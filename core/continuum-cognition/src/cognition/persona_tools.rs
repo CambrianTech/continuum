@@ -25,14 +25,21 @@
 //! living in the command's own destiny — [`descriptor_to_tool_spec`] consumes it
 //! with no caller change. Open-by-default now; advanced description/validation
 //! later, exactly where it belongs.
-
-use crate::ai::types::{NativeToolSpec, ToolInputSchema};
-use crate::cognition::tool_embedding::extract_category;
-use crate::routing::command_acl::is_command_authorized;
-use crate::routing::trust_level::TrustLevel;
-use crate::sdk_codegen::{AccessLevel, CommandDescriptor};
-use crate::sdk_codegen::ext::command_registry_live;
-use serde_json::json;
+//
+// DisclosureLevel controls how much tool detail appears in the system prompt.
+// SPINE: category headers + verb counts only — minimal context, persona discovers details via
+//        commands/list then commands/help on demand (the Claude Code shape).
+// EXPANDED: categories with one-line summaries for collapsed tools; expanded categories show
+//           full verb names + param hints. Gives the persona enough to choose without a lookup.
+// SCHEMA: like EXPANDED but includes full input parameter schemas inline — the persona can
+//         construct correct calls without commands/help.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DisclosureLevel {
+    #[default]
+    Spine,
+    Expanded,
+    Schema,
+}
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -230,61 +237,147 @@ fn render_param_hint(schema: &ToolInputSchema) -> String {
 /// [`render_tool_catalog`] (the open-everything render).
 ///
 /// [`tool_relevance`]: crate::cognition::tool_relevance
+/// Render the tool menu at the given disclosure level.
+///
+/// SPINE (default): category headers + verb counts for collapsed categories,
+///   inline verbs for expanded categories — no descriptions or schemas.
+/// EXPANDED: collapsed tools show "verb_name — description" summaries;
+///   expanded categories show full verb names with param hints.
+/// SCHEMA: like EXPANDED plus the full input_schema JSON for each tool.
 pub fn render_tool_menu(
     tools: &[NativeToolSpec],
     expanded: &std::collections::BTreeSet<String>,
 ) -> String {
+    render_tool_menu_inner(tools, expanded, DisclosureLevel::default())
+}
+
+/// Internal renderer that supports all three disclosure levels.
+pub(super) fn render_tool_menu_inner(
+    tools: &[NativeToolSpec],
+    expanded: &std::collections::BTreeSet<String>,
+    level: DisclosureLevel,
+) -> String {
     if tools.is_empty() {
         return String::new();
     }
-    // Same grouping as render_tool_catalog — stable (BTreeMap) order so the spine is
-    // a byte-stable prefix; only the per-category expansion differs. An expanded
-    // category renders BARE verb names — no param hints. Measured 2026-07-10: the
-    // hinted always-expanded menu was 8.4k chars of a 16.5k live system prompt
-    // (77% instruction boilerplate vs 21% live world — Joel: "prompts that are
-    // more boilerplate than logic"). Verbs stay visible (the she-must-see-her-
-    // hands invariant holds); ARGS are on-demand — `commands/help` is progressive
-    // disclosure's home, and since #1916 a wrong call gets the exact shape
-    // inlined in the SAME error observation, a stronger net at the correction
-    // seam than a hint buried in an 8k wall. (The 2026-07-01 field-name-guessing
-    // fix moved seams: menu-hint → error-manual.)
-    let mut by_cat: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+
+    // Group by category — stable BTreeMap order so the spine is a byte-stable prefix.
+    let mut by_cat: BTreeMap<&str, Vec<(&str, &NativeToolSpec)>> = BTreeMap::new();
     for t in tools {
         let cat = extract_category(&t.name);
         let verb = t
             .name
             .strip_prefix(cat)
             .and_then(|r| r.strip_prefix('/'))
-            .unwrap_or(&t.name); // unwrap_or: an uncategorised name renders whole
-        by_cat.entry(cat).or_default().push(verb.to_string());
+            .unwrap_or(&t.name);
+        by_cat.entry(cat).or_default().push((verb, t));
     }
+
     let mut out = String::new();
-    // ONE form example at the header — the invocation SHAPE, not per-tool
-    // hints (those measured as 77% prompt boilerplate and moved to the
-    // error-manual seam). 2026-07-12 glass-box: all four personas knew the
-    // real NAMES within hours but kept fumbling the FORM (paren-call vs
-    // CLI-flag vs bare); one canonical example teaches the form for ~20
-    // tokens. PX, not steering: it shows how calls look, never which to make.
-    let _ = writeln!(
-        out,
-        "call form: code/read({{\"file_path\":\"src/main.rs\"}}) — exact args for any tool: commands/help(name)"
-    );
-    for (cat, mut verbs) in by_cat {
-        verbs.sort_unstable();
-        if expanded.contains(cat) {
-            let _ = writeln!(out, "{cat}: {}", verbs.join(", "));
-        } else if verbs.len() == 1 {
-            // A singleton category isn't worth collapsing — its one verb IS the name.
-            let _ = writeln!(out, "{cat}: {} (+ commands/list --filter {cat})", verbs[0]);
-        } else {
+    match level {
+        DisclosureLevel::Spine => {
+            // SPINE: call-form example + category headers with verb counts or inline verbs.
             let _ = writeln!(
                 out,
-                "{cat} ({} — commands/list --filter {cat})",
-                verbs.len()
+                "call form: code/read({{\"file_path\":\"src/main.rs\"}}) — exact args for any tool: commands/help(name)"
             );
+            for (cat, mut entries) in by_cat {
+                let verbs: Vec<&str> = entries.iter().map(|(v, _)| *v).collect();
+                if expanded.contains(cat) {
+                    let _ = writeln!(out, "{cat}: {}", verbs.join(", "));
+                } else if verbs.len() == 1 {
+                    // Singleton categories aren't worth collapsing.
+                    let _ = writeln!(out, "{cat}: {} (+ commands/list --filter {cat})", verbs[0]);
+                } else {
+                    let _ = writeln!(out, "{cat} ({} — commands/list --filter {cat})", verbs.len());
+                }
+            }
+        }
+        DisclosureLevel::Expanded => {
+            // EXPANDED: collapsed tools show one-line summaries (verb + description);
+            // expanded categories show full details with param hints.
+            let _ = writeln!(
+                out,
+                "call form: code/read({{\"file_path\":\"src/main.rs\"}}) — exact args for any tool: commands/help(name)"
+            );
+            for (cat, mut entries) in by_cat {
+                let is_expanded = expanded.contains(cat);
+                if is_expanded {
+                    // Expanded: show each verb with its param hint.
+                    let mut lines: Vec<String> = Vec::new();
+                    for (verb, tool) in &entries {
+                        let hints = render_param_hint(&tool.input_schema);
+                        lines.push(format!("  {verb}{hints}"));
+                    }
+                    entries.sort_by(|a, b| a.0.cmp(b.0));
+                    let _ = writeln!(out, "{cat}:");
+                    for line in &lines {
+                        out.push_str(line);
+                        out.push('\n');
+                    }
+                } else if entries.len() == 1 {
+                    // Singleton: show verb + summary.
+                    let (verb, tool) = &entries[0];
+                    let desc_trunc = truncate_summary(&tool.description, 80);
+                    let _ = writeln!(out, "{cat}: {verb} — {desc_trunc}");
+                } else {
+                    // Collapsed: show one-line summaries for each tool.
+                    entries.sort_by(|a, b| a.0.cmp(b.0));
+                    let _ = writeln!(out, "{cat}:");
+                    for (verb, tool) in &entries {
+                        let desc_trunc = truncate_summary(&tool.description, 80);
+                        let _ = writeln!(out, "  {verb} — {desc_trunc}");
+                    }
+                }
+            }
+        }
+        DisclosureLevel::Schema => {
+            // SCHEMA: like Expanded but includes full input_schema JSON for each tool.
+            let _ = writeln!(
+                out,
+                "call form: code/read({{\"file_path\":\"src/main.rs\"}}) — exact args for any tool: commands/help(name)"
+            );
+            for (cat, mut entries) in by_cat {
+                let is_expanded = expanded.contains(cat);
+                if is_expanded {
+                    // Expanded within schema mode: show verb + param hints + full schema.
+                    entries.sort_by(|a, b| a.0.cmp(b.0));
+                    let _ = writeln!(out, "{cat}:");
+                    for (verb, tool) in &entries {
+                        let hints = render_param_hint(&tool.input_schema);
+                        let _ = writeln!(out, "  {verb}{hints}");
+                        out.push_str("    ```json\n");
+                        out.push_str(&serde_json::to_string_pretty(&tool.input_schema).unwrap_or_default());
+                        out.push_str("\n    ```\n");
+                    }
+                } else if entries.len() == 1 {
+                    let (verb, tool) = &entries[0];
+                    let desc_trunc = truncate_summary(&tool.description, 80);
+                    let _ = writeln!(out, "{cat}: {verb} — {desc_trunc}");
+                    out.push_str("    ```json\n");
+                    out.push_str(&serde_json::to_string_pretty(&tool.input_schema).unwrap_or_default());
+                    out.push_str("\n    ```\n");
+                } else {
+                    entries.sort_by(|a, b| a.0.cmp(b.0));
+                    let _ = writeln!(out, "{cat}:");
+                    for (verb, tool) in &entries {
+                        let desc_trunc = truncate_summary(&tool.description, 80);
+                        let _ = writeln!(out, "  {verb} — {desc_trunc}");
+                    }
+                }
+            }
         }
     }
     out
+}
+
+/// Truncate a description to at most `max_chars` characters, adding "…" if truncated.
+fn truncate_summary(desc: &str, max_chars: usize) -> String {
+    if desc.len() <= max_chars {
+        desc.to_string()
+    } else {
+        format!("{}…", &desc[..max_chars.saturating_sub(1)])
+    }
 }
 
 /// Group the authorized tools into `(category, verbs)` pairs for the tool menu. Verbs are the BARE names (no param hints). Stable (BTreeMap) order

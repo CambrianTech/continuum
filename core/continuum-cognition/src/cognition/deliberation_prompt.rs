@@ -59,6 +59,9 @@ pub(super) struct SystemPromptParts<'a> {
     pub tools: &'a [NativeToolSpec],
     /// Categories to expand inline this turn (the rest render as collapsed bookmarks).
     pub expanded: &'a BTreeSet<String>,
+    /// How much detail the tool menu exposes — SPINE (verbs + counts), EXPANDED
+    /// (summaries), SCHEMA (full schemas). Default is SPINE.
+    pub disclosure_level: persona_tools::DisclosureLevel,
     // No `context`: the assembled context is a room's, and the system message is hers
     // (module doc). It renders after her view ([`working_context_message`]).
     /// A turn DIRECTED at her (question/@mention/DM) withholds the silent-PASS hatch.
@@ -331,10 +334,8 @@ fn stable_blocks<'a>(
         // Take a TURN in this activity — pure function of her name.
         Some((PromptScope::Persona, Cow::Owned(taking_your_turn_block(p.persona_name)))),
         // Tools + acting — the SUBSTRATE's block: byte-identical for every persona with
-        // the same authorized set, so it leads and is the prefix N personas share.
-        tools_block(p.tools, p.expanded).map(|b| (PromptScope::Substrate, Cow::Owned(b))),
+        tools_block(p.tools, p.expanded, p.disclosure_level).map(|b| (PromptScope::Substrate, Cow::Owned(b))),
     ]
-    .into_iter()
     .flatten()
 }
 
@@ -458,13 +459,17 @@ fn taking_your_turn_block(name: &str) -> String {
 /// answer (write the function, the prose, the design) — produce it directly; reach for
 /// a tool when the task genuinely needs one. Describing what you WOULD do is not doing
 /// it — but neither is calling a tool you don't need.
-fn tools_block(tools: &[NativeToolSpec], expanded: &BTreeSet<String>) -> Option<String> {
+fn tools_block(
+    tools: &[NativeToolSpec],
+    expanded: &BTreeSet<String>,
+    level: persona_tools::DisclosureLevel,
+) -> Option<String> {
     if tools.is_empty() {
         return None;
     }
     let mut s = String::with_capacity(1024);
     s.push_str(TOOLS_INTRO);
-    s.push_str(&persona_tools::render_tool_menu(tools, expanded));
+    s.push_str(&persona_tools::render_tool_menu_inner(tools, expanded, level));
     s.push_str(ACTING_BLOCK);
     Some(s)
 }
@@ -678,6 +683,7 @@ mod tests {
             persona_name: "Asha",
             tools: &[],
             expanded: &expanded,
+            disclosure_level: persona_tools::DisclosureLevel::Schema,
             directed,
             self_initiated,
             now_ms,
@@ -736,6 +742,7 @@ mod tests {
             persona_name: "Asha",
             tools: &[],
             expanded: &expanded,
+            disclosure_level: persona_tools::DisclosureLevel::Schema,
             directed: false,
             self_initiated: false,
             now_ms: None,
@@ -858,12 +865,12 @@ mod tests {
             persona_name: "Kira",
             tools: &tools,
             expanded: &expanded,
+            disclosure_level: persona_tools::DisclosureLevel::Schema,
             directed: false,
             now_ms: Some(1_700_000_000_000),
             self_initiated: false,
             holds_live_work: false,
         });
-        let tools_at = c.stable.find("code/read").expect("tools block present");
         let id_at = c.stable.find("IDENTITY").expect("identity present");
         assert!(tools_at < id_at, "substrate before persona: {}", &c.stable[..80]);
         assert!(!c.stable.contains("[now "), "the clock is a Turn block, never in the prefix");
@@ -890,6 +897,7 @@ mod tests {
             persona_name: "Asha",
             tools: &tools,
             expanded: &expanded,
+            disclosure_level: persona_tools::DisclosureLevel::Schema,
             directed: true,
             holds_live_work: false,
             self_initiated: false,

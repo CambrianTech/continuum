@@ -437,6 +437,7 @@ impl LlmDeliberationFaculty {
             persona_name: &self.persona_name,
             tools: &self.tools,
             expanded,
+            disclosure_level: crate::cognition::persona_tools::DisclosureLevel::Schema,
             directed,
             now_ms,
             self_initiated,
