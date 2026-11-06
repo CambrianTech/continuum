@@ -9,6 +9,17 @@ pub(super) enum GenerationAdmission {
     },
 }
 
+impl GenerationAdmission {
+    pub(super) async fn run<F: std::future::Future>(self, call: F) -> F::Output {
+        match self {
+            Self::AdapterOwned => call.await,
+            Self::SharedLocal { _lane } => {
+                crate::inference::resource_admission::with_serving_lane(_lane, call).await
+            }
+        }
+    }
+}
+
 impl LlmDeliberationFaculty {
     pub(super) async fn admit_generation(
         &self,
@@ -118,14 +129,13 @@ impl LlmDeliberationFaculty {
         // One acquisition future owns the queue entry for this turn. An estimate
         // expiring reports contention but never drops or recreates that future.
         let (wait, acquire) = crate::inference::resource_admission::serving_lane_request(
-                Some(self.persona_id),
-                priority,
-                expected,
-            );
-        let admission = super::admission_clock::waiting(wait, observe_wait(
-            acquire,
-            tokio::time::sleep(lane_bound),
-            || {
+            Some(self.persona_id),
+            priority,
+            expected,
+        );
+        let admission = super::admission_clock::waiting(
+            wait,
+            observe_wait(acquire, tokio::time::sleep(lane_bound), || {
                 continuum_base::probe!(
                     class = "delib.gate.wait_estimate_exceeded",
                     persona = %self.persona_name,
@@ -135,8 +145,8 @@ impl LlmDeliberationFaculty {
                     lanes_available = crate::inference::resource_admission::serving_lane_permits_available() as u64,
                     "lane wait exceeded its estimate; retaining the same admission request and queue position"
                 );
-            },
-        ));
+            }),
+        );
         let _lane = if ws.attention.requires_priority() {
             admission.await
         } else {

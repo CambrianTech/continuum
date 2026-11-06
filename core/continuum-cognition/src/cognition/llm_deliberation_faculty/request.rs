@@ -25,7 +25,8 @@ impl TurnKind {
     /// time term the allowance reports and the ceiling a reply may test upward to. `None` with no
     /// measured rate (after a restart the rate reads 0), so nothing grows on a guess.
     pub(super) fn time_term(self, tps: Option<f64>) -> Option<u32> {
-        tps.filter(|t| t.is_finite() && *t > 0.0).map(|t| (self.latency_budget_secs() * t).round() as u32)
+        tps.filter(|t| t.is_finite() && *t > 0.0)
+            .map(|t| (self.latency_budget_secs() * t).round() as u32)
     }
 
     pub(super) fn label(self) -> &'static str {
@@ -239,7 +240,9 @@ impl LlmDeliberationFaculty {
                     turn_bound,
                     None,
                 );
-                let result = adapter.generate_admitted(request, terms, sink.clone()).await;
+                let result = _admission
+                    .run(adapter.generate_admitted(request, terms, sink.clone()))
+                    .await;
                 witness.disarm();
                 result
             } else {
@@ -252,7 +255,9 @@ impl LlmDeliberationFaculty {
                     turn_bound,
                     Some(receiver),
                 );
-                let result = adapter.generate_admitted(request, terms, sink).await;
+                let result = _admission
+                    .run(adapter.generate_admitted(request, terms, sink))
+                    .await;
                 witness.disarm();
                 result
             }
@@ -276,19 +281,26 @@ impl LlmDeliberationFaculty {
                 .map(|t| (t.cached_tokens, t.prefill_tokens)),
         );
         let receipt = match &gen_result {
-            Ok(response) => crate::ai::provenance::GenerationReceipt::from_response(request_id, response),
-            Err(error) => crate::ai::provenance::GenerationReceipt::faulted(request_id, error.to_string()),
+            Ok(response) => {
+                crate::ai::provenance::GenerationReceipt::from_response(request_id, response)
+            }
+            Err(error) => {
+                crate::ai::provenance::GenerationReceipt::faulted(request_id, error.to_string())
+            }
         };
         // Counted where the served receipt is made, the one producer of the facts her service
         // window reads: in the window it was served in, whether or not her turn settles soon.
-        if matches!(receipt.outcome, crate::ai::provenance::GenerationOutcome::Served { .. }) {
+        if matches!(
+            receipt.outcome,
+            crate::ai::provenance::GenerationOutcome::Served { .. }
+        ) {
             crate::cognition::resident_service::note_generation(self.persona_id);
         }
         receipts.push(
             receipt
-            .with_capture(completed.as_deref())
-            .with_genes(genes)
-            .with_allocation(allocation),
+                .with_capture(completed.as_deref())
+                .with_genes(genes)
+                .with_allocation(allocation),
         );
         Some(gen_result)
     }

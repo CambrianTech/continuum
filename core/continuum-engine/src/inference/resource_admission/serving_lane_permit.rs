@@ -6,8 +6,9 @@ use super::{note_lane_held_ms, InflightModelCall, LanePriority};
 /// (optional) non-directed sub-cap permit, and the in-flight gauge marker — ALL released
 /// on drop. Acquire it around the single generate call so the reservation window matches
 /// exactly the lane-consuming window (queue + prefill + decode) and nothing downstream.
-#[derive(Debug)]
 pub struct ServingLanePermit {
+    pub(super) gate: &'static super::LaneAdmission,
+    pub(super) expected_occupancy: Option<std::time::Duration>,
     pub(super) _progress: super::progress::ProgressGuard,
     pub(super) _lane: tokio::sync::OwnedSemaphorePermit,
     pub(super) _nondirected: Option<tokio::sync::OwnedSemaphorePermit>,
@@ -24,6 +25,29 @@ pub struct ServingLanePermit {
     /// Its place in admission. LAST: fields drop in order, so the lane and the in-flight marker
     /// are released before a quiesce can see this request gone (`quiesce`).
     pub(super) _entry: super::quiesce::AdmissionEntry,
+}
+
+impl std::fmt::Debug for ServingLanePermit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServingLanePermit")
+            .field("persona", &self.persona)
+            .field("priority", &self.priority)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ServingLanePermit {
+    /// The same admission authority and priority used for this granted call.
+    /// A parked physical-slot wait may relinquish capacity, then join this
+    /// authority's queue again; it must not invent a different lane budget.
+    pub(crate) fn reacquisition(&self) -> super::lane_handoff::LaneReacquisition {
+        super::lane_handoff::LaneReacquisition {
+            gate: self.gate,
+            persona: self.persona,
+            priority: self.priority,
+            expected_occupancy: self.expected_occupancy,
+        }
+    }
 }
 
 impl Drop for ServingLanePermit {

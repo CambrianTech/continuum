@@ -83,6 +83,128 @@ impl Wake for WakeCount {
     }
 }
 
+#[tokio::test]
+async fn same_mind_wait_releases_the_callers_serving_lane() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::inference::resource_admission::{with_serving_lane, LaneAdmission, LanePriority};
+    let root = format!("test://same-mind-lane-{}", Uuid::new_v4());
+    let key = PageKey::mind(Uuid::new_v4()).ok_or("mind key")?;
+    let pool = Arc::new(KvSlotPool::new(&root, 1));
+    let sem = Arc::new(Semaphore::new(2));
+    let client = reqwest::Client::new();
+    let held = admit_turn(
+        &sem,
+        crate::inference::slots::SlotClass::Turn,
+        Some(key),
+        Some(pool.clone()),
+        &client,
+        &root,
+        100,
+        std::time::Duration::ZERO,
+    )
+    .await?;
+    let lanes: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+    lanes.set_served_lane_count(1);
+    let lane = lanes
+        .acquire_serving_lane(None, LanePriority::Directed, None)
+        .await;
+    let mut waiting = Box::pin(with_serving_lane(
+        lane,
+        admit_turn(
+            &sem,
+            crate::inference::slots::SlotClass::Turn,
+            Some(key),
+            Some(pool),
+            &client,
+            &root,
+            100,
+            std::time::Duration::ZERO,
+        ),
+    ));
+    assert!(futures::poll!(&mut waiting).is_pending());
+    let mut borrowed = Box::pin(lanes.acquire_serving_lane(None, LanePriority::Directed, None));
+    assert!(
+        futures::poll!(&mut borrowed).is_ready(),
+        "same-mind wait must not retain a lane"
+    );
+    drop(waiting);
+    drop(held);
+    Ok(())
+}
+
+// Compose the real two owners as cognition's SharedLocal call does: its lane
+// surrounds adapter admission. This is a custody reproduction, not an HTTP or
+// full cognition integration test. An inner permit drop cannot release it.
+#[tokio::test]
+async fn all_pinned_wait_releases_the_outer_serving_lane() -> Result<(), Box<dyn std::error::Error>>
+{
+    use crate::inference::resource_admission::{LaneAdmission, LanePriority};
+    let root = format!("test://outer-lane-{}", Uuid::new_v4());
+    let pool = Arc::new(KvSlotPool::new(&root, 1));
+    let sem = Arc::new(Semaphore::new(2));
+    let client = reqwest::Client::new();
+    let owner = PageKey::mind(Uuid::new_v4()).ok_or("owner key")?;
+    let held = admit_turn(
+        &sem,
+        crate::inference::slots::SlotClass::Turn,
+        Some(owner),
+        Some(pool.clone()),
+        &client,
+        &root,
+        100,
+        std::time::Duration::ZERO,
+    )
+    .await?;
+    let lanes: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+    lanes.set_served_lane_count(1);
+    let outer = lanes
+        .acquire_serving_lane(None, LanePriority::Directed, None)
+        .await;
+    let key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
+    let mut waiting = Box::pin(crate::inference::resource_admission::with_serving_lane(
+        outer,
+        async {
+            admit_turn(
+                &sem,
+                crate::inference::slots::SlotClass::Turn,
+                Some(key),
+                Some(pool.clone()),
+                &client,
+                &root,
+                100,
+                std::time::Duration::ZERO,
+            )
+            .await
+        },
+    ));
+    assert!(futures::poll!(&mut waiting).is_pending());
+    assert_eq!(
+        sem.available_permits(),
+        1,
+        "inner adapter permit was released"
+    );
+    let mut next = Box::pin(lanes.acquire_serving_lane(None, LanePriority::Directed, None));
+    let std::task::Poll::Ready(other_lane) = futures::poll!(&mut next) else {
+        return Err("all-pinned wait retained the outer serving lane".into());
+    };
+    drop(held);
+    assert!(
+        futures::poll!(&mut waiting).is_pending(),
+        "slot release cannot bypass lane authority"
+    );
+    drop(other_lane);
+    let admitted = tokio::time::timeout(std::time::Duration::from_secs(2), waiting).await??;
+    assert_eq!(admitted.slot(), Some(0));
+    let mut following = Box::pin(lanes.acquire_serving_lane(None, LanePriority::Directed, None));
+    assert!(
+        futures::poll!(&mut following).is_pending(),
+        "physical owner retains reacquired lane"
+    );
+    drop(admitted);
+    drop(tokio::time::timeout(std::time::Duration::from_secs(2), following).await?);
+    Ok(())
+}
+
 // Intel's all-pinned storm: nine contenders must not repeatedly wake each other
 // while the sole physical slot remains pinned. Cancellation must not manufacture
 // a slot release; a real release must still make the survivor eligible.

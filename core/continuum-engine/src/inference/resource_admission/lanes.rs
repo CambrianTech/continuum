@@ -437,6 +437,8 @@ impl LaneAdmission {
         );
         progress.granted();
         ServingLanePermit {
+            gate: self,
+            expected_occupancy,
             _progress: progress,
             _lane: lane,
             _nondirected: nondirected,
