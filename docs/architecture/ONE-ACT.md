@@ -924,3 +924,20 @@ relaunched engine PID36340 (five lanes, context163840); its live gate ends03:35:
 Windows publication is complete. PrepareOnly verified exact5d and staged service-b;
 ResumePrepared activation is in progress. No Windows recovery claim precedes its
 live resident evidence.
+
+### 2026-11-06 03:46Z: completed observation windows
+
+Windows 5d survived the prior crash window and restored Kimi and Sahar from disk.
+The full 03:26–03:41 window contains two model-reached Sahar acts (50 and 85 seconds),
+none for Kimi, and no false attempts. This is crash-containment progress, not
+productive acceptance for both residents. Intel's full 03:20:13–03:35:13 window
+contains one Delia act (417 seconds) and one false attempt; it also lacks productive
+acceptance. Keep current code while repairing the demonstrated admission problem;
+these Intel results do not establish a decline from its already poor 8b baseline.
+
+M5's saved-8b restoration completed at03:28:07. Its full following 15 minutes
+contains ten model-reached acts across all four minds, no false attempts, versus
+seven and no Atlas completion on5d. This remains below the predeployment17.
+The larger engine geometry survived restoration, so none of these windows isolates
+an embedding-code effect. No further rollback cycle is the engineering solution.
+Stable summaries and rotated logs are retained in the recovery evidence directory.
