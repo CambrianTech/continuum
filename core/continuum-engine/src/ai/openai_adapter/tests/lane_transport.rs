@@ -7,6 +7,18 @@ use super::*;
 // generation, then accepts the unchanged prompt with its explicitly resized room.
 #[tokio::test]
 async fn kimi_reply_resize_requires_a_second_quote_before_one_generation() {
+    replay_reply_resize(26654, 27221, 32512, 5857, 5290).await;
+}
+
+// Sahar, 2026-11-06 15:28:56Z: the live unchanged-prompt retry repeats the
+// same disagreement at a different admitted window. Counts are recorded; the
+// prompt and backend are synthetic, so this is transport proof, not live replay.
+#[tokio::test]
+async fn sahar_reply_resize_requires_a_second_quote_before_one_generation() {
+    replay_reply_resize(19034, 18702, 22435, 3769, 3732).await;
+}
+
+async fn replay_reply_resize(estimate: usize, prompt: u32, window: u32, predicted: u32, resized: u32) {
     use axum::{routing::post, Router};
     use std::sync::{Arc, Mutex};
     use crate::inference::lane_send::{DispatchAdmission, FillReceipt, PromptQuote};
@@ -21,7 +33,7 @@ async fn kimi_reply_resize_requires_a_second_quote_before_one_generation() {
             let log = quote_log.clone();
             async move {
                 log.lock().expect("fixture quote log").push(body);
-                axum::Json(serde_json::json!({"input_tokens": 27221}))
+                axum::Json(serde_json::json!({"input_tokens": prompt}))
             }
         }))
         .route("/v1/chat/completions", post(move |axum::Json(body): axum::Json<serde_json::Value>| {
@@ -35,7 +47,7 @@ async fn kimi_reply_resize_requires_a_second_quote_before_one_generation() {
     let address = listener.local_addr().expect("fixture address");
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let adapter = test_adapter();
-    for reply in [5857, 5290] {
+    for reply in [predicted, resized] {
         let body = serde_json::to_vec(&serde_json::json!({
             "messages": [{"role": "user", "content": "same finalized prompt"}], "max_tokens": reply
         })).expect("fixture body");
@@ -44,16 +56,16 @@ async fn kimi_reply_resize_requires_a_second_quote_before_one_generation() {
             adapter.client.post(format!("http://{address}/v1/chat/completions")).header("Content-Type", "application/json"),
             body, None,
             FillReceipt {
-                model: "fixture", prompt_tokens: 26654,
-                prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "Kimi fixture", reply, request_id: "kimi-room" }),
+                model: "fixture", prompt_tokens: estimate,
+                prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "recorded room fixture", reply, request_id: "recorded-room" }),
                 admission: Some(DispatchAdmission {
                     persona: uuid::Uuid::nil(), engine: None,
-                    admission: RequestAdmission { window: 32512, lease: None, priced: PromptAdmission::EngineCounted },
+                    admission: RequestAdmission { window, lease: None, priced: PromptAdmission::EngineCounted },
                 }),
             }, &mut None,
         ).await;
-        if reply == 5857 {
-            assert!(matches!(result, Err(crate::ai::inference_error::InferenceError::ContextExceeded { requested: 27221, available: 32512 })));
+        if reply == predicted {
+            assert!(matches!(result, Err(crate::ai::inference_error::InferenceError::ContextExceeded { requested, available } ) if requested == prompt && available == window));
             assert!(generations.lock().expect("fixture generations").is_empty());
         } else {
             assert!(result.expect("resized room fits").status().is_success());
@@ -65,7 +77,7 @@ async fn kimi_reply_resize_requires_a_second_quote_before_one_generation() {
     assert_eq!(sent.len(), 1);
     assert_eq!(counted[0]["messages"], counted[1]["messages"]);
     assert_eq!(sent[0], counted[1]);
-    assert_eq!(sent[0]["max_tokens"], 5290);
+    assert_eq!(sent[0]["max_tokens"], resized);
     server.abort();
 }
 
