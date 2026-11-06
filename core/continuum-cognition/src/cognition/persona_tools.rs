@@ -287,7 +287,7 @@ pub(super) fn render_tool_menu_inner(
             // inline, collapsed ones still list the names (the spine is the map).
             let _ = writeln!(
                 out,
-                "call form: code/read({{{"file_path":"src/main.rs"}}}) — exact args for any tool: commands/help(name)"
+                "call form: code/read({{\"file_path\":\"src/main.rs\"}}) — exact args for any tool: commands/help(name)"
             );
             for (cat, mut entries) in by_cat {
                 entries.sort_by(|a, b| a.0.cmp(b.0));
