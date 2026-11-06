@@ -60,7 +60,6 @@ use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
 
 use crate::cognition::faculty_ids::WALL;
 
-/// Abstract reader over the airc room wall. Production rides on
 /// `airc_lib::Airc::wall_posts`; tests stub it without a daemon. Mirrors
 /// the `AircDoctrineReader` / `AircRosterReader` rails.
 #[async_trait]
@@ -118,7 +117,7 @@ pub type CardLabels = std::collections::HashMap<uuid::Uuid, (String, airc_work::
 /// her active card's, labelled only `[card-ledger]` with the card's id buried in JSON.
 ///
 /// Board unread (`None`): every post renders verbatim. Nothing is dropped and nothing is
-/// labelled, since a board that could not be read cannot say a card is over or gone.
+
 fn ledgers_for_context(posts: Vec<WallPostPublished>, labels: Option<&CardLabels>) -> Vec<WallPostPublished> {
     let Some(labels) = labels else {
         return posts;
@@ -420,7 +419,7 @@ impl RagSource for WallSource {
 
         tracing::debug!(
             persona_id = %self.persona_id,
-            posts = posts.len(),
+            posts = items.len(),
             "wall_posts: deliver"
         );
 
