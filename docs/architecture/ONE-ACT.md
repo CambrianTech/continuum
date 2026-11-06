@@ -972,3 +972,5 @@ M5 is being returned through the supported lifecycle to the published, all-CI-gr
 5d release already running on Windows and Intel. The fresh evidence is under
 `5d5985c1c209/current-0524` on M5. PR5796 remains separate and unmerged until its
 exact-head CI completes; its isolated genome fixture rerun is in progress.
+
+PR5796 passed all applicable CI at exact head827836d83c, including the unchanged genome fixture on its targeted rerun. It merged as canary49e0fadee47709366ff411393c7e7c80d125ed0c. Supported publisher42169216864 names that exact revision; publication and live verification remain pending. All three machines were directly verified on published5d at05:26Z, with M5's fresh observation window ending05:40:10Z. Current-code failures are engineering evidence, not justification for activity-based rollback.
