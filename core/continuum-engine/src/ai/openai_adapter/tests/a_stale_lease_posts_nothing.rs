@@ -148,21 +148,38 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
 // must not authorize generation; no global readiness watch substitutes for it.
 #[tokio::test]
 async fn quarantine_during_quote_posts_nothing() {
+    owned_quote_refusal(true, 4, 100).await;
+}
+
+#[tokio::test]
+async fn owned_physical_window_refuses_a_larger_admitted_window() {
+    owned_quote_refusal(false, 100, 1000).await;
+}
+
+async fn owned_quote_refusal(quarantine: bool, prompt: u32, admitted_window: u32) {
     use axum::{routing::post, Router};
     use crate::inference::lane_send::{DispatchAdmission, FillReceipt, PromptQuote};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture bind");
     let address = listener.local_addr().expect("fixture address");
     let root = format!("http://{address}");
-    let pool = crate::inference::slots::directory().ensure_pool(&root, 1);
     let endpoint = crate::inference::slots::directory().endpoint(&root);
+    let transition = endpoint.transition().await;
+    let generation = transition.start_generation().expect("fixture generation");
+    transition.ready(&root, &generation, crate::inference::slots::KvPageContract {
+        model_id: "fixture".into(), model: "fixture.gguf".into(), adapters: vec![],
+        page_dir: None, context: 100, slots: 1, cache_type: None,
+        flash_attn: None, revisions: None,
+    }).expect("fixture owned geometry");
+    drop(transition);
+    let pool = endpoint.admit().await.expect("fixture reader").pool.expect("fixture pool");
     let posts = Arc::new(AtomicUsize::new(0));
     let posted = posts.clone();
     let app = Router::new()
         .route("/v1/chat/completions/input_tokens", post(move || {
             let endpoint = endpoint.clone();
             async move {
-                endpoint.quarantine_paging();
-                axum::Json(serde_json::json!({"input_tokens":4}))
+                if quarantine { endpoint.quarantine_paging(); }
+                axum::Json(serde_json::json!({"input_tokens":prompt}))
             }
         }))
         .route("/v1/chat/completions", post(move || {
@@ -178,6 +195,8 @@ async fn quarantine_during_quote_posts_nothing() {
         &sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool),
         &adapter.client, &root, 4, std::time::Duration::ZERO,
     ).await.expect("fixture admission");
+    assert_eq!(owned.dispatch_geometry("fixture").expect("owned model").per_slot_window, 100);
+    assert!(matches!(owned.dispatch_geometry("other-model"), Err(InferenceError::AdmissionUncounted { .. })));
     let mut reservation = None;
     let result = crate::inference::lane_send::send_with_lane_retry(
         &adapter.config,
@@ -189,11 +208,15 @@ async fn quarantine_during_quote_posts_nothing() {
             prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "fixture", reply: 1, request_id: "quarantined-quote" }),
             admission: Some(DispatchAdmission {
                 persona, endpoint: Some(&owned),
-                admission: crate::ai::types::RequestAdmission { window: 100, lease: None, priced: crate::ai::types::PromptAdmission::EngineCounted },
+                admission: crate::ai::types::RequestAdmission { window: admitted_window, lease: None, priced: crate::ai::types::PromptAdmission::EngineCounted },
             }),
         }, &mut reservation,
     ).await;
-    assert!(matches!(result, Err(InferenceError::Unavailable(_))));
+    if quarantine {
+        assert!(matches!(result, Err(InferenceError::Unavailable(_))));
+    } else {
+        assert!(matches!(result, Err(InferenceError::ContextExceeded { requested: 100, available: 100 })));
+    }
     assert_eq!(posts.load(Ordering::SeqCst), 0);
     assert!(reservation.is_none());
     server.abort();

@@ -149,12 +149,16 @@ pub(crate) async fn send_with_lane_retry(
             endpoint.check_dispatch_ready().map_err(InferenceError::Unavailable)?;
         }
         if let Some(quote) = fill.prompt_quote {
+            let geometry = fill.admission.and_then(|admission| admission.endpoint)
+                .map(|endpoint| endpoint.dispatch_geometry(fill.model)).transpose()?;
             // A transport retry may reach a replacement engine. Re-count the
             // same prepared body on EVERY attempt; never reuse its predecessor's
             // template/projector count. A failed quote refuses this attempt.
-            super::serving_guard::guard_resident_model(
-                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Estimated(0), quote.caller,
-            ).await?;
+            if geometry.is_none() {
+                super::serving_guard::guard_resident_model(
+                    cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Estimated(0), quote.caller,
+                ).await?;
+            }
             let count_started = Instant::now();
             fill.prompt_tokens = super::serving_guard::quote_prompt(
                 quote.client,
@@ -162,9 +166,14 @@ pub(crate) async fn send_with_lane_retry(
                 header_bound.saturating_sub(quote_started.elapsed()),
             ).await?;
             let count_elapsed_ms = count_started.elapsed().as_millis() as u64;
-            super::serving_guard::guard_resident_model(
-                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller,
-            ).await?;
+            let measured = super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply };
+            if let Some(geometry) = geometry {
+                measured.check(geometry.per_slot_window, &cfg.name, quote.caller)?;
+            } else {
+                super::serving_guard::guard_resident_model(
+                    cfg, quote.dedicated_lane, fill.model, measured, quote.caller,
+                ).await?;
+            }
             if let Some(DispatchAdmission { admission, .. }) = fill.admission {
                 super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }
                     .check(admission.window, &cfg.name, quote.caller)?;

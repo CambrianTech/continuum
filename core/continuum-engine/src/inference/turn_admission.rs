@@ -122,6 +122,15 @@ impl TurnAdmission {
         self._endpoint.check_ready()
     }
 
+    /// Physical capacity from this admission's process owner, never a global
+    /// serving watch or a geometry remembered from a different generation.
+    pub(crate) fn dispatch_geometry(&self, model: &str) -> Result<crate::inference::served_window_store::ServedGeometry, crate::ai::inference_error::InferenceError> {
+        use crate::ai::inference_error::InferenceError;
+        self.check_dispatch_ready().map_err(InferenceError::Unavailable)?;
+        self._endpoint.served_geometry(model)
+            .ok_or_else(|| InferenceError::AdmissionUncounted { model: model.to_owned() })
+    }
+
     /// How this turn's KV reached its slot ([`PageIn`]).
     pub(crate) fn page_in(&self) -> PageIn {
         self.page_in
