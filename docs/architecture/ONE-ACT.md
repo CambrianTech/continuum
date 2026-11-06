@@ -148,6 +148,7 @@ design requirements for the coherent replacement, not instructions to add anothe
 | `lane_send` checks physical and admitted windows separately | The exact facts are available but no single executable decision owns them | One feasibility result over their intersection, then reserve through the existing grant authority |
 | `lane_send` prepares immutable wire bytes before exact resolution | Output intent is already flattened into a guessed `max_tokens` | Separate immutable prompt identity from output controls; serialize the resolved executable request once per authorized attempt |
 | `window_grant::reserve_attempt` | Already owns replacement of an unsent reservation | Preserve this owner; prove its release-unsent precondition at every transport retry, do not add another reservation layer |
+| `TurnAdmission::_endpoint` / `EndpointGeneration::admit` | Already retains endpoint read admission and the admitted pool's incarnation | Pass this owned capability into exact dispatch; do not replace it with a copied PID, an unrelated watch snapshot, or another lifecycle lock |
 | Prototype optional `quoted_reply_room` | `None` can conceal a missing receipt on a path that promised counted admission | A successful counted dispatch must contain its sent receipt; provider-enforced fixed dispatch is a distinct explicit result/capability, not absence interpreted as fallback |
 
 **Resolve the intent before implementation.** Current act-room documentation authorizes an act to
@@ -175,6 +176,21 @@ Review gates before runtime editing: agree these public types and backend capabi
 identify all counted/fixed callers and consumers; specify which resize-only retry branch disappears;
 and record how the engine incarnation is fenced across quote, reserve and send. The mock-HTTP
 baseline and pure arithmetic tests do not prove those concurrency boundaries.
+
+**Existing concurrency primitives to retain (source audit, 2026-11-06):**
+`EndpointGeneration::admit` acquires the endpoint read guard and rechecks readiness;
+`TurnAdmission` retains that admission through generation. Controlled lifecycle transitions acquire
+the corresponding writer. `window_grant::Reservations::reserve_against` compares the exact lease
+under its reservation lock; regrant publication uses that same owner. These are complementary
+endpoint-lifetime and capacity invariants, not reasons to add a third gate. The dispatch API must
+retain access to both owned capabilities through quote/reserve/send. Passing only incarnation
+numbers loses the ability to express that ownership in the type boundary.
+
+Controlled transitions and external engine failure require distinct validation: the read guard
+serializes the former but cannot prevent an OS crash or external replacement. On transport recovery,
+re-establish current endpoint identity and the matching lease before a new quote/POST. Test same-URL
+replacement and late responses explicitly. This audit identifies the existing mechanisms and the
+proof needed; it does not claim that the current transport already proves the entire contract.
 
 ### 5. Engine memory (where her KV lives)
 
