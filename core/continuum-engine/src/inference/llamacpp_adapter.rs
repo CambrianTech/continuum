@@ -746,6 +746,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let start = Instant::now();
 
         // ── Governed GPU admission (mirrors inference::single_purpose_lane::acquire_lane_slot) ──
+        // Wait without a memory claim. The admitted worker owns both through context teardown,
+        // even when the request future is cancelled after spawn_blocking starts.
+        let embedding = backend.admit_embedding().await?;
         // The embedding forward pass allocates a bounded Metal context (a 2048-token
         // embedding context: ~1.2 GiB compute buffer — quadratic in n_ubatch=2048 —
         // plus ~224 MiB KV). UNGOVERNED, it grabbed that context behind the governor's
@@ -844,10 +847,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             }
         };
 
-        let embeddings = tokio::task::spawn_blocking(move || backend.embed(&texts))
-            .await
-            .map_err(|e| format!("embedding task join failed: {e}"))??;
-        // `_vram_lease` drops here → the VRAM is returned to the governor's board.
+        let embeddings = embedding.run(texts, _vram_lease).await?;
         Ok(EmbeddingResponse {
             embeddings,
             model: model_id,

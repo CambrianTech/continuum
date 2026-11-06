@@ -39,6 +39,7 @@ impl LlamaCppBackend {
         ));
 
         Ok(Self {
+            embedding_lane: super::embedding_lane::EmbeddingLane::new(),
             model: Arc::new(model),
             config,
             model_id,
@@ -131,19 +132,16 @@ impl LlamaCppBackend {
         chosen
     }
 
-    /// Compute pooled, L2-normalized embeddings for `texts` using a dedicated
-    /// EMBEDDING-mode context. The generation scheduler's context is
-    /// `embeddings: false` and physically cannot embed, so we build a separate
-    /// embedding context here (one per call covers the whole batch; the KV is
-    /// cleared between texts so each embedding is independent of the last).
-    ///
-    /// Model-agnostic plumbing: the LOADED model should be a retrieval embedder
-    /// (the grid's canonical Qwen3-Embedding-0.6B — last-token pooled) for the
-    /// vectors to be comparable grid-wide. `NeuralEmbeddingProvider` loads that
-    /// model; this just runs it. Runtime-validated by an `#[ignore]` real-model
-    /// test once the embedding GGUF is on disk; cargo-checked without it.
-    pub fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
-        embed_model(&self.model, texts)
+    /// Admit one embedding context on this backend before claiming its memory.
+    /// The returned call binds the model to its permit and retains both through
+    /// blocking execution, even if its async caller disappears. Generation uses
+    /// its separate scheduler context; embeddings clear KV between input texts.
+    pub(crate) async fn admit_embedding(&self) -> Result<super::embedding_lane::EmbeddingCall, String> {
+        let permit = self.embedding_lane.acquire().await?;
+        Ok(super::embedding_lane::EmbeddingCall {
+            model: Arc::clone(&self.model),
+            permit,
+        })
     }
 
     /// Lazily load the multimodal projector. Returns Err when

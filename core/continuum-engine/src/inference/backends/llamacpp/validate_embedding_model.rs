@@ -309,6 +309,8 @@ impl ModelCapabilities {
 /// activation is a v2 follow-up — the scheduler currently ignores
 /// `active_loras` (see `llamacpp_scheduler` module docs).
 pub struct LlamaCppBackend {
+    /// One temporary embedding context is admitted per loaded model.
+    pub(super) embedding_lane: super::embedding_lane::EmbeddingLane,
     pub(super) model: Arc<Model>,
     pub(super) config: LlamaCppConfig,
     pub(super) model_id: String,
