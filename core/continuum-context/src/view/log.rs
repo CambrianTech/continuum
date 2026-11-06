@@ -92,6 +92,8 @@ pub(super) fn arrange<'a, T: Block>(motion: &Motion, sources: &[&'a dyn Source<T
             let mut whole = claim(*source, items);
             whole.floor_chars = claim(*source, &fresh).floor_chars + fixed;
             whole.full_chars += fixed;
+            whole.logged_chars = fixed;
+            whole.collapsible = crate::depth::collapsible(&fresh, Some(motion.rereads()));
             whole
         })
         .collect();

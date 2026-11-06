@@ -30,7 +30,7 @@ pub use allot::floor;
 const FOLD_KEY: &str = "(folded)";
 
 /// One source as the allocator sees it at an epoch start.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Claim {
     pub source: String,
     pub priority: u8,
@@ -41,6 +41,21 @@ pub struct Claim {
     pub full_chars: usize,
     /// Its newest item in full: the newest end a start never collapses when it fits.
     pub newest_chars: usize,
+    /// What of its floor her collapsed log already lays down byte for byte.
+    pub logged_chars: usize,
+    /// Its items carry acts, so a re-read of one is measured (`crate::rereads`).
+    pub instrumented: bool,
+    /// What a deeper start could collapse, newest first, with her measured re-read chance for each
+    /// (`crate::depth`): every item but the newest not yet in her log.
+    pub collapsible: Vec<crate::depth::Collapsible>,
+}
+
+impl Claim {
+    /// This source as the depth choice weighs it (`crate::depth::choose`): `share` is what the
+    /// caller's rule gives it, `per_char` the caller's units per character of it.
+    pub fn growing(&self, share: usize, per_char: f64) -> crate::depth::Growing<'_> {
+        crate::depth::Growing { share, per_char, base_chars: self.floor_chars + self.newest_chars, logged_chars: self.logged_chars, instrumented: self.instrumented, collapsible: &self.collapsible }
+    }
 }
 
 /// The allocator answered for a different number of sources than it was asked about.
@@ -184,6 +199,9 @@ fn claim<T: Block>(source: &dyn Source<T>, items: &[Item<T>]) -> Claim {
         floor_chars: floor(source, items, Block::chars),
         full_chars: items.iter().map(crate::source::whole_chars).sum(),
         newest_chars: items.last().map_or(0, crate::source::whole_chars), // map_or: a source with no items has no newest end
+        logged_chars: 0,
+        instrumented: items.iter().any(|item| item.act().is_some()),
+        collapsible: crate::depth::collapsible(items, None),
     }
 }
 
@@ -201,7 +219,7 @@ impl<T: Block> View<T> {
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<(Self, Start), GrantMismatch> {
-        Self::begin(1, head, sources, allocate, Motion::default(), None, Vec::new()).map_err(|(mismatch, _, _)| mismatch)
+        Self::begin(1, head, sources, allocate, Motion::default(), None, Vec::new()).map_err(|refused| refused.0)
     }
 
     /// Replace this epoch with a fresh one rendered from the sources' current state at the
@@ -216,7 +234,8 @@ impl<T: Block> View<T> {
         let log = std::mem::take(&mut self.log);
         let (next, mut start) = match Self::begin(self.epoch.id() + 1, head, sources, allocate, motion, Some(&self.epoch), log) {
             Ok(begun) => begun,
-            Err((mismatch, motion, log)) => {
+            Err(refused) => {
+                let (mismatch, motion, log) = *refused;
                 self.motion = motion;
                 self.log = log;
                 return Err(mismatch);
@@ -290,12 +309,16 @@ impl<T: Block> View<T> {
         mut motion: Motion,
         previous: Option<&Epoch<T>>,
         log: Vec<log::Logged<T>>,
-    ) -> Result<(Self, Start), (GrantMismatch, Motion, Vec<log::Logged<T>>)> {
+    ) -> Result<(Self, Start), Box<(GrantMismatch, Motion, Vec<log::Logged<T>>)>> {
         motion.close_epoch();
         let arranged = log::arrange(&motion, sources, &log);
+        {
+            let views: Vec<(&str, &[Item<T>])> = arranged.sources.iter().zip(&arranged.items).map(|(source, items)| (source.name(), items.as_slice())).collect();
+            motion.rereads_mut().start(&views);
+        }
         let grants = allocate(&arranged.claims);
         if grants.len() != arranged.claims.len() {
-            return Err((GrantMismatch { claims: arranged.claims.len(), grants: grants.len() }, motion, log));
+            return Err(Box::new((GrantMismatch { claims: arranged.claims.len(), grants: grants.len() }, motion, log)));
         }
         let granted: std::collections::HashMap<&str, usize> = arranged.sources.iter().zip(&grants).map(|(source, grant)| (source.name(), *grant)).collect();
         // The log folds when a source's logged history alone outgrows what this start grants it:
@@ -541,7 +564,12 @@ impl<T: Block> View<T> {
     pub fn advance(&mut self, sources: &[&dyn Source<T>]) -> Advance {
         self.act = Some(self.epoch.mark());
         self.motion.act();
-        self.append(sources, None)
+        let advance = self.append(sources, None);
+        // Her re-requests, aged against what this act shows her (`crate::rereads`).
+        let mut rereads = std::mem::take(self.motion.rereads_mut());
+        rereads.act(sources, |source, item| self.holds_whole(&key(source, item)));
+        *self.motion.rereads_mut() = rereads;
+        advance
     }
 
     /// Redo this act's append within `limit` characters for the whole view, reducing only an

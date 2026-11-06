@@ -960,3 +960,5 @@ fn a_source_that_turns_volatile_drifts_tailward_and_the_shared_prefix_recovers()
 
 /// A source absent from a start takes its logged history with it.
 mod absent_source;
+/// The collapse depth from her measured re-reads, end to end.
+mod depth;

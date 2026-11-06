@@ -54,7 +54,7 @@ struct Track {
 }
 
 /// Every source's [`Track`], kept across turnovers and restarts with her view.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Motion {
     sources: BTreeMap<String, Track>,
     /// The order the last start laid its sources down in (first block of each): what a tie keeps.
@@ -66,6 +66,11 @@ pub struct Motion {
     epoch_acts: u32,
     #[serde(default)]
     last_epoch_acts: u32,
+    /// How often she asks again for what she observed, by its age: what a start's collapse depth
+    /// weighs (`crate::rereads`, `crate::depth`). Absent in a view saved before it, which starts
+    /// measuring at its next act.
+    #[serde(default)]
+    rereads: crate::rereads::Rereads,
 }
 
 /// One unit a start places: a source, or her collapsed log.
@@ -225,6 +230,15 @@ impl Motion {
             }
         }
         order
+    }
+
+    /// Her measured re-requests by age.
+    pub fn rereads(&self) -> &crate::rereads::Rereads {
+        &self.rereads
+    }
+
+    pub(crate) fn rereads_mut(&mut self) -> &mut crate::rereads::Rereads {
+        &mut self.rereads
     }
 
     /// The order a start laid its sources down in: what the next start's ties keep.
