@@ -123,6 +123,27 @@ fn board_over_budget(board: &LeaseBoard) -> bool {
         .any(|k| k.granted_bytes.max(k.physical_used_bytes) > k.capacity_bytes)
 }
 
+/// One replace-myself read ([`ResourceDaemon::replacement_budget_snapshot`]): the budget, the
+/// caller's own measured residency that budget added back, and every other holder's lease of
+/// the pool, taken under one governor lock, so no consumer pairs a budget with a fact about
+/// it read at another moment (the M5, 2026-11-04 16:41Z: the planner read "credited" off the
+/// board while its budget was scaled by a pressure reading that never saw the credit).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplacementBudget {
+    /// What the caller could have if it released what it holds, capped at the device and net
+    /// of every other holder's grant.
+    pub bytes: u64,
+    /// The pool's scanned capacity on the same board: 0 when its capacity source has not
+    /// reported (no reading), so a zero `bytes` on a positive capacity is a measurement (a
+    /// fully leased pool), never an absence to substitute for.
+    pub capacity_bytes: u64,
+    /// The caller's own measured residency of the pool on the same board: 0 when it has
+    /// reported none, so nothing of its own was added back.
+    pub own_bytes: u64,
+    /// The other holders' leases of the pool this budget was charged.
+    pub charged: Vec<super::lease::ResourceLease>,
+}
+
 /// The single per-machine resource authority's runtime shell.
 ///
 /// A [`Daemon`] — but a *hybrid* one: it publishes its [`LeaseBoard`] both from
@@ -325,24 +346,33 @@ impl ResourceDaemon {
         self.governor.lock().budget_for_replacing(consumer_id, kind)
     }
 
-    /// Replacement budget and the leases charged by the same accounting read.
-    /// Consumers must keep these together when deriving a smaller planning budget;
-    /// a later board/holder read cannot justify omitting a future reservation.
-    pub fn replacement_budget_snapshot(
-        &self, consumer_id: &str, kind: ResourceKind,
-    ) -> (u64, Vec<super::lease::ResourceLease>) {
+    /// Replacement budget, the caller's own bytes it added back, and the leases charged, all
+    /// from the same accounting read. Consumers must keep these together when deriving a
+    /// smaller planning budget: a later board/holder read cannot justify omitting a future
+    /// reservation, nor say whether this budget already holds the caller's own bytes.
+    pub fn replacement_budget_snapshot(&self, consumer_id: &str, kind: ResourceKind) -> ReplacementBudget {
         let governor = self.governor.lock();
         let budget = governor.budget_for_replacing(consumer_id, kind);
         let board = governor.board();
         let capacity = board.kinds.iter().find(|row| row.kind == kind)
             .map_or(0, |row| row.capacity_bytes);
-        let leases: Vec<_> = board.leases.into_iter()
+        // The same attribution `budget_for_replacing` added back (`measured_by`), read under
+        // the same lock.
+        let own_bytes = board.attributions.iter()
+            .filter(|a| a.consumer_id == consumer_id && a.kind == kind)
+            .fold(0u64, |sum, a| sum.saturating_add(a.bytes));
+        let charged: Vec<_> = board.leases.into_iter()
             .filter(|lease| lease.kind == kind && lease.consumer_id != consumer_id)
             .collect();
-        let charged = leases.iter().fold(0u64, |sum, lease| sum.saturating_add(lease.bytes));
+        let charged_bytes = charged.iter().fold(0u64, |sum, lease| sum.saturating_add(lease.bytes));
         // An oversized own-residency add-back cannot erase another holder's
         // grant. Every returned lease is excluded even before physical sampling.
-        (budget.min(capacity.saturating_sub(charged)), leases)
+        ReplacementBudget {
+            bytes: budget.min(capacity.saturating_sub(charged_bytes)),
+            capacity_bytes: capacity,
+            own_bytes,
+            charged,
+        }
     }
 
     /// Register a leaseholder after startup — no restart (the directive's
