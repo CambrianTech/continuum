@@ -4,7 +4,7 @@
 //! physical receipts for every handoff ticket the owner issues.
 //!
 //! Recorded: the pool, the holder's grant, every need, the tick and Aiko's cadence
-//! (`dyno/2026-11-04.json`). Scripted (SHAPE, not receipts): a granted waiter's own turns run at
+//! (`fixtures/dyno/2026-11-04.json`). Scripted (SHAPE, not receipts): a granted waiter's own turns run at
 //! Aiko's cadence (the dark residents had no recorded turns), and a physical receipt lands
 //! `reclaim_after_ms` after its ticket. The bound is stated in feasible opportunities, so neither
 //! value decides whether a waiter is served; the generated schedules vary both.

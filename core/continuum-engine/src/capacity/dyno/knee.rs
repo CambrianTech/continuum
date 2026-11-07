@@ -1,5 +1,5 @@
 //! The cold-prefill knee (ONE-ACT 5c) and bounded warm decode under mixed load (5d), from the
-//! recorded curves (`dyno/2026-11-04-prefill-knee.json`, every value beside its receipt).
+//! recorded curves (`fixtures/dyno/2026-11-04-prefill-knee.json`, every value beside its receipt).
 //!
 //! Two things kept apart, as Codex specified:
 //! - the POLICY invariant: active cold prefills never exceed the node's knee, and the knee is
@@ -22,7 +22,7 @@ use serde::Deserialize;
 
 use super::recorded::Receipted;
 
-const EVIDENCE_JSON: &str = include_str!("2026-11-04-prefill-knee.json");
+const EVIDENCE_JSON: &str = include_str!("../../../fixtures/dyno/2026-11-04-prefill-knee.json");
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Evidence {

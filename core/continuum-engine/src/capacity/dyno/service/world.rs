@@ -325,7 +325,7 @@ impl World {
         let demands: Vec<Demand<Mind>> = self.order.iter().map(|mind| {
             let s = &self.minds[mind];
             let need = test_tokens(s.need);
-            Demand { mind: *mind, need, target: need, wish: need, in_flight: s.phase != Phase::Idle, ceiling: self.ceiling }
+            Demand { mind: *mind, need, target: need, wish: need, in_flight: s.phase != Phase::Idle, settled: s.completed_since_grant, ceiling: self.ceiling }
         }).collect();
         let (next, tickets) = self.owner.publish(&mut self.fair, &demands, self.pool, self.ceiling, Some(self.engine), self.current.clone());
         self.publications += 1;

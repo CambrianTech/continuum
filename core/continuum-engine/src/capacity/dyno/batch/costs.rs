@@ -1,5 +1,5 @@
 //! The engine's measured step costs on the recorded M5 generation, FITTED here from the log's
-//! own observations (`2026-11-06-m5-batches.json`), each fit with its residual stated:
+//! own observations (`fixtures/dyno/2026-11-06-m5-batches.json`), each fit with its residual stated:
 //!
 //! - prefill: one slot's chunk of `t` tokens at depth `d` takes `f0 + f1 d + t (g0 + g1 d)`
 //!   seconds, from every clean solo chunk: a per-chunk cost that grows with depth (the log's

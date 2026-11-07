@@ -1,12 +1,12 @@
 //! What the M5 recorded on 2026-11-04: the dyno's only inputs. The values are DATA
-//! (`2026-11-04.json`), each beside its receipt; this module is their typed shape and the
+//! (`fixtures/dyno/2026-11-04.json`), each beside its receipt; this module is their typed shape and the
 //! engine's refusal wording. A value that is not a measurement says so in its receipt ("SHAPE,
 //! not a receipt") and names the one property a scenario uses from it.
 
 use crate::inference::planning::serving_plan::ModelFootprint;
 
 /// The day's data file, compiled in so a run needs no file system.
-const RECORDED_JSON: &str = include_str!("2026-11-04.json");
+const RECORDED_JSON: &str = include_str!("../../../fixtures/dyno/2026-11-04.json");
 
 /// A recorded value and where it was measured.
 #[derive(Debug, Clone, serde::Deserialize)]
