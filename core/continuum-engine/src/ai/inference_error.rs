@@ -106,6 +106,11 @@ pub enum InferenceError {
     /// reasoning-budget sampler, or a grid peer that does not advertise one. Refused before
     /// anything is sent, never generated with an unbounded think. PERMANENT for this adapter.
     ThinkUnenforceable { model: String },
+
+    /// The request asks for a JSON schema the adapter cannot enforce (no schema-to-grammar path,
+    /// or a provider without structured output). Refused before anything is sent, never answered
+    /// unconstrained for a parser that expects the shape. PERMANENT for this adapter.
+    FormatUnenforceable { model: String },
 }
 
 impl InferenceError {
@@ -122,6 +127,7 @@ impl InferenceError {
             Self::AdmissionUncounted { .. } => false,
             Self::GrantChanged { .. } => false,
             Self::ThinkUnenforceable { .. } => false,
+            Self::FormatUnenforceable { .. } => false,
             Self::Unavailable(_) | Self::Transient(_) => true,
         }
     }
@@ -210,6 +216,10 @@ impl fmt::Display for InferenceError {
             Self::ThinkUnenforceable { model } => write!(
                 f,
                 "the adapter serving {model} cannot bound this turn's think: refused rather than sent unbounded"
+            ),
+            Self::FormatUnenforceable { model } => write!(
+                f,
+                "the adapter serving {model} cannot enforce this request's JSON schema: refused rather than answered unconstrained"
             ),
         }
     }

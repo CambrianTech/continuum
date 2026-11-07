@@ -93,6 +93,14 @@ pub async fn generate_without_thinking<A: super::AIProviderAdapter + ?Sized>(
     adapter.generate_stream_checked(request, sink, Dispatched::under(&terms)).await
 }
 
+/// The refusal of a JSON schema an adapter cannot enforce, when the request asks for one.
+pub fn refuse_schema(request: &TextGenerationRequest) -> Result<(), InferenceError> {
+    match request.response_format {
+        Some(crate::ai::types::ResponseFormat::JsonSchema { .. }) => Err(InferenceError::FormatUnenforceable { model: model_of(request) }),
+        _ => Ok(()),
+    }
+}
+
 /// The refusal of a think budget an adapter cannot carry, when the terms carry one.
 pub fn refuse_think_budget(request: &TextGenerationRequest, terms: &DispatchTerms) -> Result<(), InferenceError> {
     match terms.think {
@@ -124,8 +132,20 @@ macro_rules! dispatch_without_thinking {
 // test-fixtures gate its module carries, so its policy does too.
 #[cfg(any(test, feature = "test-fixtures"))]
 dispatch_without_thinking!(crate::ai::heuristic_adapter::HeuristicInferenceAdapter);
-// The cloud Anthropic adapter sends no `thinking` block, so its turns never think.
-dispatch_without_thinking!(crate::ai::anthropic_adapter::AnthropicAdapter);
+/// The cloud Anthropic adapter sends no `thinking` block, so its turns never think; it has no
+/// structured-output parameter, so a JSON schema is refused rather than answered unconstrained.
+#[async_trait::async_trait]
+impl DispatchTermsPolicy for crate::ai::anthropic_adapter::AnthropicAdapter {
+    async fn generate_admitted(
+        &self,
+        request: TextGenerationRequest,
+        terms: DispatchTerms,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, InferenceError> {
+        refuse_schema(&request)?;
+        generate_without_thinking(self, request, terms, sink).await
+    }
+}
 
 /// The in-process llama adapter: no reasoning-budget sampler reaches our bindings, so a think
 /// budget is refused typed (the turn is never sent unbounded); an admission likewise.
@@ -138,6 +158,9 @@ impl DispatchTermsPolicy for crate::inference::llamacpp_adapter::LlamaCppAdapter
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, InferenceError> {
         refuse_think_budget(&request, &terms)?;
+        // No schema-to-grammar path reaches our bindings: a schema is refused, never degraded to
+        // the plain JSON grammar.
+        refuse_schema(&request)?;
         generate_without_thinking(self, request, terms, sink).await
     }
 }
@@ -184,5 +207,16 @@ mod tests {
             let refused = adapter.generate_admitted(request(), terms, sink.clone()).await;
             assert_eq!(refused.err(), Some(InferenceError::ThinkUnenforceable { model: "m".into() }), "{think:?}");
         }
+        // what this catches: a JSON schema the in-process path cannot enforce degrading to the plain
+        // JSON grammar (or none), so a typed parse downstream gets an unconstrained answer. It is
+        // refused before any model is touched, under the model's own think.
+        let schema = TextGenerationRequest {
+            response_format: Some(crate::ai::types::ResponseFormat::JsonSchema {
+                json_schema: crate::ai::types::JsonSchemaFormat { name: "lesson".into(), schema: serde_json::json!({ "type": "object" }) },
+            }),
+            ..request()
+        };
+        let refused = adapter.generate_admitted(schema, DispatchTerms::thinking(Think::ModelDefault), sink).await;
+        assert_eq!(refused.err(), Some(InferenceError::FormatUnenforceable { model: "m".into() }));
     }
 }

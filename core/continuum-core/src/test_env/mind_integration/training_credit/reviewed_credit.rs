@@ -169,12 +169,14 @@ use super::*;
         use airc_work::{WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
         use reviewed::ReviewedCreditState as State;
         use crate::cognition::dream_consolidation::test_support::{
-            drain, episodic, region_over_with_store, seeded_admission,
+            drain, episodic, measured, region_over_with_store, seeded_admission,
         };
         use crate::runtime::brain_region::{BrainRegion, RegionContext};
         let (fx, mut capture) = exact_review().await;
         let (executor, persona, name, owner, reviewer, card_id, room) =
             (fx.executor.clone(), fx.persona, fx.name, fx.owner, fx.reviewer, fx.card_id, fx.room);
+        // A resident who did reviewed work has acted: her dream sizes from that measurement.
+        let persona = measured(persona);
         let (receipts, selected, selection, pass) = (fx.receipts.clone(), fx.selected.clone(), fx.selection.clone(), fx.pass.clone());
         let data = &fx.data;
         let admission = seeded_admission(

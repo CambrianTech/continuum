@@ -404,46 +404,6 @@ async fn review_batch(
     );
 }
 
-/// Parse (and strip) a trailing `SUPERSEDES: 1,3` verdict line, mapping the
-/// model's 1-based indices onto the presented prior-belief ids. Tolerant by
-/// design: no line / `SUPERSEDES: none` / out-of-range indices → no
-/// supersessions from that fragment; the line is removed from the fact text
-/// either way when present. Only the LAST line is consulted — a fact whose
-/// body legitimately mentions the word "supersedes" is untouched.
-///
-/// The line is NORMALIZED before matching: surrounding markdown emphasis and
-/// backticks are stripped, and the keyword is matched case-insensitively. The
-/// verdict is the model's JUDGMENT; how it decorated the line is not part of
-/// it. Glass-boxed 2026-08-13 — a live `**SUPERSEDES: 3,6**` matched none of
-/// the three exact prefixes, so a real supersession ruling was DISCARDED and
-/// the marker stayed baked into the stored belief. Honor the emission idiom
-/// structurally, the same lesson as the tool-call formats.
-pub(super) fn parse_supersedes_line(raw: &str, prior_beliefs: &[Engram]) -> (String, Vec<Uuid>) {
-    /// Markdown decoration a model may wrap the verdict line in.
-    const DECORATION: &[char] = &['*', '_', '`', '#', ' ', '\t'];
-    const KEYWORD: &str = "SUPERSEDES:";
-
-    let Some(last) = raw.lines().last() else {
-        return (raw.trim().to_string(), Vec::new());
-    };
-    let trimmed = last.trim_matches(|c: char| DECORATION.contains(&c));
-    let Some(rest) = trimmed
-        .get(..KEYWORD.len())
-        .filter(|head| head.eq_ignore_ascii_case(KEYWORD))
-        .map(|_| &trimmed[KEYWORD.len()..])
-    else {
-        return (raw.trim().to_string(), Vec::new());
-    };
-    let body = raw[..raw.len() - last.len()].trim().to_string();
-    let ids = rest
-        .split(',')
-        .filter_map(|t| t.trim().parse::<usize>().ok())
-        .filter_map(|i| i.checked_sub(1).and_then(|i| prior_beliefs.get(i)))
-        .map(|e| e.id)
-        .collect();
-    (body, ids)
-}
-
 /// Episodics not yet folded into a fact for this persona.
 pub(super) fn fresh_episodics(
     consolidated: &Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
