@@ -348,8 +348,8 @@ fn output(act: usize, chars: usize) -> String {
 /// or turned over at the start the plan's arithmetic sizes. Answers (prompt tokens, prefill tokens,
 /// turned over).
 fn act_through_the_view(day: &Recorded, view: &mut View<String>, sources: &[&dyn Source<String>], appended_tokens: usize) -> (usize, usize, bool) {
-    let source_claims = view_claims(sources);
-    let as_claim = |claim: &Claim| view_source(&claim.source, claim.priority, tokens(claim.floor_chars) as u32, tokens(claim.full_chars) as u32);
+    let source_claims = view_claims(&crate::cost::Chars, sources);
+    let as_claim = |claim: &Claim| view_source(&claim.source, claim.priority, tokens(claim.floor) as u32, tokens(claim.full) as u32);
     let act_claims = ActClaims {
         framing: Head::free(Leveled::one(Rungs::whole(tokens(day.head_chars.value) as u32))),
         required: Leveled::default(),
@@ -369,19 +369,19 @@ fn act_through_the_view(day: &Recorded, view: &mut View<String>, sources: &[&dyn
     }
     let start = plan.start_room();
     let grant_of = |claim: &Claim| plan.plan.of(&format!("{}{}", id::VIEW, claim.source)).cloned();
-    view.turn_over(Vec::new(), sources, |claims: &[Claim]| {
+    view.turn_over(&crate::cost::Chars, Vec::new(), sources, |claims: &[Claim]| {
         let starts: Vec<StartSource> = claims
             .iter()
             .map(|claim| {
                 let grant = grant_of(claim).map_or(0, |a| a.allocated_tokens); // map_or: an unclaimed source starts collapsed
-                StartSource { priority: claim.priority, fixed: false, required: false, floor: tokens(claim.floor_chars) as u32, grant, newest: 0 }
+                StartSource { priority: claim.priority, fixed: false, required: false, floor: tokens(claim.floor) as u32, grant, newest: 0 }
             })
             .collect();
         start_shares(start, &starts)
             .expect("test: no required floor in this start") // JUSTIFIED: test fixture
             .iter()
             .zip(claims)
-            .map(|(&share, claim)| (share as usize * claim.full_chars) / tokens(claim.full_chars).max(1))
+            .map(|(&share, claim)| (share as usize * claim.full) / tokens(claim.full).max(1))
             .collect()
     })
     .expect("test: the grants answer every claim"); // JUSTIFIED: test fixture
@@ -405,8 +405,8 @@ fn reproduction_7_an_overflowing_view_collapses_older_items_and_prompt_tokens_st
     for n in 0..seeds {
         actions.push(&format!("seed{n}"), &output(n, seed_chars / seeds));
     }
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<String>], whole).expect("test: a start"); // JUSTIFIED: test fixture
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&actions as &dyn Source<String>], whole).expect("test: a start"); // JUSTIFIED: test fixture
     let mut verbatim = tokens(day.head_chars.value) + tokens(view.chars());
     let mut rows = Vec::new();
     for act in 0..day.aris_acts.value {
