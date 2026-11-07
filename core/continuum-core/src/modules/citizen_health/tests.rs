@@ -6,7 +6,7 @@
     static LEDGER_CLOSES: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
     fn h(resident: u64, lanes: u64, acts: u64, writes: u64) -> CitizenHealth {
-        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, lanes_sustained: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, settles: 0, credits_staged: 0, credits_settled: 0, stops: StopCounts::default(), lane_starved: 0, generations: 0, generations_dropped: 0, knee: None, prompt_cached_tokens: 0, prompt_prefill_tokens: 0, moves_opportunity: 0, moves_failure: 0, oldest_dormant_turn_age_ms: None, held_for: None }
+        CitizenHealth { window_secs: 3600, resident, lanes, lanes_now: lanes, lanes_sustained: lanes, directed_wait_p50_ms: 0, directed_wait_p90_ms: 0, directed_waits: 0, served_window: 66_000, acts, writes, lanes_granted: acts, learning: LearningHour::default(), review_queue: None, stops: StopCounts::default(), lane_starved: 0, generations: 0, generations_dropped: 0, knee: None, prompt_cached_tokens: 0, prompt_prefill_tokens: 0, moves_opportunity: 0, moves_failure: 0, oldest_dormant_turn_age_ms: None, held_for: None }
     }
 
     // what this catches (card 10bba591): the line carries the grid's half — moves by
@@ -176,11 +176,10 @@
         note_act(true);
         note_act(false);
         note_lane_granted();
-        note_settle();
-        note_credit_staged();
+        note_submission_staged();
         note_stop(Stop::CutThink);
         let closed = hour(Read::Close);
-        assert!(closed.acts >= 2 && closed.writes >= 1 && closed.lanes_granted >= 1 && closed.settles >= 1 && closed.credits_staged >= 1);
+        assert!(closed.acts >= 2 && closed.writes >= 1 && closed.lanes_granted >= 1 && closed.learning.submissions_staged >= 1);
         // what this catches (the M5, 2026-10-30): a cut inside thinking is on the hour's
         // ledger as a cut, and the stops reset with the rest of the window.
         assert!(closed.stops.cut_think >= 1, "a cut think is on the hour's ledger");

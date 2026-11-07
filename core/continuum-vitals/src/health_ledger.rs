@@ -1,11 +1,14 @@
 //! The citizens' health LEDGER: what each mind did this hour (acts, writes, verdicts, lane
-//! grants, settles, moves), fed at the mind's own seams and read by the hourly health tick
+//! grants, learning, moves), fed at the mind's own seams and read by the hourly health tick
 //! (`modules::citizen_health`). The facts are the mind's, so they live in the mind ring; the
 //! service module that snapshots, judges and speaks them stays in the surface.
 
 use continuum_base::time::EpochMs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+
+pub mod learning;
+pub use learning::{learning_terms, CreditOutcome, CreditOutcomeCounts, LearningHour, ReviewQueue};
 
 /// One hour: long enough for a fair sample of a roster that gets a lane every few
 /// minutes, short enough that a starved evening is caught before it is a night.
@@ -16,9 +19,9 @@ pub struct Ledger {
     pub acts: AtomicU64,
     pub writes: AtomicU64,
     pub lanes_granted: AtomicU64,
-    pub settles: AtomicU64,
-    pub credits_staged: AtomicU64,
-    pub credits_settled: AtomicU64,
+    /// What became of her reviewed work (`learning`): credit outcomes, submissions with staged
+    /// credit, review boundaries processed.
+    pub(crate) learning: learning::LearningCounters,
     /// How every completed generation stopped, counted once at the one place it is
     /// classified (see [`Stop`]). Counting at a branch instead missed every cut: Aris's
     /// three 963-token cuts inside thinking (the M5, 2026-10-30) read "think-only 0".
@@ -81,9 +84,7 @@ pub static LEDGER: Ledger = Ledger {
     acts: AtomicU64::new(0),
     writes: AtomicU64::new(0),
     lanes_granted: AtomicU64::new(0),
-    settles: AtomicU64::new(0),
-    credits_staged: AtomicU64::new(0),
-    credits_settled: AtomicU64::new(0),
+    learning: learning::LearningCounters::new(),
     stops: StopCounters::new(),
     lane_starved: AtomicU64::new(0),
     generations: AtomicU64::new(0),
@@ -345,6 +346,8 @@ pub struct MindHour {
     pub writes: u64,
     /// Serving lanes granted to her this hour — the "least served" order.
     pub lane_grants: u64,
+    /// Her reviewed credit's outcomes this hour, by type (`learning`).
+    pub credit_outcomes: CreditOutcomeCounts,
 }
 
 pub(crate) static MINDS: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, MindHour>> = std::sync::LazyLock::new(dashmap::DashMap::new);
@@ -397,25 +400,32 @@ pub fn rotation_candidates(
     out
 }
 
+/// A review decided `outcome` for `persona`'s credit (`learning`), on the node's hour and on hers.
+/// The caller counts each (review, outcome) once (continuum-mind's `count_outcome_once`).
+pub fn note_credit_outcome_of(persona: uuid::Uuid, outcome: CreditOutcome) {
+    LEDGER.learning.note_outcome(outcome);
+    MINDS.entry(persona).or_default().credit_outcomes.note(outcome);
+}
+
+/// Her credit's outcomes this hour: the per-mind read of [`note_credit_outcome_of`].
+pub fn credit_outcomes_of(persona: uuid::Uuid) -> CreditOutcomeCounts {
+    MINDS.get(&persona).map_or_else(CreditOutcomeCounts::default, |m| m.credit_outcomes) // map_or_else: no row this hour = nothing decided, the truth
+}
+
+/// A board submission was bound to her staged credit (a fresh binding, never a replay).
+pub fn note_submission_staged() {
+    LEDGER.learning.note_submission_staged();
+}
+
+/// A review boundary's dream consolidation finished (a fresh receipt, never a replay).
+pub fn note_boundary_processed() {
+    LEDGER.learning.note_boundary_processed();
+}
+
 pub fn snapshot_minds_and_reset() -> Vec<(uuid::Uuid, MindHour)> {
     let out: Vec<(uuid::Uuid, MindHour)> = MINDS.iter().map(|e| (*e.key(), e.value().clone())).collect();
     MINDS.clear();
     out
-}
-
-/// A round card settled (the `bench.round.card_settled` seam).
-pub fn note_settle() {
-    LEDGER.settles.fetch_add(1, Ordering::Relaxed);
-}
-
-/// A learning credit was staged / settled (the `training.credit.*` seams) — the
-/// continual-learning half of the flywheel, in the same line as the work.
-pub fn note_credit_staged() {
-    LEDGER.credits_staged.fetch_add(1, Ordering::Relaxed);
-}
-
-pub fn note_credit_settled() {
-    LEDGER.credits_settled.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The hour's numbers, as read at the tick.
@@ -450,9 +460,12 @@ pub struct CitizenHealth {
     pub acts: u64,
     pub writes: u64,
     pub lanes_granted: u64,
-    pub settles: u64,
-    pub credits_staged: u64,
-    pub credits_settled: u64,
+    /// The hour's learning: credit outcomes by type, submissions with staged credit, review
+    /// boundaries processed (`learning`).
+    pub learning: LearningHour,
+    /// The boards' review queue at the tick; `None` when no board was read (an unread board is
+    /// not an empty queue).
+    pub review_queue: Option<ReviewQueue>,
     /// How this hour's generations stopped, every class side by side.
     pub stops: StopCounts,
     /// Turn iterations this hour that never reached the model — a wait, not an act, and
@@ -730,7 +743,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         // class apart (a cut inside thinking is not a landed turn); `prefix reuse` is how much of each
         // prompt the engine did not re-read (card c119ace7); `moves` is minds changing
         // seats and `oldest dormant turn` is a mind with no seat at all (card 10bba591).
-        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · stops: landed {} / empty {} / think-ended {} / cut-answer {} / cut-think {} / think-budget {} · dropped {} · writes {} · lane grants {} · settles {} · learning credits {} staged / {} settled{}{} · moves: {} on opportunity / {} on failure{} — {}",
+        "[health] last {} min: resident {} · lanes {} @ {}k · acts {} · lane-starved {} · stops: landed {} / empty {} / think-ended {} / cut-answer {} / cut-think {} / think-budget {} · dropped {} · writes {} · lane grants {} · {}{}{} · moves: {} on opportunity / {} on failure{} — {}",
         h.window_secs / 60,
         h.resident,
         lanes,
@@ -746,9 +759,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         dropped,
         h.writes,
         h.lanes_granted,
-        h.settles,
-        h.credits_staged,
-        h.credits_settled,
+        learning_terms(&h.learning, h.review_queue.as_ref()),
         directed,
         reuse,
         h.moves_opportunity,
@@ -784,9 +795,7 @@ pub struct HourCounters {
     pub acts: u64,
     pub writes: u64,
     pub lanes_granted: u64,
-    pub settles: u64,
-    pub credits_staged: u64,
-    pub credits_settled: u64,
+    pub learning: LearningHour,
     pub stops: StopCounts,
     pub lane_starved: u64,
     pub generations: u64,
@@ -812,9 +821,7 @@ pub fn hour(read: Read) -> HourCounters {
         acts: read.of(&LEDGER.acts),
         writes: read.of(&LEDGER.writes),
         lanes_granted: read.of(&LEDGER.lanes_granted),
-        settles: read.of(&LEDGER.settles),
-        credits_staged: read.of(&LEDGER.credits_staged),
-        credits_settled: read.of(&LEDGER.credits_settled),
+        learning: LEDGER.learning.read(|c| read.of(c)),
         stops: LEDGER.stops.read(|c| read.of(c)),
         lane_starved: read.of(&LEDGER.lane_starved),
         generations: read.of(&LEDGER.generations),

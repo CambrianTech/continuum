@@ -180,8 +180,8 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
         reg.record_emission_in_memory(quiet, 40, 0, EmissionStop::Landed, t);
     }
     assert_eq!(wanted(quiet, 0), LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS);
-    // (d) a turn cut mid-answer at 5,000 records its answer at 10,000: the p90 is
-    // now 10,000 — a citizen who needs the room earns it back within a turn.
+    // (d) a turn cut mid-answer at 5,000 is a bound of 5,000: her answer's room is the
+    // median past it, 10,000 — a citizen who needs the room has it on the next turn.
     reg.record_emission_in_memory(persona, 5_000, 0, EmissionStop::CutMidAnswer, 4);
     assert_eq!(wanted(persona, 0), 10_000);
     let view = faculty.prompt_view_within(&Workspace::new("continue"), window);
@@ -205,16 +205,18 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     concern.activity_room_id = room;
     wm.set_scope(Some("owned-workspace".into()));
     let cut = reg.record_emission_in_memory(quiet, 2276, 965, EmissionStop::CutMidAnswer, 10);
-    assert_eq!(cut.peak_tokens, 3587);
+    assert_eq!(cut.peak_tokens, 2276, "the peak is what was written");
     wm.retain_truncated_emission(room, cut.peak_tokens);
-    for (tick, tokens) in [871, 1120, 400, 300, 300, 300, 300, 300, 300].into_iter().enumerate() {
+    // Past her whole ring of reads, so the cut's bound ages out of the ordinary need too.
+    let reads = [871, 1120, 400].into_iter().chain(std::iter::repeat(300).take(crate::cognition::working_set::NEED_SAMPLES));
+    for (tick, tokens) in reads.enumerate() {
         reg.record_emission_in_memory(quiet, tokens, 0, EmissionStop::Landed, 11 + tick as u64);
-        assert!(wanted(quiet, wm.pending_emission_peak(room)) >= 3587,
+        assert!(wanted(quiet, wm.pending_emission_peak(room)) >= cut.peak_tokens,
             "the claim retains at least the measured cut as demand through intermediate reads");
-        assert!(quiet_faculty.prompt_view_within(&concern, window).completion_reserve >= 3587,
+        assert!(quiet_faculty.prompt_view_within(&concern, window).completion_reserve >= cut.peak_tokens,
             "the one allocation grants it under measured capacity");
     }
-    assert!(wanted(quiet, 0) < 3587, "ordinary measurements still decay");
+    assert!(wanted(quiet, 0) < cut.peak_tokens, "ordinary measurements still decay");
     let small = quiet_faculty.prompt_view_within(&concern, 4096);
     assert!(small.capacity_error.is_none(), "{:?}", small.capacity_error);
     assert!(
@@ -240,7 +242,7 @@ fn measured_reserve_recovers_past_a_censored_large_reply() {
     for tick in 1..=3 {
         reg.record_emission_in_memory(persona, 16_384, 0, crate::cognition::working_set::EmissionStop::CutMidAnswer, tick);
     }
-    // A censored sample is doubled by the registry; the need is that, as measured.
+    // A censored sample is a bound; the need is the median past it, twice what was written.
     let need = reg.need_of(persona).expect("three measured turns");
     assert_eq!(need.total(), 32_768);
     for window in [8_192, 16_384, 32_768, 67_072, 131_072] {
@@ -866,4 +868,17 @@ fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
         in_tail(&v2, "Then I read it back to verify"),
         "the new act must append to the trailing turn"
     );
+}
+
+// what this catches: a cut answer whose floor is only its bound. The bound is what she wrote
+// before the cap, so a retried write of the same size would be cut at the same token: the act's
+// FLOOR holds the cut answer's median past it (`OutputNeed::answer_room`), with or without a
+// measured rate, and the want adds no second factor on top of it.
+#[test]
+fn a_cut_answer_floor_holds_its_median_past_the_bound() {
+    let need = crate::cognition::working_set::OutputNeed { reasoning: 400, answer: 200, turns: 16, reasoning_at_least: None, answer_at_least: Some(300) };
+    for time_term in [Some(10_000), None] {
+        let claim = reply_claim(TurnKind::Act, Some(need), 0, false, false, time_term);
+        assert_eq!((claim.min_tokens, claim.max_tokens), (1_000, 1_000), "her think plus the cut answer's median, once ({time_term:?})");
+    }
 }

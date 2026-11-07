@@ -15,7 +15,8 @@ pub(super) static EXECUTOR: LateBound<CommandExecutor> = LateBound::new("trainin
 /// `PersonaCognition` on the producer path. Lazily built on first turn.
 pub(super) static CLASSIFIER: OnceLock<DomainClassifier> = OnceLock::new();
 
-/// Quality bar below which a live turn is NOT worth training on.
+/// Quality bar below which a live turn is NOT worth training on: a threshold on the
+/// interaction score (0..1), not a size.
 ///
 /// On a live turn there is no human feedback or task outcome, so
 /// `score_interaction_quality` reduces to `0.275 + 0.3 * substance` (+ a small
@@ -23,7 +24,7 @@ pub(super) static CLASSIFIER: OnceLock<DomainClassifier> = OnceLock::new();
 /// — substance `0.1` → score ≈ `0.305`) fall below this bar; substantive replies
 /// (≥100 chars → substance `0.7` → ≈ `0.485`, or ≥500 chars → ≈ `0.545`) clear it.
 /// `0.45` is the clean separator between "acknowledgement" and "real content."
-pub(super) const MIN_TRAINING_QUALITY: f32 = 0.45;
+pub(super) const TRAINING_QUALITY_BAR: f32 = 0.45;
 
 /// ONE dispatched generation, as a correlation ROW — the index that
 /// [`StagedCredit::receipts`] cannot carry (card 0d51573a).
@@ -207,7 +208,7 @@ pub struct SubmitPlan {
     pub prompt: String,
     /// The persona's reply.
     pub completion: String,
-    /// The interaction-quality score that cleared [`MIN_TRAINING_QUALITY`]
+    /// The interaction-quality score that cleared [`TRAINING_QUALITY_BAR`]
     /// (carried into example metadata as training provenance).
     pub quality: f32,
     /// The verified outcome, when this turn is credited to a settled card.
@@ -283,7 +284,7 @@ pub fn plan(
         return None;
     }
     let quality = score_interaction_quality(prompt, completion, None, stamp.map(|s| s.outcome));
-    if quality.score < MIN_TRAINING_QUALITY {
+    if quality.score < TRAINING_QUALITY_BAR {
         return None;
     }
     let domain = classifier
@@ -472,7 +473,6 @@ impl TurnCreditCapture {
         match result {
             Ok(_) => {
                 self.superseded.clear();
-                crate::cognition::health_ledger::note_credit_staged();
                 continuum_base::probe!(
                     class = "training.credit.staged",
                     persona = %self.persona_name,
@@ -686,7 +686,7 @@ pub fn produce_with_id(
 /// ([[lived-and-eval-experience-are-one-stream-one-being]]). Pure: classify + package,
 /// no I/O.
 ///
-/// Unlike [`plan`], there is **no `MIN_TRAINING_QUALITY` gate**: a received lesson's
+/// Unlike [`plan`], there is **no `TRAINING_QUALITY_BAR` gate**: a received lesson's
 /// salience is its PROVENANCE — someone deliberately chose to teach it (`ReceivedSalience`,
 /// where provenance IS the signal), not a chat-interaction score designed for live
 /// `(stimulus → reply)` turns. A terse-but-important lesson must not be filtered by a

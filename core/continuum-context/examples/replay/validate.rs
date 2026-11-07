@@ -37,6 +37,16 @@ pub struct Act {
 }
 
 impl Act {
+    /// What it asked for and what its tools do, as the core's action source stamps an item
+    /// (`Item::with_act`): `Observes` for the validator's reads, `Undeclared` otherwise (a capture
+    /// does not carry the commands' declarations). `None` for an act with no calls.
+    pub fn identity(&self) -> Option<continuum_context::cause::Act> {
+        let effect = if self.observes { continuum_context::cause::ToolEffect::Observes } else { continuum_context::cause::ToolEffect::Undeclared };
+        self.fingerprint.map(|fingerprint| continuum_context::cause::Act { fingerprint, effect })
+    }
+}
+
+impl Act {
     /// Stamp the act with its capture row's session and cycle.
     pub fn at(mut self, row: &serde_json::Value) -> Self {
         self.cycle = row["session_id"].as_str().zip(row["cycle_id"].as_u64()).map(|(session, cycle)| (session.to_owned(), cycle));
@@ -117,8 +127,10 @@ pub fn gutter(line: &str) -> Option<(u32, &str)> {
 pub struct Restored {
     by_seq: BTreeMap<String, String>,
     seen: HashSet<String>,
-    /// The previous capture's act: its result, its reads and where it sits.
-    pending: Option<(String, Vec<String>, Option<(String, u64)>)>,
+    /// The previous capture's act, until the next capture says which action it was.
+    pending: Option<Pending>,
+    /// What each restored action asked for: the re-read measurement's identity (`crate::rereads`).
+    identity: BTreeMap<String, continuum_context::cause::Act>,
     read_seq: BTreeMap<String, String>,
     /// Acts whose result could not be tied to exactly one action: more than one new action
     /// key, or a capture missing between two (Codex on #5432). Counted, never restored.
@@ -126,6 +138,15 @@ pub struct Restored {
     /// Each earlier observing act: its fingerprint, its result's hash and its result, for
     /// invariant 4's repeat identity.
     observed: Vec<(Fingerprint, ContentHash, String)>,
+}
+
+/// An act waiting to be tied to its action: its result, its reads, where it sits and what it
+/// asked for.
+struct Pending {
+    result: String,
+    reads: Vec<String>,
+    cycle: Option<(String, u64)>,
+    identity: Option<continuum_context::cause::Act>,
 }
 
 /// One act's invariant-4 identity against the acts before it.
@@ -159,12 +180,15 @@ impl Restored {
     /// filed under an unrelated action (Codex and Cormac on #5432).
     pub fn learn(&mut self, action_keys: &[String], act: &Act) {
         let new: Vec<&String> = action_keys.iter().filter(|key| !self.seen.contains(*key) && key.parse::<u64>().is_ok()).collect();
-        if let Some((result, reads, cycle)) = self.pending.take() {
+        if let Some(Pending { result, reads, cycle, identity }) = self.pending.take() {
             let chained = act.follows(&cycle);
             match new.as_slice() {
                 [only] if chained => {
                     for path in reads {
                         self.read_seq.insert(path, (*only).clone());
+                    }
+                    if let Some(identity) = identity {
+                        self.identity.insert((*only).clone(), identity);
                     }
                     self.by_seq.insert((*only).clone(), result);
                 }
@@ -173,16 +197,25 @@ impl Restored {
         }
         self.seen.extend(action_keys.iter().cloned());
         if let Some(result) = &act.result {
-            self.pending = Some((result.clone(), act.reads.clone(), act.cycle.clone()));
+            self.pending = Some(Pending { result: result.clone(), reads: act.reads.clone(), cycle: act.cycle.clone(), identity: act.identity() });
         }
     }
 
     /// Give each action item its whole result again, its summary level, and what was sent as
-    /// its pointer. An item sent whole already is left as it was.
+    /// its pointer; and, as the core's action source does, what it asked for, its content hash
+    /// taken over the raw result (`Item::rendered`), so a later read with the same outcome is the
+    /// same observation. An item sent whole keeps its levels.
     pub fn enrich(&self, items: &mut [Item<String>]) {
         for item in items {
             let Some(whole) = self.by_seq.get(item.key()) else { continue };
+            let content = continuum_context::cause::Content::Hashed(ContentHash::of(whole));
+            let identity = self.identity.get(item.key()).copied();
+            let stamp = |rebuilt: Item<String>| match identity {
+                Some(identity) => rebuilt.with_act(identity),
+                None => rebuilt,
+            };
             if item.full().chars().count() >= whole.chars().count() {
+                *item = stamp(Item::rendered(item.id(), item.cause(), item.key(), item.full().clone(), content).with_summary(item.summary().cloned()).with_pointer(item.pointer().cloned()));
                 continue;
             }
             let sent = item.full().clone();
@@ -190,10 +223,10 @@ impl Restored {
             let summary = summarize(whole, Shape::Code(&gutter))
                 .or_else(|| summarize(whole, Shape::Output))
                 .map(|summary| format!("{header}\n{summary}"));
-            // Rebuilt, never edited in place: its content hash is the whole it now holds.
-            *item = Item::whole(item.id(), item.cause(), item.key(), format!("{header}\n{whole}"))
+            // Rebuilt, never edited in place: its content hash is the raw whole it now holds.
+            *item = stamp(Item::rendered(item.id(), item.cause(), item.key(), format!("{header}\n{whole}"), content)
                 .with_summary(summary)
-                .with_pointer(sent);
+                .with_pointer(sent));
         }
     }
 

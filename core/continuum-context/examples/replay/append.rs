@@ -39,6 +39,8 @@ pub struct Options {
     pub generational: bool,
     /// Unranged reads answer with their first page (`replay/paged.rs`).
     pub paged: bool,
+    /// Turnovers start at her measured collapse depth (`Rule::Measured`).
+    pub measured: bool,
 }
 
 /// One request under both prompts.
@@ -70,6 +72,15 @@ pub struct Summary {
     pub first_page_held: usize,
     pub used_later: usize,
     pub extra_requests: usize,
+    /// Re-reads of what the starts collapsed, as the measured depth predicted them (its per-act
+    /// rate over each act of the epoch it started), and re-requests the view counted: all, and of
+    /// an occurrence held collapsed (`continuum_context::rereads`).
+    pub predicted_rereads: (f64, f64),
+    pub counted_rereads: (u64, u64),
+    /// Starts the measured depth decided, of all starts it was asked about, and the growing start
+    /// it chose beside the half's, summed over those it decided (chars).
+    pub decided: (usize, usize),
+    pub depth_chars: (usize, usize),
 }
 
 /// The tail's pieces not yet in this epoch's view, each once, in the order they were sent.
@@ -136,6 +147,12 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
     let mut carried_headroom: Option<usize> = None;
     let mut headrooms = Vec::new();
     let (mut previous_head, mut previous_sent, mut previous_rendered): (Option<&str>, Option<&str>, Option<String>) = (None, None, None);
+    let (mut rate, mut predicted, mut counted) = ((0.0f64, 0.0f64), (0.0f64, 0.0f64), (0u64, 0u64));
+    let (mut decided, mut depth_chars) = ((0usize, 0usize), (0usize, 0usize));
+    let count = |view: &View<String>, counted: &mut (u64, u64)| {
+        let (all, collapsed) = view.motion().rereads().totals();
+        *counted = (counted.0 + all, counted.1 + collapsed);
+    };
     let mut rows = Vec::with_capacity(cuts.len());
     for (n, cut) in cuts.iter().enumerate() {
         paging.said(n, &cut.said);
@@ -156,6 +173,9 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
             .collect();
         sources.sort_by_key(|source| order(Order::SettledFirst, &source.name));
         if previous_head.is_some_and(|head| head != cut.head) {
+            if let Some(view) = &view {
+                count(view, &mut counted);
+            }
             view = None;
             sediment.restart();
         }
@@ -216,7 +236,28 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
                 available = window.saturating_sub(head_chars + chars(&sent(&tail, options.outline)) + chars(&extra_pages));
             }
             let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
-            open.turn_over(sediment.heads(&cut.head), &every, |claims| start(Rule::Reserved, claims, available, per_act, share))?;
+            let chosen = std::cell::Cell::new(None);
+            open.turn_over(sediment.heads(&cut.head), &every, |claims| {
+                if options.measured {
+                    let (grants, depth) = crate::measured(claims, available, per_act, share);
+                    chosen.set(Some(depth.map(|(depth, half)| ((depth.rereads_per_act, depth.rereads_observed_per_act), depth.start, half))));
+                    grants
+                } else {
+                    start(Rule::Reserved, claims, available, per_act, share)
+                }
+            })?;
+            rate = match chosen.take() {
+                Some(Some((per_act, start, half))) => {
+                    decided = (decided.0 + 1, decided.1 + 1);
+                    depth_chars = (depth_chars.0 + start, depth_chars.1 + half);
+                    per_act
+                }
+                Some(None) => {
+                    decided.1 += 1;
+                    (0.0, 0.0)
+                }
+                None => (0.0, 0.0),
+            };
             turnover = true;
         }
         if turnover {
@@ -224,6 +265,7 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
             held.clear();
             paging.turned_over();
         }
+        predicted = (predicted.0 + rate.0, predicted.1 + rate.1);
         let mut sending = sent(&tail, options.outline);
         sending.extend(extra_pages.iter().cloned());
         let rendered = format!("{}\n{}", open.render().cloned().collect::<Vec<_>>().join("\n"), sending.join("\n"));
@@ -239,6 +281,12 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
         open.sent();
         // From the next act on, an outlined result stands at its outline in either mode; her act
         // on the next request is the first that read it whole (next-act) or never did (strict).
+        // Her act's result arrives with what it asked for, as the core's action source stamps it,
+        // so a later read with the same outcome is the same observation (`continuum_context::rereads`).
+        // A tool_result message is captured as its JSON parts, so the result shows escaped in it.
+        let escaped = cut.act.result.as_deref().map(|result| serde_json::to_string(result).unwrap_or_default().trim_matches('"').to_owned()); // unwrap_or_default: a string always serializes
+        let identity = cut.act.identity().zip(cut.act.result.as_deref()).zip(escaped.as_deref());
+        let mut stamped = false;
         for shown in tail {
             held.insert(shown.piece.clone());
             // Her act on the next request is the first that read the page.
@@ -254,13 +302,24 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
                 }
                 None => shown.answered().to_owned(),
             };
-            looped.push(crate::captured(looped.len().to_string(), full));
+            let item = crate::captured(looped.len().to_string(), full);
+            looped.push(match identity {
+                Some(((act, result), escaped)) if !stamped && (shown.piece.contains(result) || shown.piece.contains(escaped)) => {
+                    stamped = true;
+                    let content = continuum_context::cause::Content::Hashed(continuum_context::cause::ContentHash::of(result));
+                    Item::rendered(item.id(), item.cause(), item.key(), item.full().clone(), content).with_act(act)
+                }
+                _ => item,
+            });
         }
         for full in extra_pages {
             looped.push(crate::captured(looped.len().to_string(), full));
         }
         previous_sent = Some(&cut.sent);
         previous_rendered = Some(rendered);
+    }
+    if let Some(view) = &view {
+        count(view, &mut counted);
     }
     if table {
         print(label, &rows, window, chars_per_token, tps);
@@ -281,6 +340,10 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
         first_page_held: pager.totals().1,
         used_later: pager.totals().2,
         extra_requests: pager.extra,
+        predicted_rereads: predicted,
+        counted_rereads: counted,
+        decided,
+        depth_chars,
     })
 }
 
@@ -290,10 +353,18 @@ pub fn line(resident: &str, variant: &str, summary: &Summary, tps: f64) -> Strin
     let per_turnover = summary.turnover_tokens.iter().sum::<f64>() / summary.turnover_tokens.len().max(1) as f64;
     let with_extras = summary.tokens / tps / (summary.requests + summary.extra_requests).max(1) as f64;
     format!(
-        "TABLE {resident} | {variant} | prefill {:.0} tok | {per_request:.0} s/request ({with_extras:.0} counting extra requests) | {} turnovers | re-prefill {per_turnover:.0} tok/turnover (median {:.0}) | sediment re-renders {} (handles dropped {}) | outlined {}, paged back {} | headroom median {:.0} chars | paged reads {} (first page held every used line in {}; {} used later at all) | extra page requests {}",
+        "TABLE {resident} | {variant} | prefill {:.0} tok | {per_request:.0} s/request ({with_extras:.0} counting extra requests) | {} turnovers | re-prefill {per_turnover:.0} tok/turnover (median {:.0}) | re-reads predicted {:.2} (as observed {:.2}), counted {} (of a collapsed one {}) | depth decided {} of {} starts, growing start {} chars vs the half's {} | sediment re-renders {} (handles dropped {}) | outlined {}, paged back {} | headroom median {:.0} chars | paged reads {} (first page held every used line in {}; {} used later at all) | extra page requests {}",
         summary.tokens,
         summary.turnovers,
         median(summary.turnover_tokens.clone()),
+        summary.predicted_rereads.0,
+        summary.predicted_rereads.1,
+        summary.counted_rereads.0,
+        summary.counted_rereads.1,
+        summary.decided.0,
+        summary.decided.1,
+        summary.depth_chars.0,
+        summary.depth_chars.1,
         summary.sediment_rerenders,
         summary.sediment_dropped,
         summary.outlined,

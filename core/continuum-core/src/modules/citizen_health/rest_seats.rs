@@ -142,9 +142,9 @@ fn assemble(read: Read) -> CitizenHealth {
         acts: c.acts,
         writes: c.writes,
         lanes_granted: c.lanes_granted,
-        settles: c.settles,
-        credits_staged: c.credits_staged,
-        credits_settled: c.credits_settled,
+        learning: c.learning,
+        // Measured from the boards by the async readers (tick, command), never by this sync fold.
+        review_queue: None,
         stops: c.stops,
         generations: c.generations,
         generations_dropped: c.generations_dropped,
@@ -188,7 +188,11 @@ impl ServiceModule for CitizenHealthModule {
         Ok(())
     }
     async fn tick(&self) -> Result<(), String> {
-        let h = self.read();
+        let mut h = self.read();
+        h.review_queue = super::review_queue::read().await;
+        if let Some(hour) = LAST_HOUR.lock().as_mut() {
+            hour.review_queue = h.review_queue;
+        }
         let v = verdict(&h);
         // No verdict pages a mind out (Joel, 2026-11-02: the mindless page-out is deleted; a
         // free mind is never judged out of her seat, and seats follow demand). THE SLOW CLIP
@@ -216,9 +220,18 @@ impl ServiceModule for CitizenHealthModule {
             generations = h.generations,
             generations_dropped = h.generations_dropped,
             dropped_pct = dropped_pct(&h).unwrap_or(0), // unwrap_or: 0 = no generation ended this hour; `generations` says so
-            settles = h.settles,
-            credits_staged = h.credits_staged,
-            credits_settled = h.credits_settled,
+            submissions_staged = h.learning.submissions_staged,
+            credit_accepted = h.learning.outcomes.of(CreditOutcome::Accepted),
+            credit_failed_review = h.learning.outcomes.of(CreditOutcome::FailedReview),
+            credit_unknown_review = h.learning.outcomes.of(CreditOutcome::UnknownReview),
+            credit_awaiting_acceptance = h.learning.outcomes.of(CreditOutcome::AwaitingAcceptance),
+            credit_independent_review_required = h.learning.outcomes.of(CreditOutcome::IndependentReviewRequired),
+            credit_held = h.learning.outcomes.of(CreditOutcome::Held),
+            credit_ineligible = h.learning.outcomes.of(CreditOutcome::Ineligible),
+            credit_undecided = h.learning.outcomes.of(CreditOutcome::Undecided),
+            boundaries_processed = h.learning.boundaries_processed,
+            awaiting_reviewer = h.review_queue.map(|q| q.awaiting_reviewer),
+            unsubmitted_pull_requests = h.review_queue.map(|q| q.unsubmitted_pull_requests),
             rotated = rotated.len() as u64,
             moves_opportunity = h.moves_opportunity,
             moves_failure = h.moves_failure,
@@ -245,7 +258,8 @@ impl ServiceModule for CitizenHealthModule {
         match command {
             // A read WITHOUT reset: the hour's running counters as they stand.
             "citizen/health" => {
-                let h = assemble(Read::Peek);
+                let mut h = assemble(Read::Peek);
+                h.review_queue = super::review_queue::read().await;
                 let v = verdict(&h);
                 let deploy = continuum_cli_lifecycle::deploy_health::read(
                     &crate::paths::continuum_root(),
@@ -259,8 +273,14 @@ impl ServiceModule for CitizenHealthModule {
                     "resident": h.resident, "lanes": h.lanes,
                     "lanes_sustained": h.lanes_sustained, "lanes_now": h.lanes_now,
                     "served_window": h.served_window,
-                    "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted, "settles": h.settles,
-                    "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
+                    "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted,
+                    "learning": {
+                        "submissions_staged": h.learning.submissions_staged,
+                        "credit": CreditOutcome::ALL.iter().map(|o| (o.as_str().to_owned(), serde_json::json!(h.learning.outcomes.of(*o)))).collect::<serde_json::Map<_, _>>(),
+                        "boundaries_processed": h.learning.boundaries_processed,
+                        "awaiting_reviewer": h.review_queue.map(|q| q.awaiting_reviewer),
+                        "unsubmitted_pull_requests": h.review_queue.map(|q| q.unsubmitted_pull_requests),
+                    },
                     "stops": {
                         "landed": h.stops.landed, "empty": h.stops.empty, "think_ended": h.stops.think_ended,
                         "cut_answer": h.stops.cut_answer, "cut_think": h.stops.cut_think,
@@ -287,7 +307,7 @@ impl ServiceModule for CitizenHealthModule {
     fn command_schemas(&self) -> Vec<CommandSchema> {
         vec![CommandSchema {
             name: "citizen/health",
-            description: "The hour's citizen health as the substrate reads it: residents, lanes, acts, lane-starved waits, think-only turns, dropped generations, writes, lane grants, settles, prefix reuse, and the verdict (healthy / starved / dropping / reading / idle)",
+            description: "The hour's citizen health as the substrate reads it: residents, lanes, acts, lane-starved waits, think-only turns, dropped generations, writes, lane grants, learning (credit outcomes by type, submissions with staged credit, review boundaries, the review queue), prefix reuse, and the verdict (healthy / starved / dropping / reading / idle)",
             params: vec![],
         }]
     }

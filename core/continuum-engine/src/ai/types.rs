@@ -381,8 +381,23 @@ pub struct RequestAdmission {
 pub enum ResponseFormat {
     /// Model output is constrained to a single valid JSON object.
     JsonObject,
+    /// The answer is constrained to one JSON schema, the shape a caller's own type declares. On
+    /// our fork the chat template wraps the schema in its reasoning rule, so it constrains the
+    /// answer and never the think (llama.cpp#95 probe). An adapter that cannot enforce a schema
+    /// refuses it typed (`InferenceError::FormatUnenforceable`), never degrades it.
+    JsonSchema { json_schema: JsonSchemaFormat },
     /// Plain text output (default; equivalent to omitting response_format).
     Text,
+}
+
+/// A named JSON schema for [`ResponseFormat::JsonSchema`]; serializes as the OpenAI wire's
+/// `{"type":"json_schema","json_schema":{"name":…,"schema":…}}`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/JsonSchemaFormat.ts")]
+pub struct JsonSchemaFormat {
+    pub name: String,
+    #[ts(type = "Record<string, unknown>")]
+    pub schema: serde_json::Value,
 }
 
 /// Text generation response
@@ -872,6 +887,18 @@ impl Default for HealthStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a schema format the engine cannot read. llama-server and every
+    // OpenAI-compatible gateway take `{"type":"json_schema","json_schema":{"name","schema"}}`; the
+    // request body forwards the format as it serializes, so the serialized form IS the wire.
+    #[test]
+    fn a_json_schema_format_serializes_as_the_openai_wire() {
+        let format = ResponseFormat::JsonSchema {
+            json_schema: JsonSchemaFormat { name: "lesson".into(), schema: serde_json::json!({ "type": "object" }) },
+        };
+        let Ok(wire) = serde_json::to_value(&format) else { panic!("a format serializes") };
+        assert_eq!(wire, serde_json::json!({ "type": "json_schema", "json_schema": { "name": "lesson", "schema": { "type": "object" } } }));
+    }
 
     // what this catches: command/module route stamping used to reconstruct the
     // route and discard the serving window, model mapping and remote receipt.

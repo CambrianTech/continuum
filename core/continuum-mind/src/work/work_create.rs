@@ -86,7 +86,7 @@ pub struct WorkReleaseResult {
 #[async_trait]
 impl ActionCommand for WorkRelease {
     const NAME: &'static str = "work/release";
-    const ALIASES: &'static [&'static str] = &["release_task"];
+    const ALIASES: &'static [&'static str] = crate::cognition::work_preconditions::WorkVerb::Release.aliases();
     // core room workflow — HANDING BACK. Without it a citizen who realizes a card is
     // not hers has only one exit: hold it until the lease lapses. (#339)
     const NATIVE: bool = true;
@@ -175,7 +175,7 @@ pub struct WorkStateResult {
 #[async_trait]
 impl ActionCommand for WorkState {
     const NAME: &'static str = "work/state";
-    const ALIASES: &'static [&'static str] = &["update_task", "close_task"];
+    const ALIASES: &'static [&'static str] = crate::cognition::work_preconditions::WorkVerb::State.aliases();
     // core room workflow — SAYING DONE. This is the missing half of #339: citizens were
     // offered claim/list/get and NOTHING that writes a card's lifecycle back, so every
     // claim could only end in a lapsed lease and a completed card was indistinguishable

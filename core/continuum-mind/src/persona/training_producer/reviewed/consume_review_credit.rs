@@ -1,6 +1,28 @@
 use super::*;
 
+/// A review's decision over her credit, counted on the health line once per (review, outcome)
+/// ([`counted_outcome`](super::counted_outcome)), so a registration replay re-decides it and counts
+/// nothing more. `Accepted` is counted where the acceptance is written ([`settle_passed`]), the
+/// only place that knows this decision settled it.
 pub(super) async fn consume_review_credit<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    persona_id: Uuid,
+    room_id: Uuid,
+    board: &airc_work::WorkBoardProjection,
+    review_id: airc_work::WorkReviewId,
+    self_review: &SelfReview,
+) -> Result<ReviewedCredit, CreditBindingError> {
+    let decided = decide_review_credit(conn, persona_name, persona_id, room_id, board, review_id, self_review).await;
+    if let Ok(credit) = &decided {
+        if credit.state != ReviewedCreditState::Accepted {
+            super::counted_outcome::count_outcome_once(conn, persona_name, persona_id, review_id.as_uuid(), credit.state).await;
+        }
+    }
+    decided
+}
+
+async fn decide_review_credit<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
     persona_id: Uuid,
@@ -227,21 +249,30 @@ pub(super) async fn settle_passed<T: Transport>(
         review_id: review_id.as_uuid(),
         receipt,
     };
-    if let Err(error) =
-        write_batch(conn, persona_name, vec![create(id.to_string(), &accepted)?, clear_refusal(id)]).await
-    {
-        let prior =
-            read_one::<_, CreditReviewAcceptance>(conn, persona_name, &id.to_string()).await?;
-        if prior.as_ref().is_none_or(|prior| {
-            prior.decision_id != id
-                || prior.review_id != accepted.review_id
-                || prior
-                    .receipt
-                    .acceptance
-                    .as_ref()
-                    .is_none_or(|a| a.submission_id != row.id)
-        }) {
-            return Err(error.into());
+    match write_batch(conn, persona_name, vec![create(id.to_string(), &accepted)?, clear_refusal(id)]).await {
+        // Learning that actually settled: counted here, at its one write, once.
+        Ok(()) => {
+            let accepted = ReviewedCreditState::Accepted;
+            super::counted_outcome::count_outcome_once(conn, persona_name, persona_id, review_id.as_uuid(), accepted).await;
+        }
+        Err(error) => {
+            let prior =
+                read_one::<_, CreditReviewAcceptance>(conn, persona_name, &id.to_string()).await?;
+            if prior.as_ref().is_none_or(|prior| {
+                prior.decision_id != id
+                    || prior.review_id != accepted.review_id
+                    || prior
+                        .receipt
+                        .acceptance
+                        .as_ref()
+                        .is_none_or(|a| a.submission_id != row.id)
+            }) {
+                return Err(error.into());
+            }
+            // The acceptance committed and its acknowledgement was lost (or a racing replay wrote
+            // it): it settled all the same, counted once by its key (Cormac on #5810).
+            let accepted = ReviewedCreditState::Accepted;
+            super::counted_outcome::count_outcome_once(conn, persona_name, persona_id, review_id.as_uuid(), accepted).await;
         }
     }
     // No evidence deletion: binding and immutable intent remain inspectable. The
@@ -661,13 +692,15 @@ pub(super) async fn bind_snapshot<T: Transport>(
         operations.push(create(reservation.id.clone(), &reservation)?);
     }
     if let Err(error) = write_batch(conn, persona_name, operations).await {
-        // Another identical caller, or a committed write with a lost receipt.
+        // Another identical caller, or a committed write with a lost receipt: not a new submission.
         // The transaction cannot leave a binding with only some reservations.
         if let Some(prior) = read_one::<_, WorkCreditBinding>(conn, persona_name, &id).await? {
             return same_selection(prior, persona_id, &binding.selection);
         }
         return Err(error.into());
     }
+    // One submission bound to her staged credit: the unit a settle accepts.
+    crate::cognition::health_ledger::note_submission_staged();
     Ok(binding)
 }
 

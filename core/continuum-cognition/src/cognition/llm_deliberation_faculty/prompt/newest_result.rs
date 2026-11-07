@@ -22,6 +22,7 @@
 use super::*;
 use crate::ai::types::{ContentPart, MessageContent};
 use crate::cognition::act_observe::Observation;
+use crate::cognition::tool_executor::tool_output::Reopen;
 
 /// One text slot of the newest result group: a native tool result's content or a legacy
 /// receipt's text.
@@ -64,8 +65,9 @@ impl Level {
 fn too_large_note(label: &str, handle: &str, chars: usize, tokens: usize, level: &str) -> String {
     format!(
         "[{label}: too large to show whole beside the rest of your window ({chars} chars, about \
-         {tokens} tokens), so this is its {level}. Nothing is lost: read the whole by line range or \
-         grep with tool/output {handle}, or ask the tool a narrower question (a page or a filter)]"
+         {tokens} tokens), so this is its {level}. Nothing is lost: reopen it with {}, adding a \
+         line range or a pattern, or ask the tool a narrower question (a page or a filter)]",
+        Reopen::Output(handle)
     )
 }
 

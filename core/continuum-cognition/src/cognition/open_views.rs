@@ -19,6 +19,11 @@
 
 use crate::ai::types::ResultCustody;
 use crate::cognition::act_observe::{Observation, ToolVerb};
+use crate::cognition::tool_executor::tool_output::TOOL_OUTPUT;
+use crate::sdk_codegen::VerbRef;
+
+/// The verb her open views name for paging a file.
+const CODE_READ: VerbRef<continuum_hands::modules::code_commands::CodeRead> = VerbRef::in_hands();
 
 /// What a view is OF.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
@@ -97,7 +102,7 @@ impl OpenViews {
             return self.note_file_read(act, seq, scope);
         }
         let name = crate::ai::tool_dialect::resolve_wire_name(&act.call.name);
-        if name == "tool/output" {
+        if name == TOOL_OUTPUT.canonical() {
             return self.note_output_page(act, seq);
         }
         // Any other result saved whole because it was too big to show: open it as an output,
@@ -240,10 +245,14 @@ impl OpenViews {
     }
 
     /// The banner her open views are listed under.
-    pub const BANNER: &'static str = "[open views] Files and outputs I have open, and which lines of each I have read \
-         (kept across turns and restarts; not a message from anyone). code/read with \
-         start_line/end_line pages a file; tool/output with outputId and startLine/endLine \
-         pages an output:";
+    pub fn banner() -> String {
+        format!(
+            "[open views] Files and outputs I have open, and which lines of each I have read \
+             (kept across turns and restarts; not a message from anyone). {CODE_READ} with \
+             start_line/end_line pages a file; {TOOL_OUTPUT} with outputId and startLine/endLine \
+             pages an output:"
+        )
+    }
 
     /// Each visible view's stable key, whole representation and resolvable cursor. Planning
     /// prose is detail, never part of the mandatory cursor floor (FOCUS-CONTRACT rules 1–3).
@@ -272,7 +281,7 @@ impl OpenViews {
         if lines.is_empty() {
             return None;
         }
-        let mut out = String::from(Self::BANNER);
+        let mut out = Self::banner();
         for line in lines {
             out.push_str("\n- ");
             out.push_str(&line.full);

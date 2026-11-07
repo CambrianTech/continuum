@@ -33,6 +33,7 @@ mod arguments;
 pub mod command_executor;
 pub mod result_tap;
 pub mod spill;
+pub mod tool_output;
 pub mod types;
 
 pub use command_executor::CommandToolExecutor;

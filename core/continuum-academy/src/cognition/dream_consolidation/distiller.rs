@@ -44,6 +44,14 @@ pub enum DistillError {
     /// transcript — an empty distillation is surfaced, not hidden.
     #[error("distillation produced empty output")]
     EmptyDistillation,
+    /// The answer did not decode as the lesson's shape (the engine held it to the schema, so this
+    /// is an adapter that did not, or a cut answer).
+    #[error(transparent)]
+    Unreadable(#[from] UnreadableLesson),
+    /// No act of hers has a measured output need yet, so no bound can be derived: the pass waits
+    /// for her first act, the cluster kept (`lens_terms`).
+    #[error("no measured act need for this mind yet: the distillation waits for her first act")]
+    Unmeasured,
 }
 
 /// Distills clusters of episodic engrams into durable semantic facts via the
@@ -99,10 +107,8 @@ pub const LENS_CONSOLIDATOR: Lens = Lens {
 You are consolidating your own episodic memories into long-term knowledge. \
 Below are several things you observed or experienced, in order. Distill them \
 into a SINGLE durable fact: the general, reusable knowledge they share, stated \
-independently of when or how you learned it. Output ONLY the consolidated fact \
-as one or two plain sentences — no numbering, no preamble, no commentary, no \
-quotes. If the observations share no single consolidatable fact, state the one \
-most important durable takeaway.",
+independently of when or how you learned it. If the observations share no single \
+consolidatable fact, state the one most important durable takeaway.",
     purpose: "dream-consolidation",
     tag_output: false,
 };
@@ -118,9 +124,9 @@ You are the historian voice of your own mind, quietly reviewing your recent \
 experiences. Below are several of your own memories, in order. Notice the \
 PATTERN across them that you may be living without seeing: something you have \
 tried repeatedly, what actually worked versus what did not, a habit forming, a \
-thread you dropped. Output ONE short observation about your own recent history \
-— one or two plain sentences, addressed to yourself, no preamble, no quotes. \
-If there is truly no pattern, name the single most notable thing that happened.",
+thread you dropped. Write ONE short observation about your own recent history, \
+addressed to yourself. If there is truly no pattern, name the single most notable \
+thing that happened.",
     purpose: "wanderer-historian",
     tag_output: true,
 };
@@ -136,11 +142,10 @@ pub const LENS_REVIEWER: Lens = Lens {
     name: "reviewer",
     system_prompt: "\
 You are re-examining several of your own OLDER long-term beliefs to keep your \
-knowledge current. Below are beliefs you consolidated some time ago. Restate, \
-as one or two plain sentences, the most important understanding among them \
-that remains true and useful today — no numbering, no preamble, no quotes. \
-Follow the instructions after the list to flag any that are outdated, overly \
-specific to past work, or contradicted by your current understanding.",
+knowledge current. Below are beliefs you consolidated some time ago. Restate the \
+most important understanding among them that remains true and useful today, and \
+flag any that are outdated, overly specific to past work, or contradicted by your \
+current understanding.",
     purpose: "dream-belief-review",
     tag_output: false,
 };
@@ -253,6 +258,9 @@ impl SemanticDistiller {
         let observation_budget = self.max_observation_chars.saturating_sub(belief_floor);
         let (mut block, kept_n) = Self::observations_block(sources, observation_budget);
         let kept = &sources[..kept_n];
+        // How many prior beliefs the block actually lists (whole beliefs up to the budget): the only
+        // ones a `supersedes` number may name.
+        let mut listed = 0usize;
         if !prior_beliefs.is_empty() {
             // Numbered list FIRST, then an UNCONDITIONAL format slot at the very
             // end — recency beats primacy for instruction-following on small
@@ -275,6 +283,7 @@ impl SemanticDistiller {
                 block.push_str(&line);
                 beliefs_kept += 1;
             }
+            listed = beliefs_kept;
             if beliefs_kept < prior_beliefs.len() {
                 // The size of the belief that did NOT fit, so `kept = 0` is a
                 // READABLE state rather than a mystery: with none shown,
@@ -298,16 +307,10 @@ impl SemanticDistiller {
                      first {beliefs_kept}, deferring the rest to a later pass (#3847)"
                 );
             }
-            // The instruction's key phrase is ONE constant the Speak gate shares
-            // (`framing_echo::CONSOLIDATOR_SUPERSEDES_INSTRUCTION`): a citizen who
-            // speaks this scaffold in a room is passing, never posting.
-            block.push_str(&format!(
-                "\nAfter your reply, on its own final line, {}, wrong, or replaced by better understanding — \
-                 exactly `SUPERSEDES: 2` or `SUPERSEDES: 1,3` — or exactly \
-                 `SUPERSEDES: none` if every one still holds. This final line is REQUIRED.",
-                crate::cognition::framing_echo::CONSOLIDATOR_SUPERSEDES_INSTRUCTION
-            ));
         }
+        // The shape she answers in, from the type the engine holds the answer to (`lesson`).
+        block.push_str("\n\n");
+        block.push_str(&DistilledLesson::instruction());
         if kept_n < sources.len() {
             tracing::info!(
                 probe_class = "dream.cluster.budgeted",
@@ -319,16 +322,15 @@ impl SemanticDistiller {
             );
         }
 
-        // max_tokens stays None — the adapter owns generation length (#45/#46);
-        // no per-call clamp. The distillation's faithfulness is gated by VDD
-        // with a real model, not by hand-tuned sampling knobs here.
+        // Sized and thought from her measured need (`lens_terms`); the answer held to the lesson.
+        let (max_tokens, think) = lens_terms(persona_id)?;
         let request = TextGenerationRequest {
             messages: vec![ChatMessage::text("user", block)],
             system_prompt: Some(lens.system_prompt.to_string()),
             model: self.model.clone(),
             provider: None,
             temperature: None,
-            max_tokens: None,
+            max_tokens: Some(max_tokens),
             top_p: None,
             top_k: None,
             repeat_penalty: None,
@@ -339,7 +341,7 @@ impl SemanticDistiller {
             tail_tools: None,
             view_messages: None,
             tool_choice: None,
-            response_format: None,
+            response_format: Some(DistilledLesson::format(listed)),
             active_adapters: None,
             request_id: None,
             user_id: None,
@@ -367,50 +369,40 @@ impl SemanticDistiller {
             request.purpose.as_deref(),
         )
         .await;
-        // The dream's distillation states no think term yet: the model's own default, as it always
-        // ran (measured per-purpose think budgets: card, owner Fable).
-        let terms = crate::ai::types::Think::ModelDefault;
+        let terms = think;
         let response = self
             .adapter
             .generate_under(request, terms)
             .await
             .map_err(|e| DistillError::Inference(e.to_string()))?;
 
-        let raw = response.text.trim();
-        if raw.is_empty() {
-            return Err(DistillError::EmptyDistillation);
-        }
-        // Lift the model's supersession verdict OUT of the fact text (the fact
-        // must read as knowledge, not as a grading transcript). The raw tail is
-        // probed FIRST — the one glass-box eye on what the model actually wrote
-        // before the parse strips it (25 live reviews were undiagnosable
-        // without this; the distiller path has no prompt-capture yet).
+        let lesson = DistilledLesson::read(response.text.trim(), &prior_beliefs[..listed])?;
         if !prior_beliefs.is_empty() {
-            let tail = raw.lines().last().unwrap_or("").trim();
             continuum_base::probe!(
-                class = "dream.review.raw_tail",
+                class = "dream.review.verdict",
                 persona = ?persona_id,
-                tail = %tail,
-                "belief-review raw verdict line"
+                reviewed = prior_beliefs.len(),
+                superseded = lesson.supersedes.len(),
+                unlisted = ?lesson.unlisted,
+                "belief-review verdict, as the lesson's typed field"
             );
         }
-        let (raw, supersedes) = parse_supersedes_line(raw, prior_beliefs);
-        if raw.is_empty() {
+        if lesson.content.is_empty() {
             return Err(DistillError::EmptyDistillation);
         }
         // Provenance is prefixed at the ONE synthesis point (see distill_with
         // docs): a tagged lens's output always reads as typed inner speech.
         let content = if lens.tag_output {
-            format!("[thought:{}] {}", lens.name, raw)
+            format!("[thought:{}] {}", lens.name, lesson.content)
         } else {
-            raw.to_string()
+            lesson.content
         };
 
         Ok(DistilledFact {
             content,
             source_ids: kept.iter().map(|e| e.id).collect(),
             tags: Self::union_recall_keys(kept),
-            supersedes,
+            supersedes: lesson.supersedes,
         })
     }
 
@@ -454,3 +446,21 @@ impl SemanticDistiller {
 // ───────────────────────────────────────────────────────────────────────────
 // Slice 3: the DreamConsolidationRegion — the organism's rest-state servicer.
 // ───────────────────────────────────────────────────────────────────────────
+
+/// What one distillation may spend, from her measured need (`working_set::need_of`): an output room
+/// of her act's (`act_room`, which bounds every string the lesson schema allows) and a think at her
+/// measured reasoning need, raised by a recent cut. A lens's own measured need, with an upward
+/// probe, replaces this prior (next slice). Unmeasured (no act of hers has landed since boot) is
+/// typed and defers the pass: the cluster stays for a later dream, never a guessed bound (Fable on
+/// #5811: a constant for an unknown).
+pub(super) fn lens_terms(persona_id: Option<Uuid>) -> Result<(u32, crate::ai::types::Think), DistillError> {
+    use crate::ai::types::{Think, ThinkBudget};
+    let need = persona_id.and_then(|persona| crate::cognition::working_set::global().need_of(persona));
+    let Some(need) = need else {
+        continuum_base::probe!(class = "dream.distill.unmeasured", persona = ?persona_id,
+            "no measured act need yet: the distillation waits for her first act, its cluster kept");
+        return Err(DistillError::Unmeasured);
+    };
+    let think = need.reasoning_at_least.map_or(need.reasoning, |at_least| at_least.max(need.reasoning));
+    Ok((need.act_room(), Think::Budget(ThinkBudget(think))))
+}

@@ -184,6 +184,14 @@ pub struct WorkListResult {
     /// filter applied. The one number that answers "is there work here for me".
     pub claimable_now: usize,
 
+    /// Live cards on this board whose newest submission no review names: work waiting on a
+    /// reviewer, board-wide, regardless of the filter (`review_queue::awaiting_reviewer`).
+    pub awaiting_reviewer: usize,
+
+    /// Code cards with a pull request linked and no submission: no reviewer can judge them until
+    /// their holder submits (`review_queue::unsubmitted_pull_requests`).
+    pub unsubmitted_pull_requests: usize,
+
     /// Present only when the filter emptied a non-empty board — says so plainly and
     /// names the query that would have answered her actual question. Friendly feedback
     /// at the moment of the miss, not a silent zero and not a redefinition of `state`
@@ -273,6 +281,8 @@ impl ActionCommand for WorkList {
             .collect();
 
         let total_on_board = rendered.len();
+        let awaiting_reviewer = crate::cognition::review_queue::awaiting_reviewer(&board).count();
+        let unsubmitted_pull_requests = crate::cognition::review_queue::unsubmitted_pull_requests(&board).count();
         let claimable_now = rendered.iter().filter(|(r, _)| r.claimable).count();
 
         let mut cards: Vec<WorkListCard> = rendered
@@ -328,6 +338,8 @@ impl ActionCommand for WorkList {
             cards,
             total_on_board,
             claimable_now,
+            awaiting_reviewer,
+            unsubmitted_pull_requests,
             note,
         })
     }

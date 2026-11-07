@@ -3,7 +3,7 @@ use super::*;
 #[async_trait]
 impl ActionCommand for WorkClaim {
     const NAME: &'static str = "work/claim";
-    const ALIASES: &'static [&'static str] = &["claim_task"];
+    const ALIASES: &'static [&'static str] = crate::cognition::work_preconditions::WorkVerb::Claim.aliases();
     const NATIVE: bool = true; // core room workflow — claiming shared-board work as yourself
                                // AiSafe since 2026-07-10: claiming/working a card AS YOURSELF is the
                                // self-scoped cooperative act the shared board exists for. It was

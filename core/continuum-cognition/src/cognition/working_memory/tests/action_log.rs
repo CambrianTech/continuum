@@ -25,8 +25,36 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
     let lines: Vec<String> = ledger(&wm).into_iter().map(|(_, head)| head).collect();
     assert!(lines.first().is_some_and(|head| head.starts_with("[action #1]")), "{lines:?}");
     let ring = wm.recent_results_messages().join("\n");
-    assert!(ring.contains("[result #1; room unrecorded; operation unrecorded; output handle: tool/output first-handle — collapsed]"), "{ring}");
+    assert!(ring.contains("[result #1; room unrecorded; operation unrecorded; saved: read_output({\"outputId\":\"first-handle\"}) — collapsed]"), "{ring}");
     assert!(!ring.contains(&"a".repeat(cap / 2)), "its whole result left the ring");
+}
+
+// what this catches: the collapsed line and its reader disagreeing (before 2026-11-06 the index
+// emitted "… — collapsed]" while the reader accepted only "… — collapsed; query tool/output to
+// expand]", so diagnostic replay refused every pointer it was meant to omit). One type renders
+// and reads it: every collapsed line she is shown reads back, in a workspace or not, and a whole
+// result or an edited pointer does not.
+#[test]
+fn every_collapsed_line_she_is_shown_reads_back_and_nothing_else_does() {
+    let wm = WorkingMemory::new(8);
+    let cap = 2 * BODY;
+    wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved("first-handle"));
+    for act in 2..=5 {
+        record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
+    }
+    wm.record_settlement("done", None);
+    shed(&wm, cap / 2);
+    let messages = wm.recent_results_messages();
+    let lines: Vec<&str> = messages.iter().flat_map(|m| m.lines()).collect();
+    let collapsed: Vec<&str> = lines.iter().copied().filter(|l| l.ends_with(" — collapsed]")).collect();
+    assert!(!collapsed.is_empty(), "the shed collapsed a result: {messages:?}");
+    for line in &collapsed {
+        assert!(CollapsedReceipt::read(line).is_some(), "{line}");
+        assert!(CollapsedReceipt::read(&format!("{line} ")).is_none(), "an edited line is not a pointer");
+    }
+    for other in lines.iter().filter(|l| !l.ends_with(" — collapsed]")) {
+        assert!(CollapsedReceipt::read(other).is_none(), "{other}");
+    }
 }
 
 // what this catches: a restart changing what she reads of her own acts (Cormac on #5254: a

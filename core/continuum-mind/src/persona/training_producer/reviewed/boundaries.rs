@@ -157,19 +157,15 @@ impl ReviewBoundaryStore {
                 review_id: accepted.review_id,
                 eligible_clusters: eligible_clusters as u32,
             };
-            if let Err(error) = write_batch(
-                &conn,
-                &self.persona_name,
-                vec![create(id.to_string(), &receipt)?],
-            )
-            .await
-            {
+            match write_batch(&conn, &self.persona_name, vec![create(id.to_string(), &receipt)?]).await {
+                // A review boundary's consolidation finished: counted at its one receipt, once.
+                Ok(()) => crate::cognition::health_ledger::note_boundary_processed(),
                 // Lost acknowledgement or a racing replay must read the immutable
                 // receipt back; a genuine failure leaves the boundary pending.
-                if !processed_acceptance(&conn, &self.persona_name, self.persona_id, &accepted)
-                    .await?
-                {
-                    return Err(error);
+                Err(error) => {
+                    if !processed_acceptance(&conn, &self.persona_name, self.persona_id, &accepted).await? {
+                        return Err(error);
+                    }
                 }
             }
         }

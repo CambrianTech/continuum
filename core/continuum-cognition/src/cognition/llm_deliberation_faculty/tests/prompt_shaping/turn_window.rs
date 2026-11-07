@@ -651,17 +651,17 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, true, false, None)).2, 10, "live held work");
     assert_eq!(shape(reply_claim(TurnKind::Act, None, 1, false, false, None)).2, 10, "a pending cut");
     // Measured: her think + answer, whole; an act floors at both, one claim (never her answer alone).
-    let need = OutputNeed { reasoning: 900, answer: 300, turns: 5, reasoning_at_least: None };
+    let need = OutputNeed { reasoning: 900, answer: 300, turns: 5, reasoning_at_least: None, answer_at_least: None };
     assert_eq!(shape(reply_claim(TurnKind::Pass, Some(need), 0, false, false, None)).1, 1_200);
-    let kimi = OutputNeed { reasoning: 6_100, answer: 4_077, turns: 32, reasoning_at_least: None };
+    let kimi = OutputNeed { reasoning: 6_100, answer: 4_077, turns: 32, reasoning_at_least: None, answer_at_least: None };
     assert_eq!(shape(reply_claim(TurnKind::Act, Some(kimi), 0, false, false, None)), (10_177, 10_177, 8));
     // A large measured need claims all of it: the window and the allocation bound it.
-    let huge = OutputNeed { reasoning: 30_000, answer: 20_000, turns: 9, reasoning_at_least: None };
+    let huge = OutputNeed { reasoning: 30_000, answer: 20_000, turns: 9, reasoning_at_least: None, answer_at_least: None };
     assert_eq!(shape(reply_claim(TurnKind::Act, Some(huge), 0, false, false, None)), (50_000, 50_000, 8));
     // A recent cut think tests upward only under a measured time term, never past it, and not at
     // all with no measured rate (the M5, 2026-10-31: Benchy, need 520 + 217, cut at 597+ thinking,
     // time term 832). Card b726a311.
-    let benchy = OutputNeed { reasoning: 520, answer: 217, turns: 16, reasoning_at_least: Some(700) };
+    let benchy = OutputNeed { reasoning: 520, answer: 217, turns: 16, reasoning_at_least: Some(700), answer_at_least: None };
     assert_eq!(shape(reply_claim(TurnKind::Pass, Some(benchy), 0, false, false, Some(832))).1, 832, "up to the time term");
     assert_eq!(shape(reply_claim(TurnKind::Pass, Some(benchy), 0, false, false, Some(2_000))).1, 917, "to the lower bound under a roomy term");
     assert_eq!(shape(reply_claim(TurnKind::Pass, Some(benchy), 0, false, false, None)).1, 737, "no rate, no upward test");
@@ -679,7 +679,7 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     let clipped = output_allowance(
         TurnKind::Pass,
         None,
-        Some(OutputNeed { reasoning: 3_000, answer: 500, turns: 5, reasoning_at_least: None }),
+        Some(OutputNeed { reasoning: 3_000, answer: 500, turns: 5, reasoning_at_least: None, answer_at_least: None }),
         2_172,
     );
     assert_eq!((clipped.allowance, clipped.need_clipped), (2_172, true), "a need past the grant is said");
@@ -688,9 +688,9 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     assert_eq!(output_allowance(TurnKind::Act, Some(0.0), Some(need), 6_932).time_term, None);
     assert_eq!(output_allowance(TurnKind::Act, Some(f64::NAN), Some(need), 6_932).time_term, None);
     // The split that feeds the need: the server's count, apportioned by channel bytes.
-    assert_eq!(reasoning_answer_split(1_000, 2_730, 910), (750, 250));
-    assert_eq!(reasoning_answer_split(500, 0, 0), (0, 500), "no channel text (a native call): all answer");
-    assert_eq!(reasoning_answer_split(300, 2_112, 0), (300, 0), "a think-only turn is all reasoning");
+    assert_eq!(crate::cognition::working_set::reasoning_answer_split(1_000, 2_730, 910), (750, 250));
+    assert_eq!(crate::cognition::working_set::reasoning_answer_split(500, 0, 0), (0, 500), "no channel text (a native call): all answer");
+    assert_eq!(crate::cognition::working_set::reasoning_answer_split(300, 2_112, 0), (300, 0), "a think-only turn is all reasoning");
     // what this catches: a thinking model's native file-writing arguments
     // being counted as zero answer, so an output cut never grows that channel.
     let parts = vec![
@@ -701,11 +701,11 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
             input: serde_json::json!({"path": "migration.sql", "content": "CREATE TABLE example(id INTEGER);"}),
         },
     ];
-    let tool_bytes = answer_payload_bytes("", Some(&parts));
+    let tool_bytes = crate::cognition::working_set::answer_payload_bytes("", Some(&parts));
     assert!(tool_bytes > 0);
-    assert_eq!(answer_payload_bytes("note", Some(&parts)), tool_bytes + 4,
+    assert_eq!(crate::cognition::working_set::answer_payload_bytes("note", Some(&parts)), tool_bytes + 4,
         "mirrored Text parts are counted once");
-    let (think, answer) = reasoning_answer_split(1000, 2000, tool_bytes);
+    let (think, answer) = crate::cognition::working_set::reasoning_answer_split(1000, 2000, tool_bytes);
     assert_eq!(think + answer, 1000);
     assert!(answer > 0);
     assert_eq!(crate::cognition::working_set::EmissionStop::classify(true, answer > 0),

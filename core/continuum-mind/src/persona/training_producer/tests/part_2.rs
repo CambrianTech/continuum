@@ -44,7 +44,7 @@ use super::*;
         // nothing. `score_interaction_quality` weights `task_success` at 0.25 and
         // scores a failed outcome 0.2, so a failed turn scores `0.20 + 0.3*substance`
         // — and `long` above (237 chars → substance 0.7) lands at 0.41, BELOW
-        // MIN_TRAINING_QUALITY 0.45. With that fixture the gate refuses the turn and
+        // TRAINING_QUALITY_BAR 0.45. With that fixture the gate refuses the turn and
         // the evidence floor is never reached: deleting the floor entirely left this
         // assertion green. Found by mutation, not by reading.
         //
@@ -183,7 +183,7 @@ use super::*;
     pub(super) fn substantive_turn_plans_a_bucket_trivial_turn_is_gated() {
         let classifier = DomainClassifier::new();
 
-        // A trivial reply: below MIN_TRAINING_QUALITY → no plan.
+        // A trivial reply: below TRAINING_QUALITY_BAR → no plan.
         assert!(
             plan(&classifier, "thanks!", "ok", None).is_none(),
             "a one-word acknowledgement must be gated out of the training corpus"
@@ -200,7 +200,7 @@ use super::*;
         assert!(!p.trait_kind.is_empty(), "must be bucketed by a domain");
         assert_eq!(p.completion, long, "the reply is the training completion");
         assert!(
-            p.quality >= MIN_TRAINING_QUALITY,
+            p.quality >= TRAINING_QUALITY_BAR,
             "the carried quality must be the score that cleared the gate: {}",
             p.quality
         );

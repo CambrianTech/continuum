@@ -7,12 +7,15 @@
 //! - [`level`]: how much of an item the view rendered (whole, summary, pointer, folded).
 //! - [`levels`]: each item's summary level, generated from its shape (mipmaps for context).
 //! - [`motion`]: how each source moves between epoch starts, which orders the next start.
+//! - [`rereads`]: how often she asks again for what she observed, by its age.
+//! - [`depth`]: how deep a turnover collapses her history, from those re-reads and her growth.
 //! - [`view`]: one mind's epoch fed by its sources; turnover is the only rewrite.
 //! - [`flex`]: the one allocator: claims by floor, min, max and priority.
 //! - [`allocation`]: an act's ONE allocation over everything her prompt holds, run once.
 
 pub mod allocation;
 pub mod cause;
+pub mod depth;
 pub mod epoch;
 pub mod flex;
 #[cfg(test)]
@@ -20,5 +23,6 @@ mod fixtures;
 pub mod level;
 pub mod levels;
 pub mod motion;
+pub mod rereads;
 pub mod source;
 pub mod view;

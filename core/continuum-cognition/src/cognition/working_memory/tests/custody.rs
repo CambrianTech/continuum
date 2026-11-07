@@ -36,7 +36,7 @@ fn a_step_is_scoped_to_its_root_and_every_result_is_perceived_labelled_with_its_
     results.record_receipt_typed(&[], "task-b-only", None, saved("scope-b-output"));
     for _ in 0..4 { results.record_fact("unrelated notice"); }
     let from_b = results.recent_results_messages().join("\n");
-    assert!(from_b.contains("scope-a-output; workspace task-a"), "one mind: task-a's result, labelled, from task-b: {from_b}");
+    assert!(from_b.contains(r#"scope-a-output"}); workspace task-a"#), "one mind: task-a's result, labelled, from task-b: {from_b}");
     assert!(!from_b.contains("task-b-only"), "the in-flight action renders at the tail, not in the ring");
     results.set_scope(Some("task-a".into()));
     assert_eq!(results.recent_results_messages().join("\n"), from_b, "the ring is the same from either root");
@@ -89,7 +89,7 @@ fn a_mind_s_saved_handles_are_live_until_it_drops() {
     wm.record_settlement("done", None);
     shed(&wm, cap / 2);
     assert!(
-        wm.recent_results_messages().join("\n").contains(&format!("{handle} — collapsed")),
+        wm.recent_results_messages().join("\n").contains(&format!("{} — collapsed", crate::cognition::tool_executor::tool_output::Reopen::Output(&handle))),
         "it collapsed to a pointer"
     );
     assert!(live(&file), "still referenced by its pointer");
@@ -185,7 +185,7 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
 
     wm.record_settlement("done", None);
     shed(&wm, cap / 2);
-    assert!(wm.recent_results_messages().join("\n").contains(&format!("{receipt} — collapsed")), "collapsed to a pointer");
+    assert!(wm.recent_results_messages().join("\n").contains(&format!("{} — collapsed", crate::cognition::tool_executor::tool_output::Reopen::Output(&receipt))), "collapsed to a pointer");
     assert!(live(&receipt) && children.iter().all(|c| live(c)), "the pointer holds the receipt and its children");
 
     let snapshot = wm.snapshot();
@@ -355,7 +355,7 @@ fn an_unsaved_result_keeps_its_bytes_through_a_shed_and_restore() {
     let whole = |m: &WorkingMemory| m.recent_results_messages().iter().any(|r| r.ends_with(&unsaved));
     assert!(whole(&wm), "kept whole through the shed");
     assert!(
-        wm.recent_results_messages().join("\n").contains("ring-test — collapsed"),
+        wm.recent_results_messages().join("\n").contains(r#"ring-test"}) — collapsed"#),
         "the saved ones around it collapsed"
     );
     let restored = WorkingMemory::new(8);

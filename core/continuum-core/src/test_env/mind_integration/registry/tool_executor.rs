@@ -21,7 +21,8 @@ fn a_path_or_a_symbol_where_the_tool_name_goes_is_named_as_the_slip_it_is() {
     let path = r"C:\Users\kimi\.airc/worktrees\d33e928a";
     let out = persona_tool_error(path, unknown(path));
     assert!(out.contains("is a PATH, not a tool"), "{out}");
-    assert!(out.contains(&format!("`code/read({{\"file_path\": \"{path}\"}})`")), "{out}");
+    // The verbs render as her tool list offers them (`VerbRef`), so the call is one she can make.
+    assert!(out.contains(&format!("`read_file({{\"file_path\": \"{path}\"}})`")), "{out}");
     assert!(!out.contains("commands/help"), "the manual is not the lesson here: {out}");
     // Fixture 2 (20:0xZ): a probe field name from the code she was reading. It
     // shares the word `budget` with a real verb, so did-you-mean has a candidate
@@ -29,7 +30,7 @@ fn a_path_or_a_symbol_where_the_tool_name_goes_is_named_as_the_slip_it_is() {
     let out = persona_tool_error("msg_budget", unknown("msg_budget"));
     assert!(out.contains("Closest:"), "{out}");
     assert!(out.contains("If `msg_budget` is not a verb you meant but a symbol"), "{out}");
-    assert!(out.contains("`code/edit`"), "{out}");
+    assert!(out.contains("`edit_file`"), "{out}");
     // A bare word near NOTHING gets the slip alone.
     let out = persona_tool_error("frobnitz", unknown("frobnitz"));
     assert!(out.contains("`frobnitz` is not a tool, and is not near one"), "{out}");
