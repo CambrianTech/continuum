@@ -1,5 +1,6 @@
 //! Genome responsibility of the llama-server process owner.
 use super::*;
+use std::collections::BTreeMap;
 /// Whether the serving engine accepts `--train-dir`, read off its own `--help` by the same
 /// once-per-binary probe that reads its KV cache types. An engine older than the flag REJECTS
 /// it and the lane does not start (2026-09-27: #4438 on canary would have put `--train-dir` on
@@ -10,32 +11,34 @@ use super::*;
 /// differently: a launch reads both as no (in-engine training is never worth a lane), but an
 /// in-place gene change asks first (IntelMac 2026-11-07: a core adopting a live engine read the
 /// unasked flag as no 71 ms before the probe answered yes, and relaunched the engine cold).
-pub(super) static ENGINE_TRAIN_DIR: parking_lot::Mutex<Option<(String, TrainDirSupport)>> = parking_lot::Mutex::new(None);
+pub(super) static ENGINE_PROBES: parking_lot::Mutex<BTreeMap<String, ProbeOutcome>> = parking_lot::Mutex::new(BTreeMap::new());
 
-/// What a binary said about `--train-dir`.
+/// What the support probe got from one engine binary: the one record of both "was it asked" and
+/// "what did it say", per binary, so asking one binary never touches another's (Codex on #5817: two
+/// single-slot records, a failed probe of B left A marked asked with B's "no", and A read "no").
+/// One entry per installed engine binary: a handful, never growing with use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum TrainDirSupport {
-    /// It does not list the flag, or it was asked and did not answer.
-    No,
-    Yes,
+pub(super) enum ProbeOutcome {
+    /// It answered (`answered` or `did_not_enumerate`): never asked again.
+    Answered { train_dir: bool },
+    /// It was asked and did not answer: no, for now, and asked again at its next use.
+    Unanswered,
 }
 
 /// What `bin` said about `--train-dir`: `None` until `bin` itself was asked.
 pub(super) fn train_dir_support(bin: &str) -> Option<bool> {
-    answer_for(ENGINE_TRAIN_DIR.lock().as_ref(), bin)
+    answer_for(&ENGINE_PROBES.lock(), bin)
 }
 
-/// PURE: what the record says about `bin`: its answer when it is the binary asked, else nothing.
-pub(super) fn answer_for(record: Option<&(String, TrainDirSupport)>, bin: &str) -> Option<bool> {
-    match record {
-        Some((asked, answer)) if asked == bin => Some(*answer == TrainDirSupport::Yes),
-        _ => None,
-    }
+/// PURE: what the record says about `bin`: its answer, no when it did not answer, nothing when it
+/// was never asked.
+pub(super) fn answer_for(probes: &BTreeMap<String, ProbeOutcome>, bin: &str) -> Option<bool> {
+    probes.get(bin).map(|outcome| matches!(outcome, ProbeOutcome::Answered { train_dir: true }))
 }
 
-/// Record what `bin` said.
-pub(super) fn record_train_dir_support(bin: &str, answer: TrainDirSupport) {
-    *ENGINE_TRAIN_DIR.lock() = Some((bin.to_owned(), answer));
+/// PURE: whether `bin` needs asking: never asked, or asked without an answer.
+pub(super) fn needs_asking(probes: &BTreeMap<String, ProbeOutcome>, bin: &str) -> bool {
+    !matches!(probes.get(bin), Some(ProbeOutcome::Answered { .. }))
 }
 
 /// Whether `bin` accepts `--train-dir`. A launch reads "not asked yet" as no: the one answer that
@@ -62,26 +65,17 @@ pub fn engine_train_dir() -> Option<PathBuf> {
 }
 
 
-/// PURE: the bare file name a gene is staged under inside the engine's --train-dir, the
-/// only folder `POST /lora-adapters/load` reads (a bare `.gguf` name: no separators, no
-/// "..", no control characters, at most 200 bytes). Keyed by the gene's own file name so the
-/// adapter catalog can be matched back to the genome path; `None` when that name cannot be
-/// made one (the gene then rides a relaunch, as before). The full path's hash rides in the
-/// name, so two genes that share a file name in different folders never collide.
-pub(crate) fn gene_stage_name(gene: &std::path::Path) -> Option<String> {
+/// PURE: the bare file name a gene is staged under inside the engine's --train-dir, the only
+/// folder `POST /lora-adapters/load` reads: `gene-<sha256 of its genome path, hex>.gguf`. The full
+/// hash is the gene's identity (two genes never share one), the name is the same for the same gene
+/// on every call, so the adapter catalog maps back to its genome path by recomputing it, and at
+/// 74 bytes it is always inside the engine's name confinement (`confine_out`, at most 200 bytes, no
+/// separators, no "..").
+pub(crate) fn gene_stage_name(gene: &std::path::Path) -> String {
     use sha2::Digest;
-    let stem = gene.file_stem()?.to_str()?;
-    let clean: String = stem
-        .chars()
-        .take(120)
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
-        .collect();
     let digest = sha2::Sha256::digest(gene.as_os_str().as_encoded_bytes());
-    let tag: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
-    clean
-        .chars()
-        .any(|c| c.is_ascii_alphanumeric())
-        .then(|| format!("gene-{clean}-{tag}.gguf"))
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("gene-{hex}.gguf")
 }
 
 
@@ -97,7 +91,7 @@ pub(super) fn genome_paths_of(catalog: &[(i64, String)], genes: &[String]) -> Ve
                 return path.clone();
             }
             let base = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
-            match genes.iter().find(|gene| base.is_some() && gene_stage_name(std::path::Path::new(gene.as_str())).as_deref() == base) {
+            match genes.iter().find(|gene| base == Some(gene_stage_name(std::path::Path::new(gene.as_str())).as_str())) {
                 Some(gene) => gene.clone(),
                 None => path.clone(),
             }
@@ -173,10 +167,7 @@ impl LlamaServerProcess {
         let removed: Vec<&String> = active.iter().filter(|p| !desired.contains(p)).collect();
         let mut staged = Vec::with_capacity(added.len());
         for gene in &added {
-            let Some(name) = gene_stage_name(std::path::Path::new(gene.as_str())) else {
-                return Ok(GenomeInPlace::Unsupported);
-            };
-            staged.push((PathBuf::from(gene.as_str()), name));
+            staged.push((PathBuf::from(gene.as_str()), gene_stage_name(std::path::Path::new(gene.as_str()))));
         }
         // Every step the engine accepts is recorded at once, so an early return (a busy
         // retire, an error) leaves the served set naming exactly what the engine holds;
@@ -202,7 +193,7 @@ impl LlamaServerProcess {
                 let stage = gene_stage_name(std::path::Path::new(gene.as_str()));
                 let id = catalog.iter().find_map(|(id, path)| {
                     let base = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
-                    (path == *gene || (stage.is_some() && base == stage.as_deref())).then_some(*id)
+                    (path == *gene || base == Some(stage.as_str())).then_some(*id)
                 });
                 let Some(id) = id else {
                     record(gene, false)?; // not loaded: nothing to retire, and not served
@@ -211,9 +202,7 @@ impl LlamaServerProcess {
                 match self.lora_post("unload", serde_json::json!({ "id": id })).await? {
                     LoraPost::Done => {
                         record(gene, false)?;
-                        if let Some(name) = &stage {
-                            let _ = std::fs::remove_file(dir.join(name)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
-                        }
+                        let _ = std::fs::remove_file(dir.join(&stage)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
                     }
                     LoraPost::Busy => return Ok(GenomeInPlace::Busy),
                     LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),

@@ -64,7 +64,7 @@ async fn a_busy_second_retire_leaves_the_served_set_naming_what_the_engine_holds
 // it; a malformed report is an error, never an empty set.
 #[tokio::test]
 async fn a_fresh_process_reads_an_adopted_engines_genes_from_its_report() {
-    let staged = gene_stage_name(std::path::Path::new("/genes/b.gguf")).expect("test: stageable");
+    let staged = gene_stage_name(std::path::Path::new("/genes/b.gguf"));
     let report = serde_json::json!([
         {"id": 0, "path": "/genes/a.gguf"},
         {"id": 1, "path": format!("/cache/engine-train/{staged}")}

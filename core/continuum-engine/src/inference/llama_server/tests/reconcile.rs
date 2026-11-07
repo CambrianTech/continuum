@@ -303,10 +303,11 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     }
     // The staged name: a bare .gguf the engine's confinement accepts, and two genes
     // sharing a file name in different folders never collide.
-    let a = gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf")).expect("stageable");
-    let b = gene_stage_name(std::path::Path::new("/genome/asha/adapter.gguf")).expect("stageable");
+    let a = gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf"));
+    let b = gene_stage_name(std::path::Path::new("/genome/asha/adapter.gguf"));
     assert_ne!(a, b);
-    assert!(a.starts_with("gene-adapter-") && a.ends_with(".gguf"));
+    assert!(a.starts_with("gene-") && a.ends_with(".gguf"));
+    assert_eq!(a, gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf")), "the same gene stages under the same name");
     assert!(!a.contains('/') && !a.contains("..") && a.len() <= 200);
 }
 
@@ -319,7 +320,7 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
 fn an_adopted_engines_report_reads_back_as_the_genes_it_holds() {
     let kimi = "/genome/kimi/adapter.gguf".to_string();
     let asha = "/genome/asha/adapter.gguf".to_string();
-    let staged = format!("/cache/engine-train/{}", gene_stage_name(std::path::Path::new(&asha)).expect("stageable"));
+    let staged = format!("/cache/engine-train/{}", gene_stage_name(std::path::Path::new(&asha)));
     let dropped = "/genome/old/retired.gguf".to_string();
     let mut genes = vec![kimi.clone(), asha.clone()];
     genes.sort();
@@ -331,18 +332,36 @@ fn an_adopted_engines_report_reads_back_as_the_genes_it_holds() {
     assert!(genome_paths_of(&[], &genes).is_empty(), "an engine with nothing loaded holds nothing");
 }
 
-// what this catches (Codex on #5817): one process-global train-dir answer standing in for a
-// binary that was never asked. After a promotion (or on another endpoint) the next binary's in-place
-// decision read its predecessor's answer. The record answers only for the binary it asked; any
-// other binary is unasked, so it is asked itself before a gene change is decided.
+// what this catches (Codex on #5817): a train-dir answer standing in for a binary that was never
+// asked. Each binary's entry is its own: one asked and answered is never asked again, one never asked
+// (a promoted binary, another endpoint's) reads as unasked, and one that did not answer is "no" for
+// now and asked again at its next use.
 #[test]
 fn a_train_dir_answer_is_about_the_binary_asked_and_no_other() {
-    let asked = ("/slots/engine-a/llama-server".to_string(), TrainDirSupport::Yes);
-    assert_eq!(answer_for(Some(&asked), "/slots/engine-a/llama-server"), Some(true));
-    assert_eq!(answer_for(Some(&asked), "/slots/engine-b/llama-server"), None, "a promoted binary is unasked, never inherits");
-    let refused = ("/slots/engine-b/llama-server".to_string(), TrainDirSupport::No);
-    assert_eq!(answer_for(Some(&refused), "/slots/engine-b/llama-server"), Some(false));
-    assert_eq!(answer_for(None, "/slots/engine-a/llama-server"), None, "nothing asked yet");
+    let probes = std::collections::BTreeMap::from([
+        ("/slots/engine-a/llama-server".to_string(), ProbeOutcome::Answered { train_dir: true }),
+        ("/slots/engine-b/llama-server".to_string(), ProbeOutcome::Unanswered),
+    ]);
+    assert_eq!(answer_for(&probes, "/slots/engine-a/llama-server"), Some(true));
+    assert!(!needs_asking(&probes, "/slots/engine-a/llama-server"), "answered: never asked again");
+    assert_eq!(answer_for(&probes, "/slots/engine-b/llama-server"), Some(false), "unanswered reads no for now");
+    assert!(needs_asking(&probes, "/slots/engine-b/llama-server"), "and is asked again at its next use");
+    assert_eq!(answer_for(&probes, "/slots/engine-c/llama-server"), None, "a promoted binary is unasked, never inherits");
+}
+
+// what this catches (Codex on #5817, review_failed_other_binary_probe_preserves_the_first_binary_answer):
+// the real probe, through its one record. A answers yes; a failed probe of another binary B; A asked
+// again must keep its yes and not be probed again (here its second command would answer no).
+#[tokio::test]
+async fn a_failed_probe_of_another_binary_leaves_the_first_binarys_answer() {
+    let (a, b) = ("test-probe-a/llama-server", "test-probe-b/llama-server");
+    let says = |help: &str| { let mut command = tokio::process::Command::new("echo"); command.arg(help); command };
+    ensure_engine_kv_support_recorded(a, says("--train-dir")).await;
+    assert_eq!(train_dir_support(a), Some(true), "A lists the flag");
+    ensure_engine_kv_support_recorded(b, tokio::process::Command::new("/nonexistent/test-probe-b")).await;
+    assert_eq!(train_dir_support(b), Some(false), "B did not answer: no, for now");
+    ensure_engine_kv_support_recorded(a, says("no-flags-here")).await;
+    assert_eq!(train_dir_support(a), Some(true), "A keeps its own answer and is not asked again");
 }
 
 // what this catches: nothing running (Unreachable) is NOT an error — it's
