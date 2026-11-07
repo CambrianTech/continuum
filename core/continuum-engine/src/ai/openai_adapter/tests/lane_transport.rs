@@ -1,4 +1,5 @@
 #![cfg(test)]
+use crate::ai::adapter::DispatchTermsPolicy;
 
 use super::*;
 
@@ -163,7 +164,7 @@ async fn slot_discovery_failure_refuses_generation_before_http_dispatch() {
         };
         let (sink, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let error = tokio::time::timeout(
-            std::time::Duration::from_secs(5), adapter.generate_stream_checked(request, sink),
+            std::time::Duration::from_secs(5), adapter.generate_stream_checked(request.clone(), sink, crate::ai::adapter::Dispatched::fixture_for(&request)),
         ).await.expect("bounded fixture").expect_err("discovery must refuse");
         assert!(matches!(error, crate::ai::inference_error::InferenceError::Unavailable(_)), "{error}");
         assert!(error.to_string().contains(cause), "{error}");
@@ -237,7 +238,7 @@ async fn a_server_error_frame_fails_the_act_never_an_empty_completion() {
     drop(receiver);
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_stream_checked(request, sink),
+        adapter.generate_stream_checked(request.clone(), sink, crate::ai::adapter::Dispatched::fixture_for(&request)),
     )
     .await
     .expect("bounded fixture request");
@@ -308,7 +309,7 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
     drop(receiver);
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_stream_checked(request, sink),
+        adapter.generate_stream_checked(request.clone(), sink, crate::ai::adapter::Dispatched::fixture_for(&request)),
     )
     .await
     .expect("bounded fixture request");
@@ -586,7 +587,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         fail_save.store(fails, Ordering::SeqCst);
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            adapter.generate_text(request),
+            adapter.generate_text(request.clone(), crate::ai::adapter::Dispatched::fixture_for(&request)),
         )
         .await
         .expect("bounded adapter fixture")
@@ -605,7 +606,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(1, Ordering::SeqCst);
     assert!(tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(failed_turn.clone()),
+        adapter.generate_text(failed_turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&failed_turn)),
     )
     .await
     .expect("bounded failed generation")
@@ -613,7 +614,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(0, Ordering::SeqCst);
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(turn.clone()),
+        adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&turn)),
     )
     .await
     .expect("bounded return after failure")
@@ -653,7 +654,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
             // assertion that cancellation stops a production backend.
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             {
-                let generation = adapter.generate_stream(failed_turn.clone(), tx);
+                let generation = adapter.generate_stream(failed_turn.clone(), tx, crate::ai::adapter::Dispatched::fixture_for(&failed_turn));
                 tokio::pin!(generation);
                 tokio::time::timeout(std::time::Duration::from_secs(5), async {
                     tokio::select! {
@@ -667,7 +668,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         } else {
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                adapter.generate_text(failed_turn.clone()),
+                adapter.generate_text(failed_turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&failed_turn)),
             )
             .await
             .expect("bounded interrupted generation");
@@ -683,7 +684,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         generation_mode.store(0, Ordering::SeqCst);
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            adapter.generate_text(turn.clone()),
+            adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&turn)),
         )
         .await
         .expect("bounded restore")
@@ -709,7 +710,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     // following generation also fails; retry must prefill, not retry that page.
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(background),
+        adapter.generate_text(background.clone(), crate::ai::adapter::Dispatched::fixture_for(&background)),
     )
     .await
     .expect("bounded background")
@@ -718,7 +719,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(1, Ordering::SeqCst);
     assert!(tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(turn.clone())
+        adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&turn))
     )
     .await
     .expect("bounded failed restore")
@@ -727,7 +728,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(0, Ordering::SeqCst);
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(turn),
+        adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&turn)),
     )
     .await
     .expect("bounded cold retry")
@@ -741,7 +742,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         ["save", "generate", "restore", "generate", "generate"]
     );
     generation_mode.store(5, Ordering::SeqCst);
-    tokio::time::timeout(std::time::Duration::from_secs(5), adapter.generate_text(TextGenerationRequest { max_tokens: Some(32), ..Default::default() }))
+    tokio::time::timeout(std::time::Duration::from_secs(5), adapter.generate_under(TextGenerationRequest { max_tokens: Some(32), ..Default::default() }, crate::ai::types::Think::ModelDefault))
         .await.expect("bounded foreign alias response").expect("response compatibility");
     assert!(!crate::inference::resource_admission::leased_in_sent_samples().iter()
         .any(|sample| sample.served(&root, Some("foreign-alias")).is_some()),

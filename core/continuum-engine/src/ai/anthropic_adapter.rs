@@ -304,6 +304,7 @@ impl AIProviderAdapter for AnthropicAdapter {
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        _dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         let api_key = self
             .api_key

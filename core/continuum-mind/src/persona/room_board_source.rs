@@ -559,7 +559,10 @@ impl RoomBoardSource {
                         "open_lead_suppressed": working,
                     }),
                 )
-                .with_pointer(headline),
+                .with_pointer(headline)
+                // Its counts move whenever anyone claims or files a card: a tally, held after the
+                // board's stable body so a count never rewrites the cards in front of it.
+                .as_tally(),
             );
         }
 
@@ -615,12 +618,12 @@ impl RoomBoardSource {
         // filter the board itself.
         if !working && !open.is_empty() {
             // The count, not a sample of titles: every live card follows this lead whole, her holds
-            // first and then the newest claimable (the order below), so a card dispatched minutes
-            // ago is the first claimable card she reads. Five titles here repeated what follows and
-            // were the literal ceiling a touched file may not keep (self_sized).
+            // first and then the claimable cards oldest first, so a card dispatched minutes ago is
+            // the last she reads, nearest her newest context. Five titles here repeated what follows
+            // and were the literal ceiling a touched file may not keep (self_sized).
             let lead = format!(
                 "[available work] {n} card(s) on this board are claimable — unclaimed, \
-                 or their holder's claim lease lapsed; they follow, newest first. A card is \
+                 or their holder's claim lease lapsed; they are listed oldest first, the newest last. A card is \
                  picked up with `work/claim` (its id); once claimed it is yours to \
                  work with your tools. Claimable work waits until someone chooses it.",
                 n = open.len(),
@@ -631,7 +634,8 @@ impl RoomBoardSource {
                     lead,
                     json!({ "kind": "available-work-lead", "open_count": open.len() }),
                 )
-                .with_pointer(format!("[available work] {} card(s) claimable here — work/list", open.len())),
+                .with_pointer(format!("[available work] {} card(s) claimable here — work/list", open.len()))
+                .as_tally(),
             );
         }
 
@@ -651,8 +655,11 @@ impl RoomBoardSource {
         }
         let names = self.reader.peer_names(&owner_peers).await;
 
-        // RELEVANCE ORDER, delivered whole. Her own holds first, then newest claimable
-        // (the same recency argument the available-work lead makes). Every LIVE card is
+        // RELEVANCE ORDER, delivered whole. Her own holds first, then the claimable cards oldest
+        // first: a new card APPENDS to the block instead of rewriting it from its first card, so
+        // the cards she already read stay a reused prefix (the M5, 2026-11-06: newest-first put
+        // every new card at the head of a 30k-char list and every epoch start re-prefilled it),
+        // and the newest stand last, nearest the rest of her newest context. Every LIVE card is
         // delivered: when the prompt view must shrink it collapses the oldest cards to
         // their pointers (measured 2026-08-17: 38 cards were 49.7% of a system prompt;
         // that is the allocation's problem to solve by level, not a count cap here).
@@ -671,14 +678,15 @@ impl RoomBoardSource {
                     format!("[board history] {} card(s) merged or closed in this room — work/list shows them", history.len()),
                     json!({ "kind": "board-history", "settled_count": history.len() }),
                 )
-                .with_pointer(format!("[board history] {} merged/closed — work/list", history.len())),
+                .with_pointer(format!("[board history] {} merged/closed — work/list", history.len()))
+                .as_tally(),
             );
         }
         let mut ordered: Vec<&airc_work::WorkCard> = live;
         ordered.sort_by_key(|c| {
             let mine_first = !(c.owner.map(|o| o.as_uuid()) == Some(self.persona_id));
-            // Negate for newest-first without needing a reversed comparator.
-            (mine_first, std::cmp::Reverse(c.created_at_ms))
+            // Oldest first: a new card appends.
+            (mine_first, c.created_at_ms)
         });
 
         for card in ordered {

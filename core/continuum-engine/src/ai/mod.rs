@@ -22,7 +22,8 @@
 //! registry.register(Arc::new(anthropic), 1);
 //!
 //! let (provider_id, adapter) = registry.select(None, Some("deepseek-chat"), InferenceDevice::Auto).unwrap();
-//! let response = adapter.generate_text(request).await?;
+//! // Every generation states its think (`DispatchTerms`); the terms-less paths are the engine's.
+//! let response = adapter.generate_under(request, Think::ModelDefault).await?;
 //! ```
 
 pub mod adapter;
@@ -46,6 +47,7 @@ pub mod openai_endpoints;
 pub mod provenance;
 pub mod registry_bridge;
 pub mod stream_sinks;
+pub mod think;
 pub mod tool_dialect;
 pub mod tool_usage;
 pub mod types;

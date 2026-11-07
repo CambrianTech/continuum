@@ -32,7 +32,7 @@ use std::sync::Arc;
 use airc_test_fixtures::TwoAircLoopback;
 use async_trait::async_trait;
 use continuum_airc_protocol::{HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, KIND_PEER};
-use continuum_core::ai::adapter::AIProviderAdapter;
+use continuum_core::ai::adapter::DispatchTermsPolicy;
 use continuum_core::ai::types::{
     ChatMessage, FinishReason, MessageContent, TextGenerationRequest, TextGenerationResponse,
     UsageMetrics,
@@ -207,8 +207,9 @@ async fn round_trip() {
     };
 
     let started = std::time::Instant::now();
+    let terms = continuum_core::ai::types::Think::ModelDefault;
     let response: TextGenerationResponse = adapter
-        .generate_text(request)
+        .generate_under(request, terms)
         .await
         .expect("AircRemoteInferenceAdapter round-trip");
 

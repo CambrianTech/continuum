@@ -83,7 +83,7 @@ fn a_route_that_moves_between_selection_and_send_refuses_the_tail_never_drops_it
         ..Default::default()
     };
     let mut body = serde_json::json!({ "model": "eyes" });
-    let sent = crate::inference::request_body::finish_body(&adapter.config, &request, "eyes", at_send.tail_tools, None, &mut body);
+    let sent = crate::inference::request_body::finish_body(&adapter.config, &request, "eyes", at_send.tail_tools, crate::ai::types::Think::ModelDefault, &mut body);
     assert_eq!(sent, Err(InferenceError::TailToolsUnreachable { model: "eyes".into() }));
     assert!(!InferenceError::TailToolsUnreachable { model: "eyes".into() }.is_retryable_unchanged(), "rebuilt, never resent as is");
 }

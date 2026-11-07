@@ -7,7 +7,7 @@
 
 use continuum_base::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
-use crate::ai::types::ResponseFormat;
+use crate::ai::types::{DispatchTerms, ResponseFormat, Think, ThinkBudget};
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use crate::ai::adapter::global_registry;
 use serde::{Deserialize, Serialize};
@@ -240,10 +240,11 @@ pub async fn evaluate_gating(
             model: Some(model.clone()),
         })?;
 
+    // No think: today's behaviour (its JSON format closed the think), now stated by the one owner.
     let response: TextGenerationResponse = adapter
-        .generate_text(gen_request)
+        .generate_under(gen_request, Think::Budget(ThinkBudget(0)))
         .await
-        .map_err(ShouldRespondError::Generation)?;
+        .map_err(|e| ShouldRespondError::Generation(e.to_string()))?;
 
     let parsed = parse_gating_response(&response.text);
     Ok(AIGatingDecision {

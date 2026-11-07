@@ -315,8 +315,9 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
-        crate::ai::stream_sinks::drain_generation(|sink| self.generate_stream(request, sink)).await
+        crate::ai::stream_sinks::drain_generation(|sink| self.generate_stream(request, sink, dispatched)).await
     }
 
     /// The streaming primitive on the remote lane: every chunk the peer publishes
@@ -326,8 +327,9 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         &self,
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
-        self.generate_with(request, None, sink).await
+        self.generate_with(request, dispatched.terms().think.budget(), sink).await
     }
 
     async fn health_check(&self) -> HealthStatus {
@@ -596,16 +598,18 @@ impl crate::ai::adapter::DispatchTermsPolicy for AircRemoteInferenceAdapter {
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         crate::ai::adapter::refuse_unenforceable_admission(&request, &terms)?;
         let model = self.default_model.as_deref().or(request.model.as_deref());
-        if terms.think.is_some() && !self.seat_takes_think(model) {
+        if terms.think.budget().is_some() && !self.seat_takes_think(model) {
             return Err(crate::ai::inference_error::InferenceError::ThinkUnenforceable {
                 model: model.unwrap_or_default().to_owned(), // unwrap_or_default: no lane model and none requested is said as empty
             });
         }
-        let crate::ai::reply_room::OutputIntent::Fixed(reply) = terms.output else {
-            return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model: model.unwrap_or_default().to_owned() }); // Diagnostic label only: no requested model is represented by an empty name.
+        let dispatch = match terms.output {
+            crate::ai::reply_room::OutputIntent::Fixed(reply) => crate::ai::reply_room::DispatchReceipt::ProviderFixed { reply: reply.get() },
+            crate::ai::reply_room::OutputIntent::ProviderControlled => crate::ai::reply_room::DispatchReceipt::Unadmitted,
+            crate::ai::reply_room::OutputIntent::UseAdmittedRoom { .. } => return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model: model.unwrap_or_default().to_owned() }), // Diagnostic label only: no requested model.
         };
-        let mut response = self.generate_with(request, terms.think, sink).await.map_err(crate::ai::inference_error::InferenceError::from)?;
-        response.dispatch = crate::ai::reply_room::DispatchReceipt::ProviderFixed { reply: reply.get() };
+        let mut response = self.generate_with(request, terms.think.budget(), sink).await.map_err(crate::ai::inference_error::InferenceError::from)?;
+        response.dispatch = dispatch;
         Ok(response)
     }
 }

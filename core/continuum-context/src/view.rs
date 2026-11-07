@@ -123,6 +123,12 @@ pub struct View<T: Block> {
     /// a view saved before repeats, which held none.
     #[serde(default)]
     repeats: HashSet<SourceId>,
+    /// Items a sent prompt's tail already showed her this epoch ([`View::append_sent`]): the tail
+    /// is in the view in the bytes it was sent, so the item never arrives again as its source
+    /// renders it until a start re-renders everything. Absent in a view saved before the tail
+    /// joined the view, which covered nothing.
+    #[serde(default)]
+    covered: HashSet<SourceId>,
     /// Characters each act of this epoch appended, in order.
     appended: Vec<usize>,
     /// How each source moved across this view's starts; carried over every turnover and
@@ -181,7 +187,7 @@ impl<T: Block> View<T> {
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<(Self, Start), GrantMismatch> {
-        Self::begin(1, head, sources, allocate, Motion::default()).map_err(|(mismatch, _)| mismatch)
+        Self::begin(1, head, sources, allocate, Motion::default(), None).map_err(|(mismatch, _)| mismatch)
     }
 
     /// Replace this epoch with a fresh one rendered from the sources' current state at the
@@ -193,7 +199,7 @@ impl<T: Block> View<T> {
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<Start, GrantMismatch> {
         let motion = std::mem::take(&mut self.motion);
-        let (next, mut start) = match Self::begin(self.epoch.id() + 1, head, sources, allocate, motion) {
+        let (next, mut start) = match Self::begin(self.epoch.id() + 1, head, sources, allocate, motion, Some(&self.epoch)) {
             Ok(begun) => begun,
             Err((mismatch, motion)) => {
                 self.motion = motion;
@@ -255,14 +261,17 @@ impl<T: Block> View<T> {
         }
     }
 
-    /// Render a start with `sources` in the order `motion` measured to keep the most of the
-    /// previous start, and record what each rendered. A refusal hands `motion` back.
+    /// Render a start with `sources` in the order `motion` measured as most stable first, and
+    /// record what each rendered. The blocks are laid down so the start shares the longest prefix
+    /// with the epoch it replaces (`previous`): [`lead_with_what_held`]. A refusal hands `motion`
+    /// back.
     fn begin(
         id: u64,
         head: Vec<T>,
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
         mut motion: Motion,
+        previous: Option<&Epoch<T>>,
     ) -> Result<(Self, Start), (GrantMismatch, Motion)> {
         let sources = motion.order(sources);
         let offered: Vec<Vec<Item<T>>> = sources.iter().map(|source| source.items()).collect();
@@ -277,13 +286,15 @@ impl<T: Block> View<T> {
             summarized: HashSet::new(),
             folded: HashSet::new(),
             repeats: HashSet::new(),
+            covered: HashSet::new(),
             appended: Vec::new(),
             motion: Motion::default(),
             act: None,
             submitted: None,
             last_by_source: Vec::new(),
         };
-        for ((source, items), grant) in sources.iter().zip(offered).zip(grants) {
+        let mut planned: Vec<Planned<T>> = Vec::new();
+        for (index, ((source, items), grant)) in sources.iter().zip(offered).zip(grants).enumerate() {
             let allot::Allotment { levels, mut fold } = allot(&**source, &items, grant);
             let mut rendered = Vec::with_capacity(items.len());
             for (item, level) in items.into_iter().zip(levels) {
@@ -307,18 +318,34 @@ impl<T: Block> View<T> {
                         view.folded.insert(id);
                         if let Some(block) = fold.take() {
                             rendered.push((fingerprint(FOLD_KEY, &block), block.chars()));
-                            view.epoch.observe(key(source.name(), FOLD_KEY), None, Level::Folded, block);
+                            planned.push(Planned { source: index, id: key(source.name(), FOLD_KEY), element: None, level: Level::Folded, text: block });
                         }
                         continue;
                     }
                 };
                 if let Some(text) = text {
                     rendered.push((fingerprint(&item_key, &text), text.chars()));
-                    view.epoch.observe(id, Some(element), level, text);
+                    planned.push(Planned { source: index, id, element: Some(element), level, text });
                 }
             }
             motion.record(source.name(), rendered);
         }
+        let laid = lead_with_what_held(planned, previous);
+        let mut order: Vec<String> = Vec::with_capacity(sources.len());
+        for block in laid {
+            let name = sources[block.source].name();
+            if !order.iter().any(|seen| seen == name) {
+                order.push(name.to_owned());
+            }
+            view.epoch.observe(block.id, block.element, block.level, block.text);
+        }
+        // Sources that rendered nothing keep their place after the ones that did.
+        for source in &sources {
+            if !order.iter().any(|seen| seen == source.name()) {
+                order.push(source.name().to_owned());
+            }
+        }
+        motion.started_in(order);
         view.motion = motion;
         let start = Start {
             epoch: id,
@@ -340,17 +367,63 @@ impl<T: Block> View<T> {
     /// (her room cursor) only advances through what this answers true for.
     pub fn renders(&self, source: &str, item: &str) -> bool {
         let id = key(source, item);
-        self.epoch.holds(&id) && !self.collapsed.contains(&id) && !self.repeats.contains(&id)
+        (self.epoch.holds(&id) && !self.collapsed.contains(&id) && !self.repeats.contains(&id)) || self.covered.contains(&id)
+    }
+
+    /// Whether a sent tail already showed her `source`'s item `item` this epoch
+    /// ([`View::append_sent`]): the caller does not send it in a tail again.
+    pub fn covers(&self, source: &str, item: &str) -> bool {
+        self.covered.contains(&key(source, item))
+    }
+
+    /// Whether this epoch holds `block` exactly, appended under `source` by a sent tail and not
+    /// retired: a tail piece she was already sent (the same clock line, the same ask) is not sent
+    /// again, or every act would re-append it.
+    pub fn holds_sent(&self, source: &str, block: &T) -> bool {
+        let prefix = format!("{source}/");
+        self.epoch.events().iter().any(|event| !event.retired && event.source.0.starts_with(&prefix) && &event.text == block)
+    }
+
+    /// The tail of a prompt that was SENT after this view (the clock line, the ask, her own call
+    /// and its result), appended in the exact blocks it was sent under `source`, so the next act's
+    /// prompt is this prompt plus what is new and the engine resumes at its end. Before this the
+    /// tail was re-rendered every act: her newest result as native protocol at the end of one
+    /// prompt and as a `[result #n]` item of her actions in the next, so every act re-prefilled the
+    /// previous one's tail (the M5, 2026-11-06: 2,822 s over 78 acts). `covers` names the items
+    /// (`(source, key)`) these blocks already show her: they do not arrive again from their source
+    /// this epoch; a start re-renders everything from the sources and drops the tail blocks.
+    pub fn append_sent(&mut self, source: &str, blocks: Vec<T>, covers: &[(&str, &str)]) -> Advance {
+        let mut advance = Advance::default();
+        for block in blocks {
+            // Unique for the epoch: events only grow once a prompt is sent (rewind never passes it).
+            let id = key(source, &self.epoch.events().len().to_string());
+            let chars = block.chars();
+            if let Observed::Appended { .. } = self.epoch.observe(id, None, Level::Full, block) {
+                advance.items += 1;
+                advance.chars += chars;
+            }
+        }
+        for (covered_source, item) in covers {
+            self.covered.insert(key(covered_source, item));
+        }
+        // The tail is this act's growth too: the next start reserves room for it.
+        match self.appended.last_mut() {
+            Some(last) => *last += advance.chars,
+            None => self.appended.push(advance.chars),
+        }
+        advance
     }
 
     /// Whether `id` is held whole this epoch: rendered at its whole level, not collapsed,
     /// summarized, folded or a repeat. What a repeat may point at.
     fn holds_whole(&self, id: &SourceId) -> bool {
-        self.epoch.holds(id)
+        let held = self.epoch.holds(id)
             && !self.collapsed.contains(id)
             && !self.summarized.contains(id)
             && !self.folded.contains(id)
-            && !self.repeats.contains(id)
+            && !self.repeats.contains(id);
+        // A sent tail showed it in the bytes she read it in: whole.
+        held || self.covered.contains(id)
     }
 
     pub fn advance(&mut self, sources: &[&dyn Source<T>]) -> Advance {
@@ -413,7 +486,8 @@ impl<T: Block> View<T> {
                 }
                 // A folded item is held by its source's fold block, fixed at the start: it
                 // arrives on its own only when a later start raises it (the prefix never moves).
-                if self.folded.contains(&id) {
+                // A covered item is in her view already, in the bytes a sent tail showed her.
+                if self.folded.contains(&id) || self.covered.contains(&id) {
                     continue;
                 }
                 // An item with no pointer would leave her view entirely if collapsed (a peer's
@@ -461,6 +535,13 @@ impl<T: Block> View<T> {
                     advance.chars += chars;
                 }
             }
+            for (id, notice) in if source.states() { self.ended(&**source) } else { Vec::new() } {
+                let chars = notice.chars();
+                if let Observed::Appended { .. } = self.epoch.retire(id, notice) {
+                    advance.items += 1;
+                    advance.chars += chars;
+                }
+            }
             if advance.items > before.0 {
                 self.last_by_source.push(SourceAdvance {
                     source: name.to_owned(),
@@ -471,6 +552,26 @@ impl<T: Block> View<T> {
         }
         self.appended.push(advance.chars);
         advance
+    }
+
+    /// The items of `source` this epoch holds (their latest version not retired) that the source no
+    /// longer offers, each with the notice that ends it, for a source of states ([`Source::ended`]).
+    /// Its fold block and anything a sent tail covers are not its items to end.
+    fn ended(&self, source: &dyn Source<T>) -> Vec<(SourceId, T)> {
+        let prefix = format!("{}/", source.name());
+        let offered: HashSet<String> = source.items().into_iter().map(|item| item.key).collect();
+        let mut latest: std::collections::BTreeMap<&SourceId, bool> = std::collections::BTreeMap::new();
+        for event in self.epoch.events().iter().filter(|event| event.source.0.starts_with(&prefix)) {
+            latest.insert(&event.source, event.retired);
+        }
+        latest
+            .into_iter()
+            .filter(|(id, retired)| !retired && !self.covered.contains(*id))
+            .filter_map(|(id, _)| {
+                let item = &id.0[prefix.len()..];
+                (item != FOLD_KEY && !offered.contains(item)).then(|| source.ended(item).map(|notice| (id.clone(), notice)))?
+            })
+            .collect()
     }
 
     /// The view in order: the head, then every item as it arrived.
@@ -532,6 +633,61 @@ impl<T: Block> View<T> {
         acts.sort_unstable();
         acts.get(acts.len() / 2).copied()
     }
+}
+
+/// One block a start renders: which source (its index in the start's order), its id, its level
+/// and its bytes.
+struct Planned<T> {
+    source: usize,
+    id: SourceId,
+    element: Option<crate::cause::ElementId>,
+    level: Level,
+    text: T,
+}
+
+/// A start's blocks in the order that shares the most with the epoch it replaces: the previous
+/// epoch's blocks, in its order, for as long as this start renders each of them byte for byte,
+/// then every other block in the start's order (its sources most stable first, each source's
+/// items in their own order). The engine reuses a prompt only up to its first difference, so
+/// every unchanged block the previous prompt led with is reused in place, however the measured
+/// order would have ranked it, and the first block it holds in new bytes follows them, so its
+/// unchanged front is reused too (the M5, 2026-11-06: 13 turnovers, every one resumed from the
+/// system head alone because the start's front moved). A source's items never pass one another:
+/// a block of the previous epoch is reused only when everything its source lays down before it
+/// already was. `previous` is `None` at a view's first start.
+fn lead_with_what_held<T: Block>(planned: Vec<Planned<T>>, previous: Option<&Epoch<T>>) -> Vec<Planned<T>> {
+    let Some(previous) = previous else {
+        return planned;
+    };
+    let at: std::collections::HashMap<&SourceId, usize> = planned.iter().enumerate().map(|(index, block)| (&block.id, index)).collect();
+    // The next block each source may lay down: its blocks are contiguous in `planned`, in order.
+    let mut next: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for (index, block) in planned.iter().enumerate() {
+        next.entry(block.source).or_insert(index);
+    }
+    let mut lead = Vec::new();
+    for event in previous.events() {
+        let Some(&index) = at.get(&event.source) else {
+            break; // the previous prompt held a block this start does not render: the prefix ends
+        };
+        let block = &planned[index];
+        if next.get(&block.source) != Some(&index) {
+            break;
+        }
+        lead.push(index);
+        next.insert(block.source, index + 1);
+        // The same block in new bytes ends the reuse, laid right where it stood: the engine still
+        // reuses its bytes up to their first difference (a card appended at a list's end keeps
+        // the whole list before it).
+        if block.text != event.text {
+            break;
+        }
+    }
+    let led: HashSet<usize> = lead.iter().copied().collect();
+    let mut slots: Vec<Option<Planned<T>>> = planned.into_iter().map(Some).collect();
+    let mut laid: Vec<Planned<T>> = lead.iter().filter_map(|&index| slots[index].take()).collect();
+    laid.extend(slots.into_iter().enumerate().filter(|(index, _)| !led.contains(index)).filter_map(|(_, block)| block));
+    laid
 }
 
 #[cfg(test)]

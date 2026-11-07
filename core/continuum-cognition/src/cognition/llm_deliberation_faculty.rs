@@ -839,7 +839,7 @@ pub mod test_support {
             };
             let mut request = request;
             request.max_tokens = Some(dispatch.admitted_reply()?);
-            let mut response = self.generate_stream(request, sink).await.map_err(crate::ai::inference_error::InferenceError::from)?;
+            let mut response = self.generate_stream(request, sink, crate::ai::adapter::Dispatched::fixture()).await.map_err(crate::ai::inference_error::InferenceError::from)?;
             if let crate::ai::reply_room::DispatchReceipt::Counted { room } = dispatch {
                 response.usage.input_tokens = room.prompt;
             }
@@ -882,10 +882,11 @@ pub mod test_support {
             &self,
             request: TextGenerationRequest,
             sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
+            dispatched: crate::ai::adapter::Dispatched,
         ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>
         {
             self.check_fixture_dispatch(&request)?;
-            self.generate_stream(request, sink)
+            self.generate_stream(request, sink, dispatched)
                 .await
                 .map_err(Into::into)
         }
@@ -893,6 +894,7 @@ pub mod test_support {
         async fn generate_text(
             &self,
             request: TextGenerationRequest,
+            _dispatched: crate::ai::adapter::Dispatched,
         ) -> Result<TextGenerationResponse, String> {
             self.seen.lock().unwrap().push(request);
             self.responses

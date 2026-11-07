@@ -33,7 +33,7 @@
         }
         async fn generate_text(
             &self,
-            _r: TextGenerationRequest,
+            _r: TextGenerationRequest, _dispatched: crate::ai::adapter::Dispatched,
         ) -> Result<TextGenerationResponse, String> {
             Err("stub adapter — no inference".into())
         }

@@ -432,6 +432,7 @@ impl AIProviderAdapter for NoSeat {
     async fn generate_text(
         &self,
         _request: TextGenerationRequest,
+        _dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         Err(format!(
             "{}: no seat — her home adapter could not be built and no remote lane is bound",
@@ -573,21 +574,24 @@ impl AIProviderAdapter for PlacementSwitch {
         &self,
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        self.current().generate_stream_checked(request, sink).await
+        self.current().generate_stream_checked(request, sink, dispatched).await
     }
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
-        self.current().generate_text(request).await
+        self.current().generate_text(request, dispatched).await
     }
     async fn generate_stream(
         &self,
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
-        self.current().generate_stream(request, sink).await
+        self.current().generate_stream(request, sink, dispatched).await
     }
     async fn create_embedding(
         &self,

@@ -418,7 +418,7 @@ fn request_with_overrides(
         temperature: temp,
         max_tokens: max,
         timeout_ms: timeout,
-        admission: None,
+        admission: admission(4, 4, 1),
     }
 }
 
@@ -432,7 +432,7 @@ fn request_with_admission(
         temperature: None,
         max_tokens: None,
         timeout_ms: Some(100),
-        admission: Some(admission),
+        admission,
     }
 }
 
@@ -477,7 +477,7 @@ fn rust_admission_guard_releases_local_generation_lease_on_exit() {
         request_with_admission(ctx(Some("You are Alice."), vec![]), admission(4, 4, 1));
 
     {
-        let _guard = acquire_generate_response_lease(&request, 1_000, 100)
+        let _guard = acquire_generate_response_lease(&request, 1_000)
             .expect("valid request should acquire a Rust lease");
         assert_eq!(active_generate_response_leases_for_test(1_001), 1);
     }
@@ -499,10 +499,10 @@ fn rust_admission_denies_concurrency_and_cost_pressure() {
     let first = request_with_admission(ctx(Some("You are Alice."), vec![]), admission(1, 4, 1));
     let second =
         request_with_admission(ctx(Some("You are Alice."), vec![]), admission(1, 4, 1));
-    let _held = acquire_generate_response_lease(&first, 2_000, 100)
+    let _held = acquire_generate_response_lease(&first, 2_000)
         .expect("first request should fit the policy");
 
-    let err = acquire_generate_response_lease(&second, 2_001, 100)
+    let err = acquire_generate_response_lease(&second, 2_001)
         .expect_err("second request must be denied by Rust concurrency policy");
     assert!(matches!(
         err,
@@ -513,7 +513,7 @@ fn rust_admission_denies_concurrency_and_cost_pressure() {
     reset_generate_response_leases_for_test();
     let expensive =
         request_with_admission(ctx(Some("You are Alice."), vec![]), admission(4, 2, 3));
-    let err = acquire_generate_response_lease(&expensive, 3_000, 100)
+    let err = acquire_generate_response_lease(&expensive, 3_000)
         .expect_err("request whose cost exceeds policy must be denied");
     assert!(matches!(
         err,
@@ -531,12 +531,12 @@ fn rust_admission_reaps_expired_generation_leases() {
     reset_generate_response_leases_for_test();
     let request =
         request_with_admission(ctx(Some("You are Alice."), vec![]), admission(1, 1, 1));
-    let guard = acquire_generate_response_lease(&request, 4_000, 100)
+    let guard = acquire_generate_response_lease(&request, 4_000)
         .expect("first request should fit the policy");
     std::mem::forget(guard);
 
     assert_eq!(active_generate_response_leases_for_test(4_001), 1);
-    let replacement = acquire_generate_response_lease(&request, 5_001, 100)
+    let replacement = acquire_generate_response_lease(&request, 5_001)
         .expect("expired forgotten lease should be reaped before admission");
     replacement
         .release()

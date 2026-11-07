@@ -367,11 +367,14 @@ impl SemanticDistiller {
             request.purpose.as_deref(),
         )
         .await;
+        // The dream's distillation states no think term yet: the model's own default, as it always
+        // ran (measured per-purpose think budgets: card, owner Fable).
+        let terms = crate::ai::types::Think::ModelDefault;
         let response = self
             .adapter
-            .generate_text(request)
+            .generate_under(request, terms)
             .await
-            .map_err(DistillError::Inference)?;
+            .map_err(|e| DistillError::Inference(e.to_string()))?;
 
         let raw = response.text.trim();
         if raw.is_empty() {

@@ -506,7 +506,7 @@ async fn admitted_target_survives_fall_home_and_next_call_uses_home() {
         1, SeatFit { window: None, requirement: None }).await;
     assert!(moved.is_some());
     let (sink, _receiver) = tokio::sync::mpsc::unbounded_channel();
-    let result = selected.generate_stream_checked(TextGenerationRequest::default(), sink).await;
+    let result = selected.generate_stream_checked(TextGenerationRequest::default(), sink, crate::ai::adapter::Dispatched::fixture()).await;
     assert!(result.expect_err("the admitted remote still dispatches remotely").to_string().contains("selected remote receipt"));
     let next = switch.generation_target().expect("concrete home target");
     assert!(Arc::ptr_eq(&next, &home), "fall-home is effective on the next call");
@@ -547,7 +547,7 @@ impl AIProviderAdapter for HomeLane {
     }
     async fn generate_text(
         &self,
-        _request: TextGenerationRequest,
+        _request: TextGenerationRequest, _dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         Err("preparation must not generate".into())
     }
@@ -594,7 +594,7 @@ fn remote() -> Arc<AircRemoteInferenceAdapter> {
 async fn trip(remote: &AircRemoteInferenceAdapter) {
     for _ in 0..COLD_AFTER_DEADLINES {
         assert!(remote
-            .generate_text(TextGenerationRequest::default())
+            .generate_text(TextGenerationRequest::default(), crate::ai::adapter::Dispatched::fixture())
             .await
             .is_err());
     }
@@ -649,7 +649,7 @@ async fn refused_as_overloaded() -> Arc<AircRemoteInferenceAdapter> {
         }),
     ));
     assert!(remote
-        .generate_text(TextGenerationRequest::default())
+        .generate_text(TextGenerationRequest::default(), crate::ai::adapter::Dispatched::fixture())
         .await
         .is_err());
     assert!(!remote.is_cold(), "a refusal is an answer, not a deadline miss");
@@ -794,7 +794,7 @@ impl AIProviderAdapter for TailLane {
     }
     async fn generate_text(
         &self,
-        _request: TextGenerationRequest,
+        _request: TextGenerationRequest, _dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         Err("capability fixture must not generate".into())
     }

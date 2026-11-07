@@ -128,7 +128,7 @@ impl ServiceModule for TestInferenceModule {
     ) -> Result<CommandResult, String> {
         let request: TextGenerationRequest = serde_json::from_value(params)
             .map_err(|e| format!("TestInferenceModule: decode TextGenerationRequest: {e}"))?;
-        let response = self.adapter.generate_text(request).await?;
+        let response = self.adapter.generate_text(request, continuum_core::ai::adapter::Dispatched::fixture()).await?;
         let value = serde_json::to_value(&response)
             .map_err(|e| format!("TestInferenceModule: serialize TextGenerationResponse: {e}"))?;
         Ok(CommandResult::Json(value))
@@ -173,7 +173,7 @@ impl AIProviderAdapter for AlwaysFailingAdapter {
     }
     async fn generate_text(
         &self,
-        _request: TextGenerationRequest,
+        _request: TextGenerationRequest, _dispatched: continuum_core::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         Err(self.message.clone())
     }
@@ -278,7 +278,7 @@ async fn end_to_end_heuristic_dispatch_through_substrate_stack() {
 
     // Dispatch + assert.
     let response = adapter
-        .generate_text(request("hello grid"))
+        .generate_text(request("hello grid"), continuum_core::ai::adapter::Dispatched::fixture())
         .await
         .expect("end-to-end heuristic round-trip");
 
@@ -333,7 +333,7 @@ async fn end_to_end_peer_adapter_failure_surfaces_as_typed_error() {
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
     let err = adapter
-        .generate_text(request("doomed"))
+        .generate_text(request("doomed"), continuum_core::ai::adapter::Dispatched::fixture())
         .await
         .expect_err("AlwaysFailingAdapter must surface as adapter-failure error");
 
@@ -387,39 +387,17 @@ async fn end_to_end_missing_module_returns_typed_error() {
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
     let err = adapter
-        .generate_text(request("ping a void"))
+        .generate_text(request("ping a void"), continuum_core::ai::adapter::Dispatched::fixture())
         .await
         .expect_err("missing module must produce a typed error");
 
-    // What we OBSERVE today: CommandExecutor doesn't shortcut on a
-    // missing Rust module — it tries the TypeScript bridge at
-    // `/tmp/jtag-command-router.sock` (legacy router for unmigrated
-    // commands). The bridge isn't running in tests, so the caller
-    // sees the connect failure verbatim.
-    //
-    // Architecturally this is a `[[no-fallbacks-ever]]` violation —
-    // a Rust-only deployment should hard-error with the missing
-    // module name immediately, not silently route to TS-land. Filed
-    // as task #219.
-    //
-    // Per R1 round 1 on PR #1563: pin EXACTLY the current
-    // bridge-passthrough surface — NOT a permissive OR over plausible
-    // future error shapes. When task #219 lands, this test SHOULD
-    // fail loudly with "actual" not matching "commandrouterserver",
-    // forcing the test author to update to the new typed
-    // missing-module error AND verify the substrate fix actually
-    // produces it. A permissive assertion would silently stay green
-    // and let either a good fix (typed error) or a bad regression
-    // (200 on nothing) pass undetected.
+    // Task #219 landed: CommandExecutor hard-errors on a missing Rust module, naming the
+    // command, instead of falling through to the legacy TS bridge ([[no-fallbacks-ever]]).
+    // Pinned EXACTLY (R1 round 1 on PR #1563), never a permissive OR over plausible shapes.
     let lower = err.to_lowercase();
     assert!(
-        lower.contains("commandrouterserver") || lower.contains("jtag-command-router"),
-        "expected the TS-bridge connect-failure surface — the substrate \
-         currently falls through to /tmp/jtag-command-router.sock on \
-         missing Rust modules. If THIS assertion fired because task #219 \
-         landed and CommandExecutor now hard-errors on missing modules, \
-         update the assertion to pin the new typed-error surface and \
-         verify the substrate change. Got: {err:?}"
+        lower.contains("no rust module handles command: 'ai/generate'"),
+        "expected the missing-module hard error naming ai/generate. Got: {err:?}"
     );
 
     responder.await.expect("responder task joined");

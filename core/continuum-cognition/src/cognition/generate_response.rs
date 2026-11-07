@@ -37,7 +37,7 @@
 //!     when the prompt does not declare room members.
 
 use crate::ai::adapter::InferenceDevice;
-use crate::ai::types::ResponseFormat;
+use crate::ai::types::{DispatchTerms, ResponseFormat, Think, ThinkBudget};
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
 use crate::inference::resource_admission::{ResourceAdmissionError, ResourceAdmissionGate, ResourceAdmissionGuard, ResourceAdmissionPolicy, ResourceAdmissionRequest};
@@ -83,20 +83,6 @@ const DEFAULT_GENERATE_TEMPERATURE: f32 = 0.7;
 /// ceiling before `tokio::time::timeout` returns Err.
 const DEFAULT_GENERATE_TIMEOUT_MS: u64 = 180_000;
 
-/// Conservative default for local response generation while the
-/// substrate-governor bridge becomes the source of these numbers.
-const DEFAULT_GENERATE_MAX_CONCURRENCY: usize = 4;
-
-/// Cost-unit budget paired with [`DEFAULT_GENERATE_MAX_CONCURRENCY`].
-const DEFAULT_GENERATE_MAX_COST_UNITS: u32 = 4;
-
-/// One response generation claims one local-generation cost unit unless
-/// the caller provides a stricter policy.
-const DEFAULT_GENERATE_COST_UNITS: u32 = 1;
-
-/// Lease TTL must outlive the generation timeout so slow-but-valid work
-/// is not marked reclaimable before `tokio::time::timeout` fires.
-const DEFAULT_GENERATE_LEASE_TTL_PAD_MS: u64 = 5_000;
 
 static GENERATE_RESPONSE_ADMISSION: LazyLock<ResourceAdmissionGate> =
     LazyLock::new(ResourceAdmissionGate::new);
@@ -139,13 +125,10 @@ pub struct GenerateResponseRequest {
     #[ts(optional)]
     #[ts(optional, type = "number")]
     pub timeout_ms: Option<u64>,
-    /// Rust-owned admission policy for this generation. When omitted,
-    /// `evaluate_response` applies the local-generation defaults above.
-    /// Hosts that know tighter resource limits should pass them here;
-    /// they should not coordinate slots outside Rust.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub admission: Option<GenerateResponseAdmissionPolicy>,
+    /// Rust-owned admission policy for this generation: REQUIRED, the host's resource limits for
+    /// it (no local default stands in for them: a sized constant here was a consumer sizing
+    /// itself). Hosts pass them here; they never coordinate slots outside Rust.
+    pub admission: GenerateResponseAdmissionPolicy,
 }
 
 /// Per-call local-generation admission policy. This is the contract a
@@ -167,16 +150,6 @@ pub struct GenerateResponseAdmissionPolicy {
 }
 
 impl GenerateResponseAdmissionPolicy {
-    fn with_timeout(timeout_ms: u64) -> Self {
-        Self {
-            target_silicon: TargetSilicon::UnifiedMemory,
-            max_concurrency: DEFAULT_GENERATE_MAX_CONCURRENCY,
-            max_cost_units: DEFAULT_GENERATE_MAX_COST_UNITS,
-            cost_units: DEFAULT_GENERATE_COST_UNITS,
-            lease_ttl_ms: timeout_ms.saturating_add(DEFAULT_GENERATE_LEASE_TTL_PAD_MS),
-        }
-    }
-
     fn into_resource_policy(self) -> ResourceAdmissionPolicy {
         ResourceAdmissionPolicy {
             resource_class: ResourceClass::LocalGeneration,
@@ -279,7 +252,7 @@ pub async fn evaluate_response(
 ) -> Result<GenerateResponseResult, GenerateResponseError> {
     let start_ms = continuum_base::time::EpochMs::now().millis();
     let timeout_ms = request.timeout_ms.unwrap_or(DEFAULT_GENERATE_TIMEOUT_MS);
-    let _lease = acquire_generate_response_lease(&request, start_ms, timeout_ms)?;
+    let _lease = acquire_generate_response_lease(&request, start_ms)?;
 
     // Bind this turn to the persona's ESTABLISHED inference handle (reused across
     // turns, re-homed if lost — self-healing), bound to the model the engine actually
@@ -339,12 +312,13 @@ pub async fn evaluate_response(
 
     let response: TextGenerationResponse = match tokio::time::timeout(
         Duration::from_millis(timeout_ms),
-        adapter.generate_text(inference_request),
+        // No think: today's behaviour (its Text format closed the think), now stated by the one owner.
+        adapter.generate_under(inference_request, Think::Budget(ThinkBudget(0))),
     )
     .await
     {
         Ok(Ok(resp)) => resp,
-        Ok(Err(e)) => return Err(GenerateResponseError::Generation(e)),
+        Ok(Err(e)) => return Err(GenerateResponseError::Generation(e.to_string())),
         Err(_) => return Err(GenerateResponseError::Timeout { timeout_ms }),
     };
 
@@ -355,12 +329,8 @@ pub async fn evaluate_response(
 fn acquire_generate_response_lease(
     request: &GenerateResponseRequest,
     now_ms: u64,
-    timeout_ms: u64,
 ) -> Result<ResourceAdmissionGuard, GenerateResponseError> {
-    let policy = request
-        .admission
-        .clone()
-        .unwrap_or_else(|| GenerateResponseAdmissionPolicy::with_timeout(timeout_ms));
+    let policy = request.admission.clone();
 
     GENERATE_RESPONSE_ADMISSION
         .acquire(ResourceAdmissionRequest {

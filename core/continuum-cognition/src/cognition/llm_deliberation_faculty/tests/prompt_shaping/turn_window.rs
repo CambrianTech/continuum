@@ -499,7 +499,7 @@ async fn playback_excludes_typed_error_responses_from_completed_training_rows() 
         .generate_text(TextGenerationRequest {
             messages: vec![ChatMessage::text("user", "fixture input")],
             ..Default::default()
-        })
+        }, crate::ai::adapter::Dispatched::fixture())
         .await
         .expect("shared fixture response");
     // This is a valid participation decision when the provider succeeds;

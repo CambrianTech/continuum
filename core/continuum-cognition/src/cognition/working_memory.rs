@@ -32,8 +32,8 @@
 //!
 //! ## Pairs with the thinking toggle
 //!
-//! When thinking is suppressed (`ThinkingMode::Suppress`, the local llama-server
-//! default), `reasoning` is `None` → nothing is recorded → the faculty abstains. So
+//! When a turn does not think (its caller's zero think term,
+//! `request_body::apply_think`), `reasoning` is `None` → nothing is recorded → the faculty abstains. So
 //! working memory SELF-ACTIVATES only where thinking is enabled — "reason when it
 //! helps, remember what you reasoned." No config flag needed.
 
@@ -176,6 +176,8 @@ struct TurnPinnedFact {
     text: String,
     turns_left: u8,
     detail: Option<String>,
+    /// A tally (a count that moves every act): listed after every other notice (`notice_items`).
+    tally: bool,
 }
 
 /// A bounded, rolling buffer of the persona's recent reasoning. Cheap to clone the `Arc`;

@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
+pub use super::think::{DispatchTerms, Think, ThinkBudget};
+
 /// Chat message for text generation
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ChatMessage.ts")]
@@ -333,51 +335,6 @@ pub struct TextGenerationRequest {
     #[ts(optional, type = "{ secs: number, nanos: number }")]
     pub turn_bound: Option<std::time::Duration>,
 }
-
-/// The terms a mind's turn is DISPATCHED under, beside its request: what the faculty decided when
-/// it rendered the request, which the adapter enforces at dispatch
-/// (`AIProviderAdapter::generate_admitted`). Not part of the wire request: an adapter that cannot
-/// enforce them refuses typed rather than sending without them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DispatchTerms {
-    pub output: crate::ai::reply_room::OutputIntent,
-    /// The strict admission guard it was rendered under; `None` = the lane's own window only.
-    pub admission: Option<RequestAdmission>,
-    /// The think's bound inside `max_tokens`, sized from her MEASURED output need (her grant past
-    /// her measured answer), so the answer keeps its room. A mind's turn always carries one, zero
-    /// included; `None` only for a caller with no measured need.
-    pub think: Option<ThinkBudget>,
-}
-
-impl DispatchTerms {
-    pub fn validate_request(&self, request: &TextGenerationRequest) -> Result<(), crate::ai::inference_error::InferenceError> {
-        if matches!(self.output, crate::ai::reply_room::OutputIntent::ProviderControlled) && (request.max_tokens.is_some() || self.admission.is_some() || self.think.is_some()) {
-            return Err(crate::ai::inference_error::InferenceError::Protocol("provider-controlled generation cannot carry admission or output bounds".into()));
-        }
-        if let crate::ai::reply_room::OutputIntent::Fixed(reply) = self.output {
-            if request.max_tokens != Some(reply.get()) {
-                return Err(crate::ai::inference_error::InferenceError::Protocol("fixed dispatch limit disagrees with request".into()));
-            }
-        }
-        Ok(())
-    }
-    /// Ordinary callers explicitly retain their positive requested limit. A
-    /// missing limit is a contract refusal, never a guessed provider allowance.
-    pub fn fixed(request: &TextGenerationRequest, think: Option<ThinkBudget>) -> Result<Self, crate::ai::inference_error::InferenceError> {
-        let reply = request.max_tokens.and_then(std::num::NonZeroU32::new)
-            .ok_or_else(|| crate::ai::inference_error::InferenceError::Protocol("fixed dispatch requires a positive output limit".into()))?;
-        Ok(Self { output: crate::ai::reply_room::OutputIntent::Fixed(reply), admission: None, think })
-    }
-}
-
-/// A think budget in tokens. ZERO is a budget, not "unbounded": on our fork the reasoning-budget
-/// sampler forces the end tag the moment the think opens when its budget is 0
-/// (`common/reasoning-budget.cpp`: `remaining <= 0` -> `REASONING_BUDGET_FORCING`), and only `-1`
-/// (never sent) means unlimited (`common/sampling.cpp`). It applies where the model's chat template
-/// declares thinking end tags (`server-common.cpp`, `thinking_end_tags`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/ThinkBudget.ts")]
-pub struct ThinkBudget(pub u32);
 
 /// How a prompt's price is admitted: whether a price below its estimate is backed by the engine's
 /// exact count of the finalized body.

@@ -306,7 +306,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
             persona_id: None,
             turn_bound: None,
         };
-        match self.generate_text(warmup_request).await {
+        // A warm-up decode states no think term: the model's own default, as it always ran.
+        let terms = crate::ai::types::Think::ModelDefault;
+        match crate::ai::stream_sinks::drain_generation(|sink| crate::ai::adapter::DispatchTermsPolicy::generate_general(self, warmup_request, terms, sink)).await {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("LlamaCppAdapter warmup decode failed: {e}")),
         }
@@ -321,6 +323,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        _dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         let allocation = match self.generation {
             GenerationSupport::EmbeddingOnly => return Err("embedding-only adapter does not support text generation".into()),

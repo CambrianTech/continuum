@@ -14,10 +14,47 @@
 //! - the in-process llama adapter has no reasoning-budget sampler in our bindings (the fork's
 //!   `common_reasoning_budget_init` is not reached from `llama`), so it refuses a think budget
 //!   typed rather than let a turn think unbounded.
+//!
+//! General generation states a Think through `generate_general`/`generate_under`; admitted
+//! generation states complete DispatchTerms through `generate_admitted`. The terms-less paths
+//! (`generate_text`, `generate_stream`, `generate_stream_checked`) take a [`Dispatched`] witness
+//! only the engine builds, so no caller outside it can generate without stating its think.
 
 use super::GenerationChunk;
 use crate::ai::inference_error::InferenceError;
-use crate::ai::types::{DispatchTerms, PromptAdmission, TextGenerationRequest, TextGenerationResponse};
+use crate::ai::types::{DispatchTerms, PromptAdmission, TextGenerationRequest, TextGenerationResponse, Think};
+
+/// The witness that a generation was dispatched under stated [`DispatchTerms`]. Its field is
+/// private and its one constructor is the engine's, so a caller outside the engine reaches a
+/// terms-less adapter path only by forwarding a witness it was handed (an adapter that wraps
+/// another), never by building one: every core generation states its think.
+#[derive(Debug, Clone, Copy)]
+pub struct Dispatched(DispatchTerms);
+
+impl Dispatched {
+    /// Built where the engine dispatches under `terms`.
+    pub(crate) fn under(terms: &DispatchTerms) -> Self {
+        Self(*terms)
+    }
+
+    /// The terms it attests: a wrapping adapter's inner path honours them as stated.
+    pub fn terms(self) -> DispatchTerms {
+        self.0
+    }
+
+    /// A test's witness, under the model's default think: an adapter fixture's own contract is
+    /// exercised directly. Behind the test-fixtures gate, so a production binary cannot build one.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn fixture() -> Self {
+        Self(DispatchTerms { output: crate::ai::reply_room::OutputIntent::ProviderControlled, admission: None, think: Think::ModelDefault })
+    }
+    /// Explicit fixture authority for the exact request used by an adapter transport test.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn fixture_for(request: &TextGenerationRequest) -> Self {
+        Self(DispatchTerms::for_request(request, Think::ModelDefault).expect("fixture request has valid output authority"))
+    }
+
+}
 
 /// Generate a mind's turn under the terms her faculty rendered it with ([`DispatchTerms`]),
 /// enforced at DISPATCH. No default: every adapter states how it honours them.
@@ -36,12 +73,34 @@ pub trait DispatchTermsPolicy: Send + Sync {
         Ok(response)
     }
 
+    /// General generation states thinking without claiming an admission. Output authority is
+    /// derived once from the explicit request, then the same policy executes it.
+    async fn generate_general(&self, request: TextGenerationRequest, think: Think,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, InferenceError> {
+        let terms = DispatchTerms::for_request(&request, think)?;
+        if !matches!(terms.output, crate::ai::reply_room::OutputIntent::ProviderControlled) {
+            return self.generate_admitted(request, terms, sink).await;
+        }
+        let response = self.generate_with_terms(request, terms, sink).await?;
+        if !matches!(response.dispatch, crate::ai::reply_room::DispatchReceipt::Unadmitted) {
+            return Err(InferenceError::Protocol("provider-controlled response claims admission".into()));
+        }
+        Ok(response)
+    }
+
     async fn generate_with_terms(
         &self,
         request: TextGenerationRequest,
         terms: DispatchTerms,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, InferenceError>;
+
+    /// General generation for a caller that wants the whole answer. The shared general
+    /// entry derives output authority from the request and validates its response receipt.
+    async fn generate_under(&self, request: TextGenerationRequest, think: Think) -> Result<TextGenerationResponse, InferenceError> {
+        crate::ai::stream_sinks::drain_generation(|sink| self.generate_general(request, think, sink)).await
+    }
 }
 
 /// The refusal of an admission this adapter cannot enforce (no exact prompt count, no grant to
@@ -69,19 +128,20 @@ pub async fn generate_without_thinking<A: super::AIProviderAdapter + ?Sized>(
     sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
 ) -> Result<TextGenerationResponse, InferenceError> {
     refuse_unenforceable_admission(&request, &terms)?;
-    let crate::ai::reply_room::OutputIntent::Fixed(reply) = terms.output else {
-        return Err(InferenceError::AdmissionUncounted { model: model_of(&request) });
+    let mut response = adapter.generate_stream_checked(request, sink, Dispatched::under(&terms)).await?;
+    response.dispatch = match terms.output {
+        crate::ai::reply_room::OutputIntent::Fixed(reply) => crate::ai::reply_room::DispatchReceipt::ProviderFixed { reply: reply.get() },
+        crate::ai::reply_room::OutputIntent::ProviderControlled => crate::ai::reply_room::DispatchReceipt::Unadmitted,
+        crate::ai::reply_room::OutputIntent::UseAdmittedRoom { .. } => return Err(InferenceError::Protocol("unsupported adaptive admission".into())),
     };
-    let mut response = adapter.generate_stream_checked(request, sink).await?;
-    response.dispatch = crate::ai::reply_room::DispatchReceipt::ProviderFixed { reply: reply.get() };
     Ok(response)
 }
 
 /// The refusal of a think budget an adapter cannot carry, when the terms carry one.
 pub fn refuse_think_budget(request: &TextGenerationRequest, terms: &DispatchTerms) -> Result<(), InferenceError> {
     match terms.think {
-        Some(_) => Err(InferenceError::ThinkUnenforceable { model: model_of(request) }),
-        None => Ok(()),
+        Think::Budget(_) => Err(InferenceError::ThinkUnenforceable { model: model_of(request) }),
+        Think::ModelDefault => Ok(()),
     }
 }
 
@@ -151,7 +211,7 @@ mod tests {
         request.max_tokens = None;
         let terms = DispatchTerms {
             output: crate::ai::reply_room::OutputIntent::ProviderControlled,
-            admission: None, think: None,
+            admission: None, think: Think::ModelDefault,
         };
         assert!(terms.validate_request(&request).is_ok());
         let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -159,21 +219,36 @@ mod tests {
             Err(InferenceError::Protocol(_))));
     }
 
+    #[tokio::test]
+    async fn general_generation_preserves_output_and_think_authority() {
+        use crate::ai::reply_room::DispatchReceipt;
+        let adapter = crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new();
+        let fixed = adapter.generate_under(request(), Think::Budget(ThinkBudget(0))).await.expect("fixed general request");
+        assert_eq!(fixed.dispatch, DispatchReceipt::ProviderFixed { reply: 32 });
+        let mut uncapped = request();
+        uncapped.max_tokens = None;
+        let provider = adapter.generate_under(uncapped.clone(), Think::ModelDefault).await.expect("explicit provider output");
+        assert_eq!(provider.dispatch, DispatchReceipt::Unadmitted);
+        assert!(matches!(adapter.generate_under(uncapped, Think::Budget(ThinkBudget(0))).await, Err(InferenceError::Protocol(_))));
+        let mut zero = request(); zero.max_tokens = Some(0);
+        assert!(matches!(adapter.generate_under(zero, Think::ModelDefault).await, Err(InferenceError::Protocol(_))));
+    }
+
     #[test]
     fn output_authority_is_explicit_and_cannot_disagree_with_fixed_wire() {
         let mut request = request();
-        let fixed = DispatchTerms::fixed(&request, None).expect("positive fixture limit");
+        let fixed = DispatchTerms::fixed(&request, Think::ModelDefault).expect("positive fixture limit");
         assert!(fixed.validate_request(&request).is_ok());
         request.max_tokens = Some(31);
         assert!(fixed.validate_request(&request).is_err());
         request.max_tokens = None;
-        assert!(DispatchTerms::fixed(&request, None).is_err());
+        assert!(DispatchTerms::fixed(&request, Think::ModelDefault).is_err());
         request.max_tokens = Some(0);
-        assert!(DispatchTerms::fixed(&request, None).is_err());
+        assert!(DispatchTerms::fixed(&request, Think::ModelDefault).is_err());
         let adaptive = DispatchTerms {
             output: crate::ai::reply_room::OutputIntent::UseAdmittedRoom {
                 required_reply: std::num::NonZeroU32::new(1).expect("positive fixture claim"),
-            }, admission: None, think: None,
+            }, admission: None, think: Think::ModelDefault,
         };
         assert!(matches!(refuse_unenforceable_admission(&request, &adaptive), Err(InferenceError::AdmissionUncounted { .. })));
     }
@@ -183,7 +258,7 @@ mod tests {
     // estimate) is refused typed before anything is generated.
     #[test]
     fn an_unthinking_adapter_keeps_a_budget_and_refuses_an_admission_it_cannot_enforce() {
-        let think = DispatchTerms { output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")), think: Some(ThinkBudget(0)), admission: None };
+        let think = DispatchTerms { output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")), think: Think::Budget(ThinkBudget(0)), admission: None };
         assert_eq!(refuse_unenforceable_admission(&request(), &think), Ok(()));
         let counted = DispatchTerms {
             admission: Some(RequestAdmission { window: 4_096, lease: None, priced: PromptAdmission::EngineCounted }),
@@ -207,7 +282,7 @@ mod tests {
         });
         let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
         for think in [ThinkBudget(0), ThinkBudget(338)] {
-            let terms = DispatchTerms { output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")), think: Some(think), admission: None };
+            let terms = DispatchTerms { output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")), think: Think::Budget(think), admission: None };
             let refused = adapter.generate_admitted(request(), terms, sink.clone()).await;
             assert_eq!(refused.err(), Some(InferenceError::ThinkUnenforceable { model: "m".into() }), "{think:?}");
         }

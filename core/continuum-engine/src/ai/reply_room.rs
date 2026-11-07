@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn admitted_results_reject_missing_or_substituted_authority() {
         let mut terms = crate::ai::types::DispatchTerms {
-            output: OutputIntent::Fixed(positive(32)), admission: None, think: None,
+            output: OutputIntent::Fixed(positive(32)), admission: None, think: crate::ai::types::Think::ModelDefault,
         };
         assert!(DispatchReceipt::Unadmitted.verify(terms).is_err());
         assert!(DispatchReceipt::ProviderFixed { reply: 31 }.verify(terms).is_err());

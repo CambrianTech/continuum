@@ -307,7 +307,7 @@ async fn owned_gene_page_in_changes_output() {
             .with_context_length(2048);
 
     let out_base = adapter
-        .generate_text(make_req(None))
+        .generate_text(make_req(None), crate::ai::adapter::Dispatched::fixture())
         .await
         .expect("base generation failed")
         .text;
@@ -317,7 +317,7 @@ async fn owned_gene_page_in_changes_output() {
             path: gene.clone(),
             domain: "code".to_string(),
             scale: 1.0,
-        }])))
+        }])), crate::ai::adapter::Dispatched::fixture())
         .await
         .expect("gene generation failed")
         .text;
@@ -337,7 +337,7 @@ async fn owned_gene_page_in_changes_output() {
 async fn embedding_only_adapter_refuses_generation_before_model_loading() {
     let adapter = LlamaCppAdapter::with_model_id(
         PathBuf::from("/nonexistent/embedding-only.gguf"), "embedding-only".into());
-    let result = adapter.generate_text(TextGenerationRequest::default()).await;
+    let result = adapter.generate_text(TextGenerationRequest::default(), crate::ai::adapter::Dispatched::fixture()).await;
     assert_eq!(result.expect_err("unsupported operation"),
         "embedding-only adapter does not support text generation");
     assert!(adapter.backend.read().is_none());

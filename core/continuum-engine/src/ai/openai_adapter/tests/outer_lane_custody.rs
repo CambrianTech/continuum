@@ -71,7 +71,7 @@ async fn adapter_parks_without_caller_lane_and_reacquires_before_http(
     };
     let terms = crate::ai::types::DispatchTerms {
         output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")),
-        admission: None, think: None,
+        admission: None, think: crate::ai::types::Think::ModelDefault,
     };
     let (sink, _receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut call = Box::pin(with_serving_lane(

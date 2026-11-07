@@ -148,7 +148,10 @@ pub async fn generate_recipe_with_ai(
 
     let registry = global_registry();
     let registry_guard = registry.read().await;
-    let response = generate_text(&registry_guard, inference_request).await?;
+    // The recipe generator states no think term yet: the model's own default, as it always ran
+    // (measured per-purpose think budgets: card, owner Fable).
+    let terms = crate::ai::types::Think::ModelDefault;
+    let response = generate_text(&registry_guard, inference_request, terms).await?;
 
     let parsed: RecipeDefinitionShape =
         parse_recipe_from_ai_response(&response.text).map_err(|e: ParseError| e.to_string())?;

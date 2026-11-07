@@ -367,7 +367,10 @@ async fn execute(
         .to_string();
     let replay_max_tokens = request.max_tokens;
     // No faculty invocation, tool executor, memory writer or learning update.
-    let response = adapter.generate_text(request).await;
+    // A capture keeps no think term yet, so a replay states the model's own default, as it always
+    // resent (measured per-purpose think budgets: card, owner Fable).
+    let terms = crate::ai::types::Think::ModelDefault;
+    let response = adapter.generate_under(request, terms).await.map_err(|e| e.to_string());
     match response {
         Ok(response) => {
             capture.finish(Some(&response), None);

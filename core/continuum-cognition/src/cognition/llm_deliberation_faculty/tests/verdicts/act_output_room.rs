@@ -94,7 +94,7 @@ async fn an_act_carries_her_measured_room_the_guard_and_its_receipt() {
     assert!(cap >= 434, "her measured think plus answer: {cap}");
     assert!(cap >= view.completion_reserve, "never below the reply's grant");
     let terms = *adapter.terms_seen.lock().unwrap().last().expect("dispatched under terms"); // JUSTIFIED: test fixture lock, never poisoned
-    let budget = terms.think.expect("an act's think is bounded by her need").0;
+    let budget = terms.think.budget().expect("an act's think is bounded by her need").0;
     assert!(budget >= 338 && budget + 96 <= cap, "the answer keeps its room inside the cap: {budget} of {cap}");
     // A large write with a bounded thought: the cap allows the long answer, the think stays at its budget.
     assert!(cap >= budget + 1_000, "room for a write far past her measured answer: think {budget}, cap {cap}");

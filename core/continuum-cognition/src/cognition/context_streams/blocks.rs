@@ -36,6 +36,25 @@ impl Grounding {
         Self { persona, faculty: faculty.into(), minimum: text.clone(), text, units: std::sync::Arc::from(Vec::new()) }
     }
 
+    /// The block's stable body and, when its source marked some units as tallies (counts that
+    /// move as its subject does, `RagItem::tally`), those units as a block of their own named
+    /// `<faculty> counts`: two sources, so a moving count appends a few lines and never rewrites
+    /// the body, and an epoch start can keep the body in front while the tally rides later (the
+    /// M5, 2026-11-06: the kanban's "192 claimable" in its first line broke every turnover's
+    /// shared prefix at message 2-4, 30k chars of cards behind it). A block that is all tally, or
+    /// has none, stays one.
+    pub fn split_tally(self) -> Vec<Self> {
+        let tallies = self.units.iter().filter(|unit| unit.tally()).count();
+        if tallies == 0 || tallies == self.units.len() {
+            return vec![self];
+        }
+        let (tally, body): (Vec<RagItem>, Vec<RagItem>) = self.units.iter().cloned().partition(|unit| unit.tally());
+        let joined = |units: &[RagItem]| units.iter().map(|unit| unit.content.as_str()).collect::<Vec<_>>().join("\n");
+        let (tally_text, body_text) = (joined(&tally), joined(&body));
+        let counts = Self { persona: self.persona, faculty: format!("{} counts", self.faculty), minimum: tally_text.clone(), text: tally_text, units: tally.into() };
+        vec![Self { minimum: body_text.clone(), text: body_text, units: body.into(), ..self }, counts]
+    }
+
     /// The block as a standing item: the root of its activity; a board update is new content, not a
     /// new identity.
     fn block(&self, full: ContextMessage, summary: Option<ContextMessage>, pointer: ContextMessage) -> Item<ContextMessage> {

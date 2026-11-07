@@ -208,7 +208,9 @@ fn standard_facts() -> Vec<Box<dyn PerceptionFact>> {
 /// `perception.fact` probe per evaluated fact (fired = whether it rendered).
 /// Her notices and open views are not facts: they are streams of her view
 /// (`context_streams::{notices, open_views}`).
-pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<String> {
+/// Each fired fact under its id: the key her view's facts source holds it by, so an unchanged fact
+/// appends nothing and a changed one supersedes its last version (`context_streams::facts`).
+pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<(&'static str, String)> {
     let mut rendered = Vec::new();
     for fact in standard_facts() {
         if !policy.enabled(fact.id()) {
@@ -229,7 +231,7 @@ pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<String> {
             "perception fact evaluated"
         );
         if let Some(text) = out {
-            rendered.push(text);
+            rendered.push((fact.id(), text));
         }
     }
     rendered
@@ -270,7 +272,8 @@ mod tests {
         };
         let facts = render_facts(&cx, &FactPolicy::default());
         assert_eq!(facts.len(), 1, "quiet room: only the bounds fact renders");
-        assert_eq!(facts[0], "[context] 3 input turns were available before prompt fitting; this request may retain only part of that history, and chat/history rereads any turn not shown");
+        assert_eq!(facts[0].0, "context_bounds", "keyed by its id");
+        assert_eq!(facts[0].1, "[context] 3 input turns were available before prompt fitting; this request may retain only part of that history, and chat/history rereads any turn not shown");
     }
 
     // what this catches: FactPolicy::disable actually silences a fact — the

@@ -229,9 +229,10 @@ impl LlmDeliberationFaculty {
         all_messages.streams.blocks.extend(contracts.into_iter().map(|contract| {
             crate::cognition::context_streams::blocks::Grounding::atomic(self.persona_id, contract.name, contract.body)
         }));
-        // Her view leads the history: this act appends to it, and everything after it (the
-        // standing grounding, facts, the clock) is this act's fresh tail.
+        // Her view leads the history: this act appends to it, and everything after it (the clock,
+        // the ask, her newest act) is this act's tail, which joins her view once it is sent.
         let view = self.place_view(&mut all_messages);
+        let epoch_before = self.view_epoch();
 
         let input_identity = all_messages.input_identity;
         let calibration = calibration.for_input(input_identity);
@@ -475,9 +476,15 @@ impl LlmDeliberationFaculty {
                 }
                 Err(mismatch) => (None, Some(format!("her view could not be sized: {mismatch}")), None),
             };
+        // What a sent tail already showed her is in her view now: never sent twice. Then what this
+        // tail shows that her sources also render, for her view to cover once it is sent.
+        self.drop_what_she_was_sent(&mut all_messages);
+        let tail_covers = Self::tail_covers(&all_messages);
         self.view_sent();
-        // The surface this act sends: the epoch's set, or this act's own when it turned the view over.
-        let selected = self.retain_tools(tools_choice, tools_refusal.is_some());
+        // The surface this act sends: the epoch's set, or, when this act started an epoch of her
+        // view, the set it adopts (`tools_epoch.rs`).
+        let new_epoch = view.started() || self.view_epoch() != epoch_before;
+        let selected = self.retain_tools(tools_choice, tools_refusal.is_some(), new_epoch);
         // Her view as the allocation sized it: the fit below never cuts it.
         let view_len = all_messages.grounding_at;
 
@@ -656,7 +663,8 @@ impl LlmDeliberationFaculty {
         if capacity_error.is_none() {
             grounding.expand_within(grounding_grant);
         }
-        let trailing_grounding = grounding.trailing_messages();
+        // A block a sent tail already showed her, byte for byte, is in her view: not sent again.
+        let trailing_grounding: Vec<ChatMessage> = grounding.trailing_messages().into_iter().filter(|block| !self.view_holds_sent(block)).collect();
         fitted.refit.grounding_len = trailing_grounding.len();
         fitted.messages.splice(
             fitted.grounding_at..fitted.grounding_at,
@@ -698,9 +706,11 @@ impl LlmDeliberationFaculty {
         // (pages keyed per room restored ~7.4k tokens across a switch on the M5). It is
         // a room's, so it rides the fresh tail after her view, with the grounding the
         // refit keeps frozen; grounding sources themselves are her view's blocks.
-        if let Some(block) = deliberation_prompt::working_context_message(&context) {
-            messages.insert(grounding_at + refit.grounding_len, ChatMessage::text("user", block));
-            refit.grounding_len += 1;
+        if let Some(block) = deliberation_prompt::working_context_message(&context).map(|block| ChatMessage::text("user", block)) {
+            if !self.view_holds_sent(&block) {
+                messages.insert(grounding_at + refit.grounding_len, block);
+                refit.grounding_len += 1;
+            }
         }
 
         // #266 KV-cache fix, THE SPLIT ACTUALLY APPLIED. The split composer
@@ -780,6 +790,7 @@ impl LlmDeliberationFaculty {
             tools_grant,
             act_room,
             output_shortfall,
+            tail_covers,
         }
     }
 

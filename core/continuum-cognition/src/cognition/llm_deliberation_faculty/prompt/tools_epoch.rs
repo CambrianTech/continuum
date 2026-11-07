@@ -24,10 +24,21 @@
 //! So the set is held across her view's turnovers ([`ToolsEpoch`]) and changes only:
 //! - down, when the window cannot hold it (`delib.tools.epoch_level_lost`), then re-selected and
 //!   held;
-//! - when the moves her held cards give her change (`delib.tools.epoch_moves_changed`): a card's
-//!   transition is a new epoch of her hands, one cached prefix, never churn every act
-//!   (STATE-DRIVEN-SURFACE.md);
+//! - when the moves her held cards give her change (`delib.tools.epoch_moves_changed`), at the
+//!   next act that starts an epoch of her view, never mid-epoch: a card's transition is a new
+//!   epoch of her hands, one cached prefix (STATE-DRIVEN-SURFACE.md);
 //! - when her surface is rebuilt (`rebuild_tool_surface` clears it).
+//!
+//! # The template puts her hands at the head
+//!
+//! The served model's chat template (Qwen3.6-35B-A3B's, read from its GGUF on the M5) renders the
+//! tool schemas first of all (`<|im_start|>system` then `# Tools` and `<tools>…</tools>`), before
+//! her system text: a set that changes rewrites the head and every token behind it. A held card's
+//! transition re-selected the set at once, mid-epoch, and the whole prompt went cold. So a changed
+//! set waits for her view's next start, where everything after the system text is re-rendered
+//! anyway; until then the epoch keeps its set, the verbs the new moves add ride the tail
+//! (`tail_tools`, after her messages, outside the prefix) and are callable natively at once, and
+//! the budget reserves the larger set, so the start that adopts it fits.
 //!
 //! The trade, stated: a verb whose affordance appears later, or that her learned head would add,
 //! is not in her head until one of those changes. On a server that takes `tail_tools` her learned
@@ -48,6 +59,8 @@ pub(in super::super) struct ToolsEpoch {
     tokens: usize,
     /// The held-card moves it was selected for (`HeldWork::move_commands`).
     moves: Vec<String>,
+    /// Moves that changed since and whose set waits for her view's next start: said once.
+    waiting: Vec<String>,
 }
 
 /// This act's tools claim, in raw tokens.
@@ -72,6 +85,8 @@ pub(in super::super) struct ToolsChoice<'a> {
     kept: bool,
     /// The held-card moves this act selected for, kept with the set it holds.
     moves: Vec<String>,
+    /// The set her changed moves select, adopted at the next act that starts an epoch of her view.
+    adopt: Option<SelectedSurface<'a>>,
 }
 
 impl LlmDeliberationFaculty {
@@ -91,18 +106,20 @@ impl LlmDeliberationFaculty {
         // Selected every act, so her learned head computes and reserves the head a later set
         // would hold (`with_learned_head`) and its loaded verbs ride the tail.
         let fresh = self.select_tool_surface_granted(ws, grant);
+        let changed = held.as_ref().is_some_and(|held| held.moves != moves);
         let kept = match held {
-            Some(held) if held.moves != moves => {
-                continuum_base::probe!(
-                    class = "delib.tools.epoch_moves_changed",
-                    persona = %self.persona_name,
-                    held_moves = %held.moves.join(","),
-                    moves = %moves.join(","),
-                    "a held card's transition changed the moves in her hands: her tool set is selected afresh, once"
-                );
-                None
+            Some(held) if held.tokens <= grant => {
+                if changed && held.waiting != moves {
+                    continuum_base::probe!(
+                        class = "delib.tools.epoch_moves_changed",
+                        persona = %self.persona_name,
+                        held_moves = %held.moves.join(","),
+                        moves = %moves.join(","),
+                        "a held card's transition changed the moves in her hands: her tool set changes at her view's next start; its new verbs ride the tail until then"
+                    );
+                }
+                Some(self.surface.retained(&held.names, held.reason, held.tokens))
             }
-            Some(held) if held.tokens <= grant => Some(self.surface.retained(&held.names, held.reason, held.tokens)),
             Some(held) => {
                 continuum_base::probe!(
                     class = "delib.tools.epoch_level_lost",
@@ -119,32 +136,58 @@ impl LlmDeliberationFaculty {
         match (kept, fresh) {
             (Some(mut sent), fresh) => {
                 let want = self.tool_claim_tokens(ws).1;
-                if let Ok(fresh) = fresh.as_ref() {
+                let mut adopt = None;
+                if let Ok(fresh) = fresh {
                     sent.tail = fresh.tail.clone(); // the verbs she loaded ride the tail, outside the prefix
+                    if changed {
+                        // The verbs her new moves add that the held head lacks ride the tail now, and
+                        // the budget holds the larger set, so the start that adopts it fits.
+                        let head = self.surface.names_of(&sent);
+                        let added = self.surface.names_of(&fresh).into_iter().filter(|name| !head.contains(name)).collect::<Vec<_>>();
+                        let riding = self.surface.retained(&added, fresh.reason, 0).specs.map(std::borrow::Cow::into_owned).unwrap_or_default(); // unwrap_or_default: a surface with no tools adds no verbs
+                        let riding: Vec<_> = riding.into_iter().filter(|spec| !sent.tail.iter().any(|loaded| loaded.name == spec.name)).collect();
+                        sent.tail.extend(riding);
+                        sent = sent.reserving(fresh.tokens);
+                        adopt = Some(fresh);
+                    }
                 }
-                (ToolsChoice { sent: sent.with_demand(want), kept: true, moves }, None)
+                (ToolsChoice { sent: sent.with_demand(want), kept: true, moves, adopt }, None)
             }
-            (None, Ok(selected)) => (ToolsChoice { sent: selected, kept: false, moves }, None),
+            (None, Ok(selected)) => (ToolsChoice { sent: selected, kept: false, moves, adopt: None }, None),
             (None, Err(needed)) => (
-                ToolsChoice { sent: SelectedSurface::none(), kept: false, moves },
+                ToolsChoice { sent: SelectedSurface::none(), kept: false, moves, adopt: None },
                 Some(PromptCapacityError { required_tokens: needed, budget_tokens: grant }),
             ),
         }
     }
 
     /// After her view is fitted: the surface this act sends. Her held set goes out unchanged,
-    /// whether or not her view turned over in this act; an act with no held set (the first or a
-    /// lost level) holds what it sends.
-    pub(in super::super) fn retain_tools<'a>(&'a self, choice: ToolsChoice<'a>, refused: bool) -> SelectedSurface<'a> {
-        let ToolsChoice { sent, kept, moves } = choice;
-        if refused || kept {
-            return sent; // a refused turn sent no surface; a held set stays held
+    /// whether or not her view turned over in this act, unless her moves changed and this act
+    /// started an epoch of her view (`new_epoch`): then the set her moves select is adopted and
+    /// held. An act with no held set (the first or a lost level) holds what it sends.
+    pub(in super::super) fn retain_tools<'a>(&'a self, choice: ToolsChoice<'a>, refused: bool, new_epoch: bool) -> SelectedSurface<'a> {
+        let ToolsChoice { sent, kept, moves, adopt } = choice;
+        if refused {
+            return sent; // a refused turn sent no surface
         }
+        let sent = match adopt {
+            Some(adopted) if new_epoch => adopted,
+            Some(_) => {
+                // Her set waits for her view's next start; the change is said once.
+                if let Some(held) = self.tools_epoch.lock().as_mut() {
+                    held.waiting = moves;
+                }
+                return sent;
+            }
+            None if kept => return sent, // a held set stays held
+            None => sent,
+        };
         *self.tools_epoch.lock() = Some(ToolsEpoch {
             names: self.surface.names_of(&sent),
             reason: sent.reason,
             tokens: sent.tokens,
             moves,
+            waiting: Vec::new(),
         });
         sent
     }

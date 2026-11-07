@@ -133,7 +133,7 @@ async fn remote_adapter_over_local_heuristic_transport_round_trips() {
     let transport = LocalAdapterTransport::new(heuristic);
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
-    let response = adapter.generate_text(req("hello grid")).await.unwrap();
+    let response = adapter.generate_text(req("hello grid"), crate::ai::adapter::Dispatched::fixture()).await.unwrap();
     assert!(response.text.starts_with("[heuristic:"));
     assert!(response.text.contains("hello grid"));
     // The adapter rewrites `provider` to "airc-remote" so
@@ -157,11 +157,11 @@ async fn remote_adapter_deterministic_when_peer_is_deterministic() {
     let adapter2 = AircRemoteInferenceAdapter::new(LocalAdapterTransport::new(heuristic2));
 
     let r1 = adapter1
-        .generate_text(req("identical prompt"))
+        .generate_text(req("identical prompt"), crate::ai::adapter::Dispatched::fixture())
         .await
         .unwrap();
     let r2 = adapter2
-        .generate_text(req("identical prompt"))
+        .generate_text(req("identical prompt"), crate::ai::adapter::Dispatched::fixture())
         .await
         .unwrap();
     assert_eq!(r1.text, r2.text);
@@ -176,7 +176,7 @@ async fn transport_error_surfaces_as_adapter_error_string() {
             message: "all peers down".to_string(),
         });
     let adapter = AircRemoteInferenceAdapter::new(transport);
-    let err = adapter.generate_text(req("hi")).await.unwrap_err();
+    let err = adapter.generate_text(req("hi"), crate::ai::adapter::Dispatched::fixture()).await.unwrap_err();
     assert!(err.contains("no remote peer reachable"));
     assert!(err.contains("all peers down"));
 }
@@ -194,11 +194,11 @@ async fn three_deadline_misses_make_the_lane_cold_and_the_next_request_fails_fas
     let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer("df72dbf2");
     for _ in 0..COLD_AFTER_DEADLINES {
         assert!(!adapter.is_cold(), "warm until the third miss");
-        let err = adapter.generate_text(req("hi")).await.unwrap_err();
+        let err = adapter.generate_text(req("hi"), crate::ai::adapter::Dispatched::fixture()).await.unwrap_err();
         assert!(err.contains("timed out"), "a real round trip: {err}");
     }
     assert!(adapter.is_cold());
-    let err = adapter.generate_text(req("hi")).await.unwrap_err();
+    let err = adapter.generate_text(req("hi"), crate::ai::adapter::Dispatched::fixture()).await.unwrap_err();
     assert!(err.contains("cold"), "refused here, not on the wire: {err}");
     assert!(err.contains("df72dbf2"));
 }
@@ -224,10 +224,10 @@ async fn no_session_and_no_route_count_as_misses_and_make_the_lane_cold() {
     let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer("ce043fcc-no-session");
     for _ in 0..COLD_AFTER_DEADLINES {
         assert!(!adapter.is_cold(), "warm until the misses add up");
-        adapter.generate_text(req("hi")).await.unwrap_err();
+        adapter.generate_text(req("hi"), crate::ai::adapter::Dispatched::fixture()).await.unwrap_err();
     }
     assert!(adapter.is_cold(), "no session and no route are misses, not answers");
-    let err = adapter.generate_text(req("hi")).await.unwrap_err();
+    let err = adapter.generate_text(req("hi"), crate::ai::adapter::Dispatched::fixture()).await.unwrap_err();
     assert!(err.contains("cold"), "refused here, not after another full deadline: {err}");
 }
 
@@ -248,7 +248,7 @@ async fn an_answering_refusal_resets_the_misses() {
     });
     let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer("ce043fcc-answers");
     for _ in 0..5 {
-        adapter.generate_text(req("hi")).await.unwrap_err();
+        adapter.generate_text(req("hi"), crate::ai::adapter::Dispatched::fixture()).await.unwrap_err();
     }
     assert!(!adapter.is_cold(), "two misses, an answer, two misses: never three in a row");
 }
@@ -259,7 +259,7 @@ async fn timeout_error_surfaces_with_elapsed_ms() {
         elapsed_ms: 5_000,
     });
     let adapter = AircRemoteInferenceAdapter::new(transport);
-    let err = adapter.generate_text(req("hi")).await.unwrap_err();
+    let err = adapter.generate_text(req("hi"), crate::ai::adapter::Dispatched::fixture()).await.unwrap_err();
     assert!(err.contains("timed out"));
     assert!(err.contains("5000"));
 }
@@ -271,7 +271,7 @@ async fn policy_denied_surfaces_through_adapter() {
             reason: "persona scope mismatch".to_string(),
         });
     let adapter = AircRemoteInferenceAdapter::new(transport);
-    let err = adapter.generate_text(req("hi")).await.unwrap_err();
+    let err = adapter.generate_text(req("hi"), crate::ai::adapter::Dispatched::fixture()).await.unwrap_err();
     assert!(err.contains("policy denied"));
     assert!(err.contains("persona scope mismatch"));
 }
@@ -313,7 +313,7 @@ async fn the_adapter_stamps_its_model_on_a_request_that_names_none() {
         })
     });
     let adapter = AircRemoteInferenceAdapter::new(transport).with_model("qwen3.8-27b");
-    let out = adapter.generate_text(req("hi")).await.unwrap();
+    let out = adapter.generate_text(req("hi"), crate::ai::adapter::Dispatched::fixture()).await.unwrap();
     assert_eq!(
         out.model, "qwen3.8-27b",
         "the override's model must ride the wire"
@@ -323,7 +323,7 @@ async fn the_adapter_stamps_its_model_on_a_request_that_names_none() {
     // wait; the lane's model wins and the difference is a probe row.
     let mut named = req("hi");
     named.model = Some("ornith-ai/Ornith-1.5-35B-A3B-GGUF".to_string());
-    let out = adapter.generate_text(named).await.unwrap();
+    let out = adapter.generate_text(named, crate::ai::adapter::Dispatched::fixture()).await.unwrap();
     assert_eq!(
         out.model, "qwen3.8-27b",
         "the lane's model is the truth for every request on it"
@@ -363,7 +363,7 @@ async fn with_target_peer_threads_through_to_transport_envelope() {
     });
     let adapter =
         AircRemoteInferenceAdapter::new(transport).with_target_peer("test-remote-peer");
-    let _ = adapter.generate_text(req("anything")).await.unwrap();
+    let _ = adapter.generate_text(req("anything"), crate::ai::adapter::Dispatched::fixture()).await.unwrap();
     // The test verifies via the stub's served_by echo; the
     // adapter overwrites response.provider to airc-remote, so
     // we can't read served_by directly off the response. The
@@ -402,7 +402,7 @@ async fn without_target_peer_sends_envelope_with_none() {
         })
     });
     let adapter = AircRemoteInferenceAdapter::new(transport);
-    let _ = adapter.generate_text(req("any")).await.unwrap();
+    let _ = adapter.generate_text(req("any"), crate::ai::adapter::Dispatched::fixture()).await.unwrap();
 }
 
 // ── health ────────────────────────────────────────────────
@@ -439,7 +439,7 @@ async fn health_check_flips_to_healthy_after_first_successful_round_trip() {
     assert!(matches!(h_before.status, HealthState::Unhealthy));
 
     // One real round-trip.
-    let _ = adapter.generate_text(req("anything")).await.unwrap();
+    let _ = adapter.generate_text(req("anything"), crate::ai::adapter::Dispatched::fixture()).await.unwrap();
 
     // Post-roundtrip: Healthy.
     let h_after = adapter.health_check().await;
@@ -509,7 +509,7 @@ async fn the_served_window_on_an_answer_reaches_the_sink() {
     // Arm 1 (2026-09-18): UNHEARD is None — the binding window stands until the seat
     // has spoken for itself; never a stand-in number.
     assert_eq!(adapter.live_served_window(), None, "unheard seat is unmeasured, not 0");
-    let response = adapter.generate_text(req("hi")).await.unwrap();
+    let response = adapter.generate_text(req("hi"), crate::ai::adapter::Dispatched::fixture()).await.unwrap();
     assert_eq!(*seen.lock().unwrap(), Some(26_112));
     let route = response.routing.unwrap();
     assert!(!route.is_local);
@@ -522,7 +522,7 @@ async fn the_served_window_on_an_answer_reaches_the_sink() {
     // the first only), and the sink hears it too, so the durable override follows.
     let changed = adapter.capacity_changed(Some(26_112));
     let another = adapter.capacity_changed(Some(26_112));
-    let again = adapter.generate_text(req("hi again")).await.unwrap();
+    let again = adapter.generate_text(req("hi again"), crate::ai::adapter::Dispatched::fixture()).await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         tokio::join!(changed, another);
     })
@@ -570,7 +570,7 @@ async fn the_grid_lane_carries_a_think_budget_only_to_a_seat_that_advertises_it(
     });
     let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer(uuid::Uuid::new_v4().to_string());
     let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let terms = DispatchTerms { output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")), admission: None, think: Some(ThinkBudget(338)) };
+    let terms = DispatchTerms { output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")), admission: None, think: crate::ai::types::Think::Budget(ThinkBudget(338)) };
     let mut request = req("act"); request.max_tokens = Some(32);
     let refused = adapter.generate_admitted(request, terms, sink).await;
     assert!(matches!(refused, Err(crate::ai::inference_error::InferenceError::ThinkUnenforceable { .. })), "{refused:?}");

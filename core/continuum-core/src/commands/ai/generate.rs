@@ -147,20 +147,14 @@ crate::action_command! {
         // local persona turn rides — and the assembled response at the end. No sink
         // registered (a plain call) = the drain, exactly as before.
         let sink = stream_id.and_then(crate::ai::stream_sinks::take);
-        let mut response = match (think, sink) {
-            // A forwarded think budget: generated under it, or refused typed by the adapter.
-            (Some(think), sink) => {
-                let terms = crate::ai::types::DispatchTerms::fixed(&request, Some(think)).map_err(|e| e.to_string())?;
-                match sink {
-                    Some(sink) => adapter.generate_admitted(request, terms, sink).await.map_err(|e| e.to_string())?,
-                    None => crate::ai::stream_sinks::drain_generation(|sink| adapter.generate_admitted(request, terms, sink))
-                        .await
-                        .map_err(|e| e.to_string())?,
-                }
-            }
-            (None, Some(sink)) => adapter.generate_stream(request, sink).await?,
-            (None, None) => adapter.generate_text(request).await?,
-        };
+        // Its think is the caller's `think` (a grid lane forwards her budget, generated under it or
+        // refused typed by the adapter); absent, the external caller's model default.
+        let terms = crate::ai::types::Think::from_wire(think);
+        let mut response = match sink {
+            Some(sink) => adapter.generate_general(request, terms, sink).await,
+            None => adapter.generate_under(request, terms).await,
+        }
+        .map_err(|e| e.to_string())?;
         // A generate from a cross-grid caller is inference this seat performed for a mind
         // hosted on ANOTHER node. Its measured prompt size (the server's own count) joins
         // the serving plan's per-lane window floor beside this node's residents' prompts —

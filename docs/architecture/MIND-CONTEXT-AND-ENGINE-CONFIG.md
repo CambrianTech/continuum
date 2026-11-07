@@ -296,7 +296,12 @@ layer is a context `Source`:
 **The one owner of the invariants**, `continuum-context` (`View`, `Epoch`, `Motion`). No layer and
 no faculty re-implements them:
 1. Within an epoch the prompt only appends. A rewrite is a turnover, and turnover is the only
-   place collapse happens.
+   place collapse happens. That includes the act's tail (the clock, the ask, her call and its
+   result): once served it joins the epoch in the bytes it was sent (`View::append_sent`), and
+   what it showed never arrives again from its source. Before 2026-11-06 the tail was re-rendered
+   every act (her newest result native at one prompt's end, a `[result #n]` item in the next): on
+   the hybrid M5 model that re-prefilled every act's tail (2,822 s over 78 acts in 3 h). Facts are
+   a source of states (`Source::states`, `Source::ended`): appended once, ended once.
 2. The newest arrival stays whole unless it alone exceeds what a start would grant it. In that
    case it arrives at its summary (admission, `View::readmit`); otherwise the view turns over and
    shrinks the oldest first (goal 7). The same rule covers her newest native tool result

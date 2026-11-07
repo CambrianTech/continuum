@@ -285,7 +285,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
         capacity_error: None, budget_fault: None, protocol_error: None, segments: Vec::new(),
         newest_result_reduced: false, newest_result_tokens: 0, allocation: None,
         messages: roomy.messages, tools: crate::cognition::tool_surface::SelectedSurface::none(), tools_grant: 0,
-        act_room: crate::cognition::working_set::ActRoom::Unmeasured, output_shortfall: None,
+        act_room: crate::cognition::working_set::ActRoom::Unmeasured, output_shortfall: None, tail_covers: Vec::new(),
     };
     let corrected = faculty.refit_rejected_prompt(snapshot, estimate as u32 + 1, estimate as u32, 0).unwrap();
     assert!(corrected.estimated_prompt_tokens < estimate);

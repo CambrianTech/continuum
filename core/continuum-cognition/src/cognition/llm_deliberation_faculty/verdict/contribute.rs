@@ -312,9 +312,9 @@ impl LlmDeliberationFaculty {
             }
             let mut request = request_template.as_ref().expect("initial request assembled").clone();
             request.messages = view.messages.clone();
-            // Where her view ends in THIS view's messages: the engine checkpoints there and
-            // her page keeps it, so the next act resumes past everything she already read.
-            request.view_messages = u32::try_from(view.refit.grounding_at).ok().filter(|len| *len > 0);
+            // Where her next act stops matching THIS prompt: the engine checkpoints there and her
+            // page keeps it, so the next act resumes past everything she already read.
+            request.view_messages = view.resumes_at();
             // The allowance belongs to THIS view, refreshed on every refit: the template
             // is built once, and a template's `max_tokens` from an earlier plan would
             // bound the reply to a window the prompt no longer leaves.
@@ -323,7 +323,7 @@ impl LlmDeliberationFaculty {
                 Ok(terms) => terms,
                 Err(error) => return Some(Contribution::deliberation_fault(&error.to_string())),
             };
-            sent_reasoning_budget = terms.think.map(|think| think.0);
+            sent_reasoning_budget = terms.think.budget().map(|think| think.0);
             let allocation = view.allocation.clone().map(|allocation| crate::ai::provenance::AllocationReceipt { output_room, ..allocation });
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
             if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {
@@ -490,6 +490,7 @@ impl LlmDeliberationFaculty {
                         fit_window,
                         &response.model,
                     );
+                    self.view_served(&view); // her tail joins her view as sent: the next prompt extends this one
                     break (view, response);
                 }
             }

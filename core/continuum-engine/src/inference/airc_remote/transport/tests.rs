@@ -216,7 +216,7 @@ async fn local_adapter_transport_propagates_peer_adapter_errors() {
         }
         async fn generate_text(
             &self,
-            _r: TextGenerationRequest,
+            _r: TextGenerationRequest, _dispatched: crate::ai::adapter::Dispatched,
         ) -> Result<TextGenerationResponse, String> {
             Err("simulated peer failure".to_string())
         }

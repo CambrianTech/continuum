@@ -72,7 +72,8 @@ pub(super) struct ShortRoom {
 /// measured room; unmeasured, past the smallest usable reply
 /// ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`], the reply claim's own floor). Never a
 /// fixed count or a share of the cap, and never unbounded: a grant that leaves the think nothing
-/// is a budget of ZERO (no thinking; the fork forces the end tag at once).
+/// is a budget of ZERO (no thinking: the template's `enable_thinking = false` on every pin, and the
+/// sampler's zero budget from the fork fix on, `request_body::apply_think`).
 pub(super) fn act_reasoning_budget(room: ActRoom, reserve: u32) -> crate::ai::types::ThinkBudget {
     let answer = match room {
         ActRoom::Needs { answer, .. } => answer,
@@ -99,12 +100,12 @@ impl LlmDeliberationFaculty {
                 .ok_or_else(|| crate::ai::inference_error::InferenceError::Protocol("act dispatch requires a positive reply claim".into()))?;
             crate::ai::reply_room::OutputIntent::UseAdmittedRoom { required_reply }
         } else {
-            crate::ai::types::DispatchTerms::fixed(request, None)?.output
+            crate::ai::types::DispatchTerms::fixed(request, crate::ai::types::Think::ModelDefault)?.output
         };
         let terms = crate::ai::types::DispatchTerms {
             output,
             admission: Some(crate::ai::types::RequestAdmission { window, lease, priced: calibration.admission }),
-            think: Some(act_reasoning_budget(view.act_room, view.completion_reserve)),
+            think: crate::ai::types::Think::Budget(act_reasoning_budget(view.act_room, view.completion_reserve)),
         };
         let Some(cap) = request.max_tokens.filter(|_| kind == TurnKind::Act) else {
             return Ok((terms, None));
@@ -113,7 +114,7 @@ impl LlmDeliberationFaculty {
         let room = crate::ai::provenance::OutputRoom {
             model: request.model.clone().unwrap_or_default(), // unwrap_or_default: a request naming no model is the adapter's default, said as empty
             cap,
-            reasoning_budget: terms.think.map(|think| think.0),
+            reasoning_budget: terms.think.budget().map(|think| think.0),
             need: view.act_room.needed(),
             density_estimated,
             density_measured,
