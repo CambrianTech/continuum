@@ -48,6 +48,10 @@ pub enum DistillError {
     /// is an adapter that did not, or a cut answer).
     #[error(transparent)]
     Unreadable(#[from] UnreadableLesson),
+    /// No act of hers has a measured output need yet, so no bound can be derived: the pass waits
+    /// for her first act, the cluster kept (`lens_terms`).
+    #[error("no measured act need for this mind yet: the distillation waits for her first act")]
+    Unmeasured,
 }
 
 /// Distills clusters of episodic engrams into durable semantic facts via the
@@ -254,6 +258,9 @@ impl SemanticDistiller {
         let observation_budget = self.max_observation_chars.saturating_sub(belief_floor);
         let (mut block, kept_n) = Self::observations_block(sources, observation_budget);
         let kept = &sources[..kept_n];
+        // How many prior beliefs the block actually lists (whole beliefs up to the budget): the only
+        // ones a `supersedes` number may name.
+        let mut listed = 0usize;
         if !prior_beliefs.is_empty() {
             // Numbered list FIRST, then an UNCONDITIONAL format slot at the very
             // end — recency beats primacy for instruction-following on small
@@ -276,6 +283,7 @@ impl SemanticDistiller {
                 block.push_str(&line);
                 beliefs_kept += 1;
             }
+            listed = beliefs_kept;
             if beliefs_kept < prior_beliefs.len() {
                 // The size of the belief that did NOT fit, so `kept = 0` is a
                 // READABLE state rather than a mystery: with none shown,
@@ -315,14 +323,14 @@ impl SemanticDistiller {
         }
 
         // Sized and thought from her measured need (`lens_terms`); the answer held to the lesson.
-        let (max_tokens, think) = lens_terms(persona_id);
+        let (max_tokens, think) = lens_terms(persona_id)?;
         let request = TextGenerationRequest {
             messages: vec![ChatMessage::text("user", block)],
             system_prompt: Some(lens.system_prompt.to_string()),
             model: self.model.clone(),
             provider: None,
             temperature: None,
-            max_tokens,
+            max_tokens: Some(max_tokens),
             top_p: None,
             top_k: None,
             repeat_penalty: None,
@@ -333,7 +341,7 @@ impl SemanticDistiller {
             tail_tools: None,
             view_messages: None,
             tool_choice: None,
-            response_format: Some(DistilledLesson::format()),
+            response_format: Some(DistilledLesson::format(listed)),
             active_adapters: None,
             request_id: None,
             user_id: None,
@@ -368,7 +376,7 @@ impl SemanticDistiller {
             .await
             .map_err(|e| DistillError::Inference(e.to_string()))?;
 
-        let lesson = DistilledLesson::read(response.text.trim(), prior_beliefs)?;
+        let lesson = DistilledLesson::read(response.text.trim(), &prior_beliefs[..listed])?;
         if !prior_beliefs.is_empty() {
             continuum_base::probe!(
                 class = "dream.review.verdict",
@@ -439,20 +447,20 @@ impl SemanticDistiller {
 // Slice 3: the DreamConsolidationRegion — the organism's rest-state servicer.
 // ───────────────────────────────────────────────────────────────────────────
 
-/// What one distillation may spend, from her measured need (`working_set::need_of`): a think bounded
-/// at her measured act think need, and an output room of her act's. A lens's own measured need, with
-/// an upward probe, replaces this prior (card 2e6c4f03, next slice). Unmeasured (no act of hers has
-/// landed since boot) is a state, not a number: no think, and the answer bounded by the lesson's
-/// shape alone.
-pub(super) fn lens_terms(persona_id: Option<Uuid>) -> (Option<u32>, crate::ai::types::Think) {
+/// What one distillation may spend, from her measured need (`working_set::need_of`): an output room
+/// of her act's (`act_room`, which bounds every string the lesson schema allows) and a think at her
+/// measured reasoning need, raised by a recent cut. A lens's own measured need, with an upward
+/// probe, replaces this prior (next slice). Unmeasured (no act of hers has landed since boot) is
+/// typed and defers the pass: the cluster stays for a later dream, never a guessed bound (Fable on
+/// #5811: a constant for an unknown).
+pub(super) fn lens_terms(persona_id: Option<Uuid>) -> Result<(u32, crate::ai::types::Think), DistillError> {
     use crate::ai::types::{Think, ThinkBudget};
     let need = persona_id.and_then(|persona| crate::cognition::working_set::global().need_of(persona));
-    match need {
-        Some(need) => (Some(need.act_room()), Think::Budget(ThinkBudget(need.reasoning_at_least.map_or(need.reasoning, |at_least| at_least.max(need.reasoning))))),
-        None => {
-            continuum_base::probe!(class = "dream.distill.unmeasured", persona = ?persona_id,
-                "no measured act need yet: the lesson's shape alone bounds the answer, and it does not think");
-            (None, Think::Budget(ThinkBudget(0)))
-        }
-    }
+    let Some(need) = need else {
+        continuum_base::probe!(class = "dream.distill.unmeasured", persona = ?persona_id,
+            "no measured act need yet: the distillation waits for her first act, its cluster kept");
+        return Err(DistillError::Unmeasured);
+    };
+    let think = need.reasoning_at_least.map_or(need.reasoning, |at_least| at_least.max(need.reasoning));
+    Ok((need.act_room(), Think::Budget(ThinkBudget(think))))
 }

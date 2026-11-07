@@ -5,6 +5,19 @@ pub(crate) use super::test_support::*;
 use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
 use crate::cognition::engram::{Engram, EngramKind, EngramOrigin};
 
+/// `persona` with a measured act need on the process's working set, so a distillation can size
+/// itself (an unmeasured mind's pass defers, `lens_terms`). 400 output tokens, 120 of them thought.
+pub(crate) fn measured(persona: Uuid) -> Uuid {
+    crate::cognition::working_set::global().record_emission_in_memory(
+        persona,
+        400,
+        120,
+        crate::cognition::working_set::EmissionStop::Landed,
+        1,
+    );
+    persona
+}
+
 /// The tests' observation budget: room for a few short engrams. The size is the test's
 /// choice; production derives it from the served window (`passes.rs`).
 const OBSERVATION_CHARS: usize = 4_096;
@@ -83,7 +96,7 @@ async fn distill_invokes_adapter_and_preserves_provenance() {
 
     let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
     let fact = distiller
-        .distill(Some(Uuid::from_u128(99)), &sources)
+        .distill(Some(measured(Uuid::from_u128(99))), &sources)
         .await
         .expect("distillation succeeds against the heuristic adapter");
 
@@ -136,7 +149,7 @@ async fn historian_output_is_provenance_tagged_and_consolidator_is_not() {
     let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
 
     let thought = distiller
-        .distill_with(LENS_HISTORIAN, None, &sources)
+        .distill_with(LENS_HISTORIAN, Some(measured(Uuid::from_u128(77))), &sources)
         .await
         .expect("historian distills");
     assert!(
@@ -146,7 +159,7 @@ async fn historian_output_is_provenance_tagged_and_consolidator_is_not() {
     );
 
     let fact = distiller
-        .distill_with(LENS_CONSOLIDATOR, None, &sources)
+        .distill_with(LENS_CONSOLIDATOR, Some(measured(Uuid::from_u128(77))), &sources)
         .await
         .expect("consolidator distills");
     assert!(
@@ -167,11 +180,11 @@ async fn lens_system_prompt_reaches_the_adapter() {
     let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
 
     let historian = distiller
-        .distill_with(LENS_HISTORIAN, None, &sources)
+        .distill_with(LENS_HISTORIAN, Some(measured(Uuid::from_u128(77))), &sources)
         .await
         .expect("historian distills");
     let consolidator = distiller
-        .distill_with(LENS_CONSOLIDATOR, None, &sources)
+        .distill_with(LENS_CONSOLIDATOR, Some(measured(Uuid::from_u128(77))), &sources)
         .await
         .expect("consolidator distills");
 
@@ -226,14 +239,29 @@ fn a_lessons_superseded_numbers_map_onto_the_listed_beliefs() {
 // lesson to one or two sentences, and the instruction names both fields.
 #[test]
 fn the_lesson_schema_and_its_instruction_are_one_shape() {
-    let crate::ai::types::ResponseFormat::JsonSchema { json_schema } = super::lesson::DistilledLesson::format() else {
+    let crate::ai::types::ResponseFormat::JsonSchema { json_schema } = super::lesson::DistilledLesson::format(3) else {
         panic!("a lesson is asked for by its schema")
     };
     let schema = &json_schema.schema;
     assert_eq!(schema["required"], serde_json::json!(["sentences", "supersedes"]));
     assert_eq!((schema["properties"]["sentences"]["minItems"].as_u64(), schema["properties"]["sentences"]["maxItems"].as_u64()), (Some(1), Some(2)));
+    // The superseded list is bounded by the request's own data: each listed belief at most once.
+    assert_eq!(schema["properties"]["supersedes"]["maxItems"], serde_json::json!(3));
+    assert_eq!(schema["properties"]["supersedes"]["uniqueItems"], serde_json::json!(true));
     let instruction = super::lesson::DistilledLesson::instruction();
     assert!(instruction.contains("\"sentences\"") && instruction.contains("\"supersedes\""), "{instruction}");
 }
 
 pub(crate) mod region;
+
+// what this catches: a guessed bound for a mind with no measurement (Fable on #5811: "a constant
+// for an unknown"). With no act of hers measured, the distillation is refused typed before any
+// request, so its cluster stays for a later dream instead of running unbounded.
+#[tokio::test]
+async fn an_unmeasured_mind_defers_her_distillation_typed() {
+    let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()), OBSERVATION_CHARS);
+    let sources = vec![episodic(Uuid::new_v4(), "an observation", &["k"])];
+    let unmeasured = Uuid::from_u128(0xdead_0001);
+    assert!(matches!(distiller.distill(Some(unmeasured), &sources).await, Err(DistillError::Unmeasured)));
+    assert!(matches!(distiller.distill(None, &sources).await, Err(DistillError::Unmeasured)));
+}
