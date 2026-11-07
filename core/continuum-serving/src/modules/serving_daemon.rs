@@ -150,8 +150,9 @@ pub struct ServingDaemonModule {
     resource_daemon: Arc<ResourceDaemon>,
     /// The plan's memory budget, SUSTAINED: every instantaneous reading of the last
     /// `READY_TIMEOUT`, so the plan grows only into headroom that has outlived one relaunch
-    /// and shrinks the moment pressure arrives (`system_resources::sustained`).
-    budget_readings: parking_lot::Mutex<crate::system_resources::sustained::Sustained>,
+    /// and shrinks the moment pressure arrives (`system_resources::sustained`), within one
+    /// credit view (`own_credit::CreditedReadings`).
+    budget_readings: parking_lot::Mutex<own_credit::CreditedReadings>,
     /// The published decision. `None` until the first successful plan. Held as
     /// the module's only shared state; `send` takes `&self` so `tick()` can
     /// publish without interior-mutability gymnastics.
@@ -345,9 +346,10 @@ pub struct ServingDaemonModule {
     /// asked for divides every mind's window for nothing (the 4-slots-for-2-
     /// personas starvation, 2026-07-10). Default 1 — window-first.
     lane_demand: Arc<std::sync::atomic::AtomicU32>,
-    /// The usable bytes the last plan sized against: the budget the one launch lays its pool
-    /// out on, so the engine holds the memory the planner just proved it may.
-    plan_budget_bytes: Arc<std::sync::atomic::AtomicU64>,
+    /// The budget the last plan sized against and whether it already held serving's own bytes:
+    /// the one launch lays its pool out on it, so the engine holds the memory the planner just
+    /// proved it may. `None` until a plan has been computed.
+    planned_budget: Arc<parking_lot::Mutex<Option<PlannedBudget>>>,
     /// The engine process this core last asked to move onto the shared pool: one try per
     /// engine, so a refused move is never retried every tick.
     shared_pool_move_tried: Arc<std::sync::atomic::AtomicU64>,
@@ -509,11 +511,9 @@ impl ServingDaemonModule {
             gpu,
             system,
             resource_daemon,
-            budget_readings: parking_lot::Mutex::new(
-                crate::system_resources::sustained::Sustained::new(
-                    crate::inference::llama_server::READY_TIMEOUT,
-                ),
-            ),
+            budget_readings: parking_lot::Mutex::new(own_credit::CreditedReadings::new(
+                crate::inference::llama_server::READY_TIMEOUT,
+            )),
             plan_tx,
             plan_view_tx,
             server,
@@ -552,7 +552,7 @@ impl ServingDaemonModule {
             pin_store,
             intent,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
-            plan_budget_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            planned_budget: Arc::new(parking_lot::Mutex::new(None)),
             shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             pool_growth_models: Arc::new(parking_lot::Mutex::new(std::collections::BTreeSet::new())),
             grants_tx: watch::channel(None).0,
@@ -684,6 +684,8 @@ mod launch;
 mod planning;
 mod grants;
 mod hold;
+mod own_credit;
+use own_credit::{OwnCredit, PlanBudget, PlannedBudget};
 mod pool_growth;
 mod reconcile;
 mod tick;
