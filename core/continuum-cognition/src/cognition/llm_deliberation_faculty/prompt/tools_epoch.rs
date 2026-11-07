@@ -294,7 +294,7 @@ mod review_growth_tests {
         let window = (framing.leveled.want() + offer.head().leveled.want()) * 2;
         let act = allocate(window, ActClaims {
             framing: Head { held: Some(floor.rungs), ..Head::free(framing.leveled.clone()) },
-            tools: offer.head(), required: Leveled::default(), newest: Leveled::default(),
+            tools: offer.head(), required: Leveled::default(), newest: continuum_context::allocation::Newest::Absent,
             grounding: Leveled::default(), last_move: Leveled::default(), history: Span::default(),
             reply: FlexClaim { source_id: id::REPLY.into(), priority: 1, floor_tokens: 0, min_tokens: 0, max_tokens: 0, required: false },
             view: Vec::new(),

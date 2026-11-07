@@ -97,7 +97,7 @@ fn least(claims: &ActClaims) -> u32 {
     hard_limits(claims)
         .saturating_add(held_above(&claims.framing))
         .saturating_add(held_above(&claims.tools))
-        .saturating_add(claims.newest.want())
+        .saturating_add(claims.newest.whole())
         .saturating_add(claims.reply.floor_tokens)
 }
 

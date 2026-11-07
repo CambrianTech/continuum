@@ -392,7 +392,7 @@
     // what this catches: a board with no count cap reaching her as one line, or as a level that
     // drops her first card or the board's counts. work/list lists every match (its default count
     // is gone); the result goes on one card per line, and the level the one allocation shows when
-    // the board outgrows the window (`operation_level`, `prompt/newest_result.rs`) keeps the first
+    // the board outgrows the window (`operation_level`, for a result older than her newest) keeps the first
     // card whole, the counts after the list, and the marker that reopens the rest.
     #[test]
     fn a_board_larger_than_the_window_shows_its_first_card_whole_and_the_rest_behind_a_handle() {

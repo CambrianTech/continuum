@@ -279,6 +279,11 @@ pub enum Reopen<'a> {
     Act(u64),
     /// A saved output, by the id its preview named.
     Output(&'a str),
+    /// A range of a saved output's lines (`spill::LineRange`, its end the output's own when
+    /// open): where a page of it shown short continues.
+    Lines { output: &'a str, range: spill::LineRange },
+    /// A saved output's bytes from `offset`: where a page cut inside one line continues.
+    Bytes { output: &'a str, offset: u64 },
 }
 
 impl Reopen<'_> {
@@ -286,6 +291,10 @@ impl Reopen<'_> {
         match self {
             Reopen::Act(act) => ToolOutputParams { act: Some(act), ..Default::default() },
             Reopen::Output(handle) => ToolOutputParams { handle: Some(handle.to_owned()), ..Default::default() },
+            Reopen::Lines { output, range } => {
+                ToolOutputParams { handle: Some(output.to_owned()), start_line: Some(range.start), end_line: range.end, ..Default::default() }
+            }
+            Reopen::Bytes { output, offset } => ToolOutputParams { handle: Some(output.to_owned()), byte_offset: Some(offset), ..Default::default() },
         }
     }
 }
@@ -513,7 +522,8 @@ mod tests {
         assert_eq!(offered, "read_output", "her list offers the trained reflex, its first alias");
         assert_eq!(Reopen::Act(3).to_string(), r#"read_output({"act":3})"#);
         assert_eq!(Reopen::Output("deadbeef").to_string(), r#"read_output({"outputId":"deadbeef"})"#);
-        for reopen in [Reopen::Act(3), Reopen::Output("deadbeef")] {
+        // A page's reading on (`prompt/newest_result.rs`) is the same call with its selection.
+        for reopen in [Reopen::Act(3), Reopen::Output("deadbeef"), Reopen::Lines { output: "deadbeef", range: spill::LineRange { start: 41, end: Some(900) } }, Reopen::Lines { output: "deadbeef", range: spill::LineRange { start: 41, end: None } }, Reopen::Bytes { output: "deadbeef", offset: 4_096 }] {
             let shown = reopen.to_string();
             let Some(args) = shown.strip_prefix(&format!("{offered}(")).and_then(|s| s.strip_suffix(')')) else {
                 panic!("{shown} is not a call of {offered}")
@@ -521,9 +531,12 @@ mod tests {
             let Ok(parsed) = serde_json::from_str::<ToolOutputParams>(args) else {
                 panic!("{args} does not parse as the command's params")
             };
-            assert_eq!((parsed.act, parsed.handle.as_deref()), match reopen {
-                Reopen::Act(n) => (Some(n), None),
-                Reopen::Output(h) => (None, Some(h)),
+            let selection = (parsed.act, parsed.handle.as_deref(), parsed.start_line, parsed.end_line, parsed.byte_offset);
+            assert_eq!(selection, match reopen {
+                Reopen::Act(n) => (Some(n), None, None, None, None),
+                Reopen::Output(h) => (None, Some(h), None, None, None),
+                Reopen::Lines { output, range } => (None, Some(output), Some(range.start), range.end, None),
+                Reopen::Bytes { output, offset } => (None, Some(output), None, None, Some(offset)),
             });
         }
     }

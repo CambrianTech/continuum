@@ -15,7 +15,7 @@
 //!   (`cut`), each source's floor its items' pointers and its want their wholes; the held-work
 //!   block actionable; `[recall]` is the grounding, each bullet whole or at its first line;
 //! - the act loop (from her first assistant message): the ask before it is the required input,
-//!   its last tool result her newest (whole or its first line), the assistant message before
+//!   its last tool result her newest (whole, or a page no smaller than its first line), the assistant message before
 //!   that her last move, the rest optional history;
 //! - the reply: her largest output in her previous twenty acts (at least 256) up to `maxTokens`.
 //!
@@ -29,7 +29,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use continuum_context::allocation::{allocate, id, ActClaims, ActPlan, Consumer, Head, Leveled, Priced, Rungs, Span, ViewClaim};
+use continuum_context::allocation::{allocate, id, ActClaims, ActPlan, Consumer, Head, Leveled, Newest, Priced, Rungs, Span, ViewClaim};
 use continuum_context::flex::FlexClaim;
 use continuum_context::price::{ActSample, ActTimeFit, ContextPrice};
 use serde_json::Value;
@@ -111,14 +111,14 @@ fn claims(act: &Act, reply_need: u32, price: ContextPrice) -> ActClaims {
     let loop_at = messages.iter().position(|(role, _)| *role == "assistant").unwrap_or(messages.len()); // unwrap_or: an act with no loop is all view and ask
     let ask_at = loop_at.checked_sub(1);
     let required = Leveled::one(Rungs::whole(ask_at.map_or(0, |at| tok(messages[at].1.chars().count())))); // map_or: no ask is no required input
-    let (mut newest, mut last_move, mut history) = (Leveled::default(), Leveled::default(), 0usize);
+    let (mut newest, mut last_move, mut history) = (Newest::Absent, Leveled::default(), 0usize);
     let looped = &messages[loop_at..];
     let newest_at = looped.iter().rposition(|(role, text)| *role == "user" && text.contains("\"tool_result\""));
     let move_at = newest_at.and_then(|at| looped[..at].iter().rposition(|(role, _)| *role == "assistant"));
     for (at, (_, text)) in looped.iter().enumerate() {
         let size = text.chars().count();
         if Some(at) == newest_at {
-            newest = Rungs::new([tok(size), tok(first_line(text))]).map_or_else(Leveled::default, Leveled::one); // map_or_else: an empty result is no result
+            newest = Newest::Pageable { whole: tok(size), least: tok(first_line(text)) };
         } else if Some(at) == move_at {
             last_move = Leveled::one(Rungs::whole(tok(size)));
         } else {
@@ -255,7 +255,8 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
                 for claim in priced.claims() {
                     println!("    {:<28} p{:>2} floor {:>6} want {:>7} | priced {:>6} | unpriced {:>6}", claim.source_id, claim.priority, claim.floor_tokens, claim.max_tokens, priced.granted(&claim.source_id), unpriced.granted(&claim.source_id));
                 }
-                for part in [id::FRAMING, id::TOOLS, id::GROUNDING, id::NEWEST] {
+                println!("    newest: priced {:?} unpriced {:?} least {:?}", priced.newest_shown(), unpriced.newest_shown(), priced.hard_limit(id::NEWEST));
+                for part in [id::FRAMING, id::TOOLS, id::GROUNDING] {
                     println!("    chosen {part}: priced {:?} unpriced {:?} hard limit {:?}", priced.chosen(part).map(|c| c.cost), unpriced.chosen(part).map(|c| c.cost), priced.hard_limit(part));
                 }
             }

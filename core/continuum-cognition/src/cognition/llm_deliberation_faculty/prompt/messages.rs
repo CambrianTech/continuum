@@ -378,7 +378,7 @@ impl LlmDeliberationFaculty {
                     let calls = wm.active_action_native_calls(seq);
                     let mut group = if calls.is_empty() {
                         // Legacy receipts have no native IDs to echo. Whole: the one allocation
-                        // reduces it by level when it alone exceeds her window
+                        // pages it only past what her window holds beside every other hard limit
                         // (`fit_newest_result`), never a head cut here (FOCUS-CONTRACT rule 4).
                         vec![ChatMessage::text("user", message)]
                     } else {
