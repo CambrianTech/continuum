@@ -307,6 +307,9 @@ pub struct StartSource {
     pub required: bool,
     pub floor: u32,
     pub grant: u32,
+    /// What its newest item costs whole: a growing source holds it before the rest is shared, so
+    /// her newest end never depends on how the shares divide (goal 7).
+    pub newest: u32,
 }
 
 /// A view start whose REQUIRED floors the plan did not fund: a typed refusal, never a silent drop
@@ -336,7 +339,8 @@ impl StartRefused {
 /// the start, or the typed [`StartRefused`]); then every optional floor, in priority order, while
 /// the start holds it (an optional floor that does not fit starts that source empty); then the
 /// fixed sources up to their grant, in priority order; then what is left shared among the growing
-/// sources in proportion to what each lacks of its grant. No source ever exceeds its grant.
+/// sources: first each one's newest item whole, then the rest in proportion to what each lacks of
+/// its grant. No source ever exceeds its grant.
 pub fn start_shares(start: u32, sources: &[StartSource]) -> Result<Vec<u32>, StartRefused> {
     if let Some(s) = sources.iter().find(|s| s.required && s.grant < s.floor) {
         return Err(StartRefused::Underfunded { floor: s.floor, grant: s.grant });
@@ -361,6 +365,15 @@ pub fn start_shares(start: u32, sources: &[StartSource]) -> Result<Vec<u32>, Sta
     }
     for &i in order.iter().filter(|&&i| sources[i].fixed) {
         let more = sources[i].grant.saturating_sub(shares[i]).min(left);
+        shares[i] += more;
+        left -= more;
+    }
+    // Each growing source's newest item, whole, before the proportional share: shared in
+    // proportion to what each lacks of its grant, a grant the reply's priority moved left her
+    // conversation 1 char short of her newest turn on an act and not on the pass before it
+    // (`reply_priority_grows_the_reply_not_at_history_or_required_input`, 2026-11-06).
+    for &i in order.iter().filter(|&&i| !sources[i].fixed) {
+        let more = sources[i].newest.min(sources[i].grant).saturating_sub(shares[i]).min(left);
         shares[i] += more;
         left -= more;
     }
