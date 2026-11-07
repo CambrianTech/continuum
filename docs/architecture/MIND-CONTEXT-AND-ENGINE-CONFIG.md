@@ -327,7 +327,7 @@ no faculty re-implements them:
 | prompt messages built outside the view and the fresh tail's one renderer (`ChatMessage::text`/`tool_results` in `llm_deliberation_faculty/prompt`) | 13 | the tail's single renderer only |
 | collapse outside the view (`collapse_over` / `collapse_results_over_cap` callers) | 4 | 0: working memory bounds RAM by handle, never what she sees |
 | hand churn labels (`churn_of` callers; production lines, ratchet `hand_churn_labels`) | 3 | 0: `Motion` orders every start |
-| positron `ViewState` kinds that are not context `Source`s | 13 | 0: one adapter, items with levels and expand handles |
+| positron `ViewState` kinds that are not context `Source`s | 13; 11 on 2026-11-07 (the kanban and the wall: one keyed item per card and post, `context_streams::blocks`) | 0: one adapter, items with levels and expand handles |
 
 **Media is the same codec** (Joel, 2026-10-26: "Should be positron. This is common across so
 much."). A frame (a screen, a camera, a room the minds share, an image in chat) is a positron
@@ -354,6 +354,10 @@ surface, observed back through her eyes and ears.
    `summary` with `continuum_context::levels::summarize(full, Shape::…)` (`Code` with the producer's
    line parser, `Output`, `List`). Its `pointer` names the handle that expands it. A source
    whose items accumulate (her acts) implements `fold` so its floor is one block.
+   A fold, and any group a source folds itself (a board's merged cards, its claimable cards beyond
+   the most recent), is a `continuum_context::nav::Node`: a label, a count and the typed command
+   that opens it, one line whatever the count. Off her focus a group shows its most recently
+   changed `nav::standing(n)` items (the geometric mean of 1 and n) and folds the rest.
 3. Add the source to the view's source list. Never push a prompt message, never collapse, never
    pick an order: the view appends, levels, admits, orders by measured motion and turns over.
 4. Prove it with a fixture in the source's test mod, then with the replay validator.

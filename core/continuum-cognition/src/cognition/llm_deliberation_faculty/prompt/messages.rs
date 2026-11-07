@@ -308,6 +308,7 @@ impl LlmDeliberationFaculty {
         let blocks: Vec<crate::cognition::context_streams::blocks::Grounding> = pieces
             .into_iter()
             .map(|c| {
+                use crate::cognition::context_streams::blocks::{Body, Grounding};
                 // Rendered by the owner of a block's body, so it reads exactly as it did:
                 // whole, and for a standing source also at its truthful minimum, what the
                 // flexbox collapses it to when the window is short.
@@ -316,9 +317,20 @@ impl LlmDeliberationFaculty {
                     piece.append_body(&mut text);
                     text
                 };
-                let text = render(GroundingPiece::whole(c));
-                let minimum = if c.standing_grounding { render(GroundingPiece::minimum(c)) } else { text.clone() };
-                crate::cognition::context_streams::blocks::Grounding { persona: self.persona_id, faculty: c.faculty.as_str().to_owned(), text, minimum, units: std::sync::Arc::clone(&c.units) }
+                // A source that delivered keyed units is state: one item per unit (`blocks`).
+                let body = if c.units.is_empty() {
+                    let text = render(GroundingPiece::whole(c));
+                    let minimum = if c.standing_grounding { render(GroundingPiece::minimum(c)) } else { text.clone() };
+                    Body::Atomic { text, minimum }
+                } else {
+                    let more = c.source_truncated.then(|| {
+                        let mut notice = String::new();
+                        GroundingPiece::append_notice(c, 0, &mut notice);
+                        notice
+                    });
+                    Body::Units { units: std::sync::Arc::clone(&c.units), expand: c.expand_command, more }
+                };
+                Grounding { persona: self.persona_id, faculty: c.faculty.as_str().to_owned(), body }
             })
             .collect();
         // A faculty that ran this cycle and said nothing has ended: its held version goes.
@@ -328,11 +340,7 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && c.fault.is_none() && c.trailing && c.content.trim().is_empty())
             .map(|c| c.faculty.as_str())
             .collect();
-        let blocks: Vec<_> = self
-            .carry_held_blocks(ws.activity_room_id, blocks, &ended)
-            .into_iter()
-            .flat_map(crate::cognition::context_streams::blocks::Grounding::split_tally)
-            .collect();
+        let blocks = self.carry_held_blocks(ws.activity_room_id, blocks, &ended);
         let result_pointers = Vec::new();
         let grounding_at = 0;
 
