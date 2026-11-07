@@ -39,12 +39,15 @@ impl Category {
 pub enum NoMove {
     /// What she asked for no longer exists anywhere: what she was shown of it is all there is.
     NothingMoreExists,
+    /// Nothing of hers is saved yet, so there is nothing to reopen.
+    NothingSaved,
 }
 
 impl std::fmt::Display for NoMove {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NoMove::NothingMoreExists => f.write_str("no call recovers it; what you were shown is all there is"),
+            NoMove::NothingSaved => f.write_str("none of your acts has a saved output yet"),
         }
     }
 }
