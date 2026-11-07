@@ -8,10 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 pub mod learning;
-pub use learning::{
-    credits_accepted_of, learning_terms, note_boundary_processed, note_credit_outcome_of, note_submission_staged,
-    CreditOutcome, CreditOutcomeCounts, LearningHour, ReviewQueue,
-};
+pub use learning::{learning_terms, CreditOutcome, CreditOutcomeCounts, LearningHour, ReviewQueue};
 
 /// One hour: long enough for a fair sample of a roster that gets a lane every few
 /// minutes, short enough that a starved evening is caught before it is a night.
@@ -403,6 +400,30 @@ pub fn rotation_candidates(
     out
 }
 
+/// A review decided `outcome` for `persona`'s credit (`learning`). `Accepted` is noted only where
+/// the acceptance is written, so it counts each settled credit once, and on her hour as well.
+pub fn note_credit_outcome_of(persona: uuid::Uuid, outcome: CreditOutcome) {
+    LEDGER.learning.note_outcome(outcome);
+    if outcome == CreditOutcome::Accepted {
+        MINDS.entry(persona).or_default().credits_accepted += 1;
+    }
+}
+
+/// Her credit accepted this hour: the per-mind read of [`note_credit_outcome_of`].
+pub fn credits_accepted_of(persona: uuid::Uuid) -> u64 {
+    MINDS.get(&persona).map_or(0, |m| m.credits_accepted) // map_or: no row this hour = nothing accepted, the truth
+}
+
+/// A board submission was bound to her staged credit (a fresh binding, never a replay).
+pub fn note_submission_staged() {
+    LEDGER.learning.note_submission_staged();
+}
+
+/// A review boundary's dream consolidation finished (a fresh receipt, never a replay).
+pub fn note_boundary_processed() {
+    LEDGER.learning.note_boundary_processed();
+}
+
 pub fn snapshot_minds_and_reset() -> Vec<(uuid::Uuid, MindHour)> {
     let out: Vec<(uuid::Uuid, MindHour)> = MINDS.iter().map(|e| (*e.key(), e.value().clone())).collect();
     MINDS.clear();
@@ -760,7 +781,7 @@ pub enum Read {
 }
 
 impl Read {
-    pub(crate) fn of(self, counter: &AtomicU64) -> u64 {
+    fn of(self, counter: &AtomicU64) -> u64 {
         match self {
             Self::Close => counter.swap(0, Ordering::Relaxed),
             Self::Peek => counter.load(Ordering::Relaxed),
@@ -802,7 +823,7 @@ pub fn hour(read: Read) -> HourCounters {
         acts: read.of(&LEDGER.acts),
         writes: read.of(&LEDGER.writes),
         lanes_granted: read.of(&LEDGER.lanes_granted),
-        learning: LEDGER.learning.read(read),
+        learning: LEDGER.learning.read(|c| read.of(c)),
         stops: LEDGER.stops.read(|c| read.of(c)),
         lane_starved: read.of(&LEDGER.lane_starved),
         generations: read.of(&LEDGER.generations),

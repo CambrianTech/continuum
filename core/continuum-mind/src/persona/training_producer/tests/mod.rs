@@ -221,7 +221,7 @@
         assert_eq!(plan.completion, SILENCE_COMPLETION);
         assert!(plan.prompt.starts_with("[wake]"));
         assert!(
-            plan.quality >= MIN_TRAINING_QUALITY,
+            plan.quality >= TRAINING_QUALITY_BAR,
             "curated floor clears the chat gate"
         );
         assert!(plan.stamp.is_none());

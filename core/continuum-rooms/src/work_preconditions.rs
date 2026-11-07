@@ -26,7 +26,7 @@
 //! (Cormac, after this merges).
 
 use airc_core::PeerId;
-use airc_work::{CardState, ClaimId, WorkCard, WorkCardId};
+use airc_work::{CardState, ClaimId, PullRequestRef, WorkCard, WorkCardId};
 
 use crate::card_holder::refused_by_claim;
 
@@ -444,6 +444,41 @@ pub fn decide<T>(decision: Result<T, Unmet>, card_now: &WorkCard, actor: PeerId,
     decision.map_err(|unmet| Refusal::at(unmet, card_now, actor, at_ms))
 }
 
+/// A code card that is not over, with a pull request linked and no submission: her work, which no
+/// reviewer can judge until it is submitted (a verdict names a submission). The board counts these
+/// (`review_queue`); her held card turns one into her [`NextMove`].
+pub fn unsubmitted_pull_request(card: &WorkCard) -> Option<&PullRequestRef> {
+    let live = !matches!(card.state, CardState::Merged | CardState::Closed);
+    let code = CardRole::of(card) == CardRole::Code;
+    card.pull_request.as_ref().filter(|_| live && code && card.submissions.is_empty())
+}
+
+/// The move her held card owes before anything else can happen to it, when there is one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NextMove {
+    /// Her pull request is linked to the card but was never submitted: submitting it is what lets
+    /// a reviewer judge it and her credit settle (Benchy's #5791 on the M5, 2026-11-07, sat in
+    /// Review with no submission, and a reviewer's verdict was refused).
+    SubmitLinkedPullRequest { pull_request: PullRequestRef },
+}
+
+impl NextMove {
+    /// The verb the move calls.
+    pub const fn verb(&self) -> WorkVerb {
+        match self {
+            NextMove::SubmitLinkedPullRequest { .. } => WorkVerb::Submit,
+        }
+    }
+}
+
+/// `actor`'s next move on `card` at `now_ms`: offered only when its verb's precondition holds, the
+/// same predicate the verb executes under ([`check`]).
+pub fn next_move(card: &WorkCard, actor: PeerId, now_ms: u64) -> Option<NextMove> {
+    let pull_request = unsubmitted_pull_request(card)?;
+    let next = NextMove::SubmitLinkedPullRequest { pull_request: pull_request.clone() };
+    check(next.verb(), card, actor, now_ms).is_ok().then_some(next)
+}
+
 /// A card she holds: its role, when it entered its current state (the producer's revision of
 /// it, so a re-entry is a new occurrence), and what she has in hand on it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -453,8 +488,8 @@ pub struct Held {
     /// The board's `updated_at_ms` at the first read that saw the card in its current state.
     pub entered_ms: u64,
     pub in_hand: Vec<&'static str>,
-    /// The move the card owes before anything else can happen to it (`review_queue::next_move`).
-    pub next: Option<crate::review_queue::NextMove>,
+    /// The move the card owes before anything else can happen to it ([`next_move`]).
+    pub next: Option<NextMove>,
 }
 
 impl Held {
@@ -463,7 +498,7 @@ impl Held {
         (card.owner == Some(holder)).then(|| Self {
             role: CardRole::of(&card),
             in_hand: in_hand(&card, holder, now_ms),
-            next: crate::review_queue::next_move(&card, holder, now_ms),
+            next: next_move(&card, holder, now_ms),
             entered_ms,
             card,
         })
@@ -495,6 +530,32 @@ pub fn fixture_card(state: CardState, owner: Option<PeerId>, reviews: Option<Wor
         reviews,
         submissions: Vec::new(),
         last_submission_rejection: None,
+    }
+}
+
+/// A pull request for tests: Benchy's #5791, linked from `benchy/fix` onto canary.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn fixture_pull_request() -> PullRequestRef {
+    PullRequestRef {
+        repo: airc_work::RepoId::new("acme/continuum").expect("a fixed, valid repo id"), // expect: a literal RepoId accepts
+        number: 5791,
+        head: airc_work::BranchName::new("benchy/fix").expect("a valid branch"), // expect: a literal branch name
+        base: airc_work::BranchName::new("canary").expect("a valid branch"),     // expect: as above
+    }
+}
+
+/// A submission of `card` for tests, published by its owner under its claim.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn fixture_submission(card: &WorkCard) -> airc_work::WorkSubmission {
+    airc_work::WorkSubmission {
+        submission_id: airc_work::SubmissionId::from_u128(9),
+        card_id: card.card_id,
+        claim_id: card.claim_id.expect("an owned fixture has a claim"), // expect: the fixture claims an owned card
+        instance: "i".into(),
+        base_sha: airc_work::GitObjectId::new("abc123").expect("hex"), // expect: a literal hex id
+        artifact: airc_blobs::MediaRef { hash: airc_blobs::ContentHash::from_bytes(b"patch"), size_bytes: 5, mime: None },
+        publisher: card.owner.expect("an owned fixture"), // expect: the fixture names its owner
+        submitted_at_ms: 1,
     }
 }
 
@@ -711,6 +772,30 @@ mod tests {
         }
         let taken = board.card(card_id).expect("still on the board"); // expect: claimed above
         assert_eq!((taken.owner, taken.claim_id), (Some(other()), Some(ClaimId::from_u128(0xc2))), "taken over, on the record");
+    }
+
+    // what this catches: Benchy's #5791 on the M5, 2026-11-07: her held card in Review with a PR
+    // linked and no submission, so no reviewer could file a verdict and nothing told her. Her
+    // surface names work/submit for that card, only while the card is hers to submit, and not once
+    // a submission exists, nor on a review card or a card that is over.
+    #[test]
+    fn a_held_card_with_a_linked_pr_and_no_submission_yields_the_submit_move() {
+        let mut card = fixture_card(S::Review, Some(her()), None, "fix the thing");
+        card.pull_request = Some(fixture_pull_request());
+        let next = next_move(&card, her(), NOW).expect("the unsubmitted PR is her next move"); // expect: asserted
+        assert_eq!(next, NextMove::SubmitLinkedPullRequest { pull_request: fixture_pull_request() });
+        assert_eq!(next.verb(), WorkVerb::Submit);
+        assert_eq!(Held::of(card.clone(), her(), NOW, 1).and_then(|held| held.next), Some(next), "her held card carries it");
+        assert_eq!(next_move(&card, other(), NOW), None, "not hers to submit");
+        let mut submitted = card.clone();
+        submitted.submissions = vec![fixture_submission(&card)];
+        assert_eq!(next_move(&submitted, her(), NOW), None, "submitted: a reviewer can judge it");
+        let mut review = fixture_card(S::Claimed, Some(her()), Some(parent()), "r");
+        review.pull_request = Some(fixture_pull_request());
+        assert_eq!(next_move(&review, her(), NOW), None, "a review card's word is a verdict");
+        let mut merged = card;
+        merged.state = S::Merged;
+        assert_eq!(next_move(&merged, her(), NOW), None, "its work is over");
     }
 
     // what this catches: a verb or state the predicates do not answer (each `match` above has no

@@ -22,8 +22,6 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{Read, LEDGER, MINDS};
-
 /// What a review decided about her credit, as the health line counts it. A projection of the
 /// credit owner's state (`ReviewedCreditState`, which maps onto it exhaustively), so a new state
 /// fails to compile until it is counted somewhere.
@@ -102,7 +100,7 @@ impl CreditOutcomeCounts {
     }
 }
 
-/// The learning counters, fed only by the `note_*` functions below.
+/// The learning counters: the parent ledger holds one and feeds it from its `note_*` seams.
 pub(crate) struct LearningCounters {
     outcomes: [AtomicU64; CreditOutcome::ALL.len()],
     submissions_staged: AtomicU64,
@@ -124,15 +122,28 @@ impl LearningCounters {
         }
     }
 
-    pub(crate) fn read(&self, read: Read) -> LearningHour {
+    pub(crate) fn note_outcome(&self, outcome: CreditOutcome) {
+        self.outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_submission_staged(&self) {
+        self.submissions_staged.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_boundary_processed(&self) {
+        self.boundaries_processed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Every counter read one way (`take`: a close swaps to zero, a peek loads).
+    pub(crate) fn read(&self, take: impl Fn(&AtomicU64) -> u64) -> LearningHour {
         let mut outcomes = CreditOutcomeCounts::default();
         for outcome in CreditOutcome::ALL {
-            outcomes.0[outcome.index()] = read.of(&self.outcomes[outcome.index()]);
+            outcomes.0[outcome.index()] = take(&self.outcomes[outcome.index()]);
         }
         LearningHour {
             outcomes,
-            submissions_staged: read.of(&self.submissions_staged),
-            boundaries_processed: read.of(&self.boundaries_processed),
+            submissions_staged: take(&self.submissions_staged),
+            boundaries_processed: take(&self.boundaries_processed),
         }
     }
 }
@@ -154,30 +165,6 @@ pub struct ReviewQueue {
     pub awaiting_reviewer: u64,
     /// Code cards with a pull request linked and no submission: no reviewer can file a verdict.
     pub unsubmitted_pull_requests: u64,
-}
-
-/// A review decided `outcome` for `persona`'s credit. `Accepted` is noted only where the
-/// acceptance is written, so it counts each settled credit once.
-pub fn note_credit_outcome_of(persona: uuid::Uuid, outcome: CreditOutcome) {
-    LEDGER.learning.outcomes[outcome.index()].fetch_add(1, Ordering::Relaxed);
-    if outcome == CreditOutcome::Accepted {
-        MINDS.entry(persona).or_default().credits_accepted += 1;
-    }
-}
-
-/// Her credit accepted this hour: the per-mind read of [`note_credit_outcome_of`].
-pub fn credits_accepted_of(persona: uuid::Uuid) -> u64 {
-    MINDS.get(&persona).map_or(0, |m| m.credits_accepted) // map_or: no row this hour = nothing accepted, the truth
-}
-
-/// A board submission was bound to her staged credit (a fresh binding, never a replay).
-pub fn note_submission_staged() {
-    LEDGER.learning.submissions_staged.fetch_add(1, Ordering::Relaxed);
-}
-
-/// A review boundary's dream consolidation finished (a fresh receipt, never a replay).
-pub fn note_boundary_processed() {
-    LEDGER.learning.boundaries_processed.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The line's learning terms: every credit outcome side by side, never summed, then the
@@ -211,15 +198,18 @@ mod tests {
     fn every_outcome_is_counted_in_its_own_counter_and_the_window_resets() {
         let counters = LearningCounters::new();
         for outcome in CreditOutcome::ALL {
-            counters.outcomes[outcome.index()].fetch_add(outcome.index() as u64 + 1, Ordering::Relaxed);
+            for _ in 0..=outcome.index() {
+                counters.note_outcome(outcome);
+            }
         }
-        counters.submissions_staged.fetch_add(2, Ordering::Relaxed);
-        let peek = counters.read(Read::Peek);
+        counters.note_submission_staged();
+        counters.note_submission_staged();
+        let peek = counters.read(|c| c.load(Ordering::Relaxed));
         for outcome in CreditOutcome::ALL {
             assert_eq!(peek.outcomes.of(outcome), outcome.index() as u64 + 1, "{outcome:?}");
         }
-        assert_eq!(counters.read(Read::Close).submissions_staged, 2);
-        assert_eq!(counters.read(Read::Peek), LearningHour::default());
+        assert_eq!(counters.read(|c| c.swap(0, Ordering::Relaxed)).submissions_staged, 2);
+        assert_eq!(counters.read(|c| c.load(Ordering::Relaxed)), LearningHour::default());
     }
 
     // what this catches: the line folding outcomes into one number, naming the deleted benchmark

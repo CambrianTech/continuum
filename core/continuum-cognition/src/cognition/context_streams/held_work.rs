@@ -15,9 +15,8 @@ use continuum_context::source::{Item, Source};
 
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::card_facts::state_str;
-use crate::cognition::work_preconditions::{CardRole, Held};
+use crate::cognition::work_preconditions::{CardRole, Held, NextMove};
 use crate::cognition::workspace::{EndedClaim, HeldWork};
-use crate::cognition::review_queue::NextMove;
 
 /// The occurrence of a held card's rendering: its card, the state entry it belongs to, and the
 /// rendered projection itself (`whole`).
@@ -184,12 +183,7 @@ mod tests {
     #[test]
     fn a_linked_pr_with_no_submission_is_her_next_move() {
         let mut card = held(1, CardState::Review, None, 10).card;
-        card.pull_request = Some(airc_work::PullRequestRef {
-            repo: airc_work::RepoId::new("acme/continuum").expect("a fixed, valid repo id"), // expect: a literal RepoId accepts
-            number: 5791,
-            head: airc_work::BranchName::new("benchy/fix").expect("a valid branch"), // expect: a literal branch
-            base: airc_work::BranchName::new("canary").expect("a valid branch"),     // expect: as above
-        });
+        card.pull_request = Some(crate::cognition::work_preconditions::fixture_pull_request());
         let held = Held::of(card, her(), FIXTURE_NOW_MS, 10).expect("she owns the fixture"); // expect: the fixture names her owner
         let items = stream(vec![held], None).items();
         let text = items[0].full().text();
