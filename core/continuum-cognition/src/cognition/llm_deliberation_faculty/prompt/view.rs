@@ -76,10 +76,24 @@ impl LlmDeliberationFaculty {
         binding: &Arc<ModelBinding>,
         view: &DeliberationPromptView,
         engine_prompt_tokens: u32,
-        engine_cached_tokens: u32,
+        timing: Option<&crate::ai::types::GenerationTiming>,
         available: u32,
         served: &str,
     ) {
+        // No timing on the reply = nothing measured as reused = nothing rides free.
+        let engine_cached_tokens = timing.map_or(0, |t| t.cached_tokens); // map_or: no timing reused nothing
+        // Her act's engine timing joins what holding context costs her on this binding.
+        let mut act_time = self.act_time_on(binding);
+        if let Some(t) = timing {
+            act_time.observe(&continuum_context::price::ActSample {
+                input: engine_prompt_tokens,
+                cached: t.cached_tokens,
+                fresh: t.prefill_tokens,
+                prefill_ms: t.prefill_ms,
+                output: t.decode_tokens,
+                decode_ms: t.decode_ms,
+            });
+        }
         let Some((density, calibration, reading)) =
             self.density_on(binding).observe(view.estimated_prompt_tokens, engine_prompt_tokens, served)
         else {
@@ -90,6 +104,7 @@ impl LlmDeliberationFaculty {
             calibration,
             available,
             density,
+            act_time,
         })));
         continuum_base::probe!(
             class = "delib.prompt.density",
@@ -107,6 +122,13 @@ impl LlmDeliberationFaculty {
             template = ?super::template::TemplateEstimate::from_measurement(&binding.adapter.template_overhead(binding.requested_model())),
             "the engine's count of this prompt, retained in her density; the next prompt is fitted at its bound"
         );
+    }
+
+    /// Her acts' timing fit on `binding`: the one her last feedback carried when it applies to this
+    /// binding, else empty (a new model, adapter or window measures afresh, as her density does).
+    pub(in super::super) fn act_time_on(&self, binding: &ModelBinding) -> continuum_context::price::ActTimeFit {
+        let feedback = self.prompt_feedback.load();
+        feedback.as_ref().filter(|feedback| feedback.applies_to(binding)).map_or_else(Default::default, |feedback| feedback.act_time) // map_or_else: no feedback on this binding has measured nothing
     }
 
     /// Her measured density on `binding`: the ring her last feedback carried when it applies to
@@ -266,6 +288,9 @@ impl LlmDeliberationFaculty {
                 history: continuum_context::allocation::Span { floor: 0, min: 0, want: claim(optional_history.saturating_sub(history_floor)) },
                 reply,
                 view: view_claims,
+                // What holding context costs her act on this binding, measured from her own acts:
+                // the allocation holds the window where her value per second peaks.
+                price: self.act_time_on(&self.binding.load()).price(),
             },
         );
         let allocation_us = started.elapsed().as_micros() as u64;
@@ -370,6 +395,8 @@ impl LlmDeliberationFaculty {
             tools_limit = act.hard_limit(claim_id::TOOLS).unwrap_or(0), // unwrap_or: tools are always a leveled part
             searched_cells = act.searched.as_ref().map_or(0, |s| s.cells), // map_or: no search when every hard limit together did not fit
             search_refined = act.searched.as_ref().is_some_and(|s| s.refined),
+            // The window the time price of context held (or why none: unmeasured, window binds).
+            priced = ?act.priced,
             allocation_us,
             reply_priority = reply_claimed.map_or(0, |r| r.priority), // map_or: the reply is always claimed; 0 reads as absent
             reply_floor = reply_claimed.map_or(0, |r| r.floor_tokens), // map_or: as above

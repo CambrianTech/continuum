@@ -371,6 +371,7 @@ impl LlmDeliberationFaculty {
                         available: fit_window,
                         // Her replies' density survives the refusal; the next reply prices at its bound again.
                         density: self.density_on(&binding),
+                        act_time: self.act_time_on(&binding),
                     })));
                     continuum_base::probe!(
                         class = "delib.prompt.refit",
@@ -488,8 +489,7 @@ impl LlmDeliberationFaculty {
                         &binding,
                         &view,
                         response.usage.input_tokens,
-                        // No timing on the reply = nothing measured as reused = nothing rides free.
-                        response.timing.as_ref().map_or(0, |t| t.cached_tokens),
+                        response.timing.as_ref(),
                         fit_window,
                         &response.model,
                     );

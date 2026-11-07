@@ -39,6 +39,7 @@ fn claims(window_newest: Leveled, view: Vec<FlexClaim>, reply_priority: u8) -> A
         history: Span { floor: 0, min: 0, want: 600 },
         reply: reply(800, 2_400, reply_priority),
         view,
+        price: ContextPrice::Unmeasured,
     }
 }
 
@@ -251,6 +252,7 @@ fn every_leveled_claims_floor_is_its_items_hard_limit() {
         history: Span { floor: 0, min: 0, want: 4_000 },
         reply: reply(446, 2_000, 10),
         view: vec![FlexClaim { required: true, ..view_source("conversation", 4, 1_500, 9_000) }],
+        price: ContextPrice::Unmeasured,
     };
     let limits = 1_900 + 11 + 12 + 300 + 23 * 25 + 38 + 1_500;
     let roomy = allocate(60_000, act());
@@ -360,6 +362,7 @@ fn act_through_the_view(day: &Recorded, view: &mut View<String>, sources: &[&dyn
         history: Span::default(),
         reply: reply(day.reply_tokens.value, day.reply_tokens.value, 8),
         view: source_claims.iter().map(as_claim).collect(),
+        price: ContextPrice::Unmeasured,
     };
     let plan = allocate(day.aris_window.value, act_claims);
     assert!(plan.irreducible_shortfall().is_none(), "her working set fits her window: no grant growth");

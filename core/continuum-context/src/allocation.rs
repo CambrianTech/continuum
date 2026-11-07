@@ -18,6 +18,9 @@
 //!   they leave, so a window too small for every part whole collapses what matters least first, by
 //!   level, and the turn is short only when every hard limit together does not fit (Joel,
 //!   2026-11-07: "The rag budgeting should collapse rather than crap out");
+//! - context has a price ([`priced`], card 7b7a696a): every token she holds slows every act by
+//!   her measured seconds ([`crate::price`]), so the plan holds the window where her act's value
+//!   per second peaks, never simply the window it was served; unmeasured prices nothing;
 //! - her view's START is arithmetic on the one plan ([`ActPlan::start_room`],
 //!   [`start_shares`]), never a second allocation;
 //! - irreducible growth is typed apart from reducible history: required floors past the window
@@ -29,7 +32,10 @@
 
 use crate::flex::{flex_allocate, turn_need, AllocationState, FlexAllocation, FlexClaim};
 pub use crate::ladder::{Choice, Leveled, Rungs};
+pub mod priced;
 pub mod search;
+use crate::price::ContextPrice;
+pub use priced::Priced;
 use search::{overflow, search, Group, Searched};
 
 /// The claim ids of an act's allocation.
@@ -122,6 +128,10 @@ pub struct ActClaims {
     pub reply: FlexClaim,
     /// Each source of her view, `view/<source>`, at the source's priority.
     pub view: Vec<FlexClaim>,
+    /// What holding context costs her act on the node and model serving her ([`crate::price`]):
+    /// the allocation holds the window where her value per second peaks ([`priced`]).
+    /// `Unmeasured` prices nothing and fills the window as before.
+    pub price: ContextPrice,
 }
 
 /// Every hard limit and her reply's measured need past the window: growth no collapse can make,
@@ -161,6 +171,8 @@ pub struct ActPlan {
     rise: Vec<(&'static str, Choice)>,
     /// What the search did this act; `None` when every hard limit together did not fit.
     pub searched: Option<Searched>,
+    /// What the time price of context decided: the window this plan holds within the served one.
+    pub priced: Priced,
 }
 
 /// The fixed, required claim of one part.
@@ -228,21 +240,34 @@ pub fn first_guess(window: u32, groups: &[Group], continuous: &[FlexClaim]) -> V
         .collect()
 }
 
-/// THE allocation of one act: `window` tokens shared across `claims`, once. Every leveled part
+/// THE allocation of one act: the window her act holds ([`priced::hold`]: where her value per
+/// second peaks, never past `window`), shared across `claims`.
+pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
+    priced::hold(window, claims)
+}
+
+/// Every hard limit of `claims` that the search never reduces: framing, the required input, her
+/// tools and her last move at their hard limits, and her view's required floors.
+fn hard_limits(claims: &ActClaims) -> u32 {
+    let view_floors = turn_need(&claims.view.iter().filter(|claim| claim.required).cloned().collect::<Vec<_>>());
+    claims
+        .framing
+        .leveled
+        .hard_limit()
+        .saturating_add(claims.required.hard_limit())
+        .saturating_add(claims.tools.leveled.hard_limit())
+        .saturating_add(claims.last_move.hard_limit())
+        .saturating_add(view_floors)
+}
+
+/// The plan of one act at `window` tokens shared across `claims`, once. Every leveled part
 /// answers "the most you can show within this" ([`Leveled::reduce`]); their levels are searched
 /// together ([`search`]), and the continuous parts share what the levels leave through the
 /// flexbox. The turn is short only when every hard limit together does not fit
 /// ([`ActPlan::irreducible_shortfall`], naming the binding one).
-pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
-    let ActClaims { framing, required, newest, tools, grounding, last_move, history, reply, view } = claims;
-    let view_floors = turn_need(&view.iter().filter(|claim| claim.required).cloned().collect::<Vec<_>>());
-    let hard = framing
-        .leveled
-        .hard_limit()
-        .saturating_add(required.hard_limit())
-        .saturating_add(tools.leveled.hard_limit())
-        .saturating_add(last_move.hard_limit())
-        .saturating_add(view_floors);
+fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
+    let hard = hard_limits(&claims);
+    let ActClaims { framing, required, newest, tools, grounding, last_move, history, reply, view, price: _ } = claims;
     // Her newest result is chosen before the search, among its own levels: whole whenever the
     // window holds it beside every HARD LIMIT (the reply's measured need included), else the
     // largest level that does, else its coarsest. The detail above any part's hard limit and every
@@ -369,7 +394,7 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
         (id::GROUNDING, 0),
     ];
     chosen.push((id::NEWEST, newest_choice));
-    ActPlan { window, plan, claims: all, reply_need, newest_level, limits, hard_limits, chosen, lost, rise, searched }
+    ActPlan { window, plan, claims: all, reply_need, newest_level, limits, hard_limits, chosen, lost, rise, searched, priced: Priced::Unmeasured }
 }
 
 impl ActPlan {

@@ -418,6 +418,7 @@ fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window:
             history: Span::default(),
             reply,
             view: Vec::new(),
+            price: continuum_context::price::ContextPrice::Unmeasured,
         },
     );
     (faculty.granted_tools(ws, offer, &framing, &act, &charge), act)

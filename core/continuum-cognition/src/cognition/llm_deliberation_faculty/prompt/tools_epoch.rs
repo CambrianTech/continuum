@@ -297,6 +297,7 @@ mod review_growth_tests {
             grounding: Leveled::default(), last_move: Leveled::default(), history: Span::default(),
             reply: FlexClaim { source_id: id::REPLY.into(), priority: 1, floor_tokens: 0, min_tokens: 0, max_tokens: 0, required: false },
             view: Vec::new(),
+            price: continuum_context::price::ContextPrice::Unmeasured,
         });
         assert!(act.rise(id::FRAMING).is_some(), "fixture: actual allocator offers menu rise");
         assert!(act.rise(id::TOOLS).is_none(), "fixture: tools stay at same level");

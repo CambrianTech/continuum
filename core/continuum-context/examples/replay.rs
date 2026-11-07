@@ -47,6 +47,9 @@
 //!
 //! `--acts` is the act inspector (`replay/acts/`): one row per request each resident sent, joined
 //! to the engine log and her view's probes, with her summary; see `replay/acts/mod.rs`.
+//!
+//! `--act-price` measures what holding context costs an act on this node, per model
+//! (`replay/price.rs`, `continuum_context::price`).
 
 use std::collections::BTreeMap;
 
@@ -64,6 +67,8 @@ mod append;
 mod outline;
 #[path = "replay/paged.rs"]
 mod paged;
+#[path = "replay/price.rs"]
+mod price;
 #[path = "replay/sediment.rs"]
 mod sediment;
 use continuum_context::view::View;
@@ -538,6 +543,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--acts") {
         return acts::main(args.into_iter().filter(|arg| arg != "--acts").collect());
+    }
+    if args.iter().any(|arg| arg == "--act-price") {
+        return price::main(args.into_iter().filter(|arg| arg != "--act-price").collect());
     }
     let (mut room, mut purpose, mut keyed_turn, mut trace, mut paths) = (String::new(), String::from("deliberation"), false, false, Vec::new());
     // The growing sources' share of what a start leaves: `start_grants` gives them half.
