@@ -303,11 +303,65 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     }
     // The staged name: a bare .gguf the engine's confinement accepts, and two genes
     // sharing a file name in different folders never collide.
-    let a = gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf")).expect("stageable");
-    let b = gene_stage_name(std::path::Path::new("/genome/asha/adapter.gguf")).expect("stageable");
+    let a = gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf"));
+    let b = gene_stage_name(std::path::Path::new("/genome/asha/adapter.gguf"));
     assert_ne!(a, b);
-    assert!(a.starts_with("gene-adapter-") && a.ends_with(".gguf"));
+    assert!(a.starts_with("gene-") && a.ends_with(".gguf"));
+    assert_eq!(a, gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf")), "the same gene stages under the same name");
     assert!(!a.contains('/') && !a.contains("..") && a.len() <= 200);
+}
+
+// what this catches (IntelMac 2026-11-07, from=0 to=7): a core adopting a live engine reading
+// its adapter set as empty and relaunching it cold. The engine's own report maps back to genome
+// paths: a gene loaded at launch by its path, one loaded in place by its staged name, matched to
+// the target's gene; a gene the target dropped keeps the engine's path (to retire); and a target
+// whose genes the engine already holds compares equal to it, so nothing relaunches.
+#[test]
+fn an_adopted_engines_report_reads_back_as_the_genes_it_holds() {
+    let kimi = "/genome/kimi/adapter.gguf".to_string();
+    let asha = "/genome/asha/adapter.gguf".to_string();
+    let staged = format!("/cache/engine-train/{}", gene_stage_name(std::path::Path::new(&asha)));
+    let dropped = "/genome/old/retired.gguf".to_string();
+    let mut genes = vec![kimi.clone(), asha.clone()];
+    genes.sort();
+    let held = genome_paths_of(&[(0, kimi.clone()), (2, staged.clone())], &genes);
+    assert_eq!(held, genes, "launch path and staged name both read back as the target's genes");
+    let with_dropped = genome_paths_of(&[(0, kimi.clone()), (1, dropped.clone()), (2, staged)], &genes);
+    assert!(with_dropped.contains(&dropped), "a gene the target dropped stays visible to retire: {with_dropped:?}");
+    assert_ne!(with_dropped, genes);
+    assert!(genome_paths_of(&[], &genes).is_empty(), "an engine with nothing loaded holds nothing");
+}
+
+// what this catches (Codex on #5817): a train-dir answer standing in for a binary that was never
+// asked. Each binary's entry is its own: one asked and answered is never asked again, one never asked
+// (a promoted binary, another endpoint's) reads as unasked, and one that did not answer is "no" for
+// now and asked again at its next use.
+#[test]
+fn a_train_dir_answer_is_about_the_binary_asked_and_no_other() {
+    let probes = std::collections::BTreeMap::from([
+        ("/slots/engine-a/llama-server".to_string(), ProbeOutcome::Answered { train_dir: true }),
+        ("/slots/engine-b/llama-server".to_string(), ProbeOutcome::Unanswered),
+    ]);
+    assert_eq!(answer_for(&probes, "/slots/engine-a/llama-server"), Some(true));
+    assert!(!needs_asking(&probes, "/slots/engine-a/llama-server"), "answered: never asked again");
+    assert_eq!(answer_for(&probes, "/slots/engine-b/llama-server"), Some(false), "unanswered reads no for now");
+    assert!(needs_asking(&probes, "/slots/engine-b/llama-server"), "and is asked again at its next use");
+    assert_eq!(answer_for(&probes, "/slots/engine-c/llama-server"), None, "a promoted binary is unasked, never inherits");
+}
+
+// what this catches (Codex on #5817, review_failed_other_binary_probe_preserves_the_first_binary_answer):
+// the real probe, through its one record. A answers yes; a failed probe of another binary B; A asked
+// again must keep its yes and not be probed again (here its second command would answer no).
+#[tokio::test]
+async fn a_failed_probe_of_another_binary_leaves_the_first_binarys_answer() {
+    let (a, b) = ("test-probe-a/llama-server", "test-probe-b/llama-server");
+    let says = |help: &str| { let mut command = tokio::process::Command::new("echo"); command.arg(help); command };
+    ensure_engine_kv_support_recorded(a, says("--train-dir")).await;
+    assert_eq!(train_dir_support(a), Some(true), "A lists the flag");
+    ensure_engine_kv_support_recorded(b, tokio::process::Command::new("/nonexistent/test-probe-b")).await;
+    assert_eq!(train_dir_support(b), Some(false), "B did not answer: no, for now");
+    ensure_engine_kv_support_recorded(a, says("no-flags-here")).await;
+    assert_eq!(train_dir_support(a), Some(true), "A keeps its own answer and is not asked again");
 }
 
 // what this catches: nothing running (Unreachable) is NOT an error — it's

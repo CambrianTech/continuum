@@ -49,8 +49,7 @@ fn unregistered_adapter_is_a_miss() {
 #[test]
 fn a_runtime_loaded_gene_resolves_by_its_staged_name() {
     let gene = "/genome/kimi-coursework/adapter.gguf";
-    let stage = crate::inference::llama_server::gene_stage_name(std::path::Path::new(gene))
-        .expect("stageable");
+    let stage = crate::inference::llama_server::gene_stage_name(std::path::Path::new(gene));
     let mut loaded = catalog();
     loaded.push((2, format!("/home/x/.continuum/cache/engine-train/{stage}")));
     assert_eq!(OpenAICompatibleAdapter::match_lora_index(&loaded, "kimi", gene), Some(2));

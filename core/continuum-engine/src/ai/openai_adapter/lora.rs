@@ -72,12 +72,11 @@ impl OpenAICompatibleAdapter {
         // 2. a gene staged into the engine's --train-dir for a runtime load (charter S1):
         //    the catalog carries the staged file, named from the genome path
         if !path.is_empty() {
-            if let Some(stage) = crate::inference::llama_server::gene_stage_name(std::path::Path::new(path)) {
-                if let Some((id, _)) = catalog.iter().find(|(_, p)| {
-                    std::path::Path::new(p).file_name().and_then(|n| n.to_str()) == Some(stage.as_str())
-                }) {
-                    return Some(*id);
-                }
+            let stage = crate::inference::llama_server::gene_stage_name(std::path::Path::new(path));
+            if let Some((id, _)) = catalog.iter().find(|(_, p)| {
+                std::path::Path::new(p).file_name().and_then(|n| n.to_str()) == Some(stage.as_str())
+            }) {
+                return Some(*id);
             }
         }
         // 3. substring on path or name

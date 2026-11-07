@@ -43,7 +43,10 @@ pub struct LlamaServerProcess {
     /// with a persisting server this reads empty → one safe extra relaunch
     /// re-establishes the genome (core owns the lifecycle, so this is truthful in
     /// the steady state).
-    pub(super) served_adapters: Arc<StdMutex<Vec<String>>>,
+    /// The adapter set the served engine holds, as genome paths: `None` until this process launches
+    /// the engine or reads an adopted engine's own report (`active_adapters`), never an empty set
+    /// standing in for one it did not read.
+    pub(super) served_adapters: Arc<StdMutex<Option<Vec<String>>>>,
     /// The page-dir reservation of the CURRENT child when its registry record could
     /// not be written — kept until the owned child reports exit
     /// (see [`PageDirReservation`]). Empty when the record carries the dir.
@@ -146,7 +149,7 @@ impl LlamaServerProcess {
             loading: parking_lot::Mutex::new(None),
             retiring_adopted: parking_lot::Mutex::new(None),
             retiring_discard: parking_lot::Mutex::new(None),
-            served_adapters: Arc::new(StdMutex::new(Vec::new())),
+            served_adapters: Arc::new(StdMutex::new(None)),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // THE host's live lane — pins the canonical port, owns the reclaim
             // pidfile. `new()`/`with_client()` are the live constructors.
@@ -182,7 +185,7 @@ impl LlamaServerProcess {
             loading: parking_lot::Mutex::new(None),
             retiring_adopted: parking_lot::Mutex::new(None),
             retiring_discard: parking_lot::Mutex::new(None),
-            served_adapters: Arc::new(StdMutex::new(Vec::new())),
+            served_adapters: Arc::new(StdMutex::new(None)),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
             // It must never write the canonical pidfile or reclaim the live port.

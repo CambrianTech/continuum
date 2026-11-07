@@ -299,6 +299,8 @@ mod tests {
                 }
             }))
             .route("/slots", axum::routing::get(|| async { axum::Json(serde_json::json!([])) }))
+            // our fork's adapter report: an adopting core reads the set the engine holds (none here)
+            .route("/lora-adapters", axum::routing::get(|| async { axum::Json(serde_json::json!([])) }))
             .route("/props", axum::routing::get(move || {
                 let props_open = Arc::clone(&props_open);
                 async move {

@@ -47,12 +47,7 @@ impl LlamaServerProcess {
             crate::inference::engine_install::EngineInstallReceipt::prepare(bin.clone())
                 .await
                 .map_err(LlamaServerError::Spawn)?;
-        let engine_command = || -> Result<tokio::process::Command, LlamaServerError> {
-            match &engine_install {
-                Some(receipt) => receipt.command().map_err(LlamaServerError::Spawn),
-                None => Ok(tokio::process::Command::new(&bin)),
-            }
-        };
+        let engine_command = || super::kv_support::engine_command_of(&engine_install, &bin);
 
         let (host, port) = split_host_port(&self.root);
 
@@ -303,7 +298,7 @@ impl LlamaServerProcess {
             chat_template: chat_template.as_deref(),
             loras: &lora_paths,
             // only to an engine that lists the flag: an older one refuses to start with it
-            train_dir: train_dir.as_deref().filter(|_| engine_accepts_train_dir()),
+            train_dir: train_dir.as_deref().filter(|_| engine_accepts_train_dir(&bin)),
             expert_ot: expert_ot.as_deref(),
             host_pinned_tensors: target.model.serving.host_pinned_tensors,
             fit_off: target.model.serving.fit_off,

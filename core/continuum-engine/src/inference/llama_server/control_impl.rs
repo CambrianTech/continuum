@@ -56,17 +56,32 @@ impl LlamaServerControl for LlamaServerProcess {
         Ok(id)
     }
 
-    async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
-        // The set we launched the current child with. llama.cpp exposes no query
-        // for `/lora-adapters` contents, so the truthful answer is what WE loaded.
-        Ok(self.served_adapters.lock().unwrap().clone())
+    async fn active_adapters(&self, target: &ServingTarget) -> Result<Vec<String>, LlamaServerError> {
+        let poisoned = |_| LlamaServerError::Unreachable("the served adapter record is poisoned".into());
+        if let Some(known) = self.served_adapters.lock().map_err(poisoned)?.clone() {
+            return Ok(known); // the set this process launched or converged it to
+        }
+        // An engine this process did not launch (a core restart adopting it): its own report is
+        // the contract, never an empty record (IntelMac 2026-11-07: from=0 to=7 relaunched an
+        // engine serving 3 adapters, and every resident's KV went cold).
+        let catalog = self.lora_catalog().await?;
+        let known = super::genome::genome_paths_of(&catalog, &target.adapter_paths());
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.rehydrated",
+            model = target.model_id(),
+            adapters = known.len() as u64,
+            "an adopted engine's adapter set, read from its own report"
+        );
+        *self.served_adapters.lock().map_err(poisoned)? = Some(known.clone());
+        Ok(known)
     }
 
     async fn adopt_genome_in_place(
         &self,
         target: &ServingTarget,
     ) -> Result<GenomeInPlace, LlamaServerError> {
-        let Some(dir) = engine_train_dir().filter(|_| engine_accepts_train_dir()) else {
+        // an unasked binary is asked, never read as no; another binary's answer is not this one's
+        let takes = self.engine_takes_train_dir().await?;
+        let Some(dir) = engine_train_dir().filter(|_| takes) else {
             return Ok(GenomeInPlace::Unsupported);
         };
         self.converge_genome(&dir, target).await

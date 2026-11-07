@@ -1,16 +1,50 @@
 //! Genome responsibility of the llama-server process owner.
 use super::*;
+use std::collections::BTreeMap;
 /// Whether the serving engine accepts `--train-dir`, read off its own `--help` by the same
-/// once-per-process probe that reads its KV cache types. An engine older than the flag REJECTS
+/// once-per-binary probe that reads its KV cache types. An engine older than the flag REJECTS
 /// it and the lane does not start (2026-09-27: #4438 on canary would have put `--train-dir` on
 /// the 5090's lane while its engine was still b10765-965d38a90, because the deploy consumer
-/// converges the core but not the engine). Unknown — no probe, no answer — is NO: in-engine
-/// training is never worth a lane.
-pub(super) static ENGINE_TRAIN_DIR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// converges the core but not the engine). The record is the binary the probe last asked with its
+/// answer, because the answer is about that binary alone: a promoted binary (or another endpoint's)
+/// is not asked until it is asked itself (Codex on #5817). "Not asked yet" and "no" decide
+/// differently: a launch reads both as no (in-engine training is never worth a lane), but an
+/// in-place gene change asks first (IntelMac 2026-11-07: a core adopting a live engine read the
+/// unasked flag as no 71 ms before the probe answered yes, and relaunched the engine cold).
+pub(super) static ENGINE_PROBES: parking_lot::Mutex<BTreeMap<String, ProbeOutcome>> = parking_lot::Mutex::new(BTreeMap::new());
 
+/// What the support probe got from one engine binary: the one record of both "was it asked" and
+/// "what did it say", per binary, so asking one binary never touches another's (Codex on #5817: two
+/// single-slot records, a failed probe of B left A marked asked with B's "no", and A read "no").
+/// One entry per installed engine binary: a handful, never growing with use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ProbeOutcome {
+    /// It answered (`answered` or `did_not_enumerate`): never asked again.
+    Answered { train_dir: bool },
+    /// It was asked and did not answer: no, for now, and asked again at its next use.
+    Unanswered,
+}
 
-pub fn engine_accepts_train_dir() -> bool {
-    ENGINE_TRAIN_DIR.load(std::sync::atomic::Ordering::Relaxed) // unprobed or unanswered is false: the one answer that cannot keep a lane from starting
+/// What `bin` said about `--train-dir`: `None` until `bin` itself was asked.
+pub(super) fn train_dir_support(bin: &str) -> Option<bool> {
+    answer_for(&ENGINE_PROBES.lock(), bin)
+}
+
+/// PURE: what the record says about `bin`: its answer, no when it did not answer, nothing when it
+/// was never asked.
+pub(super) fn answer_for(probes: &BTreeMap<String, ProbeOutcome>, bin: &str) -> Option<bool> {
+    probes.get(bin).map(|outcome| matches!(outcome, ProbeOutcome::Answered { train_dir: true }))
+}
+
+/// PURE: whether `bin` needs asking: never asked, or asked without an answer.
+pub(super) fn needs_asking(probes: &BTreeMap<String, ProbeOutcome>, bin: &str) -> bool {
+    !matches!(probes.get(bin), Some(ProbeOutcome::Answered { .. }))
+}
+
+/// Whether `bin` accepts `--train-dir`. A launch reads "not asked yet" as no: the one answer that
+/// cannot keep a lane from starting.
+pub fn engine_accepts_train_dir(bin: &str) -> bool {
+    train_dir_support(bin) == Some(true)
 }
 
 
@@ -31,26 +65,41 @@ pub fn engine_train_dir() -> Option<PathBuf> {
 }
 
 
-/// PURE: the bare file name a gene is staged under inside the engine's --train-dir, the
-/// only folder `POST /lora-adapters/load` reads (a bare `.gguf` name: no separators, no
-/// "..", no control characters, at most 200 bytes). Keyed by the gene's own file name so the
-/// adapter catalog can be matched back to the genome path; `None` when that name cannot be
-/// made one (the gene then rides a relaunch, as before). The full path's hash rides in the
-/// name, so two genes that share a file name in different folders never collide.
-pub(crate) fn gene_stage_name(gene: &std::path::Path) -> Option<String> {
+/// PURE: the bare file name a gene is staged under inside the engine's --train-dir, the only
+/// folder `POST /lora-adapters/load` reads: `gene-<sha256 of its genome path, hex>.gguf`. The full
+/// hash is the gene's identity (two genes never share one), the name is the same for the same gene
+/// on every call, so the adapter catalog maps back to its genome path by recomputing it, and at
+/// 74 bytes it is always inside the engine's name confinement (`confine_out`, at most 200 bytes, no
+/// separators, no "..").
+pub(crate) fn gene_stage_name(gene: &std::path::Path) -> String {
     use sha2::Digest;
-    let stem = gene.file_stem()?.to_str()?;
-    let clean: String = stem
-        .chars()
-        .take(120)
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
-        .collect();
     let digest = sha2::Sha256::digest(gene.as_os_str().as_encoded_bytes());
-    let tag: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
-    clean
-        .chars()
-        .any(|c| c.is_ascii_alphanumeric())
-        .then(|| format!("gene-{clean}-{tag}.gguf"))
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("gene-{hex}.gguf")
+}
+
+
+/// PURE: an engine's catalog as genome paths. An adapter loaded at launch is listed by its own
+/// path; one loaded in place by the name it was staged under (`gene_stage_name`), matched back
+/// to the target's gene that stages to it; anything else keeps the engine's path (a gene the
+/// target dropped, to retire). Sorted like `ServingTarget::adapter_paths`, so the two compare.
+pub(super) fn genome_paths_of(catalog: &[(i64, String)], genes: &[String]) -> Vec<String> {
+    let mut paths: Vec<String> = catalog
+        .iter()
+        .map(|(_, path)| {
+            if genes.contains(path) {
+                return path.clone();
+            }
+            let base = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
+            match genes.iter().find(|gene| base == Some(gene_stage_name(std::path::Path::new(gene.as_str())).as_str())) {
+                Some(gene) => gene.clone(),
+                None => path.clone(),
+            }
+        })
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 
@@ -110,28 +159,31 @@ impl LlamaServerProcess {
         dir: &std::path::Path,
         target: &ServingTarget,
     ) -> Result<GenomeInPlace, LlamaServerError> {
-        let active = self.served_adapters.lock().unwrap().clone(); // JUSTIFIED: poison means a prior panic while recording the served set.
+        let Some(active) = self.served_adapters.lock().unwrap().clone() else { // JUSTIFIED: poison means a prior panic while recording the served set.
+            return Err(LlamaServerError::Unreachable("the engine's adapter set was never read: converge reads it first (active_adapters)".into()));
+        };
         let desired = target.adapter_paths();
         let added: Vec<&String> = desired.iter().filter(|p| !active.contains(p)).collect();
         let removed: Vec<&String> = active.iter().filter(|p| !desired.contains(p)).collect();
         let mut staged = Vec::with_capacity(added.len());
         for gene in &added {
-            let Some(name) = gene_stage_name(std::path::Path::new(gene.as_str())) else {
-                return Ok(GenomeInPlace::Unsupported);
-            };
-            staged.push((PathBuf::from(gene.as_str()), name));
+            staged.push((PathBuf::from(gene.as_str()), gene_stage_name(std::path::Path::new(gene.as_str()))));
         }
         // Every step the engine accepts is recorded at once, so an early return (a busy
         // retire, an error) leaves the served set naming exactly what the engine holds;
         // the next tick converges the rest (Codex on #4467: two retires, the second busy,
         // left the first advertised although the engine had freed it).
-        let record = |gene: &str, held: bool| {
-            let mut served = self.served_adapters.lock().unwrap(); // JUSTIFIED: poison means a prior panic while recording the served set.
+        let record = |gene: &str, held: bool| -> Result<(), LlamaServerError> {
+            let mut guard = self.served_adapters.lock().unwrap(); // JUSTIFIED: poison means a prior panic while recording the served set.
+            let Some(served) = guard.as_mut() else {
+                return Err(LlamaServerError::Unreachable("the engine's adapter set was never read: converge reads it first (active_adapters)".into()));
+            };
             served.retain(|p| p != gene);
             if held {
                 served.push(gene.to_string());
                 served.sort();
             }
+            Ok(())
         };
         // Retire first, so a refused retire (a turn holds the gene) stops the change before
         // any new gene joins.
@@ -141,18 +193,16 @@ impl LlamaServerProcess {
                 let stage = gene_stage_name(std::path::Path::new(gene.as_str()));
                 let id = catalog.iter().find_map(|(id, path)| {
                     let base = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
-                    (path == *gene || (stage.is_some() && base == stage.as_deref())).then_some(*id)
+                    (path == *gene || base == Some(stage.as_str())).then_some(*id)
                 });
                 let Some(id) = id else {
-                    record(gene, false); // not loaded: nothing to retire, and not served
+                    record(gene, false)?; // not loaded: nothing to retire, and not served
                     continue;
                 };
                 match self.lora_post("unload", serde_json::json!({ "id": id })).await? {
                     LoraPost::Done => {
-                        record(gene, false);
-                        if let Some(name) = &stage {
-                            let _ = std::fs::remove_file(dir.join(name)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
-                        }
+                        record(gene, false)?;
+                        let _ = std::fs::remove_file(dir.join(&stage)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
                     }
                     LoraPost::Busy => return Ok(GenomeInPlace::Busy),
                     LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
@@ -167,7 +217,7 @@ impl LlamaServerProcess {
                 .map_err(|e| LlamaServerError::Spawn(format!("staging a gene panicked: {e}")))?
                 .map_err(|e| LlamaServerError::AdapterNotFound(format!("{name}: {e}")))?;
             match self.lora_post("load", serde_json::json!({ "name": name })).await? {
-                LoraPost::Done => record(&gene_key, true),
+                LoraPost::Done => record(&gene_key, true)?,
                 LoraPost::Busy => return Ok(GenomeInPlace::Busy),
                 LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
             }
@@ -191,17 +241,16 @@ impl LlamaServerProcess {
         }
         let body: serde_json::Value =
             resp.json().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
-        Ok(body
-            .as_array()
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|e| {
-                        Some((e.get("id")?.as_i64()?, e.get("path")?.as_str()?.to_string()))
-                    })
-                    .collect()
+        // A malformed answer is an error, never an empty set: an empty read is what relaunched
+        // an engine serving 3 adapters (IntelMac 2026-11-07, from=0).
+        let entries = body.as_array().ok_or_else(|| LlamaServerError::Unreachable("/lora-adapters answered no array".into()))?;
+        entries
+            .iter()
+            .map(|e| match (e.get("id").and_then(|v| v.as_i64()), e.get("path").and_then(|v| v.as_str())) {
+                (Some(id), Some(path)) => Ok((id, path.to_string())),
+                _ => Err(LlamaServerError::Unreachable(format!("/lora-adapters entry without an id and a path: {e}"))),
             })
-            .unwrap_or_default()) // unwrap_or_default: a non-array body lists nothing loaded
+            .collect()
     }
 
     /// `POST /lora-adapters/{load,unload}`. 404 = an engine without the route (older than
