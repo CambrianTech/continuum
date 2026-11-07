@@ -298,6 +298,38 @@ impl std::fmt::Display for Reopen<'_> {
     }
 }
 
+/// The saved output a reopen's result is a VIEW of: a command that declares `ToolEffect::Reopens`
+/// names its source in its result, and that source is the call's custody, never a new save. Saving
+/// the rendered selection minted a handle to a search, and her search of that handle matched her own
+/// earlier search instead of the log (Codex's capture on the 5090, windows-df8: `tool/output` her
+/// most frequent call while nothing got written). `None` for every other command: its result is saved.
+pub(crate) fn reopened_source(canonical: &str, value: &serde_json::Value) -> Option<String> {
+    if crate::sdk_codegen::ext::effect_of(canonical) != continuum_base::tool_effect::ToolEffect::Reopens {
+        return None;
+    }
+    ToolOutputResult::deserialize(value).ok().map(|result| result.handle)
+}
+
+/// The one saved output an act's receipt is a view of: every call reopened it (each call's name
+/// as she made it, resolved through the dispatch seam, and its custody). `None` when any call did
+/// anything else or the calls reopened different outputs: that receipt is its own text, saved.
+pub(crate) fn reopened_by_every_call<'a>(
+    calls: impl IntoIterator<Item = (&'a str, &'a crate::ai::types::ResultCustody)>,
+) -> Option<String> {
+    let mut source: Option<&str> = None;
+    for (name, custody) in calls {
+        let canonical = crate::ai::tool_dialect::resolve_wire_name(name);
+        let reopened = custody.handle().filter(|_| {
+            crate::sdk_codegen::ext::effect_of(&canonical) == continuum_base::tool_effect::ToolEffect::Reopens
+        })?;
+        if source.is_some_and(|first| first != reopened) {
+            return None;
+        }
+        source = Some(reopened);
+    }
+    source.map(str::to_owned)
+}
+
 /// A read that brought nothing back is a failure she sees as one, like `grep` exiting 1: a
 /// pattern with no match, a range past the end, an empty page. A refusal (no such output, a bad
 /// selector) is already an `Err`.
@@ -308,11 +340,11 @@ impl ProjectsOutcome for ToolOutput {
 }
 
 /// The lines a range names, each half read as she would mean it: `endLine` alone is from the
-/// first line, `startLine` alone is to the last (the reader stops at the end). Neither is no range.
-fn line_range(start: Option<usize>, end: Option<usize>) -> Option<(usize, usize)> {
+/// first line, `startLine` alone is to the last. Neither is no range.
+fn line_range(start: Option<usize>, end: Option<usize>) -> Option<spill::LineRange> {
     match (start, end) {
         (None, None) => None,
-        (start, end) => Some((start.unwrap_or(1), end.unwrap_or(usize::MAX))), // unwrap_or: a missing half is the output's own edge
+        (start, end) => Some(spill::LineRange { start: start.unwrap_or(1), end }), // unwrap_or: a missing start is the first line
     }
 }
 
@@ -369,7 +401,7 @@ fn read_saved(
     path: &std::path::Path,
     handle: String,
     params: ToolOutputParams,
-    range: Option<(usize, usize)>,
+    range: Option<spill::LineRange>,
     allowance: spill::Allowance,
 ) -> Result<ToolOutputResult, String> {
     if let Some(offset) = params.byte_offset {
@@ -646,6 +678,47 @@ mod tests {
         };
         assert_eq!(next_of("h1", 2), [serde_json::json!({"outputId": "h1"}), serde_json::json!({"act": 2})]);
         assert_eq!(next_of("h1", 99), [serde_json::json!({"outputId": "h1"})], "an act naming nothing offers only the id");
+    }
+
+    // what this catches: a reopen saved as a new output (Codex's 5090 capture, windows-df8): she
+    // searched a handle for FAILED, got her selection under a fresh handle, searched THAT, and
+    // matched her own earlier search instead of the log. A reopen's custody is its source, so the
+    // second search reads the original output and returns its failure line again, and an act that
+    // only reopened one output names that output; any other call, or two sources, saves its own.
+    #[test]
+    fn a_reopen_is_a_view_of_its_source_and_never_a_new_output() {
+        use crate::ai::types::ResultCustody;
+        let Ok(dir) = tempfile::tempdir() else { panic!("a temp dir") };
+        let source = "deadbeefcafe0001";
+        let path = dir.path().join(source);
+        assert!(std::fs::write(&path, "   Compiling foo\ntest it_works ... FAILED\ntest result: ok\n").is_ok());
+        let search = |handle: &str| {
+            let params = ToolOutputParams { pattern: Some("FAILED".into()), ..Default::default() };
+            let Ok(result) = read_saved(&path, handle.to_owned(), params, None, spill::Allowance::Whole) else {
+                panic!("the search reads back")
+            };
+            let Ok(value) = serde_json::to_value(&result) else { panic!("a result serializes") };
+            (result.content, reopened_source(TOOL_OUTPUT.canonical(), &value))
+        };
+        let (first, custody) = search(source);
+        assert_eq!(custody.as_deref(), Some(source), "the reopen names its source, never a new output");
+        let Some(custody) = custody else { unreachable!() };
+        let (second, again) = search(&custody);
+        assert_eq!((second.as_str(), again.as_deref()), (first.as_str(), Some(source)));
+        assert!(first.contains("it_works ... FAILED"), "{first}");
+        let Ok(value) = serde_json::to_value(ToolOutputResult {
+            handle: source.into(), total_lines: None, total_bytes: 0, total_matches: None, content: "x".into(),
+            truncated: false, encoding: "utf8".into(), byte_start: None, byte_end: None, next_byte_offset: None,
+        }) else {
+            panic!("a result serializes")
+        };
+        assert_eq!(reopened_source("code/read", &value), None, "only a reopen's result is a view");
+        let whole = |handle: &str| ResultCustody::Whole { handle: handle.into() };
+        let (h, other) = (whole(source), whole("0123456789abcdef"));
+        assert_eq!(reopened_by_every_call([("read_output", &h), ("tool/output", &h)]).as_deref(), Some(source));
+        assert_eq!(reopened_by_every_call([("read_output", &h), ("read_output", &other)]), None, "two sources");
+        assert_eq!(reopened_by_every_call([("read_output", &h), ("code/read", &other)]), None, "another command");
+        assert_eq!(reopened_by_every_call([("read_output", &ResultCustody::Unsaved)]), None);
     }
 
     // what this catches: a half range refused ("give BOTH startLine and endLine"): endLine alone

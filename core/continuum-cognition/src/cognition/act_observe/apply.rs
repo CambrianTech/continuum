@@ -690,7 +690,15 @@ pub async fn apply_act(
     // one-time recency rendering; `acts` are the id-correlated typed observations.
     // The ring keeps this exact text; save THAT, so the pointer it leaves when it collapses
     // resolves to what she saw, every call of the batch included.
-    let custody = pin.retain(body.persona_id, observation.trim());
+    // An act that only reopened one saved output is a view of it: its receipt's custody is that
+    // output, so reopening the act reopens the source, never her earlier selection of it.
+    let reopened = crate::cognition::tool_executor::tool_output::reopened_by_every_call(
+        acts.iter().map(|act| (act.call.name.as_str(), &act.output.result.custody)),
+    );
+    let custody = match reopened {
+        Some(source) => crate::ai::types::ResultCustody::Whole { handle: source },
+        None => pin.retain(body.persona_id, observation.trim()),
+    };
     let disk = super::disk_change::DiskChange::between(
         disk_before,
         super::disk_change::fingerprint_at(acting_root).await,
