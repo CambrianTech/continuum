@@ -26,7 +26,7 @@ pub(in super::super) fn segment_map(system: &str, messages: &[ChatMessage]) -> V
         } else {
             "history"
         };
-        cum += estimate_guard_tokens(&body) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS;
+        cum += estimate_guard_tokens(&body);
         match runs.last_mut() {
             Some((l, end)) if *l == label => *end = cum as u32,
             _ => runs.push((label, cum as u32)),

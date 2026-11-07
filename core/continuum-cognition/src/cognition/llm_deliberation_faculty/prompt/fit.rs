@@ -1,36 +1,23 @@
 use super::*;
 
 impl LlmDeliberationFaculty {
-    /// The per-message chat-template overhead every message pays, whether it is being
-    /// measured for demand or fitted to a budget. ONE constant so the two cannot drift
-    /// — an under-count here is an llama-server 400 at the window edge.
-    ///
-    /// Chat templates wrap each message in role markers
-    /// (`<|im_start|>role\n…<|im_end|>`, ~4-5 tokens). The original +2 was optimistic:
-    /// at the budget edge the fitted thread measured over the window by a token
-    /// (glass-boxed 2026-07-13). Round UP like every other estimate here.
-    // context-budget-exempt: fixed chat-template overhead per message (role tags + separators) — a property of the prompt FORMAT, not a budget that should scale with the window
-    pub const PER_MESSAGE_TEMPLATE_TOKENS: usize = 5;
-
     pub(in super::super) fn context_piece_tokens(faculty: &str, body_bytes: usize) -> usize {
         // The actual rendered shape is "\n[faculty]\n<body>\n".
         (faculty.len() + body_bytes + "\n[]\n\n".len()).div_ceil(GUARD_CHARS_PER_TOKEN)
     }
 
-    /// What wrapping a non-empty assembled context costs: its header, and the chat-template
-    /// wrapper of the message it now is (it rides the tail after her view, never the system
-    /// message; `deliberation_prompt::working_context_message`).
+    /// What wrapping a non-empty assembled context costs: its header (it rides the tail after her
+    /// view, never the system message; `deliberation_prompt::working_context_message`).
     pub fn working_context_header_cost() -> usize {
-        deliberation_prompt::WORKING_CONTEXT_HEADER
-            .len()
-            .div_ceil(GUARD_CHARS_PER_TOKEN)
-            + Self::PER_MESSAGE_TEMPLATE_TOKENS
+        deliberation_prompt::WORKING_CONTEXT_HEADER.len().div_ceil(GUARD_CHARS_PER_TOKEN)
     }
 
+    /// The system message's estimate: its text. The chat template's own tokens around each message
+    /// are no constant here: they are in the engine's count of every prompt, so her measured
+    /// density prices them (`Density`, `delib.prompt.density`); unmeasured, the estimate stands
+    /// alone and the engine's exact count before generation refits a prompt denser than priced.
     pub fn framing_cost(system: &str) -> usize {
-        // System is a message too; the template also opens the assistant's
-        // generation turn. Charge both wrappers using the same format allowance.
-        estimate_guard_tokens(system) + 2 * Self::PER_MESSAGE_TEMPLATE_TOKENS
+        estimate_guard_tokens(system)
     }
 
     /// How many MESSAGES a cluster walk may cross — how far the front may advance past a
@@ -63,41 +50,18 @@ impl LlmDeliberationFaculty {
         messages.iter().map(Self::message_cost).sum()
     }
 
+    /// A message's estimate: its text, a lower bound calibrated by the provider's measured prompt
+    /// count (her density, which carries the chat template's tokens around each message too).
+    /// Never count base64 characters as image tokens. Native images require the finalized-body
+    /// image quote before local generation.
     pub fn message_cost(message: &ChatMessage) -> usize {
-        // Text-only lower bound, calibrated by the provider's measured prompt
-        // count. Never count base64 characters as image tokens. Native images
-        // require the finalized-body image quote before local generation.
-        let tokens = super::super::super::token_budget::estimate_message_content_tokens(&message.content, estimate_guard_tokens);
-        tokens + Self::PER_MESSAGE_TEMPLATE_TOKENS
+        super::super::super::token_budget::estimate_message_content_tokens(&message.content, estimate_guard_tokens)
     }
 
-    /// The window-start advance QUANTUM divisor: when the conversation outgrows
-    /// its budget, the front is dropped in chunks of `budget/8` (floored at 512
-    /// tokens) rather than message-by-message. See [`Self::fit_messages`].
-    // context-budget-exempt: a stability/latency trade ratio, not a token budget — the actual chunk derives from the live budget at the call
-    pub(in super::super) const FRONT_DROP_QUANTUM_DIVISOR: usize = 8;
-
-    /// Fit an already-built conversation to `budget_tokens` — with a
-    /// QUANTIZED, whole-message front drop, because the fit's cut point is the
-    /// byte-stability of the entire conversation prefix.
-    ///
-    /// The old shape walked NEWEST-first, spending the budget backward: correct
-    /// per-act, and a KV catastrophe across acts — every act appends new tokens
-    /// at the tail, so the exact-fit cut point advanced the window START by a
-    /// few messages per act, and the straddling message was tail-trimmed to a
-    /// different byte offset each time. Measured 2026-09-01 (wire-capture
-    /// diffs): consecutive prompts diverging at ~1% depth on exactly this seam,
-    /// re-prefilling the other 99%.
-    ///
-    /// Now the drop is quantized: the minimum front mass that must go is
-    /// rounded UP to a chunk (`budget/8`, ≥512 tokens), whole messages only, so
-    /// the window start stays BYTE-IDENTICAL for ~a chunk's worth of new
-    /// conversation and then advances once, in one jump. The cost is a window
-    /// that runs up to one chunk under-full — a deliberate stability/capacity
-    /// trade, same law as the scratch slot: reuse of a 20-80k prefix is worth
-    /// vastly more than the last few k of oldest history
-    /// ([[collapse-dont-clip-condense-the-past-never-erode-it]] — and when the
-    /// jump does land, it drops whole turns, never a mid-message shear).
+    /// Fit an already-built conversation to `budget_tokens`: required input whole, then optional
+    /// history kept newest-last, dropped whole message by whole message from its oldest end, never
+    /// a mid-message shear, never past her own last move while it fits, and never opening on an
+    /// answer without its question.
     pub fn fit_messages(
         &self,
         mut prompt: PromptMessages,
@@ -129,15 +93,17 @@ impl LlmDeliberationFaculty {
         // outcome cost, so the drop below can refuse to reach them.
         let evidence = prompt.recent_move_evidence();
         let messages = &prompt.history;
-        // Per-message template overhead: `Self::PER_MESSAGE_TEMPLATE_TOKENS`, shared
-        // with `messages_cost` so measurement and fitting charge identically.
+        // Each message at `messages_cost`'s estimate, so measurement and fitting charge identically.
         let costs: Vec<usize> = messages.iter().map(Self::message_cost).collect();
         let total: usize = costs.iter().sum();
         let mut start = 0usize;
-        let quantum = (budget_tokens / Self::FRONT_DROP_QUANTUM_DIVISOR).max(512);
         if total > history_budget {
+            // Whole messages, oldest first, exactly as many as the budget needs: each step is the
+            // oldest message's own size. A quantized drop (chunks of a budget fraction) once kept
+            // the conversation's front byte-stable across acts; her view's epoch owns that now,
+            // and what this fits (this act's fresh tail, or this act's refused prompt) is never
+            // the next act's prefix (a sent tail joins her view in the bytes it was sent).
             let min_drop = total - history_budget;
-            let drop_q = min_drop.div_ceil(quantum).saturating_mul(quantum);
             let mut dropped = 0usize;
             // Only optional history yields. Stimulus and action payload are typed
             // slots outside this eviction range, even when both render as user.
@@ -224,7 +190,7 @@ impl LlmDeliberationFaculty {
             } else {
                 drop_end
             };
-            while start < drop_end && dropped < drop_q {
+            while start < drop_end && dropped < min_drop {
                 dropped += costs[start];
                 start += 1;
             }
@@ -257,7 +223,6 @@ impl LlmDeliberationFaculty {
             dropped_tokens: costs[..start].iter().sum(),
             required_tokens,
             history_budget,
-            quantum,
         };
         // Move the surviving messages; fitting never clones the entire prompt.
         prompt.history.drain(..start);

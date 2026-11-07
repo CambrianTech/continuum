@@ -152,6 +152,10 @@ type DensitySample = (std::num::NonZeroUsize, std::num::NonZeroU32);
 /// is priced at it. `Unmeasured` (no reply on this binding and model yet) prices at the estimate
 /// itself, `PromptCalibration::default()` (follow-up: one `/tokenize` count, or the model's
 /// measured density on this node, for the first act).
+///
+/// The chat template's own tokens around each message (role markers, the generation prompt) are
+/// part of what it measures: the engine counts the templated prompt and the estimate counts the
+/// text, so no per-message constant sits beside it (it was `PER_MESSAGE_TEMPLATE_TOKENS = 5`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in super::super) enum Density {
     #[default]
@@ -509,7 +513,6 @@ pub(in super::super) struct FitReceipt {
     pub(in super::super) dropped_tokens: usize,
     pub(in super::super) required_tokens: usize,
     pub(in super::super) history_budget: usize,
-    pub(in super::super) quantum: usize,
 }
 
 impl FitReceipt {

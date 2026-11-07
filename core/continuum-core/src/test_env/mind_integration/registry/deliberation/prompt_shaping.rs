@@ -168,7 +168,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     let guard_text = format!("{grep_result}日本語訳");
     assert_eq!(
         LlmDeliberationFaculty::message_cost(&ChatMessage::text("user", &guard_text)),
-        estimate_guard_tokens(&guard_text) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS,
+        estimate_guard_tokens(&guard_text),
     );
     assert!(required >= estimate_guard_tokens(&grep_result));
     assert!(faculty.fit_messages(prompt, required - 1).is_err(), "native pair cannot be split under pressure");

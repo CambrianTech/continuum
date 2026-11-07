@@ -524,7 +524,6 @@ impl LlmDeliberationFaculty {
                 kept_messages = r.kept_messages,
                 dropped_messages = r.dropped_messages,
                 dropped_tokens = r.dropped_tokens,
-                quantum = r.quantum,
                 "the fit dropped optional history from the front; history_emptied means nothing \
                  optional survived and the turn composes with no room messages at all"
             );

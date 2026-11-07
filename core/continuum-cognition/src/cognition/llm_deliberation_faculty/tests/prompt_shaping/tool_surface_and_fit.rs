@@ -136,7 +136,7 @@ fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
     let tight = faculty.fit_messages(prompt(history.clone()), required + total / 2).expect("fits");
     assert!(tight.receipt.dropped_messages > 0 && tight.receipt.kept_messages > 0, "{:?}", tight.receipt);
     assert_eq!(tight.receipt.dropped_messages + tight.receipt.kept_messages, 12);
-    assert!(tight.receipt.dropped_tokens >= (total / 2).saturating_sub(tight.receipt.quantum), "{:?}", tight.receipt);
+    assert!(tight.receipt.dropped_tokens >= total - total / 2, "exactly what the budget needs, in whole messages: {:?}", tight.receipt);
 
     // A budget that holds only the stimulus: the whole history goes, and the
     // receipt says emptied (the turn Kimi could not see).
@@ -148,29 +148,21 @@ fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
         "the stimulus itself is never optional");
 }
 
-// what this catches: the fit's cut point IS the byte-stability of the
-// whole conversation prefix (2026-09-01, wire-diffed: consecutive
-// prompts diverging at ~1% depth because the exact-fit window start
-// advanced every act). The front must stay byte-identical across small
-// growth (a quantum of headroom), then advance in ONE whole-message
-// jump — and the fitted suffix must always fit the budget.
+// what this catches: a fit that cuts mid-message, keeps more than its budget, opens on an answer
+// without its question, or drops more than the budget needs. Her view's epoch owns the prefix's
+// byte-stability (the quantized front drop that once did is gone: what this fits is this act's
+// fresh tail or its refused prompt, never the next act's prefix), so the fit drops whole messages,
+// oldest first, exactly as many as it must.
 #[test]
-fn fit_front_advances_in_quanta_not_per_act() {
+fn fit_drops_whole_oldest_messages_and_opens_on_a_cluster_opener() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
     let msgs: Vec<ChatMessage> = (0..40)
         .map(|i| ChatMessage::text("user", format!("m{i} {}", "word ".repeat(95))))
         .collect();
     let budget = 2000;
-    // Simulate 20 consecutive acts, each appending one ~160-token
-    // message. Old behavior: the exact-fit start advanced EVERY act
-    // (20 moves). Quantized: total growth ≈ 3.2k tokens ÷ the 512
-    // quantum ⇒ at most ~7 boundary crossings, so most acts keep a
-    // byte-identical front. (Counted, not position-pinned, so the
-    // assertion cannot land on a quantum edge as token estimates
-    // drift.)
-    let mut moves = 0usize;
-    let mut prev_first: Option<String> = None;
+    // Twenty acts, each appending one message: every fit holds its budget and drops no message
+    // the budget could have held.
     let mut last_fit: Vec<ChatMessage> = Vec::new();
     for n in 20..=40 {
         let fit = faculty
@@ -189,19 +181,15 @@ fn fit_front_advances_in_quanta_not_per_act() {
             .expect("whole history suffix fits")
             .messages;
         assert!(!fit.is_empty());
-        let first = fit.first().map(|m| m.content_text());
-        if prev_first.is_some() && first != prev_first {
-            moves += 1;
+        let kept = LlmDeliberationFaculty::messages_cost(&fit);
+        assert!(kept <= budget, "act {n}: kept {kept} over its budget {budget}");
+        let dropped = n - fit.len();
+        if dropped > 0 {
+            let one_more = LlmDeliberationFaculty::message_cost(&msgs[dropped - 1]);
+            assert!(kept + one_more > budget, "act {n}: the oldest dropped message would have fit");
         }
-        prev_first = first;
         last_fit = fit;
     }
-    assert!(
-        (1..=8).contains(&moves),
-        "front moved {moves} times across 20 acts — it must advance in \
-                 QUANTA (a handful of jumps), never per act, and must still \
-                 advance eventually (bounded memory)"
-    );
     // Whole messages only at the front: the first fitted message is one
     // of the originals, never a mid-message shear.
     let first = last_fit.first().unwrap().content_text();

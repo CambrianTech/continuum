@@ -294,7 +294,10 @@ mod tests {
     #[test]
     fn a_more_salient_block_is_never_shown_less_whole_than_a_lesser_one() {
         let top = board();
-        let lesser = Contribution::context(FacultyId::Custom("affect".to_string()), "a short note", 0.3, "a feeling");
+        // A lesser block with levels of its own (an atomic one is its own summary and may stay
+        // whole beside a summarized top block, the view's rule).
+        let notes: Vec<String> = (0..12).map(|i| format!("note {i}: a feeling about the work, said at some length")).collect();
+        let lesser = Contribution::context(FacultyId::Custom("affect".to_string()), notes.join("\n"), 0.3, "a feeling").with_parts(notes);
         let mut ws = Workspace::new("what is on the board?");
         ws.broadcast.push(lesser);
         ws.broadcast.push(top);
