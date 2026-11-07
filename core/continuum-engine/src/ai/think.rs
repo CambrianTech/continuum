@@ -17,12 +17,12 @@ use super::types::RequestAdmission;
 ///
 /// What this catches (Cormac on #5808): a generation whose think was left to a side rule. Terms
 /// without a think do not compile:
-/// ```compile_fail
+/// ```compile_fail,E0063
 /// let _ = continuum_engine::ai::types::DispatchTerms { admission: None };
 /// ```
 /// nor does a caller outside the engine build the witness the terms-less adapter paths take, so
 /// it cannot reach `generate_text` without stating terms:
-/// ```compile_fail
+/// ```compile_fail,E0423
 /// use continuum_engine::ai::types::{DispatchTerms, Think};
 /// let _ = continuum_engine::ai::adapter::Dispatched(DispatchTerms::thinking(Think::ModelDefault));
 /// ```
@@ -71,10 +71,13 @@ impl Think {
     }
 }
 
-/// A think budget in tokens. ZERO is a budget, not "unbounded": on our fork the reasoning-budget
-/// sampler forces the end tag the moment the think opens when its budget is 0
-/// (`common/reasoning-budget.cpp`: `remaining <= 0` -> `REASONING_BUDGET_FORCING`), and only `-1`
-/// (never sent) means unlimited (`common/sampling.cpp`). It applies where the model's chat template
+/// A think budget in tokens. ZERO is a budget, not "unbounded": it is no-think, said through both
+/// levers (`inference::request_body::apply_think`). The template's `enable_thinking = false` holds
+/// on every pin (deployed engine 0d7dda6ae, Qwen3.5-0.8B on the IntelMac, ~01:10Z 2026-11-07,
+/// Cormac: empty reasoning, 96 tokens of schema JSON, a 56-token answer, finish=stop). The
+/// sampler's `reasoning_budget_tokens: 0` holds only from the fork fix on (llama.cpp#95, card
+/// c5fb32b7): on pinned 0d7dda6ae a zero budget does not bound the think. Only `-1` (never sent)
+/// means unlimited (`common/sampling.cpp`); the budget applies where the model's chat template
 /// declares thinking end tags (`server-common.cpp`, `thinking_end_tags`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ThinkBudget.ts")]

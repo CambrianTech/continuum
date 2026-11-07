@@ -36,7 +36,8 @@ pub const VISION_DESCRIPTION_PURPOSE: &str = "cognition/vision-describe";
 /// - `Think::Budget(ThinkBudget(n))`, `n > 0`: she thinks, bounded at `n`
 ///   (`reasoning_budget_tokens`); the template's `enable_thinking` is left at its default, on.
 /// - `Think::Budget(ThinkBudget(0))`: the caller's explicit no-think. Both levers say it: the
-///   template's `enable_thinking = false` and a zero budget for the fork's sampler. The template
+///   template's `enable_thinking = false`, which holds on every pin, and a zero budget for the
+///   fork's sampler, which holds only from the fork fix on (llama.cpp#95, card c5fb32b7). The template
 ///   reads `enable_thinking` only in its generation prompt (Qwen3.6-35B-A3B, served by fork
 ///   0d7dda6ae: `<think>\n\n</think>\n\n` instead of `<think>\n`; prior turns render by
 ///   `preserve_thinking` / the last query index), so flipping it per turn keeps her prefix.

@@ -72,7 +72,8 @@ pub(super) struct ShortRoom {
 /// measured room; unmeasured, past the smallest usable reply
 /// ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`], the reply claim's own floor). Never a
 /// fixed count or a share of the cap, and never unbounded: a grant that leaves the think nothing
-/// is a budget of ZERO (no thinking; the fork forces the end tag at once).
+/// is a budget of ZERO (no thinking: the template's `enable_thinking = false` on every pin, and the
+/// sampler's zero budget from the fork fix on, `request_body::apply_think`).
 pub(super) fn act_reasoning_budget(room: ActRoom, reserve: u32) -> crate::ai::types::ThinkBudget {
     let answer = match room {
         ActRoom::Needs { answer, .. } => answer,
