@@ -81,11 +81,18 @@ impl ServingDaemonModule {
             .requirements
             .iter()
             .filter_map(|r| {
+                // A bound is clamped to what one sequence holds (`Observed::within`); an exact need is not.
+                let need = r.measure.observed_need()?.map(|need| need.min(trained)).within(per_sequence_cap);
+                // Her target is room to grow over what her turns hold (her held need with the sent
+                // headroom), never her untrimmed demand: every held token slows every act (the M5,
+                // 2026-11-07: targets of 150-557k grew grants to 197k, 71 acts vs 158; 7b7a696a).
+                // Growing past it is a priced decision, never "fill because the pool has room".
+                let headroom = crate::inference::planning::serving_plan::SENT_HEADROOM;
+                let target = crate::inference::planning::window_allocator::Tokens::new((f64::from(need.get()) * headroom) as u32)?.min(trained);
                 Some(Demand {
                     mind: r.persona,
-                    // A bound is clamped to what one sequence holds (`Observed::within`); an exact need is not.
-                    need: r.measure.observed_need()?.map(|need| need.min(trained)).within(per_sequence_cap),
-                    target: r.measure.target()?.min(trained),
+                    need,
+                    target,
                     wish: r.wish?.min(trained),
                     in_flight: crate::cognition::turn_ledger::turn_in_flight(r.persona),
                     // read off her receipts by the fair publisher, which owns them (`publish_fair_grants`)
