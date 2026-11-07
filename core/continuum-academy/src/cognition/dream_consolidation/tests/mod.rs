@@ -5,18 +5,6 @@ pub(crate) use super::test_support::*;
 use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
 use crate::cognition::engram::{Engram, EngramKind, EngramOrigin};
 
-/// `persona` with a measured act need on the process's working set, so a distillation can size
-/// itself (an unmeasured mind's pass defers, `lens_terms`). 400 output tokens, 120 of them thought.
-pub(crate) fn measured(persona: Uuid) -> Uuid {
-    crate::cognition::working_set::global().record_emission_in_memory(
-        persona,
-        400,
-        120,
-        crate::cognition::working_set::EmissionStop::Landed,
-        1,
-    );
-    persona
-}
 
 /// The tests' observation budget: room for a few short engrams. The size is the test's
 /// choice; production derives it from the served window (`passes.rs`).

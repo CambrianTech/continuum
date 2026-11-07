@@ -213,6 +213,20 @@ pub mod test_support {
     use crate::cognition::engram::{Engram, EngramKind, EngramOrigin, TrustState};
     use crate::cognition::recall_metadata::RecallMetadataRegistry;
 
+    /// `persona` with a measured act need on the process's working set, as a resident has after her
+    /// first act, so her dream can size itself (an unmeasured mind's distillation defers,
+    /// `distiller::lens_terms`). 400 output tokens, 120 of them thought.
+    pub fn measured(persona: Uuid) -> Uuid {
+        crate::cognition::working_set::global().record_emission_in_memory(
+            persona,
+            400,
+            120,
+            crate::cognition::working_set::EmissionStop::Landed,
+            1,
+        );
+        persona
+    }
+
     /// Build an episodic engram with a given id, content, and recall keys.
     pub fn episodic(id: Uuid, content: &str, recall_keys: &[&str]) -> Engram {
         Engram {

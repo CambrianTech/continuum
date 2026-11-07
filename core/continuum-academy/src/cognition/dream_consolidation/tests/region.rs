@@ -14,7 +14,7 @@ use crate::runtime::brain_region::RegionContext;
 #[tokio::test]
 async fn a_reviewed_boundary_during_an_idle_pass_is_finished_once_without_doubling_inference() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let persona = super::measured(Uuid::new_v4());
+    let persona = measured(Uuid::new_v4());
     let seeds: Vec<_> = (0..3)
         .map(|n| {
             episodic(
@@ -80,7 +80,7 @@ async fn a_reviewed_boundary_during_an_idle_pass_is_finished_once_without_doubli
 #[tokio::test]
 async fn reviewed_boundary_retries_failed_distillation_with_bounded_receipt_state() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let persona = super::measured(Uuid::new_v4());
+    let persona = measured(Uuid::new_v4());
     let seeds: Vec<_> = (0..3)
         .map(|n| {
             episodic(
@@ -170,7 +170,7 @@ async fn reviewed_boundary_retries_failed_distillation_with_bounded_receipt_stat
 #[tokio::test]
 async fn dream_tick_runs_the_decay_drain() {
     use crate::cognition::recall_metadata::RecallMetadata;
-    let persona = super::measured(Uuid::from_u128(7));
+    let persona = measured(Uuid::from_u128(7));
     // A single episodic so there's a live reflective surface (below min_cluster → the
     // consolidation itself sleeps, which is the point: decay runs BEFORE that gate).
     let admission = seeded_admission(&[episodic(Uuid::from_u128(1), "one memory", &["k"])]);
@@ -218,7 +218,7 @@ async fn dream_tick_runs_the_decay_drain() {
 
 #[tokio::test]
 async fn dream_distills_fresh_cluster_into_semantic_fact() {
-    let persona = super::measured(Uuid::from_u128(7));
+    let persona = measured(Uuid::from_u128(7));
     let seeds = vec![
         episodic(Uuid::from_u128(1), "Rust is the core", &["rust"]),
         episodic(Uuid::from_u128(2), "Node is only the shell", &["rust"]),
@@ -284,7 +284,7 @@ async fn dream_distills_fresh_cluster_into_semantic_fact() {
 // guard against the rejected `tick_number % N` automaton design.
 #[tokio::test]
 async fn dream_rests_when_no_fresh_experience() {
-    let persona = super::measured(Uuid::from_u128(7));
+    let persona = measured(Uuid::from_u128(7));
     let seeds = vec![
         episodic(Uuid::from_u128(1), "Rust is the core", &["rust"]),
         episodic(Uuid::from_u128(2), "Node is only the shell", &["rust"]),
@@ -329,7 +329,7 @@ async fn dream_rests_when_no_fresh_experience() {
 // old beliefs required new experience as a vehicle.
 #[tokio::test]
 async fn quiet_day_dream_reviews_old_beliefs_then_sleeps() {
-    let persona = super::measured(Uuid::from_u128(9));
+    let persona = measured(Uuid::from_u128(9));
     let mut old_belief = episodic(
         Uuid::from_u128(41),
         "You can work with specific Rust files (main.rs, life.rs, wordstats.rs)",
@@ -370,7 +370,7 @@ async fn quiet_day_dream_reviews_old_beliefs_then_sleeps() {
 // distilling a singleton into a spurious "fact".
 #[tokio::test]
 async fn dream_waits_below_min_cluster() {
-    let persona = super::measured(Uuid::from_u128(7));
+    let persona = measured(Uuid::from_u128(7));
     let seeds = vec![episodic(
         Uuid::from_u128(1),
         "a lone observation",
@@ -392,7 +392,7 @@ async fn dream_waits_below_min_cluster() {
 // consolidate and sleeps — the dream is per-persona, like the digest.
 #[tokio::test]
 async fn dream_global_tick_is_noop() {
-    let persona = super::measured(Uuid::from_u128(7));
+    let persona = measured(Uuid::from_u128(7));
     let admission = seeded_admission(&[
         episodic(Uuid::from_u128(1), "Rust is the core", &["rust"]),
         episodic(Uuid::from_u128(2), "Node is only the shell", &["rust"]),
