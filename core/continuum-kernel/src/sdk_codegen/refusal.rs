@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use super::{wire_name, offer_style_for, primary_alias, CommandSpec, VerbRef};
+use super::{offered_name_of, CallForm, CommandSpec, VerbRef};
 use continuum_base::tool_disclosure::Disclosure;
 pub use continuum_airc_protocol::refusal::{Category, NoMove};
 use continuum_airc_protocol::refusal as wire;
@@ -48,9 +48,9 @@ impl CommandId {
         self.disclosure
     }
 
-    /// The name her tool list offers it under ([`wire_name`]).
+    /// The name her tool list offers it under ([`offered_name_of`]).
     pub fn offered(self) -> String {
-        wire_name(self.name, primary_alias(self.aliases), offer_style_for(None))
+        offered_name_of(self.name, self.aliases)
     }
 }
 
@@ -97,13 +97,16 @@ impl NextCall {
     pub fn why(&self) -> &'static str {
         self.why
     }
+
+    /// The call alone, as she makes it ([`CallForm`]), for text that says why in its own words.
+    pub fn call(&self) -> String {
+        CallForm::new(&self.verb.offered(), &self.args).to_string()
+    }
 }
 
 impl std::fmt::Display for NextCall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // A map of JSON values always serializes; an error is a formatter error.
-        let args = serde_json::to_string(&self.args).map_err(|_| std::fmt::Error)?; // boundary: her tool-call wire, the arguments she reads and sends back as written
-        write!(f, "{}({args}): {}", self.verb.offered(), self.why)
+        write!(f, "{}: {}", self.call(), self.why)
     }
 }
 

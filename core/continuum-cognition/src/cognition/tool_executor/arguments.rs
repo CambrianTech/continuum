@@ -43,7 +43,7 @@ pub(crate) fn refusal_of_held(call: &ToolCall, ending: CallEnding) -> ArgumentsR
 pub(crate) fn manual_for(name: &str) -> Option<String> {
     command_descriptor(name)
         .filter(|d| d.access_level == AccessLevel::AiSafe)
-        .map(|d| crate::sdk_codegen::ai_help::render_ai_help(d.name, d.description, &d.params_schema))
+        .map(crate::sdk_codegen::ai_help::render_ai_help)
 }
 
 /// What she reads for a refused call: what was wrong, then her next move. A retry carries the

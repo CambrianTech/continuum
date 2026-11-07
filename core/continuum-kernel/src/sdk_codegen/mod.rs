@@ -56,6 +56,10 @@ use ts_rs::{Config, Dependency, TS};
 /// Nothing live consumes its output; the headless command framework below is
 /// always compiled. See the `ts-codegen` feature note in Cargo.toml.
 pub mod ai_help;
+mod call_form;
+pub use call_form::CallForm;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use call_form::{read_call, CallFormMiss};
 pub mod command;
 pub mod ext;
 pub mod conformance;
@@ -66,7 +70,7 @@ pub mod handler;
 mod refusal;
 pub use refusal::{Category, CommandId, NextCall, NextCallArgs, NextMoves, NoMove, Refusal, RefusalCause};
 mod verb_ref;
-pub use verb_ref::{offer_style_for, primary_alias, wire_name, OfferStyle, VerbRef};
+pub use verb_ref::{offer_style_for, offered_name_of, primary_alias, wire_name, OfferStyle, VerbRef};
 pub use command::{
     natives_without_an_outcome, outcome_projector, project_result, read_outcome, read_refusals_only, stateless_command_objects,
     ActVerdict, ActionCommand, DynCommand, OutcomeProjector, ProjectsOutcome, StatelessCommand, ToolVerdict,

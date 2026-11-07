@@ -22,7 +22,8 @@ fn a_path_or_a_symbol_where_the_tool_name_goes_is_named_as_the_slip_it_is() {
     let out = persona_tool_error(path, unknown(path));
     assert!(out.contains("is a PATH, not a tool"), "{out}");
     // The verbs render as her tool list offers them (`VerbRef`), so the call is one she can make.
-    assert!(out.contains(&format!("`read_file({{\"file_path\": \"{path}\"}})`")), "{out}");
+    // Rendered from typed params (`CallForm`), so the path is JSON-escaped and the call decodes.
+    assert!(out.contains(&format!("`read_file({})`", serde_json::json!({ "file_path": path }))), "{out}");
     assert!(!out.contains("commands/help"), "the manual is not the lesson here: {out}");
     // Fixture 2 (20:0xZ): a probe field name from the code she was reading. It
     // shares the word `budget` with a real verb, so did-you-mean has a candidate
