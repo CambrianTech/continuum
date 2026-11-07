@@ -187,7 +187,6 @@ impl ServingDaemonModule {
         let force_relaunch = self.force_relaunch.clone();
         let server = self.server.clone();
         let served_pool = Arc::clone(&self.served_pool);
-        let last_healthy_pool = Arc::clone(&self.last_healthy_pool);
         let serving_tx = self.serving_tx.clone();
         let verified_target = self.verified_target.clone();
         let intent_owner = self.intent.clone();
@@ -343,9 +342,11 @@ impl ServingDaemonModule {
                     (true, Some(true)) => match server.served_pool_tokens().await {
                         Ok(pool) => {
                             served_pool.store(pool, Ordering::Relaxed);
-                            let mut proven = last_healthy_pool.lock();
-                            let held = proven.entry(target.model.id.clone()).or_insert(0);
-                            *held = (*held).max(u64::from(pool));
+                            crate::inference::proven_pool::observe(
+                                &target.model.id,
+                                u64::from(pool),
+                                crate::inference::proven_pool::PoolContract::running(),
+                            );
                             sequence_share(pool, served_lanes, target.model.context_window)
                         }
                         Err(e) => {
@@ -780,7 +781,7 @@ impl ServingDaemonModule {
         let steady = matches!(*self.planned_budget.lock(), Some(PlannedBudget { credit: OwnCredit::Included { .. }, .. }));
         let proven = match steady {
             true => 0,
-            false => self.last_healthy_pool.lock().get(&model.id).copied().unwrap_or(0), // unwrap_or: a model not yet run has proven nothing
+            false => crate::inference::proven_pool::proven(&model.id),
         };
         Seated { need, proven }
     }

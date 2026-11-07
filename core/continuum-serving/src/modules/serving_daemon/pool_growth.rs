@@ -32,7 +32,7 @@ impl ServingDaemonModule {
         // A relaunch that came back below the largest pool this model ran at (an engine exit
         // relaunched from a gap reading, the M5 2026-11-07 16:14Z, card 9ffcb1b5) is a repair to
         // what this node already held, never a chain upward: the one-try record does not hold it.
-        let proven = self.last_healthy_pool.lock().get(&model.id).copied().unwrap_or(0); // unwrap_or: a model not yet run has proven nothing
+        let proven = crate::inference::proven_pool::proven(&model.id);
         if !recovering(running, proven) && self.pool_growth_models.lock().contains(desired) {
             return false;
         }
