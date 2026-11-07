@@ -755,16 +755,19 @@ pub(in super::super) fn start_grants(
         .collect();
     let room = continuum_context::depth::Room { growable, per_act: appended_per_act.map(|_| per_act_tokens) };
     if let continuum_context::depth::Depth::Chosen(chosen) = continuum_context::depth::choose(room, &weighed) {
+        // The growing start is what the lowered grants hold, never the depth's own sum: that sum
+        // prices her newest item rounded, so it can fall a token under it.
+        let mut start = 0usize;
         for (&index, &chosen_share) in growing_at.iter().zip(&chosen.shares) {
             let source = &mut sources[index];
-            // The measured depth lowers a grant, never below her newest item whole: the depth
-            // prices it in rounded tokens, `StartSource::newest` in ceiled ones (goal 7).
-            source.grant = LlmDeliberationFaculty::clamp_u32(chosen_share).max(source.floor).max(source.newest).min(source.grant);
+            source.grant = depth_grant(chosen_share, source);
+            start += source.grant as usize;
         }
-        shares = share(chosen.start.min(growable), &sources)?;
+        shares = share(start.min(growable), &sources)?;
         continuum_base::probe!(
             class = "delib.view.depth",
-            start_tokens = chosen.start,
+            start_tokens = start,
+            chosen_tokens = chosen.start,
             half_tokens = growing,
             kept_items = chosen.kept,
             collapsed_items = chosen.collapsed,
@@ -795,6 +798,13 @@ pub(in super::super) fn start_grants(
         grants
     };
     Ok(grants)
+}
+
+/// How a measured depth lowers one growing source's grant: to the share it chose, never below its
+/// floor or her newest item whole (the depth prices that item rounded, `StartSource::newest` ceiled;
+/// goal 7), and never above the grant the plan gave it.
+fn depth_grant(chosen_share: usize, source: &continuum_context::allocation::StartSource) -> u32 {
+    LlmDeliberationFaculty::clamp_u32(chosen_share).max(source.floor).max(source.newest).min(source.grant)
 }
 
 #[cfg(test)]
