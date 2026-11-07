@@ -7,7 +7,7 @@
 
 use continuum_base::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
-use crate::ai::types::{DispatchTerms, ResponseFormat, Think, ThinkBudget};
+use crate::ai::types::{ResponseFormat, Think, ThinkBudget};
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use crate::ai::adapter::global_registry;
 use serde::{Deserialize, Serialize};

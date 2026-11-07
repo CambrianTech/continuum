@@ -37,7 +37,7 @@
 //!     when the prompt does not declare room members.
 
 use crate::ai::adapter::InferenceDevice;
-use crate::ai::types::{DispatchTerms, ResponseFormat, Think, ThinkBudget};
+use crate::ai::types::{ResponseFormat, Think, ThinkBudget};
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
 use crate::inference::resource_admission::{ResourceAdmissionError, ResourceAdmissionGate, ResourceAdmissionGuard, ResourceAdmissionPolicy, ResourceAdmissionRequest};
