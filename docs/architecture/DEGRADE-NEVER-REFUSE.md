@@ -74,3 +74,11 @@ Pattern 2's boot deadline goes first, because a wedge takes the whole node. Next
   Custom `Deserialize` validations that the JSON schema can't express need explicit fixtures. The ratchet lives on the existing `CommandSpec` conformance boundary, not in a parallel registry (card 9ad69f13, Codex).
 - **A writer's retry first reconciles an uncertain append** under the existing owner (receipt or tail check) before it replays, so a retry never duplicates.
 - **"Last known good" is bounded.** A last-good measurement counts only when it matches the current engine incarnation and config, and it expires. Stale capacity never stands in for a measurement.
+
+## Review answers (Cormac, 2026-11-07, patterns 1 and 3)
+
+- **The act's minimum includes room for her reply:** her newest result whole, her hands, and her reply's measured need. An act without room to answer isn't servable.
+- **A rung changes only at an act's start, never mid-act.** That keeps the prefix stable for the engine's cache (the context codec's rule: collapse only at a start).
+- **A skipped learn step is typed** (`LearnSkipped{reason}`), never silent. The learning ledger counts it like any other collapse.
+- **A censored measurement carries its bound:** `Censored{at_least}`, never a bare "unknown". Decisions use the bound with its variance.
+- **Grow-back is an upward trial,** with the same damping and deadband as a shrink, and kept only if the trial's measurement holds (every downward move has a scheduled upward test). The proven pool it trials toward is keyed by (model, config, engine incarnation), on card 8a983e31.
