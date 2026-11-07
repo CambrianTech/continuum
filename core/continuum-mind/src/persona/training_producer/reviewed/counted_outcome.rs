@@ -6,6 +6,14 @@
 //! own credit store, so it is the same once-only guarantee the acceptance row gives: the first
 //! decision writes the key and counts; any later decision finds it and counts nothing. An
 //! acceptance whose write committed but whose acknowledgement was lost counts here too, once.
+//!
+//! Lifetime: these rows live and die with the review's other kept rows in her credit store (the
+//! binding, transfer intent, reservations, decision, acceptance and processed boundary). That
+//! chain is kept on purpose (`reviewed.rs:5-7`): deleting its reservations would let the same
+//! generations train again, so nothing retires it today, and a key outlives its review only if
+//! the review's own rows do. Bounded by reviews x outcomes, the same order as the decision rows
+//! beside it. A retirement of the chain, if one is ever built, must retire these rows in that same
+//! owner, in the same batch, so a dedupe key is gone only once its review is.
 
 use super::*;
 use crate::cognition::health_ledger::{note_credit_outcome_of, CreditOutcome};
