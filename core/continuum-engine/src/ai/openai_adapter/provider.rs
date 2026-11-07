@@ -145,6 +145,16 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         self.exact_prompt_admission()
     }
 
+    /// The serving lane's measured template overhead, for a request that reaches it: the same
+    /// lane authority as [`Self::live_served_window`] (a dedicated lane or a non-resident config
+    /// reaches another server, unmeasured here).
+    fn template_overhead(&self, model: &str) -> crate::inference::llama_server::TemplateMeasurement {
+        if self.dedicated_lane || !self.config.single_resident_model {
+            return crate::inference::llama_server::TemplateMeasurement::Unmeasured;
+        }
+        crate::inference::llama_server::serving_template_overhead(model)
+    }
+
     fn live_served_window(&self) -> Option<u32> {
         if self.dedicated_lane || !self.config.single_resident_model {
             return None;

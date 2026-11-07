@@ -243,7 +243,7 @@ mod the_newest_result_over_her_window {
     /// A request's cost in the fitter's own unit: framing, messages, tool schemas.
     fn estimate(request: &TextGenerationRequest) -> usize {
         LlmDeliberationFaculty::framing_cost(request.system_prompt.as_deref().unwrap_or_default()) // JUSTIFIED: a request with no system prompt costs none
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
+            + PromptCalibration::default().estimate_all(&request.messages)
             + request.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of) // map_or: no tools, no schemas
     }
 

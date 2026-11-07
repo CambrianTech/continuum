@@ -427,6 +427,14 @@ pub trait AIProviderAdapter: super::DispatchTermsPolicy + Send + Sync {
         false
     }
 
+    /// The chat template observed (each probe message and the tokens it added) for a request for
+    /// `model`, measured from the
+    /// engine that request reaches (`llama_server::template_overhead`). Default `Unmeasured`: a
+    /// caller prices message text at its density alone and says so.
+    fn template_overhead(&self, _model: &str) -> crate::inference::llama_server::TemplateMeasurement {
+        crate::inference::llama_server::TemplateMeasurement::Unmeasured
+    }
+
     /// Get API style.
     ///
     /// Default: `Local` (in-process inference). Cloud adapters override

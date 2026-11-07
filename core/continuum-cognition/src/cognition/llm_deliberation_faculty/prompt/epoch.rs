@@ -17,6 +17,9 @@
 use continuum_context::source::Source;
 use continuum_context::view::{Claim, View};
 
+mod allocation_estimate;
+pub(in super::super) use allocation_estimate::AllocationEstimate;
+
 use super::*;
 use crate::cognition::context_streams::{ContextMessage, MemoryStreams};
 use crate::cognition::working_memory::WorkingMemory;
@@ -62,38 +65,26 @@ impl LlmDeliberationFaculty {
         ViewPlacement { len, started }
     }
 
-    /// Her view's sources as claims in the window's one allocation, each `view/<source>`,
-    /// priced in the unit the final fit charges ([`Self::message_cost`], template overhead
-    /// included): floor = the source folded or collapsed, want = the source whole, at the source's
-    /// priority. There is no separate history claim for the view, so the allocation that
-    /// weighs her reply also decides, once, how much of her context she reads.
-    pub(in super::super) fn view_claims(&self, streams: &Streams) -> Vec<continuum_context::flex::FlexClaim> {
+    /// Her view's sources as claims in the window's one allocation, each `view/<source>`, priced by
+    /// the view's own claims ([`continuum_context::view::claims`]) at `cost`, the allocation estimate her view
+    /// starts by ([`AllocationEstimate`]): floor = the source folded or collapsed, want = the source whole
+    /// (a stored body at its measured size), at the source's priority. There is no separate
+    /// history claim for the view, so the allocation that weighs her reply also decides, once, how
+    /// much of her context she reads, in the very prices the start keeps within.
+    pub(in super::super) fn view_claims(&self, streams: &Streams, cost: AllocationEstimate) -> Vec<continuum_context::flex::FlexClaim> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
-        Self::view_sources(streams, memory_streams.as_ref())
+        let sources = Self::view_sources(streams, memory_streams.as_ref());
+        continuum_context::view::claims(&cost, &sources)
             .into_iter()
-            .map(|source| {
-                let items = source.items();
-                let cost = |message: &ContextMessage| Self::message_cost(&message.to_chat());
-                // Its floor from the view's one owner: one fold block when the source folds its
-                // oldest run, else each item's pointer, so the allocation prices the true floor.
-                let floor = continuum_context::view::floor(source, &items, cost);
-                // An item's WHOLE level, stored or resident (`whole_chars`): a body evicted from RAM
-                // is priced from its measured size, never as the pointer resident in its place,
-                // or the allocation would never grant room to see it (FOCUS-CONTRACT rule 7).
-                let whole = |item: &continuum_context::source::Item<ContextMessage>| {
-                    let extra = continuum_context::source::whole_chars(item).saturating_sub(item.full().text.chars().count());
-                    cost(item.full()) + extra / continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN
-                };
-                let want: usize = items.iter().map(whole).sum();
-                continuum_context::flex::FlexClaim {
-                    source_id: format!("{VIEW_CLAIM}{}", source.name()),
-                    priority: source.priority(),
-                    floor_tokens: Self::clamp_u32(floor),
-                    min_tokens: Self::clamp_u32(floor),
-                    max_tokens: Self::clamp_u32(want),
-                    required: source.required(),
-                }
+            .zip(&sources)
+            .map(|(claim, source)| continuum_context::flex::FlexClaim {
+                source_id: format!("{VIEW_CLAIM}{}", claim.source),
+                priority: claim.priority,
+                floor_tokens: Self::clamp_u32(claim.floor),
+                min_tokens: Self::clamp_u32(claim.floor),
+                max_tokens: Self::clamp_u32(claim.full),
+                required: source.required(),
             })
             .collect()
     }
@@ -140,7 +131,9 @@ impl LlmDeliberationFaculty {
         // so the view is charged too. Compared raw, a view near its grant passed here and the
         // final fit, which converts its budget back to raw, cut 96-99 of its oldest messages
         // from the front with no turnover (Benchy, the M5, 2026-10-23: a head clip, goal 7).
-        let view_tokens = calibration.charge(Self::messages_cost(&prompt.history[..view.len]));
+        // Her view's allocation estimate: each block as this prompt is priced, the unit of every grant.
+        let cost = AllocationEstimate(calibration);
+        let view_tokens = calibration.charge(calibration.estimate_all(&prompt.history[..view.len]));
         let granted = act.view_granted() as usize;
         // The epoch keeps appending into window no claim took: its rendering carries the
         // versions it superseded, which no claim counts, so measured against its grants alone
@@ -164,14 +157,14 @@ impl LlmDeliberationFaculty {
         let room_all = act.start_room() as usize;
         let funds_head = room_all >= head_growth.saturating_add(required_floors);
         let start_room = if funds_head { room_all - head_growth } else { room_all };
-        let sized = |claims: &[Claim]| match start_grants(claims, &act.plan, start_room, appended_per_act) {
+        let sized = |claims: &[Claim]| match start_grants(claims, &act.plan, start_room, next_act_tokens) {
             Ok(grants) => grants,
             Err(start) => {
                 refused.set(Some(start));
                 Vec::new()
             }
         };
-        let due = turnover_due(view_tokens, granted + room, next_act_tokens, || self.view_would_restore(&prompt.streams, &sized))
+        let due = turnover_due(view_tokens, granted + room, next_act_tokens, || self.view_would_restore(cost, &prompt.streams, &sized))
             .map_err(&typed)?;
         if due == Turnover::Keep {
             return kept(None);
@@ -182,8 +175,8 @@ impl LlmDeliberationFaculty {
         // view, an arrival too large for it reduced to its outline or pointer
         // (`View::readmit`). An act that started the view has nothing to redo.
         if !fits && !view.started {
-            if let Some(admitted) = self.admit_view(&prompt.streams, view_tokens, granted + room) {
-                let admitted_tokens = calibration.charge(Self::messages_cost(&admitted));
+            if let Some(admitted) = self.admit_view(cost, &prompt.streams, granted + room) {
+                let admitted_tokens = calibration.charge(calibration.estimate_all(&admitted));
                 if admitted_tokens <= granted + room {
                     continuum_base::probe!(
                         class = "delib.view.admitted",
@@ -212,7 +205,7 @@ impl LlmDeliberationFaculty {
         // (`budget_fault` / `capacity_error`, view.rs), never sent without it.
         // (`escalation_needed` is only probed; it refuses nothing.)
         let shed = act.shed_view_sources();
-        let started = self.turn_over_view_with(&prompt.streams, &shed, &sized).map_err(&typed)?;
+        let started = self.turn_over_view_with(cost, &prompt.streams, &shed, &sized).map_err(&typed)?;
         prompt.grounding_at = started.len();
         prompt.history.splice(0..view.len, started);
         continuum_base::probe!(
@@ -263,8 +256,8 @@ impl LlmDeliberationFaculty {
                 "her view appended this act's changes; the prompt before them is unchanged"
             );
         } else {
-            let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-            match View::start(Vec::new(), &sources, whole) {
+            let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
+            match View::start(&AllocationEstimate::uncalibrated(), Vec::new(), &sources, whole) {
                 Ok((view, _)) => {
                     *held = Some(view);
                     self.tool_head_turned_over();
@@ -286,21 +279,20 @@ impl LlmDeliberationFaculty {
         (Self::render(held.as_ref()), started)
     }
 
-    /// Redo this act's append to her view within `budget_tokens`, converted to characters at
-    /// the view's own measured ratio (ballpark: an arrival is admitted or reduced whole, and
-    /// the caller re-checks the result in tokens). `None` when there is no unsent act to redo.
-    fn admit_view(&self, streams: &Streams, view_tokens: usize, budget_tokens: usize) -> Option<Vec<ChatMessage>> {
+    /// Redo this act's append to her view within `budget_tokens`, every block priced by her view's
+    /// allocation estimate (`cost`), the unit of the budget (the caller re-checks the result in tokens). `None`
+    /// when there is no unsent act to redo.
+    fn admit_view(&self, cost: AllocationEstimate, streams: &Streams, budget_tokens: usize) -> Option<Vec<ChatMessage>> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
         let mut held = self.context_view.lock();
         let view = held.as_mut()?;
-        let limit = (budget_tokens as u128 * view.chars() as u128 / view_tokens.max(1) as u128) as usize;
         // What a start would grant one arrival at most: `start_grants` gives her growing
         // sources at most half of what the view may hold, so an item larger than half of it is
         // reduced by a turnover too. Only such an arrival is reduced here; any other stays
         // whole and the caller turns over, shrinking the oldest (goal 7).
-        view.readmit(&sources, limit, limit / 2)?;
+        view.readmit(&cost, &sources, budget_tokens, budget_tokens / 2)?;
         if let Some(memory) = memory {
             memory.keep_view(held.clone());
         }
@@ -393,18 +385,21 @@ impl LlmDeliberationFaculty {
         }
     }
 
-    /// Whether her view, started now under `allocate`'s grants, would show her more than it holds.
-    fn view_would_restore(&self, streams: &Streams, allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, continuum_context::view::GrantMismatch> {
+    /// Whether her view, started now under `allocate`'s grants in `cost`, would show her more than
+    /// it holds.
+    fn view_would_restore(&self, cost: AllocationEstimate, streams: &Streams, allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, continuum_context::view::GrantMismatch> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
-        self.context_view.lock().as_ref().map_or(Ok(false), |view| view.start_would_restore(&sources, allocate)) // map_or: no view yet holds nothing to restore
+        self.context_view.lock().as_ref().map_or(Ok(false), |view| view.start_would_restore(&cost, &sources, allocate)) // map_or: no view yet holds nothing to restore
     }
 
-    /// Start a new epoch of her view under `allocate`'s grants without the `shed` sources, whose
-    /// items wait for a later start that funds them ([`View::withhold`]).
+    /// Start a new epoch of her view under `allocate`'s grants, each kept as `cost` prices what it
+    /// renders, without the `shed` sources, whose items wait for a later start that funds them
+    /// ([`View::withhold`]).
     fn turn_over_view_with(
         &self,
+        cost: AllocationEstimate,
         streams: &Streams,
         shed: &[&str],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
@@ -415,9 +410,9 @@ impl LlmDeliberationFaculty {
             Self::view_sources(streams, memory_streams.as_ref()).into_iter().partition(|source| shed.contains(&source.name()));
         let mut held = self.context_view.lock();
         let started = if let Some(view) = held.as_mut() {
-            view.turn_over(Vec::new(), &sources, allocate)
+            view.turn_over(&cost, Vec::new(), &sources, allocate)
         } else {
-            match View::start(Vec::new(), &sources, allocate) {
+            match View::start(&cost, Vec::new(), &sources, allocate) {
                 Ok((view, start)) => {
                     *held = Some(view);
                     Ok(start)
@@ -474,8 +469,8 @@ impl LlmDeliberationFaculty {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
-        let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-        match View::start(Vec::new(), &sources, whole) {
+        let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
+        match View::start(&AllocationEstimate::uncalibrated(), Vec::new(), &sources, whole) {
             Ok((view, _)) => Self::render(Some(&view)),
             Err(mismatch) => {
                 continuum_base::probe!(
@@ -637,11 +632,14 @@ thread_local! {
     pub(in super::super) static SHORT_GRANTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Each view source's character grant at a turnover: the start the next epoch re-prefills,
-/// leaving a growth reserve for the acts that follow to append into.
+/// Each view source's grant at a turnover, in the allocation's tokens (the unit her view's claims
+/// are priced in, [`AllocationEstimate`]): the start the next epoch re-prefills, leaving a growth reserve for
+/// the acts that follow to append into. The view keeps within each grant as her allocation estimate prices what
+/// it renders; no grant is converted into characters.
 ///
 /// `available` is what the window's one allocation leaves her view (its sources' grants plus
-/// the room no claim took), in the allocation's tokens. The higher-priority sources (the
+/// the room no claim took), in the allocation's tokens; `per_act_tokens` what one act of the epoch
+/// being replaced appended, in the same tokens (`fit_view`'s `next_act_tokens`). The higher-priority sources (the
 /// grounding blocks: identity, tools, policy) start whole at their grant, `grounding` in all;
 /// they change least and only supersede. The lowest-priority sources (her conversation,
 /// results and thoughts), which grow by appends, start at `growing` and the reserve is what
@@ -673,16 +671,12 @@ pub(in super::super) fn start_grants(
     claims: &[Claim],
     plan: &continuum_context::flex::FlexAllocation,
     available: usize,
-    appended_per_act: Option<usize>,
+    per_act: Option<usize>,
 ) -> Result<Vec<usize>, continuum_context::allocation::StartRefused> {
     let grants: Vec<Option<&continuum_context::flex::SourceAllocation>> = claims
         .iter()
         .map(|claim| plan.allocations.iter().find(|a| a.source_id == format!("{VIEW_CLAIM}{}", claim.source)))
         .collect();
-    // Characters per allocation token, the ratio each claim was priced at (`view_claims`).
-    let wanted_tokens: u64 = grants.iter().flatten().map(|a| u64::from(a.requested_max)).sum();
-    let wanted_chars: u64 = claims.iter().zip(&grants).filter(|(_, a)| a.is_some()).map(|(c, _)| c.full_chars as u64).sum();
-    let per_act_tokens = appended_per_act.map_or(0, |chars| (chars as u64 * wanted_tokens).div_ceil(wanted_chars.max(1)) as usize); // map_or: no act measured yet: the half bound alone
     let lowest = claims.iter().map(|claim| claim.priority).min().unwrap_or(0); // unwrap_or: no claims means nothing to grant
     let grounding: usize = claims
         .iter()
@@ -702,23 +696,22 @@ pub(in super::super) fn start_grants(
     // chars and her history rendered empty after a scaled calibration
     // (a_scaled_calibration_after_turnovers).
     // `reserve >= growing` with `growing + reserve = growable`: half, from the amortization.
-    let growing = if per_act_tokens < growable {
-        (growable / 2).min(growable - per_act_tokens)
-    } else {
-        growable
+    let growing = match per_act {
+        Some(tokens) if tokens >= growable => growable,
+        Some(tokens) => (growable / 2).min(growable - tokens),
+        // No act measured yet: the half bound alone.
+        None => growable / 2,
     };
     // The newest end is never collapsed by the growth reserve (goal 7): halved, a 5,204-token
     // growable start converted to 1,885 chars, less than her one newest turn of 2,040, so her
     // history rendered empty after a scaled calibration (a_scaled_calibration_after_turnovers).
-    // The start covers each growing source's newest item whole when the growable room can.
-    let newest_of = |claim: &Claim, a: &continuum_context::flex::SourceAllocation| {
-        (claim.newest_chars as u64 * u64::from(a.requested_max)).div_ceil(claim.full_chars.max(1) as u64) as usize
-    };
+    // The start covers each growing source's newest item whole when the growable room can, at
+    // its own price (`Claim::newest`).
     let newest: usize = claims
         .iter()
         .zip(&grants)
-        .filter(|(claim, _)| claim.priority == lowest)
-        .filter_map(|(claim, grant)| grant.map(|a| newest_of(claim, a)))
+        .filter(|(claim, grant)| claim.priority == lowest && grant.is_some())
+        .map(|(claim, _)| claim.newest)
         .sum();
     let growing = growing.max(newest.min(growable));
     // Each source's share of the start: arithmetic on the one plan's grants, never a second
@@ -731,7 +724,7 @@ pub(in super::super) fn start_grants(
         .zip(&grants)
         .map(|(claim, grant)| {
             let (floor, max, required, newest) = grant.map_or((0, 0, false, 0), |a| {
-                let newest = if claim.priority == lowest { newest_of(claim, a) as u32 } else { 0 };
+                let newest = if claim.priority == lowest { LlmDeliberationFaculty::clamp_u32(claim.newest) } else { 0 };
                 (a.requested_floor, a.allocated_tokens, a.required, newest)
             }); // map_or: a source the window granted nothing starts collapsed
             continuum_context::allocation::StartSource { priority: claim.priority, fixed: claim.priority > lowest, required, floor, grant: max, newest }
@@ -757,16 +750,10 @@ pub(in super::super) fn start_grants(
     let mut shares = share(growing, &sources)?;
     // How deep the start collapses, from her measured re-reads and growth
     // (`continuum_context::depth`): each growing source's share where the measurement decides it,
-    // the half above where it does not. Each source is weighed at its own tokens per char.
+    // the half above where it does not. Every size is already in the allocation's tokens.
     let growing_at: Vec<usize> = (0..claims.len()).filter(|&index| claims[index].priority == lowest && grants[index].is_some()).collect();
-    let weighed: Vec<continuum_context::depth::Growing<'_>> = growing_at
-        .iter()
-        .filter_map(|&index| {
-            let allocation = grants[index]?;
-            Some(claims[index].growing(shares[index] as usize, f64::from(allocation.requested_max) / claims[index].full_chars.max(1) as f64))
-        })
-        .collect();
-    let room = continuum_context::depth::Room { growable, per_act: appended_per_act.map(|_| per_act_tokens) };
+    let weighed: Vec<continuum_context::depth::Growing<'_>> = growing_at.iter().map(|&index| claims[index].growing(shares[index] as usize)).collect();
+    let room = continuum_context::depth::Room { growable, per_act };
     if let continuum_context::depth::Depth::Chosen(chosen) = continuum_context::depth::choose(room, &weighed) {
         // The growing start is what the lowered grants hold, never the depth's own sum: that sum
         // prices her newest item rounded, so it can fall a token under it.
@@ -795,8 +782,10 @@ pub(in super::super) fn start_grants(
         .zip(&grants)
         .zip(&shares)
         .map(|((claim, grant), &share)| match grant {
-            Some(a) if share >= a.requested_max => claim.full_chars,
-            Some(a) => (u64::from(share) * claim.full_chars as u64 / u64::from(a.requested_max.max(1))) as usize,
+            // Granted all it asked: the start renders it whole.
+            Some(a) if share >= a.requested_max => claim.full,
+            // The share itself: the view keeps within it as her allocation estimate prices each item.
+            Some(_) => share as usize,
             None => 0,
         })
         .collect();

@@ -36,8 +36,8 @@ impl LlmDeliberationFaculty {
     /// `Some(fault)` when the assembled prompt breaks the one budget; the caller sends nothing.
     pub(in super::super) fn budget_violation(&self, ledger: &BudgetLedger<'_>) -> Option<String> {
         let charge = |tokens: usize| ledger.calibration.charge(tokens);
-        let estimated = Self::framing_cost(ledger.system)
-            .saturating_add(Self::messages_cost(ledger.messages))
+        let estimated = ledger.calibration.estimate_system(ledger.system)
+            .saturating_add(ledger.calibration.estimate_all(ledger.messages))
             .saturating_add(ledger.tool_tokens);
         let charged = charge(estimated).saturating_add(ledger.completion_reserve);
         if charged <= ledger.context_window as usize {
@@ -45,10 +45,10 @@ impl LlmDeliberationFaculty {
         }
         let view_end = ledger.view_len.min(ledger.messages.len());
         let grounding_end = view_end.saturating_add(ledger.grounding_len).min(ledger.messages.len());
-        let view_cost = charge(Self::messages_cost(&ledger.messages[..view_end]));
-        let grounding_cost = charge(Self::messages_cost(&ledger.messages[view_end..grounding_end]));
-        let tail_cost = charge(Self::messages_cost(&ledger.messages[grounding_end..]));
-        let framing_cost = charge(Self::framing_cost(ledger.system).saturating_add(ledger.tool_tokens));
+        let view_cost = charge(ledger.calibration.estimate_all(&ledger.messages[..view_end]));
+        let grounding_cost = charge(ledger.calibration.estimate_all(&ledger.messages[view_end..grounding_end]));
+        let tail_cost = charge(ledger.calibration.estimate_all(&ledger.messages[grounding_end..]));
+        let framing_cost = charge(ledger.calibration.estimate_system(ledger.system).saturating_add(ledger.tool_tokens));
         continuum_base::probe!(
             class = "delib.budget.violated",
             persona = %self.persona_name,

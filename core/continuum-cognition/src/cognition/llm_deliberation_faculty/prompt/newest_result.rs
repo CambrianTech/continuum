@@ -82,7 +82,7 @@ impl LlmDeliberationFaculty {
         }
         let mut group = prompt.latest_result.clone();
         let mut costs = Vec::new();
-        self.level_newest(&mut group, 0, false, Some(&mut costs));
+        self.level_newest(prompt.pricing, &mut group, 0, false, Some(&mut costs));
         costs
     }
 
@@ -90,7 +90,7 @@ impl LlmDeliberationFaculty {
     /// level's cost: whole when it fits, else down its levels to the first that costs no more.
     /// Answers whether it was shown smaller than whole (`DeliberationPromptView::newest_result_reduced`).
     pub(in super::super) fn fit_newest_result(&self, prompt: &mut PromptMessages, room: usize) -> bool {
-        self.level_newest(&mut prompt.latest_result, room, true, None)
+        self.level_newest(prompt.pricing, &mut prompt.latest_result, room, true, None)
     }
 
     /// `group` (her newest result's messages) down its levels until it costs at most `room`.
@@ -102,8 +102,8 @@ impl LlmDeliberationFaculty {
     /// sent emptied. Each rewrite is in place: the native call/result pairing and its ids are
     /// untouched. Only a SAVED result is shown as less than whole. `report` probes what it did;
     /// `costs`, when given, records the cost whole and after every step (the levels).
-    fn level_newest(&self, group: &mut Vec<ChatMessage>, room: usize, report: bool, mut costs: Option<&mut Vec<usize>>) -> bool {
-        let whole_tokens = Self::messages_cost(group);
+    fn level_newest(&self, pricing: PromptCalibration, group: &mut Vec<ChatMessage>, room: usize, report: bool, mut costs: Option<&mut Vec<usize>>) -> bool {
+        let whole_tokens = pricing.estimate_all(group);
         if let Some(costs) = costs.as_mut() {
             costs.push(whole_tokens);
         }
@@ -183,7 +183,7 @@ impl LlmDeliberationFaculty {
                 // How many mipmap levels below whole she was shown it at.
                 depth,
                 whole_tokens,
-                shown_tokens = Self::messages_cost(group),
+                shown_tokens = pricing.estimate_all(group),
                 room,
                 "her newest result's grant was smaller than its whole: shown at a smaller level with its handle"
             );

@@ -41,7 +41,7 @@ async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
     assert!(reply >= 10_808, "the retried write gets at least the cut answer's median: {reply}");
     let wire_tokens =
         LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
+            + PromptCalibration::default().estimate_all(&request.messages)
             + crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap())
             + reply as usize;
     assert!(wire_tokens <= window as usize, "prompt + reply {wire_tokens} > window {window}");
@@ -206,8 +206,8 @@ async fn provider_context_feedback_bounds_replay_and_scales_next_turn() {
         let seen = adapter.seen.lock().expect("actual requests");
         assert_eq!(seen.len(), 3);
         assert!(
-            LlmDeliberationFaculty::messages_cost(&seen[2].messages)
-                < LlmDeliberationFaculty::messages_cost(&seen[1].messages),
+            PromptCalibration::default().estimate_all(&seen[2].messages)
+                < PromptCalibration::default().estimate_all(&seen[1].messages),
             "the previously rejected prompt must not be sent unchanged next tick"
         );
     }
@@ -516,7 +516,7 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
         let tool_tokens = crate::cognition::tool_surface::tool_surface_tokens_of(tools);
         assert_eq!(tool_tokens, faculty.prompt_view(&ws).tools.tokens);
         let wire = LlmDeliberationFaculty::framing_cost(system)
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
+            + PromptCalibration::default().estimate_all(&request.messages)
             + tool_tokens
             + request.max_tokens.expect("planned completion reserve") as usize;
         assert!(

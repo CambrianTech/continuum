@@ -4,7 +4,7 @@ use crate::fixtures::{item, Fake};
 use crate::source::Item;
 
 fn all_full(claims: &[Claim]) -> Vec<usize> {
-    claims.iter().map(|claim| claim.full_chars).collect()
+    claims.iter().map(|claim| claim.full).collect()
 }
 
 fn rendered(view: &View<String>) -> String {
@@ -21,7 +21,7 @@ fn every_act_of_an_epoch_only_appends() {
     board.push("card", "card 1b232595 claimed");
     let mut actions = Fake::new("actions", 5);
     let mut notices = Fake::new("notices", 2);
-    let (mut view, _) = View::start(vec!["identity".into()], &[&board, &actions, &notices], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&board, &actions, &notices], all_full).unwrap();
     for act in 1..=6 {
         let before = rendered(&view);
         actions.push(&format!("#{act}"), &format!("code/read result {act}"));
@@ -38,7 +38,7 @@ fn an_act_appends_only_the_items_that_changed() {
     let mut views = Fake::new("open-views", 4);
     views.push("a.rs", &"a".repeat(5_000));
     views.push("b.rs", &"b".repeat(5_000));
-    let (mut view, _) = View::start(vec![], &[&views], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&views], all_full).unwrap();
     views.push("b.rs", "b.rs lines 1-40");
     let advance = view.advance(&[&views]);
     assert_eq!(advance, Advance { items: 1, chars: "b.rs lines 1-40".len(), repeats: 0 });
@@ -54,7 +54,7 @@ fn an_advance_names_each_source_that_appended() -> Result<(), GrantMismatch> {
     let mut actions = Fake::new("actions", 1);
     views.push("a.rs", "aaa");
     actions.push("#1", "first");
-    let (mut view, _) = View::start(vec![], &[&views, &actions], all_full)?;
+    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&views, &actions], all_full)?;
     actions.push("#2", "second");
     actions.push("#3", "third");
     view.advance(&[&views, &actions]);
@@ -75,7 +75,7 @@ fn an_advance_names_each_source_that_appended() -> Result<(), GrantMismatch> {
 fn a_collapsed_item_stays_collapsed_and_a_new_one_arrives_in_full() {
     let mut actions = Fake::new("actions", 1);
     actions.push("#1", &"x".repeat(9_000));
-    let (mut view, start) = View::start(vec![], &[&actions], |claims| vec![0; claims.len()]).unwrap();
+    let (mut view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |claims| vec![0; claims.len()]).unwrap();
     assert_eq!(start.collapsed, 1);
     let at_start = view.chars();
     actions.push("#2", "short");
@@ -95,7 +95,7 @@ fn a_grant_keeps_the_newest_items_in_full() {
     let pointer = |item: &Item<String>| item.pointer.as_ref().map_or(0, String::len);
     let floor: usize = actions.items().iter().map(pointer).sum();
     let grant = floor + 2 * (1_000 - pointer(&actions.items()[0]));
-    let (view, start) = View::start(vec![], &[&actions], |_| vec![grant]).unwrap();
+    let (view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |_| vec![grant]).unwrap();
     assert_eq!(start.collapsed, 1);
     assert!(rendered(&view).starts_with("[#1:"), "the oldest collapsed, the newest two whole");
     assert!(view.chars() <= grant);
@@ -107,7 +107,7 @@ fn a_grant_keeps_the_newest_items_in_full() {
 fn a_grant_for_the_wrong_number_of_sources_is_refused() {
     let a = Fake::new("a", 1);
     let b = Fake::new("b", 1);
-    let refused = View::start(vec![], &[&a, &b], |_| vec![usize::MAX]).err();
+    let refused = View::start(&crate::cost::Chars, vec![], &[&a, &b], |_| vec![usize::MAX]).err();
     assert_eq!(refused, Some(GrantMismatch { claims: 2, grants: 1 }));
 }
 
@@ -117,14 +117,14 @@ fn a_grant_for_the_wrong_number_of_sources_is_refused() {
 fn turnover_renders_only_what_the_sources_offer_now() {
     let mut views = Fake::new("open-views", 4);
     views.push("a.rs", "a.rs contents");
-    let (mut view, _) = View::start(vec!["head".into()], &[&views], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["head".into()], &[&views], all_full).unwrap();
     views.items.clear();
     views.retired.push(("a.rs".into(), "[closed a.rs]".into()));
     view.advance(&[&views]);
     assert!(rendered(&view).ends_with("[closed a.rs]"), "the close is appended, not a rewrite");
     views.retired.clear();
     views.push("b.rs", "b.rs contents");
-    let start = view.turn_over(vec!["head".into()], &[&views], all_full).unwrap();
+    let start = view.turn_over(&crate::cost::Chars, vec!["head".into()], &[&views], all_full).unwrap();
     assert_eq!(start.epoch, 2);
     assert_eq!(rendered(&view), "head\nb.rs contents");
     assert_eq!(view.superseded_chars(), 0);
@@ -135,7 +135,7 @@ fn turnover_renders_only_what_the_sources_offer_now() {
 #[test]
 fn appended_per_act_is_the_median_act_of_the_epoch() {
     let mut actions = Fake::new("actions", 1);
-    let (mut view, _) = View::start(vec![], &[&actions], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&actions], all_full).unwrap();
     assert_eq!(view.appended_per_act(), None);
     for (act, size) in [(1, 100), (2, 120), (3, 9_000)] {
         actions.push(&format!("#{act}"), &"r".repeat(size));
@@ -162,7 +162,7 @@ fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
         }
     }
     let mut turns = Turns(vec!["one", "two", "three"]);
-    let (mut view, start) = View::start(vec![], &[&turns], |_| vec!["three".len()]).unwrap();
+    let (mut view, start) = View::start(&crate::cost::Chars, vec![], &[&turns], |_| vec!["three".len()]).unwrap();
     assert_eq!((start.collapsed, rendered(&view)), (2, "three".to_owned()));
     turns.0.push("four");
     view.advance(&[&turns]);
@@ -177,7 +177,7 @@ fn a_restored_view_renders_the_same_bytes_and_keeps_appending() {
     let mut actions = Fake::new("actions", 1);
     actions.push("#1", &"x".repeat(9_000));
     actions.push("#2", "short");
-    let (mut view, _) = View::start(vec!["head".into()], &[&actions], |claims| vec![claims[0].floor_chars + 10]).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["head".into()], &[&actions], |claims| vec![claims[0].floor + 10]).unwrap();
     view.advance(&[&actions]);
     let saved = serde_json::to_string(&view).unwrap();
     let mut restored: View<String> = serde_json::from_str(&saved).unwrap();
@@ -196,12 +196,12 @@ fn a_restored_view_renders_the_same_bytes_and_keeps_appending() {
 fn an_oversized_arrival_is_admitted_as_its_pointer_and_the_prefix_holds() -> Result<(), GrantMismatch> {
     let mut results = Fake::new("results", 1);
     results.push("r1", "small result");
-    let (mut view, _) = View::start(Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full_chars).collect())?;
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full).collect())?;
     let before: Vec<String> = view.render().cloned().collect();
     results.push("r2", &"x".repeat(51_827));
     view.advance(&[&results]);
     let limit = before.iter().map(String::len).sum::<usize>() + 200;
-    assert!(view.readmit(&[&results], limit, limit / 2).is_some(), "the unsent act is held");
+    assert!(view.readmit(&crate::cost::Chars, &[&results], limit, limit / 2).is_some(), "the unsent act is held");
     let after: Vec<String> = view.render().cloned().collect();
     assert!(after.starts_with(&before), "admission rewrote the prefix");
     assert!(view.chars() <= limit, "the view exceeds what the act granted: {}", view.chars());
@@ -239,7 +239,7 @@ fn an_item_too_large_to_keep_whole_takes_its_summary_and_caps_the_older_ones() -
         ("small", "a small result".to_owned(), Some("small".to_owned())),
         ("file", "x".repeat(51_827), Some("outline of the file".to_owned())),
     ]);
-    let (view, start) = View::start(Vec::new(), &[&reads as &dyn Source<String>], |_| vec![200])?;
+    let (view, start) = View::start(&crate::cost::Chars, Vec::new(), &[&reads as &dyn Source<String>], |_| vec![200])?;
     let rendered: Vec<String> = view.render().cloned().collect();
     assert_eq!(rendered, ["older", "small", "outline of the file"]);
     assert_eq!((start.collapsed, start.summarized), (0, 3));
@@ -253,17 +253,17 @@ fn an_item_too_large_to_keep_whole_takes_its_summary_and_caps_the_older_ones() -
 fn only_an_oversized_arrival_is_reduced_and_a_small_one_stays_whole() -> Result<(), GrantMismatch> {
     let mut results = Fake::new("results", 1);
     results.push("old", &"o".repeat(900));
-    let (mut view, _) = View::start(Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full_chars).collect())?;
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full).collect())?;
     results.push("small", &"s".repeat(300));
     view.advance(&[&results]);
     let limit = 1_000;
-    assert!(view.readmit(&[&results], limit, limit / 2).is_some());
+    assert!(view.readmit(&crate::cost::Chars, &[&results], limit, limit / 2).is_some());
     assert_eq!(view.render().last().map(String::len), Some(300), "the small newest read stays whole");
     assert!(view.chars() > limit, "still over: the caller turns over, shrinking the oldest");
-    let (mut view, _) = View::start(Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full_chars).collect())?;
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full).collect())?;
     results.push("big", &"b".repeat(5_000));
     view.advance(&[&results]);
-    assert!(view.readmit(&[&results], 2_000, 1_000).is_some());
+    assert!(view.readmit(&crate::cost::Chars, &[&results], 2_000, 1_000).is_some());
     assert_eq!(view.render().last().map(String::as_str), Some("[big: 5000 chars, reopen by key]"));
     Ok(())
 }
@@ -274,11 +274,11 @@ fn only_an_oversized_arrival_is_reduced_and_a_small_one_stays_whole() -> Result<
 fn a_sent_act_cannot_be_readmitted() -> Result<(), GrantMismatch> {
     let mut results = Fake::new("results", 1);
     results.push("r1", "one");
-    let (mut view, _) = View::start(Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full_chars).collect())?;
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&results as &dyn Source<String>], |c| c.iter().map(|c| c.full).collect())?;
     results.push("r2", "two");
     view.advance(&[&results]);
     view.sent();
-    assert!(view.readmit(&[&results], 0, 0).is_none());
+    assert!(view.readmit(&crate::cost::Chars, &[&results], 0, 0).is_none());
     Ok(())
 }
 
@@ -293,7 +293,7 @@ fn a_short_item_without_a_summary_stays_whole_under_a_summary_ceiling() -> Resul
         ("short", "a short result".to_owned(), None),
         ("file", "x".repeat(51_827), Some("outline of the file".to_owned())),
     ]);
-    let (view, start) = View::start(Vec::new(), &[&reads as &dyn Source<String>], |_| vec![300])?;
+    let (view, start) = View::start(&crate::cost::Chars, Vec::new(), &[&reads as &dyn Source<String>], |_| vec![300])?;
     let rendered: Vec<String> = view.render().cloned().collect();
     assert_eq!(rendered, ["a short old result", "outline of the big result", "a short result", "outline of the file"]);
     assert_eq!((start.collapsed, start.summarized), (0, 2));
@@ -310,7 +310,7 @@ fn renders_is_true_only_for_what_her_view_shows() -> Result<(), GrantMismatch> {
     actions.push("#2", "short");
     let pointer = |item: &Item<String>| item.pointer.as_ref().map_or(0, String::len);
     let floor: usize = actions.items().iter().map(pointer).sum();
-    let (view, _) = View::start(vec![], &[&actions], |_| vec![floor + 10])?;
+    let (view, _) = View::start(&crate::cost::Chars, vec![], &[&actions], |_| vec![floor + 10])?;
     assert!(!view.renders("actions", "#1"), "collapsed to its pointer: not read");
     assert!(view.renders("actions", "#2"), "whole: read");
     assert!(!view.renders("actions", "#3"), "never held");
@@ -332,13 +332,13 @@ fn a_start_with_room_restores_what_a_squeezed_start_collapsed() -> Result<(), Gr
     let pointer = |item: &Item<String>| item.pointer.as_ref().map_or(0, String::len);
     let floor: usize = actions.items().iter().map(pointer).sum();
     let squeezed = floor + 10;
-    let (view, _) = View::start(vec![], &[&actions], |_| vec![squeezed])?;
+    let (view, _) = View::start(&crate::cost::Chars, vec![], &[&actions], |_| vec![squeezed])?;
     assert!(!view.renders("actions", "#1"), "the squeezed start collapsed the big item");
-    assert!(view.start_would_restore(&[&actions], all_full)?, "room for it: a start gives it back");
-    assert!(!view.start_would_restore(&[&actions], |_| vec![squeezed])?, "the same grants: nothing to restore");
+    assert!(view.start_would_restore(&crate::cost::Chars, &[&actions], all_full)?, "room for it: a start gives it back");
+    assert!(!view.start_would_restore(&crate::cost::Chars, &[&actions], |_| vec![squeezed])?, "the same grants: nothing to restore");
     // what this catches: an allocator answering for the wrong number of sources read as "nothing
     // to restore" (Codex on #5564). It is the start's own typed refusal.
-    assert_eq!(view.start_would_restore(&[&actions], |_| vec![]), Err(GrantMismatch { claims: 1, grants: 0 }));
+    assert_eq!(view.start_would_restore(&crate::cost::Chars, &[&actions], |_| vec![]), Err(GrantMismatch { claims: 1, grants: 0 }));
     Ok(())
 }
 
@@ -375,18 +375,18 @@ impl Source<String> for Spilled {
 // what this catches: a body evicted from RAM priced and rendered as its resident pointer, so
 // storage decided what she saw (FOCUS-CONTRACT rule 7; on the M5 2026-10-29 working memory
 // deleted result bodies by a window share while the window had room for them). Its claim
-// prices the WHOLE (full_chars and the newest end), and a grant that holds it renders the
+// prices the WHOLE (full and the newest end), and a grant that holds it renders the
 // loaded body, not the pointer.
 #[test]
 fn an_evicted_body_is_priced_whole_and_rendered_whole_when_granted() -> Result<(), GrantMismatch> {
     let body = "line of her newest result\n".repeat(200);
     let spilled = Spilled { body: body.clone() };
-    let claims = claims(&[&spilled]);
-    assert_eq!(claims[0].newest_chars, body.chars(), "the newest end is her whole result");
-    assert_eq!(claims[0].full_chars, body.chars() + "an older result".to_owned().chars());
-    let (view, _) = View::start(Vec::new(), &[&spilled], all_full)?;
+    let claims = claims(&crate::cost::Chars, &[&spilled]);
+    assert_eq!(claims[0].newest, body.chars(), "the newest end is her whole result");
+    assert_eq!(claims[0].full, body.chars() + "an older result".to_owned().chars());
+    let (view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&spilled], all_full)?;
     assert!(rendered(&view).contains(&body), "granted whole, it renders the loaded body");
-    let (tight, _) = View::start(Vec::new(), &[&spilled], |claims: &[Claim]| claims.iter().map(|c| c.floor_chars).collect())?;
+    let (tight, _) = View::start(&crate::cost::Chars, Vec::new(), &[&spilled], |claims: &[Claim]| claims.iter().map(|c| c.floor).collect())?;
     assert!(!rendered(&tight).contains(&body) && rendered(&tight).contains("reopen by its handle"), "granted only its floor, it is its pointer");
     Ok(())
 }
@@ -441,12 +441,12 @@ fn fold_blocks(view: &View<String>) -> usize {
 #[test]
 fn a_hundred_results_under_a_tight_grant_fold_into_one_block_and_the_newest_stay_whole() -> Result<(), GrantMismatch> {
     let actions = Folding::new(100, 1_000);
-    let claim = &claims(&[&actions])[0];
-    assert!(claim.floor_chars < 100, "the floor is one block, not {} chars of pointers", actions.pointers());
-    assert_eq!(claim.full_chars, 100 * 1_000, "a folded item still wants its whole");
-    let grant = claim.floor_chars + 3 * 1_000;
+    let claim = &claims(&crate::cost::Chars, &[&actions])[0];
+    assert!(claim.floor < 100, "the floor is one block, not {} chars of pointers", actions.pointers());
+    assert_eq!(claim.full, 100 * 1_000, "a folded item still wants its whole");
+    let grant = claim.floor + 3 * 1_000;
     assert!(grant < actions.pointers());
-    let (view, start) = View::start(Vec::new(), &[&actions], |_| vec![grant])?;
+    let (view, start) = View::start(&crate::cost::Chars, Vec::new(), &[&actions], |_| vec![grant])?;
     let shown: Vec<String> = view.render().cloned().collect();
     assert_eq!(fold_blocks(&view), 1);
     assert!(shown[0].starts_with("[actions #1-#97: 97 earlier acts"), "{}", shown[0]);
@@ -473,9 +473,9 @@ fn no_folded_item_is_newer_than_a_pointer_summary_or_whole_item() -> Result<(), 
             item.2 = Some("s".repeat(item.1.len() / 5));
         }
     }
-    let claim = &claims(&[&actions])[0];
-    for grant in (claim.floor_chars..=claim.full_chars).step_by(97) {
-        let (view, _) = View::start(Vec::new(), &[&actions], |_| vec![grant])?;
+    let claim = &claims(&crate::cost::Chars, &[&actions])[0];
+    for grant in (claim.floor..=claim.full).step_by(97) {
+        let (view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&actions], |_| vec![grant])?;
         let ranks: Vec<u8> = actions.items().iter().map(|item| rank(&view.held_level(&key("actions", &item.key))).min(rank(&Level::Summary))).collect();
         assert!(ranks.windows(2).all(|pair| pair[0] <= pair[1]), "grant {grant}: levels oldest -> newest {ranks:?}");
         assert!(fold_blocks(&view) <= 1);
@@ -492,8 +492,8 @@ fn a_source_without_a_fold_floors_at_the_sum_of_its_pointers() -> Result<(), Gra
         actions.push(&format!("#{act}"), &"r".repeat(1_000));
     }
     let pointers: usize = actions.items().iter().map(|item| item.pointer.as_ref().map_or(0, String::len)).sum();
-    assert_eq!(claims(&[&actions])[0].floor_chars, pointers);
-    let (view, start) = View::start(Vec::new(), &[&actions], |_| vec![pointers])?;
+    assert_eq!(claims(&crate::cost::Chars, &[&actions])[0].floor, pointers);
+    let (view, start) = View::start(&crate::cost::Chars, Vec::new(), &[&actions], |_| vec![pointers])?;
     assert_eq!((start.collapsed, start.folded), (5, 0));
     assert_eq!(view.chars(), pointers);
     Ok(())
@@ -506,15 +506,15 @@ fn a_source_without_a_fold_floors_at_the_sum_of_its_pointers() -> Result<(), Gra
 #[test]
 fn only_a_rise_past_the_pointer_restores_what_a_squeezed_start_folded() -> Result<(), GrantMismatch> {
     let actions = Folding::new(20, 100_000);
-    let floor = claims(&[&actions])[0].floor_chars;
-    let (mut view, start) = View::start(Vec::new(), &[&actions], |_| vec![floor])?;
+    let floor = claims(&crate::cost::Chars, &[&actions])[0].floor;
+    let (mut view, start) = View::start(&crate::cost::Chars, Vec::new(), &[&actions], |_| vec![floor])?;
     assert_eq!(start.folded, 20, "a floor grant folds the whole run");
     let pointers = actions.pointers();
-    let (pointed, _) = View::start(Vec::new(), &[&actions], |_| vec![pointers])?;
+    let (pointed, _) = View::start(&crate::cost::Chars, Vec::new(), &[&actions], |_| vec![pointers])?;
     assert_eq!(fold_blocks(&pointed), 0, "precondition: the pointer grant raises every item to its pointer");
-    assert!(!view.start_would_restore(&[&actions], |_| vec![pointers])?, "pointers only: no turnover");
-    assert!(view.start_would_restore(&[&actions], all_full)?, "room for them whole: a start gives them back");
-    let raised = view.turn_over(Vec::new(), &[&actions], |_| vec![pointers])?;
+    assert!(!view.start_would_restore(&crate::cost::Chars, &[&actions], |_| vec![pointers])?, "pointers only: no turnover");
+    assert!(view.start_would_restore(&crate::cost::Chars, &[&actions], all_full)?, "room for them whole: a start gives them back");
+    let raised = view.turn_over(&crate::cost::Chars, Vec::new(), &[&actions], |_| vec![pointers])?;
     assert_eq!((raised.restored_items, raised.restored_chars), (0, 0), "pointers are not restored content");
     Ok(())
 }
@@ -526,16 +526,16 @@ fn only_a_rise_past_the_pointer_restores_what_a_squeezed_start_folded() -> Resul
 #[test]
 fn an_act_appends_one_result_and_neither_turns_over_nor_grows_the_floor() -> Result<(), GrantMismatch> {
     let mut actions = Folding::new(100, 1_000);
-    let floor = claims(&[&actions])[0].floor_chars;
+    let floor = claims(&crate::cost::Chars, &[&actions])[0].floor;
     let grant = floor + 3 * 1_000;
-    let (mut view, _) = View::start(Vec::new(), &[&actions], |_| vec![grant])?;
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&actions], |_| vec![grant])?;
     let before = rendered(&view);
     actions.push(1_000);
     assert_eq!(view.advance(&[&actions]), Advance { items: 1, chars: 1_000, repeats: 0 });
     assert!(rendered(&view).starts_with(&before), "the act rewrote the prefix");
     assert_eq!(fold_blocks(&view), 1, "the fold block is not re-rendered mid-epoch");
-    assert_eq!(claims(&[&actions])[0].floor_chars, floor, "one more act, the same one-block floor");
-    assert!(!view.start_would_restore(&[&actions], |_| vec![grant])?, "the same grant restores nothing");
+    assert_eq!(claims(&crate::cost::Chars, &[&actions])[0].floor, floor, "one more act, the same one-block floor");
+    assert!(!view.start_would_restore(&crate::cost::Chars, &[&actions], |_| vec![grant])?, "the same grant restores nothing");
     Ok(())
 }
 
@@ -547,7 +547,7 @@ fn the_receipt_names_each_shown_occurrence_and_its_level_in_prompt_order() -> Re
     let mut results = Fake::new("results", 1);
     results.push("r1", &"a".repeat(3_000));
     results.push("r2", "two");
-    let (mut view, _) = View::start(Vec::new(), &[&results as &dyn Source<String>], |_| vec![100])?;
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&results as &dyn Source<String>], |_| vec![100])?;
     results.push("r3", "three");
     view.advance(&[&results]);
     let receipt = view.receipt();
@@ -622,7 +622,7 @@ mod repeats {
     }
 
     fn floors(claims: &[Claim]) -> Vec<usize> {
-        claims.iter().map(|claim| claim.floor_chars).collect()
+        claims.iter().map(|claim| claim.floor).collect()
     }
 
     // what this catches: the M5 2026-10-30 read loop, the same unchanged file arriving whole
@@ -631,7 +631,7 @@ mod repeats {
     #[test]
     fn an_unchanged_read_repeated_mid_epoch_arrives_as_a_repeat() {
         let mut acts = Acts(Vec::new());
-        let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
+        let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
         assert_eq!(view.advance(&[&acts]).repeats, 0);
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
@@ -676,7 +676,7 @@ mod repeats {
     fn only_a_declared_observation_can_repeat() {
         for effect in [ToolEffect::Changes, ToolEffect::Reopens, ToolEffect::Undeclared] {
             let mut acts = Acts(Vec::new());
-            let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
+            let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
             acts.push("tool/x", r#"{"line":"a"}"#, effect, "OK");
             view.advance(&[&acts]);
             acts.push("tool/x", r#"{"line":"a"}"#, effect, "OK");
@@ -694,7 +694,7 @@ mod repeats {
         let mut acts = Acts(Vec::new());
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
         acts.push("code/read", r#"{"path":"b.rs"}"#, ToolEffect::Observes, &body("b.rs"));
-        let (mut view, start) = View::start(vec!["identity".into()], &[&acts], floors).unwrap(); // unwrap: one grant per claim cannot mismatch
+        let (mut view, start) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], floors).unwrap(); // unwrap: one grant per claim cannot mismatch
         assert_eq!(start.collapsed + start.folded, 2, "the start holds both at their floor");
         assert!(!view.renders("acts", "1"));
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
@@ -703,7 +703,7 @@ mod repeats {
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
         assert_eq!(view.advance(&[&acts]).repeats, 1, "#3 is whole now: #4 repeats it");
         assert!(rendered(&view).contains("[#4 repeat of #3,"));
-        view.turn_over(vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
+        view.turn_over(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
         let text = rendered(&view);
         assert!(!text.contains("repeat of"), "a turnover re-renders every item as itself: {text}");
         assert!(view.renders("acts", "4"));
@@ -716,7 +716,7 @@ mod repeats {
     #[test]
     fn a_rendering_already_sent_is_never_turned_into_a_repeat() {
         let mut acts = Acts(Vec::new());
-        let (mut view, _) = View::start(vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
+        let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
         acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
         assert_eq!(view.advance(&[&acts]).repeats, 0);
@@ -737,8 +737,8 @@ fn wall_append_preserves_prefix_until_restore_recovers_collapsed_content() -> Re
     let mut wall = Fake::new("room-wall", 2);
     wall.push("wall", "original wall");
     let sources: [&dyn Source<String>; 2] = [&actions, &wall];
-    let (mut view, _) = View::start(vec!["identity".into()], &sources, |claims| {
-        claims.iter().map(|claim| if claim.source == "actions" { 100 } else { claim.full_chars }).collect()
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &sources, |claims| {
+        claims.iter().map(|claim| if claim.source == "actions" { 100 } else { claim.full }).collect()
     })?;
     assert!(!view.renders("actions", "old-result"));
     let before = rendered(&view);
@@ -747,16 +747,16 @@ fn wall_append_preserves_prefix_until_restore_recovers_collapsed_content() -> Re
     view.advance(&sources);
     let appended = rendered(&view);
     assert!(appended.starts_with(&before), "the wall advance must preserve the held prefix");
-    assert!(view.start_would_restore(&sources, all_full)?);
+    assert!(view.start_would_restore(&crate::cost::Chars, &sources, all_full)?);
     assert_eq!(rendered(&view), appended, "the restore probe cannot mutate the view");
-    let restored = view.turn_over(vec!["identity".into()], &sources, all_full)?;
+    let restored = view.turn_over(&crate::cost::Chars, vec!["identity".into()], &sources, all_full)?;
     assert_eq!(restored.restored_items, 1, "the changed wall is not restored content");
     assert_eq!(restored.restored_chars, 9_000);
     assert!(view.renders("actions", "old-result"), "restore must actually recover the old result");
     assert!(view.renders("room-wall", "wall"));
     assert!(!rendered(&view).starts_with(&appended), "restoring content changes the prior prefix");
-    assert!(!view.start_would_restore(&sources, all_full)?, "unchanged full grants must not restore twice");
-    let repeated = view.turn_over(vec!["identity".into()], &sources, all_full)?;
+    assert!(!view.start_would_restore(&crate::cost::Chars, &sources, all_full)?, "unchanged full grants must not restore twice");
+    let repeated = view.turn_over(&crate::cost::Chars, vec!["identity".into()], &sources, all_full)?;
     assert_eq!(repeated.restored_items, 0);
     assert_eq!(repeated.restored_chars, 0);
     Ok(())
@@ -765,18 +765,18 @@ fn wall_append_preserves_prefix_until_restore_recovers_collapsed_content() -> Re
 #[test]
 fn turnover_receipt_counts_promotions_but_not_new_items() -> Result<(), GrantMismatch> {
     let mut reads = Leveled(vec![("old", "x".repeat(1000), Some("outline".into()))]);
-    let (mut view, start) = View::start(Vec::new(), &[&reads], |_| vec![0])?;
+    let (mut view, start) = View::start(&crate::cost::Chars, Vec::new(), &[&reads], |_| vec![0])?;
     assert_eq!((start.restored_items, start.restored_chars), (0, 0));
     // Logged as its pointer at the squeezed start, it rises with room for its summary beside the
     // pointer her log keeps (5 + 7 chars).
-    assert!(view.turn_over(Vec::new(), &[&reads], |_| vec![7])?.restored_items == 0, "no room beside its log entry");
-    let summary = view.turn_over(Vec::new(), &[&reads], |_| vec![12])?;
+    assert!(view.turn_over(&crate::cost::Chars, Vec::new(), &[&reads], |_| vec![7])?.restored_items == 0, "no room beside its log entry");
+    let summary = view.turn_over(&crate::cost::Chars, Vec::new(), &[&reads], |_| vec![12])?;
     assert_eq!((summary.restored_items, summary.restored_chars), (1, 7));
     reads.0.push(("new", "newly arrived".into(), None));
     let before = rendered(&view);
-    assert!(view.turn_over(Vec::new(), &[&reads], |_| vec![]).is_err());
+    assert!(view.turn_over(&crate::cost::Chars, Vec::new(), &[&reads], |_| vec![]).is_err());
     assert_eq!(rendered(&view), before, "a refused turnover retains the old owner");
-    let full = view.turn_over(Vec::new(), &[&reads], all_full)?;
+    let full = view.turn_over(&crate::cost::Chars, Vec::new(), &[&reads], all_full)?;
     assert_eq!((full.restored_items, full.restored_chars), (1, 1000));
     Ok(())
 }
@@ -790,7 +790,7 @@ fn turnover_receipt_counts_promotions_but_not_new_items() -> Result<(), GrantMis
 fn a_sent_tail_is_the_next_acts_prefix_and_what_it_showed_never_arrives_twice() -> Result<(), GrantMismatch> {
     let mut actions = Fake::new("actions", 5);
     actions.push("#1", "result 1");
-    let (mut view, _) = View::start(vec!["identity".into()], &[&actions], all_full)?;
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&actions], all_full)?;
     view.advance(&[&actions]);
     let sent = [rendered(&view), "[now 12:00]".into(), "call #2".into(), "result 2 as sent".into()].join("\n");
     view.append_sent("tail", vec!["[now 12:00]".into(), "call #2".into(), "result 2 as sent".into()], &[("actions", "#2")]);
@@ -804,7 +804,7 @@ fn a_sent_tail_is_the_next_acts_prefix_and_what_it_showed_never_arrives_twice() 
     assert!(next.starts_with(&sent), "the next act's prompt extends the sent one");
     assert!(!next.contains("as the actions source renders it"), "#2 arrived twice:\n{next}");
     assert!(next.ends_with("result 3"), "{next}");
-    view.turn_over(vec!["identity".into()], &[&actions], all_full)?;
+    view.turn_over(&crate::cost::Chars, vec!["identity".into()], &[&actions], all_full)?;
     let started = rendered(&view);
     assert!(started.contains("as the actions source renders it") && !started.contains("as sent"), "a start renders from the source:\n{started}");
     assert!(!view.covers("actions", "#2"), "a start covers nothing");
@@ -819,7 +819,7 @@ fn a_state_the_source_no_longer_offers_is_ended_once_and_returns_at_the_newest_e
     let mut facts = Fake::states("facts", 5);
     let mut actions = Fake::new("actions", 5);
     facts.push("repetition", "[repetition] the same call twice");
-    let (mut view, _) = View::start(vec![], &[&facts, &actions], all_full)?;
+    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&facts, &actions], all_full)?;
     facts.drop_item("repetition");
     actions.push("#1", "result 1");
     view.advance(&[&facts, &actions]);
@@ -848,16 +848,16 @@ fn a_start_leads_with_every_unchanged_block_the_epoch_before_it_led_with() -> Re
     kanban.push("body", &"card line\n".repeat(50));
     log.push("#1", "result 1");
     log.push("#2", "result 2");
-    let (mut view, _) = View::start(Vec::new(), &[&work, &kanban, &log], all_full)?;
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&work, &kanban, &log], all_full)?;
     let before = rendered(&view);
     // The caller now offers the sources in another order (a measured re-rank, a new block):
     // every block is unchanged, so the start is the epoch it replaces, byte for byte.
-    view.turn_over(Vec::new(), &[&kanban, &log, &work], all_full)?;
+    view.turn_over(&crate::cost::Chars, Vec::new(), &[&kanban, &log, &work], all_full)?;
     assert_eq!(rendered(&view), before, "an unchanged view starts as the prompt before it");
     // A changed block ends the reuse where it stood; everything before it is kept in place.
     log.push("#2", "result 2, rewritten");
     log.push("#3", "result 3");
-    view.turn_over(Vec::new(), &[&log, &kanban, &work], all_full)?;
+    view.turn_over(&crate::cost::Chars, Vec::new(), &[&log, &kanban, &work], all_full)?;
     let after = rendered(&view);
     let kept = ["card 1b23 in progress", &"card line\n".repeat(50), "result 1", "result 2, rewritten"].join("\n");
     assert!(after.starts_with(&kept), "the unchanged lead is reused in its old order, the changed block where it stood:\n{after}");
@@ -903,15 +903,15 @@ fn a_collapsed_item_is_laid_down_again_byte_for_byte_at_every_later_start() -> R
         actions.push(&format!("#{n}"), &format!("result {n} {}", "x".repeat(400)));
     }
     // A squeezed start: the oldest results collapse to their handles.
-    let squeeze = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars / 2).collect::<Vec<_>>();
-    let (mut view, _) = View::start(Vec::new(), &[&actions], squeeze)?;
+    let squeeze = |claims: &[Claim]| claims.iter().map(|claim| claim.full / 2).collect::<Vec<_>>();
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&actions], squeeze)?;
     let handles: Vec<String> = view.render().filter(|block| block.starts_with("[#")).cloned().collect();
     assert!(!handles.is_empty(), "precondition: the squeezed start collapsed her oldest results");
     for n in 7..=12 {
         actions.push(&format!("#{n}"), &format!("result {n} {}", "x".repeat(400)));
         view.advance(&[&actions]);
     }
-    let start = view.turn_over(Vec::new(), &[&actions], squeeze)?;
+    let start = view.turn_over(&crate::cost::Chars, Vec::new(), &[&actions], squeeze)?;
     let now: Vec<String> = view.render().cloned().collect();
     assert_eq!(now[..handles.len()], handles[..], "the old log leads the new start as it was");
     assert!(now.len() > handles.len() && now[handles.len()].starts_with("[#"), "what collapsed now appends after it: {now:?}");
@@ -930,13 +930,13 @@ fn a_source_that_turns_volatile_drifts_tailward_and_the_shared_prefix_recovers()
     let mut map = Fake::new("map", 6);
     wall.push("w", &"wall ".repeat(200));
     map.push("m", &"map ".repeat(400));
-    let (mut view, _) = View::start(Vec::new(), &[&wall, &map], all_full)?;
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&wall, &map], all_full)?;
     // Stable epochs: both hold; the caller's order (wall first) stands.
     for _ in 0..3 {
         for _ in 0..4 {
             view.advance(&[&wall, &map]);
         }
-        view.turn_over(Vec::new(), &[&wall, &map], all_full)?;
+        view.turn_over(&crate::cost::Chars, Vec::new(), &[&wall, &map], all_full)?;
     }
     assert!(rendered(&view).starts_with("wall"), "precondition: stable, it keeps its place");
     // The wall turns volatile: it changes at every act from now on.
@@ -947,7 +947,7 @@ fn a_source_that_turns_volatile_drifts_tailward_and_the_shared_prefix_recovers()
             view.advance(&[&wall, &map]);
         }
         let before = rendered(&view);
-        view.turn_over(Vec::new(), &[&wall, &map], all_full)?;
+        view.turn_over(&crate::cost::Chars, Vec::new(), &[&wall, &map], all_full)?;
         if shared(&before, &rendered(&view)) >= map.items[0].1.len() {
             recovered.get_or_insert(epoch);
         }

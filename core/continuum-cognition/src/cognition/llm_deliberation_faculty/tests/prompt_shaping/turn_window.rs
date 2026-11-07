@@ -57,7 +57,7 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
         assert!(refused > 0, "a window too small for her notices refuses the turn");
     }
     let prompt = faculty.messages_unfitted(&ws, None);
-    let all = prompt.required_tokens() + LlmDeliberationFaculty::messages_cost(&prompt.history);
+    let all = prompt.required_tokens() + PromptCalibration::default().estimate_all(&prompt.history);
     let fitted = faculty.fit_messages(prompt, all).expect("inline ledger fits");
     assert!(fitted.messages.iter().any(|message| message.content_text().contains("large-ledger-detail")));
     wm.pin_fact("ledger", "[ledger] No saved note remains.");

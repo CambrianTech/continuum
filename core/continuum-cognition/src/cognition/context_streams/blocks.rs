@@ -151,7 +151,7 @@ mod tests {
     }
 
     fn whole(claims: &[Claim]) -> Vec<usize> {
-        claims.iter().map(|claim| claim.full_chars).collect()
+        claims.iter().map(|claim| claim.full).collect()
     }
 
     fn texts(view: &View<ContextMessage>) -> Vec<String> {
@@ -200,7 +200,7 @@ mod tests {
             )
         };
         let first = board(&[("a", "Open"), ("b", "Open"), ("c", "Open")]);
-        let (mut view, _) = View::start(Vec::new(), &[&first as &dyn Source<_>], whole)?;
+        let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&first as &dyn Source<_>], whole)?;
         assert_eq!(view.advance(&[&first as &dyn Source<_>]).items, 0, "unchanged: nothing appended");
         let claimed = board(&[("a", "Open"), ("b", "Claimed"), ("c", "Open")]);
         assert_eq!(view.advance(&[&claimed as &dyn Source<_>]).items, 1, "one card changed, one revision");
@@ -224,7 +224,7 @@ mod tests {
             })
             .collect();
         let board = grounding(cards, Some("work/list"));
-        let (view, _) = View::start(Vec::new(), &[&board as &dyn Source<_>], |claims: &[Claim]| vec![claims[0].full_chars / 8])?;
+        let (view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&board as &dyn Source<_>], |claims: &[Claim]| vec![claims[0].full / 8])?;
         let shown = texts(&view);
         assert_eq!(shown.iter().filter(|t| t.contains("▸ older (")).count(), 1, "one node: {shown:#?}");
         assert!(shown.first().is_some_and(|t| t.contains("→ `work/list`")), "the node leads, the oldest run: {shown:#?}");
@@ -307,7 +307,7 @@ mod tests {
             let captured: Captured = serde_json::from_str(raw).expect("the fixture is a capture"); // expect: checked-in fixture
             let board = |n: usize| grounding(units(&captured.snapshots[n]), Some("work/list"));
             let first = board(0);
-            let (mut view, _) = View::start(Vec::new(), &[&first as &dyn Source<_>], whole)?;
+            let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&first as &dyn Source<_>], whole)?;
             let mut previous = first.items();
             let mut appended = 0;
             for n in 1..captured.snapshots.len() {

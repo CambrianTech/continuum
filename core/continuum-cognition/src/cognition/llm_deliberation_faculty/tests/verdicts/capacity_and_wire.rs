@@ -107,7 +107,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         // result was muting citizens outright — 836 refusals, zero acts, 2026-09-10).
         // The fixture property is asserted where it actually lives now.
         assert!(
-            LlmDeliberationFaculty::messages_cost(&[ChatMessage::text(
+            PromptCalibration::default().estimate_all(&[ChatMessage::text(
                 "user",
                 result.clone()
             )]) > crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS,
@@ -181,7 +181,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         );
         let prompt_tokens =
             LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
-                + LlmDeliberationFaculty::messages_cost(&request.messages)
+                + PromptCalibration::default().estimate_all(&request.messages)
                 + schema_tokens;
         // An act's cap is the room its prompt leaves (`request_allowance`), never below the
         // reserve the plan sized her view beside.
@@ -542,7 +542,7 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
     assert!(view.budget_fault.is_none(), "{:?}", view.budget_fault);
     assert!(view.messages.first().is_some_and(|m| m.content_text().contains("turn_0 ")), "her view leads the prompt");
     let framing = LlmDeliberationFaculty::framing_cost(&view.system);
-    let tools = view.estimated_prompt_tokens - framing - LlmDeliberationFaculty::messages_cost(&view.messages);
+    let tools = view.estimated_prompt_tokens - framing - PromptCalibration::default().estimate_all(&view.messages);
     let charged = view.estimated_prompt_tokens + view.completion_reserve as usize;
     let ledger = |context_window: usize| BudgetLedger {
         context_window: context_window as u32,
@@ -681,7 +681,7 @@ async fn an_act_on_a_large_window_with_a_small_need_sends_the_room() {
         let seen = adapter.seen.lock().unwrap();
         let request = &seen[0];
         let prompt = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
+            + PromptCalibration::default().estimate_all(&request.messages)
             + crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
         let cap = request.max_tokens.expect("the reply is bounded");
         if deliverable {
@@ -707,7 +707,7 @@ async fn an_acts_room_refusal_shrinks_the_cap_and_keeps_her_view() {
     *adapter.on_request.lock().unwrap() = Some(Box::new(move |request| {
         let excess = excess.take()?;
         let prompt = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture, no system prompt costs none
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
+            + PromptCalibration::default().estimate_all(&request.messages)
             + request.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of); // map_or: no tools, no schemas
         Some(InferenceError::ContextExceeded { requested: prompt as u32 + excess, available: window })
     }));

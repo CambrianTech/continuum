@@ -153,7 +153,7 @@ mod tests {
     }
 
     fn whole(claims: &[Claim]) -> Vec<usize> {
-        claims.iter().map(|claim| claim.full_chars).collect()
+        claims.iter().map(|claim| claim.full).collect()
     }
 
     /// The occurrence her view shows last.
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn through_her_view_a_card_appends_once_per_change_and_a_reentry_is_a_new_occurrence() -> Result<(), GrantMismatch> {
         let first = stream(vec![held(1, CardState::InProgress, None, 10)], None);
-        let (mut view, _) = View::start(Vec::new(), &[&first], whole)?;
+        let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&first], whole)?;
         let shown = newest(&view);
         assert_eq!(view.advance(&[&first]), Advance::default(), "unchanged: nothing appended");
         let mut beat = held(1, CardState::InProgress, None, 10);
@@ -222,12 +222,12 @@ mod tests {
         assert_eq!(view.advance(&[&refused]), Advance::default(), "and once only");
 
         let two = |selected| stream(vec![held(1, CardState::InProgress, None, 10), held(2, CardState::Claimed, None, 11)], Some(selected));
-        let (mut view, _) = View::start(Vec::new(), &[&two(1)], whole)?;
+        let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&two(1)], whole)?;
         assert_eq!(view.advance(&[&two(2)]).items, 2, "a selection switch re-renders both cards' stance, once each");
         assert_eq!(view.advance(&[&two(2)]), Advance::default());
 
         let at = |state, entered| stream(vec![held(1, state, None, entered)], None);
-        let (mut view, _) = View::start(Vec::new(), &[&at(CardState::Review, 20)], whole)?;
+        let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&at(CardState::Review, 20)], whole)?;
         let review = newest(&view);
         view.advance(&[&at(CardState::InProgress, 30)]);
         view.advance(&[&at(CardState::Review, 40)]);

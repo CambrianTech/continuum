@@ -1,8 +1,8 @@
 //! One mind's view: an epoch fed by her sources.
 //!
 //! Within an epoch every act only appends: the items whose rendering changed. Turnover is
-//! the only rewrite. At a start the caller's one allocator grants each source a character
-//! budget between its floor (its items folded into one block when the source folds, else
+//! the only rewrite. At a start the caller's one allocator grants each source a budget, in the
+//! caller's cost (the price it charges the final prompt with), between its floor (its items folded into one block when the source folds, else
 //! each collapsed to its pointer) and its want (every item in full); the view spends it newest
 //! first, each item at the most detail that fits: whole, its summary (a coarser level, like a
 //! mipmap), its pointer, or folded with the oldest run. Those choices hold for the
@@ -15,6 +15,7 @@
 use std::collections::HashSet;
 
 use crate::epoch::{Block, Epoch, Mark, Observed, SourceId};
+use crate::cost::Estimate;
 use crate::motion::{fingerprint, Motion};
 use crate::source::{Item, Source};
 
@@ -29,20 +30,21 @@ pub use allot::floor;
 /// The item key a source's fold block is observed under: no source keys an item with it.
 const FOLD_KEY: &str = "(folded)";
 
-/// One source as the allocator sees it at an epoch start.
+/// One source as the allocator sees it at an epoch start, every size priced by the caller's cost
+/// (`crate::cost`), the unit its grants come back in.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Claim {
     pub source: String,
     pub priority: u8,
     /// What the source costs at its least ([`floor`]): one fold block when the source folds
     /// its items, else every item collapsed to its pointer.
-    pub floor_chars: usize,
+    pub floor: usize,
     /// What the source costs in full: its want. A folded item still wants its whole.
-    pub full_chars: usize,
+    pub full: usize,
     /// Its newest item in full: the newest end a start never collapses when it fits.
-    pub newest_chars: usize,
+    pub newest: usize,
     /// What of its floor her collapsed log already lays down byte for byte.
-    pub logged_chars: usize,
+    pub logged: usize,
     /// Its items carry acts, so a re-read of one is measured (`crate::rereads`).
     pub instrumented: bool,
     /// What a deeper start could collapse, newest first, with her measured re-read chance for each
@@ -52,9 +54,9 @@ pub struct Claim {
 
 impl Claim {
     /// This source as the depth choice weighs it (`crate::depth::choose`): `share` is what the
-    /// caller's rule gives it, `per_char` the caller's units per character of it.
-    pub fn growing(&self, share: usize, per_char: f64) -> crate::depth::Growing<'_> {
-        crate::depth::Growing { share, per_char, base_chars: self.floor_chars + self.newest_chars, logged_chars: self.logged_chars, instrumented: self.instrumented, collapsible: &self.collapsible }
+    /// caller's rule gives it, in the same cost as the claim.
+    pub fn growing(&self, share: usize) -> crate::depth::Growing<'_> {
+        crate::depth::Growing { share, base: self.floor + self.newest, logged: self.logged, instrumented: self.instrumented, collapsible: &self.collapsible }
     }
 }
 
@@ -200,49 +202,53 @@ fn key(source: &str, item: &str) -> SourceId {
     SourceId(format!("{source}/{item}"))
 }
 
-fn claim<T: Block>(source: &dyn Source<T>, items: &[Item<T>], rereads: &crate::rereads::Rereads) -> Claim {
+fn claim<T: Block>(cost: &dyn Estimate<T>, source: &dyn Source<T>, items: &[Item<T>], rereads: &crate::rereads::Rereads) -> Claim {
     Claim {
         source: source.name().to_owned(),
         priority: source.priority(),
-        floor_chars: floor(source, items, Block::chars),
-        full_chars: items.iter().map(crate::source::whole_chars).sum(),
-        newest_chars: items.last().map_or(0, crate::source::whole_chars), // map_or: a source with no items has no newest end
-        logged_chars: 0,
+        floor: floor(cost, source, items),
+        full: items.iter().map(|item| crate::cost::whole(item, cost)).sum(),
+        newest: items.last().map_or(0, |item| crate::cost::whole(item, cost)), // map_or: a source with no items has no newest end
+        logged: 0,
         instrumented: items.iter().any(|item| item.act().is_some()),
-        collapsible: crate::depth::collapsible(items, rereads),
+        collapsible: crate::depth::collapsible(items, rereads, cost),
     }
 }
 
-/// What each source would claim at an epoch start, without starting one: the caller's one
-/// allocation weighs these beside its own claims and hands its grants back to
+/// What each source would claim at an epoch start, without starting one, priced by `cost`: the
+/// caller's one allocation weighs these beside its own claims and hands its grants back to
 /// [`View::start`] / [`View::turn_over`]. With no view there is no measured re-read: a fresh
 /// clock's, every age Unmeasured.
-pub fn claims<T: Block>(sources: &[&dyn Source<T>]) -> Vec<Claim> {
+pub fn claims<T: Block>(cost: &dyn Estimate<T>, sources: &[&dyn Source<T>]) -> Vec<Claim> {
     let fresh = crate::rereads::Rereads::default();
-    sources.iter().map(|source| claim(*source, &source.items(), &fresh)).collect()
+    sources.iter().map(|source| claim(cost, *source, &source.items(), &fresh)).collect()
 }
 
 impl<T: Block> View<T> {
-    /// The first epoch. `allocate` answers each claim with a character grant.
+    /// The first epoch. `allocate` answers each claim with a grant in `cost`, the caller's price
+    /// of a block (the one it charges the final prompt with): the start keeps within each grant
+    /// as `cost` prices what it renders, never through a converted unit.
     pub fn start(
+        cost: &dyn Estimate<T>,
         head: Vec<T>,
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<(Self, Start), GrantMismatch> {
-        Self::begin(1, head, sources, allocate, Motion::default(), None, Vec::new()).map_err(|refused| refused.0)
+        Self::begin(cost, head, sources, allocate, Carried { id: 1, motion: Motion::default(), previous: None, log: Vec::new() }).map_err(|refused| refused.0)
     }
 
     /// Replace this epoch with a fresh one rendered from the sources' current state at the
-    /// grants the allocator makes now.
+    /// grants the allocator makes now, in `cost`.
     pub fn turn_over(
         &mut self,
+        cost: &dyn Estimate<T>,
         head: Vec<T>,
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
     ) -> Result<Start, GrantMismatch> {
         let motion = std::mem::take(&mut self.motion);
         let log = std::mem::take(&mut self.log);
-        let (next, mut start) = match Self::begin(self.epoch.id() + 1, head, sources, allocate, motion, Some(&self.epoch), log) {
+        let (next, mut start) = match Self::begin(cost, head, sources, allocate, Carried { id: self.epoch.id() + 1, motion, previous: Some(&self.epoch), log }) {
             Ok(begun) => begun,
             Err(refused) => {
                 let (mismatch, motion, log) = *refused;
@@ -274,14 +280,14 @@ impl<T: Block> View<T> {
     /// gives ([`GrantMismatch`]), never a quiet "nothing to restore" (Codex on #5564).
     /// An item her collapsed log holds rises too: whole at the front of its source's items, its log
     /// entry kept where it was (`view/log.rs`).
-    pub fn start_would_restore(&self, sources: &[&dyn Source<T>], allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, GrantMismatch> {
-        let arranged = log::arrange(&self.motion, sources, &self.log);
+    pub fn start_would_restore(&self, cost: &dyn Estimate<T>, sources: &[&dyn Source<T>], allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, GrantMismatch> {
+        let arranged = log::arrange(cost, &self.motion, sources, &self.log);
         let grants = allocate(&arranged.claims);
         if grants.len() != arranged.claims.len() {
             return Err(GrantMismatch { claims: arranged.claims.len(), grants: grants.len() });
         }
-        Ok(arranged.sources.iter().zip(&arranged.items).zip(grants.iter().zip(&arranged.logged_chars)).any(|((source, items), (grant, logged))| {
-            allot(&**source, items, grant.saturating_sub(*logged)).levels.iter().zip(items).any(|(level, item)| {
+        Ok(arranged.sources.iter().zip(&arranged.items).zip(grants.iter().zip(&arranged.logged)).any(|((source, items), (grant, logged))| {
+            allot(&**source, items, grant.saturating_sub(*logged), cost).levels.iter().zip(items).any(|(level, item)| {
                 let id = key(source.name(), &item.key);
                 self.restores(&id, level)
             })
@@ -316,16 +322,15 @@ impl<T: Block> View<T> {
     /// (`previous`, [`lead_with_what_held`]). A refusal hands `motion` and the log back.
     #[allow(clippy::type_complexity)] // the refusal returns what it was handed: the mismatch, the measurements and the log
     fn begin(
-        id: u64,
+        cost: &dyn Estimate<T>,
         head: Vec<T>,
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
-        mut motion: Motion,
-        previous: Option<&Epoch<T>>,
-        log: Vec<log::Logged<T>>,
+        carried: Carried<'_, T>,
     ) -> Result<(Self, Start), Box<(GrantMismatch, Motion, Vec<log::Logged<T>>)>> {
+        let Carried { id, mut motion, previous, log } = carried;
         motion.close_epoch();
-        let arranged = log::arrange(&motion, sources, &log);
+        let arranged = log::arrange(cost, &motion, sources, &log);
         {
             let views: Vec<(&str, &[Item<T>])> = arranged.sources.iter().zip(&arranged.items).map(|(source, items)| (source.name(), items.as_slice())).collect();
             motion.rereads_mut().start(&views);
@@ -350,8 +355,8 @@ impl<T: Block> View<T> {
                 kept.then_some(entry)
             })
             .collect();
-        let folds = arranged.logged_chars.iter().zip(&grants).any(|(logged, grant)| logged > grant);
-        let (log, arranged) = if folds { (Vec::new(), log::arrange(&motion, sources, &[])) } else { (log, arranged) };
+        let folds = arranged.logged.iter().zip(&grants).any(|(logged, grant)| logged > grant);
+        let (log, arranged) = if folds { (Vec::new(), log::arrange(cost, &motion, sources, &[])) } else { (log, arranged) };
         let mut view = Self {
             epoch: Epoch::new(id, head),
             collapsed: HashSet::new(),
@@ -384,8 +389,8 @@ impl<T: Block> View<T> {
         let mut planned_by_source: Vec<Vec<Planned<T>>> = Vec::with_capacity(sources_n);
         for (index, (source, items)) in arranged.sources.iter().zip(arranged.items).enumerate() {
             let name = source.name();
-            let grant = granted.get(name).copied().unwrap_or(0).saturating_sub(arranged.logged_chars[index]); // unwrap_or: every arranged source was granted (the allocator answered for each)
-            let allot::Allotment { levels, mut fold } = allot(&**source, &items, grant);
+            let grant = granted.get(name).copied().unwrap_or(0).saturating_sub(arranged.logged[index]); // unwrap_or: every arranged source was granted (the allocator answered for each)
+            let allot::Allotment { levels, mut fold } = allot(&**source, &items, grant, cost);
             let fold_run: Vec<String> = items.iter().zip(&levels).filter(|(_, level)| **level == Level::Folded).map(|(item, _)| item.key.clone()).collect();
             let mut rendered: Vec<(u64, usize)> = log.iter().filter(|entry| entry.source == name).map(|entry| (fingerprint(&entry.id.0, &entry.text), entry.text.chars())).collect();
             let mut planned = Vec::new();
@@ -599,7 +604,8 @@ impl<T: Block> View<T> {
         advance
     }
 
-    /// Redo this act's append within `limit` characters for the whole view, reducing only an
+    /// Redo this act's append within `limit` for the whole view, priced by the caller's `cost` (the
+    /// unit `limit` and `oversized` are in), reducing only an
     /// arrival that is itself `oversized`: larger than a start would grant it, so a turnover
     /// would reduce it too. It arrives at its summary if that fits, else its pointer, and keeps
     /// that level for the epoch. Every other arrival stays whole even when the view is then
@@ -614,11 +620,16 @@ impl<T: Block> View<T> {
     /// start a new epoch, the one full re-prefill (Aiko, the M5, 2026-10-25: 11 turnovers in
     /// 43 acts). Reduced, it costs its outline or pointer, she can reopen it by its key, and
     /// the epoch keeps appending.
-    pub fn readmit(&mut self, sources: &[&dyn Source<T>], limit: usize, oversized: usize) -> Option<Advance> {
+    pub fn readmit(&mut self, cost: &dyn Estimate<T>, sources: &[&dyn Source<T>], limit: usize, oversized: usize) -> Option<Advance> {
         let mark = self.act?;
         self.epoch.rewind(mark);
         self.appended.pop();
-        Some(self.append(sources, Some((limit, oversized))))
+        Some(self.append(sources, Some(Admission { limit, oversized, cost })))
+    }
+
+    /// What the whole view costs, head included, priced by `cost`.
+    fn cost(&self, cost: &dyn Estimate<T>) -> usize {
+        self.epoch.render().map(|block| cost.block(block)).sum()
     }
 
     /// The prompt rendered from this act was sent: the engine may now hold every token of it,
@@ -634,7 +645,7 @@ impl<T: Block> View<T> {
         self.submitted.take()
     }
 
-    fn append(&mut self, sources: &[&dyn Source<T>], limit: Option<(usize, usize)>) -> Advance {
+    fn append(&mut self, sources: &[&dyn Source<T>], limit: Option<Admission<'_, T>>) -> Advance {
         let mut advance = Advance::default();
         self.last_by_source.clear();
         for source in sources {
@@ -662,15 +673,23 @@ impl<T: Block> View<T> {
                 // An item with no pointer would leave her view entirely if collapsed (a peer's
                 // new turn), so it always arrives whole: admission never drops what she has
                 // not seen.
-                let fits = |chars: usize| limit.is_none_or(|(limit, _)| self.epoch.chars() + chars <= limit); // no limit admits every arrival whole
-                let oversized = limit.is_some_and(|(_, oversized)| crate::source::whole_chars(&item) > oversized);
+                // Admission prices in the caller's cost; with no limit every arrival is whole.
+                let (oversized, whole_fits, summary_fits) = match &limit {
+                    None => (false, true, false),
+                    Some(admit) => {
+                        let held = self.cost(admit.cost);
+                        let whole = crate::cost::whole(&item, admit.cost);
+                        let fits = |price: usize| held + price <= admit.limit;
+                        (whole > admit.oversized, fits(whole), item.summary.as_ref().is_some_and(|summary| fits(admit.cost.block(summary))))
+                    }
+                };
                 let level = if self.collapsed.contains(&id) {
                     Level::Pointer
                 } else if self.summarized.contains(&id) {
                     Level::Summary
-                } else if self.epoch.holds(&id) || item.pointer.is_none() || !oversized || fits(crate::source::whole_chars(&item)) {
+                } else if self.epoch.holds(&id) || item.pointer.is_none() || !oversized || whole_fits {
                     Level::Full
-                } else if item.summary.as_ref().is_some_and(|summary| fits(summary.chars())) {
+                } else if summary_fits {
                     self.summarized.insert(id.clone());
                     Level::Summary
                 } else {
@@ -806,6 +825,23 @@ impl<T: Block> View<T> {
         acts.sort_unstable();
         acts.get(acts.len() / 2).copied()
     }
+}
+
+/// An act's admission ([`View::readmit`]): the whole view within `limit`, reducing only an arrival
+/// whose whole is over `oversized`, both in the caller's `cost`.
+struct Admission<'a, T> {
+    limit: usize,
+    oversized: usize,
+    cost: &'a dyn Estimate<T>,
+}
+
+/// What a start carries over from the view it replaces: its epoch id, her measured motion, the
+/// epoch it shares a prefix with (`None` at a view's first start) and her collapsed log.
+struct Carried<'a, T> {
+    id: u64,
+    motion: Motion,
+    previous: Option<&'a Epoch<T>>,
+    log: Vec<log::Logged<T>>,
 }
 
 /// One block a start renders: which source (its index in the start's order), its id, its level

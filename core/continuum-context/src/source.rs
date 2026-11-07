@@ -210,12 +210,6 @@ pub trait Source<T: Block> {
     }
 }
 
-/// What an item's whole level costs: its stored size when the whole is not resident, else
-/// the resident text's size. The allocation prices from this and never reads a stored body.
-pub fn whole_chars<T: Block>(item: &Item<T>) -> usize {
-    item.stored.as_ref().map_or_else(|| item.full.chars(), |stored| stored.chars) // map_or_else: a resident item is priced by its own text
-}
-
 /// The item at its whole level: a stored body loaded through its source, else what is resident.
 pub fn whole<T: Block>(source: &(impl Source<T> + ?Sized), item: Item<T>) -> T {
     let loaded = item.stored.as_ref().and_then(|_| source.load(&item));
