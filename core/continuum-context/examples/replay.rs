@@ -37,7 +37,9 @@
 //! generation (`replay/sediment.rs`, card f746143e). `--paged-reads` (with `--append-tail`) also
 //! replays a read with no range answering with its first page and the line naming the rest,
 //! charging each later page her acts show she needed as an extra request (`replay/paged.rs`).
-//! Each run prints one `TABLE` line.
+//! `--measured-depth` (with `--append-tail`) also replays the core's collapse depth from her
+//! measured re-reads (`continuum_context::depth`), and prints the re-reads it predicted beside
+//! those the replay counted. Each run prints one `TABLE` line.
 //!
 //! `--chars-per-token <r>` prices the window at the core's own estimate instead of the
 //! engine's bill; `--keyed-turn` keys the standing turn text into the epoch; `--trace`
@@ -193,12 +195,36 @@ fn start(rule: Rule, claims: &[continuum_context::view::Claim], available: usize
                 .map(|(claim, grant)| if grant >= claim.full_chars { claim.full_chars } else { grant / 2 })
                 .collect()
         }
-        Rule::Reserved => {
-            // The grounding blocks start whole at their grant; the growing sources (the
-            // lowest priority) start at half of what is left, less one act's appends.
-            let (grounding, growable) = growable(claims, available);
-            let growing = (growable / share).min(per_act.map_or(growable, |chars| growable.saturating_sub(chars))); // map_or: no act measured, the half start alone
-            allocate(claims, grounding + growing)
+        Rule::Reserved => reserved(claims, available, per_act, share),
+    }
+}
+
+/// `Rule::Reserved`: the grounding blocks start whole at their grant; the growing sources (the
+/// lowest priority) start at half of what is left, less one act's appends.
+fn reserved(claims: &[continuum_context::view::Claim], available: usize, per_act: Option<usize>, share: usize) -> Vec<usize> {
+    let (grounding, growable) = growable(claims, available);
+    let growing = (growable / share).min(per_act.map_or(growable, |chars| growable.saturating_sub(chars))); // map_or: no act measured, the half start alone
+    allocate(claims, grounding + growing)
+}
+
+/// `start_grants` with her measured collapse depth (`continuum_context::depth`): `Rule::Reserved`'s grants with each measured growing source at the share
+/// `depth::choose` gives it, as the core's `start_grants` does, and what the depth predicted.
+/// The half's growing start rides beside the depth's, for the comparison.
+fn measured(claims: &[continuum_context::view::Claim], available: usize, per_act: Option<usize>, share: usize) -> (Vec<usize>, Option<(continuum_context::depth::Chosen, usize)>) {
+    use continuum_context::depth::{choose, Depth, Growing, Room};
+    let mut grants = reserved(claims, available, per_act, share);
+    let (_, growable) = growable(claims, available);
+    let lowest = claims.iter().map(|claim| claim.priority).min().unwrap_or(0); // unwrap_or: no claims means nothing to grant
+    let at: Vec<usize> = (0..claims.len()).filter(|&index| claims[index].priority == lowest).collect();
+    let weighed: Vec<Growing<'_>> = at.iter().map(|&index| claims[index].growing(grants[index], 1.0)).collect();
+    let half: usize = weighed.iter().map(|source| source.share).sum();
+    match choose(Room { growable, per_act }, &weighed) {
+        Depth::Unmeasured => (grants, None),
+        Depth::Chosen(chosen) => {
+            for (&index, &chosen_share) in at.iter().zip(&chosen.shares) {
+                grants[index] = chosen_share.max(claims[index].floor_chars).min(claims[index].full_chars);
+            }
+            (grants, Some((chosen, half)))
         }
     }
 }
@@ -523,7 +549,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut append_tps: Option<f64> = None;
     let mut reply_override: Option<u64> = None;
     let mut fixed_tools: Option<String> = None;
-    let (mut outline_results, mut generational, mut paged_reads) = (false, false, false);
+    let (mut outline_results, mut generational, mut paged_reads, mut measured_depth) = (false, false, false, false);
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -533,6 +559,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--outline-results" => outline_results = true,
             "--generational" => generational = true,
             "--paged-reads" => paged_reads = true,
+            "--measured-depth" => measured_depth = true,
             "--trace" => trace = true,
             "--reply" => reply_override = Some(args.next().ok_or("--reply needs a token count")?.parse()?),
             "--validate" => {
@@ -628,7 +655,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let today = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
         let resident = paths.iter().map(|path| path.rsplit('/').next().unwrap_or(path).chars().take(8).collect::<String>()).collect::<Vec<_>>().join("+"); // unwrap_or: rsplit always yields one piece
         let rate = (chars_per_token, tps);
-        let whole = append::Options { outline: outline::Mode::Whole, generational: false, paged: false };
+        let whole = append::Options { outline: outline::Mode::Whole, generational: false, paged: false, measured: false };
         let base = append::replay(&label, &cuts, window, share, rate, whole, true)?;
         let tokens = |chars: &[f64]| chars.iter().sum::<f64>() / chars_per_token;
         let per_turnover = tokens(&today.turnover_prefill) / today.turnover_prefill.len().max(1) as f64;
@@ -641,17 +668,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         println!("{}", append::line(&resident, "append-tail", &base, tps));
         let mut variants = Vec::new();
+        if measured_depth {
+            variants.push(("append-tail + measured depth", append::Options { measured: true, ..whole }));
+        }
         if outline_results {
-            variants.push(("append-tail + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false, paged: false }));
-            variants.push(("append-tail + outline strict (own act too)", append::Options { outline: outline::Mode::Strict, generational: false, paged: false }));
+            variants.push(("append-tail + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false, paged: false, measured: false }));
+            variants.push(("append-tail + outline strict (own act too)", append::Options { outline: outline::Mode::Strict, generational: false, paged: false, measured: false }));
         }
         if paged_reads {
-            variants.push(("append-tail + paged reads", append::Options { outline: outline::Mode::Whole, generational: false, paged: true }));
-            variants.push(("append-tail + paged reads + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false, paged: true }));
+            variants.push(("append-tail + paged reads", append::Options { outline: outline::Mode::Whole, generational: false, paged: true, measured: false }));
+            variants.push(("append-tail + paged reads + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: false, paged: true, measured: false }));
         }
         if generational {
-            variants.push(("append-tail + generational", append::Options { outline: outline::Mode::Whole, generational: true, paged: false }));
-            variants.push(("append-tail + generational + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: true, paged: false }));
+            variants.push(("append-tail + generational", append::Options { outline: outline::Mode::Whole, generational: true, paged: false, measured: false }));
+            variants.push(("append-tail + generational + outline from the next act", append::Options { outline: outline::Mode::NextAct, generational: true, paged: false, measured: false }));
         }
         for (variant, options) in variants {
             let summary = append::replay(&label, &cuts, window, share, rate, options, false)?;
