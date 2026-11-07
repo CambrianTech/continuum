@@ -23,10 +23,18 @@
 //! Ages are bucketed by powers of two (0, 1-2, 3-6, 7-14, ...): resolution where her behaviour
 //! changes fastest, a handful of buckets over a whole session. Each start halves every tally, so the
 //! measurement has a half-life of one of her epochs, her own time scale, and follows what she does
-//! now. Tallies survive a restart with her view; the index of occurrences is rebuilt at the first
-//! act after it, counting nothing for that act.
+//! now.
+//!
+//! Every age is read off ONE clock, her acts as this measurement counts them: an occurrence's
+//! birth is the act at which her view first held it, stamped there ([`Rereads::act`] for an
+//! arrival, a start for what it finds), kept with her view across restarts, and never inferred
+//! from how many items stand after it (a source that sat idle for eight acts, or appended three
+//! items in one, would sample the wrong bucket: Codex on #5806). The depth choice reads the same
+//! clock ([`Rereads::age`]). Tallies and births survive a restart with her view; the index of
+//! occurrences is rebuilt from those births at the first act after it, counting no re-request for
+//! that act.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use crate::cause::{Content, ContentHash, ElementId, Fingerprint, ToolEffect};
 use crate::epoch::Block;
@@ -83,7 +91,7 @@ struct Held {
     key: String,
     fingerprint: Fingerprint,
     content: ContentHash,
-    /// The act at which she asked for it.
+    /// The act at which her view first held it ([`Rereads::births`]).
     born: u64,
 }
 
@@ -105,10 +113,14 @@ pub struct Rereads {
     total: u64,
     #[serde(default)]
     total_collapsed: u64,
+    /// The act at which her view first held each occurrence her sources still offer: the one
+    /// clock every age is read from. Stamped where it enters, kept across restarts (a view saved
+    /// before births has none, and each occurrence is born when this clock first sees it), and
+    /// drained at each start to what the sources still offer.
+    #[serde(default)]
+    births: BTreeMap<ElementId, u64>,
     #[serde(skip)]
     index: Vec<Held>,
-    #[serde(skip)]
-    seen: HashSet<ElementId>,
     #[serde(skip)]
     primed: bool,
 }
@@ -134,8 +146,7 @@ fn add(tallies: &mut Curves, source: &str, age: u64, exposure: f64, events: f64)
 
 impl Rereads {
     /// A start: halve what was measured (when she acted since the last start) and index her latest
-    /// occurrence of each request among the sources' items, each aged by how many newer items its
-    /// source holds.
+    /// occurrence of each request among the sources' items, each at its recorded birth.
     pub(crate) fn start<T: Block>(&mut self, sources: &[(&str, &[Item<T>])]) {
         if self.acts > self.acts_at_start {
             for tally in self.any.values_mut().chain(self.collapsed.values_mut()).flatten() {
@@ -149,13 +160,12 @@ impl Rereads {
 
     fn prime<T: Block>(&mut self, sources: &[(&str, &[Item<T>])]) {
         let mut latest: HashMap<Fingerprint, Held> = HashMap::new();
-        self.seen.clear();
+        let mut births = BTreeMap::new();
         for (source, items) in sources {
-            for (position, item) in items.iter().enumerate() {
-                self.seen.insert(item.id());
+            for item in *items {
+                // Born when this clock first held it: recorded, or now for what it never saw.
+                let born = *births.entry(item.id()).or_insert_with(|| self.births.get(&item.id()).copied().unwrap_or(self.acts)); // unwrap_or: an occurrence this clock never held enters her view at this act
                 let Some((fingerprint, content)) = occurrence(item) else { continue };
-                let newer = (items.len() - 1 - position) as u64;
-                let born = self.acts.saturating_sub(newer);
                 let held = Held { source: (*source).to_owned(), key: item.key().to_owned(), fingerprint, content, born };
                 if latest.get(&fingerprint).is_none_or(|was| was.born <= born) {
                     latest.insert(fingerprint, held);
@@ -163,17 +173,21 @@ impl Rereads {
             }
         }
         self.index = latest.into_values().collect();
+        self.births = births;
         self.primed = true;
     }
 
     /// One act: every occurrence she still has is exposed at its age (`whole` answers whether her
-    /// view holds it whole), then each arriving occurrence that asks an earlier one's request with its
-    /// outcome is a re-request at that one's age, and becomes her latest occurrence of it.
+    /// view holds it whole), then each arriving occurrence is born at this act, and one that asks an
+    /// earlier one's request with its outcome is a re-request at that one's age, and becomes her
+    /// latest occurrence of it. Every act ticks the clock, the first after a restart too, which
+    /// rebuilds the index from the recorded births and counts no re-request.
     pub(crate) fn act<T: Block>(&mut self, sources: &[&dyn Source<T>], whole: impl Fn(&str, &str) -> bool) {
         let items: Vec<(&str, Vec<Item<T>>)> = sources.iter().map(|source| (source.name(), source.items())).collect();
         if !self.primed {
             let views: Vec<(&str, &[Item<T>])> = items.iter().map(|(name, items)| (*name, items.as_slice())).collect();
             self.prime(&views);
+            self.acts += 1;
             return;
         }
         for held in &self.index {
@@ -185,9 +199,10 @@ impl Rereads {
         }
         for (source, items) in &items {
             for item in items {
-                if !self.seen.insert(item.id()) {
+                if self.births.contains_key(&item.id()) {
                     continue;
                 }
+                self.births.insert(item.id(), self.acts);
                 let Some((fingerprint, content)) = occurrence(item) else { continue };
                 if let Some(at) = self.index.iter().position(|held| held.fingerprint == fingerprint) {
                     let earlier = self.index.swap_remove(at);
@@ -205,6 +220,12 @@ impl Rereads {
             }
         }
         self.acts += 1;
+    }
+
+    /// How many acts ago her view first held the occurrence `id`: the age its hazard is read at.
+    /// An occurrence this clock has not held yet enters her view at this act.
+    pub(crate) fn age(&self, id: ElementId) -> u64 {
+        self.births.get(&id).map_or(0, |born| self.acts.saturating_sub(*born)) // map_or: one this clock has not held is born now
     }
 
     /// Her re-request chance at `age`, over every source: the propensity is hers, whichever source
@@ -281,5 +302,66 @@ mod tests {
         // A start halves what was measured.
         rereads.start::<String>(&[("actions", &items)]);
         assert_eq!(rereads.curves().0["actions"][bucket(3)].events, 0.5);
+    }
+    fn acts(rereads: &mut Rereads, items: &[Item<String>], n: usize) {
+        for _ in 0..n {
+            rereads.act(&[&Reads(items.to_vec()) as &dyn Source<String>], |_, _| true);
+        }
+    }
+
+    // what this catches (Codex on #5806, his reproduction): two clocks. The depth aged an item by
+    // how many newer items its source held while the measurement aged it by acts, so a source that
+    // sat idle sampled the wrong hazard bucket: one item, eight acts with nothing new, a second item
+    // and one act make the first one 9 acts old on both, never 1.
+    #[test]
+    fn an_idle_source_ages_its_items_by_acts_on_both_clocks() {
+        let mut rereads = Rereads::default();
+        let mut items = vec![read(1, "a.rs", "fn a() {}")];
+        rereads.start::<String>(&[("actions", &items)]);
+        acts(&mut rereads, &items, 8);
+        items.push(read(2, "b.rs", "fn b() {}"));
+        acts(&mut rereads, &items, 1);
+        let depth = crate::depth::collapsible(&items, &rereads);
+        assert_eq!(depth[0].age, 9, "the depth's age");
+        assert_eq!(rereads.age(items[0].id()), 9, "the measurement's age");
+        assert_eq!(depth[0].hazard, rereads.hazard(9));
+    }
+
+    // what this catches: a batched source (three results in one act) read as three ages, its
+    // oldest priced as if it were two acts older than the act that brought all three.
+    #[test]
+    fn items_that_arrive_in_one_act_share_one_birth() {
+        let mut rereads = Rereads::default();
+        rereads.start::<String>(&[("actions", &[])]);
+        let mut items = vec![read(1, "a.rs", "a"), read(2, "b.rs", "b"), read(3, "c.rs", "c")];
+        acts(&mut rereads, &items, 1);
+        items.push(read(4, "d.rs", "d"));
+        acts(&mut rereads, &items, 1);
+        let ages: Vec<u64> = crate::depth::collapsible(&items, &rereads).iter().map(|item| item.age).collect();
+        assert_eq!(ages, vec![2, 2, 2]);
+    }
+
+    // what this catches: a restart re-deriving births from position (born = acts - newer items),
+    // so after the idle source above a restored view priced its first item at age 1. Births are
+    // kept with her view: the first act after the restart rebuilds the index from them and ticks
+    // the clock, and the next exposes the first item at its true age.
+    #[test]
+    fn a_restart_keeps_true_ages() {
+        let mut rereads = Rereads::default();
+        let mut items = vec![read(1, "a.rs", "fn a() {}")];
+        rereads.start::<String>(&[("actions", &items)]);
+        acts(&mut rereads, &items, 8);
+        items.push(read(2, "b.rs", "fn b() {}"));
+        acts(&mut rereads, &items, 1);
+        let saved = serde_json::to_string(&rereads).expect("test: the measurement serializes"); // JUSTIFIED: test fixture
+        let mut restored: Rereads = serde_json::from_str(&saved).expect("test: and restores"); // JUSTIFIED: test fixture
+        let mut started = restored.clone();
+        started.start::<String>(&[("actions", &items)]);
+        assert_eq!(crate::depth::collapsible(&items, &started)[0].age, 9, "a start after the restart");
+        acts(&mut restored, &items, 1);
+        assert_eq!(crate::depth::collapsible(&items, &restored)[0].age, 10, "the first act after it ticks the clock");
+        let before = restored.curves().0["actions"][bucket(10)].exposure;
+        acts(&mut restored, &items, 1);
+        assert_eq!(restored.curves().0["actions"][bucket(10)].exposure - before, 1.0, "exposed at its true age");
     }
 }

@@ -192,7 +192,7 @@ fn key(source: &str, item: &str) -> SourceId {
     SourceId(format!("{source}/{item}"))
 }
 
-fn claim<T: Block>(source: &dyn Source<T>, items: &[Item<T>]) -> Claim {
+fn claim<T: Block>(source: &dyn Source<T>, items: &[Item<T>], rereads: &crate::rereads::Rereads) -> Claim {
     Claim {
         source: source.name().to_owned(),
         priority: source.priority(),
@@ -201,15 +201,17 @@ fn claim<T: Block>(source: &dyn Source<T>, items: &[Item<T>]) -> Claim {
         newest_chars: items.last().map_or(0, crate::source::whole_chars), // map_or: a source with no items has no newest end
         logged_chars: 0,
         instrumented: items.iter().any(|item| item.act().is_some()),
-        collapsible: crate::depth::collapsible(items, None),
+        collapsible: crate::depth::collapsible(items, rereads),
     }
 }
 
 /// What each source would claim at an epoch start, without starting one: the caller's one
 /// allocation weighs these beside its own claims and hands its grants back to
-/// [`View::start`] / [`View::turn_over`].
+/// [`View::start`] / [`View::turn_over`]. With no view there is no measured re-read: a fresh
+/// clock's, every age Unmeasured.
 pub fn claims<T: Block>(sources: &[&dyn Source<T>]) -> Vec<Claim> {
-    sources.iter().map(|source| claim(*source, &source.items())).collect()
+    let fresh = crate::rereads::Rereads::default();
+    sources.iter().map(|source| claim(*source, &source.items(), &fresh)).collect()
 }
 
 impl<T: Block> View<T> {

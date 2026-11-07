@@ -27,25 +27,25 @@ pub struct Collapsible {
     pub whole_chars: usize,
     /// Characters a start saves by collapsing it (its whole less its pointer).
     pub saves_chars: usize,
-    /// Acts since she last asked for it (items newer than it in its source).
+    /// Acts since her view first held it, on her one clock (`crate::rereads::Rereads::age`).
     pub age: u64,
     pub hazard: Hazard,
 }
 
 /// `items`' collapsible ones (all but the newest, each whole larger than its pointer), newest first,
-/// with her measured re-read chance at each one's age; `Unmeasured` without a measurement.
-pub(crate) fn collapsible<T: crate::epoch::Block>(items: &[crate::source::Item<T>], rereads: Option<&crate::rereads::Rereads>) -> Vec<Collapsible> {
-    let newer_than = |position: usize| (items.len() - 1 - position) as u64;
+/// with her measured re-read chance at each one's age, read off the clock that measured it (its
+/// recorded birth, never its position: a source idle for acts or batching several items in one
+/// would sample the wrong bucket); `Unmeasured` where nothing measured that age.
+pub(crate) fn collapsible<T: crate::epoch::Block>(items: &[crate::source::Item<T>], rereads: &crate::rereads::Rereads) -> Vec<Collapsible> {
     items
         .iter()
-        .enumerate()
         .rev()
         .skip(1)
-        .filter_map(|(position, item)| {
+        .filter_map(|item| {
             let whole_chars = crate::source::whole_chars(item);
             let pointer = item.pointer().map_or(0, crate::epoch::Block::chars); // map_or: an item that leaves when collapsed costs nothing as a pointer
-            let age = newer_than(position);
-            (whole_chars > pointer).then(|| Collapsible { whole_chars, saves_chars: whole_chars - pointer, age, hazard: rereads.map_or(Hazard::Unmeasured, |rereads| rereads.hazard(age)) }) // map_or: no measurement is Unmeasured, never a rate
+            let age = rereads.age(item.id());
+            (whole_chars > pointer).then(|| Collapsible { whole_chars, saves_chars: whole_chars - pointer, age, hazard: rereads.hazard(age) })
         })
         .collect()
 }
