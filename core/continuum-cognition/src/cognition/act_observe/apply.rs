@@ -728,6 +728,11 @@ pub async fn apply_act(
         a.completed_successfully() && a.output.verb.publishes()
     });
     let wrote = wrote_by_verb || published || disk == super::disk_change::DiskChange::Changed;
+    crate::cognition::health_ledger::note_act(wrote);
+    crate::cognition::health_ledger::note_act_of(body.persona_id, wrote);
+    // REFUSALS PER ACT, live per resident (card 9ed04d88): her hour so far, counted where her
+    // calls are refused (the executor's `persona.act.refused` seam) and where her acts are.
+    let (acts_hour, refused_hour) = crate::cognition::health_ledger::acts_and_refused_of(body.persona_id);
     continuum_base::probe!(
         class = "persona.act.observed",
         persona = %body.persona_name,
@@ -738,10 +743,10 @@ pub async fn apply_act(
         disk = disk.as_str(),
         published,
         chars = observation.len(),
+        acts_hour,
+        refused_hour,
         "acted and observed the result"
     );
-    crate::cognition::health_ledger::note_act(wrote);
-    crate::cognition::health_ledger::note_act_of(body.persona_id, wrote);
 
     // An act that changed a checkout wakes the one carry owner (modules::card_carry), which
     // carries every resident's committed card work; a turn's end is no longer the only push.

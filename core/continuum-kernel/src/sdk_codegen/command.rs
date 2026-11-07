@@ -581,13 +581,28 @@ mod tests {
     async fn invoke_maps_bad_params_to_named_refusal() {
         let cmd = EchoAction;
         let err = cmd
-            .invoke(serde_json::json!({ "text": 123 }), None)
+            .invoke(serde_json::json!({ "text": { "a": 1, "b": 2 } }), None)
             .await
-            .expect_err("type mismatch must refuse");
+            .expect_err("an object of two keys has no one reading as a string: it must refuse");
         assert!(
             err.starts_with("test/echo-action: [arguments]"),
             "named + categorized: {err}"
         );
+    }
+
+    // what this catches (card 9ed04d88): the check a call passes before dispatch reads it
+    // against the command's own declared schema and hands back the value to dispatch, so an
+    // unambiguous shape runs instead of refusing, and a call that decodes is passed untouched.
+    #[test]
+    fn the_descriptor_accepts_an_unambiguous_shape_and_returns_what_to_dispatch() {
+        let d = CommandDescriptor::of::<EchoAction>();
+        let wrapped = serde_json::json!({ "text": { "text": "hi" } });
+        assert_eq!(d.accept(&wrapped).expect("one reading").as_ref(), &serde_json::json!({ "text": "hi" })); // test: a refusal here is the failure being caught
+        let number = serde_json::json!({ "text": 5 });
+        assert_eq!(d.accept(&number).expect("rendered").as_ref(), &serde_json::json!({ "text": "5" })); // test: a refusal here is the failure being caught
+        let clean = serde_json::json!({ "text": "hi" });
+        assert!(matches!(d.accept(&clean), Ok(std::borrow::Cow::Borrowed(_))));
+        assert!(d.accept(&serde_json::json!({ "text": ["hi"] })).is_err(), "a list is not one string");
     }
 
 }
