@@ -68,27 +68,19 @@
     // Registry audit (mind cut): stays in the mind: the withheld-verb text is the tool
     // dialect's, not a registry lookup (unknown-command and bad-args feedback, which read the
     // registry, run in core's test_env/mind_integration/registry/tool_executor.rs).
-    // A compact-menu omission must not erase actionable failures or falsely
-    // revoke a reviewer's discoverable command. Own-work guidance remains.
+    // A compact-menu omission must not erase actionable failures. Own-work guidance remains
+    // for the one verb aimed at a peer's work (code/git/apply). The work verbs carry their own
+    // typed refusal (its cause and next moves), so no prose is appended to theirs.
     #[test]
     fn a_verb_withheld_from_her_hands_preserves_failure_and_purpose() {
-        let out = persona_tool_error(
-            "work_review",
-            "an explicit activity room is required".to_string(),
-        );
+        let out = persona_tool_error("code_git_apply", "patch does not apply".to_string());
         assert!(!out.contains("failed:"), "the status line frames the refusal once, never a second frame: {out}");
-        assert!(out.contains("`work/get`") && out.contains("`work/submit`"), "{out}");
-        assert!(out.contains("activity room is required"), "{out}");
-        let out = persona_tool_error(
-            "work/review",
-            "[invalid] card d33e928a is not a review card (it reviews nothing) — pass card_id if you are reviewing out of band".to_string(),
-        );
-        assert!(out.contains("not a review card") && out.contains("`work/get`"), "{out}");
-        let transport = persona_tool_error("work/review", "connection closed before response".into());
+        assert!(out.contains("`code/edit`") && out.contains("patch does not apply"), "{out}");
+        let transport = persona_tool_error("code/git/apply", "connection closed before response".into());
         assert!(transport.contains("connection closed before response"), "{transport}");
         assert!(!transport.contains("Nothing you type") && !transport.contains("did not run"), "{transport}");
-        assert!(persona_tool_error("work/submission", "x".into()).contains("`work/submit`"));
-        assert!(persona_tool_error("code/git/apply", "x".into()).contains("`code/edit`"));
+        let typed = "[invalid] the card you named is not a review card (it reviews nothing). The card is open now (revision 1); you can: work/claim, work/note";
+        assert_eq!(persona_tool_error("work/review", typed.to_string()), typed, "a typed work refusal reaches her as it is");
     }
 
     #[test]

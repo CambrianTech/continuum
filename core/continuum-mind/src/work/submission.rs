@@ -20,6 +20,8 @@ pub use next_after_submission::*;
 mod staged_evidence_page;
 pub use staged_evidence_page::*;
 mod work_submission;
+mod submission_handle;
+pub use submission_handle::*;
 
 /// Her credit store, reached as her: the `@persona:` handle resolves through this identity.
 fn credit_connection(
