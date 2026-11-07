@@ -49,3 +49,13 @@ fn a_level_no_smaller_than_the_one_above_is_not_a_rung() {
     assert_eq!(Rungs::new(Vec::new()), None);
     assert_eq!(Leveled::default().options(), vec![Choice::default()], "nothing to show is one option of nothing");
 }
+
+// what this catches (Cormac on #5426, the view's rule): an item with no level between its whole and
+// its pointer collapsing to nothing because a newer item fell to its summary. It is its own summary:
+// whole under a summary ceiling when it fits, and the ceiling holds for the items older than it.
+#[test]
+fn an_item_with_no_summary_stays_whole_under_a_summary_ceiling() {
+    let leveled = Leveled::new(vec![three(500, 100, 10), Rungs::new([40, 0]).expect("test: levels"), three(900, 200, 10)]); // JUSTIFIED: test fixture
+    let choice = leveled.reduce(200 + 40 + 100);
+    assert_eq!(choice.rungs, [1, 0, 1], "the newest at its summary, the atomic item whole, the oldest at its summary: {choice:?}");
+}

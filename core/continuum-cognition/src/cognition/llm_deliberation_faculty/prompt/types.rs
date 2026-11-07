@@ -251,8 +251,6 @@ pub struct PromptMessages {
     pub(in super::super) streams: Streams,
     /// Source-owned compact alternatives, indexed into history; never inferred from prose.
     pub(in super::super) result_pointers: Vec<(usize, ChatMessage)>,
-    /// Kept before the append-only result ring even when older history yields.
-    pub(in super::super) grounding_tokens: usize,
     pub(in super::super) grounding_at: usize,
     pub(in super::super) stimulus: Option<ChatMessage>,
     /// Atomic required native call/result group (one prose message for legacy receipts).
@@ -451,7 +449,6 @@ impl PromptMessages {
             action_statement: cost(&mut self.action_statement.iter()),
             latest_result: cost(&mut self.latest_result.iter()),
             latest_result_count: self.latest_result.len(),
-            grounding: self.grounding_tokens,
         }
     }
 
@@ -467,12 +464,11 @@ pub struct RequiredParts {
     pub action_statement: usize,
     pub latest_result: usize,
     pub latest_result_count: usize,
-    pub grounding: usize,
 }
 
 impl RequiredParts {
     pub fn total(&self) -> usize {
-        self.stimulus + self.action_statement + self.latest_result + self.grounding
+        self.stimulus + self.action_statement + self.latest_result
     }
 }
 

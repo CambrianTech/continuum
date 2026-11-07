@@ -59,53 +59,39 @@ impl LlmDeliberationFaculty {
     }
 
     /// Her learned head over `selected` (the activity's surface): that surface plus the verbs her
-    /// head holds beyond it (`ToolSurface::learned`), never fewer. It always computes and
-    /// reserves the head the next epoch would hold, so a turnover can adopt it and the shadow
-    /// receipt (`delib.tool_head.epoch`) measures it. It changes what is SENT only on a server
-    /// that takes `tail_tools`, where a verb outside the head stays callable.
-    fn with_learned_head<'a>(&'a self, selected: SelectedSurface<'a>, ws: &Workspace, budget: usize) -> SelectedSurface<'a> {
+    /// head holds beyond it (`ToolSurface::learned`), never fewer, on a server that takes
+    /// `tail_tools`, where a verb outside the head stays callable. How much of each verb is shown is
+    /// the act's allocation's (`prompt/tools_epoch.rs`): no grant enters which verbs these are.
+    fn with_learned_head<'a>(&'a self, selected: SelectedSurface<'a>) -> SelectedSurface<'a> {
         let Some(memory) = self.working_memory.as_deref() else {
             return selected;
         };
         let binding = self.binding.load();
-        let head = memory.tool_head();
-        // The next head is chosen only with a measured act cost; the verbs help loaded ride the
-        // tail without one (help's "callable on your next act" is its contract, not the head's).
-        let next = self.act_cost().and_then(|cost| {
-            head.next(
-                ws.now_ms.map_or_else(continuum_base::time::EpochMs::now, continuum_base::time::EpochMs::from_millis), // map_or_else: a workspace that carries no clock reading decides at now
-                Some(ws.room_id),
-                u32::try_from(budget).unwrap_or(u32::MAX), // unwrap_or: a share past u32 bounds nothing a schema set can reach
-                &cost,
-            )
-        });
         if !binding.adapter.accepts_tail_tools(binding.requested_model()) {
             return selected;
         }
-        let reserve = next.as_ref().map_or(0, |next| next.tokens() as usize); // map_or: no next head reserves nothing beyond this one
+        let head = memory.tool_head();
         let (held, loaded) = (head.held(), head.loaded());
         if held.is_none() && loaded.is_empty() {
-            return selected.reserving(reserve);
+            return selected;
         }
         let held = held.unwrap_or_default(); // unwrap_or_default: no adopted head adds no held verbs; help's loads still ride the tail
         let floor: &[crate::ai::types::NativeToolSpec] = match selected.specs.as_deref() {
             Some(specs) => specs,
             None => &[],
         };
-        let learned = self.surface.learned(floor, &held, &loaded, reserve);
-        if learned.tokens <= budget {
-            return learned;
-        }
-        // Her floor plus her head's extras exceed the grant: the activity's surface, which fit,
-        // goes out instead, and the shortfall is loud (the extras stay one `commands/help` away).
-        continuum_base::probe!(
-            class = "delib.tool_head.over_grant",
-            persona = %self.persona_name,
-            head_tokens = learned.tokens as u64,
-            grant = budget as u64,
-            "her learned head (floor plus held extras) did not fit the tools grant; her activity's surface went out without the extras"
-        );
-        selected
+        self.surface.learned(floor, &held, &loaded)
+    }
+
+    /// Reserve the head her next epoch would hold, chosen within this act's tools grant with a
+    /// measured act cost (her learned head's own decision, `tool_head::next`); it never changes
+    /// what this act sends. Unmeasured, her head stays the activity's static surface.
+    pub(in super::super) fn reserve_next_head(&self, ws: &Workspace, grant_tokens: u32) {
+        let (Some(memory), Some(cost)) = (self.working_memory.as_deref(), self.act_cost()) else {
+            return;
+        };
+        let at = ws.now_ms.map_or_else(continuum_base::time::EpochMs::now, continuum_base::time::EpochMs::from_millis); // map_or_else: a workspace that carries no clock reading decides at now
+        let _reserved = memory.tool_head().next(at, Some(ws.room_id), grant_tokens, &cost);
     }
 
     /// Her native tool surfaces, as built for her tool set and model.
@@ -113,21 +99,11 @@ impl LlmDeliberationFaculty {
         &self.surface
     }
 
-    /// Whole demand before focus allocation. The epoch owner records this beside
-    /// the grant; the grant never becomes a demand observation.
-    pub fn tool_claim_tokens(&self, ws: &Workspace) -> (usize, usize) {
-        let head = self.working_memory.as_ref().and_then(|wm| wm.tool_head().held()).unwrap_or_default(); // unwrap_or_default: no learned head contributes no extra verbs
-        self.surface.claim_with_head(&ws.room_affordances, &ws.held.move_commands(), &head)
-    }
-
-    /// Called at epoch start with the ONE allocation's tools grant. Retain the
-    /// returned selection for accounting and the wire until the next epoch.
-    pub fn select_tool_surface_granted(&self, ws: &Workspace, grant_tokens: usize) -> Result<SelectedSurface<'_>, usize> {
-        let (_, want) = self.tool_claim_tokens(ws);
-        let activity = self.surface.select_granted(&ws.room_affordances, &ws.held.move_commands(), grant_tokens)?;
-        let selected = self.with_learned_head(activity, ws, grant_tokens);
-        if selected.tokens > grant_tokens { return Err(selected.tokens); }
-        Ok(selected.with_demand(want))
+    /// Her hands for this act, every verb whole: her activity's surface (her core hands, or the
+    /// room's recipe, with her held cards' moves) and her learned head's verbs.
+    pub fn select_tool_surface(&self, ws: &Workspace) -> SelectedSurface<'_> {
+        let activity = self.surface.select(&ws.room_affordances, &ws.held.move_commands());
+        self.with_learned_head(activity)
     }
 
     /// Her view started a new epoch, the one moment her head may change: her tool head learns

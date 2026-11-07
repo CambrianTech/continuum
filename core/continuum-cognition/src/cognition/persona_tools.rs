@@ -248,16 +248,6 @@ pub fn render_tool_menu(
     // inlined in the SAME error observation, a stronger net at the correction
     // seam than a hint buried in an 8k wall. (The 2026-07-01 field-name-guessing
     // fix moved seams: menu-hint → error-manual.)
-    let mut by_cat: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    for t in tools {
-        let cat = extract_category(&t.name);
-        let verb = t
-            .name
-            .strip_prefix(cat)
-            .and_then(|r| r.strip_prefix('/'))
-            .unwrap_or(&t.name); // unwrap_or: an uncategorised name renders whole
-        by_cat.entry(cat).or_default().push(verb.to_string());
-    }
     let mut out = String::new();
     // ONE form example at the header — the invocation SHAPE, not per-tool
     // hints (those measured as 77% prompt boilerplate and moved to the
@@ -269,22 +259,51 @@ pub fn render_tool_menu(
         out,
         "call form: code/read({{\"file_path\":\"src/main.rs\"}}) — exact args for any tool: commands/help(name)"
     );
-    for (cat, mut verbs) in by_cat {
-        verbs.sort_unstable();
-        if expanded.contains(cat) {
-            let _ = writeln!(out, "{cat}: {}", verbs.join(", "));
-        } else if verbs.len() == 1 {
-            // A singleton category isn't worth collapsing — its one verb IS the name.
-            let _ = writeln!(out, "{cat}: {} (+ commands/list --filter {cat})", verbs[0]);
-        } else {
-            let _ = writeln!(
-                out,
-                "{cat} ({} — commands/list --filter {cat})",
-                verbs.len()
-            );
-        }
+    for line in menu_lines(tools) {
+        out.push_str(if expanded.contains(&line.category) { &line.expanded } else { &line.collapsed });
     }
     out
+}
+
+/// One category of the tool menu at both of its levels: `expanded` lists its verbs, `collapsed` is
+/// its count and the handle that opens it (`commands/list --filter <category>`). The menu is a
+/// budget consumer like any other: under pressure a category collapses to its handle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MenuLine {
+    pub category: String,
+    /// Its verbs' full names, for what her native surface already shows.
+    pub verbs: Vec<String>,
+    pub expanded: String,
+    pub collapsed: String,
+}
+
+/// The menu's categories in its spine order (stable, a byte-stable prefix), each at both levels.
+pub fn menu_lines(tools: &[NativeToolSpec]) -> Vec<MenuLine> {
+    let mut by_cat: BTreeMap<&str, Vec<(String, &str)>> = BTreeMap::new();
+    for t in tools {
+        let cat = extract_category(&t.name);
+        let verb = t
+            .name
+            .strip_prefix(cat)
+            .and_then(|r| r.strip_prefix('/'))
+            .unwrap_or(&t.name); // unwrap_or: an uncategorised name renders whole
+        by_cat.entry(cat).or_default().push((verb.to_string(), t.name.as_str()));
+    }
+    by_cat
+        .into_iter()
+        .map(|(cat, mut entries)| {
+            entries.sort_unstable();
+            let verbs: Vec<&str> = entries.iter().map(|(verb, _)| verb.as_str()).collect();
+            let expanded = format!("{cat}: {}\n", verbs.join(", "));
+            let collapsed = if verbs.len() == 1 {
+                // A singleton category isn't worth collapsing — its one verb IS the name.
+                format!("{cat}: {} (+ commands/list --filter {cat})\n", verbs[0])
+            } else {
+                format!("{cat} ({} — commands/list --filter {cat})\n", verbs.len())
+            };
+            MenuLine { category: cat.to_string(), verbs: entries.iter().map(|(_, name)| (*name).to_string()).collect(), expanded, collapsed }
+        })
+        .collect()
 }
 
 /// Group the authorized tools into `(category, verbs)` pairs for the tool menu. Verbs are the BARE names (no param hints). Stable (BTreeMap) order

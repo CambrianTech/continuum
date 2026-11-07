@@ -135,18 +135,25 @@ impl Leveled {
             }
             let floor = item.limit();
             let budget = spare.saturating_add(floor);
-            let rise = item
-                .costs()
-                .iter()
-                .enumerate()
-                .find(|&(rung, &cost)| rank(item.class(rung)) <= ceiling && cost <= budget);
+            // An item with no level between its whole and its pointer is its own summary: under a
+            // summary ceiling it stays whole when it fits, and the ceiling holds (the view's rule,
+            // `view::allot`; Cormac on #5426: a short result older than one big read fell to its
+            // pointer and collapsed every older item with it).
+            let own_summary = item.costs().len() <= 2;
+            let allowed = |rung: usize| {
+                let rank_of = rank(item.class(rung));
+                rank_of <= ceiling || (rung == 0 && own_summary && ceiling == rank(Level::Summary))
+            };
+            let rise = item.costs().iter().enumerate().find(|&(rung, &cost)| allowed(rung) && cost <= budget);
             let (rung, cost) = match rise {
                 Some((rung, &cost)) => (rung, cost),
                 None => (item.costs().len() - 1, floor),
             };
             rungs[index] = rung;
             spare = budget - cost;
-            ceiling = rank(item.class(rung));
+            if !(rung == 0 && own_summary && ceiling == rank(Level::Summary)) {
+                ceiling = rank(item.class(rung));
+            }
         }
         let cost = self.cost_of(&rungs);
         Choice { rungs, cost }

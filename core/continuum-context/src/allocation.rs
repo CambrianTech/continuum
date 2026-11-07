@@ -9,9 +9,15 @@
 //!
 //! Now:
 //! - every part is a claim ([`ActClaims`]): framing, the required input, her NEWEST result (the
-//!   largest of its own levels that fits beside the required floors: whole whenever the window
-//!   holds it, goal 7), her hands, her LAST MOVE (required, whole), the standing grounding, the
-//!   rest of the fresh history (optional), the reply, her view's sources;
+//!   largest of its own levels that fits beside every hard limit: whole whenever the window holds
+//!   it, goal 7), her hands, her LAST MOVE (required, whole), the standing grounding, the rest of
+//!   the fresh history (optional), the reply, her view's sources;
+//! - every part made of items is a [`Leveled`] consumer (the one contract, [`crate::ladder`]): its
+//!   items' levels come from their shapes and its hard limit is derived from them, never declared.
+//!   Their levels are searched together ([`crate::search`]) and the continuous parts share what
+//!   they leave, so a window too small for every part whole collapses what matters least first, by
+//!   level, and the turn is short only when every hard limit together does not fit (Joel,
+//!   2026-11-07: "The rag budgeting should collapse rather than crap out");
 //! - her view's START is arithmetic on the one plan ([`ActPlan::start_room`],
 //!   [`start_shares`]), never a second allocation;
 //! - irreducible growth is typed apart from reducible history: required floors past the window
@@ -142,6 +148,9 @@ pub struct ActPlan {
     newest_level: usize,
     /// Each part's hard limit as the search saw it, the reply at its uncapped need among them.
     limits: Vec<Group>,
+    /// Each leveled part's own hard limit (her newest result at its coarsest level): what a
+    /// receipt names as the part's floor.
+    hard_limits: Vec<(&'static str, u32)>,
     /// The levels chosen for each leveled part, by claim id.
     chosen: Vec<(&'static str, Choice)>,
     /// Head parts whose held levels the window could no longer hold: re-chosen this act, loudly.
@@ -257,19 +266,38 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
         (parts, lost)
     };
     let groups_of = |parts: &[Part<'_>]| -> Vec<Group> { parts.iter().map(Part::group).chain(singles.iter().cloned()).collect() };
+    // The search sees the reply at its measured need only: its growth above it takes what the
+    // levels leave and never collapses another part, so a pass and the act after it (whose replies
+    // differ in priority and want) choose the same levels and start her view alike.
+    let searched_claims: Vec<FlexClaim> = continuous
+        .iter()
+        .map(|claim| if claim.source_id == id::REPLY { FlexClaim { max_tokens: claim.floor_tokens, ..claim.clone() } } else { claim.clone() })
+        .collect();
     let (parts, lost) = parts_with(true);
     let groups = groups_of(&parts);
-    let searched = search(window, &groups, &continuous).ok();
+    let searched = search(window, &groups, &searched_claims).ok();
     // Every hard limit together does not fit: each part at its hard limit and the shortfall typed
     // (`irreducible_shortfall`); never a part dropped or budget minted.
     let picks: Vec<usize> = searched.as_ref().map_or_else(|| groups.iter().map(|g| g.options.len() - 1).collect(), |found| found.picks.clone()); // map_or_else: no search answer is every part at its hard limit
     let mut chosen: Vec<(&'static str, Choice)> = parts.iter().zip(&picks).map(|(part, &pick)| (part.id, part.options[pick].clone())).collect();
+    // The grounding rides the tail after her view, so it may trade with her reply's real priority
+    // and want: searched again with the head fixed at the levels just chosen.
+    if searched.is_some() {
+        let head_fixed: Vec<Group> = groups
+            .iter()
+            .zip(&picks)
+            .map(|(g, &pick)| if g.id == id::GROUNDING { g.clone() } else { Group { options: vec![g.options[pick]], ..g.clone() } })
+            .collect();
+        if let (Ok(found), Some(at)) = (search(window, &head_fixed, &continuous), parts.iter().position(|part| part.id == id::GROUNDING)) {
+            chosen[at] = (id::GROUNDING, parts[at].options[found.picks[at]].clone());
+        }
+    }
     // Both ways: what the search would show a held head part at unheld. It rises at the next start
     // of her head's epoch, never mid-epoch.
     let held_any = parts.iter().any(|part| part.options.len() == 1 && part.leveled.options().len() > 1);
     let rise = if held_any {
         let (free, _) = parts_with(false);
-        search(window, &groups_of(&free), &continuous).map_or_else(|_| Vec::new(), |found| { // map_or_else: unheld fits no better, nothing rises
+        search(window, &groups_of(&free), &searched_claims).map_or_else(|_| Vec::new(), |found| { // map_or_else: unheld fits no better, nothing rises
             free.iter()
                 .zip(&found.picks)
                 .filter(|(part, _)| part.id != id::GROUNDING)
@@ -306,8 +334,16 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
         priority: c.priority,
         options: vec![if c.source_id == id::REPLY { reply_need } else { c.floor_tokens }],
     }));
+    let hard_limits = vec![
+        (id::FRAMING, framing.leveled.hard_limit()),
+        (id::REQUIRED, required.hard_limit()),
+        (id::NEWEST, newest.hard_limit()),
+        (id::TOOLS, tools.leveled.hard_limit()),
+        (id::LAST_MOVE, last_move.hard_limit()),
+        (id::GROUNDING, 0),
+    ];
     chosen.push((id::NEWEST, newest_choice));
-    ActPlan { window, plan, claims: all, reply_need, newest_level, limits, chosen, lost, rise, searched }
+    ActPlan { window, plan, claims: all, reply_need, newest_level, limits, hard_limits, chosen, lost, rise, searched }
 }
 
 impl ActPlan {
@@ -423,6 +459,12 @@ impl ActPlan {
     /// newest): one rung per item, or no rungs when it left the turn.
     pub fn chosen(&self, id: &str) -> Option<&Choice> {
         self.chosen.iter().find(|(part, _)| *part == id).map(|(_, choice)| choice)
+    }
+
+    /// The leveled part `id`'s hard limit: what it shows at its least (grounding leaves the turn).
+    /// `None` for a part that is not leveled (history, the reply, a view source).
+    pub fn hard_limit(&self, id: &str) -> Option<u32> {
+        self.hard_limits.iter().find(|(part, _)| *part == id).map(|(_, limit)| *limit)
     }
 
     /// Whether the head part `id`'s held levels were lost this act (the window could not hold them).

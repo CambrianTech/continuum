@@ -380,11 +380,12 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
             // The standing minimum, unfitted — this fixture asserts the WHOLE
             // minimum fits its window, so it wants the plan itself, not a
             // budget-shed one.
-            let minimum = GroundingPlan::minimum(&ws);
+            let standing: Vec<_> = ws.broadcast.iter().filter(|c| c.decision.is_none() && c.standing_grounding && !c.trailing).collect();
+            let minimum = standing.iter().map(|c| GroundingPiece::minimum(c).tokens).sum::<usize>()
+                + if standing.is_empty() { 0 } else { LlmDeliberationFaculty::working_context_header_cost() };
             let fixed = LlmDeliberationFaculty::framing_cost(&framing.stable)
                 + faculty.prompt_view(&ws).tools.tokens
-                + minimum.context_reserve()
-                + minimum.trailing_tokens()
+                + minimum
                 + unfitted.required_tokens()
                 // The reply's floor as the plan sizes it — what it takes before history grows.
                 + reply_claim(

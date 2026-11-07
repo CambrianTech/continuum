@@ -118,7 +118,6 @@ fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
         streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32],
-        grounding_tokens: 0,
         grounding_at: 0,
         history,
         stimulus: Some(stimulus.clone()),
@@ -180,7 +179,6 @@ fn fit_front_advances_in_quanta_not_per_act() {
                     streams: Default::default(),
                     result_pointers: Vec::new(),
                     input_identity: [0; 32],
-                    grounding_tokens: 0,
                     grounding_at: 0,
                     history: msgs[..n].to_vec(),
                     stimulus: None,
@@ -231,7 +229,6 @@ fn fit_front_advances_in_quanta_not_per_act() {
                 streams: Default::default(),
                 result_pointers: Vec::new(),
                 input_identity: [0; 32],
-                grounding_tokens: 0,
                 grounding_at: 0,
                 history: clustered,
                 stimulus: None,
@@ -258,7 +255,6 @@ fn fit_front_advances_in_quanta_not_per_act() {
         streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32],
-        grounding_tokens: 0,
         grounding_at: 0,
         history: vec![
             ChatMessage::text("user", "old situation ".repeat(30)),
@@ -288,7 +284,7 @@ fn the_pinned_result_rides_last_and_nothing_rides_after_the_ask() {
     let prompt = |result: bool| PromptMessages {
         streams: Default::default(),
         result_pointers: Vec::new(),
-        input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
+        input_identity: [0; 32], grounding_at: 0,
         history: vec![ChatMessage::text("user", "[work turn] fix the bug")],
         stimulus: Some(ChatMessage::text("user", "the ask")),
         latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")).into_iter().collect(), action_statement: None,
@@ -319,7 +315,7 @@ fn continuity_followup_keeps_completed_action_evidence() {
     let prompt = PromptMessages {
         streams: Default::default(),
         result_pointers: Vec::new(),
-        input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
+        input_identity: [0; 32], grounding_at: 0,
         history, stimulus: None, latest_result: Vec::new(), action_statement: None,
     };
     assert!(prompt.recent_move_evidence().tokens >= expected,
@@ -334,7 +330,7 @@ fn continuity_insufficient_capacity_refuses_instead_of_dropping_evidence() {
     let prompt = PromptMessages {
         streams: Default::default(),
         result_pointers: Vec::new(),
-        input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
+        input_identity: [0; 32], grounding_at: 0,
         history: vec![
             ChatMessage::text("user", "Write the requested file. ".repeat(30)),
             ChatMessage::text("assistant", "calling code/write: completed.py ".repeat(30)),
@@ -412,17 +408,41 @@ fn view_epoch(faculty: &LlmDeliberationFaculty) -> Option<u64> {
     faculty.context_view.lock().as_ref().map(|view| view.epoch_id())
 }
 
+/// Her hands as the act's one allocation chooses them within `window`, beside her framing alone:
+/// the path `prompt_view` takes, without the rest of a prompt.
+fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window: u32) -> (crate::cognition::llm_deliberation_faculty::prompt::ToolsChoice<'a>, continuum_context::allocation::ActPlan) {
+    use continuum_context::allocation::{allocate, id, ActClaims, Head, Span};
+    use continuum_context::ladder::Leveled;
+    let charge = |tokens: usize| tokens as u32;
+    let offer = faculty.tools_offer(ws, &charge);
+    let held_menu = faculty.tools_epoch.lock().as_ref().map(|held| held.menu().clone());
+    let framing = faculty.framing_offer(ws, false, offer.names(), held_menu.as_ref(), &charge);
+    let reply = continuum_context::flex::FlexClaim { source_id: id::REPLY.to_owned(), priority: 8, floor_tokens: 0, min_tokens: 0, max_tokens: 0, required: true };
+    let act = allocate(
+        window,
+        ActClaims {
+            framing: Head { leveled: framing.leveled.clone(), held: framing.held.clone() },
+            required: Leveled::default(),
+            newest: Leveled::default(),
+            tools: offer.head(),
+            grounding: Leveled::default(),
+            last_move: Leveled::default(),
+            history: Span::default(),
+            reply,
+            view: Vec::new(),
+        },
+    );
+    (faculty.granted_tools(ws, offer, &framing, &act, &charge), act)
+}
+
 #[test]
 fn an_epoch_keeps_the_tool_level_its_allocation_bought() {
     let faculty = asha_with_hands();
     let ws = Workspace::new("what changed on the board?");
     let first = faculty.prompt_view_within(&ws, 200_000);
     assert!(first.capacity_error.is_none(), "{:?}", first.capacity_error);
-    let claim = faculty.tools_claim(&ws);
-    assert!(claim.floor > 0 && claim.floor == claim.want, "her core hands are her whole claim: {claim:?}");
-    assert_eq!(first.tools.tokens, claim.want, "an ample grant buys her core hands, never more");
+    assert_eq!(first.tools.tokens, first.tools.demand_tokens(), "an ample window shows every verb of her hands whole");
     assert!(first.tools.tokens <= faculty.tool_surface().hands_tokens(), "her on-demand verbs stay out");
-    assert_eq!(claim.level, first.tools.tokens, "the epoch keeps the level it chose as its target");
     assert!(first.tools_grant >= first.tools.tokens, "the selection stays within its grant");
     let second = faculty.prompt_view_within(&ws, 200_000);
     assert_eq!(
@@ -444,10 +464,7 @@ fn an_epoch_sends_one_tool_set_whatever_its_acts_affordances() {
     let first = faculty.prompt_view_within(&ws, 200_000);
     assert!(first.capacity_error.is_none(), "{:?}", first.capacity_error);
     let epoch = view_epoch(&faculty);
-    let alone = faculty
-        .tool_surface()
-        .select_granted(&declared.room_affordances, &[], first.tools_grant)
-        .expect("precondition: the declared verb's offer fits the epoch's grant");
+    let alone = faculty.tool_surface().select(&declared.room_affordances, &[]);
     assert_ne!(wire(&alone), wire(&first.tools), "precondition: these affordances alone choose another set");
     let second = faculty.prompt_view_within(&declared, 200_000);
     let third = faculty.prompt_view_within(&ws, 200_000);
@@ -468,46 +485,51 @@ fn a_view_turnover_keeps_her_tool_set() {
     let ws = Workspace::new("what changed on the board?");
     let declared = declaring_one_hand(&faculty);
     let first = faculty.prompt_view_within(&ws, 200_000);
-    let grant = first.tools_grant;
-    let alone = faculty
-        .tool_surface()
-        .select_granted(&declared.room_affordances, &[], grant)
-        .expect("precondition: the declared verb's offer fits the grant");
+    let alone = faculty.tool_surface().select(&declared.room_affordances, &[]);
     assert_ne!(wire(&alone), wire(&first.tools), "precondition: these affordances alone choose another set");
-    let (choice, refused) = faculty.granted_tools(&declared, faculty.tools_claim(&declared), grant);
-    assert!(refused.is_none());
+    let (choice, _) = tools_within(&faculty, &declared, 200_000);
     // The fit turns her view over in this act (what `fit_view` does when it outgrows its grant).
     let none: [&dyn Source<crate::cognition::context_streams::ContextMessage>; 0] = [];
     faculty.context_view.lock().as_mut().expect("a view").turn_over(Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
-    let sent = faculty.retain_tools(choice, false, true);
+    let (sent, _) = faculty.retain_tools(choice, false, true);
     assert_eq!(wire(&sent), wire(&first.tools), "the turnover act sends the set she held");
     let next = faculty.prompt_view_within(&declared, 200_000);
     assert_eq!(wire(&next.tools), wire(&first.tools), "and so does every act after it");
 }
 
 // what this catches: a held set sent past a window that can no longer hold it (an over-budget
-// prompt the server refuses), a smaller surface sent in its place (her core hands are
-// indivisible), the loss taken quietly, or a refusal that never recovers (every downward move
-// needs its upward one). A grant below her held set refuses on the probed path
-// (`delib.tools.epoch_level_lost`) naming her core hands' whole cost and sends nothing; a window
-// that holds them again sends the same set.
+// prompt the server refuses), the turn refused instead (Aiko on the M5, 2026-11-07: her core hands
+// whole, 11,377 tokens, refused her turns on a 30,566 window), a verb dropped to make room (she is
+// never handless), the loss taken quietly, or a collapse that never rises again (every downward
+// move needs its upward one). A window too small for her held levels re-chooses them smaller
+// (`delib.tools.epoch_level_lost`), every verb still sent and named; the head holds those levels,
+// and at the next start a roomy window funds, her verbs rise whole again.
 #[test]
-fn a_window_that_cannot_hold_the_epochs_set_reselects_loudly() {
+fn a_window_that_cannot_hold_the_epochs_levels_collapses_them_and_they_rise_again() {
     let faculty = asha_with_hands();
     let ws = Workspace::new("what changed on the board?");
     let first = faculty.prompt_view_within(&ws, 200_000);
-    let claim = faculty.tools_claim(&ws);
-    assert_eq!(claim.level, first.tools.tokens, "precondition: the epoch holds her core hands");
-    assert!(claim.floor > 0, "precondition: she has core hands");
-    let (choice, refused) = faculty.granted_tools(&ws, claim, claim.floor - 1);
-    let refused = refused.expect("a grant below her core hands refuses loudly");
-    assert_eq!(refused.required_tokens, claim.floor, "the refusal names her core hands' whole cost");
-    let sent = faculty.retain_tools(choice, true, false);
-    assert!(sent.specs.is_none(), "no partial surface is sent");
-    let restored = faculty.prompt_view_within(&ws, 200_000);
-    assert_eq!(wire(&restored.tools), wire(&first.tools), "a window that holds her core hands sends them again");
-    let after = faculty.prompt_view_within(&ws, 200_000);
-    assert_eq!(wire(&after.tools), wire(&first.tools), "and the set holds");
+    let names = faculty.tool_surface().names_of(&first.tools);
+    let (probe, _) = tools_within(&faculty, &ws, 200_000);
+    assert_eq!(probe.sent.tokens, first.tools.tokens, "precondition: an ample window holds her verbs whole");
+    let floor = {
+        let charge = |tokens: usize| tokens as u32;
+        let offer = faculty.tools_offer(&ws, &charge);
+        let framing = faculty.framing_offer(&ws, false, offer.names(), None, &charge);
+        offer.head().leveled.hard_limit() + framing.leveled.want()
+    };
+    let (small, act) = tools_within(&faculty, &ws, floor);
+    assert!(act.lost(continuum_context::allocation::id::TOOLS), "the held whole levels were lost, loudly");
+    assert!(act.irreducible_shortfall().is_none(), "nothing refuses: every verb fits at its pointer");
+    assert!(small.sent.tokens < first.tools.tokens, "her verbs collapsed: {} of {}", small.sent.tokens, first.tools.tokens);
+    assert_eq!(faculty.tool_surface().names_of(&small.sent), names, "every verb is still sent, in its place");
+    let (sent, _) = faculty.retain_tools(small, false, false);
+    let held = faculty.prompt_view_within(&ws, 200_000);
+    assert_eq!(wire(&held.tools), wire(&sent), "the head holds its collapsed levels mid-epoch");
+    let (roomy, _) = tools_within(&faculty, &ws, 200_000);
+    assert!(roomy.next.is_some(), "a roomy window reports the rise for her head's next epoch");
+    let (risen, _) = faculty.retain_tools(roomy, false, true);
+    assert_eq!(wire(&risen), wire(&first.tools), "a funded start raises her verbs whole again");
 }
 
 // what this catches: a held card's transition rewriting her tool head mid-epoch. The served
@@ -537,7 +559,7 @@ fn a_moves_change_waits_for_her_views_next_start_and_rides_the_tail_until_then()
         .find(|(name, spec)| {
             surface.hands().iter().any(|hand| hand.name == spec.name)
                 && !head.contains(name)
-                && surface.select_granted(&ws.room_affordances, std::slice::from_ref(*name), surface.hands_tokens()).is_ok_and(|fresh| surface.names_of(&fresh).contains(name))
+                && surface.names_of(&surface.select(&ws.room_affordances, std::slice::from_ref(*name))).contains(name)
         })
         .map(|(name, _)| &*Box::leak(name.clone().into_boxed_str())) // a held card's moves are static names
         .expect("precondition: a verb of her hands outside her head that a move selects");
@@ -553,11 +575,10 @@ fn a_moves_change_waits_for_her_views_next_start_and_rides_the_tail_until_then()
     assert!(second.tools.tail.iter().any(|spec| spec.name == wire_name), "the move's verb rides the tail, callable now: {:?}", second.tools.tail);
 
     // The act that starts her view's next epoch adopts the set her moves select.
-    let (choice, refused) = faculty.granted_tools(&moved, faculty.tools_claim(&moved), second.tools_grant);
-    assert!(refused.is_none());
+    let (choice, _) = tools_within(&faculty, &moved, 200_000);
     let none: [&dyn Source<crate::cognition::context_streams::ContextMessage>; 0] = [];
     faculty.context_view.lock().as_mut().expect("a view").turn_over(Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
-    let adopted = faculty.retain_tools(choice, false, true);
+    let (adopted, _) = faculty.retain_tools(choice, false, true);
     assert!(surface.names_of(&adopted).iter().any(|name| name == verb), "the start adopts the set her moves select");
     let next = faculty.prompt_view_within(&moved, 200_000);
     assert_eq!(wire(&next.tools), wire(&adopted), "and holds it");
