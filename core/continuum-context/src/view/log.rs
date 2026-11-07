@@ -89,9 +89,11 @@ pub(super) fn arrange<'a, T: Block>(motion: &Motion, sources: &[&'a dyn Source<T
         .zip(&logged_chars)
         .map(|((source, items), &fixed)| {
             let fresh: Vec<Item<T>> = items.iter().filter(|item| !ids.contains(&key(source.name(), &item.key))).cloned().collect();
-            let mut whole = claim(*source, items);
-            whole.floor_chars = claim(*source, &fresh).floor_chars + fixed;
+            let mut whole = claim(*source, items, motion.rereads());
+            whole.floor_chars = claim(*source, &fresh, motion.rereads()).floor_chars + fixed;
             whole.full_chars += fixed;
+            whole.logged_chars = fixed;
+            whole.collapsible = crate::depth::collapsible(&fresh, motion.rereads());
             whole
         })
         .collect();

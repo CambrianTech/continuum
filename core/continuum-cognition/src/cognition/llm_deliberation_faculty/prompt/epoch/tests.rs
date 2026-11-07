@@ -163,3 +163,50 @@ fn an_overflow_measures_what_her_view_would_have_held() {
     assert_eq!(overflow_beyond(restore, false, 40_000, allowed, Some(next)), None, "a restore fit: no shortfall");
     assert_eq!(overflow_beyond(Turnover::Keep, false, 40_000, allowed, Some(next)), None, "a kept view fit: no shortfall");
 }
+
+/// One growing source whose measured depth prices her newest item a token under
+/// `StartSource::newest`: at 0.01 tokens per char a 501-char newest item is 5.01 tokens (ceiled to
+/// 6), and the depth's base, her 20-char floor with it (521 chars), rounds to 5. Its one older item
+/// is measured as never asked for again, so the depth collapses it and starts the source at its base.
+fn depth_one_token_under_her_newest() -> (Vec<continuum_context::view::Claim>, continuum_context::flex::FlexAllocation) {
+    use continuum_context::depth::Collapsible;
+    use continuum_context::rereads::{Hazard, Tally};
+    let claim = continuum_context::view::Claim {
+        source: "results".to_owned(),
+        priority: 0,
+        floor_chars: 20,
+        full_chars: 1_000,
+        newest_chars: 501,
+        logged_chars: 0,
+        instrumented: true,
+        collapsible: vec![Collapsible { whole_chars: 489, saves_chars: 479, age: 1, hazard: Hazard::Measured(Tally { exposure: 1_000.0, events: 0.0 }) }],
+    };
+    let grant = continuum_context::flex::SourceAllocation {
+        source_id: format!("{VIEW_CLAIM}results"),
+        allocated_tokens: 10,
+        requested_floor: 1,
+        requested_min: 1,
+        requested_max: 10,
+        required: false,
+        state: continuum_context::flex::AllocationState::Satisfied,
+    };
+    let plan = continuum_context::flex::FlexAllocation { allocations: vec![grant], unallocated: 0, escalation_needed: false, warnings: Vec::new() };
+    (vec![claim], plan)
+}
+
+// what this catches: #5807's failure again, through the measured depth: her newest turn collapsed
+// by a char (`reply_priority_grows_the_reply_not_at_history_or_required_input`, 2026-11-06). The
+// depth prices her newest item in rounded tokens and `StartSource::newest` in ceiled ones, so a
+// depth that lowered her grant, or sized her start, to its own sum started her a token (ten chars)
+// under her newest item whole.
+#[test]
+fn a_measured_depth_never_starts_her_under_her_newest_item() {
+    let (claims, plan) = depth_one_token_under_her_newest();
+    let grants = start_grants(&claims, &plan, 100, Some(50)).expect("an optional source is never refused");
+    assert!(grants[0] >= claims[0].newest_chars, "her newest item whole: granted {} of {} chars", grants[0], claims[0].newest_chars);
+    // The lowered grant itself, at the fixture's tokens: the depth chose 5, her newest needs 6.
+    let source = continuum_context::allocation::StartSource { priority: 0, fixed: false, required: false, floor: 1, grant: 10, newest: 6 };
+    assert_eq!(depth_grant(5, &source), 6, "never below her newest item");
+    assert_eq!(depth_grant(0, &continuum_context::allocation::StartSource { floor: 7, ..source }), 7, "never below its floor");
+    assert_eq!(depth_grant(40, &source), 10, "never above the plan's grant");
+}

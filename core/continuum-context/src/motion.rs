@@ -54,18 +54,22 @@ struct Track {
 }
 
 /// Every source's [`Track`], kept across turnovers and restarts with her view.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Motion {
     sources: BTreeMap<String, Track>,
     /// The order the last start laid its sources down in (first block of each): what a tie keeps.
     /// Absent in a view saved before it, which breaks ties by the caller's order.
     #[serde(default)]
     last_order: Vec<String>,
-    /// Acts in the current epoch, and in her last closed one: her measured epoch length.
+    /// Acts in her last closed epoch: her measured epoch length. The current epoch's acts are read
+    /// off her one clock ([`crate::rereads::Rereads::epoch_acts`]), never counted here again.
     #[serde(default)]
-    epoch_acts: u32,
+    last_epoch_acts: u64,
+    /// How often she asks again for what she observed, by its age: what a start's collapse depth
+    /// weighs (`crate::rereads`, `crate::depth`). Absent in a view saved before it, which starts
+    /// measuring at its next act.
     #[serde(default)]
-    last_epoch_acts: u32,
+    rereads: crate::rereads::Rereads,
 }
 
 /// One unit a start places: a source, or her collapsed log.
@@ -130,11 +134,6 @@ impl Motion {
         track.changed += u32::from(changed);
     }
 
-    /// One act of her epoch.
-    pub(crate) fn act(&mut self) {
-        self.epoch_acts += 1;
-    }
-
     /// A start closes her epoch: its counts become the rates the next start ranks by. An epoch
     /// with no acts keeps the rates before it.
     pub(crate) fn close_epoch(&mut self) {
@@ -144,10 +143,10 @@ impl Motion {
             }
             (track.acts, track.changed) = (0, 0);
         }
-        if self.epoch_acts > 0 {
-            self.last_epoch_acts = self.epoch_acts;
+        let epoch_acts = self.rereads.epoch_acts();
+        if epoch_acts > 0 {
+            self.last_epoch_acts = epoch_acts;
         }
-        self.epoch_acts = 0;
     }
 
     /// `q`, the chance `source` differs at the next start, and how many observations measured it;
@@ -160,7 +159,7 @@ impl Motion {
         }
         // Her per-act rate over her measured epoch length, counted as one observation beside what
         // her starts measured directly.
-        let epoch = f64::from(self.last_epoch_acts.max(self.epoch_acts).max(1));
+        let epoch = self.last_epoch_acts.max(self.rereads.epoch_acts()).max(1) as f64;
         let per_act = if acts == 0 { 0.0 } else { f64::from(changed) / f64::from(acts) };
         let from_acts = 1.0 - (1.0 - per_act).powf(epoch);
         let at_starts = f64::from(track.compared - track.unchanged);
@@ -227,6 +226,15 @@ impl Motion {
         order
     }
 
+    /// Her measured re-requests by age.
+    pub fn rereads(&self) -> &crate::rereads::Rereads {
+        &self.rereads
+    }
+
+    pub(crate) fn rereads_mut(&mut self) -> &mut crate::rereads::Rereads {
+        &mut self.rereads
+    }
+
     /// The order a start laid its sources down in: what the next start's ties keep.
     pub(crate) fn started_in(&mut self, order: Vec<String>) {
         self.last_order = order;
@@ -248,6 +256,11 @@ mod tests {
         Unit { name, chars, log: false, after_log: false }
     }
 
+    /// One act on her clock: the measurement every epoch length is read from.
+    fn tick(motion: &mut Motion) {
+        motion.rereads_mut().act::<String>(&[], |_, _| true);
+    }
+
     fn names<'a>(units: &'a [Unit<'a>], order: &[usize]) -> Vec<&'a str> {
         order.iter().map(|&index| units[index].name).collect()
     }
@@ -261,7 +274,7 @@ mod tests {
     fn units_rank_by_what_a_start_keeps_and_ties_keep_the_last_order() {
         let mut motion = Motion::default();
         for act in 0..20 {
-            motion.act();
+            tick(&mut motion);
             motion.act_saw("doctrine", false);
             motion.act_saw("wall", act % 10 == 0);
             motion.act_saw("kanban", act % 2 == 0);
@@ -280,7 +293,7 @@ mod tests {
     fn the_log_stands_by_what_it_keeps_and_its_sources_follow_it() {
         let mut motion = Motion::default();
         for _ in 0..10 {
-            motion.act();
+            tick(&mut motion);
             motion.act_saw("thoughts", true);
             motion.act_saw("roster", false);
         }
@@ -292,6 +305,29 @@ mod tests {
         ];
         let order = motion.rank(&units);
         assert_eq!(names(&units, &order), ["roster", "(collapsed log)", "thoughts"]);
+    }
+
+    // what this catches: her epoch length counted twice (a counter here beside her clock) and the
+    // two drifting. Read off the one clock, a start closes the acts since the last start as her
+    // epoch length, the new epoch starts at none, and an epoch with no acts keeps the one before.
+    #[test]
+    fn her_epoch_length_is_read_off_her_one_clock_across_a_start() -> Result<(), crate::view::GrantMismatch> {
+        let mut actions = crate::fixtures::Fake::new("actions", 5);
+        let all_full = |claims: &[crate::view::Claim]| -> Vec<usize> { claims.iter().map(|claim| claim.full_chars).collect() };
+        let (mut view, _) = crate::view::View::<String>::start(vec![], &[&actions], all_full)?;
+        for act in 1..=3 {
+            actions.push(&format!("#{act}"), &format!("result {act}"));
+            view.advance(&[&actions]);
+        }
+        assert_eq!(view.motion().rereads().epoch_acts(), 3);
+        view.turn_over(vec![], &[&actions], all_full)?;
+        assert_eq!((view.motion().last_epoch_acts, view.motion().rereads().epoch_acts()), (3, 0), "the start closed three acts");
+        view.turn_over(vec![], &[&actions], all_full)?;
+        assert_eq!(view.motion().last_epoch_acts, 3, "an epoch with no acts keeps the length before it");
+        view.advance(&[&actions]);
+        view.advance(&[&actions]);
+        assert_eq!(view.motion().rereads().epoch_acts(), 2);
+        Ok(())
     }
 
     // what this catches: a view restored after a restart losing what it measured.

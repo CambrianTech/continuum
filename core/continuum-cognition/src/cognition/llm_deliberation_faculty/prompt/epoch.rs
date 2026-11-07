@@ -646,6 +646,12 @@ thread_local! {
 /// (a quarter, replayed on M5 captures, collapsed every read but her newest on 2026-10-30,
 /// ONE-BUDGET.md slice 6).
 ///
+/// That half is the rule only until her re-reads are measured: then each growing source whose
+/// items are acts starts at the depth `continuum_context::depth::choose` picks, keeping an item
+/// whole exactly when collapsing it would cost more in expected re-reads than it saves in
+/// turnover misses (the M5 captures, 2026-11-06: on misses alone, Aiko's best start was 23.9k
+/// tokens to the half's 62.6k).
+///
 /// The one plan's grants are shared by arithmetic, never a second allocation
 /// (`allocation::start_shares`): a higher-priority source starts at its whole grant, in priority
 /// order, and the lowest priority shares what is left in proportion to what each lacks. The newest end is never cut: a source keeps its newest items whole
@@ -707,7 +713,7 @@ pub(in super::super) fn start_grants(
     // collapsed minimum on an act) is never shared away: the start holds every one of them.
     // Each growing source carries its newest item's cost, so the room raised above for it reaches
     // it whatever the shares (`StartSource::newest`).
-    let sources: Vec<continuum_context::allocation::StartSource> = claims
+    let mut sources: Vec<continuum_context::allocation::StartSource> = claims
         .iter()
         .zip(&grants)
         .map(|(claim, grant)| {
@@ -723,10 +729,9 @@ pub(in super::super) fn start_grants(
     // #5779). An underfunded floor or required floors past the room are the typed `StartRefused`,
     // carried to the turn's capacity refusal by the caller.
     let required_floors: usize = sources.iter().filter(|s| s.required).map(|s| s.floor as usize).sum();
-    let start = (grounding + growing).max(required_floors).min(available);
-    let shares = match continuum_context::allocation::start_shares(LlmDeliberationFaculty::clamp_u32(start), &sources) {
-        Ok(shares) => shares,
-        Err(refused) => {
+    let share = |growing: usize, sources: &[continuum_context::allocation::StartSource]| {
+        let start = (grounding + growing).max(required_floors).min(available);
+        continuum_context::allocation::start_shares(LlmDeliberationFaculty::clamp_u32(start), sources).inspect_err(|refused| {
             let (needed, had) = refused.needed_and_had();
             continuum_base::probe!(
                 class = "delib.view.start_refused",
@@ -734,9 +739,44 @@ pub(in super::super) fn start_grants(
                 start_tokens = had,
                 "a view start whose required floors the plan did not fund: refused typed, never a floor dropped or budget minted"
             );
-            return Err(refused);
-        }
+        })
     };
+    let mut shares = share(growing, &sources)?;
+    // How deep the start collapses, from her measured re-reads and growth
+    // (`continuum_context::depth`): each growing source's share where the measurement decides it,
+    // the half above where it does not. Each source is weighed at its own tokens per char.
+    let growing_at: Vec<usize> = (0..claims.len()).filter(|&index| claims[index].priority == lowest && grants[index].is_some()).collect();
+    let weighed: Vec<continuum_context::depth::Growing<'_>> = growing_at
+        .iter()
+        .filter_map(|&index| {
+            let allocation = grants[index]?;
+            Some(claims[index].growing(shares[index] as usize, f64::from(allocation.requested_max) / claims[index].full_chars.max(1) as f64))
+        })
+        .collect();
+    let room = continuum_context::depth::Room { growable, per_act: appended_per_act.map(|_| per_act_tokens) };
+    if let continuum_context::depth::Depth::Chosen(chosen) = continuum_context::depth::choose(room, &weighed) {
+        // The growing start is what the lowered grants hold, never the depth's own sum: that sum
+        // prices her newest item rounded, so it can fall a token under it.
+        let mut start = 0usize;
+        for (&index, &chosen_share) in growing_at.iter().zip(&chosen.shares) {
+            let source = &mut sources[index];
+            source.grant = depth_grant(chosen_share, source);
+            start += source.grant as usize;
+        }
+        shares = share(start.min(growable), &sources)?;
+        continuum_base::probe!(
+            class = "delib.view.depth",
+            start_tokens = start,
+            chosen_tokens = chosen.start,
+            half_tokens = growing,
+            kept_items = chosen.kept,
+            collapsed_items = chosen.collapsed,
+            miss_per_act = chosen.miss_per_act,
+            rereads_per_act = chosen.rereads_per_act,
+            reread_tokens_per_act = chosen.reread_per_act,
+            "her start collapses to the depth her measured re-reads and growth choose"
+        );
+    }
     let grants: Vec<usize> = claims
         .iter()
         .zip(&grants)
@@ -758,6 +798,13 @@ pub(in super::super) fn start_grants(
         grants
     };
     Ok(grants)
+}
+
+/// How a measured depth lowers one growing source's grant: to the share it chose, never below its
+/// floor or her newest item whole (the depth prices that item rounded, `StartSource::newest` ceiled;
+/// goal 7), and never above the grant the plan gave it.
+fn depth_grant(chosen_share: usize, source: &continuum_context::allocation::StartSource) -> u32 {
+    LlmDeliberationFaculty::clamp_u32(chosen_share).max(source.floor).max(source.newest).min(source.grant)
 }
 
 #[cfg(test)]
