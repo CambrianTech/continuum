@@ -17,6 +17,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use continuum_saved_state::{OwnedFile, Rebuildable, Retention, SavedState, Singleton, Store};
 use serde::{Deserialize, Serialize};
 
 use super::types::TrainingExample;
@@ -40,26 +41,35 @@ struct RateRow {
 /// per token than a chunk-256 one (Fable on #4939), and the trigger sizes a run before the adapter
 /// has chosen its chunk.
 pub struct TrainingRates {
-    path: PathBuf,
+    store: Store<Rates>,
 }
 
+/// The rates, saved through the one saved-state contract (`<genome root>/training-rate.json`).
+struct Rates;
+impl SavedState for Rates {
+    const KIND: &'static str = "training-rate";
+    const FORMAT: u32 = 1;
+    const RETENTION: Retention = Retention::PerKey { bound: "one file per node, one row per (base model, chunk) ever trained" };
+    type Key = Singleton;
+    type Contract = ();
+    type Value = BTreeMap<String, RateRow>;
+    type Medium = OwnedFile;
+}
+/// A missing rate means the next run calibrates at the bucket's threshold.
+impl Rebuildable for Rates {}
+
 impl TrainingRates {
-    pub(crate) fn at(path: PathBuf) -> Self {
-        Self { path }
+    pub(crate) fn in_dir(dir: PathBuf) -> Self {
+        Self { store: Store::at(dir) }
     }
 
-    /// The store in the continuum home, `None` when the home cannot be resolved.
+    /// The store in the continuum home's genome root, `None` when the home cannot be resolved.
     pub fn in_home() -> Option<Self> {
-        crate::paths::continuum_home()
-            .ok()
-            .map(|home| Self::at(home.join("genome").join("engine-rates.json")))
+        super::job_dir::genome_root().map(Self::in_dir)
     }
 
     fn read_all(&self) -> BTreeMap<String, RateRow> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(body) => serde_json::from_str(&body).unwrap_or_default(), // unwrap_or_default: a corrupt file means no measured rate, so the next run calibrates at the bucket's threshold
-            Err(_) => BTreeMap::new(),
-        }
+        self.store.load_rebuildable(&Singleton, &())
     }
 
     /// Wall seconds per character per epoch for `base`: the SLOWEST measured at any chunk (each as
@@ -83,7 +93,7 @@ impl TrainingRates {
         if chars == 0 || epochs == 0 || wall_ms == 0 {
             return Ok(());
         }
-        let mut all = self.read_all();
+        let (mut all, generation) = self.store.rebuildable_at_generation(&Singleton, &());
         // a rate from before the chunk key is superseded by the first chunked one: left in place it
         // would cap every budget at an old, unkeyed rate forever (Cormac on #4939)
         all.remove(base);
@@ -95,12 +105,7 @@ impl TrainingRates {
                 job: job.to_string(),
             },
         );
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
-        continuum_host::durable::replace(&tmp, &self.path)
+        Ok(self.store.save_over(&Singleton, &(), &all, generation).map(|_saved| ())?)
     }
 }
 
@@ -157,10 +162,10 @@ pub fn oldest_within_budget(chars_per_submission: &[u64], secs_per_char_epoch: f
     Some(take)
 }
 
-/// The path a test can point the store at.
+/// The directory a test can point the store at.
 #[cfg(test)]
-pub(crate) fn rates_at(path: &std::path::Path) -> TrainingRates {
-    TrainingRates::at(path.to_path_buf())
+pub(crate) fn rates_at(dir: &std::path::Path) -> TrainingRates {
+    TrainingRates::in_dir(dir.to_path_buf())
 }
 
 #[cfg(test)]
@@ -176,7 +181,7 @@ mod tests {
     #[test]
     fn a_run_is_budgeted_at_the_slowest_chunk_the_base_has_run() {
         let dir = tempfile::tempdir().expect("test: dir");
-        let rates = rates_at(&dir.path().join("rates.json"));
+        let rates = rates_at(dir.path());
         rates.record("m", 256, 1_000, 1, 1_000, uuid::Uuid::nil()).expect("test: c256");
         rates.record("m", 64, 1_000, 1, 4_000, uuid::Uuid::nil()).expect("test: c64");
         rates.record("other", 64, 1_000, 1, 9_000, uuid::Uuid::nil()).expect("test: other base");
@@ -184,8 +189,9 @@ mod tests {
         rates.record("m", 64, 1_000, 1, 2_000, uuid::Uuid::nil()).expect("test: c64 again");
         assert_eq!(rates.secs_per_char_epoch("m"), Some(0.002), "the latest at each chunk stands");
         // a row from before the chunk key is read until the first chunked record supersedes it
-        let legacy = rates_at(&dir.path().join("legacy.json"));
-        std::fs::write(dir.path().join("legacy.json"), r#"{"m":{"secsPerCharEpoch":9.0,"measuredAtMs":0,"job":"old"}}"#).expect("test: legacy");
+        let legacy = rates_at(&dir.path().join("legacy"));
+        let unkeyed = RateRow { secs_per_char_epoch: 9.0, measured_at_ms: 0, job: "old".into() };
+        legacy.store.save(&Singleton, &(), &BTreeMap::from([("m".to_string(), unkeyed)])).expect("test: legacy");
         assert_eq!(legacy.secs_per_char_epoch("m"), Some(9.0), "a pre-chunk rate still counts");
         legacy.record("m", 256, 1_000, 1, 1_000, uuid::Uuid::nil()).expect("test: chunked");
         assert_eq!(legacy.secs_per_char_epoch("m"), Some(0.001), "and is gone once a chunked rate is recorded");
@@ -199,7 +205,7 @@ mod tests {
         assert_eq!(oldest_within_budget(&[100, 100, 100], 1.0, 3, hour), None, "900 s: all of them fit");
         assert_eq!(oldest_within_budget(&[10_000], 1.0, 3, hour), Some(1), "one over budget still trains, alone");
         let dir = tempfile::tempdir().expect("test: dir");
-        let rates = rates_at(&dir.path().join("rates.json"));
+        let rates = rates_at(dir.path());
         assert_eq!(rates.secs_per_char_epoch("m"), None, "unmeasured: none");
         rates.record("m", 256, 1_000, 2, 4_000, uuid::Uuid::nil()).expect("test: record");
         assert_eq!(rates.secs_per_char_epoch("m"), Some(0.002), "4 s over 1000 chars x 2 epochs");
@@ -207,5 +213,15 @@ mod tests {
         let mut encoded = Vec::new();
         serde_json::to_writer(&mut encoded, &ex).expect("test: encodes");
         assert_eq!(example_chars(&ex), encoded.len() as u64, "the counted length is the encoded length");
+    }
+
+    // what this catches: a corrupt, newer or pre-envelope rate file silently read as "no rate"
+    // with nothing said, or a save that does not come back: every outcome of the saved-state
+    // contract, for this kind.
+    #[test]
+    fn the_rates_round_trip_and_any_other_file_is_a_typed_outcome() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let row = RateRow { secs_per_char_epoch: 0.002, measured_at_ms: 5, job: "j".into() };
+        continuum_saved_state::round_trip::every_outcome::<Rates>(dir.path(), Singleton, (), None, BTreeMap::from([("m|c256".to_string(), row)]));
     }
 }

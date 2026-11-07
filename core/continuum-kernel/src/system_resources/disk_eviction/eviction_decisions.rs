@@ -243,4 +243,25 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
             "charter S3/S6 engine trainer: delete every `<uuid>.gguf` whose job is not \
              live on the TrainingJobBoard; a live job's file is never touched",
         ),
+        // Saved state: small measured or recorded facts, one file per key, never a cache. Losing
+        // one costs a re-measure, so byte pressure is never a reason; what can go is a key with no
+        // live owner (a model no longer served, a persona gone), which the saved-state trunk's
+        // retention sweep decides from each kind's declared Retention.
+        (
+            "state",
+            "8a983e31: the decode knee, prefill rate and lane footprint files still written here \
+             by hand move onto the saved-state contract with their observers (controller card); \
+             bf0574a4: each kind's pre-envelope upgrade (adopt_bare) is removed once no node \
+             reports state.load.upgraded over a deploy cycle. Bounded meanwhile by one file per key",
+        ),
+        (
+            "training-demand",
+            "bf0574a4: the pre-envelope upgrade leaves once no node reports state.load.upgraded \
+             over a deploy cycle; bounded by one file per persona with parked examples",
+        ),
+        (
+            "training-rate",
+            "bf0574a4: one file per node, one row per (base, chunk) ever trained; nothing to \
+             evict, only the upgrade seam to retire",
+        ),
 ];
