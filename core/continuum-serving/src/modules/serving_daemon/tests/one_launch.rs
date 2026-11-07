@@ -165,3 +165,24 @@ fn a_relaunch_from_a_gap_budget_holds_every_seated_need_up_to_the_proven_pool() 
     let fit = launch_pool(Some(&m5), steady, 88_320, 2, 5, trained, none);
     assert_eq!(launch_pool(Some(&m5), steady, 88_320, 2, 5, trained, Seated { need: held, proven: 0 }), fit, "a steady budget: the floor (proven 0) never lifts the pool past its live fit");
 }
+
+// what this catches (the M5, 2026-11-07 19:08Z, #5835 -> #5837): engine_pool held a planned_budget
+// guard as a temporary in launch_pool's argument list while seated_for, another argument, locked
+// the same (non-reentrant) mutex: the serving reconcile deadlocked and the core never bound its
+// socket. engine_pool on a real daemon with a planned budget set, under both credit facts, returns;
+// a deadlock fails here in seconds instead of wedging a node.
+#[tokio::test(flavor = "multi_thread")]
+async fn engine_pool_returns_with_a_planned_budget_set() {
+    for credit in [OwnCredit::Included { own_bytes: 20 * GB }, OwnCredit::ToApply] {
+        let daemon = Arc::new(daemon_with(Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true))));
+        *daemon.planned_budget.lock() = Some(PlannedBudget { usable_bytes: 23 * GB, credit });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let sized = Arc::clone(&daemon);
+        std::thread::spawn(move || {
+            let pool = sized.engine_pool(&fake_model("m"), 32_768, 2);
+            let _ = tx.send(pool); // the receiver may have given up; the assertion below says so
+        });
+        let pool = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert!(pool.is_ok(), "engine_pool did not return with a planned budget set ({credit:?}): a lock held across its own relock");
+    }
+}
