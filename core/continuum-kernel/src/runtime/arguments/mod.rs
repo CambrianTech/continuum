@@ -39,6 +39,9 @@ pub enum ArgumentsRefusal {
     NotAnObject { sent: JsonKind },
     /// One field did not decode as the command's own type for it.
     Field(FieldRefusal),
+    /// A field held a whole tool call (`{"tool_call": {"name", "arguments"}}`) naming no command
+    /// in her hands. Her next call is that inner call, sent as a call of its own with a real name.
+    WrappedCall { property: String, name: String, arguments: String },
 }
 
 /// Which field, and what was wrong with it.
@@ -225,6 +228,12 @@ impl std::fmt::Display for ArgumentsRefusal {
                 write!(f, "the arguments must be an object of named fields; you sent {}", sent.noun())
             }
             ArgumentsRefusal::Field(refusal) => write!(f, "{refusal}"),
+            ArgumentsRefusal::WrappedCall { property, name, arguments } => write!(
+                f,
+                "`{property}` holds a whole tool call to `{name}`, and no command named `{name}` is in your \
+                 hands, so nothing ran. A tool call is never an argument: your next call is {name}({arguments}), \
+                 sent as a call of its own under a name from your tool list."
+            ),
         }
     }
 }

@@ -28,6 +28,7 @@
 
 #[cfg(test)]
 mod tests;
+pub mod wrapped_call;
 
 use std::borrow::Cow;
 use std::sync::LazyLock;

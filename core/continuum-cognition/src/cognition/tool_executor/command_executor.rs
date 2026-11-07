@@ -603,8 +603,8 @@ impl ToolExecutor for CommandToolExecutor {
                 // day (M5, 09-16). Each verb refused in its own words and she tried again.
                 // One seam names the FIELD and what belongs in it, and never dispatches.
                 let canonical = crate::ai::tool_dialect::resolve_wire_name(&call.name);
-                let input = match super::arguments::accept_before_dispatch(&canonical, &call.input) {
-                    Ok(input) => input,
+                let accepted = match super::arguments::accept_before_dispatch(&canonical, &call.input) {
+                    Ok(accepted) => accepted,
                     Err(refusal) => {
                         continuum_base::probe!(
                             class = "tool.call.arguments_refused",
@@ -616,7 +616,8 @@ impl ToolExecutor for CommandToolExecutor {
                         return (call.id.clone(), Err(Refused::Arguments { canonical, refusal }));
                     }
                 };
-                let outcome: Result<Value, Refused> = match manual_blanks_in(&call.input) {
+                // Ok carries the command a wrapped call redirected to, so its own projector reads it.
+                let outcome: Result<(Value, Option<&'static str>), Refused> = match manual_blanks_in(&call.input) {
                     // A reported note is answered here, before the router: never a command path to
                     // permission-check or resolve, and her teacher text is the whole result.
                     _ if is_reported_sentinel(&call.name) => Err(Refused::Client(ClientError::Refused {
@@ -651,8 +652,9 @@ impl ToolExecutor for CommandToolExecutor {
                     }
                     _ => {
                         conn.commands()
-                            .execute_value(command.as_ref(), input.into_owned())
+                            .execute_value(accepted.redirect.unwrap_or(command.as_ref()), accepted.input.into_owned()) // unwrap_or: no redirect = the call runs as she named it
                             .await
+                            .map(|value| (value, accepted.redirect))
                             .map_err(Refused::Client)
                     }
                 };
@@ -668,7 +670,7 @@ impl ToolExecutor for CommandToolExecutor {
             // Each result is its call's: zipped, never indexed, so a result can never lack one.
             .zip(batch.entries().iter().map(Disposed::call))
             .map(|((tool_use_id, outcome), call)| match outcome {
-                Ok(mut value) => {
+                Ok((mut value, redirect)) => {
                     // THE TOOL'S OWN VERDICT, derived HERE — before the fold, from
                     // the FULL value. Ordering is the contract, not an accident: the
                     // fold below can spill and truncate the rendered text, and the
@@ -685,8 +687,10 @@ impl ToolExecutor for CommandToolExecutor {
                     // command that DID opt in but whose own declared `Output` no
                     // longer decodes projects `Undecodable` — schema drift, a defect,
                     // and never silently a success (Astra, #4352 review).
-                    let canonical =
-                        crate::ai::tool_dialect::resolve_wire_name(&call.name);
+                    let canonical = match redirect {
+                        Some(ran) => ran.to_string(),
+                        None => crate::ai::tool_dialect::resolve_wire_name(&call.name),
+                    };
                     let (verdict, dispatch_handle) =
                         crate::sdk_codegen::project_result(&canonical, &value);
                     if verdict == ActVerdict::Undecodable {
