@@ -58,6 +58,10 @@ pub enum CommandError {
     /// The arguments did not decode as the command's params, or a field failed a check past
     /// its type: which field, and what it needed, typed.
     Arguments(ArgumentsRefusal),
+    /// A refused call with its typed cause and her next moves ([`super::Refusal`]): what every
+    /// refusal she can act on becomes. The three string variants below are its predecessors,
+    /// migrated by the `stringly_command_errors` ratchet.
+    Refused(std::sync::Arc<super::Refusal>),
     /// A decoded request failed validation or a domain precondition.
     Invalid(String),
     /// A referenced resource (handle, id, session) was not found.
@@ -72,6 +76,7 @@ impl CommandError {
     fn category(&self) -> &'static str {
         match self {
             CommandError::Arguments(_) => "arguments",
+            CommandError::Refused(refusal) => refusal.category().as_str(),
             CommandError::Invalid(_) => "invalid",
             CommandError::NotFound(_) => "not_found",
             CommandError::Denied(_) => "denied",
@@ -84,6 +89,7 @@ impl std::fmt::Display for CommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CommandError::Arguments(refusal) => write!(f, "[{}] {refusal}", self.category()),
+            CommandError::Refused(refusal) => write!(f, "[{}] {refusal}", self.category()),
             CommandError::Invalid(m) | CommandError::NotFound(m) | CommandError::Denied(m) | CommandError::Internal(m) => {
                 write!(f, "[{}] {m}", self.category())
             }

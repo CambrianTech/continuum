@@ -63,6 +63,8 @@ pub mod conformance;
 pub mod emit;
 pub mod events;
 pub mod handler;
+mod refusal;
+pub use refusal::{Category, CommandId, NextCall, NextCallArgs, NextMoves, NoMove, Refusal, RefusalCause};
 mod verb_ref;
 pub use verb_ref::{offer_style_for, primary_alias, wire_name, OfferStyle, VerbRef};
 pub use command::{
