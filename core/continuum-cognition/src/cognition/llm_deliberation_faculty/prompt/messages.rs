@@ -1,4 +1,5 @@
 use super::*;
+use super::grounding::{Body, GroundingPiece};
 
 impl LlmDeliberationFaculty {
     /// A standing block this cycle gathered replaces its last version in this room; one it did
@@ -61,14 +62,13 @@ impl LlmDeliberationFaculty {
         input.update((standing().count() as u64).to_le_bytes());
         for c in standing() {
             field(&mut input, c.faculty.as_str().as_bytes());
-            let piece = GroundingPiece::minimum(c);
-            match piece.units {
-                None => field(&mut input, c.content.as_bytes()),
-                Some(units) => {
+            match GroundingPiece::minimum(c).body {
+                Body::Units(units) => {
                     for part in c.parts.iter().take(units) {
                         field(&mut input, part.as_bytes());
                     }
                 }
+                _ => field(&mut input, c.content.as_bytes()),
             }
         }
         // Her held work is input like her standing grounding: a transition is a new input.
@@ -456,7 +456,6 @@ impl LlmDeliberationFaculty {
                 latest_act,
             },
             result_pointers,
-            grounding_tokens: 0,
             grounding_at,
             stimulus,
             latest_result,

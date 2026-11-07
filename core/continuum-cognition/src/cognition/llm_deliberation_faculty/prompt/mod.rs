@@ -17,5 +17,9 @@ pub(super) use self::fit::*;
 mod segments;
 mod newest_result;
 mod tools_epoch;
+mod framing;
+pub(super) mod grounding;
 pub(super) use self::tools_epoch::ToolsEpoch;
+#[cfg(test)]
+pub(super) use self::tools_epoch::ToolsChoice;
 pub(super) use self::segments::*;

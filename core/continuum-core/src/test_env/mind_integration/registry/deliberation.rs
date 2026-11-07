@@ -18,6 +18,7 @@ use crate::cognition::persona_tools;
 use crate::cognition::workspace::{BurstTurn, Contribution, Faculty, FacultyId, Workspace};
 
 mod budget;
+mod every_claim_collapses;
 mod prompt_shaping;
 mod surface;
 mod verdicts;

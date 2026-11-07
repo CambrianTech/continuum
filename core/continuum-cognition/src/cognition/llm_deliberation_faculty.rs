@@ -702,7 +702,7 @@ pub mod test_support {
 
     /// The surface internals core's registry tests price against the live registry.
     pub use crate::cognition::tool_surface::{core_hands, hands_surface};
-    pub use super::prompt::fit::{GroundingPiece, GroundingPlan};
+    pub use super::prompt::grounding::GroundingPiece;
     pub use super::reply_claim::reply_claim;
     pub use super::request::TurnKind;
     pub use crate::cognition::tool_surface::SelectedSurface;
