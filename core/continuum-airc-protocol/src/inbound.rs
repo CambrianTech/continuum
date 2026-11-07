@@ -57,7 +57,15 @@ pub enum ProtocolKind {
     UnknownHint(String),
     /// On airc's request/reply bus (a correlation id) with no continuum hint.
     BusCorrelated,
+    /// A node's telemetry line (`[health]`, `[memory]`, `[fleet]`) in a room operators and minds
+    /// share: for operators, never a mind's perception ([`NODE_TELEMETRY_BODY_HINT`]).
+    NodeTelemetry,
 }
+
+/// The body hint a node's telemetry line carries (`continuum-grid` `say_in_org_room`). Routed by
+/// this header alone, never by the line's text: 57 `[health]` lines were 8.4% of Benchy's prompt
+/// on the M5 (2026-11-07, card 72b767a4).
+pub const NODE_TELEMETRY_BODY_HINT: &str = "continuum.node.telemetry.v1";
 
 /// Who the frame is addressed to, from the envelope's addressee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +163,7 @@ fn protocol_kind(transport: TranscriptKind, headers: &airc_core::Headers) -> Opt
             EVENT_UNSUBSCRIBE_BODY_HINT => ProtocolKind::EventUnsubscribe,
             EVENT_PUBLISH_BODY_HINT => ProtocolKind::EventPublish,
             EVENT_ACK_BODY_HINT => ProtocolKind::EventAck,
+            NODE_TELEMETRY_BODY_HINT => ProtocolKind::NodeTelemetry,
             other => ProtocolKind::UnknownHint(other.to_string()),
         });
     }
@@ -197,6 +206,24 @@ mod tests {
     // protocol, routed away from perception. The class follows the transport kind and
     // headers alone, so a payload can neither smuggle a command nor be needed (decrypted,
     // parsed) to route it.
+    // what this catches (the M5, 2026-11-07, card 72b767a4): node telemetry in a mind's prompt.
+    // 57 [health] lines from three nodes were 8.4% of Benchy's prompt, because the org room is
+    // shared and a telemetry line arrived as conversation. Carrying the telemetry hint, it is
+    // protocol (never perception) by its header alone; the same text without it is conversation.
+    #[test]
+    fn a_node_telemetry_line_is_protocol_by_its_header_never_perception() {
+        let line = || Body::text("[MacBookPro] [health] last 60 min: resident 4 · acts 158");
+        let hinted = airc_core::Headers::from([(HEADER_CONTINUUM_BODY_HINT.to_string(), NODE_TELEMETRY_BODY_HINT.to_string())]);
+        assert!(matches!(
+            classify(event(TranscriptKind::System, MentionTarget::All, hinted, line())),
+            InboundEvent::Protocol(ProtocolEnvelope { kind: ProtocolKind::NodeTelemetry, .. })
+        ));
+        assert!(matches!(
+            classify(event(TranscriptKind::System, MentionTarget::All, airc_core::Headers::new(), line())),
+            InboundEvent::Conversation(_)
+        ), "the route is the header, never the text");
+    }
+
     #[test]
     fn the_class_follows_the_transport_kind_and_headers_never_the_payload() {
         let peer_call = Body::Json(serde_json::json!({

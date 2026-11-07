@@ -270,6 +270,23 @@ pub async fn publish_text_in_room(
     .map(|receipt| receipt.event_id)
 }
 
+/// A node's telemetry line into a room: an Event frame (never the conversational Message plane)
+/// carrying [`continuum_airc_protocol::NODE_TELEMETRY_BODY_HINT`], so inbound classification routes
+/// it away from every mind's perception by its header alone. Operators still read it in the room.
+pub async fn publish_telemetry_in_room(
+    airc: &airc_lib::Airc,
+    room_id: Uuid,
+    text: &str,
+) -> Result<EventId, AircError> {
+    let headers = airc_core::Headers::from([(
+        continuum_airc_protocol::HEADER_CONTINUUM_BODY_HINT.to_string(),
+        continuum_airc_protocol::NODE_TELEMETRY_BODY_HINT.to_string(),
+    )]);
+    airc.publish(publish_target_for(room_id), airc_protocol::FrameKind::Event, airc_core::Body::text(text), headers)
+        .await
+        .map(|receipt| receipt.event_id)
+}
+
 /// Resolve the channel NAME for `room_id` from ANY runtime in this process
 /// that already subscribes to it — the core hosts every citizen runtime, so a
 /// room at least one citizen belongs to is always nameable, even though the

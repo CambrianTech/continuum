@@ -3,6 +3,15 @@
 //! produces and the hands gate holds until a release confirms them, so they live in the kernel
 //! with no layer above either.
 
+
+/// This machine's host name, read once (it cannot change under a running process): the identity a
+/// node signs its lines with, never a resource's size, so it lives with the process table's other
+/// identity reads (card 72b767a4). `None` when the OS reports none, an honest unknown.
+pub fn host_name() -> Option<&'static str> {
+    static HOST_NAME: std::sync::LazyLock<Option<String>> = std::sync::LazyLock::new(sysinfo::System::host_name);
+    HOST_NAME.as_deref()
+}
+
 use std::path::{Path, PathBuf};
 
 /// One process as the process table saw it: its pid and start time. An act on it later is
