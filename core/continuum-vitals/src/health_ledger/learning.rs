@@ -10,8 +10,9 @@
 //! What is counted, and where (each at its one owner in continuum-mind's
 //! `training_producer::reviewed`):
 //! - [`CreditOutcome`]: a review's decision over her credit (`consume_review_credit`), and
-//!   `Accepted` only at the `CreditReviewAcceptance` write (`settle_passed`), so a replay of an
-//!   accepted credit never counts it twice;
+//!   `Accepted` only at the `CreditReviewAcceptance` write (`settle_passed`, a lost
+//!   acknowledgement included); each (review, outcome) counts once ever, keyed in her credit store
+//!   (`counted_outcome`), so no replay counts it twice;
 //! - submissions with staged credit: a board submission bound to her staged revision
 //!   (`bind_snapshot`), one per submission, the unit a settle accepts;
 //! - review boundaries processed: a dream consolidation boundary finished for an accepted credit
@@ -22,67 +23,57 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// What a review decided about her credit, as the health line counts it. A projection of the
-/// credit owner's state (`ReviewedCreditState`, which maps onto it exhaustively), so a new state
-/// fails to compile until it is counted somewhere.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CreditOutcome {
+/// Declares [`CreditOutcome`], its `ALL` and its names from ONE variant list, so the list, the
+/// counters' length and the index cannot drift (Cormac on #5810: a hand-kept `ALL` missing a
+/// variant made `outcomes[index]` panic). The index is the declaration order, the enum's own
+/// discriminant.
+macro_rules! credit_outcomes {
+    ($($(#[$doc:meta])* $variant:ident => $name:literal,)+) => {
+        /// What a review decided about her credit, as the health line counts it. A projection of
+        /// the credit owner's state (`ReviewedCreditState`, which maps onto it exhaustively), so a
+        /// new state fails to compile until it is counted somewhere.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum CreditOutcome {
+            $($(#[$doc])* $variant,)+
+        }
+
+        impl CreditOutcome {
+            /// Every outcome, in the order the line reads them (declaration order).
+            pub const ALL: [CreditOutcome; [$($name),+].len()] = [$(CreditOutcome::$variant),+];
+
+            /// The outcome's name on the line and in the probe.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(CreditOutcome::$variant => $name,)+
+                }
+            }
+        }
+    };
+}
+
+credit_outcomes! {
     /// The training destination accepted her reviewed revision: learning that actually settled.
-    Accepted,
+    Accepted => "accepted",
     /// A reviewer judged the submission failed.
-    FailedReview,
+    FailedReview => "failed review",
     /// A reviewer recorded no judgement either way.
-    UnknownReview,
+    UnknownReview => "unknown review",
     /// A pass, decided, waiting on the training destination's acceptance.
-    AwaitingAcceptance,
+    AwaitingAcceptance => "awaiting acceptance",
     /// Her own review, in a room that requires another reviewer.
-    IndependentReviewRequired,
+    IndependentReviewRequired => "independent review required",
     /// The credit cannot be reached yet: no binding, or its provenance does not bind.
-    Held,
+    Held => "held",
     /// The bound evidence cannot be submitted for training.
-    Ineligible,
+    Ineligible => "ineligible",
     /// Nothing decided now (policy unreadable, another review selected, not resident).
-    Undecided,
+    Undecided => "undecided",
 }
 
 impl CreditOutcome {
-    /// Every outcome, in the order the line reads them.
-    pub const ALL: [CreditOutcome; 8] = [
-        CreditOutcome::Accepted,
-        CreditOutcome::FailedReview,
-        CreditOutcome::UnknownReview,
-        CreditOutcome::AwaitingAcceptance,
-        CreditOutcome::IndependentReviewRequired,
-        CreditOutcome::Held,
-        CreditOutcome::Ineligible,
-        CreditOutcome::Undecided,
-    ];
-
+    /// Its counter's slot: the declaration order, which `ALL` is built in.
     const fn index(self) -> usize {
-        match self {
-            CreditOutcome::Accepted => 0,
-            CreditOutcome::FailedReview => 1,
-            CreditOutcome::UnknownReview => 2,
-            CreditOutcome::AwaitingAcceptance => 3,
-            CreditOutcome::IndependentReviewRequired => 4,
-            CreditOutcome::Held => 5,
-            CreditOutcome::Ineligible => 6,
-            CreditOutcome::Undecided => 7,
-        }
-    }
-
-    /// The outcome's name on the line and in the probe.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            CreditOutcome::Accepted => "accepted",
-            CreditOutcome::FailedReview => "failed review",
-            CreditOutcome::UnknownReview => "unknown review",
-            CreditOutcome::AwaitingAcceptance => "awaiting acceptance",
-            CreditOutcome::IndependentReviewRequired => "independent review required",
-            CreditOutcome::Held => "held",
-            CreditOutcome::Ineligible => "ineligible",
-            CreditOutcome::Undecided => "undecided",
-        }
+        self as usize
     }
 }
 
@@ -210,6 +201,17 @@ mod tests {
         }
         assert_eq!(counters.read(|c| c.swap(0, Ordering::Relaxed)).submissions_staged, 2);
         assert_eq!(counters.read(|c| c.load(Ordering::Relaxed)), LearningHour::default());
+    }
+
+    // what this catches (Cormac on #5810): `ALL` drifting from the variants, so a counter slot is
+    // out of range or shared. Each outcome's index is its place in `ALL`, and each name is distinct.
+    #[test]
+    fn all_lists_every_outcome_once_at_its_own_index() {
+        for (i, outcome) in CreditOutcome::ALL.iter().enumerate() {
+            assert_eq!(outcome.index(), i, "{outcome:?}");
+        }
+        let names: std::collections::BTreeSet<_> = CreditOutcome::ALL.iter().map(|o| o.as_str()).collect();
+        assert_eq!(names.len(), CreditOutcome::ALL.len());
     }
 
     // what this catches: the line folding outcomes into one number, naming the deleted benchmark

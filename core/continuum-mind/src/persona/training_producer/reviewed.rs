@@ -19,6 +19,8 @@ pub use bridge_review::*;
 mod consume_review_credit;
 mod correction;
 mod credit_outcome;
+mod counted_outcome;
+pub use counted_outcome::CountedCreditOutcome;
 pub use consume_review_credit::*;
 mod pending_binding;
 pub use pending_binding::*;

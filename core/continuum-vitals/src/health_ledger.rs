@@ -346,8 +346,8 @@ pub struct MindHour {
     pub writes: u64,
     /// Serving lanes granted to her this hour — the "least served" order.
     pub lane_grants: u64,
-    /// Her reviewed credit the training destination accepted this hour (`learning`).
-    pub credits_accepted: u64,
+    /// Her reviewed credit's outcomes this hour, by type (`learning`).
+    pub credit_outcomes: CreditOutcomeCounts,
 }
 
 pub(crate) static MINDS: std::sync::LazyLock<dashmap::DashMap<uuid::Uuid, MindHour>> = std::sync::LazyLock::new(dashmap::DashMap::new);
@@ -400,18 +400,16 @@ pub fn rotation_candidates(
     out
 }
 
-/// A review decided `outcome` for `persona`'s credit (`learning`). `Accepted` is noted only where
-/// the acceptance is written, so it counts each settled credit once, and on her hour as well.
+/// A review decided `outcome` for `persona`'s credit (`learning`), on the node's hour and on hers.
+/// The caller counts each (review, outcome) once (continuum-mind's `count_outcome_once`).
 pub fn note_credit_outcome_of(persona: uuid::Uuid, outcome: CreditOutcome) {
     LEDGER.learning.note_outcome(outcome);
-    if outcome == CreditOutcome::Accepted {
-        MINDS.entry(persona).or_default().credits_accepted += 1;
-    }
+    MINDS.entry(persona).or_default().credit_outcomes.note(outcome);
 }
 
-/// Her credit accepted this hour: the per-mind read of [`note_credit_outcome_of`].
-pub fn credits_accepted_of(persona: uuid::Uuid) -> u64 {
-    MINDS.get(&persona).map_or(0, |m| m.credits_accepted) // map_or: no row this hour = nothing accepted, the truth
+/// Her credit's outcomes this hour: the per-mind read of [`note_credit_outcome_of`].
+pub fn credit_outcomes_of(persona: uuid::Uuid) -> CreditOutcomeCounts {
+    MINDS.get(&persona).map_or_else(CreditOutcomeCounts::default, |m| m.credit_outcomes) // map_or_else: no row this hour = nothing decided, the truth
 }
 
 /// A board submission was bound to her staged credit (a fresh binding, never a replay).

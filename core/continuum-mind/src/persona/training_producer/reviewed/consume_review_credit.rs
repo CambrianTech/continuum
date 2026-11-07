@@ -1,9 +1,9 @@
 use super::*;
 
-/// A review's decision over her credit, counted once on the health line where it is decided.
-/// `Accepted` is not counted here: it counts where the acceptance is written ([`settle_passed`]),
-/// so an already-accepted credit replayed through this path never counts twice. Every other
-/// outcome counts per consumption: a registration replay re-decides it and counts it again.
+/// A review's decision over her credit, counted on the health line once per (review, outcome)
+/// ([`counted_outcome`](super::counted_outcome)), so a registration replay re-decides it and counts
+/// nothing more. `Accepted` is counted where the acceptance is written ([`settle_passed`]), the
+/// only place that knows this decision settled it.
 pub(super) async fn consume_review_credit<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
@@ -16,7 +16,7 @@ pub(super) async fn consume_review_credit<T: Transport>(
     let decided = decide_review_credit(conn, persona_name, persona_id, room_id, board, review_id, self_review).await;
     if let Ok(credit) = &decided {
         if credit.state != ReviewedCreditState::Accepted {
-            crate::cognition::health_ledger::note_credit_outcome_of(persona_id, credit.state.outcome());
+            super::counted_outcome::count_outcome_once(conn, persona_name, persona_id, review_id.as_uuid(), credit.state).await;
         }
     }
     decided
@@ -251,10 +251,10 @@ pub(super) async fn settle_passed<T: Transport>(
     };
     match write_batch(conn, persona_name, vec![create(id.to_string(), &accepted)?, clear_refusal(id)]).await {
         // Learning that actually settled: counted here, at its one write, once.
-        Ok(()) => crate::cognition::health_ledger::note_credit_outcome_of(
-            persona_id,
-            crate::cognition::health_ledger::CreditOutcome::Accepted,
-        ),
+        Ok(()) => {
+            let accepted = ReviewedCreditState::Accepted;
+            super::counted_outcome::count_outcome_once(conn, persona_name, persona_id, review_id.as_uuid(), accepted).await;
+        }
         Err(error) => {
             let prior =
                 read_one::<_, CreditReviewAcceptance>(conn, persona_name, &id.to_string()).await?;
@@ -269,6 +269,10 @@ pub(super) async fn settle_passed<T: Transport>(
             }) {
                 return Err(error.into());
             }
+            // The acceptance committed and its acknowledgement was lost (or a racing replay wrote
+            // it): it settled all the same, counted once by its key (Cormac on #5810).
+            let accepted = ReviewedCreditState::Accepted;
+            super::counted_outcome::count_outcome_once(conn, persona_name, persona_id, review_id.as_uuid(), accepted).await;
         }
     }
     // No evidence deletion: binding and immutable intent remain inspectable. The
