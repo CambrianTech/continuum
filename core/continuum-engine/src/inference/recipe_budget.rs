@@ -19,7 +19,7 @@ use ts_rs::TS;
 ///
 /// Defaults match §14.1 of the design doc. New variants land here as
 /// new task types emerge; the table stays the single source of truth.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[ts(
     export,

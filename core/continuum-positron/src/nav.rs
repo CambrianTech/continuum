@@ -53,7 +53,7 @@ use uuid::Uuid;
 /// three the nav surfaces route today; a new target kind adds a variant here
 /// (a compile-error at every `match`, never a silent `Other` —
 /// [[fallbacks-are-illegal-fail-loud]]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/positron/NavTargetKind.ts")]
 #[serde(rename_all = "lowercase")]
 pub enum NavTargetKind {

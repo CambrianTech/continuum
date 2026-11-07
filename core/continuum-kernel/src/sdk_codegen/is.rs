@@ -139,7 +139,7 @@ pub trait CommandSpec {
     /// [`WIRE`](CommandSpec::WIRE) is `Enveloped` the generated surface wraps this
     /// in `CommandRequest<P>`; otherwise it's used directly. Decodable, because the
     /// command's descriptor carries the check of a call's arguments against it.
-    type Params: TS + serde::de::DeserializeOwned + 'static;
+    type Params: TS + serde::de::DeserializeOwned + schemars::JsonSchema + 'static;
     /// The command-specific result payload (the INNER `T`). When
     /// [`WIRE`](CommandSpec::WIRE) is `Enveloped` the generated surface wraps this
     /// in `CommandResponse<T>`; otherwise it's used directly.
@@ -147,14 +147,10 @@ pub trait CommandSpec {
 
     /// The params' JSON Schema — the canonical, machine-readable input contract
     /// every interface adapts FROM (CLI flags, web forms, mobile pickers, AI tool
-    /// `input_schema`). Default `Null` (no schema). The base traits
-    /// ([`ActionCommand`](crate::sdk_codegen::ActionCommand), …) override this to
-    /// derive it AUTOMATICALLY from the Rust type via `schemars` — so a command
-    /// declared (or ported) onto a base trait gains a real schema with no extra
-    /// code, and every SDK handles it symmetrically. Manual `CommandSpec` impls
-    /// keep `Null` until migrated.
+    /// `input_schema`). Manual declarations and base-trait commands both derive
+    /// the contract from the same Params type used by the argument decoder.
     fn params_schema() -> serde_json::Value {
-        serde_json::Value::Null
+        input_schema::<Self::Params>()
     }
 }
 
@@ -320,7 +316,7 @@ impl CommandDescriptor {
             description: C::DESCRIPTION,
             wire: C::WIRE,
             native: C::NATIVE,
-            arguments: ArgumentsContract::Typed(check_arguments::<C::Params>),
+            arguments: ArgumentsContract::Typed(check_arguments::<C>),
             aliases: C::ALIASES,
             effect: C::EFFECT,
             disclosure: C::DISCLOSURE,
@@ -352,8 +348,15 @@ impl ArgumentsContract {
     }
 }
 
-fn check_arguments<P: serde::de::DeserializeOwned>(arguments: &serde_json::Value) -> Result<(), ArgumentsRefusal> {
-    crate::runtime::CommandRequest::<P>::decode(arguments).map(drop)
+fn check_arguments<C: CommandSpec>(arguments: &serde_json::Value) -> Result<(), ArgumentsRefusal> {
+    match C::WIRE {
+        WireShape::Enveloped => crate::runtime::CommandRequest::<C::Params>::decode(arguments).map(drop),
+        // A bare contract owns every input field, including names such as requestId.
+        // Stripping envelope keys here would refuse a valid bare inference request.
+        WireShape::Bare | WireShape::Provided => {
+            crate::runtime::arguments::decode::<C::Params>(arguments, |_| true).map(drop)
+        }
+    }
 }
 
 impl CommandDescriptor {

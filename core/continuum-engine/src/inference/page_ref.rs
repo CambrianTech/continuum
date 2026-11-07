@@ -15,7 +15,7 @@ use uuid::Uuid;
 /// the SHA-256-derived UUID of the artifact bytes), so two callers
 /// computing the ID independently arrive at the same value. Typed
 /// wrapper distinct from `crate::identity::PeerId`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(transparent)]
 #[ts(
     export,

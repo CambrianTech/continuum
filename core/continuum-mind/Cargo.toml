@@ -43,7 +43,7 @@ continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }  # the CLI's p
 base64 = { workspace = true }
 sha2 = { workspace = true }   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
 continuum-cognition = { path = "../continuum-cognition" }
-airc-core.workspace = true
+airc-core = { workspace = true, features = ["schemars"] }
 airc-blobs.workspace = true
 airc-protocol.workspace = true
 airc-lib.workspace = true

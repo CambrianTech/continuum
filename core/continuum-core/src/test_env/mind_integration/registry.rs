@@ -5,6 +5,7 @@
 
 mod act_observe;
 mod conformance;
+mod schema_levels;
 mod deliberation;
 mod persona_tools;
 mod tool_executor;

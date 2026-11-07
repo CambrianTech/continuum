@@ -297,7 +297,7 @@ pub mod tests {
     // Minimal typed payloads for exercising the dispatch mechanism (the framework
     // under test), mirroring how command_envelope.rs unit-tests its envelope with
     // small local structs.
-    #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+    #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
     pub struct EchoParams {
         text: String,
     }
@@ -511,6 +511,22 @@ pub mod tests {
         );
         assert!(err.contains("[arguments]"), "carries the category: {err}");
         assert!(err.contains("handle"), "names what's missing: {err}");
+    }
+
+    #[tokio::test]
+    async fn enveloped_preflight_and_dispatch_agree_on_argument_failures() {
+        let descriptor = crate::sdk_codegen::CommandDescriptor::of::<EnvSpec>();
+        // The handler additionally requires a live-shaped handle; keep that domain
+        // prerequisite satisfied while comparing the shared argument boundary.
+        let handle = HandleRef::mint("test", "test::Cursor");
+        for arguments in [
+            serde_json::json!({"text": "hello", "handle": handle}),
+            serde_json::json!({"text": 123, "handle": handle}),
+            serde_json::json!({"text": "hello", "handle": 123}),
+        ] {
+            assert_eq!(descriptor.arguments.check(&arguments).is_ok(),
+                dispatch(&EnvHandler, arguments.clone()).await.is_ok(), "{arguments}");
+        }
     }
 
     // Regression for 6dd8befa: malformed params get argument recovery through

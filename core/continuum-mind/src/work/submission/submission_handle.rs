@@ -44,14 +44,14 @@ impl JsonSchema for SubmissionHandle {
         false
     }
 
-    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        use schemars::schema::{InstanceType, Metadata, Schema, SchemaObject, SubschemaValidation};
+    fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::{Metadata, Schema, SchemaObject, SubschemaValidation};
         let latest = SchemaObject { enum_values: Some(vec![Value::from(LATEST)]), ..Default::default() };
-        let id = SchemaObject { instance_type: Some(InstanceType::String.into()), ..Default::default() };
+        let id = gen.subschema_for::<Shown<airc_work::SubmissionId>>();
         Schema::Object(SchemaObject {
             metadata: Some(Box::new(Metadata { default: Some(Value::from(LATEST)), ..Default::default() })),
             subschemas: Some(Box::new(SubschemaValidation {
-                any_of: Some(vec![Schema::Object(latest), Schema::Object(id)]),
+                any_of: Some(vec![Schema::Object(latest), id]),
                 ..Default::default()
             })),
             ..Default::default()

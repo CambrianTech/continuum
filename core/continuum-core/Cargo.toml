@@ -464,6 +464,8 @@ required-features = ["avatar-3d"]
 unexpected_cfgs = "allow"
 
 [dev-dependencies]
+# Independently validate conformance witnesses; no file or network schema resolution.
+jsonschema = { version = "0.60.2", default-features = false }
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
 continuum-serving = { path = "../continuum-serving", features = ["test-fixtures"] }
