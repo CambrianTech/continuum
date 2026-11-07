@@ -727,7 +727,7 @@ pub enum SubmitOutcome {
 /// with what became of it so far.
 pub(super) fn already_submitted(existing: &airc_work::WorkSubmission, room_id: Uuid, outcomes: &[airc_work::WorkReviewOutcome], bench: bool) -> WorkSubmitResult {
     let id = existing.submission_id.as_uuid();
-    let verdict = next_after_submission(Some(id), outcomes, bench, None).unwrap_or_default(); // unwrap_or_default: Some(..) in, so always Some
+    let verdict = next_after_submission(Some(id), outcomes, bench, None, Some(existing.submitted_at_ms)).unwrap_or_default(); // unwrap_or_default: Some(..) in, so always Some
     WorkSubmitResult {
         outcome: SubmitOutcome::AlreadySubmitted,
         submission_id: id,

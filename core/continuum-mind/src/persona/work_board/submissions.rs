@@ -2,9 +2,15 @@
 //! `cognition::card_holder::latest_submission`.
 
 use airc_lib::WorkCardId;
+use continuum_base::time::EpochMs;
 use uuid::Uuid;
 
 use crate::cognition::card_facts::short8;
+
+/// How long (in minutes) to wait for the first review before suggesting the holder
+/// pick up other work. This prevents citizens from burning turns idly waiting on
+/// submissions that may never be reviewed.
+pub const REVIEW_IDLE_TIMEOUT_MINUTES: u64 = 30;
 
 /// PURE: what happens next for the holder of a card whose latest submission is `latest`, given
 /// the outcomes its reviews have reached and whether it is a bench card. The ONE place this is
@@ -23,7 +29,13 @@ use crate::cognition::card_facts::short8;
 /// - any other card is ordinary work, never graded: it is done when a peer's review passes it.
 /// A `Failed` review sends either kind back. An oracle FAIL is not yet a WorkReview (card
 /// 2c756670), so for a bench card the room's grade line is named as the verdict to read.
-pub fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool, review: Option<WorkCardId>) -> Option<String> {
+pub fn next_after_submission(
+    latest: Option<Uuid>,
+    outcomes: &[airc_work::WorkReviewOutcome],
+    graded_at_submit: bool,
+    review: Option<WorkCardId>,
+    submitted_at_ms: Option<u64>,
+) -> Option<String> {
     let submission = short8(latest?);
     Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
         format!("Submission {submission} passed review: the card is done. Nothing more to do on it.")
@@ -36,10 +48,23 @@ pub fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkRe
              A passed grade: nothing more to do."
         )
     } else if let Some(review) = review {
-        format!(
-            "Submitted as {submission}. Review card {review} is available to its reviewer. Await the review: a pass \
-             completes it; a send-back appears in its reviews. Do not submit again unless it is sent back."
-        )
+        let base_msg = format!(
+            "Submitted as {submission}. Review card {review} is available to its reviewer. Await the review: a pass completes it; a send-back appears in its reviews. Do not submit again unless it is sent back."
+        );
+        // Check if submission has been idle too long without any reviews.
+        let base_msg = if let Some(submitted_at) = submitted_at_ms {
+            let elapsed_min = (EpochMs::now().millis() - submitted_at) / 60_000;
+            if elapsed_min >= REVIEW_IDLE_TIMEOUT_MINUTES {
+                format!(
+                    "{base_msg} This has been waiting for reviews for {elapsed_min} minutes. Consider picking up other work while you wait."
+                )
+            } else {
+                base_msg
+            }
+        } else {
+            base_msg
+        };
+        base_msg
     } else {
         format!("Submission {submission} is retained, but no review handoff is recorded. Retry work/submit with this same submission_id to establish review; do not publish a new candidate just to retry handoff.")
     })
@@ -49,4 +74,3 @@ pub fn submission_review_handoff(board: &airc_work::WorkBoardProjection, parent:
     let id = airc_work::submission_review_card_id(parent, submission?);
     board.review_request(id).map(|_| id)
 }
-

@@ -303,7 +303,7 @@ impl ActionCommand for WorkSubmit {
             submitted_at_ms: published.submitted_at_ms,
             bound_staged_revision_id,
             next: match handoff {
-                Ok(review) => next_after_submission(Some(published.submission_id.as_uuid()), &outcomes, bench, review).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+                Ok(review) => next_after_submission(Some(published.submission_id.as_uuid()), &outcomes, bench, review, Some(published.submitted_at_ms)).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
                 Err(error) => format!("Submission {} is retained, but review handoff failed: {error}. Retry work/submit with this same submission_id; do not create a new candidate to retry handoff.", published.submission_id),
             },
         })
