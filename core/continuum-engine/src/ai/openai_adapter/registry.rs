@@ -105,14 +105,6 @@ impl OpenAICompatibleAdapter {
             // (model_registry/catalog.rs), no id stand-ins here, and the ONE
             // `ToolProtocol` (#69) — stored verbatim, no per-adapter translation.
             tool_protocol: provider.capabilities.tool_protocol,
-            // A gateway that declares `suppress_thinking` (its forged reasoner
-            // rambles/loops yet answers correctly without CoT) defaults to
-            // SUPPRESS (the reasoning-strip still protects the room).
-            thinking: if provider.capabilities.suppress_thinking {
-                ThinkingMode::Suppress
-            } else {
-                ThinkingMode::Default
-            },
             single_resident_model: provider.capabilities.single_resident_model,
             dynamic_model_catalog: provider.capabilities.dynamic_model_catalog,
             llamacpp_sampling_extensions: provider.capabilities.llamacpp_sampling_extensions,

@@ -414,6 +414,8 @@ fn build_generate_params(
         "model": model_id,
         "provider": provider_id,
         "purpose": crate::inference::request_body::VISION_DESCRIPTION_PURPOSE,
+        // A description is all answer: its caller says no think (`request_body::apply_think`).
+        "think": crate::ai::types::ThinkBudget(0),
         "maxTokens": max_tokens,
         "temperature": 0.3,
     })
@@ -555,9 +557,9 @@ mod tests {
         assert_eq!(req.options.max_length, Some(120));
 
         // Regression: Kimi's 2026-09-30 capture succeeded but vision/look spent
-        // the entire completion allowance without description text. A description is
-        // dispatched under its own purpose, whose body never thinks (`request_body::finish_body`),
-        // so its whole allowance is the description.
+        // the entire completion allowance without description text. A description's caller
+        // says no think (a zero think term, `request_body::apply_think`), so its whole allowance
+        // is the description.
         for (max_length, allowance) in [(None, 500u64), (Some(120), 50), (Some(4000), 1000)] {
             let mut request = req.clone();
             request.options.max_length = max_length;
@@ -570,8 +572,10 @@ mod tests {
             assert_eq!(
                 params["purpose"].as_str(),
                 Some(crate::inference::request_body::VISION_DESCRIPTION_PURPOSE),
-                "dispatched as a description: its body never thinks"
+                "dispatched as a description"
             );
+            assert_eq!(params["think"], 0, "a description never thinks: its caller says so");
+            assert_eq!(serde_json::from_value::<crate::ai::types::ThinkBudget>(params["think"].clone()).ok(), Some(crate::ai::types::ThinkBudget(0)), "ai/generate reads it as its think term");
         }
     }
 

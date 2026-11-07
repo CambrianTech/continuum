@@ -210,13 +210,8 @@ pub struct ProviderCapabilities {
     /// How the endpoint exchanges tool calls. See [`ToolProtocol`].
     #[serde(default)]
     pub tool_protocol: ToolProtocol,
-    /// Suppress the model's chain-of-thought by default. Some local
-    /// reasoning GGUFs ramble/loop in their thinking (latency + the
-    /// runaway-leak failure mode) yet answer correctly without it; cloud
-    /// reasoning models manage their own and leave this `false`.
-    /// Default: `false` (keep thinking).
-    #[serde(default)]
-    pub suppress_thinking: bool,
+    // NOTE: thinking is NOT here. Whether a request thinks is its think term's alone
+    // (`DispatchTerms::think`, `inference::request_body::apply_think`), never a provider default.
     // NOTE: embedding + image-generation are NOT here. They're capability
     // FACTS of a MODEL, not behavioral traits of a provider — a provider
     // "supports embeddings" only because it serves a model that does. They

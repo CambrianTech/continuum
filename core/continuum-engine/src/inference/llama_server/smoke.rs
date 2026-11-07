@@ -180,17 +180,16 @@ pub(super) fn token_count_of(v: &serde_json::Value) -> Option<u64> {
 }
 
 /// PURE: the smoke request body at `cap`, pinned to `scratch` when the pool has one.
-/// Every attempt asks the engine for no reasoning phase (`enable_thinking: false` for a
-/// template that honours it, `reasoning_budget_tokens: 0` for one whose thinking the
-/// engine can close itself): a liveness probe needs an answer, not a thought.
+/// Every attempt asks the engine for no reasoning phase, through the one owner of a
+/// request's thinking (a zero think term, `request_body::apply_think`): a liveness probe
+/// needs an answer, not a thought.
 pub(super) fn smoke_body(cap: SmokeCap, scratch: Option<u32>) -> serde_json::Value {
     let mut body = serde_json::json!({
         "messages": [{ "role": "user", "content": smoke_prompt() }],
-        "chat_template_kwargs": { "enable_thinking": false },
-        "reasoning_budget_tokens": 0,
         "stream": false,
         "temperature": 0.0,
     });
+    crate::inference::request_body::apply_think(Some(crate::ai::types::ThinkBudget(0)), &mut body);
     if let Some(obj) = body.as_object_mut() {
         if let SmokeCap::Answer(max_tokens) = cap {
             obj.insert("max_tokens".to_string(), serde_json::json!(max_tokens));

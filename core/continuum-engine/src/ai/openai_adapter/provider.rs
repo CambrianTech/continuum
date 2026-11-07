@@ -3,9 +3,7 @@
 use super::embedding::{build_embedding_body, parse_embedding_response, parse_embedding_usage};
 use super::*;
 
-// `apply_no_think_switch` / `close_trailing_assistant` live in `crate::inference::request_body` (S3b decompose).
-
-// `apply_enable_thinking_false` lives in `crate::inference::request_body` (S3b decompose).
+// `close_trailing_assistant` lives in `crate::inference::request_body` (S3b decompose).
 
 #[async_trait]
 impl AIProviderAdapter for OpenAICompatibleAdapter {

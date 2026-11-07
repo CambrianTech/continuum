@@ -1,4 +1,4 @@
-//! Request body — the tail of chat-body assembly: the per-gateway thinking policy, the
+//! Request body — the tail of chat-body assembly: the request's thinking (its think term), the
 //! structured-output format, the native tool surface, and the wire-truth probe. Carved
 //! out of `openai_adapter::generate_stream` (pure code-motion, 2026-09-03, the S3b
 //! decompose). Behaviour-identical to the inline block. The head of assembly
@@ -6,29 +6,11 @@
 
 use serde_json::{json, Value};
 
-use crate::ai::openai_adapter::{OpenAICompatibleConfig, ThinkingMode};
+use crate::ai::openai_adapter::OpenAICompatibleConfig;
 use crate::ai::types::{ChatMessage, ContentPart, MessageContent, TextGenerationRequest, ToolChoice};
 use crate::model_registry::Capability;
 
-/// Set `chat_template_kwargs.enable_thinking = false` on a built request body — the
-/// ROBUST thinking-suppression lever for qwen3-family chat templates. Where
-/// `apply_no_think_switch` appends a soft text token (which a forged template may
-/// ignore entirely), this drives the template's own `enable_thinking` branch so it
-/// emits an empty `<think></think>` and the model goes straight to content. Inserting
-/// at the body's top level (not inside an existing kwargs map) is correct for the
-/// llama.cpp servers we target; idempotent — overwrites its own prior value.
-/// Harmless where unsupported: cloud providers ignore unknown body fields and a
-/// template without `enable_thinking` ignores the kwarg.
-pub(crate) fn apply_enable_thinking_false(body: &mut Value) {
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert(
-            "chat_template_kwargs".to_string(),
-            json!({ "enable_thinking": false }),
-        );
-    }
-}
-
-/// Finish `body` for the wire: thinking suppression, `response_format`, native tools +
+/// Finish `body` for the wire: the think term ([`apply_think`]), `response_format`, native tools +
 /// `tool_choice` (NativeFunctionCalling gateways only), then the tool-surface probe.
 /// The purpose a work (ACT) turn announces on its request; the faculty sets it
 /// when the hands surface is offered.
@@ -48,20 +30,33 @@ pub const FORK_DELIBERATION_PURPOSE: &str = "cognition/fork-deliberation";
 /// Keep it distinct from persona deliberation for routing and diagnostics.
 pub const VISION_DESCRIPTION_PURPOSE: &str = "cognition/vision-describe";
 
-/// Bound the reasoning channel at the budget the turn's caller sized, or leave it to the model.
-/// Returns the budget it applied.
+/// The ONE owner of a request's thinking: its think term (`DispatchTerms::think`) and nothing
+/// else. Returns the budget it applied.
 ///
-/// ONE owner of a think budget, the caller's MEASURED need (`DispatchTerms::reasoning_budget`: her
-/// grant past her measured answer, `llm_deliberation_faculty::act_room`), never a rule here. A
-/// fixed act budget of 1,024 stood here and never applied below a 1,024 cap, so a 72-89 token act
-/// cap was spent whole on the think and every act was cut at its first sentence (the M5,
-/// 2026-11-04, a95afe3d1: 302 of 414 acts); a quarter-of-the-allowance answer share stood beside
-/// it, a constant where her measured answer exists. A sensory description does not think at all
-/// (`finish_body`): its whole allowance is the answer.
-pub fn apply_reasoning_budget(requested: Option<crate::ai::types::ThinkBudget>, body: &mut Value) -> Option<u64> {
-    let budget = u64::from(requested?.0);
-    body.as_object_mut()?.insert("reasoning_budget_tokens".to_string(), json!(budget));
-    Some(budget)
+/// - `Some(ThinkBudget(n))`, `n > 0`: she thinks, bounded at `n` (`reasoning_budget_tokens`); the
+///   template's `enable_thinking` is left at its default, on.
+/// - `Some(ThinkBudget(0))`: the caller's explicit intent is no think. Both levers say it: the
+///   template's `enable_thinking = false` (it renders an empty think; `chat_template_kwargs` at the
+///   body's top level, ignored by a template without the branch and by cloud providers) and a zero
+///   budget for the fork's sampler.
+/// - `None`: no measured need; the model's own default.
+///
+/// The budget is the caller's MEASURED need (her grant past her measured answer,
+/// `llm_deliberation_faculty::act_room`), never a rule here. A fixed act budget of 1,024 stood here
+/// and spent a 72-89 token act cap whole on the think (the M5, 2026-11-04, a95afe3d1: 302 of 414
+/// acts cut at their first sentence). Nothing else turns thinking off: a `response_format` once
+/// did (any format, Text included), so a schema-bound request could never think although the
+/// fork's template wraps the schema in its reasoning rule and the budget sampler runs before the
+/// grammar (Cormac's probe, fork 0d7dda6ae, 2026-11-06: budget 40, a forced `</think>`, then
+/// schema-valid JSON); a gateway-wide suppression flag and a purpose match did too.
+pub fn apply_think(think: Option<crate::ai::types::ThinkBudget>, body: &mut Value) -> Option<u64> {
+    let budget = think?.0;
+    let obj = body.as_object_mut()?;
+    if budget == 0 {
+        obj.insert("chat_template_kwargs".to_string(), json!({ "enable_thinking": false }));
+    }
+    obj.insert("reasoning_budget_tokens".to_string(), json!(budget));
+    Some(u64::from(budget))
 }
 
 /// `tail_tools`: whether the engine this request is routed to takes our fork's `tail_tools`
@@ -79,31 +74,9 @@ pub(crate) fn finish_body(
     reasoning_budget: Option<crate::ai::types::ThinkBudget>,
     body: &mut Value,
 ) -> Result<(), crate::ai::inference_error::InferenceError> {
-    // Thinking suppression — the REAL lever for qwen3-family forged templates.
-    // When this gateway suppresses reasoning, the adapter already appends the
-    // `/no_think` soft-switch to the last user turn (build path above). But the
-    // forged qwen3.5 chat template implements `enable_thinking`, NOT the
-    // `/no_think` text token — so the soft-switch is a NO-OP for it, and absent
-    // the kwarg the template's default branch OPENS `<think>` itself, forcing the
-    // model to reason. Verified empirically 2026-06-27 on the CPU eval lane: the
-    // 4B forged model spent its whole ~90-token budget in the `reasoning` channel
-    // and emitted EMPTY `content` (`finish_reason: stop`), so every settled answer
-    // was blank and base/gene/lift were all 0.0 — a broken measurement, not a real
-    // null result. The chat-template hatch `enable_thinking=false` makes the
-    // template emit an empty `<think></think>` so the model goes straight to
-    // content. Set it for ALL turns under suppression (not only the JSON branch
-    // below, which is where it used to be misgated). Harmless where unsupported:
-    // cloud providers ignore unknown body fields; a template without
-    // `enable_thinking` ignores the kwarg. The `/no_think` switch is left in place
-    // for any template that DOES honor the soft token.
-    // A sensory description is an answer, never a think: its allowance is the description
-    // (a think-only description said nothing, the reason it once had a share of its own).
-    if cfg.thinking == ThinkingMode::Suppress || request.purpose.as_deref() == Some(VISION_DESCRIPTION_PURPOSE) {
-        apply_enable_thinking_false(body);
-    }
-    // The reasoning channel is bounded at what the turn's caller sized from her measured need
-    // (`DispatchTerms::reasoning_budget`), so the answer keeps its measured room.
-    if let Some(budget) = apply_reasoning_budget(reasoning_budget, body) {
+    // Her thinking is her think term's alone (`apply_think`): bounded at what her caller sized from
+    // her measured need, so the answer keeps its measured room.
+    if let Some(budget) = apply_think(reasoning_budget, body) {
         let budget_class = match request.purpose.as_deref() {
             Some(ACT_PURPOSE | FORK_ACT_PURPOSE) => "delib.act.reasoning_budgeted",
             Some(VISION_DESCRIPTION_PURPOSE) => "vision.description.reasoning_budgeted",
@@ -118,24 +91,12 @@ pub(crate) fn finish_body(
         );
     }
 
-    // Forward response_format when set. Llama.cpp/DMR DO grammar-constrain
-    // JSON output, but for qwen3.5 reasoning models the model still
-    // emits its <think> reasoning BEFORE the constrained JSON region,
-    // which is no help to a JSON parser. Verified empirically 2026-04-19:
-    // `response_format=json_object` alone returns "<think>\nThinking
-    // Process:..." with no JSON.
+    // The structured-output format, forwarded as given. It constrains the answer, never the
+    // think: the fork's template wraps the schema in its reasoning rule, so a format composes
+    // with any think budget (`apply_think`).
     if let Some(format) = &request.response_format {
         if let Ok(value) = serde_json::to_value(format) {
             body["response_format"] = value;
-
-            // qwen3-family-specific kicker: when caller asks for JSON,
-            // ALSO disable thinking via the chat_template_kwargs hatch.
-            // Verified the same model returns "<think></think>\n\n{...JSON...}"
-            // in 434ms with this flag set — empty think block, clean JSON,
-            // parser-friendly. Same lever the suppression path above uses, so
-            // it routes through the same helper (one place sets the kwarg).
-            // Idempotent if suppression already set it.
-            apply_enable_thinking_false(body);
         }
         // The completed body is encoded once at dispatch. Its size and native
         // surface are probed there; exact request inspection uses the capture
@@ -210,12 +171,6 @@ pub(crate) fn finish_body(
 
 // ── the head of assembly (carve 4): messages → base body ─────────────────────────
 
-/// Append Qwen3's `/no_think` soft-switch to the LAST user message in a built
-/// OpenAI message array, suppressing chain-of-thought for the turn (the model emits
-/// an empty `<think></think>` then answers directly — which [`extract_reasoning`]
-/// reduces to clean text + no reasoning). Operates on string content (chat turns);
-/// multimodal/array content is left untouched (a follow-up can append a text part).
-/// No user message → no-op.
 /// The OpenAI `tools` param for a set of tool specs. One mapping: serving sends it,
 /// and the engine trainer sends the same list so a lived turn renders with the tool
 /// block it was served with.
@@ -245,20 +200,6 @@ pub fn wire_tool_call(id: &str, name: &str, input: &Value) -> Value {
             "arguments": serde_json::to_string(input).unwrap_or_default() // OpenAI wire boundary: tool-call arguments travel as a JSON string
         }
     })
-}
-
-pub(crate) fn apply_no_think_switch(messages: &mut [Value]) {
-    for m in messages.iter_mut().rev() {
-        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
-            continue;
-        }
-        if let Some(content) = m.get_mut("content") {
-            if let Some(s) = content.as_str() {
-                *content = Value::String(format!("{s}\n/no_think"));
-            }
-        }
-        return;
-    }
 }
 
 /// Close a message thread that ENDS with an assistant turn — wire-illegal on
@@ -312,16 +253,9 @@ pub(crate) fn format_messages(
     audio_native: bool,
     view: Option<usize>,
 ) -> (Vec<Value>, Option<usize>) {
-    let (mut result, view_end) =
-        wire_messages_marking(messages, system_prompt, vision_native, audio_native, &cfg.provider_id, view);
-    // Thinking toggle: when this gateway suppresses reasoning, append Qwen3's
-    // `/no_think` soft-switch to the last user turn so the model skips its
-    // chain-of-thought and answers directly. Model-specific token, owned here at
-    // the adapter boundary; higher layers never speak `/no_think`.
-    if cfg.thinking == ThinkingMode::Suppress {
-        apply_no_think_switch(&mut result);
-    }
-    (result, view_end)
+    // Her thinking is never a text token in her messages: it is her think term's, on the body
+    // (`apply_think`), so the messages she was served are the messages she wrote.
+    wire_messages_marking(messages, system_prompt, vision_native, audio_native, &cfg.provider_id, view)
 }
 
 /// The wire messages for a request: the system prompt, then each message with its
@@ -687,34 +621,47 @@ mod tests {
     // what this catches: a think budget sized anywhere but by her caller's measured need. The one
     // seam applies exactly the budget it is given (an act's: her grant past her measured answer)
     // and none otherwise: no fixed act count (a 72-token cap spent whole on a 1,024 think), no
-    // quarter-share rule.
+    // quarter-share rule. Only a zero budget, the caller's explicit no-think, closes the template.
     #[test]
     fn the_think_budget_is_the_callers_measured_one_and_nothing_else() {
         let mut act = json!({ "model": "m", "max_tokens": 434 });
-        assert_eq!(apply_reasoning_budget(Some(crate::ai::types::ThinkBudget(338)), &mut act), Some(338));
+        assert_eq!(apply_think(Some(crate::ai::types::ThinkBudget(338)), &mut act), Some(338));
         assert_eq!(act["reasoning_budget_tokens"], json!(338));
+        assert!(act.get("chat_template_kwargs").is_none(), "a budget thinks");
         let mut closed = json!({ "model": "m", "max_tokens": 96 });
-        assert_eq!(apply_reasoning_budget(Some(crate::ai::types::ThinkBudget(0)), &mut closed), Some(0), "zero is a budget: no thinking");
+        assert_eq!(apply_think(Some(crate::ai::types::ThinkBudget(0)), &mut closed), Some(0), "zero is a budget: no thinking");
         assert_eq!(closed["reasoning_budget_tokens"], json!(0));
+        assert_eq!(closed["chat_template_kwargs"]["enable_thinking"], json!(false), "her caller said no think");
         let mut none = json!({ "model": "m", "max_tokens": 400 });
-        assert_eq!(apply_reasoning_budget(None, &mut none), None);
+        assert_eq!(apply_think(None, &mut none), None);
         assert!(none.get("reasoning_budget_tokens").is_none(), "no caller budget, no rule of its own");
+        assert!(none.get("chat_template_kwargs").is_none(), "no caller intent: the model's default");
     }
 
-    // what this catches: a sensory description spending its whole allowance thinking (Kimi's
-    // vision/look, 2026-09-30: no description text). Its body never thinks, on any gateway; a
-    // persona's turn on the same gateway keeps its thinking.
+    // what this catches: a side rule deciding her thinking (Cormac, fork 0d7dda6ae, 2026-11-06: ANY
+    // response_format, Text included, set `enable_thinking = false`, so a format-bound request
+    // never thought whatever budget it carried; a purpose match and a gateway flag did too). A
+    // JSON or Text request with a budget thinks within it; only her caller's zero turns it off,
+    // a sensory description's included.
     #[test]
-    fn a_description_never_thinks_and_a_turn_keeps_its_thinking() {
+    fn a_response_format_never_turns_her_thinking_off_only_her_think_term_does() {
+        use crate::ai::types::{ResponseFormat, ThinkBudget};
+        for format in [ResponseFormat::JsonObject, ResponseFormat::Text] {
+            let request = TextGenerationRequest { purpose: Some(ACT_PURPOSE.into()), response_format: Some(format.clone()), ..Default::default() };
+            let mut body = json!({ "model": "m", "max_tokens": 434 });
+            assert!(finish_body(&gateway(true), &request, "m", false, Some(ThinkBudget(40)), &mut body).is_ok());
+            assert!(body.get("chat_template_kwargs").is_none(), "{format:?}: the format constrains the answer, not the think");
+            assert_eq!(body["reasoning_budget_tokens"], json!(40), "{format:?}: at her budget");
+            assert!(body.get("response_format").is_some(), "{format:?}: forwarded");
+
+            let mut off = json!({ "model": "m", "max_tokens": 96 });
+            assert!(finish_body(&gateway(true), &request, "m", false, Some(ThinkBudget(0)), &mut off).is_ok());
+            assert_eq!(off["chat_template_kwargs"]["enable_thinking"], json!(false), "{format:?}: her caller said no think");
+        }
         let describe = TextGenerationRequest { purpose: Some(VISION_DESCRIPTION_PURPOSE.into()), ..Default::default() };
-        let mut body = json!({ "model": "m", "max_tokens": 50 });
-        assert!(finish_body(&gateway(true), &describe, "m", false, None, &mut body).is_ok());
-        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], json!(false), "the description is all answer");
-        let act = TextGenerationRequest { purpose: Some(ACT_PURPOSE.into()), ..Default::default() };
-        let mut body = json!({ "model": "m", "max_tokens": 434 });
-        assert!(finish_body(&gateway(true), &act, "m", false, Some(crate::ai::types::ThinkBudget(338)), &mut body).is_ok());
-        assert!(body.get("chat_template_kwargs").is_none(), "her turn thinks");
-        assert_eq!(body["reasoning_budget_tokens"], json!(338), "at her measured budget");
+        let mut unstated = json!({ "model": "m", "max_tokens": 50 });
+        assert!(finish_body(&gateway(true), &describe, "m", false, None, &mut unstated).is_ok());
+        assert!(unstated.get("chat_template_kwargs").is_none(), "a purpose is not a think term");
     }
 
     fn gateway(llamacpp: bool) -> OpenAICompatibleConfig {
@@ -729,7 +676,6 @@ mod tests {
             model_prefixes: Vec::new(),
             requires_auth: false,
             tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
-            thinking: ThinkingMode::Default,
             single_resident_model: false,
             dynamic_model_catalog: false,
             llamacpp_sampling_extensions: llamacpp,

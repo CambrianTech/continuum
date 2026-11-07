@@ -299,62 +299,6 @@ fn trailing_assistant_thread_is_closed_with_continuation_fact() {
     assert_eq!(system_final.len(), 2, "system-final thread unchanged");
 }
 
-// what this catches: the thinking toggle's mechanism — `/no_think` is appended
-// to the LAST user message (Qwen3 soft-switch), not the system or an earlier
-// turn. Verified live: this makes the model emit an empty think block + a direct
-// answer (which extract_reasoning reduces to clean text).
-#[test]
-fn apply_no_think_switch_targets_last_user_message() {
-    let mut msgs = vec![
-        json!({"role": "system", "content": "be helpful"}),
-        json!({"role": "user", "content": "earlier turn"}),
-        json!({"role": "assistant", "content": "earlier reply"}),
-        json!({"role": "user", "content": "what is 2+2?"}),
-    ];
-    apply_no_think_switch(&mut msgs);
-    assert_eq!(msgs[3]["content"], json!("what is 2+2?\n/no_think"));
-    // earlier user turn + system untouched
-    assert_eq!(msgs[1]["content"], json!("earlier turn"));
-    assert_eq!(msgs[0]["content"], json!("be helpful"));
-}
-
-// what this catches: no user message → no-op (never corrupts a system-only or
-// tool-only message array).
-#[test]
-fn apply_no_think_switch_noop_without_user() {
-    let mut msgs = vec![json!({"role": "system", "content": "be helpful"})];
-    apply_no_think_switch(&mut msgs);
-    assert_eq!(
-        msgs[0]["content"],
-        json!("be helpful"),
-        "no user turn → unchanged"
-    );
-}
-
-// what this catches: the ROBUST thinking-suppression lever — under
-// ThinkingMode::Suppress the request body must carry
-// `chat_template_kwargs.enable_thinking=false` on EVERY turn, not only JSON
-// (response_format) turns. Regresses the 2026-06-27 misgating where the kwarg
-// lived solely in the response_format branch, so free-form act/speak turns let
-// the forged qwen3.5 template open `<think>` and emit empty content (all eval
-// answers blank, lift=0.0). Idempotent: a second apply leaves the same value.
-#[test]
-fn apply_enable_thinking_false_sets_kwarg_idempotently() {
-    let mut body = json!({ "model": "m", "messages": [], "stream": true });
-    apply_enable_thinking_false(&mut body);
-    assert_eq!(
-        body["chat_template_kwargs"],
-        json!({ "enable_thinking": false }),
-        "suppression must set the template hatch the forged template honors"
-    );
-    // second apply is a no-op on the value (overwrites identically)
-    apply_enable_thinking_false(&mut body);
-    assert_eq!(
-        body["chat_template_kwargs"],
-        json!({ "enable_thinking": false })
-    );
-}
-
 // what this catches: a single string input serializes as a JSON string (not
 // a 1-element array) and the resolved model is carried through — the request
 // shape OpenAI actually expects.

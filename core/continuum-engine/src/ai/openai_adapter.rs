@@ -40,25 +40,6 @@ use super::types::{
 /// — no hand-written literals. Fields that the registry doesn't know
 /// about (HTTP concerns — auth shape, Authorization header requirement)
 /// are derived from `Provider.auth`, not separately configured.
-/// Per-gateway thinking policy for reasoning models. The gateway can't always
-/// honor `chat_template_kwargs.enable_thinking` (verified: llama.cpp
-/// ignores it for this forged model), but Qwen3's `/no_think` SOFT-SWITCH in the
-/// message works — the model emits an empty `<think></think>` then answers
-/// directly. This is the model-specific knob the adapter owns (same boundary as
-/// reasoning separation); higher layers express a model-agnostic intent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ThinkingMode {
-    /// Leave the model at its default — reasoning models think every turn. Output
-    /// is still reasoning-stripped by [`extract_reasoning`] (the safety net).
-    #[default]
-    Default,
-    /// Suppress chain-of-thought via the model's soft-switch. Faster turns, and the
-    /// runaway-loop failure mode can't happen (no reasoning is generated). For a
-    /// small reasoning model whose "thinking" tends to ramble, this is usually the
-    /// better default; a task that genuinely needs deliberation re-enables it.
-    Suppress,
-}
-
 #[derive(Debug, Clone)]
 pub struct OpenAICompatibleConfig {
     pub provider_id: String,
@@ -87,11 +68,6 @@ pub struct OpenAICompatibleConfig {
     /// never a per-adapter mirror. Gateway-level for now; per-model refinement
     /// is the follow-up.
     pub tool_protocol: crate::model_registry::ToolProtocol,
-    /// Whether to suppress the model's chain-of-thought for this gateway (Qwen3
-    /// `/no_think` soft-switch). Sourced from `Provider.capabilities
-    /// .suppress_thinking` (#55). Gateway-level for now; per-task/per-request
-    /// refinement is the follow-up.
-    pub thinking: ThinkingMode,
     /// This endpoint serves ONE resident model and ignores the request's
     /// `model` field, so the adapter must pre-flight model activation before
     /// each generation. From `Provider.capabilities.single_resident_model`
