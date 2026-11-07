@@ -155,6 +155,8 @@ fn claims(act: &Act, reply_need: u32, price: ContextPrice) -> ActClaims {
         reply: FlexClaim { source_id: id::REPLY.into(), priority: if acting { 10 } else { 4 }, floor_tokens: reply_need, min_tokens: reply_need, max_tokens: want.max(reply_need), required: true },
         view,
         price,
+        // A capture does not carry the model row: the dyno bounds her need by her grant.
+        trained: continuum_context::allocation::TrainedContext::Unreported,
     }
 }
 

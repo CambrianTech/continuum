@@ -118,10 +118,10 @@ fn sources_survive_at_their_first_unit_when_budget_wont_fit_their_appetite() {
     }
 }
 
-// what this catches: a lane need learned from the GRANT, which the flexbox grows to any window,
-// so the need tracked the window and refused every extra lane (the M5, 10-18).
+// what this catches: a flexbox that grants a claim less than its floor on a window that holds
+// every floor, and a floor sum that wraps instead of saturating.
 #[test]
-fn a_turns_need_is_its_floors_however_much_the_window_granted() {
+fn a_window_that_holds_the_floors_grants_at_least_them() {
     let claim = |id: &str, floor: u32, max: u32| FlexClaim {
         source_id: id.into(),
         priority: 5,
@@ -131,10 +131,10 @@ fn a_turns_need_is_its_floors_however_much_the_window_granted() {
         required: false,
     };
     let claims = [claim("required", 9_000, 9_000), claim("history", 4_000, 60_000), claim("reply", 2_000, 16_000)];
-    assert_eq!(turn_need(&claims), 15_000);
+    assert_eq!(floors(&claims), 15_000);
     for window in [20_000, 102_912] {
         let granted: u32 = ["required", "history", "reply"].iter().map(|id| flex_allocate(window, &claims).granted(id)).sum();
-        assert!(granted >= turn_need(&claims), "a window that holds the floors grants at least them");
+        assert!(granted >= floors(&claims), "a window that holds the floors grants at least them");
     }
-    assert_eq!(turn_need(&[claim("a", u32::MAX, u32::MAX), claim("b", 1, 1)]), u32::MAX, "saturates, never wraps");
+    assert_eq!(floors(&[claim("a", u32::MAX, u32::MAX), claim("b", 1, 1)]), u32::MAX, "saturates, never wraps");
 }

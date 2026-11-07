@@ -1,5 +1,5 @@
 use super::*;
-use crate::allocation::{allocate, Head, Leveled, Rungs, Span, ViewClaim};
+use crate::allocation::{allocate, ActNeed, Head, Leveled, NeedWindow, Rungs, Span, TrainedContext, ViewClaim};
 use crate::flex::FlexClaim;
 use crate::price::Line;
 
@@ -57,6 +57,7 @@ fn act(newest: &[u32], price: ContextPrice) -> ActClaims {
             source("results", 5, 800, 100_000, Consumer::Context),
         ],
         price,
+        trained: TrainedContext::Unreported,
     }
 }
 
@@ -100,7 +101,7 @@ fn the_price_never_chooses_outside_the_measured_contexts() {
     let before = allocate(window, act(&[6_000, 600], ContextPrice::Unmeasured));
     let unmeasured_there = allocate(window, act(&[6_000, 600], ContextPrice::Measured(m5_over(low))));
     assert_eq!(unmeasured_there.priced, Priced::OutsideMeasured { measured: low });
-    assert_eq!(ActPlan { priced: Priced::Unmeasured, ..unmeasured_there }, before, "planned as before");
+    assert_eq!(ActPlan { priced: Priced::Unmeasured, need: ActNeed::Unpriced, ..unmeasured_there }, before, "planned as before");
 }
 
 // what this catches (the dyno on #5822: the price took her tool schemas to their names, a help
@@ -122,7 +123,7 @@ fn what_she_acts_through_is_never_priced_below_its_summary() {
     let before = allocate(tight, act(&[6_000, 600], ContextPrice::Unmeasured));
     let binds = allocate(tight, act(&[6_000, 600], m5()));
     assert_eq!(binds.priced, Priced::WindowBinds);
-    assert_eq!(ActPlan { priced: Priced::Unmeasured, ..binds }, before);
+    assert_eq!(ActPlan { priced: Priced::Unmeasured, need: ActNeed::Unpriced, ..binds }, before);
 }
 
 // what this catches: the price changing a plan whose window binds first. A window no larger than
@@ -134,7 +135,7 @@ fn a_small_window_plans_as_before() {
         let before = allocate(window, act(&[6_000, 600], ContextPrice::Unmeasured));
         let priced = allocate(window, act(&[6_000, 600], m5()));
         assert_eq!(priced.priced, Priced::WindowBinds, "{window}");
-        assert_eq!(ActPlan { priced: Priced::Unmeasured, ..priced }, before, "{window}");
+        assert_eq!(ActPlan { priced: Priced::Unmeasured, need: ActNeed::Unpriced, ..priced }, before, "{window}");
     }
 }
 
@@ -166,4 +167,73 @@ fn a_cheaper_context_holds_more() {
     let cheap = ContextPrice::Measured(ActTime { decode: tenth(m5_time.decode), prefill: tenth(m5_time.prefill), fresh: tenth(m5_time.fresh), ..m5_time });
     let (dear, cheaper) = (held_at(m5()), held_at(cheap));
     assert!(cheaper > dear, "a tenth of the price holds {cheaper}, the M5's {dear}");
+}
+
+/// Qwen3.6-35B-A3B's trained context, the model the M5 serves.
+fn trained() -> TrainedContext {
+    TrainedContext::Reported(std::num::NonZeroU32::new(262_144).expect("test: nonzero")) // JUSTIFIED: test fixture
+}
+
+/// The act above on the M5's model, her view's conversation wanting `overflow` uncollapsed.
+fn overflowing(overflow: u32, price: ContextPrice) -> ActClaims {
+    let mut claims = act(&[6_000, 600], price);
+    claims.trained = trained();
+    for view in claims.view.iter_mut().filter(|view| view.claim.source_id == format!("{}conversation", id::VIEW)) {
+        view.claim.max_tokens = overflow;
+    }
+    claims
+}
+
+fn need_tokens(need: ActNeed) -> Option<u32> {
+    match need {
+        ActNeed::Chosen(window) | ActNeed::Censored(window) => Some(window.tokens()),
+        ActNeed::Unpriced | ActNeed::BeyondTrained(_) => None,
+    }
+}
+
+// what this catches (the M5, 2026-11-07 16:21Z, `grid.mind.unservable`: Aiko's need read 902,158 on
+// a 262,144-token model and the grid's demand 23.6M): her need recorded as the window plus what her
+// view lacked UNCOLLAPSED (whole files, folded navigation). A view whose uncollapsed overflow is
+// 900k records her need at the priced point, the window her act held, never above the trained
+// context.
+#[test]
+fn a_900k_overflow_records_her_need_at_the_priced_point_never_above_the_trained_context() {
+    let window = 262_144;
+    let plan = allocate(window, overflowing(900_000, m5()));
+    let wanted: u32 = plan.claims().iter().map(|claim| claim.max_tokens).fold(0, u32::saturating_add);
+    assert!(wanted > 900_000, "the uncollapsed view the old need recorded: {wanted}");
+    let Priced::Held { held, .. } = plan.priced else { panic!("a measured act time holds a priced window: {:?}", plan.priced) };
+    assert_eq!(plan.need, ActNeed::Chosen(NeedWindow::within(held, trained()).expect("test: within")), "her need is the window the price chose"); // JUSTIFIED: test fixture
+    assert!(held < window, "the priced point is inside her grant: {held}");
+}
+
+// what this catches: a grant that censors her need recording the grant (her need could then never
+// rise past it) or the uncollapsed overflow (900k). When the priced point lies past her grant, her
+// need is that point as a lower bound: past the grant, never past the trained context.
+#[test]
+fn a_grant_below_the_priced_point_records_that_point_censored() {
+    let free = allocate(262_144, overflowing(900_000, m5()));
+    let point = need_tokens(free.need).expect("the free act has a priced need"); // JUSTIFIED: test fixture
+    // Between what she must hold and the priced point: the price wants more than her grant.
+    let window = (least(&choosable(&overflowing(900_000, m5()))) + point) / 2;
+    let censored = allocate(window, overflowing(900_000, m5()));
+    let ActNeed::Censored(need) = censored.need else { panic!("a grant below the priced point censors her need: {:?}", censored.need) };
+    assert!(need.tokens() > window && need.tokens() <= 262_144, "past her grant of {window}, inside the trained context: {}", need.tokens());
+    assert!(need.tokens().abs_diff(point) <= point / 50, "the same peak the free act chose ({point}): {}", need.tokens());
+    let mut unreported = overflowing(900_000, m5());
+    unreported.trained = TrainedContext::Unreported;
+    assert_eq!(allocate(window, unreported).need, ActNeed::Censored(NeedWindow::within(window, TrainedContext::Unreported).expect("test: within")), "an unreported model leaves her grant as the bound"); // JUSTIFIED: test fixture
+}
+
+// what this catches: a need that no lane of the model can hold being recorded as a size, or a
+// need invented where no price was measured. What she must hold past the trained context is the
+// typed defect; an unmeasured act time records no need at all.
+#[test]
+fn a_need_past_the_trained_context_is_a_defect_and_an_unmeasured_price_records_none() {
+    let mut small = act(&[6_000, 600], m5());
+    small.trained = TrainedContext::Reported(std::num::NonZeroU32::new(12_000).expect("test: nonzero")); // JUSTIFIED: test fixture
+    let binds = allocate(12_000, small);
+    assert_eq!(binds.priced, Priced::WindowBinds);
+    assert!(matches!(binds.need, ActNeed::BeyondTrained(beyond) if beyond.needed > 12_000), "{:?}", binds.need);
+    assert_eq!(allocate(262_144, overflowing(900_000, ContextPrice::Unmeasured)).need, ActNeed::Unpriced);
 }

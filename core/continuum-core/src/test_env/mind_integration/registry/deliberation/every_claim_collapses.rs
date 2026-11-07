@@ -89,6 +89,7 @@ fn as_canary_priced(view: &DeliberationPromptView) -> ActClaims {
         reply: continuum_context::flex::FlexClaim { source_id: id::REPLY.into(), priority: reply.priority, floor_tokens: reply.floor, min_tokens: reply.floor, max_tokens: reply.want, required: true },
         view: view_claims,
         price: continuum_context::price::ContextPrice::Unmeasured,
+        trained: continuum_context::allocation::TrainedContext::Unreported,
     }
 }
 

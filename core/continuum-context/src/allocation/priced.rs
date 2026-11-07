@@ -34,8 +34,13 @@
 //! token, each probe one plan ([`super::plan_at`]: microseconds; ~2 ms an act). The served window
 //! is a candidate too wherever it is measured, so the answer is never below the window as before
 //! in value per second there.
+//!
+//! The same search names her need ([`super::need`]): the window it chose. When the choice is the
+//! top of the served window, the peak may lie past it, so the search continues above the window up
+//! to the model's trained context (inside the measured contexts): a peak found there is her need,
+//! censored by her grant. A window no larger than what she must hold is censored at that least.
 
-use super::{hard_limits, id, plan_at, ActClaims, ActPlan, Consumer, Head};
+use super::{hard_limits, id, plan_at, ActClaims, ActNeed, ActPlan, Consumer, Head, TrainedContext};
 use crate::price::{ActTime, ContextPrice};
 
 /// What the time price of context decided for one act.
@@ -115,15 +120,41 @@ fn rate(plan: &ActPlan, least_value: f64, time: &ActTime) -> Option<f64> {
     (seconds > 0.0).then(|| (value - least_value) / seconds)
 }
 
-/// The plan of one act: at the window where her value per second peaks within `window`.
+/// The window in `[low, high]` where `probe`'s rate peaks, by ternary search to within two tokens
+/// and then every window left: its rate and plan (`NEG_INFINITY` and `None` when no window there
+/// has a rate).
+fn peak(low: u32, high: u32, probe: impl Fn(u32) -> (f64, ActPlan)) -> (f64, Option<ActPlan>) {
+    let (mut low, mut high) = (low, high);
+    while high - low > 2 {
+        let third = (high - low) / 3;
+        let (m1, m2) = (low + third, high - third);
+        if probe(m1).0 < probe(m2).0 {
+            low = m1;
+        } else {
+            high = m2;
+        }
+    }
+    let mut best = (f64::NEG_INFINITY, None);
+    for (rate, candidate) in (low..=high).map(&probe) {
+        if rate > best.0 {
+            best = (rate, Some(candidate));
+        }
+    }
+    best
+}
+
+/// The plan of one act: at the window where her value per second peaks within `window`, with her
+/// need the window that peak chose ([`ActNeed`]).
 pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
     let ContextPrice::Measured(time) = claims.price else {
         return plan_at(window, claims);
     };
+    let trained = claims.trained;
     let priced_claims = choosable(&claims);
     let floor = least(&priced_claims);
     if floor >= window {
-        return ActPlan { priced: Priced::WindowBinds, ..plan_at(window, claims) };
+        // What she must hold fills her grant: her need is at least it.
+        return ActPlan { priced: Priced::WindowBinds, need: ActNeed::at(floor, true, trained), ..plan_at(window, claims) };
     }
     let measured = time.measured();
     let served = plan_at(window, claims.clone());
@@ -142,21 +173,11 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
         let plan = plan_at(w, priced_claims.clone());
         (rate(&plan, least_value, &time).unwrap_or(f64::NEG_INFINITY), plan) // unwrap_or: a window with no rate (outside the measured contexts) is never the peak
     };
-    let (mut low, mut high) = (lo, hi);
-    while high - low > 2 {
-        let third = (high - low) / 3;
-        let (m1, m2) = (low + third, high - third);
-        if probe(m1).0 < probe(m2).0 {
-            low = m1;
-        } else {
-            high = m2;
-        }
-    }
     // The served window is a candidate too wherever it is measured: the answer is then never
     // below the window as before.
     let at_window = rate(&served, least_value, &time);
     let (mut best, mut plan) = (at_window.unwrap_or(f64::NEG_INFINITY), served.clone()); // unwrap_or: an unmeasured served window competes with nothing
-    for (rate, candidate) in (low..=high).map(probe) {
+    if let (rate, Some(candidate)) = peak(lo, hi, probe) {
         if rate > best {
             (best, plan) = (rate, candidate);
         }
@@ -164,6 +185,7 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
     if !best.is_finite() {
         return outside;
     }
+    let need = need_past(window, &plan, best, beyond(window, &time, &claims), &probe, trained);
     let priced = Priced::Held {
         held: plan.window,
         seconds: time.seconds(f64::from(held_context(&plan))),
@@ -171,8 +193,47 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
         at_window: at_window.map(|rate| (time.seconds(f64::from(held_context(&served))), rate)),
         measured,
     };
-    // The hard limits a receipt and her need read are her claims' own, never the price's floor.
-    ActPlan { priced, limits: served.limits, hard_limits: served.hard_limits, ..plan }
+    // The hard limits a receipt and her irreducible window read are her claims' own, never the
+    // price's floor.
+    ActPlan { priced, need, limits: served.limits, hard_limits: served.hard_limits, ..plan }
+}
+
+/// The windows past `window` her need may reach: above the served window, up to the largest
+/// measured context with her reply's want and never past the model's trained context. `None` when
+/// that range is empty, or the trained context is unreported (her need then stops at her grant,
+/// censored).
+fn beyond(window: u32, time: &ActTime, claims: &ActClaims) -> Option<(u32, u32)> {
+    let TrainedContext::Reported(trained) = claims.trained else {
+        return None;
+    };
+    let high = trained.get().min(time.measured().1.saturating_add(claims.reply.max_tokens));
+    (high > window).then_some((window.saturating_add(1), high))
+}
+
+/// Her need from the plan the price chose (`plan`, at rate `best`): that window, unless the choice
+/// is the top of her grant, where the peak may lie past it. Then the search continues over
+/// `beyond` (the windows past her grant): a higher rate there is her need, censored by the grant;
+/// none is the grant itself. An unreported trained context leaves the grant as a lower bound.
+fn need_past(
+    window: u32,
+    plan: &ActPlan,
+    best: f64,
+    beyond: Option<(u32, u32)>,
+    probe: &impl Fn(u32) -> (f64, ActPlan),
+    trained: TrainedContext,
+) -> ActNeed {
+    // Within the ternary search's resolution of the top: the peak may lie at or past the grant.
+    let at_top = plan.window.saturating_add(2) >= window;
+    if !at_top {
+        return ActNeed::at(plan.window, false, trained);
+    }
+    if trained == TrainedContext::Unreported {
+        return ActNeed::at(window, true, trained);
+    }
+    match beyond.map(|(low, high)| peak(low, high, probe)) {
+        Some((rate, Some(past))) if rate > best => ActNeed::at(past.window, true, trained),
+        _ => ActNeed::at(plan.window, false, trained),
+    }
 }
 
 #[cfg(test)]
