@@ -276,15 +276,15 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     // Her view carries the inventory whole while the window holds it; nothing collapses at
     // fit time any more (her view collapses at an epoch start, `prompt/epoch.rs`).
     let roomy = faculty.messages_unfitted(&ws, None);
-    let full_cost = roomy.required_tokens() + LlmDeliberationFaculty::messages_cost(&roomy.history);
+    let full_cost = roomy.required_tokens() + PromptCalibration::default().estimate_all(&roomy.history);
     let roomy = faculty.fit_messages(roomy, full_cost).unwrap();
     assert!(roomy.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
     // Exact-refusal correction reuses saved alternatives and keeps the
     // entire required native batch, without re-reading working memory.
-    let estimate = LlmDeliberationFaculty::messages_cost(&roomy.messages);
+    let estimate = PromptCalibration::default().estimate_all(&roomy.messages);
     let snapshot = DeliberationPromptView {
         refit: roomy.refit, system: String::new(), input_identity: [0; 32],
-        estimated_prompt_tokens: estimate, completion_reserve: 0,
+        estimated_prompt_tokens: estimate, pricing: PromptCalibration::default(), completion_reserve: 0,
         capacity_error: None, budget_fault: None, protocol_error: None, segments: Vec::new(),
         newest_result_reduced: false, newest_result_tokens: 0, allocation: None,
         messages: roomy.messages, tools: crate::cognition::tool_surface::SelectedSurface::none(), tools_grant: 0,
@@ -475,7 +475,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     let view = faculty.prompt_view(&ws);
     let reserve = view.completion_reserve as usize;
     let prompt =
-        estimate_guard_tokens(&view.system) + LlmDeliberationFaculty::messages_cost(&view.messages);
+        estimate_guard_tokens(&view.system) + PromptCalibration::default().estimate_all(&view.messages);
 
     // This assertion used to demand that framing + the FULL tool surface + the
     // reply reserve all fit an 8192 window. That is arithmetically impossible and

@@ -43,7 +43,7 @@ fn a_view_start_keeps_its_token_grant_with_uneven_message_sizes() {
             start_grants(claims, &plan, granted as usize, None).expect("funded optional source")
         }).expect("matching source grants");
         let rendered: Vec<_> = view.render().map(ContextMessage::to_chat).collect();
-        let actual = LlmDeliberationFaculty::messages_cost(&rendered);
+        let actual = PromptCalibration::default().estimate_all(&rendered);
         assert!(actual <= granted as usize, "start rendered {actual} tokens against grant {granted}");
     }
 }
@@ -255,7 +255,7 @@ fn a_measured_depth_never_starts_her_under_her_newest_item() {
 /// A conversation of `old` long turns then `newest` short ones (`long` and `short` are their
 /// lines), started under [`start_grants`] with `grant` tokens and a floor of 0 (a turn leaves her
 /// view when collapsed), its want the actual messages' cost. What the start renders, charged by
-/// the final prompt's own cost ([`LlmDeliberationFaculty::messages_cost`]), and how many messages.
+/// the final prompt's own cost ([`PromptCalibration::estimate_all`]), and how many messages.
 fn started_conversation(old: usize, long: &str, newest: usize, short: &str, grant: u32) -> (usize, usize) {
     let turns: Vec<Turn> = (0..old)
         .map(|n| (n, long))
@@ -272,7 +272,7 @@ fn started_conversation(old: usize, long: &str, newest: usize, short: &str, gran
             allocated_tokens: grant,
             requested_floor: 0,
             requested_min: 0,
-            requested_max: LlmDeliberationFaculty::clamp_u32(LlmDeliberationFaculty::messages_cost(&messages)),
+            requested_max: LlmDeliberationFaculty::clamp_u32(PromptCalibration::default().estimate_all(&messages)),
             required: false,
             state: continuum_context::flex::AllocationState::FloorOnly,
         }],
@@ -284,7 +284,7 @@ fn started_conversation(old: usize, long: &str, newest: usize, short: &str, gran
     let sized = |claims: &[Claim]| start_grants(claims, &plan, grant as usize, None).expect("an optional source is never refused");
     let (view, _) = View::start(&AllocationEstimate::uncalibrated(), Vec::new(), &sources, sized).expect("test: one grant per source");
     let rendered: Vec<ChatMessage> = view.render().map(ContextMessage::to_chat).collect();
-    (LlmDeliberationFaculty::messages_cost(&rendered), rendered.len())
+    (PromptCalibration::default().estimate_all(&rendered), rendered.len())
 }
 
 // what this catches: Codex's defect (`a_view_start_keeps_its_token_grant_with_uneven_message_sizes`
@@ -366,4 +366,48 @@ fn a_view_start_keeps_its_token_grant_with_the_measured_template_overhead() {
         assert!(estimated <= granted as usize, "start estimated at {estimated} tokens in {kept} turns against grant {granted}");
         assert!(kept * engine_ok_turn <= estimated, "the estimate errs high: {kept} turns the engine counts at {}", kept * engine_ok_turn);
     }
+}
+
+// what this catches: two prices for one message. Her view's start priced each block by her
+// allocation estimate (text plus the measured template share) while the final fit and a refusal's
+// refit priced text alone, so the fit read a start that kept its grant as under it, and the refit
+// reduced against a different number than the start kept within. All three price through
+// `PromptCalibration::estimate` now: a multi-role sequence (a user turn, a native call, its result,
+// an assistant turn, a CJK user turn) costs the same to the view's start and to the final fit.
+#[test]
+fn the_final_fit_and_a_view_start_price_a_multi_role_sequence_identically() {
+    use continuum_context::cost::Estimate;
+    let pricing = PromptCalibration::default().with_template(super::super::template::TemplateEstimate::from_measurement(&super::super::template::recorded_qwen36()));
+    let call = ChatMessage {
+        role: "assistant".into(),
+        content: crate::ai::types::MessageContent::Parts(vec![crate::ai::types::ContentPart::ToolUse { id: "c1".into(), name: "code_read".into(), input: serde_json::json!({ "path": "main.rs" }) }]),
+        name: None,
+    };
+    let sequence = vec![
+        ChatMessage::text("user", "Read main.rs please."),
+        call,
+        ChatMessage::tool_result("c1", "fn main() {\n    println!(\"hi\");\n}\n", false),
+        ChatMessage::text("assistant", "It prints hi."),
+        ChatMessage::text("user", "了解しました。次は？"),
+    ];
+    let view_price: usize = sequence
+        .iter()
+        .map(|message| AllocationEstimate(pricing).block(&ContextMessage::from_chat(message).expect("test: a message her view holds")))
+        .sum();
+    let faculty = LlmDeliberationFaculty::new(uuid::Uuid::new_v4(), "T", "You are T.", std::sync::Arc::new(crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new()));
+    let prompt = PromptMessages {
+        streams: Default::default(),
+        result_pointers: Vec::new(),
+        input_identity: [0; 32],
+        grounding_at: 0,
+        history: sequence.clone(),
+        stimulus: None,
+        latest_result: Vec::new(),
+        action_statement: None,
+        pricing,
+    };
+    let fitted = faculty.fit_messages(prompt, view_price).expect("test: a budget of the sequence's own price holds it");
+    assert_eq!(fitted.receipt.history_tokens, view_price, "the final fit prices the sequence as her view's start does");
+    assert_eq!(fitted.receipt.dropped_messages, 0, "so a budget of the view's price keeps all of it");
+    assert!(view_price > PromptCalibration::default().estimate_all(&sequence), "precondition: the measured template adds to text alone");
 }

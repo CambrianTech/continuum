@@ -3,7 +3,7 @@ use super::*;
 /// Calibration from one authoritative provider observation. This scales the
 /// CURRENT prompt estimate; a large request's absolute excess is never charged
 /// to every later small request. It remains an estimate, not a tokenizer proof.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct PromptCalibration {
     pub(in super::super) estimated: std::num::NonZeroUsize,
     pub(in super::super) measured: std::num::NonZeroU32,
@@ -83,12 +83,19 @@ impl PromptCalibration {
     /// ([`super::template::TemplateEstimate`]). Unmeasured, the text estimate stands as it is: her
     /// density carries the template inside its ratio, which is what pricing at density alone means.
     /// An estimate that errs high, never an exact count (the engine's quote is the authority).
-    pub(in super::super) fn estimate(self, message: &ChatMessage) -> usize {
+    /// The ONE price of a message: her view's start (`epoch/allocation_estimate.rs`), the final fit
+    /// and a refusal's refit all charge through it.
+    pub fn estimate(self, message: &ChatMessage) -> usize {
         let text = LlmDeliberationFaculty::message_cost(message);
         match self.template.around(message) {
             Some(template) => text.saturating_add(template),
             None => text,
         }
+    }
+
+    /// `messages`' estimate for allocation: each at [`Self::estimate`].
+    pub fn estimate_all(self, messages: &[ChatMessage]) -> usize {
+        messages.iter().map(|message| self.estimate(message)).sum()
     }
 
     /// The system message's estimate for allocation ([`Self::estimate`] of a system message).
@@ -297,6 +304,9 @@ pub struct PromptMessages {
     pub latest_result: Vec<ChatMessage>,
     /// Public action text retains assistant provenance and required-input pricing.
     pub(in super::super) action_statement: Option<ChatMessage>,
+    /// How every message here is estimated ([`PromptCalibration::estimate`]): the same owner her
+    /// view's start, the final fit and a refusal's refit price with.
+    pub(in super::super) pricing: PromptCalibration,
 }
 
 /// Her OWN most recent move and its outcome, priced — the SUFFIX of the optional history
@@ -437,12 +447,12 @@ impl PromptMessages {
             messages: history.len() - idx,
             tokens: history[idx..]
                 .iter()
-                .map(LlmDeliberationFaculty::message_cost)
+                .map(|message| self.pricing.estimate(message))
                 .sum(),
             truncated,
             largest_message: history[idx..]
                 .iter()
-                .map(LlmDeliberationFaculty::message_cost)
+                .map(|message| self.pricing.estimate(message))
                 .max()
                 .unwrap_or(0), // unwrap_or: the span is non-empty by construction here; 0 is unreachable
         }
@@ -482,7 +492,7 @@ impl PromptMessages {
     /// before it cleared; nothing said what the 105k was).
     pub fn required_parts(&self) -> RequiredParts {
         let cost = |messages: &mut dyn Iterator<Item = &ChatMessage>| -> usize {
-            messages.map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message))).sum()
+            messages.map(|message| self.pricing.estimate(message)).sum()
         };
         RequiredParts {
             stimulus: cost(&mut self.stimulus.iter()),
@@ -493,7 +503,7 @@ impl PromptMessages {
     }
 
     pub fn tokens(&self) -> usize {
-        LlmDeliberationFaculty::messages_cost(&self.history) + self.required_tokens()
+        self.pricing.estimate_all(&self.history) + self.required_tokens()
     }
 }
 
@@ -571,6 +581,9 @@ pub struct DeliberationPromptView {
     pub input_identity: [u8; 32],
     /// Cached pre-calibration cost, including selected schemas and framing.
     pub estimated_prompt_tokens: usize,
+    /// How its messages were estimated (`PromptCalibration::estimate`): a refusal's refit prices
+    /// with the same owner.
+    pub pricing: PromptCalibration,
     /// Her reply's grant in the one allocation: her measured need (no cap). Charged against the
     /// window here, so her view is sized beside it. A pass carries it verbatim as the wire
     /// request's `max_tokens`; an act carries the room its prompt leaves, never less than this

@@ -183,6 +183,8 @@ impl LlmDeliberationFaculty {
 
         let input_identity = all_messages.input_identity;
         let calibration = calibration.for_input(input_identity);
+        // One price for every message of this act: her view's start, the fit and a refit.
+        all_messages.pricing = calibration;
         // Her view already carries every block that rides the conversation. Measured BEFORE her
         // newest result is levelled: demand is the sum of wants (FOCUS-CONTRACT rule 5), so a
         // result shown at a smaller level still asks for its whole, or the window never grows for it.
@@ -225,11 +227,11 @@ impl LlmDeliberationFaculty {
         // demoted payloads) is the optional `history` claim and sheds first. Her view's sources
         // claim for themselves.
         let evidence = all_messages.recent_move_evidence();
-        let view_tokens = Self::messages_cost(&all_messages.history[..view.len()]);
+        let view_tokens = calibration.estimate_all(&all_messages.history[..view.len()]);
         let optional_history = all_messages.tokens().saturating_sub(required.total()).saturating_sub(view_tokens);
         // A quiet self-tick (no required input) still sends her newest whole message.
         let quiet_minimum = if required.total() == 0 {
-            all_messages.history.last().map_or(0, Self::message_cost) // map_or: no history = nothing to keep
+            all_messages.history.last().map_or(0, |message| calibration.estimate(message)) // map_or: no history = nothing to keep
         } else {
             0
         };
@@ -485,7 +487,7 @@ impl LlmDeliberationFaculty {
         let (view_pointers, tail_pointers): (Vec<_>, Vec<_>) =
             std::mem::take(&mut all_messages.result_pointers).into_iter().partition(|(index, _)| *index < view_len);
         all_messages.result_pointers = tail_pointers.into_iter().map(|(index, pointer)| (index - view_len, pointer)).collect();
-        let tail_budget = msg_budget.saturating_sub(Self::messages_cost(&view_messages));
+        let tail_budget = msg_budget.saturating_sub(calibration.estimate_all(&view_messages));
         let (mut fitted, capacity_error) = match self.fit_messages(all_messages, tail_budget) {
             Ok(mut fitted) => {
                 fitted.messages.splice(0..0, view_messages);
@@ -532,7 +534,7 @@ impl LlmDeliberationFaculty {
         // so a 25k working set no longer provisions a 137k slot (2026-09-13).
         if let Some(reg) = &self.working_set {
             let sent = framing_tokens
-                .saturating_add(Self::messages_cost(&fitted.messages))
+                .saturating_add(calibration.estimate_all(&fitted.messages))
                 .saturating_add(desired_reply);
             // At a window that TRIMMED this turn the post-fit size is the window's
             // echo, not the turn's — the untrimmed demand is what the plan must hear
@@ -599,7 +601,7 @@ impl LlmDeliberationFaculty {
 
         // The assembled context at the levels the one allocation chose; its header and message
         // wrapper are priced in its most important item (`grounding.rs`).
-        let used_msg_tokens = Self::messages_cost(&messages);
+        let used_msg_tokens = calibration.estimate_all(&messages);
         let context = self.render_grounding(
             ws,
             grounding_offer,
@@ -685,6 +687,7 @@ impl LlmDeliberationFaculty {
             system,
             input_identity,
             estimated_prompt_tokens,
+            pricing: calibration,
             completion_reserve: completion_reserve as u32,
             capacity_error,
             budget_fault,

@@ -71,7 +71,7 @@ async fn live_window_reductions_bound_actual_requests_and_persist() {
         assert_eq!(request.max_tokens, Some(expected_view.completion_reserve));
         let cost = LlmDeliberationFaculty::framing_cost(
             request.system_prompt.as_deref().expect("system framing"),
-        ) + LlmDeliberationFaculty::messages_cost(&request.messages)
+        ) + PromptCalibration::default().estimate_all(&request.messages)
             + schemas
             + request.max_tokens.expect("planned reply") as usize;
         assert!(
@@ -309,8 +309,8 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                 assert_eq!(pair[0].system_prompt, pair[1].system_prompt);
                 assert_eq!(pair[0].max_tokens, pair[1].max_tokens);
                 assert_eq!(serde_json::to_value(&pair[0].tools).unwrap(), serde_json::to_value(&pair[1].tools).unwrap());
-                assert!(LlmDeliberationFaculty::messages_cost(&pair[1].messages)
-                    < LlmDeliberationFaculty::messages_cost(&pair[0].messages));
+                assert!(PromptCalibration::default().estimate_all(&pair[1].messages)
+                    < PromptCalibration::default().estimate_all(&pair[0].messages));
             }
             assert_eq!(outcome.receipts.len(), seen.len());
             for (receipt, request) in outcome.receipts.iter().zip(seen.iter()) {
@@ -338,8 +338,8 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
             let second = seen.last().unwrap();
             assert_ne!(first.request_id, second.request_id);
             assert!(
-                LlmDeliberationFaculty::messages_cost(&second.messages)
-                    < LlmDeliberationFaculty::messages_cost(&first.messages)
+                PromptCalibration::default().estimate_all(&second.messages)
+                    < PromptCalibration::default().estimate_all(&first.messages)
             );
             assert!(second
                 .messages
@@ -359,7 +359,7 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                 .contains("selected card, owner and teammate review"));
             let cost = |r: &TextGenerationRequest| {
                 LlmDeliberationFaculty::framing_cost(r.system_prompt.as_deref().expect("system"))
-                    + LlmDeliberationFaculty::messages_cost(&r.messages)
+                    + PromptCalibration::default().estimate_all(&r.messages)
                     + crate::cognition::tool_surface::tool_surface_tokens_of(
                         r.tools.as_deref().expect("selected tools"),
                     )
@@ -614,7 +614,7 @@ async fn a_prompt_denser_than_her_measured_density_is_refit_before_generation() 
     assert_eq!(seen.len(), 3, "the first act, the refused request (counted, never generated), the refit");
     let cost = |r: &TextGenerationRequest| {
         LlmDeliberationFaculty::framing_cost(r.system_prompt.as_deref().unwrap_or_default())
-            + LlmDeliberationFaculty::messages_cost(&r.messages)
+            + PromptCalibration::default().estimate_all(&r.messages)
             + r.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of)
     };
     let (refused, resent) = (&seen[1], &seen[2]);

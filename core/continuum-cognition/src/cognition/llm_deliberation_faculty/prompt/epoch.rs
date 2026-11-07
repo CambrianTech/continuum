@@ -133,7 +133,7 @@ impl LlmDeliberationFaculty {
         // from the front with no turnover (Benchy, the M5, 2026-10-23: a head clip, goal 7).
         // Her view's allocation estimate: each block as this prompt is priced, the unit of every grant.
         let cost = AllocationEstimate(calibration);
-        let view_tokens = calibration.charge(Self::messages_cost(&prompt.history[..view.len]));
+        let view_tokens = calibration.charge(calibration.estimate_all(&prompt.history[..view.len]));
         let granted = act.view_granted() as usize;
         // The epoch keeps appending into window no claim took: its rendering carries the
         // versions it superseded, which no claim counts, so measured against its grants alone
@@ -176,7 +176,7 @@ impl LlmDeliberationFaculty {
         // (`View::readmit`). An act that started the view has nothing to redo.
         if !fits && !view.started {
             if let Some(admitted) = self.admit_view(cost, &prompt.streams, granted + room) {
-                let admitted_tokens = calibration.charge(Self::messages_cost(&admitted));
+                let admitted_tokens = calibration.charge(calibration.estimate_all(&admitted));
                 if admitted_tokens <= granted + room {
                     continuum_base::probe!(
                         class = "delib.view.admitted",

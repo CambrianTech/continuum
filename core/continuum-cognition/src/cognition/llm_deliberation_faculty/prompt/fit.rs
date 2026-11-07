@@ -44,14 +44,9 @@ impl LlmDeliberationFaculty {
         Self::is_own_move(message) || Self::is_move_result(message)
     }
 
-    /// What this conversation costs whole, with no budget applied — the conversational
-    /// half of a turn's demand ([`super::super::super::working_set`]).
-    pub fn messages_cost(messages: &[ChatMessage]) -> usize {
-        messages.iter().map(Self::message_cost).sum()
-    }
-
-    /// A message's estimate: its text, a lower bound calibrated by the provider's measured prompt
-    /// count (her density, which carries the chat template's tokens around each message too).
+    /// A message's TEXT estimate alone: the part [`PromptCalibration::estimate`] builds on (it adds the
+    /// engine-measured template share of the message's kind). Never a message's price by itself: every
+    /// prompt, fit and refit prices through [`PromptCalibration::estimate`].
     /// Never count base64 characters as image tokens. Native images require the finalized-body
     /// image quote before local generation.
     pub fn message_cost(message: &ChatMessage) -> usize {
@@ -73,7 +68,7 @@ impl LlmDeliberationFaculty {
         // valid provider request. Preserve its newest whole context or fault.
         let ambient_tokens = if required_tokens == 0 {
             match prompt.history.last() {
-                Some(message) => Self::message_cost(message),
+                Some(message) => prompt.pricing.estimate(message),
                 None => 0, // no history and no required payload: assembly supplies the quiet world-state
             }
         } else {
@@ -93,8 +88,8 @@ impl LlmDeliberationFaculty {
         // outcome cost, so the drop below can refuse to reach them.
         let evidence = prompt.recent_move_evidence();
         let messages = &prompt.history;
-        // Each message at `messages_cost`'s estimate, so measurement and fitting charge identically.
-        let costs: Vec<usize> = messages.iter().map(Self::message_cost).collect();
+        // Each message at the one estimate her view and the refit price with, so they charge identically.
+        let costs: Vec<usize> = messages.iter().map(|message| prompt.pricing.estimate(message)).collect();
         let total: usize = costs.iter().sum();
         let mut start = 0usize;
         if total > history_budget {
@@ -282,12 +277,12 @@ impl LlmDeliberationFaculty {
             .div_ceil(measured as u128)).min(usize::MAX as u128) as usize;
         if reduction == 0 { return Err(refusal()); }
         let input_budget = old_estimate.saturating_sub(reduction);
-        let fixed_tokens = old_estimate.saturating_sub(Self::messages_cost(&view.messages));
+        let fixed_tokens = old_estimate.saturating_sub(view.pricing.estimate_all(&view.messages));
         let grounding: Vec<_> = view.messages.drain(
             view.refit.grounding_at..view.refit.grounding_at + view.refit.grounding_len
         ).collect();
         let required = view.messages.split_off(view.refit.history_len);
-        let frozen_grounding_tokens = Self::messages_cost(&grounding);
+        let frozen_grounding_tokens = view.pricing.estimate_all(&grounding);
         let prompt = PromptMessages {
             streams: Default::default(),
             input_identity: view.input_identity,
@@ -297,6 +292,7 @@ impl LlmDeliberationFaculty {
             stimulus: None,
             latest_result: required,
             action_statement: None,
+            pricing: view.pricing,
         };
         let mut fitted = self.fit_messages(prompt, input_budget
             .saturating_sub(fixed_tokens).saturating_sub(frozen_grounding_tokens))?;
@@ -305,7 +301,7 @@ impl LlmDeliberationFaculty {
         }
         fitted.refit.grounding_len = grounding.len();
         fitted.messages.splice(fitted.grounding_at..fitted.grounding_at, grounding);
-        let estimate = fixed_tokens.saturating_add(Self::messages_cost(&fitted.messages));
+        let estimate = fixed_tokens.saturating_add(view.pricing.estimate_all(&fitted.messages));
         if estimate >= old_estimate { return Err(refusal()); }
         view.messages = fitted.messages;
         view.refit = fitted.refit;

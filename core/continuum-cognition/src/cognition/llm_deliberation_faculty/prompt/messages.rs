@@ -468,6 +468,8 @@ impl LlmDeliberationFaculty {
             stimulus,
             latest_result,
             action_statement,
+            // The one price of a message, for the engine her request reaches (its measured template).
+            pricing: self.prompt_fit(&self.binding.load()).1,
         }
     }
 }
