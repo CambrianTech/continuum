@@ -275,14 +275,7 @@ impl JsonlPromptCaptureSink {
     pub fn open(dir: &Path, persona_id: Uuid) -> std::io::Result<Self> {
         static OWNERS: LazyLock<owner::CaptureOwners<Store>> =
             LazyLock::new(owner::CaptureOwners::default);
-        let path = dir.join(format!("{persona_id}.jsonl"));
-        let store = OWNERS.acquire(&path, |path| {
-            Store::open(
-                path.parent()
-                    .ok_or_else(|| std::io::Error::other("capture directory missing"))?,
-                persona_id,
-            )
-        })?;
+        let store = OWNERS.acquire(dir, persona_id, Store::open)?;
         Ok(Self {
             persona_id,
             session_id: Uuid::new_v4(),
