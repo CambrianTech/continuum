@@ -247,3 +247,52 @@ impl LlmDeliberationFaculty {
         (sent, menu)
     }
 }
+
+
+#[cfg(test)]
+mod review_growth_tests {
+    use super::*;
+    use continuum_context::allocation::{allocate, ActClaims, Span};
+    use continuum_context::ladder::Leveled;
+    use continuum_context::flex::FlexClaim;
+
+    #[test]
+    fn review_menu_only_rise_funds_the_rendered_head_growth() {
+        let names: Vec<String> = ["code", "work", "chat"].iter().flat_map(|cat|
+            ["read", "edit", "write", "search", "status", "list", "send", "submit"].iter()
+                .map(move |verb| format!("{cat}/{verb}"))).collect();
+        let tools = names.iter().map(|name| crate::ai::types::NativeToolSpec {
+            name: name.clone(), description: format!("{name}: does what its name says"),
+            input_schema: crate::ai::types::ToolInputSchema {
+                schema_type: "object".into(), properties: serde_json::json!({}), required: None, definitions: None,
+            },
+        }).collect();
+        let adapter: std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter> =
+            std::sync::Arc::new(crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new());
+        let faculty = LlmDeliberationFaculty::new(uuid::Uuid::new_v4(), "Asha", "You are Asha.", adapter).with_tools(tools);
+        let ws = Workspace::new("what changed on the board?");
+        let charge = |tokens: usize| tokens as u32;
+        let offer = faculty.tools_offer(&ws, &charge);
+        let framing = faculty.framing_offer(&ws, false, offer.names(), None, &charge);
+        let floor = framing.leveled.at_limit();
+        assert!(floor.cost < framing.leveled.want(), "fixture: menu can rise");
+        let window = (framing.leveled.want() + offer.head().leveled.want()) * 2;
+        let act = allocate(window, ActClaims {
+            framing: Head { leveled: framing.leveled.clone(), held: Some(floor.rungs) },
+            tools: offer.head(), required: Leveled::default(), newest: Leveled::default(),
+            grounding: Leveled::default(), last_move: Leveled::default(), history: Span::default(),
+            reply: FlexClaim { source_id: id::REPLY.into(), priority: 1, floor_tokens: 0, min_tokens: 0, max_tokens: 0, required: false },
+            view: Vec::new(),
+        });
+        assert!(act.rise(id::FRAMING).is_some(), "fixture: actual allocator offers menu rise");
+        assert!(act.rise(id::TOOLS).is_none(), "fixture: tools stay at same level");
+        let choice = faculty.granted_tools(&ws, offer, &framing, &act, &charge);
+        let next = choice.next.as_ref().expect("test: menu rise has next head");
+        let before = faculty.compose_system_split(&choice.menu, false, false, None, false).stable;
+        let after = faculty.compose_system_split(&next.menu, false, false, None, false).stable;
+        let delta = (LlmDeliberationFaculty::framing_cost(&after) + next.surface.tokens)
+            .saturating_sub(LlmDeliberationFaculty::framing_cost(&before) + choice.sent.tokens);
+        assert!(delta > 0, "fixture: rendered head actually grows");
+        assert!(next.growth >= delta, "head funding {} must cover rendered growth {}", next.growth, delta);
+    }
+}
