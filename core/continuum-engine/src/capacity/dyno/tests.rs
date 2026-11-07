@@ -89,7 +89,7 @@ mod grants {
             RecordedNeed::Exact(n) => Observed::Exact(t(n)).within(pool),
             RecordedNeed::AtLeast(n) => Observed::AtLeast { at_least: t(n) }.within(pool),
         };
-        Demand { mind: resident.mind, need, target: need, wish: need, in_flight, ceiling: pool }
+        Demand { mind: resident.mind, need, target: need, wish: need, in_flight, settled: true, ceiling: pool }
     }
 
     /// What one recorded window measured: for each waiter, the count of the holder's completed
