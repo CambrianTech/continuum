@@ -105,8 +105,9 @@ impl ToolsOffer<'_> {
     }
 }
 
-/// The head's next epoch: the surface and menu it adopts, and what it adds to the head (raw
-/// tokens), which a start of her view must fund before it is adopted.
+/// The head's next epoch: the surface and menu it adopts, and what it adds to the head (in the
+/// allocation's unit, measured from the rendered heads), which a start of her view must fund before
+/// it is adopted.
 pub(in super::super) struct NextHead<'a> {
     surface: SelectedSurface<'a>,
     levels: Vec<usize>,
@@ -197,27 +198,40 @@ impl LlmDeliberationFaculty {
         // Her learned head reserves the head her next epoch would hold, within this act's grant.
         self.reserve_next_head(ws, act.granted(id::TOOLS));
         let rise_menu = act.rise(id::FRAMING).map(|choice| framing.expanded(&choice.rungs));
+        // The next head's parts: her changed moves' set (at the levels this act's tools claim, or
+        // its rise, buys) or her held set risen, and her menu risen or as it is.
         let next = match adopt {
             Some(fresh) => {
-                // Her changed moves' set, at the levels this act's tools claim (or its rise) buys.
                 let fresh_set = self.tool_set_of(&fresh, &moves);
                 let fresh_leveled = fresh_set.leveled(charge);
                 let target = act.rise(id::TOOLS).map_or(leveled.leveled.cost_of(&rungs), |rise| rise.cost); // map_or: no rise keeps this act's cost
                 let fresh_levels = fresh_set.levels_of(&fresh_leveled, &fresh_leveled.leveled.reduce(target).rungs);
                 let fresh_whole = fresh_set.render(&fresh_set.whole()).1;
-                let adopted = fresh.at_levels(&fresh_set, &fresh_levels).with_demand(fresh_whole);
-                Some(NextHead { growth: adopted.tokens.saturating_sub(sent.tokens), surface: adopted, levels: fresh_levels, menu: rise_menu.clone().unwrap_or_else(|| menu.clone()) }) // unwrap_or_else: no menu rise keeps this act's menu
+                Some((fresh.at_levels(&fresh_set, &fresh_levels).with_demand(fresh_whole), fresh_levels, rise_menu.unwrap_or_else(|| menu.clone()))) // unwrap_or_else: no menu rise keeps this act's menu
             }
             None => {
                 let rise_levels = act.rise(id::TOOLS).map(|choice| set.levels_of(&leveled, &choice.rungs));
                 (rise_levels.is_some() || rise_menu.is_some()).then(|| {
                     let levels = rise_levels.unwrap_or_else(|| levels.clone()); // unwrap_or_else: only the menu rises
-                    let risen = surface.at_levels(&set, &levels).with_demand(demand);
-                    NextHead { growth: risen.tokens.saturating_sub(sent.tokens), surface: risen, levels, menu: rise_menu.unwrap_or_else(|| menu.clone()) } // unwrap_or_else: only the verbs rise
+                    (surface.at_levels(&set, &levels).with_demand(demand), levels, rise_menu.unwrap_or_else(|| menu.clone())) // unwrap_or_else: only the verbs rise
                 })
             }
         };
+        // What the next head adds, measured in ONE place for every head part: the head it renders
+        // (system message at its menu, plus its tool surface) against this act's, in the
+        // allocation's unit, so a rise of any head consumer is funded before it is adopted.
+        let now = charge(self.head_tokens(ws, &menu, &sent));
+        let next = next.map(|(surface, levels, next_menu)| {
+            let growth = charge(self.head_tokens(ws, &next_menu, &surface)).saturating_sub(now) as usize;
+            NextHead { surface, levels, menu: next_menu, growth }
+        });
         ToolsChoice { sent, levels, kept, moves, menu, next }
+    }
+
+    /// What her head costs as it renders: the system message at `menu` and the tool `surface`.
+    fn head_tokens(&self, ws: &Workspace, menu: &BTreeSet<String>, surface: &SelectedSurface<'_>) -> usize {
+        let system = self.compose_system_split(menu, ws.directed_at_self(), ws.self_initiated, ws.now_ms, Self::holds_live_work(ws)).stable;
+        Self::framing_cost(&system).saturating_add(surface.tokens)
     }
 
     /// After her view is fitted: the surface this act sends. Her held set goes out at its held
