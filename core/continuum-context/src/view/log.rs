@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{claim, key, Claim, Level, SourceId, FOLD_KEY};
 use crate::cause::ElementId;
+use crate::cost::Cost;
 use crate::epoch::Block;
 use crate::motion::{Motion, Unit};
 use crate::source::{Item, Source};
@@ -59,7 +60,8 @@ pub(super) struct Arranged<'a, T> {
     pub sources: Vec<&'a dyn Source<T>>,
     pub items: Vec<Vec<Item<T>>>,
     pub claims: Vec<Claim>,
-    pub logged_chars: Vec<usize>,
+    /// What each source's entries in her log cost, in the caller's cost: charged to its grant.
+    pub logged: Vec<usize>,
     /// How many sources stand ahead of the log.
     pub log_at: usize,
     /// For each entry of her log, whether this start charges it: only an entry whose source this
@@ -69,54 +71,64 @@ pub(super) struct Arranged<'a, T> {
     pub retained: Vec<bool>,
 }
 
-/// One source as a start takes it: the source, its items, its claim and its logged characters.
+/// One source as a start takes it: the source, its items, its claim and what its log entries cost.
 type Slot<'a, T> = (&'a dyn Source<T>, Vec<Item<T>>, Claim, usize);
 
-/// Order `sources` and her `log` for a start ([`Motion::rank`]).
-pub(super) fn arrange<'a, T: Block>(motion: &Motion, sources: &[&'a dyn Source<T>], log: &[Logged<T>]) -> Arranged<'a, T> {
+/// Order `sources` and her `log` for a start ([`Motion::rank`]), each claim priced by `cost`. The
+/// order itself is measured in characters (`Motion` keeps what held in chars), never in `cost`.
+pub(super) fn arrange<'a, T: Block>(cost: &dyn Cost<T>, motion: &Motion, sources: &[&'a dyn Source<T>], log: &[Logged<T>]) -> Arranged<'a, T> {
     let retained: Vec<bool> = log.iter().map(|entry| sources.iter().any(|source| source.name() == entry.source)).collect();
     let charged: Vec<Logged<T>> = log.iter().zip(&retained).filter(|(_, kept)| **kept).map(|(entry, _)| entry.clone()).collect();
     let ids = logged_ids(&charged);
-    let mut logged: HashMap<&str, usize> = HashMap::new();
+    // Per source: what its log entries cost (charged to its grant) and their characters (its order).
+    let mut logged: HashMap<&str, (usize, usize)> = HashMap::new();
     for entry in &charged {
-        *logged.entry(entry.source.as_str()).or_default() += entry.text.chars();
+        let (priced, chars) = logged.entry(entry.source.as_str()).or_default();
+        *priced += cost.block(&entry.text);
+        *chars += entry.text.chars();
     }
     let items: Vec<Vec<Item<T>>> = sources.iter().map(|source| source.items()).collect();
-    let logged_chars: Vec<usize> = sources.iter().map(|source| logged.get(source.name()).copied().unwrap_or(0)).collect(); // unwrap_or: a source with nothing logged
+    let fixed: Vec<(usize, usize)> = sources.iter().map(|source| logged.get(source.name()).copied().unwrap_or((0, 0))).collect(); // unwrap_or: a source with nothing logged
     let claims: Vec<Claim> = sources
         .iter()
         .zip(&items)
-        .zip(&logged_chars)
-        .map(|((source, items), &fixed)| {
+        .zip(&fixed)
+        .map(|((source, items), &(fixed, _))| {
             let fresh: Vec<Item<T>> = items.iter().filter(|item| !ids.contains(&key(source.name(), &item.key))).cloned().collect();
-            let mut whole = claim(*source, items, motion.rereads());
-            whole.floor_chars = claim(*source, &fresh, motion.rereads()).floor_chars + fixed;
-            whole.full_chars += fixed;
-            whole.logged_chars = fixed;
-            whole.collapsible = crate::depth::collapsible(&fresh, motion.rereads());
+            let mut whole = claim(cost, *source, items, motion.rereads());
+            whole.floor = claim(cost, *source, &fresh, motion.rereads()).floor + fixed;
+            whole.full += fixed;
+            whole.logged = fixed;
+            whole.collapsible = crate::depth::collapsible(&fresh, motion.rereads(), cost);
             whole
         })
         .collect();
-    let log_chars: usize = logged.values().sum();
+    let log_chars: usize = logged.values().map(|(_, chars)| chars).sum();
     let mut units: Vec<Unit<'_>> = sources
         .iter()
-        .zip(&claims)
-        .zip(&logged_chars)
-        .map(|((source, claim), &fixed)| Unit { name: source.name(), chars: claim.full_chars - fixed, log: false, after_log: fixed > 0 })
+        .zip(&items)
+        .zip(&fixed)
+        .map(|((source, items), &(_, logged_chars))| Unit {
+            name: source.name(),
+            chars: items.iter().map(|item| crate::cost::whole(item, &crate::cost::Chars)).sum(),
+            log: false,
+            after_log: logged_chars > 0,
+        })
         .collect();
+    let logged: Vec<usize> = fixed.iter().map(|(priced, _)| *priced).collect();
     units.push(Unit { name: LOG, chars: log_chars, log: true, after_log: false });
     let order = motion.rank(&units);
     let log_at = order.iter().position(|&index| index == sources.len()).unwrap_or(sources.len()); // unwrap_or: rank returns every unit
     let order: Vec<usize> = order.into_iter().filter(|&index| index < sources.len()).collect();
     let mut slots: Vec<Option<Slot<'a, T>>> =
-        sources.iter().zip(items).zip(claims).zip(logged_chars).map(|(((s, f), c), l)| Some((*s, f, c, l))).collect();
-    let mut arranged = Arranged { sources: Vec::new(), items: Vec::new(), claims: Vec::new(), logged_chars: Vec::new(), log_at, retained };
+        sources.iter().zip(items).zip(claims).zip(logged).map(|(((s, f), c), l)| Some((*s, f, c, l))).collect();
+    let mut arranged = Arranged { sources: Vec::new(), items: Vec::new(), claims: Vec::new(), logged: Vec::new(), log_at, retained };
     for index in order {
         if let Some((source, items, claim, logged)) = slots[index].take() {
             arranged.sources.push(source);
             arranged.items.push(items);
             arranged.claims.push(claim);
-            arranged.logged_chars.push(logged);
+            arranged.logged.push(logged);
         }
     }
     arranged

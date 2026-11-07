@@ -39,7 +39,7 @@ fn a_view_start_keeps_its_token_grant_with_uneven_message_sizes() {
             warnings: Vec::new(),
         };
         let sources: Vec<&dyn Source<ContextMessage>> = vec![&conversation];
-        let (view, _) = View::start(Vec::new(), &sources, |claims| {
+        let (view, _) = View::start(&ViewCost::estimate(), Vec::new(), &sources, |claims| {
             start_grants(claims, &plan, granted as usize, None).expect("funded optional source")
         }).expect("matching source grants");
         let rendered: Vec<_> = view.render().map(ContextMessage::to_chat).collect();
@@ -104,8 +104,8 @@ fn two_acts_and_a_turnover(conversation_first: bool) -> (usize, usize, usize) {
     memory.record_settlement("listed", None);
     let memory_streams = MemoryStreams::of(&memory, uuid::Uuid::nil());
     let first = streams(0, "RECALL: the repro lives in tests/");
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-    let (mut view, _) = View::start(Vec::new(), &ordered(&first, &memory_streams, conversation_first), whole)
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
+    let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &ordered(&first, &memory_streams, conversation_first), whole)
         .expect("test: one grant per source");
     let before = texts(&view);
 
@@ -121,10 +121,10 @@ fn two_acts_and_a_turnover(conversation_first: bool) -> (usize, usize, usize) {
         let grounding = crate::cognition::context_streams::priority::GROUNDING;
         claims
             .iter()
-            .map(|claim| if claim.priority >= grounding { claim.full_chars } else { claim.full_chars / 2 })
+            .map(|claim| if claim.priority >= grounding { claim.full } else { claim.full / 2 })
             .collect()
     };
-    view.turn_over(Vec::new(), &sources, half_of_growing).expect("test: one grant per source");
+    view.turn_over(&continuum_context::cost::Chars, Vec::new(), &sources, half_of_growing).expect("test: one grant per source");
     (shared(&before, &advanced), before.len(), shared(&advanced, &texts(&view)))
 }
 
@@ -205,22 +205,21 @@ fn an_overflow_measures_what_her_view_would_have_held() {
     assert_eq!(overflow_beyond(Turnover::Keep, false, 40_000, allowed, Some(next)), None, "a kept view fit: no shortfall");
 }
 
-/// One growing source whose measured depth prices her newest item a token under
-/// `StartSource::newest`: at 0.01 tokens per char a 501-char newest item is 5.01 tokens (ceiled to
-/// 6), and the depth's base, her 20-char floor with it (521 chars), rounds to 5. Its one older item
-/// is measured as never asked for again, so the depth collapses it and starts the source at its base.
+/// One growing source, priced in the allocation's tokens (her view's oracle), whose one older item
+/// is measured as never asked for again, so the depth collapses it and starts the source at its
+/// base: her 1-token floor with her 6-token newest item whole.
 fn depth_one_token_under_her_newest() -> (Vec<continuum_context::view::Claim>, continuum_context::flex::FlexAllocation) {
     use continuum_context::depth::Collapsible;
     use continuum_context::rereads::{Hazard, Tally};
     let claim = continuum_context::view::Claim {
         source: "results".to_owned(),
         priority: 0,
-        floor_chars: 20,
-        full_chars: 1_000,
-        newest_chars: 501,
-        logged_chars: 0,
+        floor: 1,
+        full: 10,
+        newest: 6,
+        logged: 0,
         instrumented: true,
-        collapsible: vec![Collapsible { whole_chars: 489, saves_chars: 479, age: 1, hazard: Hazard::Measured(Tally { exposure: 1_000.0, events: 0.0 }) }],
+        collapsible: vec![Collapsible { whole: 4, saves: 4, age: 1, hazard: Hazard::Measured(Tally { exposure: 1_000.0, events: 0.0 }) }],
     };
     let grant = continuum_context::flex::SourceAllocation {
         source_id: format!("{VIEW_CLAIM}results"),
@@ -237,17 +236,80 @@ fn depth_one_token_under_her_newest() -> (Vec<continuum_context::view::Claim>, c
 
 // what this catches: #5807's failure again, through the measured depth: her newest turn collapsed
 // by a char (`reply_priority_grows_the_reply_not_at_history_or_required_input`, 2026-11-06). The
-// depth prices her newest item in rounded tokens and `StartSource::newest` in ceiled ones, so a
-// depth that lowered her grant, or sized her start, to its own sum started her a token (ten chars)
-// under her newest item whole.
+// depth priced her newest item in rounded tokens (chars times an average) and `StartSource::newest`
+// in ceiled ones, so a depth that lowered her grant, or sized her start, to its own sum started her
+// a token under her newest item whole. Priced by her oracle both are one number; the depth's lowered
+// grant still never falls under it.
 #[test]
 fn a_measured_depth_never_starts_her_under_her_newest_item() {
     let (claims, plan) = depth_one_token_under_her_newest();
-    let grants = start_grants(&claims, &plan, 100, Some(50)).expect("an optional source is never refused");
-    assert!(grants[0] >= claims[0].newest_chars, "her newest item whole: granted {} of {} chars", grants[0], claims[0].newest_chars);
+    let grants = start_grants(&claims, &plan, 100, Some(1)).expect("an optional source is never refused");
+    assert!(grants[0] >= claims[0].newest, "her newest item whole: granted {} of {} tokens", grants[0], claims[0].newest);
     // The lowered grant itself, at the fixture's tokens: the depth chose 5, her newest needs 6.
     let source = continuum_context::allocation::StartSource { priority: 0, fixed: false, required: false, floor: 1, grant: 10, newest: 6 };
     assert_eq!(depth_grant(5, &source), 6, "never below her newest item");
     assert_eq!(depth_grant(0, &continuum_context::allocation::StartSource { floor: 7, ..source }), 7, "never below its floor");
     assert_eq!(depth_grant(40, &source), 10, "never above the plan's grant");
+}
+
+/// A conversation of `old` long turns then `newest` short ones (`long` and `short` are their
+/// lines), started under [`start_grants`] with `grant` tokens and a floor of 0 (a turn leaves her
+/// view when collapsed), its want the actual messages' cost. What the start renders, charged by
+/// the final prompt's own cost ([`LlmDeliberationFaculty::messages_cost`]), and how many messages.
+fn started_conversation(old: usize, long: &str, newest: usize, short: &str, grant: u32) -> (usize, usize) {
+    let turns: Vec<Turn> = (0..old)
+        .map(|n| (n, long))
+        .chain((old..old + newest).map(|n| (n, short)))
+        .map(|(n, line)| Turn { key: format!("turn-{n}"), role: Role::User, line: line.to_owned(), pointer: None })
+        .collect();
+    let conversation = Conversation { turns, ..Default::default() };
+    let messages: Vec<ChatMessage> = conversation.items().iter().map(|item| item.full().to_chat()).collect();
+    let newest_cost = messages.last().map_or(0, LlmDeliberationFaculty::message_cost); // map_or: the fixture always has turns
+    assert!(newest_cost <= grant as usize, "precondition: her newest turn alone fits the grant");
+    let plan = continuum_context::flex::FlexAllocation {
+        allocations: vec![continuum_context::flex::SourceAllocation {
+            source_id: format!("{VIEW_CLAIM}conversation"),
+            allocated_tokens: grant,
+            requested_floor: 0,
+            requested_min: 0,
+            requested_max: LlmDeliberationFaculty::clamp_u32(LlmDeliberationFaculty::messages_cost(&messages)),
+            required: false,
+            state: continuum_context::flex::AllocationState::FloorOnly,
+        }],
+        unallocated: 0,
+        escalation_needed: false,
+        warnings: Vec::new(),
+    };
+    let sources: Vec<&dyn Source<ContextMessage>> = vec![&conversation];
+    let sized = |claims: &[Claim]| start_grants(claims, &plan, grant as usize, None).expect("an optional source is never refused");
+    let (view, _) = View::start(&ViewCost::estimate(), Vec::new(), &sources, sized).expect("test: one grant per source");
+    let rendered: Vec<ChatMessage> = view.render().map(ContextMessage::to_chat).collect();
+    (LlmDeliberationFaculty::messages_cost(&rendered), rendered.len())
+}
+
+// what this catches: Codex's defect (`a_view_start_keeps_its_token_grant_with_uneven_message_sizes`
+// above) on a base whose message cost carries no per-message template tokens (#5814: her density
+// carries them), where his short turns cost nothing and pass. The density that still differs per
+// message is the estimator's: it counts bytes, and a CJK character is three bytes, one estimated
+// token, against an ASCII character's third. A start that converted its TOKEN grant into
+// characters at the source's AVERAGE tokens per character bought characters enough for several
+// dense newest turns whose own cost overran the grant (red before the oracle: 36 tokens in 3
+// messages against 32). The start prices each item with the cost the final prompt is charged with,
+// so what it renders never exceeds its grant.
+#[test]
+fn a_view_start_keeps_its_token_grant_when_her_newest_turns_are_denser() {
+    let long = "x".repeat(600);
+    let (rendered, messages) = started_conversation(20, &long, 20, "了解しました。すぐ見ます", 32);
+    assert!(messages >= 1, "her newest turn is kept whole: it fits");
+    assert!(rendered <= 32, "the start rendered {rendered} tokens in {messages} messages against a 32-token grant");
+}
+
+// what this catches: the oracle changing what a start keeps when every message costs alike: with
+// uniform sizes the average was exact, and a start keeps the same newest turns it kept before.
+#[test]
+fn a_view_start_with_uniform_message_sizes_keeps_what_it_kept() {
+    let line = "y".repeat(90);
+    let (rendered, messages) = started_conversation(20, &line, 20, &line, 300);
+    assert_eq!(messages, 5, "half the grant (150 tokens) at 30 tokens a turn: her newest five");
+    assert!(rendered <= 300, "within its grant: {rendered}");
 }

@@ -478,7 +478,7 @@ fn a_view_turnover_keeps_her_tool_set() {
     let (choice, _) = tools_within(&faculty, &declared, 200_000);
     // The fit turns her view over in this act (what `fit_view` does when it outgrows its grant).
     let none: [&dyn Source<crate::cognition::context_streams::ContextMessage>; 0] = [];
-    faculty.context_view.lock().as_mut().expect("a view").turn_over(Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
+    faculty.context_view.lock().as_mut().expect("a view").turn_over(&continuum_context::cost::Chars, Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
     let (sent, _) = faculty.retain_tools(choice, false, true);
     assert_eq!(wire(&sent), wire(&first.tools), "the turnover act sends the set she held");
     let next = faculty.prompt_view_within(&declared, 200_000);
@@ -565,7 +565,7 @@ fn a_moves_change_waits_for_her_views_next_start_and_rides_the_tail_until_then()
     // The act that starts her view's next epoch adopts the set her moves select.
     let (choice, _) = tools_within(&faculty, &moved, 200_000);
     let none: [&dyn Source<crate::cognition::context_streams::ContextMessage>; 0] = [];
-    faculty.context_view.lock().as_mut().expect("a view").turn_over(Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
+    faculty.context_view.lock().as_mut().expect("a view").turn_over(&continuum_context::cost::Chars, Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
     let (adopted, _) = faculty.retain_tools(choice, false, true);
     assert!(surface.names_of(&adopted).iter().any(|name| name == verb), "the start adopts the set her moves select");
     let next = faculty.prompt_view_within(&moved, 200_000);

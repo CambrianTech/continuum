@@ -238,10 +238,9 @@ impl LlmDeliberationFaculty {
         // typed IrreducibleShortfall (Cormac on #5779). On a pass her view's optional sources shed
         // first as before.
         let acting = kind == TurnKind::Act;
-        let view_claims: Vec<_> = self.view_claims(&all_messages.streams).into_iter().map(|mut source| {
-            source.floor_tokens = claim(source.floor_tokens as usize);
-            source.min_tokens = source.floor_tokens;
-            source.max_tokens = claim(source.max_tokens as usize).max(source.floor_tokens);
+        // Already in the allocation's tokens: her view's oracle charges each block at this calibration.
+        let view_claims: Vec<_> = self.view_claims(&all_messages.streams, super::epoch::ViewCost(calibration)).into_iter().map(|mut source| {
+            source.max_tokens = source.max_tokens.max(source.floor_tokens);
             source.required = source.required || acting;
             source
         }).collect();

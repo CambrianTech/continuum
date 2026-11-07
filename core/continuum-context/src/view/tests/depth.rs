@@ -38,7 +38,7 @@ impl Source<String> for Reads {
 #[test]
 fn a_start_keeps_whole_what_she_measurably_re_reads_and_collapses_the_rest() {
     let mut reads = Reads(Vec::new());
-    let (mut view, _) = View::start(Vec::new(), &[&reads as &dyn Source<String>], |claims| claims.iter().map(|claim| claim.full_chars).collect()).unwrap(); // unwrap: one grant per claim cannot mismatch
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&reads as &dyn Source<String>], |claims| claims.iter().map(|claim| claim.full).collect()).unwrap(); // unwrap: one grant per claim cannot mismatch
     for n in 0..20 {
         reads.0.push(format!("old{n}.rs"));
         view.advance(&[&reads]);
@@ -50,13 +50,13 @@ fn a_start_keeps_whole_what_she_measurably_re_reads_and_collapses_the_rest() {
     let (all, _) = view.motion().rereads().totals();
     assert_eq!(all, 18, "every working read after the first two re-requests one she had");
     let depth = |claims: &[Claim]| -> Vec<usize> {
-        let growing: Vec<_> = claims.iter().map(|claim| claim.growing(claim.full_chars, 1.0)).collect();
+        let growing: Vec<_> = claims.iter().map(|claim| claim.growing(claim.full)).collect();
         match choose(Room { growable: 100_000, per_act: Some(4_000) }, &growing) {
             Depth::Chosen(chosen) => chosen.shares,
             Depth::Unmeasured => panic!("her re-reads are measured at every age her items have"),
         }
     };
-    view.turn_over(Vec::new(), &[&reads], depth).unwrap(); // unwrap: one grant per claim cannot mismatch
+    view.turn_over(&crate::cost::Chars, Vec::new(), &[&reads], depth).unwrap(); // unwrap: one grant per claim cannot mismatch
     let newest = reads.0.len() - 1;
     assert!(view.renders("acts", &newest.to_string()), "her newest read is whole");
     assert!(view.renders("acts", &(newest - 1).to_string()), "the file she re-reads every other act stays whole");

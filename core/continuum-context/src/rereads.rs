@@ -327,7 +327,7 @@ mod tests {
         acts(&mut rereads, &items, 8);
         items.push(read(2, "b.rs", "fn b() {}"));
         acts(&mut rereads, &items, 1);
-        let depth = crate::depth::collapsible(&items, &rereads);
+        let depth = crate::depth::collapsible(&items, &rereads, &crate::cost::Chars);
         assert_eq!(depth[0].age, 9, "the depth's age");
         assert_eq!(rereads.age(items[0].id()), 9, "the measurement's age");
         assert_eq!(depth[0].hazard, rereads.hazard(9));
@@ -343,7 +343,7 @@ mod tests {
         acts(&mut rereads, &items, 1);
         items.push(read(4, "d.rs", "d"));
         acts(&mut rereads, &items, 1);
-        let ages: Vec<u64> = crate::depth::collapsible(&items, &rereads).iter().map(|item| item.age).collect();
+        let ages: Vec<u64> = crate::depth::collapsible(&items, &rereads, &crate::cost::Chars).iter().map(|item| item.age).collect();
         assert_eq!(ages, vec![2, 2, 2]);
     }
 
@@ -363,9 +363,9 @@ mod tests {
         let mut restored: Rereads = serde_json::from_str(&saved).expect("test: and restores"); // JUSTIFIED: test fixture
         let mut started = restored.clone();
         started.start::<String>(&[("actions", &items)]);
-        assert_eq!(crate::depth::collapsible(&items, &started)[0].age, 9, "a start after the restart");
+        assert_eq!(crate::depth::collapsible(&items, &started, &crate::cost::Chars)[0].age, 9, "a start after the restart");
         acts(&mut restored, &items, 1);
-        assert_eq!(crate::depth::collapsible(&items, &restored)[0].age, 10, "the first act after it ticks the clock");
+        assert_eq!(crate::depth::collapsible(&items, &restored, &crate::cost::Chars)[0].age, 10, "the first act after it ticks the clock");
         let before = restored.curves().0["actions"][bucket(10)].exposure;
         acts(&mut restored, &items, 1);
         assert_eq!(restored.curves().0["actions"][bucket(10)].exposure - before, 1.0, "exposed at its true age");

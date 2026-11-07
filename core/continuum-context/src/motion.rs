@@ -313,16 +313,16 @@ mod tests {
     #[test]
     fn her_epoch_length_is_read_off_her_one_clock_across_a_start() -> Result<(), crate::view::GrantMismatch> {
         let mut actions = crate::fixtures::Fake::new("actions", 5);
-        let all_full = |claims: &[crate::view::Claim]| -> Vec<usize> { claims.iter().map(|claim| claim.full_chars).collect() };
-        let (mut view, _) = crate::view::View::<String>::start(vec![], &[&actions], all_full)?;
+        let all_full = |claims: &[crate::view::Claim]| -> Vec<usize> { claims.iter().map(|claim| claim.full).collect() };
+        let (mut view, _) = crate::view::View::<String>::start(&crate::cost::Chars, vec![], &[&actions], all_full)?;
         for act in 1..=3 {
             actions.push(&format!("#{act}"), &format!("result {act}"));
             view.advance(&[&actions]);
         }
         assert_eq!(view.motion().rereads().epoch_acts(), 3);
-        view.turn_over(vec![], &[&actions], all_full)?;
+        view.turn_over(&crate::cost::Chars, vec![], &[&actions], all_full)?;
         assert_eq!((view.motion().last_epoch_acts, view.motion().rereads().epoch_acts()), (3, 0), "the start closed three acts");
-        view.turn_over(vec![], &[&actions], all_full)?;
+        view.turn_over(&crate::cost::Chars, vec![], &[&actions], all_full)?;
         assert_eq!(view.motion().last_epoch_acts, 3, "an epoch with no acts keeps the length before it");
         view.advance(&[&actions]);
         view.advance(&[&actions]);

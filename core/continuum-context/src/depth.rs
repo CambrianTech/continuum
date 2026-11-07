@@ -23,44 +23,43 @@ use crate::rereads::Hazard;
 /// One item a start could collapse: everything but a source's newest, not yet in her log.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Collapsible {
-    /// Characters of its whole: what a re-read re-sends.
-    pub whole_chars: usize,
-    /// Characters a start saves by collapsing it (its whole less its pointer).
-    pub saves_chars: usize,
+    /// Its whole, in the caller's cost (`crate::cost`): what a re-read re-sends.
+    pub whole: usize,
+    /// What a start saves by collapsing it (its whole less its pointer), in the caller's cost.
+    pub saves: usize,
     /// Acts since her view first held it, on her one clock (`crate::rereads::Rereads::age`).
     pub age: u64,
     pub hazard: Hazard,
 }
 
 /// `items`' collapsible ones (all but the newest, each whole larger than its pointer), newest first,
-/// with her measured re-read chance at each one's age, read off the clock that measured it (its
-/// recorded birth, never its position: a source idle for acts or batching several items in one
-/// would sample the wrong bucket); `Unmeasured` where nothing measured that age.
-pub(crate) fn collapsible<T: crate::epoch::Block>(items: &[crate::source::Item<T>], rereads: &crate::rereads::Rereads) -> Vec<Collapsible> {
+/// priced by the caller's `cost`, with her measured re-read chance at each one's age, read off the
+/// clock that measured it (its recorded birth, never its position: a source idle for acts or
+/// batching several items in one would sample the wrong bucket); `Unmeasured` where nothing
+/// measured that age.
+pub(crate) fn collapsible<T: crate::epoch::Block>(items: &[crate::source::Item<T>], rereads: &crate::rereads::Rereads, cost: &dyn crate::cost::Cost<T>) -> Vec<Collapsible> {
     items
         .iter()
         .rev()
         .skip(1)
         .filter_map(|item| {
-            let whole_chars = crate::source::whole_chars(item);
-            let pointer = item.pointer().map_or(0, crate::epoch::Block::chars); // map_or: an item that leaves when collapsed costs nothing as a pointer
+            let whole = crate::cost::whole(item, cost);
+            let pointer = item.pointer().map_or(0, |pointer| cost.block(pointer)); // map_or: an item that leaves when collapsed costs nothing as a pointer
             let age = rereads.age(item.id());
-            (whole_chars > pointer).then(|| Collapsible { whole_chars, saves_chars: whole_chars - pointer, age, hazard: rereads.hazard(age) })
+            (whole > pointer).then(|| Collapsible { whole, saves: whole - pointer, age, hazard: rereads.hazard(age) })
         })
         .collect()
 }
 
-/// One growing source at a start (`view::Claim::growing`), in the caller's unit.
+/// One growing source at a start (`view::Claim::growing`), every size in the caller's cost.
 #[derive(Clone, Debug)]
 pub struct Growing<'a> {
     /// What the caller's rule gives it: kept when it cannot be measured.
     pub share: usize,
-    /// The caller's units per character of this source (its tokens per char).
-    pub per_char: f64,
-    /// Its floor with its newest item whole, in chars: the least a measured start gives it.
-    pub base_chars: usize,
-    /// What of it her collapsed log lays down byte for byte, in chars.
-    pub logged_chars: usize,
+    /// Its floor with its newest item whole: the least a measured start gives it.
+    pub base: usize,
+    /// What of it her collapsed log lays down byte for byte.
+    pub logged: usize,
     /// Its items carry acts, so their re-reads are measured.
     pub instrumented: bool,
     pub collapsible: &'a [Collapsible],
@@ -126,12 +125,12 @@ pub fn choose(room: Room, growing: &[Growing<'_>]) -> Depth {
 /// One walk over the `measured` sources' items, youngest first; `Err` names a source that reached
 /// an Unmeasured age while still keeping items.
 fn walk(w: f64, g: f64, growing: &[Growing<'_>], measured: &[bool]) -> Result<Chosen, usize> {
-    let kept_log: f64 = growing.iter().map(|source| source.logged_chars as f64 * source.per_char).sum();
+    let kept_log: f64 = growing.iter().map(|source| source.logged as f64).sum();
     // A measured source starts at its floor with its newest item whole; the rest keep their share.
     let base: Vec<f64> = growing
         .iter()
         .zip(measured)
-        .map(|(source, measured)| if *measured { source.base_chars as f64 * source.per_char } else { source.share as f64 })
+        .map(|(source, measured)| if *measured { source.base as f64 } else { source.share as f64 })
         .collect();
     let mut s: f64 = base.iter().sum();
     let miss = |s: f64| if s < w { g * (s - kept_log).max(0.0) / (w - s) } else { f64::INFINITY };
@@ -146,8 +145,7 @@ fn walk(w: f64, g: f64, growing: &[Growing<'_>], measured: &[bool]) -> Result<Ch
     let mut closed = vec![false; growing.len()];
     let (mut collapsed, mut kept, mut rereads, mut observed, mut reread) = (0usize, 0usize, 0.0f64, 0.0f64, 0.0f64);
     for (index, item) in candidates {
-        let per_char = growing[index].per_char;
-        let (whole, saves) = (item.whole_chars as f64 * per_char, item.saves_chars as f64 * per_char);
+        let (whole, saves) = (item.whole as f64, item.saves as f64);
         let hazard = item.hazard.per_act();
         let keep = !closed[index] && s + saves + g <= w && {
             let Some(hazard) = hazard else { return Err(index) };
@@ -179,11 +177,11 @@ mod tests {
 
     /// An instrumented source at a 1,000-char floor with its 2,000-char newest item.
     fn source(collapsible: &[Collapsible], share: usize) -> Growing<'_> {
-        Growing { share, per_char: 1.0, base_chars: 3_000, logged_chars: 0, instrumented: true, collapsible }
+        Growing { share, base: 3_000, logged: 0, instrumented: true, collapsible }
     }
 
-    fn item(age: u64, whole_chars: usize, events: f64, exposure: f64) -> Collapsible {
-        Collapsible { whole_chars, saves_chars: whole_chars - 100, age, hazard: Hazard::Measured(Tally { exposure, events }) }
+    fn item(age: u64, whole: usize, events: f64, exposure: f64) -> Collapsible {
+        Collapsible { whole, saves: whole - 100, age, hazard: Hazard::Measured(Tally { exposure, events }) }
     }
 
     fn room() -> Room {
@@ -216,7 +214,7 @@ mod tests {
     // caller's rule in place; an unmeasured age past where the walk already collapses does not.
     #[test]
     fn unmeasured_keeps_the_callers_share() {
-        let unmeasured = [Collapsible { whole_chars: 5_000, saves_chars: 4_900, age: 2, hazard: Hazard::Unmeasured }];
+        let unmeasured = [Collapsible { whole: 5_000, saves: 4_900, age: 2, hazard: Hazard::Unmeasured }];
         assert_eq!(choose(room(), &[source(&unmeasured, 30_000)]), Depth::Unmeasured);
         let measured = [item(3, 5_000, 0.0, 100.0)];
         assert_eq!(choose(Room { per_act: None, ..room() }, &[source(&measured, 30_000)]), Depth::Unmeasured);
@@ -227,7 +225,7 @@ mod tests {
         };
         assert_eq!(chosen.measured, vec![true, false]);
         assert_eq!(chosen.shares[1], 12_000, "the conversation keeps its share");
-        let past = [item(1, 5_000, 0.0, 1_000.0), Collapsible { whole_chars: 5_000, saves_chars: 4_900, age: 300, hazard: Hazard::Unmeasured }];
+        let past = [item(1, 5_000, 0.0, 1_000.0), Collapsible { whole: 5_000, saves: 4_900, age: 300, hazard: Hazard::Unmeasured }];
         let Depth::Chosen(chosen) = choose(room(), &[source(&past, 30_000)]) else {
             panic!("the walk collapses before the unmeasured age");
         };

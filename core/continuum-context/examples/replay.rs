@@ -145,7 +145,7 @@ fn captured(key: String, full: String) -> Item<String> {
 /// goes to sources by priority level, highest first, sources of one level sharing in
 /// proportion to what each wants. (In the core this is `flex_allocate`.)
 fn allocate(claims: &[continuum_context::view::Claim], budget: usize) -> Vec<usize> {
-    let mut grants: Vec<usize> = claims.iter().map(|claim| claim.floor_chars).collect();
+    let mut grants: Vec<usize> = claims.iter().map(|claim| claim.floor).collect();
     let mut spare = budget.saturating_sub(grants.iter().sum());
     let mut levels: Vec<u8> = claims.iter().map(|claim| claim.priority).collect();
     levels.sort_unstable_by(|a, b| b.cmp(a));
@@ -153,7 +153,7 @@ fn allocate(claims: &[continuum_context::view::Claim], budget: usize) -> Vec<usi
     for level in levels {
         let wants: Vec<(usize, usize)> = (0..claims.len())
             .filter(|index| claims[*index].priority == level)
-            .map(|index| (index, claims[index].full_chars.saturating_sub(grants[index])))
+            .map(|index| (index, claims[index].full.saturating_sub(grants[index])))
             .collect();
         let wanted: usize = wants.iter().map(|(_, want)| want).sum();
         let given = wanted.min(spare);
@@ -192,7 +192,7 @@ fn start(rule: Rule, claims: &[continuum_context::view::Claim], available: usize
             claims
                 .iter()
                 .zip(granted)
-                .map(|(claim, grant)| if grant >= claim.full_chars { claim.full_chars } else { grant / 2 })
+                .map(|(claim, grant)| if grant >= claim.full { claim.full } else { grant / 2 })
                 .collect()
         }
         Rule::Reserved => reserved(claims, available, per_act, share),
@@ -216,13 +216,13 @@ fn measured(claims: &[continuum_context::view::Claim], available: usize, per_act
     let (_, growable) = growable(claims, available);
     let lowest = claims.iter().map(|claim| claim.priority).min().unwrap_or(0); // unwrap_or: no claims means nothing to grant
     let at: Vec<usize> = (0..claims.len()).filter(|&index| claims[index].priority == lowest).collect();
-    let weighed: Vec<Growing<'_>> = at.iter().map(|&index| claims[index].growing(grants[index], 1.0)).collect();
+    let weighed: Vec<Growing<'_>> = at.iter().map(|&index| claims[index].growing(grants[index])).collect();
     let half: usize = weighed.iter().map(|source| source.share).sum();
     match choose(Room { growable, per_act }, &weighed) {
         Depth::Unmeasured => (grants, None),
         Depth::Chosen(chosen) => {
             for (&index, &chosen_share) in at.iter().zip(&chosen.shares) {
-                grants[index] = chosen_share.max(claims[index].floor_chars).min(claims[index].full_chars);
+                grants[index] = chosen_share.max(claims[index].floor).min(claims[index].full);
             }
             (grants, Some((chosen, half)))
         }
@@ -456,27 +456,27 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         previous_head = Some(&cut.head);
         let head_chars = cut.head.chars().count();
         let available = window.saturating_sub(head_chars + tail_chars);
-        let whole = |claims: &[continuum_context::view::Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+        let whole = |claims: &[continuum_context::view::Claim]| claims.iter().map(|claim| claim.full).collect();
         let open = match view.as_mut() {
-            None => view.insert(View::start(vec![cut.head.clone()], &refs, whole)?.0),
+            None => view.insert(View::start(&continuum_context::cost::Chars, vec![cut.head.clone()], &refs, whole)?.0),
             Some(open) => {
                 open.advance(&refs);
                 open
             }
         };
         if trace {
-            let whole: usize = continuum_context::view::claims(&refs).iter().map(|c| c.full_chars).sum();
+            let whole: usize = continuum_context::view::claims(&continuum_context::cost::Chars, &refs).iter().map(|c| c.full).sum();
             eprintln!("  act: view {} chars (head included) of {} it may hold; sources whole {whole}, tail {tail_chars}", open.chars(), head_chars + available);
         }
         // Admission first (`View::readmit`, the core's `fit_view`): an arrival too large for
         // what the act grants arrives as its pointer, and only a view still over turns over.
-        if admit && open.chars() > head_chars + available && open.readmit(&refs, head_chars + available, (head_chars + available) / 2).is_some() && open.chars() <= head_chars + available {
+        if admit && open.chars() > head_chars + available && open.readmit(&continuum_context::cost::Chars, &refs, head_chars + available, (head_chars + available) / 2).is_some() && open.chars() <= head_chars + available {
             admitted += 1;
         }
         let turned = open.chars() > head_chars + available;
         if turned {
             let per_act = open.appended_per_act();
-            let begun = open.turn_over(vec![cut.head.clone()], &refs, |claims| start(rule, claims, available, per_act, share))?;
+            let begun = open.turn_over(&continuum_context::cost::Chars, vec![cut.head.clone()], &refs, |claims| start(rule, claims, available, per_act, share))?;
             collapsed_at_starts += begun.collapsed;
             summarized_at_starts += begun.summarized;
             turnovers += 1;
