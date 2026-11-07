@@ -31,15 +31,13 @@ impl ServingDaemonModule {
     pub(super) fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
-        let pool = launch_pool(
-            footprint_for(model).as_ref(),
-            self.planned_budget.lock().map_or(0, |b| b.usable_bytes), // map_or: no plan computed yet is no sampled budget, which launch_pool reads as 0 exactly as before
-            served_ctx,
-            lanes,
-            sequences,
-            model.context_window,
-            self.seated_for(model),
-        );
+        // Each lock is taken and released in its own statement: a guard made inside a call's
+        // argument list lives to the end of the statement, so reading the budget there while
+        // `seated_for` locks it again deadlocked the reconcile and wedged the core's boot (the M5,
+        // 2026-11-07 19:11Z: no module past grid-capacity initialized, the IPC socket never bound).
+        let usable = self.planned_budget.lock().map_or(0, |b| b.usable_bytes); // map_or: no plan computed yet is no sampled budget, which launch_pool reads as 0 exactly as before
+        let seated = self.seated_for(model);
+        let pool = launch_pool(footprint_for(model).as_ref(), usable, served_ctx, lanes, sequences, model.context_window, seated);
         // `-c` is the CLI's `slots x per-slot`: the pool carried in that shape, not anyone's window.
         let per_slot = u32::try_from(pool / u64::from(sequences)).unwrap_or(u32::MAX); // unwrap_or: a pool over u32 x sequences is no real engine; the CLI caps it
         (per_slot, sequences)
