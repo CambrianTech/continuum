@@ -61,3 +61,16 @@ The ratchet: for every registered tool at every level, a value generated from th
 ## Order
 
 Pattern 2's boot deadline goes first, because a wedge takes the whole node. Next comes pattern 1's admission wait in place of parking. Then pattern 3's typed budget and need, and pattern 4's all-tools round-trip ratchet. Each lands with its ledger class going to zero on the next live read.
+
+## Review answers (Codex, 2026-11-07)
+
+- **The admission wait has states, not immortality.**
+  - **Tell apart a transient shortage from an incompatible demand.** A transient shortage waits for capacity to free. An incompatible demand is one whose irreducible rung exceeds what the model can physically hold.
+  - **A wait wakes on a named transition:** eligibility, a replan, or a placement or owner change. It can be cancelled by her or by her activity.
+  - **An incompatible demand never waits forever.** It is a typed result that asks for a different placement (grid) or model.
+- **A schema-generated sample is not an all-instance proof.** Pattern 4 keeps two things:
+  - **structural schema equivalence** at every callable level, for every tool;
+  - **decoder tests** covering unions, refs, required fields and constraints.
+  Custom `Deserialize` validations that the JSON schema can't express need explicit fixtures. The ratchet lives on the existing `CommandSpec` conformance boundary, not in a parallel registry (card 9ad69f13, Codex).
+- **A writer's retry first reconciles an uncertain append** under the existing owner (receipt or tail check) before it replays, so a retry never duplicates.
+- **"Last known good" is bounded.** A last-good measurement counts only when it matches the current engine incarnation and config, and it expires. Stale capacity never stands in for a measurement.
