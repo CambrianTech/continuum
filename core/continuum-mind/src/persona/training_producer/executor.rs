@@ -472,7 +472,6 @@ impl TurnCreditCapture {
         match result {
             Ok(_) => {
                 self.superseded.clear();
-                crate::cognition::health_ledger::note_credit_staged();
                 continuum_base::probe!(
                     class = "training.credit.staged",
                     persona = %self.persona_name,

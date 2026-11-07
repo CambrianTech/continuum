@@ -8,6 +8,8 @@ pub mod card_facts;
 /// Each work verb's precondition over (card, actor): what may execute, and what she is shown she
 /// can do (STATE-DRIVEN-SURFACE.md).
 pub mod work_preconditions;
+/// What on a board no reviewer can judge yet, and the next move it owes her.
+pub mod review_queue;
 /// The handoff record: her state at the seam, written before a stop, read first on wake
 /// (card 49b5e806).
 pub mod handoff;

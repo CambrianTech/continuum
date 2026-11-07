@@ -17,6 +17,7 @@ use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::card_facts::state_str;
 use crate::cognition::work_preconditions::{CardRole, Held};
 use crate::cognition::workspace::{EndedClaim, HeldWork};
+use crate::cognition::review_queue::NextMove;
 
 /// The occurrence of a held card's rendering: its card, the state entry it belongs to, and the
 /// rendered projection itself (`whole`).
@@ -53,9 +54,11 @@ impl HeldWorkStream {
         let head = format!("[my work] card {id} \"{}\": {role}, {state}{stance}", card.title);
         let mut lines = vec![head];
         lines.extend(submission_fact(held));
+        lines.extend(held.next.as_ref().map(|next| next_move_line(next, &id)));
         lines.push(format!("you can: {can}"));
         let whole = lines.join("\n");
-        let pointer = format!("[my work] card {id} \"{}\" {state}: you can {can}", card.title);
+        let next = held.next.as_ref().map(|next| format!("; next: {}", next.verb().offered())).unwrap_or_default(); // unwrap_or_default: no next move = nothing to add
+        let pointer = format!("[my work] card {id} \"{}\" {state}: you can {can}{next}", card.title);
         Item::whole(held_card_element(self.persona, held, &whole), Cause::Root(Origin::ActivityStart), card.card_id.as_uuid().to_string(), ContextMessage::user(whole))
             .with_pointer(ContextMessage::user(pointer))
     }
@@ -93,6 +96,19 @@ fn submission_fact(held: &Held) -> Option<String> {
     card.submissions
         .first()
         .map(|latest| format!("your latest submission: {}", shown_form(latest.submission_id.as_uuid())))
+}
+
+/// Her card's next move, rendered from its type: the verb under the name her tool list offers it
+/// (`WorkVerb::offered`) and the card it acts on.
+fn next_move_line(next: &NextMove, id: &str) -> String {
+    match next {
+        NextMove::SubmitLinkedPullRequest { pull_request } => format!(
+            "next: your pull request #{} is linked to this card but was never submitted, so no reviewer can judge it \
+             and it cannot reach your credit: call {} with card_id {id}",
+            pull_request.number,
+            next.verb().offered()
+        ),
+    }
 }
 
 impl Source<ContextMessage> for HeldWorkStream {
@@ -159,6 +175,27 @@ mod tests {
         }
         assert!(!text.contains("work/submit,") && !text.ends_with("work/submit"), "a reviewer never submits: {text}");
         assert!(items[0].pointer().is_some_and(|p| p.text().contains("work/review")), "collapsed, she still sees her moves");
+    }
+
+    // what this catches: Benchy's #5791 on the M5, 2026-11-07, a PR linked to her held card with no
+    // submission, so no reviewer could judge it and nothing told her. Her item names the submit move
+    // under the name her tool list offers (never the slash form), with the card, and so does its
+    // pointer.
+    #[test]
+    fn a_linked_pr_with_no_submission_is_her_next_move() {
+        let mut card = held(1, CardState::Review, None, 10).card;
+        card.pull_request = Some(airc_work::PullRequestRef {
+            repo: airc_work::RepoId::new("acme/continuum").expect("a fixed, valid repo id"), // expect: a literal RepoId accepts
+            number: 5791,
+            head: airc_work::BranchName::new("benchy/fix").expect("a valid branch"), // expect: a literal branch
+            base: airc_work::BranchName::new("canary").expect("a valid branch"),     // expect: as above
+        });
+        let held = Held::of(card, her(), FIXTURE_NOW_MS, 10).expect("she owns the fixture"); // expect: the fixture names her owner
+        let items = stream(vec![held], None).items();
+        let text = items[0].full().text();
+        assert!(text.contains("pull request #5791") && text.contains("call work_submit with card_id"), "{text}");
+        assert_eq!(text.matches("work_submit").count(), 1, "rendered once: {text}");
+        assert!(items[0].pointer().is_some_and(|p| p.text().contains("next: work_submit")), "collapsed, the move stays");
     }
 
     // what this catches (Codex on the occurrence contract): an occurrence keyed by card and state

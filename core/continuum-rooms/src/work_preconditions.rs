@@ -91,6 +91,26 @@ impl WorkVerb {
         }
     }
 
+    /// The verb's declared aliases, the first being the name her tool list offers it under. The
+    /// mind's work commands declare `ALIASES` from this, so the alias has one owner.
+    pub const fn aliases(self) -> &'static [&'static str] {
+        match self {
+            WorkVerb::Claim => &["claim_task"],
+            WorkVerb::Heartbeat => &["heartbeat_task", "extend_claim"],
+            WorkVerb::Note => &["ledger", "note_task"],
+            WorkVerb::Release => &["release_task"],
+            WorkVerb::State => &["update_task", "close_task"],
+            WorkVerb::Review | WorkVerb::Submission | WorkVerb::Submit => &[],
+        }
+    }
+
+    /// The name her tool list offers the verb under (`sdk_codegen::wire_name`, the one function
+    /// her function list is named by), so a move her text names is one she can call.
+    pub fn offered(self) -> String {
+        use continuum_kernel::sdk_codegen::{offer_style_for, primary_alias, wire_name};
+        wire_name(self.command(), primary_alias(self.aliases()), offer_style_for(None))
+    }
+
     /// What holding this verb's precondition entitles her to besides the verb itself, as command
     /// names or subtrees a tool surface selects: an author edits her checkout to submit, and a
     /// reviewer reads the parent's submission and runs its tests in the checkout under review
@@ -433,6 +453,8 @@ pub struct Held {
     /// The board's `updated_at_ms` at the first read that saw the card in its current state.
     pub entered_ms: u64,
     pub in_hand: Vec<&'static str>,
+    /// The move the card owes before anything else can happen to it (`review_queue::next_move`).
+    pub next: Option<crate::review_queue::NextMove>,
 }
 
 impl Held {
@@ -441,6 +463,7 @@ impl Held {
         (card.owner == Some(holder)).then(|| Self {
             role: CardRole::of(&card),
             in_hand: in_hand(&card, holder, now_ms),
+            next: crate::review_queue::next_move(&card, holder, now_ms),
             entered_ms,
             card,
         })

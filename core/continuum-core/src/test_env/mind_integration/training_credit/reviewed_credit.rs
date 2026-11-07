@@ -71,6 +71,39 @@ use super::*;
         );
     }
 
+    // what this catches: the health line blind to ordinary learning (the M5, 2026-11-07): Aiko's
+    // reviewed credit really settled (acceptance c88bf229) and the line read 0, because only the
+    // benchmark verdict counted. A Passed review by another reviewer, accepted in process, counts
+    // her accepted credit exactly once, at the acceptance write; its replay counts nothing more.
+    #[tokio::test]
+    pub(super) async fn an_accepted_independent_review_counts_her_accepted_credit_once() {
+        use airc_work::WorkEvent;
+        use crate::cognition::health_ledger::credits_accepted_of;
+        let (fx, _capture) = exact_review().await;
+        let (executor, persona, name, reviewer, room) = (fx.executor.clone(), fx.persona, fx.name, fx.reviewer, fx.room);
+        let board = fx.project(vec![(WorkEvent::WorkSubmissionReviewed(fx.pass.clone()), reviewer)]);
+        let (board, review_id) = (&board, fx.pass.review_id);
+        let consume = |conn| async move {
+            reviewed::consume_review_with_boundary(&conn, name, persona, room, board, review_id, &reviewed::SelfReview::NotAdmitted, None)
+                .await
+                .unwrap() // unwrap: the store under test
+                .state
+        };
+        assert_eq!(credits_accepted_of(persona), 0);
+        let submit = continuum_client::mock::MockTransport::new();
+        script_settlement_reply(
+            &submit,
+            &fx.selected,
+            Some(json!({"success":true,"acceptance":{"submissionId":fx.selected.id,"replayed":false}})),
+        );
+        assert_eq!(consume(settlement_connection(executor.clone(), persona, submit, None)).await, reviewed::ReviewedCreditState::Accepted);
+        assert_eq!(credits_accepted_of(persona), 1, "learning that settled is on the line");
+        let never_submit = continuum_client::mock::MockTransport::new();
+        never_submit.respond_to("genome/training-trigger/submit", |_| panic!("an accepted binding must not dispatch again"));
+        assert_eq!(consume(settlement_connection(executor, persona, never_submit, None)).await, reviewed::ReviewedCreditState::Accepted);
+        assert_eq!(credits_accepted_of(persona), 1, "a replay of an accepted credit never counts it twice");
+    }
+
     // what this catches: 6c36c24d — only an accepted independent exact-artifact
     // review may transfer a bound snapshot; lost ACK/replacement/reopen cannot
     // relabel the evidence or submit it under a fresh destination identity.

@@ -143,7 +143,6 @@ pub async fn settle_card_credit_bound(
             submitted = submitted as u64,
             "card verdict checked staged revisions; acknowledged transfers retain inspectable evidence"
         );
-        crate::cognition::health_ledger::note_credit_settled();
     }
     Ok(())
 }
@@ -582,7 +581,8 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
     };
     let mut boards: std::collections::BTreeMap<Uuid, (airc_work::WorkBoardProjection, reviewed::SelfReview)> =
         std::collections::BTreeMap::new();
-    let (mut cards, mut reviews, mut deferred) = (0u64, 0u64, 0u64);
+    let (mut cards, mut reviews) = (0u64, 0u64);
+    let mut tally = super::reconcile_tally::ReconcileTally::default();
     for (room, card) in owned {
         cards += 1;
         let room_id = room.channel.as_uuid();
@@ -609,17 +609,8 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
             board.submission_reviews_for_card(card.card_id).map(|r| r.review_id).collect();
         for review_id in ids {
             reviews += 1;
-            let why = match reviewed::consume_observed_review(&conn, persona_name, observer, room_id, board, review_id, admission).await {
-                Ok(Some(credit)) if credit.state == reviewed::ReviewedCreditState::PolicyUnavailable => {
-                    "the room's review policy could not be read".to_string()
-                }
-                Ok(Some(credit)) if credit.state == reviewed::ReviewedCreditState::ProvenanceHeld => {
-                    "its submission's provenance is held (not staged yet, or shared)".to_string()
-                }
-                Ok(_) => continue,
-                Err(error) => error.to_string(),
-            };
-            deferred += 1;
+            let result = reviewed::consume_observed_review(&conn, persona_name, observer, room_id, board, review_id, admission).await;
+            let Some(why) = tally.note(&result) else { continue };
             continuum_base::probe!(
                 class = "training.credit.review_deferred",
                 persona = %persona_name,
@@ -629,13 +620,23 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
             );
         }
     }
+    use crate::cognition::health_ledger::CreditOutcome as O;
     continuum_base::probe!(
         class = "training.credit.reconciled",
         persona = %persona_name,
         cards,
         reviews,
-        deferred,
-        "registration sent every review already on her boards through the exact path"
+        accepted = tally.of(O::Accepted),
+        failed_review = tally.of(O::FailedReview),
+        unknown_review = tally.of(O::UnknownReview),
+        awaiting_acceptance = tally.of(O::AwaitingAcceptance),
+        independent_review_required = tally.of(O::IndependentReviewRequired),
+        held = tally.of(O::Held),
+        ineligible = tally.of(O::Ineligible),
+        undecided = tally.of(O::Undecided),
+        not_hers = tally.not_hers,
+        errors = tally.errors,
+        "registration sent every review already on her boards through the exact path; each outcome by type"
     );
 }
 

@@ -73,6 +73,7 @@ pub use credit_acceptance_region::{CreditAcceptanceRegion, Resolve};
 mod claim_following;
 pub use claim_following::{ClaimFollowingCapture, OpenCapture};
 mod settle_card_credit_bound;
+mod reconcile_tally;
 pub use settle_card_credit_bound::*;
 
 #[cfg(test)]
