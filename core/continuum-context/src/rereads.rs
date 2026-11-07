@@ -222,6 +222,12 @@ impl Rereads {
         self.acts += 1;
     }
 
+    /// Acts since the last start on her clock: her current epoch's length, what a start closes
+    /// (`crate::motion::Motion::close_epoch`).
+    pub(crate) fn epoch_acts(&self) -> u64 {
+        self.acts.saturating_sub(self.acts_at_start)
+    }
+
     /// How many acts ago her view first held the occurrence `id`: the age its hazard is read at.
     /// An occurrence this clock has not held yet enters her view at this act.
     pub(crate) fn age(&self, id: ElementId) -> u64 {

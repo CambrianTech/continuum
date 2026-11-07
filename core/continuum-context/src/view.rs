@@ -565,7 +565,6 @@ impl<T: Block> View<T> {
 
     pub fn advance(&mut self, sources: &[&dyn Source<T>]) -> Advance {
         self.act = Some(self.epoch.mark());
-        self.motion.act();
         let advance = self.append(sources, None);
         // Her re-requests, aged against what this act shows her (`crate::rereads`).
         let mut rereads = std::mem::take(self.motion.rereads_mut());
