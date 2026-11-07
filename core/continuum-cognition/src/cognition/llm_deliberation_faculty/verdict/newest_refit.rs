@@ -45,11 +45,11 @@ impl LlmDeliberationFaculty {
             return None;
         }
         // The higher of the two prices: the averaged ratio may already charge the result more.
-        let calibration = match newest_result_price(refused, requested) {
+        let result_calibration = match newest_result_price(refused, requested) {
             Some(price) if denser(price, calibration) => price,
             _ => calibration,
         };
-        let refit = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual);
+        let refit = self.prompt_view_with_result_price(ws, fit_window, calibration, result_calibration, visual);
         if !refit.newest_result_reduced {
             return None;
         }

@@ -526,6 +526,7 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
     let charged = view.estimated_prompt_tokens + view.completion_reserve as usize;
     let ledger = |context_window: usize| BudgetLedger {
         context_window: context_window as u32,
+        newest_extra: 0,
         calibration: PromptCalibration::default(),
         completion_reserve: view.completion_reserve as usize,
         system: &view.system,
@@ -540,6 +541,11 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
         view_grant: 0,
     };
     assert!(faculty.budget_violation(&ledger(charged)).is_none(), "at its window the prompt complies");
+    let mut scoped = ledger(charged + 7);
+    scoped.newest_extra = 7;
+    assert!(faculty.budget_violation(&scoped).is_none(), "the result surcharge fits exactly");
+    scoped.newest_extra = 8;
+    assert!(faculty.budget_violation(&scoped).is_some(), "one extra result token must refuse without changing the actual window");
     let fault = faculty.budget_violation(&ledger(charged - 1)).expect("one token over is a budget fault");
     assert!(fault.contains("prompt budget violated"), "{fault}");
     assert!(view.messages.first().is_some_and(|m| m.content_text().contains("turn_0 ")), "nothing was cut to comply");

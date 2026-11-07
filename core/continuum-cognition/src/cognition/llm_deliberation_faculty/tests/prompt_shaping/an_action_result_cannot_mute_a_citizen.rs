@@ -219,6 +219,31 @@ mod the_newest_result_over_her_window {
         assert_eq!(tool_results(&view), vec![("call-aris".to_owned(), small)]);
     }
 
+    // Windows 2026-11-06: a 902-token result inherited all 2,573 excess tokens,
+    // then its 3.85x component price was applied to unrelated framing as well.
+    #[tokio::test]
+    async fn a_small_results_refusal_price_does_not_multiply_unrelated_framing() {
+        const WINDOW: u32 = 31_218; // Recorded served window, not a policy budget.
+        let content = "result line\n".repeat(225);
+        let mut faculty = faculty_at(&content, Arc::new(HeuristicInferenceAdapter::new()), WINDOW);
+        faculty.system_prompt = "stable framing ".repeat(5_000);
+        let ws = Workspace::new("what does the evidence say?");
+        let first = faculty.prompt_view_with_visual_feedback(&ws, WINDOW, PromptCalibration::default(), None);
+        assert!(first.capacity_error.is_none() && !first.newest_result_reduced, "fixture must fit before refusal");
+        let measured = u32::try_from(first.estimated_prompt_tokens + 2_573).expect("fixture count");
+        assert!(measured + first.completion_reserve > WINDOW, "fixture refusal must exceed prompt plus reply capacity");
+        let global = PromptCalibration::observed(first.estimated_prompt_tokens, measured, Some(first.input_identity)).expect("positive fixture");
+        let ordinarily_priced = faculty.prompt_view_with_visual_feedback(&ws, WINDOW, global, None);
+        assert!(ordinarily_priced.capacity_error.is_none(), "whole-prompt measurement fits this fixture");
+        let adapter = refusing(&[]);
+        adapter.rejections.lock().expect("fixture queue").push_back(crate::ai::inference_error::InferenceError::ContextExceeded { requested: measured, available: WINDOW });
+        let mut acting = faculty_at(&content, adapter.clone(), WINDOW);
+        acting.system_prompt = faculty.system_prompt.clone();
+        let outcome = acting.contribute(&ws).await.expect("fixture verdict");
+        assert!(outcome.fault.is_none() && outcome.capacity_refusal.is_none(), "a component price must not inflate unrelated framing: {:?}, capacity={:?}, estimate={}, newest={}, measured={}", outcome.fault, outcome.capacity_refusal, first.estimated_prompt_tokens, first.newest_result_tokens, measured);
+        assert_eq!(adapter.seen.lock().expect("fixture requests").len(), 2, "one refusal and one corrected request");
+    }
+
     /// Her refusal on the M5 (2026-10-27 04:29Z), exactly as the engine counted it.
     fn aris_refusal(requested: u32) -> crate::ai::inference_error::InferenceError {
         crate::ai::inference_error::InferenceError::ContextExceeded { requested, available: ARIS_WINDOW }
