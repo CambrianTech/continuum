@@ -14,10 +14,12 @@ impl SentOutput {
     }
 }
 
-pub(super) struct PreparedCommand {
-    prompt: serde_json::Map<String, serde_json::Value>,
-    intent: OutputIntent,
-    fixed_body: Option<Vec<u8>>,
+pub(super) struct PreparedCommand { wire: PreparedWire }
+
+enum PreparedWire {
+    ProviderControlled { body: Vec<u8> },
+    Fixed { reply: std::num::NonZeroU32, body: Vec<u8> },
+    Adaptive { required_reply: std::num::NonZeroU32, prompt: serde_json::Map<String, serde_json::Value> },
 }
 
 pub(super) struct ResolvedCommand {
@@ -49,49 +51,66 @@ impl PreparedCommand {
                 }
             }
         }
-        // Output limits are not template input on this counted backend. Retain
-        // every other finalized field; the serializer alone supplies max_tokens.
-        let fixed_body = (matches!(intent, OutputIntent::ProviderControlled) || (matches!(intent, OutputIntent::Fixed(_)) && prompt.contains_key("max_tokens"))).then(|| body.to_vec());
-        prompt.remove("max_tokens");
-        Ok(Self { prompt, intent, fixed_body })
+        // Only adaptive commands defer serialization until their quote resolves.
+        // Fixed and provider-controlled commands always own executable wire bytes.
+        match intent {
+            OutputIntent::ProviderControlled => Ok(Self { wire: PreparedWire::ProviderControlled { body: body.to_vec() } }),
+            OutputIntent::Fixed(reply) => {
+                let body = if prompt.contains_key("max_tokens") {
+                    body.to_vec()
+                } else {
+                    Self::encode_body(&prompt, reply.get())?
+                };
+                Ok(Self { wire: PreparedWire::Fixed { reply, body } })
+            }
+            OutputIntent::UseAdmittedRoom { required_reply } => {
+                prompt.remove("max_tokens");
+                Ok(Self { wire: PreparedWire::Adaptive { required_reply, prompt } })
+            }
+        }
+    }
+
+    fn intent(&self) -> OutputIntent {
+        match &self.wire {
+            PreparedWire::ProviderControlled { .. } => OutputIntent::ProviderControlled,
+            PreparedWire::Fixed { reply, .. } => OutputIntent::Fixed(*reply),
+            PreparedWire::Adaptive { required_reply, .. } => OutputIntent::UseAdmittedRoom { required_reply: *required_reply },
+        }
     }
 
     pub fn quote_builder(&self, template: &reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder, InferenceError> {
-        let reply = match self.intent {
-            OutputIntent::ProviderControlled => return self.fixed()?.builder(template),
-            OutputIntent::Fixed(reply) => reply.get(),
-            OutputIntent::UseAdmittedRoom { required_reply } => required_reply.get(),
+        let body = match &self.wire {
+            PreparedWire::Adaptive { required_reply, prompt } => Self::encode_body(prompt, required_reply.get())?,
+            PreparedWire::ProviderControlled { body } | PreparedWire::Fixed { body, .. } => body.clone(),
         };
-        template.try_clone().map(|builder| self.body(reply).map(|body| builder.body(body)))
-            .ok_or_else(|| InferenceError::Protocol("generation headers are not cloneable".into()))?
+        template.try_clone().map(|builder| builder.body(body))
+            .ok_or_else(|| InferenceError::Protocol("generation headers are not cloneable".into()))
     }
 
     pub fn fixed(&self) -> Result<ResolvedCommand, InferenceError> {
-        match self.intent {
-            OutputIntent::ProviderControlled => Ok(ResolvedCommand { body: self.fixed_body.clone().ok_or_else(|| InferenceError::Protocol("missing provider-controlled wire body".into()))?, output: SentOutput::ProviderControlled }),
-            OutputIntent::Fixed(reply) => self.encode(SentOutput::ProviderFixed(reply)),
-            OutputIntent::UseAdmittedRoom { .. } => Err(InferenceError::Protocol(
+        match &self.wire {
+            PreparedWire::ProviderControlled { body } => Ok(ResolvedCommand { body: body.clone(), output: SentOutput::ProviderControlled }),
+            PreparedWire::Fixed { reply, body } => Ok(ResolvedCommand { body: body.clone(), output: SentOutput::ProviderFixed(*reply) }),
+            PreparedWire::Adaptive { .. } => Err(InferenceError::Protocol(
                 "adaptive output requires an owned endpoint, exact quote and grant lease".into())),
         }
     }
 
     pub fn counted(&self, prompt: u32, physical: u32, admitted: u32) -> Result<ResolvedCommand, InferenceError> {
-        let room = self.intent.resolve(prompt, physical, admitted)
+        let room = self.intent().resolve(prompt, physical, admitted)
             .map_err(|short| InferenceError::ContextExceeded { requested: short.prompt, available: short.window })?;
-        self.encode(SentOutput::Counted(room))
+        let body = match &self.wire {
+            PreparedWire::ProviderControlled { body } | PreparedWire::Fixed { body, .. } => body.clone(),
+            PreparedWire::Adaptive { prompt, .. } => Self::encode_body(prompt, room.reply)?,
+        };
+        Ok(ResolvedCommand { body, output: SentOutput::Counted(room) })
     }
 
-    fn encode(&self, output: SentOutput) -> Result<ResolvedCommand, InferenceError> {
-        Ok(ResolvedCommand { body: self.body(output.reply().ok_or_else(|| InferenceError::Protocol("resolved output needs an explicit cap".into()))?)?, output })
-    }
-
-    fn body(&self, reply: u32) -> Result<Vec<u8>, InferenceError> {
-        if let Some(body) = &self.fixed_body { return Ok(body.clone()); }
-        let mut body = self.prompt.clone();
+    fn encode_body(prompt: &serde_json::Map<String, serde_json::Value>, reply: u32) -> Result<Vec<u8>, InferenceError> {
+        let mut body = prompt.clone();
         body.insert("max_tokens".into(), serde_json::json!(reply));
-        let body = serde_json::to_vec(&body) // wire boundary: immutable generation request sent to the model HTTP endpoint
-            .map_err(|e| InferenceError::Protocol(format!("generation serialization failed: {e}")))?;
-        Ok(body)
+        serde_json::to_vec(&body) // wire boundary: generation request sent to the model HTTP endpoint
+            .map_err(|e| InferenceError::Protocol(format!("generation serialization failed: {e}")))
     }
 }
 
@@ -138,6 +157,18 @@ mod tests {
         assert_eq!(command.fixed().expect("fixed").body, bytes);
         assert_eq!(command.counted(40, 100, 90).expect("fits").body, bytes);
         assert!(command.counted(58, 100, 90).is_err(), "strict one-token boundary remains enforced");
+    }
+
+    #[test]
+    fn omitted_fixed_limit_is_serialized_once_for_quote_and_send() {
+        let command = PreparedCommand::new(br#"{"messages":[],"model":"fixture"}"#,
+            OutputIntent::Fixed(NonZeroU32::new(32).expect("positive fixture"))).expect("fixed command");
+        let template = reqwest::Client::new().post("http://localhost/generate");
+        let quote = command.quote_builder(&template).expect("quote").build().expect("request");
+        let sent = command.counted(40, 100, 90).expect("counted command");
+        assert_eq!(quote.body().and_then(|body| body.as_bytes()), Some(sent.body.as_slice()));
+        let value: serde_json::Value = serde_json::from_slice(&sent.body).expect("wire");
+        assert_eq!(value["max_tokens"], 32);
     }
 
     #[test]
