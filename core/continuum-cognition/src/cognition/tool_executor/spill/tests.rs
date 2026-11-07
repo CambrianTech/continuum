@@ -234,7 +234,7 @@
             .map(|n| format!("L{n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let inv = investigate(&body, None, 0, Some((10, 12)), 50, 8000).expect("ok");
+        let inv = investigate(&body, None, 0, Some(LineRange { start: 10, end: Some(12) }), 50, 8000).expect("ok");
         assert!(inv.rendered.contains("    10 L10"));
         assert!(inv.rendered.contains("    12 L12"));
         assert!(!inv.rendered.contains("L13"));
@@ -296,7 +296,7 @@
     #[test]
     fn long_unselected_lines_are_counted_without_materialization() {
         let body = format!("{}\n{}", "x".repeat(10000), "short\n".repeat(100));
-        let range = investigate(&body, None, 0, Some((2, 3)), 50, 256).unwrap();
+        let range = investigate(&body, None, 0, Some(LineRange { start: 2, end: Some(3) }), 50, 256).unwrap();
         assert_eq!(range.total_lines, 101);
         assert_eq!(range.total_bytes, body.len());
         assert!(range.rendered.contains("     2 short"));
@@ -446,7 +446,7 @@
         let path = resolve_in(&class(dir.path()), persona, &handle).unwrap();
         assert_eq!(path, persona_dir(dir.path(), persona).join(format!("{handle}.log")), "filed under her directory of the class");
         assert_eq!(fs::read_to_string(&path).unwrap(), body, "reopens byte-identical");
-        let page = investigate_file(&path, None, 0, Some((1, 2)), Some(10), Allowance::Chars(4096)).unwrap();
+        let page = investigate_file(&path, None, 0, Some(LineRange { start: 1, end: Some(2) }), Some(10), Allowance::Chars(4096)).unwrap();
         assert!(page.rendered.contains("     1 line one") && page.rendered.contains("     2 line two"), "{}", page.rendered);
     }
 

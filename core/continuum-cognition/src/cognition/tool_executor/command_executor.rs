@@ -693,6 +693,8 @@ impl ToolExecutor for CommandToolExecutor {
                     };
                     let (verdict, dispatch_handle) =
                         crate::sdk_codegen::project_result(&canonical, &value);
+                    // Read before the value is rendered: a reopen's custody is the output it reopened.
+                    let reopened = super::tool_output::reopened_source(&canonical, &value);
                     if verdict == ActVerdict::Undecodable {
                         continuum_base::probe!(
                             class = "tool.call.outcome_undecodable",
@@ -747,8 +749,12 @@ impl ToolExecutor for CommandToolExecutor {
                         // fragment. The HANDLE rides the result type-level so working
                         // memory can leave a queryable pointer when this result is later
                         // evicted (collapse, never delete — 2026-08-24).
-                        let (content, custody) =
-                            pin.whole_or_handle(full, ctx.persona_id).into_parts();
+                        // A reopen's result is a VIEW of the output it reopened: that output is its
+                        // custody, never a new save of the selection (`reopened_source`).
+                        let (content, custody) = match reopened {
+                            Some(source) => (full, crate::ai::types::ResultCustody::Whole { handle: source }),
+                            None => pin.whole_or_handle(full, ctx.persona_id).into_parts(),
+                        };
                         NativeToolResult {
                             tool_use_id,
                             content,

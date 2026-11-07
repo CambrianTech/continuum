@@ -157,6 +157,19 @@ impl WorkingMemory {
         record.handle.clone().ok_or(ActOutputRefusal::Unsaved { act: seq })
     }
 
+    /// The saved output `act` names: [`Self::saved_handle`] for a number, her newest act with a
+    /// saved output for a call that named none.
+    pub fn reopened_handle(&self, act: ActRef) -> Result<String, ActOutputRefusal> {
+        match act {
+            ActRef::Numbered(seq) => self.saved_handle(seq),
+            ActRef::NewestSaved => {
+                let actions = self.actions.lock();
+                let newest = actions.records().rev().find_map(|record| record.handle.clone());
+                newest.ok_or(ActOutputRefusal::NothingSaved)
+            }
+        }
+    }
+
     /// The provenance of the act whose native results the turn carries: `[result #n; room …;
     /// operation …; output handle …]`, the label every result of hers wears in her view.
     /// A label, not a header: rendered as "Full result of your most recent action (…):"
