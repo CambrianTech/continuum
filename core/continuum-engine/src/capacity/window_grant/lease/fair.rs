@@ -12,6 +12,9 @@ pub struct FairGrantState {
     engine: Option<EngineIncarnation>,
     baseline: BTreeMap<uuid::Uuid, u64>,
     waiters: VecDeque<uuid::Uuid>,
+    /// Each mind's receipt revision when her grant last changed: she is settled (her grant may
+    /// shrink toward her share) once a receipt past it says she served on it.
+    changed: BTreeMap<uuid::Uuid, u64>,
 }
 
 /// The callback publishes while the reservation lock is held. Tickets leave only after the
@@ -64,6 +67,7 @@ impl Reservations {
             .unwrap_or_default(); // no publication on this engine holds no grants
         let live: BTreeSet<_> = demands.iter().map(|d| d.mind).collect();
         fair.baseline.retain(|mind, _| live.contains(mind));
+        fair.changed.retain(|mind, _| live.contains(mind));
         fair.waiters.retain(|mind| demands.iter().any(|d| d.mind == *mind
             && d.need.get() <= d.ceiling && d.need.get() <= pool));
         for demand in demands {
@@ -136,6 +140,7 @@ impl Reservations {
                 .filter(|d| !state.retiring.contains_key(&d.mind))
                 .map(|d| Demand {
                     in_flight: false,
+                    settled: fair.changed.get(&d.mind).is_none_or(|at| state.receipts.get(&d.mind).is_some_and(|(_, served)| served > at)),
                     ..*d
                 })
                 .collect();
@@ -211,6 +216,12 @@ impl Reservations {
                     .any(|d| d.mind == *mind && *tokens >= d.need.get())
             })
         });
+        for d in demands {
+            if grants.get(&d.mind) != held.get(&d.mind) {
+                let served = state.receipts.get(&d.mind).map_or(0, |(_, revision)| *revision); // no receipt yet: she has served nothing on any grant
+                fair.changed.insert(d.mind, served);
+            }
+        }
         let mut next = PoolGrants {
             pool_tokens: pool,
             per_sequence_cap: ceiling,

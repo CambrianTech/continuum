@@ -12,7 +12,7 @@ fn a_refused_holder_can_grow_into_free_capacity_without_a_terminal_receipt() {
     let mut current = None;
     for floor in [40, 60] {
         let demands = [(a, floor), (b, 40)].map(|(mind, n)| Demand {
-            mind, need: t(n), target: t(n), wish: t(n), in_flight: false, ceiling: 100,
+            mind, need: t(n), target: t(n), wish: t(n), in_flight: false, settled: true, ceiling: 100,
         });
         let before = current.clone();
         let (_, tickets) = owner.fair_publish(&mut fair, &demands, 100, 100, engine(),
@@ -29,7 +29,7 @@ fn a_large_waiter_accumulates_reclaimed_capacity_across_two_holders() {
     let owner = Box::leak(Box::new(Reservations::new()));
     let (a, b, c) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(3));
     let demands = [(a, 20), (b, 60), (c, 90)].map(|(mind, n)| Demand {
-        mind, need: t(n), target: t(n), wish: t(n), in_flight: false, ceiling: 100,
+        mind, need: t(n), target: t(n), wish: t(n), in_flight: false, settled: true, ceiling: 100,
     });
     let mut fair = FairGrantState::default();
     let mut current = None;
@@ -93,7 +93,7 @@ async fn http_reclamation_proof_publishes_the_waiter_without_freeing_early() {
     let a = key.persona();
     let b = uuid::Uuid::new_v4();
     let demands = [a, b].map(|mind| Demand {
-        mind, need: t(60), target: t(60), wish: t(60), in_flight: false, ceiling: 100,
+        mind, need: t(60), target: t(60), wish: t(60), in_flight: false, settled: true, ceiling: 100,
     });
     let mut fair = FairGrantState::default();
     let mut current = None;
@@ -137,6 +137,7 @@ fn tick(
             target: t(60),
             wish: t(60),
             in_flight: *mind == minds[0],
+            settled: true,
             ceiling: 100,
         })
         .collect();
