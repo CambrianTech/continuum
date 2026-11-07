@@ -16,6 +16,8 @@ use super::*;
 pub(in super::super) struct BudgetLedger<'a> {
     pub context_window: u32,
     pub calibration: PromptCalibration,
+    /// Extra charge for the newest result above the whole-prompt calibration.
+    pub newest_extra: usize,
     pub completion_reserve: usize,
     pub system: &'a str,
     pub tool_tokens: usize,
@@ -39,7 +41,7 @@ impl LlmDeliberationFaculty {
         let estimated = Self::framing_cost(ledger.system)
             .saturating_add(Self::messages_cost(ledger.messages))
             .saturating_add(ledger.tool_tokens);
-        let charged = charge(estimated).saturating_add(ledger.completion_reserve);
+        let charged = charge(estimated).saturating_add(ledger.newest_extra).saturating_add(ledger.completion_reserve);
         if charged <= ledger.context_window as usize {
             return None;
         }
@@ -47,7 +49,7 @@ impl LlmDeliberationFaculty {
         let grounding_end = view_end.saturating_add(ledger.grounding_len).min(ledger.messages.len());
         let view_cost = charge(Self::messages_cost(&ledger.messages[..view_end]));
         let grounding_cost = charge(Self::messages_cost(&ledger.messages[view_end..grounding_end]));
-        let tail_cost = charge(Self::messages_cost(&ledger.messages[grounding_end..]));
+        let tail_cost = charge(Self::messages_cost(&ledger.messages[grounding_end..])).saturating_add(ledger.newest_extra);
         let framing_cost = charge(Self::framing_cost(ledger.system).saturating_add(ledger.tool_tokens));
         continuum_base::probe!(
             class = "delib.budget.violated",

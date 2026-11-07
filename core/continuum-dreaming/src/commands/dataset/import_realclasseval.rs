@@ -38,4 +38,29 @@ mod tests {
             crate::sdk_codegen::AccessLevel::Privileged
         ));
     }
+    // The command boundary admits exactly one complete source, before disk access.
+    #[test]
+    fn realclasseval_source_is_complete_at_command_boundary() {
+        use serde_json::json;
+        for invalid in [
+            json!({}),
+            json!({"source": {"kind": "csv", "csvPath": "rows.csv"}}),
+            json!({"source": {"kind": "repository"}}),
+            json!({"source": {"kind": "csv", "csvPath": "rows.csv", "testsDir": null}}),
+            json!({"source": {"kind": "repository", "repoDir": "repo", "csvPath": "rows.csv"}}),
+        ] {
+            assert!(serde_json::from_value::<ImportRealClassEvalParams>(invalid).is_err());
+        }
+        for source in [
+            json!({"kind": "repository", "repoDir": "repo"}),
+            json!({"kind": "csv", "csvPath": "rows.csv", "testsDir": "tests"}),
+        ] {
+            let params: ImportRealClassEvalParams =
+                serde_json::from_value(json!({"source": source.clone()})).unwrap();
+            assert_eq!(serde_json::to_value(params).unwrap()["source"], source);
+        }
+        let schema = serde_json::to_value(schemars::schema_for!(ImportRealClassEvalParams)).unwrap();
+        assert!(schema["required"].as_array().unwrap().contains(&json!("source")));
+    }
+
 }

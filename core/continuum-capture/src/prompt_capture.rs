@@ -275,14 +275,7 @@ impl JsonlPromptCaptureSink {
     pub fn open(dir: &Path, persona_id: Uuid) -> std::io::Result<Self> {
         static OWNERS: LazyLock<owner::CaptureOwners<Store>> =
             LazyLock::new(owner::CaptureOwners::default);
-        let path = dir.join(format!("{persona_id}.jsonl"));
-        let store = OWNERS.acquire(&path, |path| {
-            Store::open(
-                path.parent()
-                    .ok_or_else(|| std::io::Error::other("capture directory missing"))?,
-                persona_id,
-            )
-        })?;
+        let store = OWNERS.acquire(dir, persona_id, Store::open)?;
         Ok(Self {
             persona_id,
             session_id: Uuid::new_v4(),
@@ -448,245 +441,9 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
     }
 }
 
-/// One recorded call read back from its capture: the exact request she was served
-/// and, when the call finished, the exact response she gave. The single decode of a
-/// schema-4 capture; replay and the training lifter both read through it.
-pub struct CapturedCall {
-    pub context_window: Option<u32>,
-    pub request: TextGenerationRequest,
-    pub response: Option<TextGenerationResponse>,
-}
-
-/// Decode a capture's detail into its typed call. Refuses a capture with integrity
-/// issues or an older schema rather than guessing at its shape.
-pub fn decode(mut detail: PlaybackDetail) -> Result<CapturedCall, String> {
-    if !detail.issues.is_empty() {
-        return Err(format!("capture integrity: {}", detail.issues.join("; ")));
-    }
-    let mut submitted = detail
-        .submitted
-        .take()
-        .ok_or("capture has no submitted request")?;
-    if submitted.get("schema_version").and_then(|v| v.as_u64()) != Some(4) {
-        return Err("unsupported captured-request schema; schema 4 is required".into());
-    }
-    let context_window: Option<u32> = serde_json::from_value(submitted["context_window"].take()) // BOUNDARY: decode the persisted capture header, preserving unknown window as None.
-        .map_err(|e| format!("captured context window: {e}"))?;
-    let request: TextGenerationRequest = serde_json::from_value(submitted["request"].take()) // BOUNDARY: the on-disk request payload into the adapter's typed input.
-        .map_err(|e| format!("captured request: {e}"))?;
-    let response = match detail.terminal.as_mut().and_then(|v| v.get_mut("response")) {
-        Some(value) if !value.is_null() => Some(
-            serde_json::from_value::<TextGenerationResponse>(value.take()) // BOUNDARY: the persisted terminal response.
-                .map_err(|e| format!("captured response: {e}"))?,
-        ),
-        _ => None,
-    };
-    Ok(CapturedCall {
-        context_window,
-        request,
-        response,
-    })
-}
-
-/// Old combined rows already cross the JSON compatibility boundary. Inspect
-/// only their typed status fields, without cloning/deserializing the transcript.
-fn recorded_response_failed(response: &serde_json::Value) -> bool {
-    let finish = response
-        .get("finishReason")
-        .or_else(|| response.get("finish_reason"));
-    finish.is_some_and(|value| {
-        <continuum_engine::ai::types::FinishReason as serde::Deserialize<'_>>::deserialize(value)
-            .map_or(true, |reason| {
-                reason == continuum_engine::ai::types::FinishReason::Error
-            })
-    }) || response.get("error").is_some_and(|error| !error.is_null())
-}
-
-/// Compatibility projection for existing prompt inspection and dataset miners.
-/// Only a completed response is a training candidate. Failed/cancelled/pending
-/// calls remain visible through playback, never promoted to completed examples.
-pub fn legacy_projection(
-    detail: PlaybackDetail,
-) -> std::io::Result<Option<serde_json::Value>> {
-    let malformed =
-        || std::io::Error::other("completed capture payload is missing required structure");
-    let mut submitted = detail.submitted.ok_or_else(malformed)?;
-    if matches!(detail.header.status, CallStatus::Legacy) {
-        if submitted
-            .get("response")
-            .is_some_and(recorded_response_failed)
-        {
-            return Ok(None);
-        }
-        if let Some(record) = submitted.as_object_mut() {
-            record.insert("provenance".into(), "legacy_missing".into());
-        }
-        return Ok(Some(submitted));
-    }
-    if !matches!(detail.header.status, CallStatus::Completed) {
-        return Ok(None);
-    }
-    let mut terminal = detail.terminal.ok_or_else(malformed)?;
-    if terminal
-        .get("response")
-        .is_some_and(recorded_response_failed)
-    {
-        return Ok(None);
-    }
-    let request = submitted.get_mut("request").ok_or_else(malformed)?.take();
-    let mut record = submitted.as_object().ok_or_else(malformed)?.clone();
-    record.remove("event");
-    record.insert(
-        "system".into(),
-        request
-            .get("systemPrompt")
-            .cloned()
-            .unwrap_or(serde_json::Value::String(String::new())), // Legacy combined records represent an absent optional system prompt as empty.
-    );
-    record.insert(
-        "messages".into(),
-        request.get("messages").ok_or_else(malformed)?.clone(),
-    );
-    record.insert(
-        "response".into(),
-        terminal.get_mut("response").ok_or_else(malformed)?.take(),
-    );
-    record.insert("iteration".into(), 0.into());
-    record.insert(
-        "offered_tools".into(),
-        serde_json::Value::Array(
-            request
-                .get("tools")
-                .and_then(|v| v.as_array())
-                .into_iter()
-                .flatten()
-                .filter_map(|tool| tool.get("name").cloned())
-                .collect(),
-        ),
-    );
-    record.insert("request".into(), request);
-    if !detail.issues.is_empty() {
-        record.insert("capture_issues".into(), serde_json::json!(detail.issues));
-    }
-    Ok(Some(record.into()))
-}
-
-/// Compatibility reader for a single capture segment. Index scans are bounded
-/// by retention; payload IO is bounded separately. Offline dataset consumers use
-/// the same completed-call projection instead of guessing lifecycle joins.
-pub fn completed_file(path: &Path, limit: usize) -> std::io::Result<Vec<serde_json::Value>> {
-    use std::io::Read;
-    const READ_BUDGET: u64 = 64 * 1024 * 1024;
-    let limit = limit.max(1);
-    let mut file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    if !path.with_extension("pidx").try_exists()? {
-        if file.metadata()?.len() > READ_BUDGET {
-            return Err(std::io::Error::other("legacy capture exceeds bounded read capacity; split/archive the capture before importing"));
-        }
-        let mut text = String::new();
-        (&mut file)
-            .take(READ_BUDGET + 1)
-            .read_to_string(&mut text)?;
-        if text.len() as u64 > READ_BUDGET {
-            return Err(std::io::Error::other(
-                "legacy capture grew beyond bounded read capacity",
-            ));
-        }
-        let mut result = Vec::new();
-        for line in text.lines().rev().filter(|line| !line.trim().is_empty()) {
-            let mut value: serde_json::Value = serde_json::from_str(line)?;
-            if value.get("schema_version").and_then(|v| v.as_u64()) == Some(4) {
-                return Err(std::io::Error::other(
-                    "lifecycle capture has no index; complete history is unavailable",
-                ));
-            }
-            if value
-                .get("response")
-                .is_some_and(|response| !recorded_response_failed(response))
-            {
-                if let Some(record) = value.as_object_mut() {
-                    record.insert("provenance".into(), "legacy_missing".into());
-                }
-                result.push(value);
-            }
-            if result.len() >= limit {
-                break;
-            }
-        }
-        result.reverse();
-        return Ok(result);
-    }
-    let filename = path
-        .file_stem()
-        .and_then(|v| v.to_str())
-        .ok_or_else(|| std::io::Error::other("invalid capture file name"))?;
-    let persona = Uuid::parse_str(filename.strip_suffix(".prev").unwrap_or(filename)) // Both current and previous segment names encode the same persona UUID.
-        .map_err(|_| std::io::Error::other("capture file name must identify its persona"))?;
-    let dir = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("capture directory missing"))?;
-    let generation = store::file_generation(path)?;
-    let mut position = None;
-    let mut calls = Vec::new();
-    let mut bytes = 0_u64;
-    loop {
-        let page = page(dir, persona, position.as_deref(), false, store::PAGE_LIMIT)?;
-        for header in page.entries.into_iter().rev().filter(|header| {
-            header.request.generation == generation
-                || header
-                    .terminal
-                    .as_ref()
-                    .is_some_and(|terminal| terminal.generation == generation)
-        }) {
-            let own_generation = header
-                .terminal
-                .as_ref()
-                .unwrap_or(&header.request) // A submission/legacy entry owns its request payload; terminal entries own their terminal payload.
-                .generation;
-            if own_generation != generation
-                || !matches!(header.status, CallStatus::Completed | CallStatus::Legacy)
-            {
-                continue;
-            }
-            bytes = bytes
-                .saturating_add(header.request.bytes)
-                .saturating_add(header.terminal.as_ref().map_or(0, |v| v.bytes));
-            if bytes > READ_BUDGET {
-                return Err(std::io::Error::other(
-                    "completed capture page exceeds payload read capacity; request fewer calls",
-                ));
-            }
-            let captured = detail(dir, persona, &header.cursor)?;
-            if captured.submitted.is_none()
-                || (matches!(captured.header.status, CallStatus::Completed)
-                    && captured.terminal.is_none())
-            {
-                return Err(std::io::Error::other(format!(
-                    "completed capture payload unavailable: {}",
-                    captured.issues.join("; ")
-                )));
-            }
-            // A retained legacy row can contain a typed provider failure even
-            // though old capture code called every Ok(response) completed.
-            if let Some(value) = legacy_projection(captured)? {
-                calls.push(value);
-            }
-            if calls.len() >= limit {
-                break;
-            }
-        }
-        if calls.len() >= limit || page.older.is_none() {
-            break;
-        }
-        position = page.older;
-    }
-    calls.reverse();
-    Ok(calls)
-}
+#[path = "prompt_capture_playback.rs"]
+mod playback;
+pub use playback::{completed_file, decode, legacy_projection, CapturedCall, CaptureSegment};
 
 #[cfg(test)]
 mod tests {
@@ -914,7 +671,8 @@ mod tests {
         let path = dir.path().join(format!("{}.jsonl", Uuid::new_v4()));
         std::fs::write(&path, "{\"schema_version\":3,\"system\":\"identity\",\"messages\":[],\"response\":{\"text\":\"answer\"}}\n")
             .expect("legacy capture");
-        let rows = completed_file(&path, 1).expect("bounded legacy reader");
+        let segment = CaptureSegment::from_file_name(dir.path(), path.file_name().expect("fixture file name")).expect("fixture segment");
+        let rows = completed_file(&segment, 1).expect("bounded legacy reader");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["response"]["text"], "answer");
         assert_eq!(rows[0]["provenance"], "legacy_missing");
@@ -932,7 +690,8 @@ mod tests {
         ].into_iter().map(|response| serde_json::json!({"schema_version": 3, "response": response}).to_string())
             .collect::<Vec<_>>().join("\n");
         std::fs::write(&path, rows).expect("legacy file");
-        let rows = completed_file(&path, 10).expect("legacy compatibility projection");
+        let segment = CaptureSegment::from_file_name(dir.path(), "legacy.jsonl").expect("fixture segment");
+        let rows = completed_file(&segment, 10).expect("legacy compatibility projection");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["response"]["text"], "valid answer");
         assert_eq!(rows[1]["response"]["finishReason"], "length");

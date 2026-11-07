@@ -33,7 +33,7 @@
 
 use continuum_base::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
-use crate::ai::types::{DispatchTerms, ResponseFormat, Think, ThinkBudget};
+use crate::ai::types::{ResponseFormat, Think, ThinkBudget};
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use crate::ai::adapter::global_registry;
 use serde::{Deserialize, Serialize};
@@ -190,7 +190,7 @@ pub async fn evaluate_validate_response(
 
     // No think: today's behaviour (its Text format closed the think), now stated by the one owner.
     let response: TextGenerationResponse = adapter
-        .generate_under(inference_request, DispatchTerms::thinking(Think::Budget(ThinkBudget(0))))
+        .generate_under(inference_request, Think::Budget(ThinkBudget(0)))
         .await
         .map_err(|e| ValidateResponseError::Generation(e.to_string()))?;
 

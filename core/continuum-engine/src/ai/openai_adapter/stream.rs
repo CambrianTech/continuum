@@ -6,13 +6,22 @@ use crate::inference::sse_stream::warn_if_decode_collapsed;
 use continuum_tool_protocol::UnparsedArguments;
 
 impl OpenAICompatibleAdapter {
-    /// Generate `request` under `terms` (`DispatchTerms::default()` = none beyond the lane's own).
+    /// Generate `request` under explicit dispatch terms.
     pub(super) async fn stream_checked(
         &self,
-        request: TextGenerationRequest,
+        mut request: TextGenerationRequest,
         terms: crate::ai::types::DispatchTerms,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        terms.validate_request(&request)?;
+        // Adaptive authority requires this provider's exact-count capability and
+        // a lease; dispatch subsequently verifies the actual owned endpoint.
+        if matches!(terms.output, crate::ai::reply_room::OutputIntent::UseAdmittedRoom { .. })
+            && (!self.exact_prompt_admission() || !terms.admission.is_some_and(|a| a.lease.is_some())) {
+            return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted {
+                model: request.model.clone().unwrap_or_default(), // unnamed model is the adapter's default label
+            });
+        }
         // Only require API key for providers that need auth
         if self.config.requires_auth && self.api_key.is_none() {
             return Err(format!("{} not initialized", self.config.name).into());
@@ -481,7 +490,7 @@ impl OpenAICompatibleAdapter {
             (Some(admission), Some(Ok(persona))) => Some(crate::inference::lane_send::DispatchAdmission {
                 persona,
                 admission,
-                engine: _admission.as_ref().and_then(|admitted| admitted.engine_incarnation()),
+                endpoint: _admission.as_ref(),
             }),
             (Some(_), _) => {
                 return Err(crate::ai::inference_error::InferenceError::Protocol(
@@ -493,6 +502,7 @@ impl OpenAICompatibleAdapter {
         // Pre-flight the single-resident gateway (the serving guard, now its own module:
         // `inference::serving_guard`). Refuses when the lane cannot guarantee `model` or
         // the prompt alone overflows the served slot (#175).
+        if !(exact_prompt_quote && dispatch_admission.is_some_and(|a| a.endpoint.is_some())) {
         crate::inference::serving_guard::guard_resident_model(
             &self.config,
             self.dedicated_lane,
@@ -501,6 +511,7 @@ impl OpenAICompatibleAdapter {
             request.persona_id.as_deref().unwrap_or("non-persona"), // unwrap_or: no persona = a non-persona caller in the refusal text
         )
         .await?;
+        }
 
         // The managed engine quotes the finalized body before generation; the heuristic
         // preflight above checks residency only so an overestimate cannot refuse a fit.
@@ -515,13 +526,13 @@ impl OpenAICompatibleAdapter {
             request.turn_bound,
             crate::inference::lane_send::FillReceipt {
                 model,
+                output: terms.output,
                 prompt_tokens,
                 prompt_quote: exact_prompt_quote
                     .then_some(crate::inference::lane_send::PromptQuote {
                         client: &self.client,
                         dedicated_lane: self.dedicated_lane,
                         caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
-                        reply: request.max_tokens.unwrap_or(0), // absent max_tokens reserves no explicit output allowance
                         request_id: &request_id,
                     }),
                 admission: dispatch_admission,
@@ -529,13 +540,20 @@ impl OpenAICompatibleAdapter {
             &mut grant_reservation,
             // Only a POST touches her slot: an admission refused before it keeps her residency.
             || {
-                if let Some(admission) = _admission.as_mut() {
+                if let Some(admission) = _admission.as_ref() {
                     admission.dispatching();
                 }
             },
         )
         .await?;
 
+        request.max_tokens = response.output.reply();
+        let dispatch = match response.output {
+            crate::inference::lane_send::SentOutput::ProviderControlled => crate::ai::reply_room::DispatchReceipt::Unadmitted,
+            crate::inference::lane_send::SentOutput::Counted(room) => crate::ai::reply_room::DispatchReceipt::Counted { room },
+            crate::inference::lane_send::SentOutput::ProviderFixed(reply) => crate::ai::reply_room::DispatchReceipt::ProviderFixed { reply: reply.get() },
+        };
+        let response = response.response;
         // Consume the SSE stream — `inference::sse_stream` (watchdogs, prefill liveness,
         // token/tool accumulation). The locals below are what the inline loop bound.
         let local_lane = self.targets_local_serving_lane();
@@ -833,6 +851,7 @@ impl OpenAICompatibleAdapter {
         }
 
         Ok(TextGenerationResponse {
+            dispatch,
             text,
             finish_reason,
             model: resp_model.unwrap_or_else(|| model.to_string()),

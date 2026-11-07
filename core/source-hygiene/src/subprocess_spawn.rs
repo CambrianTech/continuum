@@ -41,8 +41,16 @@ pub const ANSWERED_BY_A_LIBRARY: &[(&str, &str)] = &[
 
 /// The program a spawn names, when it names one as a string literal. `Command::new(&bin)`
 /// and friends are dynamic and read as `None` — counted in the total, not per program.
+fn command_constructor(code: &str) -> Option<usize> {
+    code.match_indices("Command::new(").find_map(|(offset, _)| {
+        let previous = code[..offset].chars().next_back();
+        (!previous.is_some_and(|c| c.is_alphanumeric() || c == '_'))
+            .then_some(offset)
+    })
+}
+
 pub fn spawned_program(code: &str) -> Option<&str> {
-    let i = code.find("Command::new(")? + "Command::new(".len();
+    let i = command_constructor(code)? + "Command::new(".len();
     let rest = code[i..].trim_start();
     let lit = rest.strip_prefix('"')?;
     let end = lit.find('"')?;
@@ -60,7 +68,7 @@ impl SourceRule for SubprocessSpawn {
         let mut out = Vec::new();
         for (line_no, line) in file.production_lines() {
             let (code, _comment) = split_code_and_comment(line);
-            if !code.contains("Command::new(") {
+            if command_constructor(code).is_none() {
                 continue;
             }
             out.push(Violation {
@@ -114,6 +122,18 @@ mod tests {
             )
         });
         eprintln!("spawn sites: {total}; by program: {:?}", per.iter().map(|(p, v)| (*p, v.len())).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn constructor_matching_requires_an_identifier_boundary() {
+        for code in ["PreparedCommand::new(body)", "MyCommand::new(x)", "_Command::new(x)"] {
+            assert_eq!(command_constructor(code), None, "{code}");
+            assert_eq!(spawned_program(code), None);
+        }
+        for code in ["Command::new(bin)", "std::process::Command::new(bin)", "(Command::new(bin))"] {
+            assert!(command_constructor(code).is_some(), "{code}");
+        }
+        assert_eq!(spawned_program(r#"PreparedCommand::new(x); Command::new("git")"#), Some("git"));
     }
 
     #[test]

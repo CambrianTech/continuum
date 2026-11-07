@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::types::RequestAdmission;
+use super::types::{RequestAdmission, TextGenerationRequest};
 
 /// The terms a generation is DISPATCHED under, beside its request: what its caller decided when it
 /// rendered the request, which the adapter enforces at dispatch
@@ -24,10 +24,15 @@ use super::types::RequestAdmission;
 /// it cannot reach `generate_text` without stating terms:
 /// ```compile_fail,E0423
 /// use continuum_engine::ai::types::{DispatchTerms, Think};
-/// let _ = continuum_engine::ai::adapter::Dispatched(DispatchTerms::thinking(Think::ModelDefault));
+/// let terms = DispatchTerms {
+///     output: continuum_engine::ai::reply_room::OutputIntent::ProviderControlled,
+///     admission: None, think: Think::ModelDefault,
+/// };
+/// let _ = continuum_engine::ai::adapter::Dispatched(terms);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DispatchTerms {
+    pub output: crate::ai::reply_room::OutputIntent,
     /// The strict admission guard it was rendered under; `None` = the lane's own window only.
     pub admission: Option<RequestAdmission>,
     /// What its think may be: a mind's turn carries the bound sized from her MEASURED output need
@@ -36,9 +41,32 @@ pub struct DispatchTerms {
 }
 
 impl DispatchTerms {
-    /// Terms that state only a think: no admission beyond the lane's own window.
-    pub fn thinking(think: Think) -> Self {
-        Self { admission: None, think }
+    /// General requests retain their explicit cap, or explicitly leave output to the provider.
+    /// A bounded think still requires a caller output cap; no admission authority is inferred.
+    pub fn for_request(request: &TextGenerationRequest, think: Think) -> Result<Self, crate::ai::inference_error::InferenceError> {
+        if request.max_tokens.is_some() { return Self::fixed(request, think); }
+        let terms = Self { output: crate::ai::reply_room::OutputIntent::ProviderControlled, admission: None, think };
+        terms.validate_request(request)?;
+        Ok(terms)
+    }
+
+    pub fn validate_request(&self, request: &TextGenerationRequest) -> Result<(), crate::ai::inference_error::InferenceError> {
+        if matches!(self.output, crate::ai::reply_room::OutputIntent::ProviderControlled) && (request.max_tokens.is_some() || self.admission.is_some() || matches!(self.think, Think::Budget(_))) {
+            return Err(crate::ai::inference_error::InferenceError::Protocol("provider-controlled generation cannot carry admission or output bounds".into()));
+        }
+        if let crate::ai::reply_room::OutputIntent::Fixed(reply) = self.output {
+            if request.max_tokens != Some(reply.get()) {
+                return Err(crate::ai::inference_error::InferenceError::Protocol("fixed dispatch limit disagrees with request".into()));
+            }
+        }
+        Ok(())
+    }
+    /// Ordinary callers explicitly retain their positive requested limit. A
+    /// missing limit is a contract refusal, never a guessed provider allowance.
+    pub fn fixed(request: &TextGenerationRequest, think: Think) -> Result<Self, crate::ai::inference_error::InferenceError> {
+        let reply = request.max_tokens.and_then(std::num::NonZeroU32::new)
+            .ok_or_else(|| crate::ai::inference_error::InferenceError::Protocol("fixed dispatch requires a positive output limit".into()))?;
+        Ok(Self { output: crate::ai::reply_room::OutputIntent::Fixed(reply), admission: None, think })
     }
 }
 

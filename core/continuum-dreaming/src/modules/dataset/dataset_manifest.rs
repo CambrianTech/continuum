@@ -215,6 +215,15 @@ pub struct FromCapturesParams {
     pub include_forks: bool,
 }
 
+/// Complete input choices for a RealClassEval import.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+#[ts(export, export_to = "../../../protocol/typescript/dataset/RealClassEvalSource.ts")]
+pub enum RealClassEvalSource {
+    Repository { repo_dir: String },
+    Csv { csv_path: String, tests_dir: String },
+}
+
 /// Params for `dataset/import-realclasseval`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -223,18 +232,8 @@ pub struct FromCapturesParams {
     export_to = "../../../protocol/typescript/dataset/ImportRealClassEvalParams.ts"
 )]
 pub struct ImportRealClassEvalParams {
-    /// Path to a cloned RealClassEval repo root (auto-discovers CSVs + tests).
-    #[serde(default)]
-    #[ts(optional)]
-    pub repo_dir: Option<String>,
-    /// Legacy single-CSV mode: path to one RealClassEval CSV (requires `testsDir`).
-    #[serde(default)]
-    #[ts(optional)]
-    pub csv_path: Option<String>,
-    /// Legacy single-CSV mode: directory of PYNGUIN test files.
-    #[serde(default)]
-    #[ts(optional)]
-    pub tests_dir: Option<String>,
+    /// Select a repository or a complete CSV/test-directory pair.
+    pub source: RealClassEvalSource,
     /// Override the output directory (default `<datasets root>/realclasseval`).
     #[serde(default)]
     #[ts(optional)]

@@ -183,9 +183,9 @@ impl AircInferenceTransport for LocalAdapterTransport {
         request: RemoteInferenceRequest,
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
         // The seat honours the requester's think budget exactly as `ai/generate` does.
-        let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::from_wire(request.think));
+        let terms = crate::ai::types::Think::from_wire(request.think);
         let text_response = crate::ai::stream_sinks::drain_generation(|sink| async move {
-            self.adapter.generate_admitted(request.text_request, terms, sink).await.map_err(|e| e.to_string())
+            self.adapter.generate_general(request.text_request, terms, sink).await.map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| RemoteInferenceError::PeerAdapterFailed { message: e })?;

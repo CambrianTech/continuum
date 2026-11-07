@@ -558,6 +558,7 @@
             ..Default::default()
         };
         let response = TextGenerationResponse {
+            dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
             text: "reading it".into(),
             finish_reason: crate::ai::FinishReason::ToolUse,
             model: "m".into(),

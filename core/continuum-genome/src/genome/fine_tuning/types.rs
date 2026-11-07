@@ -261,6 +261,7 @@ pub struct LivedCall {
     /// The request as submitted to the engine: room, grounding, tools, stimulus.
     pub request: crate::ai::types::TextGenerationRequest,
     /// Her response: text, reasoning and tool calls.
+    #[serde(deserialize_with = "continuum_engine::ai::recorded_response::deserialize")]
     pub response: crate::ai::types::TextGenerationResponse,
 }
 
@@ -607,6 +608,23 @@ pub struct JobMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parked_historical_lived_calls_load_without_admission_evidence() {
+        // Live regression 2026-11-06: returning parked examples failed at the
+        // entity decoder because pre-receipt lived responses had no dispatch.
+        let value = serde_json::json!({"prompt":"kept prompt","completion":"kept completion",
+            "lived":{"capture":"recorded-cursor","request":{"messages":[],"model":"recorded-model"},
+                "response":{"text":"kept completion","finishReason":"stop","model":"recorded-model",
+                    "provider":"recorded-provider","usage":{"inputTokens":27221,"outputTokens":100,"totalTokens":27321},
+                    "responseTimeMs":42,"requestId":"recorded-id"}}});
+        let example: TrainingExample = serde_json::from_value(value).expect("historical parked example");
+        let lived = example.lived.expect("lived call retained");
+        assert_eq!(lived.capture, "recorded-cursor");
+        assert_eq!(lived.response.text, example.completion);
+        assert_eq!(lived.response.dispatch, continuum_engine::ai::reply_room::DispatchReceipt::LegacyUnrecorded);
+        assert!(lived.response.dispatch.admitted_reply().is_err());
+    }
 
     // what this catches: the dataset-by-NAME seam's fold contract — a chat
     // {messages} JSONL row (what dataset/from-captures writes) becomes ONE

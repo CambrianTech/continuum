@@ -152,7 +152,7 @@ async fn llamacpp_local_models_coexist_without_metal_oom() {
             ..Default::default()
         };
         let decode_start = std::time::Instant::now();
-        let terms = continuum_core::ai::types::DispatchTerms::thinking(continuum_core::ai::types::Think::ModelDefault);
+        let terms = continuum_core::ai::types::Think::ModelDefault;
         let result = adapter.generate_under(req, terms).await;
         match result {
             Ok(_) => eprintln!(

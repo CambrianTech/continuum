@@ -308,9 +308,9 @@ impl InferenceHandleStore {
 
         // A session's call states no think term yet: the model's own default, as it always ran
         // (measured per-purpose think budgets: card, owner Fable).
-        let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
+        let terms = crate::ai::types::Think::ModelDefault;
         let adapter = &session.adapter;
-        crate::ai::stream_sinks::drain_generation(|sink| adapter.generate_admitted(request, terms, sink)).await.map_err(|e| {
+        crate::ai::stream_sinks::drain_generation(|sink| adapter.generate_general(request, terms, sink)).await.map_err(|e| {
             let e = e.to_string();
             // Adapter errors aren't HandleStoreErrors per se,
             // but the consumer needs them surfaced. Wrap as a

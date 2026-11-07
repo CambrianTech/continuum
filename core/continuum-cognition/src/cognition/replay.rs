@@ -570,6 +570,7 @@ mod tests {
         drop(workspace);
 
         let response = TextGenerationResponse {
+            dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
             text: "The source review is complete.".into(),
             finish_reason: FinishReason::Stop,
             model: "fixture-model".into(),

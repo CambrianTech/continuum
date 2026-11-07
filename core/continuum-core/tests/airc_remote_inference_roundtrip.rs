@@ -155,6 +155,7 @@ async fn round_trip() {
         .expect("fixture setup should succeed");
 
     let canned = TextGenerationResponse {
+        dispatch: continuum_engine::ai::reply_room::DispatchReceipt::Unadmitted,
         text: "pong from the remote peer".to_string(),
         finish_reason: FinishReason::Stop,
         model: "test-model".to_string(),
@@ -206,7 +207,7 @@ async fn round_trip() {
     };
 
     let started = std::time::Instant::now();
-    let terms = continuum_core::ai::types::DispatchTerms::thinking(continuum_core::ai::types::Think::ModelDefault);
+    let terms = continuum_core::ai::types::Think::ModelDefault;
     let response: TextGenerationResponse = adapter
         .generate_under(request, terms)
         .await

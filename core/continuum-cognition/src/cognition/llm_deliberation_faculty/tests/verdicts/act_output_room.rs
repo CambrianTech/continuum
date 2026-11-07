@@ -152,13 +152,9 @@ async fn a_need_past_her_window_is_refused_recorded_and_waits_for_the_governor()
     assert!(cap >= 32_000, "sent with room for her measured need: {cap}");
 }
 
-// what this catches: a dense input after prose samples (code or JSON at ~1 token per estimated
-// token after a ring measured at 0.83). Priced at the ring's lighter bound, the act's cap overruns
-// the window by the engine's exact count; the strict admission guard refuses with that count, the
-// cap is recomputed ONCE from it, and her view is sent unchanged.
+// The dispatch owner resolves recorded prompt counts; cognition consumes its result once.
 #[tokio::test]
-async fn a_denser_prompt_than_her_samples_is_recapped_once_from_the_engines_count() {
-    use crate::ai::inference_error::InferenceError;
+async fn a_recorded_count_resolves_in_the_adapter_without_a_cognition_resend() {
     let home = tempfile::tempdir().expect("isolated fixture emission storage");
     let _native = crate::paths::NativeHomeOverride::install(home.path());
     let (window, persona) = (40_960u32, Uuid::new_v4());
@@ -174,28 +170,15 @@ async fn a_denser_prompt_than_her_samples_is_recapped_once_from_the_engines_coun
     prose.usage.input_tokens = (estimate * 83 / 100) as u32;
     adapter.responses.lock().unwrap().push_front(prose);
     let _ = faculty.contribute(&ws).await.expect("the prose act measured her density");
-    // The next prompt is dense: the engine counts it at its whole estimate.
-    *adapter.on_request.lock().unwrap() = Some(Box::new(move |request| {
-        let exact = (LlmDeliberationFaculty::framing_cost(request.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture, no system prompt costs none
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
-            + request.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of)) as u32; // map_or: no tools, no schemas
-        (exact + request.max_tokens? >= window).then_some(InferenceError::ContextExceeded { requested: exact, available: window })
-    }));
+    // The canned backend's next counter result is explicit recorded data, independent
+    // of the faculty's estimate. Real owned HTTP dispatch is tested in the engine crate.
+    adapter.responses.lock().unwrap().front_mut().expect("next scripted reply").usage.input_tokens = 27221;
     let contribution = faculty.contribute(&ws).await.expect("a verdict");
     assert!(contribution.fault.is_none() && contribution.capacity_refusal.is_none(), "{:?}", contribution.fault);
     let seen = adapter.seen.lock().unwrap();
-    assert_eq!(seen.len(), 3, "the prose act, the dense act refused at its count, and one resend");
-    let (refused, resent) = (&seen[1], &seen[2]);
-    assert_eq!(
-        serde_json::to_value(&refused.messages).unwrap(),
-        serde_json::to_value(&resent.messages).unwrap(),
-        "her view is sent unchanged"
-    );
-    let exact = (LlmDeliberationFaculty::framing_cost(resent.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture
-        + LlmDeliberationFaculty::messages_cost(&resent.messages)
-        + resent.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of)) as u32; // map_or: no tools, no schemas
-    assert_eq!(resent.max_tokens, Some(window - exact - 1), "recapped from the engine's exact count");
-    assert!(resent.max_tokens.unwrap() >= 434, "still past her measured need");
+    assert_eq!(seen.len(), 2, "the prose act and exactly one counted act; no cognition resize retry");
+    assert_eq!(seen[1].max_tokens, Some(window - 27221 - 1));
+    assert!(seen[1].max_tokens.unwrap() >= 434, "the required reply remains intact");
 }
 
 // what this catches: a served-model change. Her density ring is keyed by the model the engine
@@ -223,6 +206,7 @@ async fn a_grant_that_shrinks_before_dispatch_re_renders_her_turn_against_it() {
     let _native = crate::paths::NativeHomeOverride::install(home.path());
     let (rendered, current, persona) = (65_536u32, 16_384u32, Uuid::new_v4());
     let adapter = counted_adapter(1);
+    adapter.responses.lock().unwrap().front_mut().expect("scripted count").usage.input_tokens = 12000;
     adapter
         .rejections
         .lock()
@@ -242,10 +226,9 @@ async fn a_grant_that_shrinks_before_dispatch_re_renders_her_turn_against_it() {
     assert_eq!(terms[0].admission.map(|a| a.window), Some(rendered));
     let admission = terms[1].admission.expect("the re-render carries its admission");
     assert_eq!(admission.window, current, "rendered against the grant she has now");
-    let prompt = LlmDeliberationFaculty::framing_cost(fresh.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture
-        + LlmDeliberationFaculty::messages_cost(&fresh.messages)
-        + fresh.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of); // map_or: no tools, no schemas
-    assert!(prompt + fresh.max_tokens.unwrap_or_default() as usize <= current as usize, "inside her current grant: {prompt}"); // unwrap_or_default: test fixture
+    assert_eq!(fresh.max_tokens, Some(current - 12000 - 1), "reply follows the scripted backend count, not the planner estimate");
+    assert!(12000 + fresh.max_tokens.expect("sent cap") < current, "inside the current grant");
+    assert_ne!(serde_json::to_value(&seen[0].messages).unwrap(), serde_json::to_value(&fresh.messages).unwrap(), "the smaller grant requires a new view");
     drop(seen);
     // Moved again before the next dispatch: refused for capacity and parked, never a third render.
     for grant in [Some(12_000), Some(8_192)] {
@@ -271,6 +254,7 @@ async fn a_prompt_that_eats_the_reserve_is_re_rendered_or_refused_never_sent_pas
     let _native = crate::paths::NativeHomeOverride::install(home.path());
     let (window, persona) = (40_960u32, Uuid::new_v4());
     let adapter = counted_adapter(2);
+    adapter.responses.lock().unwrap().front_mut().expect("refitted prompt count").usage.input_tokens = 23000;
     let mut once = true;
     *adapter.on_request.lock().unwrap() = Some(Box::new(move |_request| { // JUSTIFIED: test fixture lock, never poisoned
         // The engine counts the prompt at all but 200 tokens of the window: below her 434 reserve.
@@ -285,11 +269,9 @@ async fn a_prompt_that_eats_the_reserve_is_re_rendered_or_refused_never_sent_pas
     let seen = adapter.seen.lock().unwrap(); // JUSTIFIED: test fixture lock, never poisoned
     let first = &seen[0];
     for resent in seen.iter().skip(1) {
-        let prompt = LlmDeliberationFaculty::framing_cost(resent.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture
-            + LlmDeliberationFaculty::messages_cost(&resent.messages)
-            + resent.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of); // map_or: no tools, no schemas
-        let cap = resent.max_tokens.unwrap_or_default(); // unwrap_or_default: test fixture
-        assert!(prompt + (cap as usize) < window as usize, "inside the window: {prompt} + {cap}");
+        let cap = resent.max_tokens.expect("sent cap");
+        assert_eq!(cap, window - 23000 - 1, "the refitted request uses its explicit backend quote");
+        assert!(23000 + cap < window, "quoted prompt and sent output fit together");
         assert!(cap >= 434, "never below her reserve: {cap}");
         assert_ne!(
             serde_json::to_value(&resent.messages).unwrap(), // JUSTIFIED: test fixture, serializable messages

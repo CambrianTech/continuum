@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
 pub struct CaptureOwners<T> {
-    owners: Mutex<HashMap<PathBuf, Weak<Mutex<T>>>>,
+    owners: Mutex<HashMap<(PathBuf, uuid::Uuid), Weak<Mutex<T>>>>,
 }
 impl<T> Default for CaptureOwners<T> {
     fn default() -> Self {
@@ -20,17 +20,12 @@ impl<T> Default for CaptureOwners<T> {
 impl<T> CaptureOwners<T> {
     pub fn acquire(
         &self,
-        path: &Path,
-        open: impl FnOnce(&Path) -> io::Result<T>,
+        directory: &Path,
+        persona: uuid::Uuid,
+        open: impl FnOnce(&Path, uuid::Uuid) -> io::Result<T>,
     ) -> io::Result<Arc<Mutex<T>>> {
-        let parent = path
-            .parent()
-            .ok_or_else(|| io::Error::other("capture directory missing"))?;
-        std::fs::create_dir_all(parent)?;
-        let key = parent.canonicalize()?.join(
-            path.file_name()
-                .ok_or_else(|| io::Error::other("capture file name missing"))?,
-        );
+        std::fs::create_dir_all(directory)?;
+        let key = (directory.canonicalize()?, persona);
         let mut owners = self
             .owners
             .lock()
@@ -39,7 +34,7 @@ impl<T> CaptureOwners<T> {
             return Ok(owner);
         }
         owners.retain(|_, owner| owner.strong_count() > 0);
-        let owner = Arc::new(Mutex::new(open(&key)?));
+        let owner = Arc::new(Mutex::new(open(&key.0, key.1)?));
         owners.insert(key, Arc::downgrade(&owner));
         Ok(owner)
     }

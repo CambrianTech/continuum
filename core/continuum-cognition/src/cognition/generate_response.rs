@@ -37,7 +37,7 @@
 //!     when the prompt does not declare room members.
 
 use crate::ai::adapter::InferenceDevice;
-use crate::ai::types::{DispatchTerms, ResponseFormat, Think, ThinkBudget};
+use crate::ai::types::{ResponseFormat, Think, ThinkBudget};
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
 use crate::inference::resource_admission::{ResourceAdmissionError, ResourceAdmissionGate, ResourceAdmissionGuard, ResourceAdmissionPolicy, ResourceAdmissionRequest};
@@ -313,7 +313,7 @@ pub async fn evaluate_response(
     let response: TextGenerationResponse = match tokio::time::timeout(
         Duration::from_millis(timeout_ms),
         // No think: today's behaviour (its Text format closed the think), now stated by the one owner.
-        adapter.generate_under(inference_request, DispatchTerms::thinking(Think::Budget(ThinkBudget(0)))),
+        adapter.generate_under(inference_request, Think::Budget(ThinkBudget(0))),
     )
     .await
     {

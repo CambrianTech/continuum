@@ -195,7 +195,9 @@ impl DatasetService {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            let captures = crate::cognition::prompt_capture::completed_file(&path, usize::MAX)
+            let segment = crate::cognition::prompt_capture::CaptureSegment::from_file_name(&dir, entry.file_name())
+                .map_err(|error| format!("capture {}: {error}", path.display()))?;
+            let captures = crate::cognition::prompt_capture::completed_file(&segment, usize::MAX)
                 .map_err(|error| format!("capture {}: {error}", path.display()))?;
             for cap in captures {
                 if let Some(pid) = p.persona_id.as_ref().map(|r| r.as_str()) {
@@ -270,58 +272,50 @@ impl DatasetService {
         let split_ratio = p.split_ratio;
 
         // Collect (csv_path, tests_dir, is_post_cutoff) pairs
-        let splits: Vec<(PathBuf, PathBuf, bool)> = if let Some(repo_dir) = p.repo_dir.as_deref() {
-            // Auto-discover from repo directory structure
-            let base = PathBuf::from(repo_dir)
-                .join("data")
-                .join("functional_correctness_data");
-            if !base.exists() {
-                return Err(format!(
-                    "RealClassEval repo structure not found at {}. Expected data/functional_correctness_data/",
-                    base.display()
-                ));
-            }
-
-            let mut found = Vec::new();
-            // post_cut-off = unseen by LLMs (post-cutoff)
-            // csn = CodeSearchNet (pre-cutoff)
-            for (dir_name, is_post) in &[("post_cut-off", true), ("csn", false)] {
-                let split_dir = base.join(dir_name);
-                if !split_dir.exists() {
-                    continue;
+        let splits: Vec<(PathBuf, PathBuf, bool)> = match &p.source {
+            RealClassEvalSource::Repository { repo_dir } => {
+                // Auto-discover from repo directory structure
+                let base = PathBuf::from(repo_dir)
+                    .join("data")
+                    .join("functional_correctness_data");
+                if !base.exists() {
+                    return Err(format!(
+                        "RealClassEval repo structure not found at {}. Expected data/functional_correctness_data/",
+                        base.display()
+                    ));
                 }
 
-                // Use no_docstr CSV (most challenging — no docstring hints)
-                let csv_path = split_dir.join("dfs").join("no_docstr.csv");
-                // Tests under pynguin_generated_tests/full_docstr/ (best coverage)
-                let tests_dir = split_dir
-                    .join("pynguin_generated_tests")
-                    .join("full_docstr");
+                let mut found = Vec::new();
+                // post_cut-off = unseen by LLMs (post-cutoff)
+                // csn = CodeSearchNet (pre-cutoff)
+                for (dir_name, is_post) in &[("post_cut-off", true), ("csn", false)] {
+                    let split_dir = base.join(dir_name);
+                    if !split_dir.exists() {
+                        continue;
+                    }
 
-                if csv_path.exists() {
-                    found.push((csv_path, tests_dir, *is_post));
+                    // Use no_docstr CSV (most challenging — no docstring hints)
+                    let csv_path = split_dir.join("dfs").join("no_docstr.csv");
+                    // Tests under pynguin_generated_tests/full_docstr/ (best coverage)
+                    let tests_dir = split_dir
+                        .join("pynguin_generated_tests")
+                        .join("full_docstr");
+
+                    if csv_path.exists() {
+                        found.push((csv_path, tests_dir, *is_post));
+                    }
                 }
-            }
 
-            if found.is_empty() {
-                return Err(format!(
-                    "No RealClassEval CSVs found under {}. Expected {{csn,post_cut-off}}/dfs/no_docstr.csv",
-                    base.display()
-                ));
+                if found.is_empty() {
+                    return Err(format!(
+                        "No RealClassEval CSVs found under {}. Expected {{csn,post_cut-off}}/dfs/no_docstr.csv",
+                        base.display()
+                    ));
+                }
+                found
             }
-            found
-        } else if let Some(csv_path) = p.csv_path.as_deref() {
-            // Legacy single-CSV mode
-            let tests_dir = p
-                .tests_dir
-                .as_deref()
-                .ok_or("Missing required param: testsDir (or use repoDir for auto-discovery)")?;
-            vec![(PathBuf::from(csv_path), PathBuf::from(tests_dir), false)]
-        } else {
-            return Err(
-                "Missing required param: repoDir (path to cloned RealClassEval repo) or csvPath"
-                    .to_string(),
-            );
+            RealClassEvalSource::Csv { csv_path, tests_dir } =>
+                vec![(PathBuf::from(csv_path), PathBuf::from(tests_dir), false)],
         };
 
         let mut all_examples: Vec<Value> = Vec::new();

@@ -183,7 +183,7 @@ async fn persona_command_pump_makes_persona_addressable_for_ai_generate() {
     let transport = AircLiveTransport::new(Arc::clone(loop_back.peer_b()), loop_back.peer_a_id());
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
-    let terms = continuum_core::ai::types::DispatchTerms::thinking(continuum_core::ai::types::Think::ModelDefault);
+    let terms = continuum_core::ai::types::Think::ModelDefault;
     let response = continuum_core::ai::adapter::DispatchTermsPolicy::generate_under(&adapter, request("ping the pump"), terms)
         .await
         .expect(

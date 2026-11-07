@@ -182,7 +182,7 @@ async fn scheduler_reports_per_seq_kv_bytes_for_persona() {
     };
 
     eprintln!("[ftp-int] dispatching generate_text with persona_id={persona_id}");
-    let terms = continuum_core::ai::types::DispatchTerms::thinking(continuum_core::ai::types::Think::ModelDefault);
+    let terms = continuum_core::ai::types::Think::ModelDefault;
     let response = adapter.generate_under(request, terms).await.expect("generate_under");
     eprintln!(
         "[ftp-int] generate_text returned: text={:?} tokens={}",

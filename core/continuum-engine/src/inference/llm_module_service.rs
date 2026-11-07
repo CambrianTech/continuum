@@ -413,8 +413,8 @@ pub(super) async fn run_adapter_inference(
 
     // The module's request states no think term yet: the model's own default, as it always ran
     // (measured per-purpose think budgets: card, owner Fable).
-    let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
-    let response = crate::ai::stream_sinks::drain_generation(|sink| adapter.generate_admitted(adapter_request, terms, sink))
+    let terms = crate::ai::types::Think::ModelDefault;
+    let response = crate::ai::stream_sinks::drain_generation(|sink| adapter.generate_general(adapter_request, terms, sink))
         .await
         .map_err(|e| format!("inference-llm: adapter generate_text failed: {e}"))?;
 
@@ -868,6 +868,7 @@ mod tests {
 
     fn canned_adapter_response() -> TextGenerationResponse {
         TextGenerationResponse {
+            dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
             text: "stub adapter completion".to_string(),
             finish_reason: AdapterFinishReason::Stop,
             model: "stub-model".to_string(),

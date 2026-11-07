@@ -97,7 +97,7 @@ pub fn select_failure_message(
 pub async fn generate_text(
     registry: &AdapterRegistry,
     request: TextGenerationRequest,
-    terms: crate::ai::types::DispatchTerms,
+    terms: crate::ai::types::Think,
 ) -> Result<TextGenerationResponse, String> {
     // Device = `Auto` — this convenience helper trusts what the
     // caller specified via `request.provider` + `request.model`.
@@ -121,7 +121,7 @@ pub async fn generate_text(
             )
         })?;
 
-    let mut response = crate::ai::stream_sinks::drain_generation(|sink| adapter.generate_admitted(request, terms, sink))
+    let mut response = crate::ai::stream_sinks::drain_generation(|sink| adapter.generate_general(request, terms, sink))
         .await
         .map_err(|e| e.to_string())?;
 

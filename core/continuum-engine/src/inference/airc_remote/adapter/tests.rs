@@ -291,6 +291,7 @@ async fn the_adapter_stamps_its_model_on_a_request_that_names_none() {
             correlation_id: req.correlation_id,
             served_by: "peer".to_string(),
             text_response: crate::ai::types::TextGenerationResponse {
+                dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
                 text: "ok".to_string(),
                 finish_reason: FinishReason::Stop,
                 model: req
@@ -343,6 +344,7 @@ async fn with_target_peer_threads_through_to_transport_envelope() {
                 .clone()
                 .unwrap_or_else(|| "no-peer-pinned".to_string()),
             text_response: crate::ai::types::TextGenerationResponse {
+                dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
                 text: "ok".to_string(),
                 finish_reason: FinishReason::Stop,
                 model: "stub".to_string(),
@@ -382,6 +384,7 @@ async fn without_target_peer_sends_envelope_with_none() {
             correlation_id: req.correlation_id,
             served_by: "any".to_string(),
             text_response: crate::ai::types::TextGenerationResponse {
+                dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
                 text: "ok".to_string(),
                 finish_reason: FinishReason::Stop,
                 model: "stub".to_string(),
@@ -465,6 +468,7 @@ async fn the_served_window_on_an_answer_reaches_the_sink() {
             correlation_id: req.correlation_id,
             served_by: "peer".to_string(),
             text_response: crate::ai::types::TextGenerationResponse {
+                dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
                 text: "ok".to_string(),
                 finish_reason: FinishReason::Stop,
                 model: "qwen3.8-27b".to_string(),
@@ -566,8 +570,9 @@ async fn the_grid_lane_carries_a_think_budget_only_to_a_seat_that_advertises_it(
     });
     let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer(uuid::Uuid::new_v4().to_string());
     let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let terms = DispatchTerms::thinking(crate::ai::types::Think::Budget(ThinkBudget(338)));
-    let refused = adapter.generate_admitted(req("act"), terms, sink).await;
+    let terms = DispatchTerms { output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")), admission: None, think: crate::ai::types::Think::Budget(ThinkBudget(338)) };
+    let mut request = req("act"); request.max_tokens = Some(32);
+    let refused = adapter.generate_admitted(request, terms, sink).await;
     assert!(matches!(refused, Err(crate::ai::inference_error::InferenceError::ThinkUnenforceable { .. })), "{refused:?}");
     assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0, "never sent unbounded");
 

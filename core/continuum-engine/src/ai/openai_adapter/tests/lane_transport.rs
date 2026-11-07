@@ -1,6 +1,87 @@
 #![cfg(test)]
+use crate::ai::adapter::DispatchTermsPolicy;
 
 use super::*;
+
+// Kimi's ed142 trace: the prior prompt's density priced the new prompt at 26,654,
+// but the selected engine counted 27,221. Prove the real HTTP seam refuses before
+// generation, then accepts the unchanged prompt with its explicitly resized room.
+#[tokio::test]
+async fn kimi_reply_resize_requires_a_second_quote_before_one_generation() {
+    replay_reply_resize(26654, 27221, 32512, 5857, 5290).await;
+}
+
+// Sahar, 2026-11-06 15:28:56Z: the live unchanged-prompt retry repeats the
+// same disagreement at a different admitted window. Counts are recorded; the
+// prompt and backend are synthetic, so this is transport proof, not live replay.
+#[tokio::test]
+async fn sahar_reply_resize_requires_a_second_quote_before_one_generation() {
+    replay_reply_resize(19034, 18702, 22435, 3769, 3732).await;
+}
+
+async fn replay_reply_resize(estimate: usize, prompt: u32, window: u32, predicted: u32, resized: u32) {
+    use axum::{routing::post, Router};
+    use std::sync::{Arc, Mutex};
+    use crate::inference::lane_send::{DispatchAdmission, FillReceipt, PromptQuote};
+    use crate::ai::types::{PromptAdmission, RequestAdmission};
+
+    let quotes = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let generations = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let quote_log = quotes.clone();
+    let generation_log = generations.clone();
+    let app = Router::new()
+        .route("/v1/chat/completions/input_tokens", post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let log = quote_log.clone();
+            async move {
+                log.lock().expect("fixture quote log").push(body);
+                axum::Json(serde_json::json!({"input_tokens": prompt}))
+            }
+        }))
+        .route("/v1/chat/completions", post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let log = generation_log.clone();
+            async move {
+                log.lock().expect("fixture generation log").push(body);
+                axum::Json(serde_json::json!({"ok": true}))
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture bind");
+    let address = listener.local_addr().expect("fixture address");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let adapter = test_adapter();
+    for reply in [predicted, resized] {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "messages": [{"role": "user", "content": "same finalized prompt"}], "max_tokens": reply
+        })).expect("fixture body");
+        let result = crate::inference::lane_send::send_with_lane_retry(
+            &adapter.config,
+            adapter.client.post(format!("http://{address}/v1/chat/completions")).header("Content-Type", "application/json"),
+            body, None,
+            FillReceipt {
+                output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(reply).expect("positive fixture")),
+                model: "fixture", prompt_tokens: estimate,
+                prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "recorded room fixture", request_id: "recorded-room" }),
+                admission: Some(DispatchAdmission {
+                    persona: uuid::Uuid::nil(), endpoint: None,
+                    admission: RequestAdmission { window, lease: None, priced: PromptAdmission::EngineCounted },
+                }),
+            }, &mut None, || {},
+        ).await;
+        if reply == predicted {
+            assert!(matches!(result, Err(crate::ai::inference_error::InferenceError::ContextExceeded { requested, available } ) if requested == prompt && available == window));
+            assert!(generations.lock().expect("fixture generations").is_empty());
+        } else {
+            assert!(result.expect("resized room fits").response.status().is_success());
+        }
+    }
+    let counted = quotes.lock().expect("fixture quotes");
+    let sent = generations.lock().expect("fixture generations");
+    assert_eq!(counted.len(), 2);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(counted[0]["messages"], counted[1]["messages"]);
+    assert_eq!(sent[0], counted[1]);
+    assert_eq!(sent[0]["max_tokens"], resized);
+    server.abort();
+}
 
 // what this catches: the engine reading a cut as bad JSON (or the reverse), or a finish the
 // backend never reported as finished. Only `length` is the output limit, and an absent marker is
@@ -78,11 +159,12 @@ async fn slot_discovery_failure_refuses_generation_before_http_dispatch() {
         let request = TextGenerationRequest {
             messages: vec![ChatMessage::text("user", "act")],
             purpose: Some("turn".into()),
+            max_tokens: Some(32), // Explicit fixed authority for this transport fixture.
             ..Default::default()
         };
         let (sink, _receiver) = tokio::sync::mpsc::unbounded_channel();
         let error = tokio::time::timeout(
-            std::time::Duration::from_secs(5), adapter.generate_stream_checked(request, sink, crate::ai::adapter::Dispatched::fixture()),
+            std::time::Duration::from_secs(5), adapter.generate_stream_checked(request.clone(), sink, crate::ai::adapter::Dispatched::fixture_for(&request)),
         ).await.expect("bounded fixture").expect_err("discovery must refuse");
         assert!(matches!(error, crate::ai::inference_error::InferenceError::Unavailable(_)), "{error}");
         assert!(error.to_string().contains(cause), "{error}");
@@ -149,13 +231,14 @@ async fn a_server_error_frame_fails_the_act_never_an_empty_completion() {
     adapter.config.base_url = format!("http://{address}");
     let request = TextGenerationRequest {
         messages: vec![ChatMessage::text("user", "act")],
+        max_tokens: Some(32), // Explicit fixed authority for this transport fixture.
         ..Default::default()
     };
     let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
     drop(receiver);
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_stream_checked(request, sink, crate::ai::adapter::Dispatched::fixture()),
+        adapter.generate_stream_checked(request.clone(), sink, crate::ai::adapter::Dispatched::fixture_for(&request)),
     )
     .await
     .expect("bounded fixture request");
@@ -219,13 +302,14 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
             "user",
             "Inspect the selected artifact — λ",
         )],
+        max_tokens: Some(32), // Explicit fixed authority for this transport fixture.
         ..Default::default()
     };
     let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
     drop(receiver);
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_stream_checked(request, sink, crate::ai::adapter::Dispatched::fixture()),
+        adapter.generate_stream_checked(request.clone(), sink, crate::ai::adapter::Dispatched::fixture_for(&request)),
     )
     .await
     .expect("bounded fixture request");
@@ -238,7 +322,7 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
     ));
 
     let body =
-        br#"{"messages":[{"role":"user","content":"prepared request"}],"tools":[]}"#.to_vec();
+        br#"{"messages":[{"role":"user","content":"prepared request"}],"tools":[],"max_tokens":1}"#.to_vec();
     adapter.config.single_resident_model = true;
     let retry = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -254,13 +338,13 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
             // existing wire floor; no readiness-patience value enters this API.
             Some(std::time::Duration::ZERO),
             crate::inference::lane_send::FillReceipt {
+                output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(1).expect("positive fixture")),
                 model: "fixture",
                 prompt_tokens: 4,
                 prompt_quote: Some(crate::inference::lane_send::PromptQuote {
                     client: &adapter.client,
                     dedicated_lane: true,
                     caller: "fixture",
-                    reply: 0,
                     request_id: "fixture",
                 }),
                 admission: None,
@@ -484,11 +568,13 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         persona_id: Some(activity.persona().to_string()),
         room_id: Some(uuid::Uuid::new_v4().to_string()),
         purpose: Some("cognition/deliberation".into()),
+        max_tokens: Some(32), // Explicit fixed authority for this transport fixture.
         ..Default::default()
     };
     let background = TextGenerationRequest {
         messages: vec![ChatMessage::text("user", "background")],
         purpose: Some("dream-belief-review".into()),
+        max_tokens: Some(32), // Explicit fixed authority for this transport fixture.
         ..Default::default()
     };
     for (request, fails) in [
@@ -501,7 +587,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         fail_save.store(fails, Ordering::SeqCst);
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            adapter.generate_text(request, crate::ai::adapter::Dispatched::fixture()),
+            adapter.generate_text(request.clone(), crate::ai::adapter::Dispatched::fixture_for(&request)),
         )
         .await
         .expect("bounded adapter fixture")
@@ -520,7 +606,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(1, Ordering::SeqCst);
     assert!(tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(failed_turn.clone(), crate::ai::adapter::Dispatched::fixture()),
+        adapter.generate_text(failed_turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&failed_turn)),
     )
     .await
     .expect("bounded failed generation")
@@ -528,7 +614,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(0, Ordering::SeqCst);
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture()),
+        adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&turn)),
     )
     .await
     .expect("bounded return after failure")
@@ -568,7 +654,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
             // assertion that cancellation stops a production backend.
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             {
-                let generation = adapter.generate_stream(failed_turn.clone(), tx, crate::ai::adapter::Dispatched::fixture());
+                let generation = adapter.generate_stream(failed_turn.clone(), tx, crate::ai::adapter::Dispatched::fixture_for(&failed_turn));
                 tokio::pin!(generation);
                 tokio::time::timeout(std::time::Duration::from_secs(5), async {
                     tokio::select! {
@@ -582,7 +668,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         } else {
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                adapter.generate_text(failed_turn.clone(), crate::ai::adapter::Dispatched::fixture()),
+                adapter.generate_text(failed_turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&failed_turn)),
             )
             .await
             .expect("bounded interrupted generation");
@@ -598,7 +684,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         generation_mode.store(0, Ordering::SeqCst);
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture()),
+            adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&turn)),
         )
         .await
         .expect("bounded restore")
@@ -624,7 +710,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     // following generation also fails; retry must prefill, not retry that page.
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(background, crate::ai::adapter::Dispatched::fixture()),
+        adapter.generate_text(background.clone(), crate::ai::adapter::Dispatched::fixture_for(&background)),
     )
     .await
     .expect("bounded background")
@@ -633,7 +719,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(1, Ordering::SeqCst);
     assert!(tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture())
+        adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&turn))
     )
     .await
     .expect("bounded failed restore")
@@ -642,7 +728,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(0, Ordering::SeqCst);
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(turn, crate::ai::adapter::Dispatched::fixture()),
+        adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture_for(&turn)),
     )
     .await
     .expect("bounded cold retry")
@@ -656,7 +742,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         ["save", "generate", "restore", "generate", "generate"]
     );
     generation_mode.store(5, Ordering::SeqCst);
-    tokio::time::timeout(std::time::Duration::from_secs(5), adapter.generate_text(TextGenerationRequest::default(), crate::ai::adapter::Dispatched::fixture()))
+    tokio::time::timeout(std::time::Duration::from_secs(5), adapter.generate_under(TextGenerationRequest { max_tokens: Some(32), ..Default::default() }, crate::ai::types::Think::ModelDefault))
         .await.expect("bounded foreign alias response").expect("response compatibility");
     assert!(!crate::inference::resource_admission::leased_in_sent_samples().iter()
         .any(|sample| sample.served(&root, Some("foreign-alias")).is_some()),

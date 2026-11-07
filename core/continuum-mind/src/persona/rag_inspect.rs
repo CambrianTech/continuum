@@ -502,7 +502,7 @@ async fn run_inference_probe(
     }
 
     // No think: today's behaviour (its JSON format closed the think), now stated by the one owner.
-    let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::Budget(crate::ai::types::ThinkBudget(0)));
+    let terms = crate::ai::types::Think::Budget(crate::ai::types::ThinkBudget(0));
     let response = adapter
         .generate_under(request, terms)
         .await

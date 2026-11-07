@@ -5,6 +5,15 @@
 
 use std::time::Instant;
 
+mod command;
+pub(crate) use command::SentOutput;
+
+#[derive(Debug)]
+pub(crate) struct SentResponse {
+    pub response: reqwest::Response,
+    pub output: SentOutput,
+}
+
 use crate::ai::inference_error::InferenceError;
 use crate::ai::openai_adapter::OpenAICompatibleConfig;
 
@@ -68,25 +77,26 @@ fn probe_client() -> &'static reqwest::Client {
 /// What one send carried, for the receipt a tripped wait leaves behind: the model the
 /// lane was asked for and the prompt it was asked to prefill (chars/4 —
 /// `serving_guard::approx_prompt_tokens`, the same estimate the overflow guard uses).
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub(crate) struct FillReceipt<'a> {
     pub model: &'a str,
+    pub output: crate::ai::reply_room::OutputIntent,
     pub prompt_tokens: usize,
     pub prompt_quote: Option<PromptQuote<'a>>,
     /// The admission the request was rendered under: at dispatch, after the wait for the lane, its
     /// lease on her grant is RESERVED (`window_grant::reserve`) against her grant now, with the
     /// engine's exact count, or the send is refused typed.
-    pub admission: Option<DispatchAdmission>,
+    pub admission: Option<DispatchAdmission<'a>>,
 }
 
 /// A request's admission and whose grant it was rendered against.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DispatchAdmission {
+#[derive(Clone, Copy)]
+pub(crate) struct DispatchAdmission<'a> {
     pub persona: uuid::Uuid,
     pub admission: crate::ai::types::RequestAdmission,
-    /// The engine incarnation (pid, OS start time) the request's endpoint admission is bound to:
-    /// the lease must name it, or the attempt is refused (the published lease is only a watch value).
-    pub engine: Option<(u32, u64)>,
+    /// Borrow the actual endpoint/page admission through quote, reservation and POST.
+    /// A copied incarnation is an observation, not ownership of that engine's lifetime.
+    pub endpoint: Option<&'a crate::inference::turn_admission::TurnAdmission>,
 }
 
 /// Request-specific authority for the engine's finalized-prompt counter. The adapter
@@ -97,13 +107,12 @@ pub(crate) struct PromptQuote<'a> {
     pub client: &'a reqwest::Client,
     pub dedicated_lane: bool,
     pub caller: &'a str,
-    pub reply: u32,
     pub request_id: &'a str,
 }
 
 /// Send `body` through `request_builder` (headers already set). `Ok(response)` is a 2xx response ready to stream; every failure is the
-/// typed turn-facing failure, already probed. `body` owns one prepared encoding;
-/// transport retries share its allocation rather than serializing again.
+/// typed turn-facing failure, already probed. Prepared prompt fields are immutable;
+/// each counted attempt resolves its wire cap and reservation from the same value.
 /// `turn_bound` is the request's own bound (`TextGenerationRequest::turn_bound`); the
 /// header wait is `max(PRE_STREAM_HEADER_TIMEOUT_SECS, turn_bound)`. `fill` is what the
 /// turn sent, so a tripped header wait can be recorded as the prefill measurement it is
@@ -118,24 +127,30 @@ pub(crate) async fn send_with_lane_retry(
     // Where the request's reservation of her grant is kept until its terminal receipt (the caller
     // drops it when the stream ends).
     reservation: &mut Option<crate::capacity::window_grant::GrantReservation>,
-    // Told at each attempt's POST, never before: a request refused before it (a quote past the
-    // window, a changed grant) reached no engine, and its turn admission must know that.
+    // Mark the owned admission only at the POST boundary, after quote and grant checks.
     mut dispatching: impl FnMut() + Send,
-) -> Result<reqwest::Response, InferenceError> {
+) -> Result<SentResponse, InferenceError> {
     // The header wait in force for THIS turn: the floor, or the request's measured bound
     // above it. Computed once — the relaunch retries below re-arm the same wait.
     let (header_bound, header_source) = crate::inference::turn_bound::effective_bound_with_source(
         std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS),
         turn_bound,
     );
-    // reqwest moves this Vec into its shared byte body. Cloning the prepared
-    // builder below shares that allocation, including across transport retries.
-    let request_builder = request_builder.body(body);
+    // Freeze prompt fields once; this owner serializes the canonical cap from
+    // the same resolution used by reservation and the sent receipt.
+    let prepared = command::PreparedCommand::new(&body, fill.output)?;
+    if matches!(fill.output, crate::ai::reply_room::OutputIntent::ProviderControlled) && fill.admission.is_some() {
+        return Err(InferenceError::Protocol("provider-controlled output cannot reserve an admitted grant".into()));
+    }
+    if matches!(fill.output, crate::ai::reply_room::OutputIntent::UseAdmittedRoom { .. })
+        && (fill.prompt_quote.is_none() || !fill.admission.is_some_and(|a| a.endpoint.is_some() && a.admission.lease.is_some())) {
+        return Err(InferenceError::AdmissionUncounted { model: fill.model.into() });
+    }
     // A CONNECT error to a local resident lane means the lane is mid-relaunch, not
     // gone (see LANE_RELAUNCH_CONNECT_RETRIES) — the connection never opened so
     // nothing streamed, and re-sending the same lane is idempotent. Ride it out with
     // bounded linear backoff, then fail loud.
-    // The prepared byte body is cloneable; no stream or serializer is replayed.
+    // Every retry quotes the same frozen prompt and resolves its output anew.
     // Shared budget for BOTH mid-relaunch signatures (connection refused = nothing
     // listening yet; 503 = listening but still loading). One counter, so the total
     // time this call can spend waiting on a relaunching lane stays bounded.
@@ -147,28 +162,51 @@ pub(crate) async fn send_with_lane_retry(
     // Keep one cumulative quote allowance across retries and their backoff; do not
     // rearm a fresh quote allowance for each replacement engine.
     let quote_started = Instant::now();
-    let response = loop {
+    let (response, output) = loop {
+        let mut resolved = None;
+        if let Some(endpoint) = fill.admission.and_then(|admission| admission.endpoint) {
+            endpoint.check_dispatch_ready().map_err(InferenceError::Unavailable)?;
+        }
         if let Some(quote) = fill.prompt_quote {
+            let geometry = fill.admission.and_then(|admission| admission.endpoint)
+                .map(|endpoint| endpoint.dispatch_geometry(fill.model)).transpose()?;
             // A transport retry may reach a replacement engine. Re-count the
             // same prepared body on EVERY attempt; never reuse its predecessor's
             // template/projector count. A failed quote refuses this attempt.
-            super::serving_guard::guard_resident_model(
-                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Estimated(0), quote.caller,
-            ).await?;
+            if geometry.is_none() {
+                super::serving_guard::guard_resident_model(
+                    cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Estimated(0), quote.caller,
+                ).await?;
+            }
+            let quote_builder = prepared.quote_builder(&request_builder)?;
             let count_started = Instant::now();
             fill.prompt_tokens = super::serving_guard::quote_prompt(
                 quote.client,
-                &request_builder,
+                &quote_builder,
                 header_bound.saturating_sub(quote_started.elapsed()),
             ).await?;
             let count_elapsed_ms = count_started.elapsed().as_millis() as u64;
-            super::serving_guard::guard_resident_model(
-                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller,
-            ).await?;
-            if let Some(DispatchAdmission { admission, .. }) = fill.admission {
-                super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }
-                    .check(admission.window, &cfg.name, quote.caller)?;
-            }
+            let command = match (geometry, fill.admission) {
+                (Some(geometry), Some(admission)) => {
+                    if matches!(fill.output, crate::ai::reply_room::OutputIntent::UseAdmittedRoom { .. })
+                        && admission.admission.lease.is_none() {
+                        return Err(InferenceError::AdmissionUncounted { model: fill.model.into() });
+                    }
+                    let prompt = u32::try_from(fill.prompt_tokens).map_err(|_| InferenceError::Protocol("prompt count exceeds representable capacity".into()))?;
+                    prepared.counted(prompt, geometry.per_slot_window, admission.admission.window)?
+                }
+                _ => {
+                    let fixed = prepared.fixed()?;
+                    // Unadmitted provider-controlled generation checks prompt fit;
+                    // there is no caller reply reservation or counted output claim.
+                    let reply = match fixed.output { command::SentOutput::ProviderControlled => 0, command::SentOutput::ProviderFixed(cap) => cap.get(), command::SentOutput::Counted(room) => room.reply };
+                    let measured = super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply };
+                    super::serving_guard::guard_resident_model(cfg, quote.dedicated_lane, fill.model, measured, quote.caller).await?;
+                    if let Some(admission) = fill.admission { measured.check(admission.admission.window, &cfg.name, quote.caller)?; }
+                    fixed
+                }
+            };
+            resolved = Some(command);
             continuum_base::probe!(
                 class = "inference.prompt.prompt_quote",
                 request_id = quote.request_id,
@@ -179,12 +217,19 @@ pub(crate) async fn send_with_lane_retry(
                 "selected engine counted the finalized prompt"
             );
         }
+        let command = match resolved { Some(command) => command, None => prepared.fixed()? };
+        // Counting awaits the backend. An endpoint quarantined during that await
+        // cannot authorize reservation or generation even if its old count fits.
+        if let Some(endpoint) = fill.admission.and_then(|admission| admission.endpoint) {
+            endpoint.check_dispatch_ready().map_err(InferenceError::Unavailable)?;
+        }
         // Her lease on her grant, re-reserved before EVERY attempt's POST (after the lane wait, with
         // the count just taken on this attempt's engine): a grant that moved since render, a
         // replacement engine, or a count past it refuses typed and nothing is sent; a reserved
         // lease holds every regrant off until the engine's terminal receipt.
-        if let Some(DispatchAdmission { persona, admission, engine }) = fill.admission {
+        if let Some(DispatchAdmission { persona, admission, endpoint }) = fill.admission {
             if let Some(leased) = admission.lease {
+                let engine = endpoint.and_then(|owned| owned.engine_incarnation());
                 // Bound to the engine this request's endpoint admission holds, never inferred from
                 // the published grants: a lease on any other incarnation (or none known) is refused.
                 let leased_on = leased.engine.map(|e| (e.pid, e.started_s));
@@ -193,7 +238,7 @@ pub(crate) async fn send_with_lane_retry(
                     return Err(InferenceError::GrantChanged { rendered: leased.tokens, current: None });
                 }
                 let needed = (fill.prompt_tokens as u64)
-                    .saturating_add(u64::from(fill.prompt_quote.map_or(0, |q| q.reply))) // map_or: no quote, no explicit reply allowance
+                    .saturating_add(u64::from(command.output.reply().ok_or_else(|| InferenceError::Protocol("grant reservation requires resolved output".into()))?))
                     .min(u64::from(u32::MAX)) as u32;
                 crate::capacity::window_grant::reserve_attempt(reservation, persona, leased, needed).map_err(|refused| match refused {
                     crate::capacity::window_grant::ReserveRefused::Changed { leased, current } => {
@@ -209,9 +254,7 @@ pub(crate) async fn send_with_lane_retry(
             }
         }
         let send_start = Instant::now();
-        let attempt_builder = request_builder
-            .try_clone()
-            .expect("prepared byte request is cloneable"); // JUSTIFIED: body is owned bytes, never a stream
+        let attempt_builder = command.builder(&request_builder)?;
 
         // BOUNDED pre-first-byte wait: a poisoned lane can accept the request
         // and never return headers (hung prefill) — with no bound here, the
@@ -320,7 +363,7 @@ pub(crate) async fn send_with_lane_retry(
                 tokio::time::sleep(backoff).await;
                 continue;
             }
-            Ok(resp) => break resp,
+            Ok(resp) => break (resp, command.output),
             Err(e)
                 if e.is_connect()
                     && cfg.single_resident_model
@@ -383,5 +426,5 @@ pub(crate) async fn send_with_lane_retry(
         return Err(classified);
     }
 
-    Ok(response)
+    Ok(SentResponse { response, output })
 }

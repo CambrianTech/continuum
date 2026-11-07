@@ -528,7 +528,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 /// lease reserved at dispatch, a price below the estimate behind its exact count.
 #[async_trait]
 impl crate::ai::adapter::DispatchTermsPolicy for OpenAICompatibleAdapter {
-    async fn generate_admitted(
+    async fn generate_with_terms(
         &self,
         request: TextGenerationRequest,
         terms: crate::ai::types::DispatchTerms,

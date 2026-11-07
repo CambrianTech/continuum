@@ -408,6 +408,8 @@ pub struct JsonSchemaFormat {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct TextGenerationResponse {
+    /// Mandatory dispatch observation; unadmitted generation is explicitly distinct.
+    pub dispatch: crate::ai::reply_room::DispatchReceipt,
     pub text: String,
     pub finish_reason: FinishReason,
     pub model: String,

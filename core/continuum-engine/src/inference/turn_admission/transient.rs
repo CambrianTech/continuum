@@ -95,7 +95,7 @@ pub(super) async fn admit_transient_through(
         paging_in_flight: false,
         _permit: None,
         uncommitted: None,
-        dispatch: super::Dispatch::Unsent,
+        dispatch: parking_lot::Mutex::new(super::Dispatch::Unsent),
         scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
         _endpoint: endpoint,
         _mind: None,

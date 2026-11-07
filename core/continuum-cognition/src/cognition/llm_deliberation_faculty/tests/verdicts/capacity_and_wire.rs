@@ -21,6 +21,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             "PASS",
             None,
         )]));
+        adapter.responses.lock().unwrap().front_mut().expect("explicit backend count").usage.input_tokens = 18702;
         let wm = Arc::new(WorkingMemory::new(8));
         let result = format!(
             "src/lib.rs:42: concrete_review_target\n{{\"payload\":\"{}\"}}\nclaimable_now: 29\ntotal_on_board: 43",
@@ -179,23 +180,10 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             schema_tokens,
             faculty.prompt_view(&ws).tools.tokens
         );
-        let prompt_tokens =
-            LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
-                + LlmDeliberationFaculty::messages_cost(&request.messages)
-                + schema_tokens;
-        // An act's cap is the room its prompt leaves (`request_allowance`), never below the
-        // reserve the plan sized her view beside.
-        assert_eq!(
-            request.max_tokens,
-            request_allowance(TurnKind::Act, view.completion_reserve, window, prompt_tokens).ok(),
-            "the act's cap is the window's room after its prompt"
-        );
+        let quoted_prompt = 18702u32; // The scripted backend count, independent of view estimation.
+        assert_eq!(request.max_tokens, Some(window - quoted_prompt - 1));
         assert!(request.max_tokens.unwrap() >= view.completion_reserve);
-        let wire_tokens = prompt_tokens + request.max_tokens.unwrap() as usize;
-        assert!(
-            wire_tokens <= window as usize,
-            "wire {wire_tokens} > window {window}"
-        );
+        assert!(quoted_prompt + request.max_tokens.unwrap() < window, "actual quote plus actual wire cap fits");
     }
 }
 
@@ -546,6 +534,7 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
     let charged = view.estimated_prompt_tokens + view.completion_reserve as usize;
     let ledger = |context_window: usize| BudgetLedger {
         context_window: context_window as u32,
+        newest_extra: 0,
         calibration: PromptCalibration::default(),
         completion_reserve: view.completion_reserve as usize,
         system: &view.system,
@@ -560,6 +549,11 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
         view_grant: 0,
     };
     assert!(faculty.budget_violation(&ledger(charged)).is_none(), "at its window the prompt complies");
+    let mut scoped = ledger(charged + 7);
+    scoped.newest_extra = 7;
+    assert!(faculty.budget_violation(&scoped).is_none(), "the result surcharge fits exactly");
+    scoped.newest_extra = 8;
+    assert!(faculty.budget_violation(&scoped).is_some(), "one extra result token must refuse without changing the actual window");
     let fault = faculty.budget_violation(&ledger(charged - 1)).expect("one token over is a budget fault");
     assert!(fault.contains("prompt budget violated"), "{fault}");
     assert!(view.messages.first().is_some_and(|m| m.content_text().contains("turn_0 ")), "nothing was cut to comply");
@@ -668,6 +662,7 @@ async fn an_act_on_a_large_window_with_a_small_need_sends_the_room() {
     }
     for deliverable in [true, false] {
         let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
+        adapter.responses.lock().unwrap().front_mut().expect("explicit backend count").usage.input_tokens = 27221;
         let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", adapter.clone())
             .with_context_window(window)
             .with_tools(vec![read_tool()])
@@ -680,52 +675,34 @@ async fn an_act_on_a_large_window_with_a_small_need_sends_the_room() {
         assert!(contribution.fault.is_none(), "{:?}", contribution.fault);
         let seen = adapter.seen.lock().unwrap();
         let request = &seen[0];
-        let prompt = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
-            + crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
         let cap = request.max_tokens.expect("the reply is bounded");
         if deliverable {
-            assert!(cap as usize >= window as usize - prompt - 1, "an act's cap is the window's room: {cap}");
+            assert_eq!(cap, window - 27221 - 1, "an act uses exactly its quoted room");
             assert!(cap > view.completion_reserve, "and larger than her read-sized grant");
-            assert!(prompt + (cap as usize) < window as usize, "inside the window, under strict admission");
+            assert!(27221 + cap < window, "quoted prompt plus wire cap is strictly inside the window");
         } else {
             assert_eq!(cap, view.completion_reserve, "a pass is unchanged: its grant, verbatim");
         }
     }
 }
 
-// what this catches: an act whose cap was the room past an ESTIMATED prompt refused because the
-// engine counted more. When her reserve still fits beside the measured prompt, the cap shrinks to
-// the measured room and the same view is sent again, never refit (refitting against the sent room
-// would drop her view to make space for a cap that only follows it).
+// A recorded provider count is resolved by dispatch without an identical-view cognition retry.
 #[tokio::test]
-async fn an_acts_room_refusal_shrinks_the_cap_and_keeps_her_view() {
-    use crate::ai::inference_error::InferenceError;
+async fn an_acts_quoted_room_needs_only_one_dispatch() {
+    let home = tempfile::tempdir().expect("isolated fixture emission storage");
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
     let window = 40_960u32;
-    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
-    let mut excess = Some(500u32);
-    *adapter.on_request.lock().unwrap() = Some(Box::new(move |request| {
-        let excess = excess.take()?;
-        let prompt = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture, no system prompt costs none
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
-            + request.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of); // map_or: no tools, no schemas
-        Some(InferenceError::ContextExceeded { requested: prompt as u32 + excess, available: window })
-    }));
+    let mut response = make_response(FinishReason::Stop, "PASS", None);
+    response.usage.input_tokens = 27221;
+    let adapter = Arc::new(ScriptedAdapter::new(vec![response]));
     let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter.clone())
-        .with_context_window(window)
-        .with_tools(vec![read_tool()]);
+        .with_context_window(window).with_tools(vec![read_tool()]);
     let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 40, true);
-    let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
+    let contribution = faculty.contribute(&ws).await.expect("a verdict");
     assert!(contribution.fault.is_none() && contribution.capacity_refusal.is_none(), "{:?}", contribution.fault);
     let seen = adapter.seen.lock().unwrap();
-    assert_eq!(seen.len(), 2, "the refused act and one resend at the measured room");
-    assert_eq!(
-        serde_json::to_value(&seen[0].messages).unwrap(),
-        serde_json::to_value(&seen[1].messages).unwrap(),
-        "her view is sent unchanged"
-    );
-    let (first, second) = (seen[0].max_tokens.unwrap(), seen[1].max_tokens.unwrap());
-    assert_eq!(first - second, 500, "the cap gives up exactly what the engine counted beyond the estimate");
+    assert_eq!(seen.len(), 1, "dispatch resolves the quote without requeueing cognition");
+    assert_eq!(seen[0].max_tokens, Some(window - 27221 - 1));
 }
 
 // what this catches: a write cut at the output limit (the M5, 2026-11-04: write-shaped calls as

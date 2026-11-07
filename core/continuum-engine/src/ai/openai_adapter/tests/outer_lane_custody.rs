@@ -63,15 +63,20 @@ async fn adapter_parks_without_caller_lane_and_reacquires_before_http(
         .acquire_serving_lane(None, LanePriority::Directed, None)
         .await;
     let request = TextGenerationRequest {
+        max_tokens: Some(32),
         messages: vec![ChatMessage::text("user", "act")],
         purpose: Some("turn".into()),
         persona_id: Some(uuid::Uuid::new_v4().to_string()),
         ..Default::default()
     };
+    let terms = crate::ai::types::DispatchTerms {
+        output: crate::ai::reply_room::OutputIntent::Fixed(std::num::NonZeroU32::new(32).expect("fixture limit")),
+        admission: None, think: crate::ai::types::Think::ModelDefault,
+    };
     let (sink, _receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut call = Box::pin(with_serving_lane(
         caller,
-        adapter.generate_admitted(request, crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault), sink),
+        adapter.generate_admitted(request, terms, sink),
     ));
     assert!(futures::poll!(&mut call).is_pending());
     let borrower = tokio::time::timeout(Duration::from_secs(2), async {

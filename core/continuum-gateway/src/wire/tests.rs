@@ -16,6 +16,7 @@ impl Frame {
 /// An answer that says a word and calls one tool.
 fn tool_answer() -> TextGenerationResponse {
     TextGenerationResponse {
+        dispatch: continuum_engine::ai::reply_room::DispatchReceipt::Unadmitted,
         text: "Reading it.".into(),
         finish_reason: FinishReason::ToolUse,
         model: "qwen".into(),
