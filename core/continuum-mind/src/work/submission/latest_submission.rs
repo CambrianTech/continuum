@@ -691,7 +691,7 @@ pub(super) async fn derive_submission(
     // so a patch that dropped any of it would land the rest unreviewed (Fable on #5824; airc's CLI
     // submit enforces the same).
     let head = committed_head(checkout)?;
-    let patch = commit_patch(checkout, &base_sha, &head)?;
+    let patch = commit_patch(checkout, base.as_str(), &head)?;
     if patch.trim().is_empty() {
         return Err(CommandError::Invalid(format!(
             "nothing to submit: {} has no changes since {} (substrate paths excluded). A submit publishes a \
