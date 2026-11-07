@@ -12,7 +12,7 @@
 //! first, each at the most detail that still fits, and an older item never more whole than a newer
 //! one, so shrinking is oldest (least important) first and never her newest.
 //! [`Leveled::options`] lists every distinct answer, most detail first: the ladder the act's search
-//! chooses among ([`crate::search`]).
+//! chooses among ([`crate::allocation::search`]).
 
 /// One item's levels in the allocation's unit, most detail first, each strictly smaller than the
 /// one above. The last is the item's hard limit: never shown smaller than it.

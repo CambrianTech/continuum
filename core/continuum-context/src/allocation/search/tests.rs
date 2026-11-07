@@ -1,4 +1,5 @@
 use super::*;
+use crate::allocation::first_guess;
 
 fn group(id: &str, priority: u8, options: &[u32]) -> Group {
     Group { id: id.to_owned(), priority, options: options.to_vec() }
@@ -41,7 +42,7 @@ fn the_search_keeps_a_high_value_item_whole_where_the_first_guess_collapsed_it()
     let window = 1_150;
     let guess = first_guess(window, &groups, &[]);
     assert_eq!(guess, [1, 1, 1], "precondition: the rounded flexbox collapses all three");
-    let found = search(window, &groups, &[]).expect("fits");
+    let found = search(window, &groups, &[], first_guess(window, &groups, &[])).expect("fits"); // JUSTIFIED: test fixture
     assert_eq!(found.picks, [0, 1, 1], "{found:?}");
     assert!(found.refined && found.value > found.first_guess_value);
     assert!(spent(&groups, &found.picks) <= window);
@@ -73,7 +74,7 @@ fn the_search_fits_beats_the_first_guess_and_matches_the_optimum_where_rounding_
         let window = limits + next(groups.iter().map(|g| g.want() - g.limit()).sum::<u32>() + 1);
         let history = FlexClaim { source_id: "history".into(), priority: 1 + next(10) as u8, floor_tokens: 0, min_tokens: 0, max_tokens: next(1_500), required: false };
         let continuous = [history];
-        let found = search(window, &groups, &continuous).expect("every limit fits");
+        let found = search(window, &groups, &continuous, first_guess(window, &groups, &continuous)).expect("every limit fits"); // JUSTIFIED: test fixture
         assert!(spent(&groups, &found.picks) <= window);
         assert!(found.value >= found.first_guess_value);
         let span: u32 = groups.iter().map(|g| g.want() - g.limit()).sum::<u32>().min(window - limits);
@@ -96,8 +97,8 @@ fn the_search_fits_beats_the_first_guess_and_matches_the_optimum_where_rounding_
 fn only_every_hard_limit_together_refuses_and_it_names_the_largest() {
     let groups = [group("tools", 7, &[11_000, 700]), group("framing", 10, &[2_700, 2_400])];
     let view = FlexClaim { source_id: "view/conversation".into(), priority: 4, floor_tokens: 9_000, min_tokens: 9_000, max_tokens: 20_000, required: true };
-    assert!(search(12_200, &groups, &[view.clone()]).is_ok(), "every part at its hard limit fits");
-    let over = search(12_000, &groups, &[view]).expect_err("12,100 of hard limits in 12,000");
+    assert!(search(12_200, &groups, &[view.clone()], first_guess(12_200, &groups, &[view.clone()])).is_ok(), "every part at its hard limit fits");
+    let over = search(12_000, &groups, &[view.clone()], first_guess(12_000, &groups, &[view])).expect_err("12,100 of hard limits in 12,000");
     assert_eq!((over.needed, over.binding.as_str(), over.binding_limit), (12_100, "view/conversation", 9_000));
 }
 
@@ -125,7 +126,7 @@ fn an_act_sized_search_reports_its_cost() {
         .collect();
     continuous.push(FlexClaim { source_id: "reply".into(), priority: 10, floor_tokens: 446, min_tokens: 446, max_tokens: 4_000, required: true });
     let started = std::time::Instant::now();
-    let found = search(30_566, &groups, &continuous).expect("fits");
+    let found = search(30_566, &groups, &continuous, first_guess(30_566, &groups, &continuous)).expect("fits"); // JUSTIFIED: test fixture
     let elapsed = started.elapsed();
     let options: usize = groups.iter().map(|g| g.options.len()).sum();
     println!("an act-sized search: {} options, {} cells, {:?}", options, found.cells, elapsed);

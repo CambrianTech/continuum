@@ -532,7 +532,7 @@ mod tests {
             assert_eq!(*level, expected, "{name}: at its floor");
         }
         let (specs, _) = set.render(&floor);
-        let edit = specs.iter().find(|s| s.name == "code/edit").expect("code/edit is in her core hands");
+        let edit = specs.iter().find(|s| s.name == "code/edit").expect("code/edit is in her core hands"); // JUSTIFIED: test fixture
         assert_eq!(edit.description, expand_handle("commands/help", "code/edit"), "the pointer names how to open it");
         // The first reduction above the floor that raises a verb past its pointer raises the verb her
         // learned head holds, before the rest of her core hands.
@@ -543,7 +543,7 @@ mod tests {
             .rev()
             .map(|option| set.levels_of(&leveled, &option.rungs))
             .find(|levels| set.names.iter().zip(levels).any(|(name, &level)| !surface.always.contains(name) && level < 2))
-            .expect("some reduction raises a verb");
+            .expect("some reduction raises a verb"); // JUSTIFIED: test fixture
         let risen: Vec<&String> = set.names.iter().zip(&first_rise).filter(|(name, &level)| !surface.always.contains(name) && level < 2).map(|(name, _)| name).collect();
         assert_eq!(risen, ["code/write"], "her used verb rises before the rest");
     }
@@ -611,7 +611,7 @@ mod tests {
         assert!(surface.vocabulary().expect("vocabulary").id("code/peer").is_some(), "withheld stays callable by name");
         assert_eq!(surface.select(&[], &[]).tokens, surface.core.tokens, "an unlearned on-demand verb is not selected");
         let floor = surface.select(&[], &[]);
-        let learned = surface.learned(floor.specs.as_deref().unwrap_or(&[]), &["code/rare".to_string()], &[]);
+        let learned = surface.learned(floor.specs.as_deref().unwrap_or(&[]), &["code/rare".to_string()], &[]); // JUSTIFIED: test fixture
         assert_eq!(learned.tokens, tool_surface_tokens_of(&[spec("code/read"), spec("mail/send"), spec("code/rare")]));
     }
 

@@ -131,7 +131,7 @@ async fn a_need_past_her_window_is_refused_recorded_and_waits_for_the_governor()
     for attempt in 0..2 {
         let contribution = faculty.contribute(&ws).await.expect("a typed refusal");
         let refusal = contribution.capacity_refusal.as_ref().expect("refused for capacity, never sent");
-        let short = refusal.output_room.clone().expect("typed as her output room, never read from the numbers");
+        let short = refusal.output_room.clone().expect("typed as her output room, never read from the numbers"); // JUSTIFIED: test fixture
         assert!(short.needed >= 32_000 && short.window == window, "attempt {attempt}: {short:?}");
         assert_eq!(adapter.call_count(), 0, "attempt {attempt}: no request on an insufficient window");
         assert_eq!(faculty.turn_window(), window, "recording a need grants nothing by itself");

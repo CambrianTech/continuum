@@ -250,7 +250,7 @@ async fn an_8192_window_keeps_required_content_and_refuses_an_act_past_her_need(
     assert!(short.needed > window && short.window == window, "{short:?}");
     let contribution = faculty.contribute(&ws).await.expect("a typed refusal");
     let refusal = contribution.capacity_refusal.as_ref().expect("refused for capacity");
-    let refused = refusal.output_room.clone().expect("typed as her output room");
+    let refused = refusal.output_room.clone().expect("typed as her output room"); // JUSTIFIED: test fixture
     assert!(refused.needed > window && refused.window == window, "{refused:?}");
     assert_eq!(adapter.call_count(), 0, "never sent with less than her need");
 }

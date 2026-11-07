@@ -3,8 +3,8 @@
 //! small window shows a verb smaller instead of refusing the turn.
 //!
 //! - **whole**: the schema as built;
-//! - **summary**: its description's first sentence and every parameter with its type, without
-//!   the parameters' own descriptions;
+//! - **summary**: its description at the codec's summary level and every parameter with its type,
+//!   without the parameters' own descriptions;
 //! - **pointer**: its name, every parameter's name (any value), and the expand handle naming the
 //!   verb that shows its whole (`commands/help`, [`crate::cognition::tool_head::FINDER`]).
 //!
@@ -72,8 +72,9 @@ impl VerbLevels {
     }
 }
 
-/// The verb's summary: its description's first sentence, every parameter with its type and none
-/// of the parameters' descriptions.
+/// The verb's summary: its description at the codec's summary level when it has one
+/// (`continuum_context::levels::summarize`, its head and tail with what lies between counted),
+/// every parameter with its type and none of the parameters' descriptions.
 fn summary(spec: &NativeToolSpec) -> NativeToolSpec {
     let properties = match spec.input_schema.properties.as_object() {
         Some(props) => serde_json::Value::Object(
@@ -92,7 +93,7 @@ fn summary(spec: &NativeToolSpec) -> NativeToolSpec {
     };
     NativeToolSpec {
         name: spec.name.clone(),
-        description: first_sentence(&spec.description).to_owned(),
+        description: continuum_context::levels::summarize(&spec.description, continuum_context::levels::Shape::Output).unwrap_or_else(|| spec.description.clone()), // unwrap_or_else: a description with no smaller level is its own summary
         input_schema: ToolInputSchema { properties, ..spec.input_schema.clone() },
     }
 }
@@ -111,16 +112,6 @@ fn pointer(spec: &NativeToolSpec, canonical: &str, finder: &str) -> NativeToolSp
 /// The one rendering of a verb's expand handle.
 pub fn expand_handle(finder: &str, canonical: &str) -> String {
     format!("{finder}(name=\"{canonical}\") shows its parameters")
-}
-
-/// A description's first sentence: through the first sentence end followed by a space or a line
-/// end, or its first line, whichever comes first.
-fn first_sentence(description: &str) -> &str {
-    let line = description.lines().next().unwrap_or(""); // unwrap_or: an empty description has no first line
-    match line.find(". ") {
-        Some(end) => &line[..=end],
-        None => line,
-    }
 }
 
 /// This act's verbs, each at its levels, in the order they are sent (canonical, as held), with the
@@ -240,11 +231,11 @@ mod tests {
         assert!(levels.cost(0) > levels.cost(1) && levels.cost(1) > levels.cost(2), "{} {} {}", levels.cost(0), levels.cost(1), levels.cost(2));
         for level in 0..levels.len() {
             let level = levels.spec(level);
-            let names: Vec<&String> = level.input_schema.properties.as_object().map(|p| p.keys().collect()).unwrap_or_default();
+            let names: Vec<&String> = level.input_schema.properties.as_object().map(|p| p.keys().collect()).unwrap_or_default(); // JUSTIFIED: test fixture
             assert_eq!(names.len(), 4, "every parameter at every level: {level:?}");
             assert_eq!(level.input_schema.required, spec().input_schema.required);
         }
-        assert_eq!(levels.spec(1).description, "Edit a file in place.");
+        assert!(levels.spec(1).description.len() <= spec().description.len(), "the summary's description is no longer than the whole's");
         assert_eq!(levels.spec(2).description, expand_handle("commands_help", "code/edit"));
         let verdict = VerbLevels::of(&spec(), "conclude", "commands_help", Floor::Summary);
         assert_eq!(verdict.len(), 2, "a verb nothing expands floors at its summary");

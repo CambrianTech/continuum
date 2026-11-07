@@ -11,8 +11,8 @@
 //! measured importance (recency, salience) before they reach the ladder.
 //!
 //! How it searches (ballpark first, exact for the few contested choices):
-//! 1. the cheap first guess: the flexbox over every claim, each leveled grant rounded down to its
-//!    largest level (what the act did before the search);
+//! 1. the cheap first guess, given by the allocation (the one caller of the flexbox): the flexbox
+//!    over every claim, each leveled grant rounded down to its largest level;
 //! 2. a dynamic programme over the leveled consumers' options, each option's cost above its hard
 //!    limit rounded UP to a unit derived from the instance (the span to decide over divided by the
 //!    count of options, so the table has about as many cells as there are options), so every
@@ -27,7 +27,7 @@
 //! and the climb's exchanges recover the neighbours of the one it keeps. The result is never worse
 //! than the first guess: the better of the two is returned.
 
-use crate::flex::{flex_allocate, FlexClaim};
+use crate::flex::FlexClaim;
 
 /// One leveled consumer as the search sees it: its options' costs, most detail first, the last
 /// its hard limit. Never empty: a consumer with nothing to show has the one option 0
@@ -40,11 +40,11 @@ pub struct Group {
 }
 
 impl Group {
-    fn limit(&self) -> u32 {
+    pub fn limit(&self) -> u32 {
         self.options.last().copied().unwrap_or(0) // unwrap_or: a consumer with no option shows nothing and costs nothing
     }
 
-    fn want(&self) -> u32 {
+    pub fn want(&self) -> u32 {
         self.options.first().copied().unwrap_or(0) // unwrap_or: as above
     }
 }
@@ -125,45 +125,20 @@ pub fn overflow(window: u32, groups: &[Group], continuous: &[FlexClaim]) -> Opti
 }
 
 /// The value of one combination, exactly: `None` when it does not fit.
-fn value_of(window: u32, groups: &[Group], picks: &[usize], continuous: &[FlexClaim]) -> Option<f64> {
+pub(crate) fn value_of(window: u32, groups: &[Group], picks: &[usize], continuous: &[FlexClaim]) -> Option<f64> {
     let spent = groups.iter().zip(picks).map(|(g, &pick)| g.options[pick]).fold(0, u32::saturating_add);
     let rest = window.checked_sub(spent)?;
     let leveled: f64 = groups.iter().zip(picks).map(|(g, &pick)| worth(g.priority, g.options[pick])).sum();
     continuous_value(rest, continuous).map(|value| leveled + value)
 }
 
-/// The first guess: the flexbox over every claim, each group's grant rounded down to its largest
-/// option that fits it.
-fn first_guess(window: u32, groups: &[Group], continuous: &[FlexClaim]) -> Vec<usize> {
-    let mut claims: Vec<FlexClaim> = groups
-        .iter()
-        .map(|g| FlexClaim {
-            source_id: g.id.clone(),
-            priority: g.priority,
-            floor_tokens: g.limit(),
-            min_tokens: g.limit(),
-            max_tokens: g.want(),
-            required: true,
-        })
-        .collect();
-    claims.extend(continuous.iter().cloned());
-    let plan = flex_allocate(window, &claims);
-    groups
-        .iter()
-        .map(|g| {
-            let grant = plan.granted(&g.id);
-            g.options.iter().position(|&cost| cost <= grant).unwrap_or(g.options.len() - 1) // unwrap_or: below every option is its hard limit
-        })
-        .collect()
-}
-
-/// Which option each group shows within `window`, beside `continuous`. `Err` only when every hard
-/// limit together does not fit.
-pub fn search(window: u32, groups: &[Group], continuous: &[FlexClaim]) -> Result<Searched, Overflow> {
+/// Which option each group shows within `window`, beside `continuous`, refining `guess` (the
+/// allocation's first guess, one option per group: `allocation::first_guess`, the flexbox's
+/// grants rounded down). `Err` only when every hard limit together does not fit.
+pub fn search(window: u32, groups: &[Group], continuous: &[FlexClaim], guess: Vec<usize>) -> Result<Searched, Overflow> {
     if let Some(over) = overflow(window, groups, continuous) {
         return Err(over);
     }
-    let guess = first_guess(window, groups, continuous);
     let first_guess_value = value_of(window, groups, &guess, continuous).unwrap_or(f64::NEG_INFINITY); // unwrap_or: a guess that does not fit is worth nothing
     let limits: u32 = groups.iter().map(Group::limit).fold(0, u32::saturating_add);
     let slack = window - limits.min(window);

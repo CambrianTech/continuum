@@ -281,7 +281,7 @@ mod tests {
         let levels = GroundingPiece::levels(&c);
         assert!(levels.len() > 2, "whole, unit prefixes, handle");
         assert!(levels.windows(2).all(|w| w[0].tokens > w[1].tokens));
-        let handle = levels.last().expect("levels");
+        let handle = levels.last().expect("levels"); // JUSTIFIED: test fixture
         assert_eq!(handle.body, Body::Handle);
         let mut text = String::new();
         handle.append_body(&mut text);
@@ -302,7 +302,7 @@ mod tests {
         let whole_top = GroundingPiece::whole(&ws.broadcast[1]).tokens as u32;
         let choice = offer.leveled.reduce(whole_top);
         let rendered = offer.rendered(&choice.rungs);
-        let top_piece = rendered.iter().find(|p| p.contribution.faculty.as_str() == "room-kanban").expect("the top block renders");
+        let top_piece = rendered.iter().find(|p| p.contribution.faculty.as_str() == "room-kanban").expect("the top block renders"); // JUSTIFIED: test fixture
         let lesser_whole = rendered.iter().any(|p| p.contribution.faculty.as_str() == "affect" && p.body == Body::Whole);
         assert!(top_piece.body == Body::Whole || !lesser_whole, "a lesser block whole beside a collapsed top one");
         let none = GroundingOffer::of(&ws, &|tokens| tokens as u32);

@@ -165,11 +165,13 @@ fn aikos_act_fits_her_window_by_collapsing_her_hands_and_grounding_instead_of_re
     // at its pointer, which names how to open it.
     let names = faculty.tool_surface().names_of(&roomy.tools);
     assert_eq!(faculty.tool_surface().names_of(&view.tools), names, "no verb dropped");
-    let wholes = roomy.tools.specs.as_deref().expect("test: her surface");
-    for (spec, whole) in view.tools.specs.as_deref().expect("test: her surface").iter().zip(wholes) {
-        let params = |s: &crate::ai::types::NativeToolSpec| s.input_schema.properties.as_object().map(|p| p.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+    let wholes = roomy.tools.specs.as_deref().expect("test: her surface"); // JUSTIFIED: test fixture
+    for (spec, whole) in view.tools.specs.as_deref().expect("test: her surface").iter().zip(wholes) { // JUSTIFIED: test fixture
+        let params = |s: &crate::ai::types::NativeToolSpec| s.input_schema.properties.as_object().map(|p| p.keys().cloned().collect::<Vec<_>>()).unwrap_or_default(); // JUSTIFIED: test fixture
         assert_eq!(params(spec), params(whole), "{}: every parameter at every level", spec.name);
-        assert!(spec == whole || whole.description.starts_with(spec.description.as_str()) || spec.description.ends_with("shows its parameters"), "{}: whole, its summary, or its pointer", spec.name);
+        let summary = crate::cognition::tool_surface::VerbLevels::of(whole, "", "", crate::cognition::tool_surface::Floor::Summary);
+        let is_summary = (0..summary.len()).any(|level| summary.spec(level) == spec);
+        assert!(spec == whole || is_summary || spec.description.ends_with("shows its parameters"), "{}: whole, its summary, or its pointer", spec.name);
     }
     let text: String = view.messages.iter().map(|m| m.content_text()).collect();
     assert!(text.contains("[room-kanban]"), "the standing board reaches her at a level");

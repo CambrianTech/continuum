@@ -14,7 +14,7 @@
 //!   the fresh history (optional), the reply, her view's sources;
 //! - every part made of items is a [`Leveled`] consumer (the one contract, [`crate::ladder`]): its
 //!   items' levels come from their shapes and its hard limit is derived from them, never declared.
-//!   Their levels are searched together ([`crate::search`]) and the continuous parts share what
+//!   Their levels are searched together ([`search`]) and the continuous parts share what
 //!   they leave, so a window too small for every part whole collapses what matters least first, by
 //!   level, and the turn is short only when every hard limit together does not fit (Joel,
 //!   2026-11-07: "The rag budgeting should collapse rather than crap out");
@@ -29,7 +29,8 @@
 
 use crate::flex::{flex_allocate, turn_need, AllocationState, FlexAllocation, FlexClaim};
 pub use crate::ladder::{Choice, Leveled, Rungs};
-use crate::search::{overflow, search, Group, Searched};
+pub mod search;
+use search::{overflow, search, Group, Searched};
 
 /// The claim ids of an act's allocation.
 pub mod id {
@@ -202,9 +203,34 @@ impl Part<'_> {
     }
 }
 
+/// The first guess: the flexbox over every claim, each group's grant rounded down to its largest
+/// option that fits it.
+pub fn first_guess(window: u32, groups: &[Group], continuous: &[FlexClaim]) -> Vec<usize> {
+    let mut claims: Vec<FlexClaim> = groups
+        .iter()
+        .map(|g| FlexClaim {
+            source_id: g.id.clone(),
+            priority: g.priority,
+            floor_tokens: g.limit(),
+            min_tokens: g.limit(),
+            max_tokens: g.want(),
+            required: true,
+        })
+        .collect();
+    claims.extend(continuous.iter().cloned());
+    let plan = flex_allocate(window, &claims);
+    groups
+        .iter()
+        .map(|g| {
+            let grant = plan.granted(&g.id);
+            g.options.iter().position(|&cost| cost <= grant).unwrap_or(g.options.len() - 1) // unwrap_or: below every option is its hard limit
+        })
+        .collect()
+}
+
 /// THE allocation of one act: `window` tokens shared across `claims`, once. Every leveled part
 /// answers "the most you can show within this" ([`Leveled::reduce`]); their levels are searched
-/// together ([`crate::search`]), and the continuous parts share what the levels leave through the
+/// together ([`search`]), and the continuous parts share what the levels leave through the
 /// flexbox. The turn is short only when every hard limit together does not fit
 /// ([`ActPlan::irreducible_shortfall`], naming the binding one).
 pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
@@ -275,7 +301,7 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
         .collect();
     let (parts, lost) = parts_with(true);
     let groups = groups_of(&parts);
-    let searched = search(window, &groups, &searched_claims).ok();
+    let searched = search(window, &groups, &searched_claims, first_guess(window, &groups, &searched_claims)).ok();
     // Every hard limit together does not fit: each part at its hard limit and the shortfall typed
     // (`irreducible_shortfall`); never a part dropped or budget minted.
     let picks: Vec<usize> = searched.as_ref().map_or_else(|| groups.iter().map(|g| g.options.len() - 1).collect(), |found| found.picks.clone()); // map_or_else: no search answer is every part at its hard limit
@@ -288,7 +314,7 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
             .zip(&picks)
             .map(|(g, &pick)| if g.id == id::GROUNDING { g.clone() } else { Group { options: vec![g.options[pick]], ..g.clone() } })
             .collect();
-        if let (Ok(found), Some(at)) = (search(window, &head_fixed, &continuous), parts.iter().position(|part| part.id == id::GROUNDING)) {
+        if let (Ok(found), Some(at)) = (search(window, &head_fixed, &continuous, first_guess(window, &head_fixed, &continuous)), parts.iter().position(|part| part.id == id::GROUNDING)) {
             chosen[at] = (id::GROUNDING, parts[at].options[found.picks[at]].clone());
         }
     }
@@ -297,7 +323,7 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
     let held_any = parts.iter().any(|part| part.options.len() == 1 && part.leveled.options().len() > 1);
     let rise = if held_any {
         let (free, _) = parts_with(false);
-        search(window, &groups_of(&free), &searched_claims).map_or_else(|_| Vec::new(), |found| { // map_or_else: unheld fits no better, nothing rises
+        { let free_groups = groups_of(&free); search(window, &free_groups, &searched_claims, first_guess(window, &free_groups, &searched_claims)) }.map_or_else(|_| Vec::new(), |found| { // map_or_else: unheld fits no better, nothing rises
             free.iter()
                 .zip(&found.picks)
                 .filter(|(part, _)| part.id != id::GROUNDING)
