@@ -94,9 +94,10 @@ pub(in super::super) struct ToolsOffer<'a> {
 }
 
 impl ToolsOffer<'_> {
-    /// Her hands as the allocation's head part.
+    /// Her hands as the allocation's head part: what she acts through, so a price choice never shows
+    /// a verb below its summary (`continuum_context::ladder::Consumer::Actionable`).
     pub(in super::super) fn head(&self) -> Head {
-        Head { leveled: self.leveled.leveled.clone(), held: self.held.clone() }
+        Head { leveled: self.leveled.leveled.clone(), held: self.held.clone(), consumer: continuum_context::ladder::Consumer::Actionable }
     }
 
     /// The canonical names her surface sends.
@@ -292,11 +293,12 @@ mod review_growth_tests {
         assert!(floor.cost < framing.leveled.want(), "fixture: menu can rise");
         let window = (framing.leveled.want() + offer.head().leveled.want()) * 2;
         let act = allocate(window, ActClaims {
-            framing: Head { leveled: framing.leveled.clone(), held: Some(floor.rungs) },
+            framing: Head { held: Some(floor.rungs), ..Head::free(framing.leveled.clone()) },
             tools: offer.head(), required: Leveled::default(), newest: Leveled::default(),
             grounding: Leveled::default(), last_move: Leveled::default(), history: Span::default(),
             reply: FlexClaim { source_id: id::REPLY.into(), priority: 1, floor_tokens: 0, min_tokens: 0, max_tokens: 0, required: false },
             view: Vec::new(),
+            price: continuum_context::price::ContextPrice::Unmeasured,
         });
         assert!(act.rise(id::FRAMING).is_some(), "fixture: actual allocator offers menu rise");
         assert!(act.rise(id::TOOLS).is_none(), "fixture: tools stay at same level");

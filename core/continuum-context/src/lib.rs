@@ -9,6 +9,7 @@
 //! - [`levels`]: each item's summary level, generated from its shape (mipmaps for context).
 //! - [`nav`]: a folded group of items: its label, its count and the typed command that opens it.
 //! - [`motion`]: how each source moves between epoch starts, which orders the next start.
+//! - [`price`]: what holding context costs an act in seconds, measured per model on its node.
 //! - [`rereads`]: how often she asks again for what she observed, by its age.
 //! - [`depth`]: how deep a turnover collapses her history, from those re-reads and her growth.
 //! - [`view`]: one mind's epoch fed by its sources; turnover is the only rewrite.
@@ -30,6 +31,7 @@ pub mod level;
 pub mod levels;
 pub mod motion;
 pub mod nav;
+pub mod price;
 pub mod rereads;
 pub mod source;
 pub mod view;

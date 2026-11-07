@@ -91,6 +91,7 @@ impl WorkingMemory {
             receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
             open_views: Mutex::new(Default::default()),
+            act_times: Mutex::new(Default::default()),
             tool_head: Default::default(),
         }
     }

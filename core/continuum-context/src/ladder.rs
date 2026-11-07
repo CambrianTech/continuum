@@ -82,6 +82,42 @@ impl Rungs {
     }
 }
 
+/// What a consumer IS to her, which decides the least a CHOICE may show of it above its hard limit
+/// (the time price of context, `allocation::priced`). Its hard limit itself never moves: a window
+/// too small for more still shows any consumer at its hard limit, the one path to a pointer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Consumer {
+    /// What she reads (her conversation, her grounding, results): a choice may show it at its
+    /// hard limit.
+    #[default]
+    Context,
+    /// What she acts through (her tools, her held card): a choice never shows an item below its
+    /// summary. A verb at its bare name costs her a `help` call and an extra act to use, which no
+    /// value the allocation weighs can see (the dyno on #5822: the price took her tool schemas
+    /// from 8.5-10.4k tokens to 245-717, names only).
+    Actionable,
+}
+
+impl Consumer {
+    /// `leveled` as a choice may show it: unchanged for context; for an actionable consumer each
+    /// item without its pointer (an item with a summary keeps down to it, one whole and pointer
+    /// only stays whole).
+    pub fn choosable(self, leveled: &Leveled) -> Leveled {
+        match self {
+            Consumer::Context => leveled.clone(),
+            Consumer::Actionable => Leveled::new(leveled.items.iter().map(Rungs::above_pointer).collect()),
+        }
+    }
+}
+
+impl Rungs {
+    /// Its levels without its pointer: down to its summary, or whole when it has none.
+    fn above_pointer(&self) -> Rungs {
+        let keep = self.0.len().saturating_sub(1).max(1);
+        Rungs(self.0[..keep].to_vec())
+    }
+}
+
 /// A consumer: its items, least important first (the oldest, or the least used), so the most
 /// important item is the last and keeps detail longest.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

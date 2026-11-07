@@ -152,6 +152,12 @@ pub trait Source<T: Block> {
         false
     }
 
+    /// What it is to her ([`crate::ladder::Consumer`]): context she reads unless she acts through
+    /// it (her held card), which a choice never shows below its whole.
+    fn consumer(&self) -> crate::ladder::Consumer {
+        crate::ladder::Consumer::Context
+    }
+
     /// The source's current items, oldest first. An item that left the source's state (a
     /// result that aged out) is simply absent: what the view already holds stays until the
     /// next turnover.

@@ -110,7 +110,7 @@ struct Options {
     paths: Vec<String>,
 }
 
-fn utc(flag: &str, value: Option<String>) -> Result<u64, String> {
+pub fn utc(flag: &str, value: Option<String>) -> Result<u64, String> {
     let value = value.ok_or_else(|| format!("{flag} needs a UTC time, e.g. 2026-10-26T22:00Z"))?;
     clock::parse(&value).ok_or_else(|| format!("{flag} {value}: not a UTC time like 2026-10-26T22:00Z"))
 }
@@ -137,7 +137,7 @@ fn options(args: Vec<String>) -> Result<Options, String> {
 }
 
 /// Every capture file written since the window opened.
-fn default_paths(since_ms: Option<u64>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+pub fn default_paths(since_ms: Option<u64>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let since_ms = since_ms.ok_or("--acts needs capture files or --since (to pick the captures written since)")?;
     let home = std::env::var("HOME").map_err(|_| "HOME is not set: pass capture files")?;
     let dir = std::path::Path::new(&home).join(".continuum/fixtures/prompt-captures");

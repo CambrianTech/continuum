@@ -409,7 +409,7 @@ fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window:
     let act = allocate(
         window,
         ActClaims {
-            framing: Head { leveled: framing.leveled.clone(), held: framing.held.clone() },
+            framing: Head { held: framing.held.clone(), ..Head::free(framing.leveled.clone()) },
             required: Leveled::default(),
             newest: Leveled::default(),
             tools: offer.head(),
@@ -418,6 +418,7 @@ fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window:
             history: Span::default(),
             reply,
             view: Vec::new(),
+            price: continuum_context::price::ContextPrice::Unmeasured,
         },
     );
     (faculty.granted_tools(ws, offer, &framing, &act, &charge), act)

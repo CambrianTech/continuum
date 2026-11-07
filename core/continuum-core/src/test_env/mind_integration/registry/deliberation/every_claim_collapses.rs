@@ -75,7 +75,7 @@ fn as_canary_priced(view: &DeliberationPromptView) -> ActClaims {
         .claims
         .iter()
         .filter(|c| c.source.starts_with(id::VIEW))
-        .map(|c| continuum_context::flex::FlexClaim { source_id: c.source.clone(), priority: c.priority, floor_tokens: c.floor, min_tokens: c.floor, max_tokens: c.want, required: true })
+        .map(|c| continuum_context::flex::FlexClaim { source_id: c.source.clone(), priority: c.priority, floor_tokens: c.floor, min_tokens: c.floor, max_tokens: c.want, required: true }.into())
         .collect();
     let reply = receipt.claims.iter().find(|c| c.source == id::REPLY).expect("test: a reply claim"); // JUSTIFIED: test fixture
     ActClaims {
@@ -88,6 +88,7 @@ fn as_canary_priced(view: &DeliberationPromptView) -> ActClaims {
         history: Span { floor: 0, min: 0, want: want(id::HISTORY) },
         reply: continuum_context::flex::FlexClaim { source_id: id::REPLY.into(), priority: reply.priority, floor_tokens: reply.floor, min_tokens: reply.floor, max_tokens: reply.want, required: true },
         view: view_claims,
+        price: continuum_context::price::ContextPrice::Unmeasured,
     }
 }
 

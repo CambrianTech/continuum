@@ -488,8 +488,7 @@ impl LlmDeliberationFaculty {
                         &binding,
                         &view,
                         response.usage.input_tokens,
-                        // No timing on the reply = nothing measured as reused = nothing rides free.
-                        response.timing.as_ref().map_or(0, |t| t.cached_tokens),
+                        response.timing.as_ref(),
                         fit_window,
                         &response.model,
                     );

@@ -76,10 +76,23 @@ impl LlmDeliberationFaculty {
         binding: &Arc<ModelBinding>,
         view: &DeliberationPromptView,
         engine_prompt_tokens: u32,
-        engine_cached_tokens: u32,
+        timing: Option<&crate::ai::types::GenerationTiming>,
         available: u32,
         served: &str,
     ) {
+        // No timing on the reply = nothing measured as reused = nothing rides free.
+        let engine_cached_tokens = timing.map_or(0, |t| t.cached_tokens); // map_or: no timing reused nothing
+        // Her act's engine timing joins what holding context costs her on this engine and model.
+        if let (Some(t), Some(memory)) = (timing, self.working_memory.as_deref()) {
+            memory.observe_act(Self::served_by(binding), &continuum_context::price::ActSample {
+                input: engine_prompt_tokens,
+                cached: t.cached_tokens,
+                fresh: t.prefill_tokens,
+                prefill_ms: t.prefill_ms,
+                output: t.decode_tokens,
+                decode_ms: t.decode_ms,
+            });
+        }
         let Some((density, calibration, reading)) =
             self.density_on(binding).observe(view.estimated_prompt_tokens, engine_prompt_tokens, served)
         else {
@@ -107,6 +120,18 @@ impl LlmDeliberationFaculty {
             template = ?super::template::TemplateEstimate::from_measurement(&binding.adapter.template_overhead(binding.requested_model())),
             "the engine's count of this prompt, retained in her density; the next prompt is fitted at its bound"
         );
+    }
+
+    /// The engine and model `binding` reaches: the key her act time is measured under, whatever
+    /// her window (seconds per held token are the engine's and the model's, never her window's).
+    fn served_by(binding: &ModelBinding) -> crate::cognition::working_memory::act_times::ServedBy {
+        crate::cognition::working_memory::act_times::ServedBy { provider: binding.adapter.provider_id().to_owned(), model: binding.requested_model().to_owned() }
+    }
+
+    /// Her acts' timing fit on the engine and model `binding` reaches, kept across window changes
+    /// and restarts with her working memory; empty with no working memory (nothing measured).
+    pub(in super::super) fn act_time_on(&self, binding: &ModelBinding) -> continuum_context::price::ActTimeFit {
+        self.working_memory.as_deref().map_or_else(Default::default, |memory| memory.act_time(&Self::served_by(binding))) // map_or_else: a faculty with no working memory has measured nothing
     }
 
     /// Her measured density on `binding`: the ring her last feedback carried when it applies to
@@ -246,8 +271,8 @@ impl LlmDeliberationFaculty {
         let acting = kind == TurnKind::Act;
         // Already in the allocation's tokens: her view's allocation estimate charges each block at this calibration.
         let view_claims: Vec<_> = self.view_claims(&all_messages.streams, super::epoch::AllocationEstimate(calibration)).into_iter().map(|mut source| {
-            source.max_tokens = source.max_tokens.max(source.floor_tokens);
-            source.required = source.required || acting;
+            source.claim.max_tokens = source.claim.max_tokens.max(source.claim.floor_tokens);
+            source.claim.required = source.claim.required || acting;
             source
         }).collect();
         let reply_need = reply.floor_tokens;
@@ -255,7 +280,7 @@ impl LlmDeliberationFaculty {
         let act = continuum_context::allocation::allocate(
             context_window,
             continuum_context::allocation::ActClaims {
-                framing: continuum_context::allocation::Head { leveled: framing_offer.leveled.clone(), held: framing_offer.held.clone() },
+                framing: continuum_context::allocation::Head { held: framing_offer.held.clone(), ..continuum_context::allocation::Head::free(framing_offer.leveled.clone()) },
                 // Input she must read: its whole is its hard limit.
                 required: Leveled::one(Rungs::whole(claim(required_tokens))),
                 newest: newest.as_ref().map_or_else(Leveled::default, |(rungs, _)| Leveled::one(rungs.clone())), // map_or_else: no result this act
@@ -266,6 +291,9 @@ impl LlmDeliberationFaculty {
                 history: continuum_context::allocation::Span { floor: 0, min: 0, want: claim(optional_history.saturating_sub(history_floor)) },
                 reply,
                 view: view_claims,
+                // What holding context costs her act on this binding, measured from her own acts:
+                // the allocation holds the window where her value per second peaks.
+                price: self.act_time_on(&self.binding.load()).price(),
             },
         );
         let allocation_us = started.elapsed().as_micros() as u64;
@@ -370,6 +398,8 @@ impl LlmDeliberationFaculty {
             tools_limit = act.hard_limit(claim_id::TOOLS).unwrap_or(0), // unwrap_or: tools are always a leveled part
             searched_cells = act.searched.as_ref().map_or(0, |s| s.cells), // map_or: no search when every hard limit together did not fit
             search_refined = act.searched.as_ref().is_some_and(|s| s.refined),
+            // The window the time price of context held (or why none: unmeasured, window binds).
+            priced = ?act.priced,
             allocation_us,
             reply_priority = reply_claimed.map_or(0, |r| r.priority), // map_or: the reply is always claimed; 0 reads as absent
             reply_floor = reply_claimed.map_or(0, |r| r.floor_tokens), // map_or: as above
