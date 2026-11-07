@@ -34,11 +34,10 @@ fn an_unaffordable_standing_source_does_not_fault_the_turn() {
     )
     .with_context_window(4_096);
 
-    // The fixture must actually be unaffordable, or this test proves nothing.
-    let whole = GroundingPlan::minimum(&ws);
+    // The fixture must actually be unaffordable whole, or this test proves nothing.
     assert!(
-        whole.context_reserve() + whole.trailing_tokens() > 4_096,
-        "fixture must make the standing minimum genuinely unaffordable"
+        LlmDeliberationFaculty::assembled_context_cost(&ws) > 4_096,
+        "fixture must make the standing grounding genuinely unaffordable whole"
     );
 
     let view = faculty.prompt_view(&ws);
@@ -51,14 +50,18 @@ fn an_unaffordable_standing_source_does_not_fault_the_turn() {
         !view.messages.is_empty(),
         "and she must be given something to think ABOUT"
     );
+    // Collapse, never vanish (Aiko on the M5, 2026-11-07: "assembled context suppressed: zero
+    // token budget"): the standing grounding reaches her at a level that fits.
+    let text: String = view.messages.iter().map(|m| m.content_text()).collect();
+    assert!(text.contains("[room-roster]") || text.contains("[room-wall]"), "her standing grounding reaches her reduced, not dropped");
 }
 
-// what this catches: shedding must report WHAT IT WANTED. A reduction that
-// cannot state its own magnitude is the saturating-subtract mistake that
-// destroyed the diagnosis one layer up — "over by 31,000" and "exactly at the
-// line" must not arrive as the same number.
+// what this catches: a reduction that cannot state its own magnitude (the saturating-subtract
+// mistake that destroyed the diagnosis one layer up: "over by 31,000" and "exactly at the line"
+// arrived as the same number). The grounding consumer's want is every contribution whole, whatever
+// level a budget shows it at, and its levels reach below any budget the fixture could need.
 #[test]
-fn shedding_reports_the_size_it_wanted() {
+fn the_grounding_consumer_keeps_its_want_whatever_level_it_is_shown_at() {
     let mut ws = Workspace::new("stimulus");
     ws.broadcast.push(
         Contribution::context(
@@ -69,31 +72,11 @@ fn shedding_reports_the_size_it_wanted() {
         )
         .standing_grounding(),
     );
-    let whole = GroundingPlan::minimum(&ws);
-    let wanted_tokens = whole.context_reserve() + whole.trailing_tokens();
-    assert!(
-        wanted_tokens > 0,
-        "the fixture must actually want something"
-    );
-
-    match GroundingPlan::within_budget(&ws, 0) {
-        Fitted::Whole(_) => panic!("a zero budget cannot afford this fixture"),
-        Fitted::Reduced { plan, wanted } => {
-            assert_eq!(wanted, wanted_tokens, "the WANT survives the shed");
-            assert_eq!(
-                plan.context_reserve() + plan.trailing_tokens(),
-                0,
-                "nothing is kept that the budget cannot pay for — and a piece                              too big for the budget is dropped whole, never truncated into                              a fragment that reads as complete"
-            );
-        }
-    }
-
-    match GroundingPlan::within_budget(&ws, wanted_tokens) {
-        Fitted::Whole(plan) => assert_eq!(
-            plan.context_reserve() + plan.trailing_tokens(),
-            wanted_tokens,
-            "an affordable minimum is kept whole"
-        ),
-        Fitted::Reduced { .. } => panic!("an exactly-affordable minimum must fit"),
-    }
+    let offer = super::super::super::prompt::grounding::GroundingOffer::of(&ws, &|tokens| tokens as u32);
+    let whole = LlmDeliberationFaculty::assembled_context_cost(&ws) as u32;
+    assert!(whole > 0, "the fixture must actually want something");
+    assert!(offer.leveled.want() >= whole, "the WANT survives every reduction: {} of {whole}", offer.leveled.want());
+    let reduced = offer.leveled.reduce(whole / 4);
+    assert!(reduced.cost <= whole / 4, "a smaller budget is met by a smaller level: {} for {}", reduced.cost, whole / 4);
+    assert!(reduced.cost > 0, "a level that still carries content, not nothing");
 }

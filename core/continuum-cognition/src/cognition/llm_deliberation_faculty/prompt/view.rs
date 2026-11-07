@@ -151,54 +151,12 @@ impl LlmDeliberationFaculty {
         );
         let desired_reply = reply.max_tokens as usize;
 
-        // The NATIVE tool schemas ride the served window too: the gateway injects
-        // each function spec (name + description + schema) via the chat template,
-        // outside `system`/`user`. Without counting them the budget silently
-        // overshoots `n_ctx` and llama-server 400s ("exceeds context size").
-        //
-        // This is NOT "a few dozen tokens" — that sentence described the two-tool
-        // discovery pair and has been false since #206 restored the full native
-        // surface (~a dozen tools, offered whole, deliberately: a native-tool model
-        // can only call what it was offered, and the amputated surface stranded it
-        // in a `commands/help` loop). Measured 2026-08-06 it is **~4,609 tokens** —
-        // 28% of a 16,384 window, before framing or a single message. It is now on
-        // the `delib.context.render` probe as `tool_tokens` rather than described,
-        // because this comment being wrong is what cost three commits of chasing a
-        // phantom accounting gap.
-        //
-        // Note the tool surface is paid TWICE in different forms: these schemas
-        // here, AND the human-readable tool MENU inside `compose_system` (counted in
-        // `framing_tokens`). Whether that duplication is intended is an open
-        // question, not something this comment should assert either way.
-        // Her hands are a claim in the one allocation below (`tools_epoch.rs`): before it,
-        // only their floor is irreducible; the surface sent is what the grant buys.
-        let tools = self.tools_claim(ws);
-
-        // Which tool categories the bookmarked menu OPENS this turn. Computed ONCE
-        // here from `ws` (NOT from the budgeted `context`, which is not built yet) and
-        // threaded IDENTICALLY into both `compose_system` calls below — so the
-        // framing-token ESTIMATE (empty context) and the FINAL render (real context)
-        // carry the exact same menu, and the budget math cannot under-count the tool
-        // block and overshoot `n_ctx`. See [`Self::expanded_categories`].
-        let expanded = self.expanded_categories(ws);
-
-        // The framing wrapper alone (no assembled context) — essential + small.
-        // Pass the SAME directedness + self-initiation + expansion as the final
-        // compose below so the framing-token estimate matches the prompt actually sent
-        // (both the silence block and the [Your own time] block are gated and add a
-        // few dozen tokens each).
+        // Her hands, her framing and her grounding are consumers in the one allocation below, each
+        // answering how it reduces (`tools_epoch.rs`, `framing.rs`, `grounding.rs`): the native
+        // tool schemas ride the served window ahead of every message (the gateway injects them via
+        // the chat template), the framing is the system message, the grounding the assembled
+        // context. Nothing about them is sized beside the allocation.
         let holds_live_work = Self::holds_live_work(ws);
-        let framing_tokens = Self::framing_cost(
-            &self
-                .compose_system_split(
-                    &expanded,
-                    ws.directed_at_self(),
-                    ws.self_initiated,
-                    ws.now_ms,
-                    holds_live_work,
-                )
-                .stable,
-        );
 
         // The contracts in force (own time, presence) are fixed text: each enters her view
         // as a standing block, once per epoch, and stays cached. Only the clock and the line
@@ -218,7 +176,6 @@ impl LlmDeliberationFaculty {
         // Her view leads the history: this act appends to it, and everything after it (the clock,
         // the ask, her newest act) is this act's tail, which joins her view once it is sent.
         let view = self.place_view(&mut all_messages);
-        let epoch_before = self.view_epoch();
 
         let input_identity = all_messages.input_identity;
         let calibration = calibration.for_input(input_identity);
@@ -246,27 +203,18 @@ impl LlmDeliberationFaculty {
         // action statement.
         let required_tokens = required.stimulus.saturating_add(required.action_statement);
         let newest_levels = self.newest_result_levels(&all_messages);
-        // GROUNDING MAY NEVER MUTE A CITIZEN (Kimi, 2026-09-09: 613 tokens of roster and map on a
-        // 28k window refused every turn). It is an optional claim with no floor: its min is the
-        // standing sources' truthful minimums, its want everything offered, and its grant is the
-        // budget it is fitted to below, shedding rather than failing.
-        let standing = GroundingPlan::minimum(ws);
-        let grounding_min = if standing.pieces.is_empty() {
-            // No standing source bid: the optional enrichment's smallest offered piece and its
-            // header. No reservation without a bid.
-            let offered = || ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing);
-            let cost = |c: &Contribution| Self::context_piece_tokens(c.faculty.as_str(), c.content.len());
-            offered()
-                .map(cost)
-                .min()
-                .map_or(0, |tokens| tokens + Self::working_context_header_cost()) // map_or: no optional source bid, no enrichment reservation
-        } else {
-            standing.context_reserve() + standing.trailing_tokens()
-        };
-        let grounding_want = match Self::assembled_context_cost(ws) {
-            0 => 0,
-            offered => offered.saturating_add(Self::working_context_header_cost()),
-        };
+        use continuum_context::ladder::{Leveled, Rungs};
+        // Her newest result's levels in the allocation's unit, each rung with the level it is
+        // (`Rungs::kept`); `None` when this act carries no result.
+        let newest = newest_levels.split_first().map(|(&whole, smaller)| {
+            Rungs::kept(claim(whole), 0, smaller.iter().enumerate().map(|(level, &cost)| (claim(cost), level + 1)))
+        });
+        // Her hands and her framing (the head of her prompt), and her grounding: each a consumer
+        // whose levels come from its items' shapes and whose hard limit is derived from them.
+        let tools_offer = self.tools_offer(ws, &claim);
+        let held_menu = self.tools_epoch.lock().as_ref().map(|held| held.menu().clone());
+        let framing_offer = self.framing_offer(ws, holds_live_work, tools_offer.names(), held_menu.as_ref(), &claim);
+        let grounding_offer = super::grounding::GroundingOffer::of(ws, &claim);
         // Her own last move and its result are a REQUIRED claim of their own (`last_move`, goal 7:
         // the newest complete interaction is whole): clipping them costs a WHOLE EXTRA TURN when
         // she re-issues the act. The rest of this act's fresh tail (older acts, facts, the clock,
@@ -298,20 +246,24 @@ impl LlmDeliberationFaculty {
             source
         }).collect();
         let reply_need = reply.floor_tokens;
+        let started = std::time::Instant::now();
         let act = continuum_context::allocation::allocate(
             context_window,
             continuum_context::allocation::ActClaims {
-                framing: claim(framing_tokens),
-                required: claim(required_tokens),
-                newest: continuum_context::allocation::Newest { levels: newest_levels.iter().map(|&cost| claim(cost)).collect() },
-                tools: continuum_context::allocation::Span { floor: claim(tools.floor), min: claim(tools.floor), want: claim(tools.want) },
-                grounding: continuum_context::allocation::Span { floor: 0, min: claim(grounding_min), want: claim(grounding_want.max(grounding_min)) },
-                last_move: claim(history_floor),
+                framing: continuum_context::allocation::Head { leveled: framing_offer.leveled.clone(), held: framing_offer.held.clone() },
+                // Input she must read: its whole is its hard limit.
+                required: Leveled::one(Rungs::whole(claim(required_tokens))),
+                newest: newest.as_ref().map_or_else(Leveled::default, |(rungs, _)| Leveled::one(rungs.clone())), // map_or_else: no result this act
+                tools: tools_offer.head(),
+                grounding: grounding_offer.leveled.clone(),
+                // The newest complete interaction is whole (goal 7): its whole is its hard limit.
+                last_move: Leveled::one(Rungs::whole(claim(history_floor))),
                 history: continuum_context::allocation::Span { floor: 0, min: 0, want: claim(optional_history.saturating_sub(history_floor)) },
                 reply,
                 view: view_claims,
             },
         );
+        let allocation_us = started.elapsed().as_micros() as u64;
         use continuum_context::allocation::id as claim_id;
         let allocation = Some(crate::ai::provenance::AllocationReceipt {
             window: context_window,
@@ -322,7 +274,8 @@ impl LlmDeliberationFaculty {
                 .map(|claim| crate::ai::provenance::ClaimGrant {
                     source: claim.source_id.clone(),
                     priority: claim.priority,
-                    floor: claim.floor_tokens,
+                    // A leveled part's floor is its hard limit, never the level this act chose.
+                    floor: act.hard_limit(&claim.source_id).unwrap_or(claim.floor_tokens), // unwrap_or: a part that is not leveled floors at its claim
                     want: claim.max_tokens,
                     grant: act.granted(&claim.source_id),
                 })
@@ -333,28 +286,16 @@ impl LlmDeliberationFaculty {
 
         // Her newest result at the level the allocation chose: whole when the window holds it,
         // else the largest of its levels that fits, never a bare pointer (goal 7, `newest_result.rs`).
-        let newest_result_reduced = match newest_levels.get(act.newest_level()) {
+        let newest_level = newest.as_ref().map(|(_, levels)| levels[act.newest_level()]);
+        let newest_result_reduced = match newest_level.and_then(|level| newest_levels.get(level)) {
             Some(&level_cost) => self.fit_newest_result(&mut all_messages, level_cost),
             None => false, // no result this act
         };
-        // The standing grounding within its grant: shedding, never refusing the turn.
+        // The grounding at the levels the allocation chose: less of each under pressure, then
+        // handles, never refusing the turn (`grounding.rs`).
+        let grounding_rungs = act.chosen(claim_id::GROUNDING).map(|choice| choice.rungs.clone()).unwrap_or_default(); // unwrap_or_default: an unchosen grounding left the turn
         let grounding_grant = calibration.prompt_budget(act.granted(claim_id::GROUNDING) as usize);
-        let mut grounding = match GroundingPlan::within_budget(ws, grounding_grant) {
-            Fitted::Whole(plan) => plan,
-            Fitted::Reduced { plan, wanted } => {
-                continuum_base::probe!(
-                    class = "delib.grounding.shed",
-                    persona = %self.persona_name,
-                    wanted_tokens = wanted,
-                    budget_tokens = grounding_grant,
-                    kept_tokens = plan.context_reserve() + plan.trailing_tokens(),
-                    "standing grounding did not fit its grant: thinking with less enrichment rather than refusing the turn"
-                );
-                plan
-            }
-        };
-        all_messages.grounding_tokens = grounding.trailing_tokens();
-        let ctx_floor = if grounding.pieces.is_empty() { grounding_min.min(grounding_grant) } else { grounding.context_reserve() };
+        let ctx_floor = grounding_grant;
 
         // The smallest window this turn can be sent in: what cannot be shed (the required claims'
         // floors, her newest result at its chosen level) plus her reply's MEASURED need, uncapped
@@ -375,27 +316,33 @@ impl LlmDeliberationFaculty {
         let shortfall = act.irreducible_shortfall();
         // An ACT is never sent with a cap below her measured need: a short cap spends itself on her
         // think and cuts her at its first sentence (the M5, 2026-11-04). A pass proceeds as before.
-        let output_shortfall = shortfall.filter(|_| kind == TurnKind::Act);
+        let output_shortfall = shortfall.clone().filter(|_| kind == TurnKind::Act);
         if let Some(short) = shortfall {
             continuum_base::probe!(
                 class = "delib.payload.over_window",
                 persona = %self.persona_name,
                 needed_tokens = short.needed,
                 payload_overflow = short.needed.saturating_sub(short.window),
+                binding = %short.binding,
+                binding_limit = short.binding_limit,
                 context_window,
-                framing_tokens,
-                tool_tokens = tools.floor,
+                framing_limit = framing_offer.leveled.hard_limit(),
+                tool_limit = tools_offer.head().leveled.hard_limit(),
                 stimulus_tokens = required.stimulus,
                 action_statement_tokens = required.action_statement,
                 latest_result_tokens = required.latest_result,
                 latest_result_levels = newest_levels.len(),
                 latest_results = required.latest_result_count,
-                "the turn's IRREDUCIBLE floors do not fit the served window: growth no collapse can make, by this much"
+                "every part at its hard limit still does not fit the served window: growth no collapse can make, by this much, the binding part named"
             );
         }
 
         let tools_grant = calibration.prompt_budget(act.granted(claim_id::TOOLS) as usize);
-        let (tools_choice, tools_refusal) = self.granted_tools(ws, tools, tools_grant);
+        let tools_choice = self.granted_tools(ws, tools_offer, &framing_offer, &act, &claim);
+        // Her framing at the menu levels the allocation chose: what the budget below charges.
+        let framing_tokens = Self::framing_cost(
+            &self.compose_system_split(&tools_choice.menu, ws.directed_at_self(), ws.self_initiated, ws.now_ms, holds_live_work).stable,
+        );
         let budget_floor = act.held_need();
         // Her reply's grant is her measured need from the one allocation, the reserve her view is
         // sized beside (a pass's `max_tokens`; an act's cap is its room, `request_allowance`).
@@ -415,6 +362,10 @@ impl LlmDeliberationFaculty {
             last_move_granted = act.granted(claim_id::LAST_MOVE),
             history_granted = act.granted(claim_id::HISTORY),
             tools_granted = act.granted(claim_id::TOOLS),
+            tools_limit = act.hard_limit(claim_id::TOOLS).unwrap_or(0), // unwrap_or: tools are always a leveled part
+            searched_cells = act.searched.as_ref().map_or(0, |s| s.cells), // map_or: no search when every hard limit together did not fit
+            search_refined = act.searched.as_ref().is_some_and(|s| s.refined),
+            allocation_us,
             reply_priority = reply_claimed.map_or(0, |r| r.priority), // map_or: the reply is always claimed; 0 reads as absent
             reply_floor = reply_claimed.map_or(0, |r| r.floor_tokens), // map_or: as above
             reply_wanted = reply_claimed.map_or(0, |r| r.max_tokens), // map_or: as above
@@ -449,24 +400,27 @@ impl LlmDeliberationFaculty {
         // A start the plan did not fund (a required floor underfunded or past the room) is this
         // turn's CAPACITY refusal, typed, never a sent prompt and never budget minted; distinct
         // from the reply-only IrreducibleShortfall, with which an act proceeds at what is left.
-        let (view_beyond, view_fault, start_refusal) =
-            match self.fit_view(&mut all_messages, view, &act, calibration) {
-                Ok(beyond) => (beyond, None, None),
+        let head_growth = tools_choice.next.as_ref().map_or(0, |next| next.growth); // map_or: no next head adds nothing
+        let (view_beyond, head_funded, view_fault, start_refusal) =
+            match self.fit_view(&mut all_messages, view, &act, calibration, head_growth) {
+                Ok(fitted) => (fitted.beyond, fitted.head_funded, None, None),
                 Err(super::epoch::ViewSizing::Start(start)) => {
                     let (needed, had) = start.needed_and_had();
-                    (None, None, Some(crate::cognition::workspace::PromptCapacityError { required_tokens: needed as usize, budget_tokens: had as usize }))
+                    (None, false, None, Some(crate::cognition::workspace::PromptCapacityError { required_tokens: needed as usize, budget_tokens: had as usize }))
                 }
-                Err(mismatch) => (None, Some(format!("her view could not be sized: {mismatch}")), None),
+                Err(mismatch) => (None, false, Some(format!("her view could not be sized: {mismatch}")), None),
             };
         // What a sent tail already showed her is in her view now: never sent twice. Then what this
         // tail shows that her sources also render, for her view to cover once it is sent.
         self.drop_what_she_was_sent(&mut all_messages);
         let tail_covers = Self::tail_covers(&all_messages);
         self.view_sent();
-        // The surface this act sends: the epoch's set, or, when this act started an epoch of her
-        // view, the set it adopts (`tools_epoch.rs`).
-        let new_epoch = view.started() || self.view_epoch() != epoch_before;
-        let selected = self.retain_tools(tools_choice, tools_refusal.is_some(), new_epoch);
+        // The surface this act sends: her head's held set and levels, or, when this act started an
+        // epoch of her view that funded it, the next head (`tools_epoch.rs`).
+        let (selected, menu) = self.retain_tools(tools_choice, start_refusal.is_some(), head_funded);
+        // The system message at the menu levels her head holds, composed once.
+        let system = self.compose_system_split(&menu, ws.directed_at_self(), ws.self_initiated, ws.now_ms, holds_live_work).stable;
+        let framing_tokens = Self::framing_cost(&system);
         // Her view as the allocation sized it: the fit below never cuts it.
         let view_len = all_messages.grounding_at;
 
@@ -543,8 +497,8 @@ impl LlmDeliberationFaculty {
             }
             Err(error) => (FittedMessages::default(), Some(error)),
         };
-        // Her hands not granted even their floor refuse the turn as loudly as her input would.
-        let capacity_error = start_refusal.or(tools_refusal).or(capacity_error);
+        // A view start the plan did not fund, or required input that cannot fit, refuses the turn.
+        let capacity_error = start_refusal.or(capacity_error);
         // THE FIT'S RECEIPT (card d33e928a, Kimi's finding): whenever the fit dropped
         // history, say what it dropped and from what budget, and say it loudly when
         // nothing optional survived — that turn composes with no room at all, operator
@@ -564,7 +518,6 @@ impl LlmDeliberationFaculty {
                 kept_messages = r.kept_messages,
                 dropped_messages = r.dropped_messages,
                 dropped_tokens = r.dropped_tokens,
-                quantum = r.quantum,
                 "the fit dropped optional history from the front; history_emptied means nothing \
                  optional survived and the turn composes with no room messages at all"
             );
@@ -638,39 +591,16 @@ impl LlmDeliberationFaculty {
                 ),
             }
         }
-        // Only the source's truthful minimum outranks optional conversation. Additional
-        // declared list units fill the grounding's own grant, never leftover room sized here: a
-        // large list cannot turn every detail into mandatory input.
-        if capacity_error.is_none() {
-            grounding.expand_within(grounding_grant);
-        }
-        // A block a sent tail already showed her, byte for byte, is in her view: not sent again.
-        let trailing_grounding: Vec<ChatMessage> = grounding.trailing_messages().into_iter().filter(|block| !self.view_holds_sent(block)).collect();
-        fitted.refit.grounding_len = trailing_grounding.len();
-        fitted.messages.splice(
-            fitted.grounding_at..fitted.grounding_at,
-            trailing_grounding,
-        );
+        fitted.refit.grounding_len = 0;
         let FittedMessages { mut refit, mut messages, grounding_at, .. } = fitted;
 
-        // Whatever remains after framing + conversation goes to enrichment
-        // context. Rendered, it is one more message opened by a header — so the
-        // moment any context renders, the prompt grows by that header and its
-        // message wrapper too. Charge the context budget for both up front, or the
-        // final prompt systematically exceeds the estimate by ~50 tokens (masked by
-        // rounding slop until the tool-menu example grew the prompt to the
-        // budget edge — glass-boxed 2026-07-13, llama-server 400 territory).
+        // The assembled context at the levels the one allocation chose; its header and message
+        // wrapper are priced in its most important item (`grounding.rs`).
         let used_msg_tokens = Self::messages_cost(&messages);
-        // The context half renders within what the grounding's grant leaves after its trailing
-        // half, never less than its standing minimum: the one allocation sized it.
-        let ctx_budget = grounding_grant
-            .saturating_sub(grounding.trailing_tokens())
-            .saturating_sub(Self::working_context_header_cost())
-            .max(ctx_floor.saturating_sub(Self::working_context_header_cost()));
-        let context = self.render_assembled_context_within(
+        let context = self.render_grounding(
             ws,
-            ctx_budget,
-            &grounding,
+            grounding_offer,
+            &grounding_rungs,
             ContextComposition {
                 context_window,
                 framing_tokens,
@@ -713,15 +643,6 @@ impl LlmDeliberationFaculty {
         // The trailing half was already rendered into the FACTS phase of the
         // conversation by `messages_unfitted` (before the ask, parrot order
         // preserved); only the byte-stable half may touch the system message.
-        let system = self
-            .compose_system_split(
-                &expanded,
-                ws.directed_at_self(),
-                ws.self_initiated,
-                ws.now_ms,
-                holds_live_work,
-            )
-            .stable;
         // This is the native request estimate, not a backend tokenizer count.
         // Adapters may add model-specific framing; live acceptance still checks
         // their captured request/usage rather than assuming this estimate exact.

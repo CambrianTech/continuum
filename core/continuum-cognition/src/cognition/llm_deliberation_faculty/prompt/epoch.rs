@@ -27,6 +27,14 @@ const VIEW_CLAIM: &str = continuum_context::allocation::id::VIEW;
 /// The source a sent prompt's tail joins her view under (`view_served`).
 const SENT_TAIL: &str = "sent";
 
+/// What fitting her view decided: how far beyond its grant it would have held, and whether a start
+/// funded her head's next epoch.
+#[derive(Clone, Copy, Debug)]
+pub(in super::super) struct ViewFitted {
+    pub(in super::super) beyond: Option<usize>,
+    pub(in super::super) head_funded: bool,
+}
+
 /// Where her view sits in this act's history: its leading `len` messages, and whether this
 /// act started it.
 #[derive(Clone, Copy, Debug)]
@@ -41,10 +49,6 @@ impl ViewPlacement {
         self.len
     }
 
-    /// Whether this act started her view (no view was held).
-    pub(in super::super) fn started(&self) -> bool {
-        self.started
-    }
 }
 
 impl LlmDeliberationFaculty {
@@ -108,16 +112,20 @@ impl LlmDeliberationFaculty {
     /// per act; 3-11% of consecutive prompts shared).
     ///
     /// Returns how far beyond what this act allowed her view she would have held, when it
-    /// OVERFLOWED ([`overflow_beyond`]): the evidence her need is censored by her grant.
+    /// OVERFLOWED ([`overflow_beyond`]): the evidence her need is censored by her grant; and
+    /// whether a start in this act funded `head_growth` (what her head's next epoch adds, charged),
+    /// taken from the start's room beside every required floor, so the next head can be adopted.
     pub(in super::super) fn fit_view(
         &self,
         prompt: &mut PromptMessages,
         view: ViewPlacement,
         act: &continuum_context::allocation::ActPlan,
         calibration: super::types::PromptCalibration,
-    ) -> Result<Option<usize>, ViewSizing> {
+        head_growth: usize,
+    ) -> Result<ViewFitted, ViewSizing> {
+        let kept = |beyond| Ok(ViewFitted { beyond, head_funded: false });
         if view.len == 0 {
-            return Ok(None);
+            return kept(None);
         }
         let room = act.room() as usize;
         // A start the plan did not fund (`StartRefused`) is carried out typed: the view's closure
@@ -150,7 +158,12 @@ impl LlmDeliberationFaculty {
         // A start is sized from the same one plan as if the reply held its whole want
         // (`ActPlan::start_room`), so a pass and the act after it start her view alike; whether
         // this act keeps, restores or turns over is judged against what this act was granted.
-        let start_room = act.start_room() as usize;
+        // A start funds her head's next epoch from its room only while every required floor still
+        // fits beside it; else the head keeps its levels and the start keeps its room.
+        let required_floors: usize = act.plan.allocations.iter().filter(|a| a.required && a.source_id.starts_with(VIEW_CLAIM)).map(|a| a.requested_floor as usize).sum();
+        let room_all = act.start_room() as usize;
+        let funds_head = room_all >= head_growth.saturating_add(required_floors);
+        let start_room = if funds_head { room_all - head_growth } else { room_all };
         let sized = |claims: &[Claim]| match start_grants(claims, &act.plan, start_room, appended_per_act) {
             Ok(grants) => grants,
             Err(start) => {
@@ -161,7 +174,7 @@ impl LlmDeliberationFaculty {
         let due = turnover_due(view_tokens, granted + room, next_act_tokens, || self.view_would_restore(&prompt.streams, &sized))
             .map_err(&typed)?;
         if due == Turnover::Keep {
-            return Ok(None);
+            return kept(None);
         }
         let beyond = overflow_beyond(due, view.started, view_tokens, granted + room, next_act_tokens);
         let fits = due == Turnover::Restore;
@@ -184,7 +197,7 @@ impl LlmDeliberationFaculty {
                     );
                     prompt.grounding_at = admitted.len();
                     prompt.history.splice(0..view.len, admitted);
-                    return Ok(beyond);
+                    return kept(beyond);
                 }
             }
         }
@@ -212,7 +225,7 @@ impl LlmDeliberationFaculty {
             "her view outgrew what the window granted its sources and started a new epoch, \
              its growing sources leaving a reserve as large as their start"
         );
-        Ok(beyond)
+        Ok(ViewFitted { beyond, head_funded: funds_head })
     }
 
     /// Append this act's changes to her view and return its messages, and whether this act
@@ -298,11 +311,6 @@ impl LlmDeliberationFaculty {
         if let Some(view) = self.context_view.lock().as_mut() {
             view.sent();
         }
-    }
-
-    /// Which epoch her view is in: a change across an act means it started a new one.
-    pub(in super::super) fn view_epoch(&self) -> Option<u64> {
-        self.context_view.lock().as_ref().map(View::epoch_id)
     }
 
     /// Whether her view already shows `source`'s item `item`, in the bytes a sent tail showed it.
