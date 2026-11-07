@@ -303,12 +303,7 @@ The dream consumer is one stage on the stage contract (STAGE-CONTRACT.md, #5692/
   - Core dies after the cursor accepts and before the task's terminal write: acceptance is idempotent (the cursor only rises), and the task owner adopts.
 - **Validator case (shared validator).** The engine commits, the reply is lost, and the core restarts. The original commit is adopted exactly once, and the next useful step runs. An engine restart with its receipt unavailable surfaces `unresolved` (or rewinds to a binding snapshot); it never silently retries.
 
-**Yield points and stops.**
-- The chunk is ONE engine step. It is non-preemptible: 962 ms median measured on CPU, Qwen2.5-0.5B, fork 832d78cb1, 2026-11-01. That is measured on this hardware, not a bound elsewhere. Pause, yield and cancel land at the step boundary, after the in-flight step's outcome arrives (quiescence).
-- `Paused`: shadow and moments resident, charged.
-- `Yielded`: execution released. Residency drops to zero only after a durable snapshot AND the engine's release receipt (unload releases her optimizer, fork #85); the snapshot file stays in custody.
-- `Cancelled.committed_effects`: the steps this run committed.
-- A reflex trip is a stimulus during work. The dream yields within one step, with a receipt (§4 of the contract's shared validator).
+**Yield points, stops and receipts** are the stage contract's (STAGE-CONTRACT.md, "The dream consumer"): the chunk is one non-preemptible engine learn step, measured per node class; every step is `Dispatched` work bound to its run and task execution; `Paused`, `Yielded` and `Cancelled` carry the receipts defined there, and a stimulus during a dream gets a yield within one step. This section adds only what that contract leaves to the dream: its inputs, its commit rule, its lost-reply order, its snapshots and its registry.
 
 **Snapshots.**
 - At a yield, and every N committed steps, her shadow is written as an immutable gene candidate (fork #86's `/lora-adapters/snapshot`).
@@ -330,13 +325,13 @@ The dream consumer is one stage on the stage contract (STAGE-CONTRACT.md, #5692/
 | Verb | State |
 |---|---|
 | `/learn` on any loaded shadow, one optimizer per shadow | #85 |
-| snapshot plus committed step | #86 |
+| snapshot plus committed step | #86 (on #85) |
+| the execution id on `/learn`, its receipt table and the duplicate-execution answer (the lost-reply binding above) | #88 (on #86) |
+| learning a past example through the ordinary serving path, `n_predict` 0 (S4 (f)) | #89 (on #88) |
 | the grant ledger | #87, draft |
 
 Still open:
-- the execution id on `/learn`, the receipt table keyed by it, and the duplicate-execution answer (the lost-reply binding above);
 - the checkpoint (moments plus cursor, for resume across a restart);
-- learning a past example on an idle slot (S4 (f): the served prompt prefilled through the ordinary serving path, `n_predict` 0);
 - a step shorter than ~1 s, which needs splitting the graph across layers (deferred until the M5 measures its own step).
 
 **Depends on:**
