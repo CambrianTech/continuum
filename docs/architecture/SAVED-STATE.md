@@ -157,7 +157,7 @@ pub trait SavedState: Sized {
     /// What kind of state: decides the default on a non-match and the eviction story.
     const CLASS: StateClass; // Authoritative | Derived { source: &'static str } | Cache
     /// Retention, declared as data, never a constant in the owner's code.
-    fn retention() -> Retention; // Generations(n) | Budget(Measured) | Age(Measured) | WhileReferenced(fn) | Decay{half_life}
+    fn retention() -> Retention; // Generations(n) | Budget(Measured) | Age(Measured) | WhileReferenced(fn)
 }
 
 /// What a load returns. Every owner and caller matches it; no `unwrap_or_default` on state.
@@ -186,7 +186,7 @@ pub enum Loaded<T, C> {
 1. **One envelope** `{kind, format, key, contract, saved_at, build, confirmed}` around every payload, with the `ExternalBlob` ledger and ORM rows carrying the same fields. One reader can list every saved state on a node (`state/list`, `state/inspect <kind> <key>`). That is the glass box for "why did she wake cold".
 2. **Typed load** (`Loaded`) with a probe for every arm under one class tree: `state.<kind>.{matched,diverged,stale,newer,corrupt,unconfirmed,absent}`, each carrying key, `what` and bytes. This ends the `tracing::warn!` and silent `unwrap_or_default` paths (capture, rate stores, held_claims, lane records, context_view).
 3. **Save with a receipt**: `save()` returns `Saved{generation}` or a typed error, and **a failed save never latches the owner dead**. The trunk re-opens on the next save and counts consecutive failures in a probe, which fixes the capture latch by construction.
-4. **Retention by policy, with the eviction decision derived.** `Retention` plus `StateClass` produce the `TrackedDir` row and the `eviction_decisions` entry, so `standard_tracked_dirs` stops being a hand list and the `state/`, `run/` and `sentinel/` gaps close. `WhileReferenced` lets a **fork page** (key lifetime = fork lifetime) be dropped when its fork ends and swept at boot (no live owner). That fixes the fork leak without a budget constant. `Decay{half_life}` gives the act-time fit a declared forgetting policy.
+4. **Retention by policy, with the eviction decision derived.** `Retention` plus `StateClass` produce the `TrackedDir` row and the `eviction_decisions` entry, so `standard_tracked_dirs` stops being a hand list and the `state/`, `run/` and `sentinel/` gaps close. `WhileReferenced` lets a **fork page** (key lifetime = fork lifetime) be dropped when its fork ends and swept at boot (no live owner). That fixes the fork leak without a budget constant. Forgetting is never a retention policy: a half-life is a constant. A derived fit persists its observer state, its Contract names what it depends on (the engine config), so a change loads `Diverged{what}` and its observer widens its variance (the controller pattern, card 8a983e31).
 5. **Stop custody**: every `SavedState` with in-flight saves registers as a `SettleBeforeStop` participant (generalizing `page_io`), so no save that has started is cut silently by an exit.
 6. **One migration seam**: `fn upgrade(from: u32, bytes) -> Result<Self, CorruptCause>`, recorded with a probe and deleted when the ratchet sees no file older than N. This replaces serde-default accretion, untagged Legacy enums and one-off folds.
 7. **A replay and validator hook** (goal 11): the trunk can round-trip every kind in a seconds-scale test (save, load, `Matched`; perturb each contract field, `Diverged{what}`), from one generic test instead of one test per owner.
@@ -206,7 +206,7 @@ pub enum Loaded<T, C> {
 
 1. Floor crate: `SavedState`, `Loaded`, `ClassFile` medium, the generic round-trip validator. Migrate E3, E4 x4, E7, C5 (the small snapshots), which deletes four copies of the rate-store load/save code and the `let _ = rename` calls.
 2. `ExternalBlob` + generic confirmed-save ledger; move E1/E2 onto it. `WhileReferenced` closes the fork leak; `Diverged{what}` gives the layout-change signal; the 128 GiB constant is replaced by a measured budget.
-3. C1 volatile split into per-concern kinds (wm, own_speech, context_view as `Derived`, act_times with `Decay`) under one envelope; delete the hand-built path and the duplicated durable code.
+3. C1 volatile split into per-concern kinds (wm, own_speech, context_view as `Derived`, act_times as `Derived` observer state) under one envelope; delete the hand-built path and the duplicated durable code.
 4. Capture as an append-segment medium, with the save receipt and no latch.
 5. Register `state/`, `run/` and `sentinel/` through the kinds; add the ratchet.
 
@@ -215,3 +215,9 @@ pub enum Loaded<T, C> {
 - KV (Fable/Codex): should the fingerprint carry the engine build after all, now that a typed `Diverged{engine_build}` could mean "try restore, expect refusal" instead of "drop everything"? Today the choice is binary.
 - ORM (Codex): should `BaseEntity` gain the envelope's `format` (schema) next to its concurrency `version`, or should the ORM row's schema evolution stay purely additive?
 - Retention numbers: every `Retention` value must be measured (budget from disk pressure, age from a resident's return gap, `serving_daemon::rotation_window_ms`). The trunk should refuse a bare constant, as `KV_PAGE_STORE_MAX_BYTES` is today.
+
+## Review answers (Cormac, 2026-11-07, review a52c79c4)
+
+- **No `Retention::Decay`.** Forgetting belongs to the observer (controller card 8a983e31), not to persistence; see §4.
+- **ORM format** is per collection, declared in its registration and folded into the envelope at `OrmRow<T>`, never per row.
+- **Grants** are `Derived` from demand: dropped loudly on restart, never restored as authoritative.
