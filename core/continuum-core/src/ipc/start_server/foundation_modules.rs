@@ -29,7 +29,7 @@ pub(super) fn register_foundation_modules(
     crate::live::video::bevy_renderer::set_gpu_manager(gpu_manager.clone());
 
     // Phase 1: HealthModule (stateless)
-    runtime.register(Arc::new(HealthModule::new()));
+    runtime.register(Arc::new(HealthModule::new(runtime.registry().readiness())));
 
     // NavModule — nav/mark-read: advance the shared read cursor + publish NAV_CHANGED
     // on the airc bus (nav slice 3). Command in, Event out; the write half of the

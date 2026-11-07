@@ -77,15 +77,28 @@ pub enum DispatchOutcome {
 pub struct DispatchFailure {
     pub outcome: DispatchOutcome,
     pub message: String,
+    /// Set when the owning module could not take the command (its initialize is past its
+    /// deadline): the typed reason, so a caller matches it instead of reading the message.
+    pub unavailable: Option<super::module_readiness::ModuleUnavailable>,
 }
 
 impl DispatchFailure {
     pub(crate) fn not_committed(message: String) -> Self {
-        Self { outcome: DispatchOutcome::NotCommitted, message }
+        Self { outcome: DispatchOutcome::NotCommitted, message, unavailable: None }
     }
 
-    fn uncertain(message: String) -> Self {
-        Self { outcome: DispatchOutcome::Uncertain, message }
+    /// A handler, interceptor or transport was reached (or may have been) and failed.
+    pub fn uncertain(message: String) -> Self {
+        Self { outcome: DispatchOutcome::Uncertain, message, unavailable: None }
+    }
+
+    /// Refused before any handler ran because the owning module is unavailable.
+    fn unavailable(refused: super::module_readiness::ModuleUnavailable) -> Self {
+        Self {
+            outcome: DispatchOutcome::NotCommitted,
+            message: refused.to_string(),
+            unavailable: Some(refused),
+        }
     }
 }
 
@@ -545,6 +558,11 @@ impl CommandExecutor {
         //    A migrated command lives here and beats its module's legacy
         //    handle_command arm; see docs/architecture/COMMAND-ORGANIZATION.md.
         if let Some(cmd) = self.registry.route_object(command) {
+            // A dep-holding object reaches its module's state: admitted as far as that module is.
+            self.registry
+                .admit(self.registry.object_owner(command))
+                .await
+                .map_err(DispatchFailure::unavailable)?;
             log.debug(&format!(
                 "Routing '{}' to DynCommand object (typed path)",
                 command
@@ -562,6 +580,9 @@ impl CommandExecutor {
         if let Some((module, cmd)) = self.registry.route_command(command) {
             log.debug(&format!("Routing '{}' to local Rust module", command));
             let module_name = module.config().name;
+            // Waited on while its initialize runs (bounded by the init deadline); refused by type
+            // past it, never a hang inside a half-initialized module.
+            self.registry.admit(Some(module_name)).await.map_err(DispatchFailure::unavailable)?;
             // catch_unwind guard — same shape `Runtime::route_command`
             // uses. Persona tool execution flows through this path; a
             // panicking handler converts to typed Err instead of

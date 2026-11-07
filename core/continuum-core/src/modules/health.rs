@@ -89,19 +89,13 @@ crate::register_stateless_command!(PingCommand);
 
 pub struct HealthModule {
     started_at: Instant,
-}
-
-impl Default for HealthModule {
-    fn default() -> Self {
-        Self {
-            started_at: Instant::now(),
-        }
-    }
+    /// The registry's readiness table, so `health-check` reports every module's state.
+    readiness: std::sync::Arc<crate::runtime::ModuleReadiness>,
 }
 
 impl HealthModule {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(readiness: std::sync::Arc<crate::runtime::ModuleReadiness>) -> Self {
+        Self { started_at: Instant::now(), readiness }
     }
 }
 
@@ -131,7 +125,7 @@ impl ServiceModule for HealthModule {
     /// `Instant` (`get-stats` self-registers statelessly; `ping` likewise). All three
     /// liveness verbs now live on the typed object map.
     fn commands(&self) -> Vec<std::sync::Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::health::command_objects(self.started_at)
+        crate::commands::health::command_objects(self.started_at, std::sync::Arc::clone(&self.readiness))
     }
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
@@ -165,7 +159,7 @@ mod tests {
     // liveness away from the typed command) is caught here.
     #[tokio::test]
     async fn migrated_arms_fail_loud() {
-        let module = HealthModule::new();
+        let module = HealthModule::new(std::sync::Arc::new(crate::runtime::ModuleReadiness::new()));
         for command in ["health-check", "get-stats"] {
             let err = module
                 .handle_command(command, Value::Null)
@@ -182,7 +176,7 @@ mod tests {
     // uptime probe — is caught.
     #[test]
     fn contributes_the_typed_health_check_command() {
-        let module = HealthModule::new();
+        let module = HealthModule::new(std::sync::Arc::new(crate::runtime::ModuleReadiness::new()));
         let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
         assert!(names.contains(&"health-check"), "got {names:?}");
     }
@@ -199,7 +193,7 @@ mod tests {
         use crate::runtime::ModuleRegistry;
         use std::sync::Arc;
         let registry = ModuleRegistry::new();
-        registry.register(Arc::new(HealthModule::new()));
+        registry.register(Arc::new(HealthModule::new(registry.readiness())));
 
         // Not prefix-routed any more — only the typed object map serves it.
         assert!(

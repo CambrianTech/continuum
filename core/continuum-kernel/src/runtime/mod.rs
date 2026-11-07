@@ -57,6 +57,8 @@ pub mod module_context;
 /// Per-module TDD harness — boots a single module in isolation. Test-only.
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod module_harness;
+pub mod module_init_record;
+pub mod module_readiness;
 pub mod module_logger;
 pub mod module_metrics;
 pub mod orientation_shares;
@@ -117,8 +119,12 @@ pub use wiring_defect::{WiringDefect, WiringDefects};
 pub use admission_gate::{AdmissionGate, Permit};
 pub use runtime::{
     await_shutdown, begin_shutdown, install_signal_shutdown, run_signal_shutdown,
-    signal_runtime, shutdown_receipt, DrainOutcome, ModuleStop,
+    signal_runtime, shutdown_receipt, DrainOutcome, InitPlan, InitSettled, ModuleStop,
     MeshPresence, ModuleStopOutcome, Runtime, ShutdownReceipt,
+};
+pub use module_init_record::{InitRecordStore, SlowestHealthyInit};
+pub use module_readiness::{
+    DegradedReason, InitDeadline, ModuleReadiness, ModuleReadinessRow, ModuleState, ModuleUnavailable,
 };
 pub use service_module::{
     CommandResult, CommandSchema, ModuleConfig, ModulePriority, ParamSchema, ServiceModule,

@@ -20,8 +20,10 @@
 //! `AiSafe` — pure liveness probe: no state mutation, no compute spend, no
 //! credentials. A persona may legitimately check whether the substrate is alive.
 
+use std::sync::Arc;
 use std::time::Instant;
 
+use crate::runtime::{ModuleReadiness, ModuleReadinessRow};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -50,14 +52,20 @@ pub struct HealthCheckReport {
     pub uptime_seconds: u64,
     /// The continuum-core build version (`CARGO_PKG_VERSION`).
     pub version: String,
+    /// Each module's initialization state. The core answers before every module has
+    /// initialized, so this is where a degraded module (initialize past its deadline, its
+    /// commands refused) is read.
+    pub modules: Vec<ModuleReadinessRow>,
 }
 
 crate::action_command! {
     /// Confirm the substrate is alive. Returns `healthy: true` along with how long
-    /// the core has been up (seconds since boot) and the build version. A pure
-    /// liveness probe — spends no compute and mutates nothing.
+    /// the core has been up (seconds since boot), the build version, and each
+    /// module's initialization state (initializing, ready, failed, or degraded with
+    /// its reason). A pure liveness probe — spends no compute and mutates nothing.
     pub struct HealthCheck {
         started_at: Instant,
+        readiness: Arc<ModuleReadiness>,
     }
     name: "health-check",
     access: AiSafe,
@@ -68,6 +76,7 @@ crate::action_command! {
             healthy: true,
             uptime_seconds: this.started_at.elapsed().as_secs(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            modules: this.readiness.report(),
         })
     }
 }
@@ -92,6 +101,7 @@ mod tests {
     async fn reports_alive_with_uptime_and_version() {
         let cmd = HealthCheck {
             started_at: Instant::now(),
+            readiness: Arc::new(ModuleReadiness::new()),
         };
         let out = cmd
             .run(&Ctx::default(), HealthCheckParams {})
@@ -107,5 +117,41 @@ mod tests {
         assert_eq!(json["healthy"], true);
         assert!(json["uptime_seconds"].is_number());
         assert!(json["version"].is_string());
+        assert!(json["modules"].is_array());
+    }
+
+    // what this catches (M5 2026-11-07 19:11Z, card 1a566cd9): the core answering only after
+    // every module initialized. With a module whose initialize never returns, `ping` must answer
+    // on the socket's route BEFORE initialize settles, the settle must still come, and
+    // `health-check` must name the wedged module degraded with its typed reason.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ping_and_health_answer_while_a_module_is_wedged_and_health_names_it() {
+        use crate::runtime::runtime::fixtures::WedgeableInitModule;
+        use crate::runtime::{InitDeadline, InitPlan, Runtime};
+        let runtime = Runtime::new();
+        runtime.register(Arc::new(crate::modules::health::HealthModule::new(
+            runtime.registry().readiness(),
+        )));
+        runtime.register(Arc::new(WedgeableInitModule { name: "wedged", prefix: &["wedged/"], wedge: true }));
+        let settle = runtime.begin_initialize(InitPlan::unrecorded(InitDeadline::fixture(100, "health")));
+
+        let ping = runtime.route_command("ping", serde_json::json!({}), None).await;
+        assert!(matches!(ping, Some(Ok(_))), "ping answers before initialize settles: {ping:?}");
+
+        let settled = tokio::time::timeout(std::time::Duration::from_secs(5), settle)
+            .await
+            .expect("initialize settles although one module never returns");
+        assert_eq!(settled.degraded, vec!["wedged"]);
+
+        let report = match runtime.route_command("health-check", serde_json::json!({}), None).await {
+            Some(Ok(result)) => result.to_json_value().expect("json"),
+            other => panic!("health-check answers: {other:?}"),
+        };
+        let modules = report["modules"].as_array().expect("modules");
+        let wedged = modules.iter().find(|m| m["module"] == "wedged").expect("wedged is reported");
+        assert_eq!(wedged["state"]["state"], "degraded");
+        assert_eq!(wedged["state"]["reason"]["kind"], "init_deadline");
+        let health = modules.iter().find(|m| m["module"] == "health").expect("health is reported");
+        assert_eq!(health["state"]["state"], "ready");
     }
 }

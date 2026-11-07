@@ -233,33 +233,40 @@ pub fn start_server(
     }
     let grid_state = closing_modules::register_closing_modules(&runtime, &gpu_manager, &code_state)?;
 
-    let runtime_start::RuntimeStarted {
-        post_init_started,
-        tick_handles: _tick_handles,
-    } = runtime_start::initialize_and_start_runtime(
-        &runtime,
-        &rt_handle,
-        &discovery,
-        boot_mode,
-        phase_started,
-    )?;
-
+    // The executor is installed before initialize: every module's slot is late-bound, and a
+    // command a module's initialize dispatches is admitted by the readiness table like any other.
     let (executor, provider_registry) = command_executor::build_and_install_executor(
         &runtime,
         grid_state,
         airc_interceptor_cell,
         &call_plane.live_registrar_executor,
     );
-    command_executor::release_executor_dependents(
+
+    // BIND BEFORE INITIALIZE SETTLES: initialize starts here and runs beside the socket, so no
+    // module can wedge boot. Everything after this until the bind is the pre-bind window the
+    // 300 s boot deadline in main.rs still guards (construction, the registered-set check, the
+    // bind itself); a module's initialize is no longer in it.
+    let runtime_start::InitializeStarted { phase_started: init_started, settle } =
+        runtime_start::verify_and_begin_initialize(
+            &runtime,
+            &rt_handle,
+            &discovery,
+            boot_mode,
+            phase_started,
+        )?;
+
+    #[cfg(unix)]
+    let listener = listeners::bind_unix_listener(socket_path, init_started)?;
+    listeners::announce_ipc_ready(socket_path);
+
+    runtime_start::settle_then_release(
         &rt_handle,
-        &executor,
+        Arc::clone(&runtime),
+        settle,
+        Arc::clone(&executor),
         operator_peer_socket,
         persona_supervisor_executor_ready_tx,
     );
-
-    #[cfg(unix)]
-    let listener = listeners::bind_unix_listener(socket_path, post_init_started)?;
-    listeners::announce_ipc_ready(socket_path);
 
     let state = Arc::new(ServerState::new_with_shared_state(
         rt_handle,
@@ -294,6 +301,6 @@ pub fn start_server(
     #[cfg(unix)]
     let served = accept_loop::serve_unix_connections(state, listener);
     #[cfg(windows)]
-    let served = accept_loop::serve_windows_tcp_connections(state, post_init_started);
+    let served = accept_loop::serve_windows_tcp_connections(state, init_started);
     served
 }

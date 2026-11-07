@@ -55,7 +55,7 @@ pub(super) fn serve_windows_tcp_connections(
     // 108 unattributed seconds and used to die — had no row at all (2026-09-05).
     continuum_base::probe!(
         class = "boot.phase",
-        phase = "post_init_to_bind",
+        phase = "init_started_to_bind",
         ms = phase_started.elapsed().as_millis() as u64,
         "pre-bind phase (Windows TCP loopback)"
     );

@@ -644,6 +644,12 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
     // loud + _exit(1) so the supervisor (launchd/systemd KeepAlive) restarts us
     // instead of parking ([[fallbacks-are-illegal-fail-loud]], task #82). Override
     // with CONTINUUM_BOOT_DEADLINE_SECS (default 300 — generous for a cold model load).
+    //
+    // What it still guards (card 1a566cd9): only the PRE-BIND window — the model registry
+    // load, module construction, the registered-set check and the bind itself. A module's
+    // initialize no longer runs before the bind: it settles beside the bound socket under
+    // its own measured deadline (`Runtime::begin_initialize`), and a module past it is
+    // Degraded with its commands refused, never a reason to restart the node.
     let boot_deadline = std::time::Duration::from_secs(
         std::env::var("CONTINUUM_BOOT_DEADLINE_SECS")
             .ok()
@@ -680,8 +686,9 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
         // eprintln! alongside tracing: libc::_exit(1) skips the async appender
         // flush, so the raw stderr write is what the operator/service log sees.
         let m = format!(
-            "❌ core did not bind its IPC socket within {}s — boot is wedged (a pre-bind \
-             panic or a hung module init). Exiting non-zero so the service restarts.",
+            "❌ core did not bind its IPC socket within {}s — boot is wedged before the bind \
+             (a pre-bind panic, a hung module constructor or registry load, or the bind itself; \
+             module initialize runs after the bind). Exiting non-zero so the service restarts.",
             boot_deadline.as_secs()
         );
         tracing::error!("{m}");

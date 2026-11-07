@@ -12,15 +12,16 @@ pub(super) fn bind_unix_listener(
     // Unix: bind the primary Unix-domain socket. On Windows this is skipped
     // entirely — the server's primary IPC is the TCP loopback listener in the
     // accept section below (Windows has no Unix-domain sockets).
-    // Everything between init's end and the bind call: signal handlers and every
-    // module's periodic loop start (IntelMac's review of #3714 — the row is named
-    // for what it measures, and the bind itself gets its own instant). The
+    // Everything between initialize's START and the bind call (initialize no longer
+    // has to end first: it settles beside the bound socket). The row is named for
+    // what it measures (IntelMac's review of #3714), and the bind itself gets its
+    // own instant. The
     // `#[cfg(unix)]` sits on the BIND, not on the probe before it: an attribute
     // gates exactly one statement, and gating the probe left the Unix bind
     // compiling on Windows (the windows-msvc check caught it on the rebase).
     continuum_base::probe!(
         class = "boot.phase",
-        phase = "post_init_to_bind",
+        phase = "init_started_to_bind",
         ms = phase_started.elapsed().as_millis() as u64,
         "pre-bind phase"
     );
