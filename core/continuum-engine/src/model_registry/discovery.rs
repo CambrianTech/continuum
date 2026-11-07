@@ -14,7 +14,8 @@ use crate::{log_error, log_info};
 use serde::{Deserialize, Serialize};
 
 /// Provider config sent from TypeScript via IPC
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/model_registry/ProviderConfig.ts")]
 pub struct ProviderConfig {
     pub provider_id: String,
     pub api_key: String,
@@ -25,7 +26,8 @@ pub struct ProviderConfig {
 }
 
 /// Static model definition (for providers that don't have a listing endpoint)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/model_registry/StaticModel.ts")]
 pub struct StaticModel {
     pub id: String,
     pub context_window: u32,

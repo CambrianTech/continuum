@@ -85,7 +85,7 @@ pub struct Lane {
 /// Mapped to `ThroughputLeaseRevocationPolicy` via
 /// `class.revocation_policy()`. The mapping is the
 /// substrate's pressure-response contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[ts(
     export,
