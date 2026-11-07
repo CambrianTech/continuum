@@ -27,6 +27,10 @@ instance?: string,
  */
 base_sha?: string, 
 /**
+ * The commit your patch ends at; defaults to your checkout's committed HEAD.
+ */
+head?: string, 
+/**
  * Omit: computed from your checkout. Not a git sha.
  */
 artifact?: WorkArtifactReference, 
