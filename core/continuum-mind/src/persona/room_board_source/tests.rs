@@ -1,6 +1,7 @@
 #![cfg(test)]
     use super::*;
     use airc_work::{CardState, Priority, RepoId, WorkCard, WorkCardId};
+    use crate::cognition::rag_budget::RagItem;
     use std::sync::Mutex;
     use uuid::Uuid;
 
@@ -214,14 +215,13 @@
         let last = rendered.last().expect("her card"); // expect: she holds one
         assert!(last.content.contains("MY held card") && last.content.contains("(P"), "her card, whole, last: {}", last.content);
         assert!(last.pointer.as_deref().is_some_and(|p| p.contains("work/get")), "her card keeps its expand handle");
-        assert!(rendered[..standing].iter().all(|i| i.pointer.is_some() && i.summary.is_none()), "a glance is the card's whole off her focus");
+        assert!(rendered[..standing].iter().all(|i| i.pointer.is_some() && i.summary.is_some()), "a card off her focus keeps its glance and its pointer");
         assert!(rendered[standing - 1].content.contains("filler card 39"), "the most recently changed stands newest: {}", rendered[standing - 1].content);
         let node = delivery.items.iter().find(|i| i.key == "nav:claimable").expect("the rest fold into one node"); // expect: 40 claimable cards fold
         assert_eq!(node.metadata["count"], 40 - standing);
         assert!(node.content.contains(&format!("({})", 40 - standing)) && node.content.contains("work/list claimable=true"), "{}", node.content);
         assert!(!delivery.truncated);
-        let headline = &delivery.items[0];
-        assert_eq!(headline.key, "headline");
+        let headline = delivery.items.iter().find(|i| i.key == "headline").expect("the headline"); // expect: she holds a card
         assert_eq!(headline.metadata["kind"], "board-headline");
         assert_eq!(headline.metadata["held_count"], 1);
         assert_eq!(headline.metadata["open_count"], 40);
@@ -262,19 +262,17 @@
         let delivery = source
             .deliver(&ctx())
             .await;
-        // Headline first, then the available-work lead, then the card list.
+        // The cards, the headline and the available-work lead, each keyed.
         assert_eq!(delivery.items.len(), 4);
-        assert_eq!(delivery.items[0].metadata["kind"], "board-headline");
-        assert_eq!(delivery.items[1].metadata["kind"], "available-work-lead");
-        assert_eq!(delivery.items[1].key, "lead:available");
+        let kind = |key: &str| delivery.items.iter().find(|i| i.key == key).map(|i| i.metadata["kind"].clone());
+        assert_eq!(kind("headline"), Some(serde_json::json!("board-headline")));
+        assert_eq!(kind("lead:available"), Some(serde_json::json!("available-work-lead")));
         let cards: Vec<&RagItem> = delivery
             .items
             .iter()
             .filter(|i| i.metadata.get("card_id").is_some())
             .collect();
         assert_eq!(cards.len(), 2);
-        // The claimable group first, then the cards held by others.
-        let cards = [cards[1], cards[0]];
         assert!(cards[0].content.contains("Wire the projector"));
         assert!(cards[0].content.contains("[InProgress]"));
         // No alias published for this holder → said as an unnamed peer, never an id inside
@@ -317,11 +315,8 @@
             .deliver(&ctx())
             .await;
 
-        let first = &delivery.items[0];
-        assert_eq!(
-            first.metadata["kind"], "board-headline",
-            "the headline must LEAD"
-        );
+        // Keyed, not placed: her view orders a source's tallies after its body itself.
+        let first = delivery.items.iter().find(|i| i.metadata["kind"] == "board-headline").expect("the headline"); // expect: she holds a card
         assert_eq!(first.key, "headline");
         assert_eq!(first.pointer.as_deref(), Some(first.content.as_str()), "the headline is its own shortest statement, kept collapsed");
         assert!(first.content.contains("hold 1"), "{}", first.content);
@@ -346,7 +341,7 @@
             let full = source
                 .deliver_with_workspace(&ctx(), true)
                 .await;
-            let headline = &full.items[0];
+            let headline = full.items.iter().find(|i| i.key == "headline").expect("the headline"); // expect: two claimable cards
             assert_eq!(headline.metadata["kind"], "board-headline");
             assert_eq!(headline.metadata["held_count"], usize::from(local_hold));
             assert_eq!(headline.metadata["open_count"], 2);
@@ -397,8 +392,6 @@
             .filter(|i| i.metadata.get("card_id").is_some())
             .collect();
         assert_eq!(cards.len(), 2);
-        // The claimable group (the lapsed hold) first, then the cards held by others.
-        let cards = [cards[1], cards[0]];
 
         let asha8: String = asha.as_uuid().to_string().chars().take(8).collect();
         // Live hold: named, and the raw hex is GONE from the line.
