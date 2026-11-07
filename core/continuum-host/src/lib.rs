@@ -11,4 +11,5 @@ pub mod output_handoff;
 pub mod positioned;
 pub mod process_exit;
 pub mod process_usage;
+pub mod read_pin;
 pub mod stack_sample;
