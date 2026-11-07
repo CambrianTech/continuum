@@ -125,7 +125,7 @@ pub async fn rate_proposals_with_ai(
     let registry_guard = registry.read().await;
     // The rater states no think term yet: the model's own default, as it always ran (measured
     // per-purpose think budgets: card, owner Fable).
-    let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
+    let terms = crate::ai::types::Think::ModelDefault;
     let response = generate_text(&registry_guard, inference_request, terms).await?;
 
     let ratings =

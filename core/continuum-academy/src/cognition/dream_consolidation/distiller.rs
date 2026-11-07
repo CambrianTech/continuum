@@ -369,7 +369,7 @@ impl SemanticDistiller {
             request.purpose.as_deref(),
         )
         .await;
-        let terms = crate::ai::types::DispatchTerms::thinking(think);
+        let terms = think;
         let response = self
             .adapter
             .generate_under(request, terms)

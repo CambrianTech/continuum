@@ -369,7 +369,7 @@ async fn execute(
     // No faculty invocation, tool executor, memory writer or learning update.
     // A capture keeps no think term yet, so a replay states the model's own default, as it always
     // resent (measured per-purpose think budgets: card, owner Fable).
-    let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
+    let terms = crate::ai::types::Think::ModelDefault;
     let response = adapter.generate_under(request, terms).await.map_err(|e| e.to_string());
     match response {
         Ok(response) => {
@@ -603,6 +603,7 @@ mod tests {
         let sink = JsonlPromptCaptureSink::open(dir.path(), replay_id).expect("execution sink");
         let target = dir.path().join("must-not-be-written.txt");
         let response = TextGenerationResponse {
+            dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
             text: String::new(),
             finish_reason: crate::ai::FinishReason::ToolUse,
             model: "captured-model".into(),

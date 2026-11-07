@@ -23,6 +23,7 @@ async fn teacher_rows_preserve_actual_receipts_and_refuse_faulted_output() {
     use std::sync::{Arc, Mutex};
 
     let response = TextGenerationResponse {
+        dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
         text: "public answer".into(),
         finish_reason: FinishReason::Stop,
         model: "actual-teacher".into(),

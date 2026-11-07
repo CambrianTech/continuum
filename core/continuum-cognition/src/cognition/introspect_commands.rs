@@ -184,14 +184,11 @@ impl ActionCommand for CognitionPrompt {
                 CommandError::Internal("cannot resolve capture home directory".into())
             })?;
         tokio::task::spawn_blocking(move || {
-            let suffix = if p.previous == Some(true) {
-                // Omitted optional flag selects the current retained segment.
-                ".prev"
-            } else {
-                ""
-            };
+            let segment = super::prompt_capture::CaptureSegment::for_persona(
+                &dir, persona, p.previous == Some(true),
+            );
             let records = super::prompt_capture::completed_file(
-                &dir.join(format!("{persona}{suffix}.jsonl")),
+                &segment,
                 limit,
             )
             .map_err(|error| CommandError::Internal(error.to_string()))?

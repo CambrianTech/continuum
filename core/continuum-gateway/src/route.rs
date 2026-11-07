@@ -46,8 +46,8 @@ fn served_models_of(registry: &continuum_engine::ai::AdapterRegistry) -> Vec<Str
 
 /// An external client's request passes through with no think term of ours: the model's own
 /// default, the client's body deciding.
-fn passthrough() -> continuum_engine::ai::types::DispatchTerms {
-    continuum_engine::ai::types::DispatchTerms::thinking(continuum_engine::ai::types::Think::ModelDefault)
+fn passthrough() -> continuum_engine::ai::types::Think {
+    continuum_engine::ai::types::Think::ModelDefault
 }
 
 /// Generate the whole answer.
@@ -61,5 +61,5 @@ pub(crate) async fn stream(
     request: TextGenerationRequest,
     sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
 ) -> Result<TextGenerationResponse, RouteError> {
-    adapter.generate_admitted(request, passthrough(), sink).await.map_err(|e| RouteError::Engine(e.to_string()))
+    adapter.generate_general(request, passthrough(), sink).await.map_err(|e| RouteError::Engine(e.to_string()))
 }

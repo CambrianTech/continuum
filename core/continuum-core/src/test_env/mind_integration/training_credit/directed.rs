@@ -44,6 +44,7 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
     let persona = body.persona_id;
     let responses = (0..5)
         .map(|n| TextGenerationResponse {
+            dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
             text: String::new(),
             finish_reason: FinishReason::ToolUse,
             model: "actual-served-model".into(),

@@ -466,6 +466,7 @@ impl AIProviderAdapter for AnthropicAdapter {
             .unwrap_or_default();
 
         Ok(TextGenerationResponse {
+            dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
             text,
             finish_reason,
             model: response_json.model,

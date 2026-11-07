@@ -167,12 +167,11 @@ impl JsonlWorkspaceCaptureSink {
     fn open_capped(dir: &Path, persona_id: Uuid, max_bytes: u64) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let file_name = format!("{persona_id}.jsonl");
-        let path = dir.join(&file_name);
         static OWNERS: LazyLock<
             super::prompt_capture::owner::CaptureOwners<BufWriter<CappedAppender>>,
         > = LazyLock::new(super::prompt_capture::owner::CaptureOwners::default);
-        let file = OWNERS.acquire(&path, |_| {
-            CappedAppender::with_limits(dir, &file_name, max_bytes, TRACE_GENERATIONS)
+        let file = OWNERS.acquire(dir, persona_id, |directory, _persona| {
+            CappedAppender::with_limits(directory, &file_name, max_bytes, TRACE_GENERATIONS)
                 .map(|appender| BufWriter::with_capacity(64 * 1024, appender))
         })?;
         Ok(Self {

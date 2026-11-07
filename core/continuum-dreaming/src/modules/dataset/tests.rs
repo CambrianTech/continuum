@@ -325,9 +325,10 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
 
         let v = service()
             .import_realclasseval(&ImportRealClassEvalParams {
-                repo_dir: None,
-                csv_path: Some(csv_path.to_str().unwrap().to_string()),
-                tests_dir: Some(tests_dir.to_str().unwrap().to_string()),
+                source: RealClassEvalSource::Csv {
+                    csv_path: csv_path.to_str().unwrap().to_string(),
+                    tests_dir: tests_dir.to_str().unwrap().to_string(),
+                },
                 output_dir: Some(output_dir.to_str().unwrap().to_string()),
                 split_ratio: 0.5,
             })
@@ -385,9 +386,9 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
 
         let v = service()
             .import_realclasseval(&ImportRealClassEvalParams {
-                repo_dir: Some(tmp.path().to_str().unwrap().to_string()),
-                csv_path: None,
-                tests_dir: None,
+                source: RealClassEvalSource::Repository {
+                    repo_dir: tmp.path().to_str().unwrap().to_string(),
+                },
                 output_dir: Some(output_dir.to_str().unwrap().to_string()),
                 split_ratio: 0.5,
             })

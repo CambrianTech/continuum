@@ -20,6 +20,10 @@ use crate::cognition::inbox_admission::content_hash_sha256;
 use crate::runtime::InProcessTransport;
 use crate::sdk_codegen::{CommandError, Ctx};
 
+#[path = "trait_kind.rs"]
+mod trait_kind;
+pub use trait_kind::TeachTraitKind;
+
 const EVIDENCE_KEY: &str = "teachCandidate";
 const PRODUCER: &str = "genome/teach:v1";
 
@@ -42,7 +46,8 @@ pub enum TeachTrainingAction {
         candidate_id: Uuid,
         recipient: PersonaRef,
         base_model_id: String,
-        trait_kind: String,
+        #[ts(type = "string")]
+        trait_kind: TeachTraitKind,
         heldout_gym: String,
     },
     /// Submit the exact stored request. Generation options cannot be supplied.
@@ -130,9 +135,6 @@ impl Preparation {
                 "candidate preparation requires prepareAndSubmit".into(),
             ));
         };
-        if trait_kind.trim().is_empty() {
-            return Err(CommandError::Invalid("traitKind is required".into()));
-        }
         let registry = crate::persona::PersonaAircRuntimeRegistry::try_global()
             .ok_or_else(|| CommandError::Invalid("recipient roster is unavailable".into()))?;
         let runtime = match registry.get_by_agent_name(recipient.as_str()) {
@@ -164,7 +166,7 @@ impl Preparation {
                 persona_id: runtime.persona_id(),
                 persona_name: runtime.agent_name().into(),
                 base_model: base_model_id.clone(),
-                trait_kind: trait_kind.clone(),
+                trait_kind: trait_kind.as_str().to_owned(),
                 examples: vec![],
                 source: TrainingSource::TeacherSynthesized,
                 eval_set: None,
@@ -512,6 +514,7 @@ mod tests {
         let adapter: Arc<dyn AIProviderAdapter> = Arc::new(
             HeuristicInferenceAdapter::new()
                 .with_responses(vec![TextGenerationResponse {
+                    dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
                     text: "fn add(a:i32,b:i32)->i32 {a+b}".into(),
                     finish_reason: FinishReason::Stop,
                     model: "actual-teacher".into(),

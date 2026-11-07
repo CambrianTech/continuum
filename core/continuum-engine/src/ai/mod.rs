@@ -23,7 +23,7 @@
 //!
 //! let (provider_id, adapter) = registry.select(None, Some("deepseek-chat"), InferenceDevice::Auto).unwrap();
 //! // Every generation states its think (`DispatchTerms`); the terms-less paths are the engine's.
-//! let response = adapter.generate_under(request, DispatchTerms::thinking(Think::ModelDefault)).await?;
+//! let response = adapter.generate_under(request, Think::ModelDefault).await?;
 //! ```
 
 pub mod adapter;
@@ -39,6 +39,8 @@ pub mod embedding;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod heuristic_adapter;
 pub mod inference_error;
+pub mod reply_room;
+pub mod recorded_response;
 pub mod json_in_prompt_tools;
 pub mod openai_adapter;
 pub mod openai_endpoints;

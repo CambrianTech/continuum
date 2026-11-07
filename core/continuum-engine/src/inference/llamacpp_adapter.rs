@@ -307,8 +307,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
             turn_bound: None,
         };
         // A warm-up decode states no think term: the model's own default, as it always ran.
-        let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
-        match crate::ai::stream_sinks::drain_generation(|sink| crate::ai::adapter::DispatchTermsPolicy::generate_admitted(self, warmup_request, terms, sink)).await {
+        let terms = crate::ai::types::Think::ModelDefault;
+        match crate::ai::stream_sinks::drain_generation(|sink| crate::ai::adapter::DispatchTermsPolicy::generate_general(self, warmup_request, terms, sink)).await {
             Ok(_) => Ok(()),
             Err(e) => Err(format!("LlamaCppAdapter warmup decode failed: {e}")),
         }
@@ -701,6 +701,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // scheduler via `is_eog_token`) and don't leak as text.
 
         Ok(TextGenerationResponse {
+            dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
             text,
             finish_reason: FinishReason::Stop,
             model: backend.model_id().to_string(),

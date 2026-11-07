@@ -159,7 +159,7 @@ async fn run_text_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, Op
 
     let started = Instant::now();
     // An operator's probe of a model states no think term: the model's own default, as it always ran.
-    let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
+    let terms = crate::ai::types::Think::ModelDefault;
     match adapter.generate_under(request, terms).await {
         Ok(resp) => {
             let secs = started.elapsed().as_secs_f32();
@@ -230,7 +230,7 @@ async fn run_vision_probe(registry: &AdapterRegistry, model_id: &str) -> (bool, 
     };
 
     // An operator's vision probe states no think term: the model's own default, as it always ran.
-    let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
+    let terms = crate::ai::types::Think::ModelDefault;
     match adapter.generate_under(request, terms).await {
         Ok(resp) if !resp.text.trim().is_empty() => (
             true,

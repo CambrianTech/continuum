@@ -132,6 +132,20 @@ impl LlmDeliberationFaculty {
         calibration: PromptCalibration,
         visual: Option<&ActiveVisualFeedback>,
     ) -> DeliberationPromptView {
+        self.prompt_view_with_result_price(ws, context_window, calibration, calibration, visual)
+    }
+
+    /// The newest result may have a component-specific price after a refusal. It is
+    /// charged only to that component; framing, tools and every other claim retain
+    /// the whole-prompt calibration. The same surcharge follows fitting and validation.
+    pub(in super::super) fn prompt_view_with_result_price(
+        &self,
+        ws: &Workspace,
+        context_window: u32,
+        calibration: PromptCalibration,
+        result_calibration: PromptCalibration,
+        visual: Option<&ActiveVisualFeedback>,
+    ) -> DeliberationPromptView {
         // THE REPLY'S CLAIM ([`reply_claim`]): what she is expected to write, at the
         // priority this turn gives it. It competes in the window's one allocation below;
         // its grant travels with the view into `build_request_within` as `max_tokens`.
@@ -222,6 +236,8 @@ impl LlmDeliberationFaculty {
 
         let input_identity = all_messages.input_identity;
         let calibration = calibration.for_input(input_identity);
+        let result_calibration = result_calibration.for_input(input_identity);
+        let result_surcharge = |tokens: usize| result_calibration.charge(tokens).saturating_sub(calibration.charge(tokens));
         // Her view already carries every block that rides the conversation. Measured BEFORE her
         // newest result is levelled: demand is the sum of wants (FOCUS-CONTRACT rule 5), so a
         // result shown at a smaller level still asks for its whole, or the window never grows for it.
@@ -303,7 +319,7 @@ impl LlmDeliberationFaculty {
             continuum_context::allocation::ActClaims {
                 framing: claim(framing_tokens),
                 required: claim(required_tokens),
-                newest: continuum_context::allocation::Newest { levels: newest_levels.iter().map(|&cost| claim(cost)).collect() },
+                newest: continuum_context::allocation::Newest { levels: newest_levels.iter().map(|&cost| result_calibration.charge(cost).min(u32::MAX as usize) as u32).collect() },
                 tools: continuum_context::allocation::Span { floor: claim(tools.floor), min: claim(tools.floor), want: claim(tools.want) },
                 grounding: continuum_context::allocation::Span { floor: 0, min: claim(grounding_min), want: claim(grounding_want.max(grounding_min)) },
                 last_move: claim(history_floor),
@@ -428,8 +444,10 @@ impl LlmDeliberationFaculty {
         );
         // What the window holds for messages once the reply's grant, the tools sent and the framing
         // are set: arithmetic on the plan, never a budget of its own.
+        let shown_result_tokens = all_messages.required_parts().latest_result;
+        let result_extra = result_surcharge(shown_result_tokens);
         let after_framing = calibration
-            .prompt_budget((context_window as usize).saturating_sub(completion_reserve))
+            .prompt_budget((context_window as usize).saturating_sub(completion_reserve).saturating_sub(result_extra))
             .saturating_sub(tools_choice.sent.tokens)
             .saturating_sub(framing_tokens);
         let window_msg_budget = after_framing.saturating_sub(ctx_floor);
@@ -490,6 +508,7 @@ impl LlmDeliberationFaculty {
                     .saturating_add(selected.demand_tokens()),
             )
             // Output is already measured in provider tokens; calibrate only input.
+            .saturating_add(result_surcharge(newest_result_tokens))
             .saturating_add(desired_reply);
         if let Some(reg) = &self.working_set {
             reg.record(
@@ -735,6 +754,7 @@ impl LlmDeliberationFaculty {
         } else if capacity_error.is_none() {
             self.budget_violation(&BudgetLedger {
                 context_window,
+                newest_extra: result_extra,
                 calibration,
                 completion_reserve,
                 system: &system,

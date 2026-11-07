@@ -616,6 +616,7 @@ fn fake_response(
     output: u32,
 ) -> TextGenerationResponse {
     TextGenerationResponse {
+        dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
         text: text.to_string(),
         finish_reason: crate::ai::types::FinishReason::Stop,
         model: "ignored".to_string(),

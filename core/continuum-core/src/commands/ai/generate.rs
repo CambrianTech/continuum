@@ -149,9 +149,9 @@ crate::action_command! {
         let sink = stream_id.and_then(crate::ai::stream_sinks::take);
         // Its think is the caller's `think` (a grid lane forwards her budget, generated under it or
         // refused typed by the adapter); absent, the external caller's model default.
-        let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::from_wire(think));
+        let terms = crate::ai::types::Think::from_wire(think);
         let mut response = match sink {
-            Some(sink) => adapter.generate_admitted(request, terms, sink).await,
+            Some(sink) => adapter.generate_general(request, terms, sink).await,
             None => adapter.generate_under(request, terms).await,
         }
         .map_err(|e| e.to_string())?;

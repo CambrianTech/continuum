@@ -48,7 +48,7 @@ use crate::modules::dataset::DatasetService;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 mod bridge;
-pub use bridge::{TeachTrainingAction, TeachTrainingResult};
+pub use bridge::{TeachTrainingAction, TeachTrainingResult, TeachTraitKind};
 
 /// Default write→fix→pass task set (one `EvalTask` JSONL row each — needs `test`), by its
 /// gym name: it resolves through `cognition::gym::resolve_gym`, which reads a file on disk

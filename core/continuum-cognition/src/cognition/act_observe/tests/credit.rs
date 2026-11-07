@@ -7,7 +7,6 @@ use crate::cognition::workspace::SalienceArbiter;
 use crate::ai::types::ToolCall;
 use uuid::Uuid;
 use std::sync::Arc;
-use std::sync::Mutex;
 use crate::cognition::working_memory::WorkingMemory;
 
 // what this catches: c5910be2 — an ordinary room drive could not see coaching
@@ -15,9 +14,9 @@ use crate::cognition::working_memory::WorkingMemory;
 // then inspect the actual second/third adapter requests, not a prompt helper.
 #[tokio::test]
 async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
-    use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+    use crate::cognition::llm_deliberation_faculty::test_support::ScriptedAdapter;
     use crate::ai::types::{
-        FinishReason, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
+        FinishReason, TextGenerationResponse, UsageMetrics,
     };
     use crate::cognition::llm_deliberation_faculty::LlmDeliberationFaculty;
     use crate::cognition::workspace::{Burst, BurstTurn, Cause, TurnAttention};
@@ -76,6 +75,7 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
         let mut responses = Vec::new();
         for step in 0..3 {
             responses.push(TextGenerationResponse {
+                dispatch: crate::ai::reply_room::DispatchReceipt::Unadmitted,
                 text: if step == 2 {
                     "PASS".into()
                 } else {
@@ -105,19 +105,19 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
                 timing: None,
             });
         }
-        let recorded = Arc::new(Mutex::new(Vec::<TextGenerationRequest>::new()));
-        let adapter = Arc::new(
-            HeuristicInferenceAdapter::new()
-                .with_responses(responses)
-                .with_request_recorder(Arc::clone(&recorded)),
-        );
+        // Scripted usage is the fixture's independent counter oracle. Exercise
+        // the admitted Act contract without claiming a production tokenizer.
+        let mut scripted = ScriptedAdapter::new(responses);
+        scripted.counts_exactly = true;
+        scripted.live_window = Some(32_768);
+        let adapter = Arc::new(scripted);
         let wm = Arc::new(WorkingMemory::new(8));
         let adm = admission();
         let body = body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm));
         let persona = body.persona_id;
         *exec.pending_persona.lock().unwrap() = Some(persona);
         let faculty =
-            LlmDeliberationFaculty::new(body.persona_id, "Asha", "You are Asha.", adapter)
+            LlmDeliberationFaculty::new(body.persona_id, "Asha", "You are Asha.", adapter.clone())
                 .with_context_window(32_768)
                 .with_working_memory(Arc::clone(&wm))
                 .with_tools(vec![crate::ai::types::NativeToolSpec {
@@ -189,7 +189,7 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
             .any(|edge| edge.target == first_act.id
                 && edge.kind == crate::cognition::engram_graph::EdgeKind::CausedBy));
         {
-            let requests = recorded.lock().unwrap();
+            let requests = adapter.seen.lock().unwrap();
             assert_eq!(requests.len(), 3);
             for (index, request) in requests.iter().enumerate() {
                 assert_eq!(request.room_id.as_deref(), Some(room.to_string().as_str()));

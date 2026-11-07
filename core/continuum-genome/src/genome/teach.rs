@@ -148,7 +148,7 @@ pub async fn teacher_generate(
 
     // The teacher states no think term yet: the model's own default, as it always ran (measured
     // per-purpose think budgets: card, owner Fable).
-    let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
+    let terms = crate::ai::types::Think::ModelDefault;
     let response: TextGenerationResponse = adapter
         .generate_under(request, terms)
         .await

@@ -103,7 +103,7 @@ pub struct TurnAdmission {
     /// A lease is provisional until the adapter observes successful generation.
     /// Cancellation during paging or generation must not save foreign KV later.
     uncommitted: Option<(Arc<KvSlotPool>, PageKey, u32)>,
-    dispatch: Dispatch,
+    dispatch: parking_lot::Mutex<Dispatch>,
     _endpoint: crate::inference::slots::EndpointAdmission,
     scratch: Option<u32>,
     /// A dream's ambient serving lane, taken only where it borrows a citizen slot (no scratch
@@ -129,6 +129,21 @@ impl TurnAdmission {
     /// The engine incarnation this turn's endpoint admission is bound to (`EndpointAdmission::incarnation`).
     pub(crate) fn engine_incarnation(&self) -> Option<(u32, u64)> {
         self._endpoint.incarnation()
+    }
+
+    /// Revalidate this owned endpoint after asynchronous work. Quarantine can
+    /// close readiness without waiting for this generation's read admission.
+    pub(crate) fn check_dispatch_ready(&self) -> Result<(), String> {
+        self._endpoint.check_ready()
+    }
+
+    /// Physical capacity from this admission's process owner, never a global
+    /// serving watch or a geometry remembered from a different generation.
+    pub(crate) fn dispatch_geometry(&self, model: &str) -> Result<crate::inference::served_window_store::ServedGeometry, crate::ai::inference_error::InferenceError> {
+        use crate::ai::inference_error::InferenceError;
+        self.check_dispatch_ready().map_err(InferenceError::Unavailable)?;
+        self._endpoint.served_geometry(model)
+            .ok_or_else(|| InferenceError::AdmissionUncounted { model: model.to_owned() })
     }
 
     /// How this turn's KV reached its slot ([`PageIn`]).
@@ -173,8 +188,8 @@ impl TurnAdmission {
     /// The adapter is sending this admission's generation request to the engine now. Called
     /// at every attempt's POST, never before: a request refused earlier (a context refit, a
     /// changed grant) leaves the slot as paging left it.
-    pub(crate) fn dispatching(&mut self) {
-        self.dispatch = Dispatch::Sent;
+    pub(crate) fn dispatching(&self) {
+        *self.dispatch.lock() = Dispatch::Sent;
         if let Some((pool, key, slot)) = &self.uncommitted {
             pool.note_dispatched(*slot, *key);
         }
@@ -209,7 +224,7 @@ impl Drop for TurnAdmission {
             // Nothing sent: the slot holds what paging left, which is hers when paging confirmed
             // it (resident, or a verified restore), so she keeps her residency. A sent request
             // or unconfirmed paging proves nothing about whose KV is there.
-            if self.dispatch == Dispatch::Sent || !self.page_confirmed {
+            if *self.dispatch.get_mut() == Dispatch::Sent || !self.page_confirmed {
                 pool.forget_resident(slot, key);
             }
         }
@@ -427,7 +442,7 @@ async fn admit(
             paging_in_flight: false,
             _permit: Some(_permit),
             uncommitted: None,
-            dispatch: Dispatch::Unsent,
+            dispatch: parking_lot::Mutex::new(Dispatch::Unsent),
             scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
             _endpoint: endpoint,
             _mind: None,
