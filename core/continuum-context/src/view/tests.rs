@@ -962,3 +962,5 @@ fn a_source_that_turns_volatile_drifts_tailward_and_the_shared_prefix_recovers()
 mod absent_source;
 /// The collapse depth from her measured re-reads, end to end.
 mod depth;
+/// A source a start shed waits for a start that funds it.
+mod shed;

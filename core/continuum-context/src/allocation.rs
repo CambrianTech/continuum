@@ -254,7 +254,8 @@ impl ActPlan {
     }
 
     /// The view sources the allocation could not grant their floor (dropped, never a required
-    /// one): a start sheds them; a later act offers them again.
+    /// one): a start sheds them, and their items wait for a later start that funds them
+    /// (`View::withhold`).
     pub fn shed_view_sources(&self) -> Vec<&str> {
         self.plan
             .allocations
