@@ -606,6 +606,15 @@
         let expected = String::from_utf8(run(&["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", &base, "HEAD", "--", "solution.py"]).stdout).expect("diff");
         assert_eq!(derived.artifact.hash, artifact_of_patch(&expected).hash);
         assert!(derived.artifact.size_bytes > 0);
+        // A commit carrying a path a submission never publishes is refused by name: the gate merges
+        // the commit, so a patch that dropped it would land it unreviewed (Fable on #5824).
+        std::fs::create_dir_all(dir.path().join(".continuum")).expect("substrate dir");
+        std::fs::write(dir.path().join(".continuum/state.json"), "{}").expect("substrate file");
+        assert!(run(&["add", "-f", ".continuum/state.json"]).status.success());
+        assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "substrate"]).status.success());
+        let carried = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.err().expect("a commit carrying substrate is refused");
+        assert!(carried.to_string().contains(".continuum/state.json"), "{carried}");
+        assert!(run(&["reset", "-q", "--hard", &clean_base]).status.success());
         // Regression for Kimi's oversized submissions: advancing the remote default
         // must neither swallow committed work nor change the stored creation base.
         assert!(run(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base, ""]).status.success());

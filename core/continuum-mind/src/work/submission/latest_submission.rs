@@ -615,6 +615,28 @@ pub(super) async fn submission_repository_url(checkout: &std::path::Path, repo: 
     Ok(Some(url))
 }
 
+/// The patch of a submission: exactly `git diff --binary base..head`. A commit that touches a path a
+/// submission never publishes (substrate or build byproducts, `SOLUTION_PATH_EXCLUDES`) is refused
+/// by name, since the gate would merge it unreviewed.
+fn commit_patch(checkout: &std::path::Path, base: &str, head: &str) -> Result<String, CommandError> {
+    let names = |pathspec: &[&str]| -> Result<Vec<String>, CommandError> {
+        let mut args = vec!["diff", "--name-only", base, head, "--", "."];
+        args.extend_from_slice(pathspec);
+        Ok(git_in(checkout, &args).map_err(CommandError::Internal)?.lines().map(str::to_owned).collect())
+    };
+    let published = names(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES)?;
+    let unpublished: Vec<String> = names(&[])?.into_iter().filter(|path| !published.contains(path)).collect();
+    if !unpublished.is_empty() {
+        return Err(CommandError::Invalid(format!(
+            "your commit {head} carries {} path(s) a submission never publishes ({}): substrate or build byproducts. Remove them from the commit, then work/submit",
+            unpublished.len(),
+            unpublished.join(", ")
+        )));
+    }
+    git_in(checkout, &["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", base, head])
+        .map_err(CommandError::Internal)
+}
+
 /// One git read in `checkout`: its stdout, or why it failed. The one place this module runs git.
 fn git_in(checkout: &std::path::Path, args: &[&str]) -> Result<String, String> {
     let out = std::process::Command::new("git").args(args).current_dir(checkout).output().map_err(|e| format!("git {}: {e}", args.join(" ")))?;
@@ -665,10 +687,11 @@ pub(super) async fn derive_submission(
     }
     let base = airc_work::GitObjectId::new(&base_sha)
         .map_err(|e| CommandError::Invalid(format!("candidate base must name a single git commit: {e}")))?;
-    // The commit the patch ends at: on a tree with nothing uncommitted, the diff against the base
-    // is exactly base..head, so a verdict on this submission covers that commit.
+    // The commit the patch ends at, and the patch is exactly base..head: the gate merges that commit,
+    // so a patch that dropped any of it would land the rest unreviewed (Fable on #5824; airc's CLI
+    // submit enforces the same).
     let head = committed_head(checkout)?;
-    let patch = benchmark.candidate_diff(checkout, Some(&base))?;
+    let patch = commit_patch(checkout, &base_sha, &head)?;
     if patch.trim().is_empty() {
         return Err(CommandError::Invalid(format!(
             "nothing to submit: {} has no changes since {} (substrate paths excluded). A submit publishes a \
