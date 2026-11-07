@@ -1,5 +1,5 @@
 //! Reading a card's submissions: what its holder does next. The latest candidate is
-//! `cognition::card_holder::latest_submission`.
+//! airc's `WorkCard::latest_submission`, the one owner of "newest".
 
 use airc_lib::WorkCardId;
 use uuid::Uuid;

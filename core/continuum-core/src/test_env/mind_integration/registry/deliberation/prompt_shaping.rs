@@ -749,7 +749,11 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // handle names. Its description was cut to one line, its param docs to a few words each and
     // its filter enum's docs removed (it measured 18757 first); the 441 left are its ten params,
     // the reach itself. Measured locally at 17927.
-    const AGENTIC_SURFACE_CEILING: u32 = 17927;
+    // 17927 -> 17956 (#5824, 2026-11-07): work/submit gains `head`, the commit her patch ends at,
+    // which the merge gate requires (airc #1660); without it a typed submit fell back to deriving
+    // from a checkout. Its doc was cut to "Omit: your checkout's committed HEAD." (it measured 17969
+    // first); the 29 left are the param itself. Measured in CI at 6b5069c06 (job 128439607272).
+    const AGENTIC_SURFACE_CEILING: u32 = 17956;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(

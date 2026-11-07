@@ -527,6 +527,7 @@
             submission_id: airc_work::SubmissionId::new(), card_id: mine.card_id,
             claim_id: mine.claim_id.unwrap(), instance: "ordinary".into(),
             base_sha: airc_work::GitObjectId::new("b".repeat(40)).unwrap(),
+            head: airc_work::SubmissionHead::Unrecorded,
             artifact: artifact.clone(), publisher: airc_core::PeerId::from_uuid(me), submitted_at_ms: 10,
         };
         mine.submissions.push(candidate.clone());

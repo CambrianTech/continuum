@@ -156,6 +156,7 @@
             claim_id: reviewed.claim_id.expect("test: claimed"),
             instance: "ordinary".into(),
             base_sha: airc_work::GitObjectId::new("b".repeat(40)).expect("test: sha"),
+            head: airc_work::SubmissionHead::Unrecorded,
             artifact: artifact.clone(),
             publisher: owner,
             submitted_at_ms: n,

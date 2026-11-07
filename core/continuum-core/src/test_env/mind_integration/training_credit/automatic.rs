@@ -67,6 +67,7 @@ impl Resident {
             "claim_id": claim.as_uuid().to_string(),
             "instance": "ordinary-project-work",
             "base_sha": "a".repeat(40),
+            "head": "b".repeat(40),
             "artifact": { "hash": patch_hash, "size_bytes": patch.len(), "mime": "text/x-diff" },
         }))?;
         Ok(Self { _home: (guard, home), airc, room, persona, name, registry, executor, slot, card, claim, params })

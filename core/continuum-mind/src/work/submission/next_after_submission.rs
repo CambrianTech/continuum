@@ -78,6 +78,7 @@ impl ActionCommand for WorkSubmit {
         // off her checkout, and a placeholder says so in the ledger.
         let typed_in_full = matches!(&p.artifact, Some(a) if !is_placeholder_hash(&a.hash))
             && p.base_sha.is_some()
+            && p.head.is_some()
             && p.instance.is_some();
         if matches!(&p.artifact, Some(a) if is_placeholder_hash(&a.hash)) {
             continuum_base::probe!(
@@ -86,10 +87,11 @@ impl ActionCommand for WorkSubmit {
                 "artifact.hash was a placeholder (zeros / a manual blank) — deriving the real one from her checkout"
             );
         }
-        let (instance, base_sha_text, artifact_ref) = if typed_in_full {
+        let (instance, base_sha_text, head_text, artifact_ref) = if typed_in_full {
             (
                 p.instance.clone().unwrap_or_default(), // unwrap_or: guarded by typed_in_full
                 p.base_sha.clone().unwrap_or_default(), // unwrap_or: guarded by typed_in_full
+                p.head.clone().unwrap_or_default(), // unwrap_or: guarded by typed_in_full
                 p.artifact.clone().unwrap_or(WorkArtifactReference { hash: String::new(), size_bytes: 0, mime: None }), // unwrap_or: guarded by typed_in_full
             )
         } else {
@@ -107,13 +109,14 @@ impl ActionCommand for WorkSubmit {
             };
             let listed = p.submodules.as_deref().unwrap_or_default(); // unwrap_or_default: none listed is an empty list
             let d = derive_submission(self.benchmark.as_ref(), &checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo), listed).await?;
-            (d.instance, d.base_sha, d.artifact)
+            (d.instance, d.base_sha, d.head, d.artifact)
         };
         continuum_base::probe!(
             class = "work.submit.shaped",
             card = %card_uuid,
             instance = %instance,
             base = %base_sha_text,
+            head = %head_text,
             size_bytes = artifact_ref.size_bytes,
             derived = !typed_in_full,
             "the submission as it goes to the board"
@@ -130,6 +133,8 @@ impl ActionCommand for WorkSubmit {
         }
         let base_sha = airc_work::GitObjectId::new(base_sha_text)
             .map_err(|e| CommandError::Invalid(format!("base_sha: {e}")))?;
+        let head = airc_work::GitObjectId::new(head_text)
+            .map_err(|e| CommandError::Invalid(format!("head: {e}")))?;
         // THE SAME PATCH, SUBMITTED AGAIN, is refused by name (Kimi, 2026-09-28: her
         // handoff said "do not re-make it", she resubmitted, and two identical
         // submissions sat on the card with credit ambiguous between them). Only when she
@@ -176,6 +181,7 @@ impl ActionCommand for WorkSubmit {
             claim_id,
             instance,
             base_sha,
+            head: airc_work::SubmissionHead::At(head.clone()),
             artifact,
             publisher: airc.peer_id(),
             submitted_at_ms: continuum_base::time::EpochMs::now().millis(),
@@ -270,7 +276,7 @@ impl ActionCommand for WorkSubmit {
         let grade_patch = candidate.artifact.clone();
         let published = airc.submit_work_in(&room, airc_lib::SubmitWork {
             submission_id: candidate.submission_id, card_id, claim_id: candidate.claim_id,
-            instance: candidate.instance, base_sha: candidate.base_sha, artifact: candidate.artifact,
+            instance: candidate.instance, base_sha: candidate.base_sha, head, artifact: candidate.artifact,
         }).await.map_err(|e| CommandError::Internal(format!(
             "submission {submission_id} publication was not acknowledged; retry with submission_id={submission_id} and the same selection: {e}")))?;
         let handoff = if bench {

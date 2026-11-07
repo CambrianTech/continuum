@@ -179,6 +179,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         "claim_id": short(claim.as_uuid()),
         "instance": "generic-project-work",
         "base_sha": "a".repeat(40),
+        "head": "b".repeat(40),
         "artifact": { "hash": patch_hash, "size_bytes": patch.len(), "mime": "text/x-diff" },
         "staged_revision_id": selected.id.to_string(),
     }))
@@ -509,6 +510,7 @@ pub(super) async fn a_claim_taken_during_a_turn_credits_from_that_act_on() {
         claim_id: reclaimed.claim_id.expect("reclaimed fixture has a claim"),
         instance: "ordinary-project-work".into(),
         base_sha: airc_work::GitObjectId::new("a".repeat(40)).expect("sha fixture"),
+        head: airc_work::SubmissionHead::Unrecorded,
         artifact: serde_json::from_value(json!({"hash":"b".repeat(64),"size_bytes":12})).expect("artifact fixture"),
         publisher: owner,
         submitted_at_ms: 3,
