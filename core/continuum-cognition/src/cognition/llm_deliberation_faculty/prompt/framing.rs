@@ -42,10 +42,11 @@ impl FramingOffer {
 
     /// The rungs `expanded` is, one per item: what her head holds.
     pub(in super::super) fn rungs_of(&self, expanded: &BTreeSet<String>) -> Vec<usize> {
+        // The category items follow the whole item, in importance order; a category whose collapse
+        // is no smaller than its expansion has one rung, its expansion.
         std::iter::once(0)
-            .chain(self.importance.iter().map(|&i| {
-                let line = &self.lines[i];
-                usize::from(!expanded.contains(&line.category) && line.collapsed.len() < line.expanded.len())
+            .chain(self.importance.iter().zip(self.leveled.items().iter().skip(1)).map(|(&i, rungs)| {
+                usize::from(!expanded.contains(&self.lines[i].category) && rungs.costs().len() > 1)
             }))
             .collect()
     }
@@ -79,7 +80,8 @@ impl LlmDeliberationFaculty {
         for &i in &importance {
             let line = &lines[i];
             let expanded = charge(line_cost(&line.expanded));
-            items.push(Rungs::new([expanded, charge(line_cost(&line.collapsed) + 1)]).unwrap_or_else(|| Rungs::whole(expanded))); // unwrap_or_else: a line always has its expanded level
+            let (rungs, _) = Rungs::kept(expanded, (), [(charge(line_cost(&line.collapsed) + 1), ())]);
+            items.push(rungs);
         }
         let mut offer = FramingOffer { lines, importance, leveled: Leveled::new(items), held: None };
         offer.held = held.map(|expanded| offer.rungs_of(expanded));

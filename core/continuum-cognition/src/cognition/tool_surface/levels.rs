@@ -16,7 +16,7 @@
 //! declare `Always` and have no command) floors at its summary, never at a pointer nothing expands.
 //!
 //! Every cost is measured from the rendered level ([`super::tool_surface_tokens_of`]); a level no
-//! smaller than the one above it is not a level ([`continuum_context::ladder::Rungs::new`]).
+//! smaller than the one above it is not a level ([`continuum_context::ladder::Rungs::kept`]).
 
 use continuum_context::ladder::{Leveled, Rungs};
 
@@ -32,7 +32,8 @@ pub enum Floor {
     Summary,
 }
 
-/// One verb at each level it can be sent at, most detail first, each with its measured cost.
+/// One verb at each level it can be sent at, most detail first, each with its measured cost. Never
+/// empty: its whole is always its first level.
 #[derive(Clone, Debug)]
 pub struct VerbLevels {
     levels: Vec<(NativeToolSpec, usize)>,
@@ -55,6 +56,13 @@ impl VerbLevels {
         Self { levels: kept }
     }
 
+    /// Its levels as rungs in the allocation's unit (`charge`), each rung with the verb level it is.
+    /// A level whose charged cost is no smaller than the one above is not a rung (`Rungs::kept`).
+    fn rungs(&self, charge: &impl Fn(usize) -> u32) -> (Rungs, Vec<usize>) {
+        let whole = charge(self.levels[0].1);
+        Rungs::kept(whole, 0, self.levels.iter().enumerate().skip(1).map(|(level, (_, cost))| (charge(*cost), level)))
+    }
+
     pub fn spec(&self, level: usize) -> &NativeToolSpec {
         &self.levels[level].0
     }
@@ -67,6 +75,7 @@ impl VerbLevels {
         self.levels.len()
     }
 
+    /// Never: its whole is always a level.
     pub fn is_empty(&self) -> bool {
         self.levels.is_empty()
     }
@@ -129,7 +138,7 @@ pub struct ToolSet {
 /// whose charged cost is no smaller than the one above it is not a rung).
 pub struct ToolsLeveled {
     pub leveled: Leveled,
-    /// Per item (importance order), the verb level of each rung.
+    /// Per item (importance order), the verb level of each rung: exactly one per rung.
     rung_levels: Vec<Vec<usize>>,
 }
 
@@ -151,27 +160,19 @@ impl ToolSet {
         let mut items = Vec::with_capacity(self.importance.len());
         let mut rung_levels = Vec::with_capacity(self.importance.len());
         for &i in &self.importance {
-            let verb = &self.levels[i];
-            let mut costs: Vec<u32> = Vec::new();
-            let mut map: Vec<usize> = Vec::new();
-            for level in 0..verb.len() {
-                let cost = charge(verb.cost(level));
-                if costs.last().is_none_or(|&above| cost < above) {
-                    costs.push(cost);
-                    map.push(level);
-                }
-            }
-            items.push(Rungs::new(costs).unwrap_or_else(|| Rungs::whole(0))); // unwrap_or_else: a verb always has its whole level
+            let (rungs, map) = self.levels[i].rungs(&charge);
+            items.push(rungs);
             rung_levels.push(map);
         }
         ToolsLeveled { leveled: Leveled::new(items), rung_levels }
     }
 
-    /// The verb levels `rungs` (one per item, importance order) name, as sent-order levels.
+    /// The verb levels `rungs` (one per item, importance order, a choice over `leveled`'s own
+    /// items) name, as sent-order levels.
     pub fn levels_of(&self, leveled: &ToolsLeveled, rungs: &[usize]) -> Vec<usize> {
         let mut levels = vec![0; self.names.len()];
         for ((&i, map), &rung) in self.importance.iter().zip(&leveled.rung_levels).zip(rungs) {
-            levels[i] = map.get(rung).copied().unwrap_or(0); // unwrap_or: a rung past the map is the whole
+            levels[i] = map[rung];
         }
         levels
     }
@@ -186,8 +187,8 @@ impl ToolSet {
 
     /// The schemas at sent-order `levels`, and what they cost.
     pub fn render(&self, levels: &[usize]) -> (Vec<NativeToolSpec>, usize) {
-        let specs: Vec<NativeToolSpec> = self.levels.iter().zip(levels).map(|(verb, &level)| verb.spec(level.min(verb.len() - 1)).clone()).collect();
-        let tokens = self.levels.iter().zip(levels).map(|(verb, &level)| verb.cost(level.min(verb.len() - 1))).sum();
+        let specs: Vec<NativeToolSpec> = self.levels.iter().zip(levels).map(|(verb, &level)| verb.spec(level).clone()).collect();
+        let tokens = self.levels.iter().zip(levels).map(|(verb, &level)| verb.cost(level)).sum();
         (specs, tokens)
     }
 

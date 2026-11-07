@@ -48,6 +48,8 @@ fn a_level_no_smaller_than_the_one_above_is_not_a_rung() {
     assert_eq!(Rungs::new([300, 300, 120, 200, 40]).map(|r| r.costs().to_vec()), Some(vec![300, 120, 40]));
     assert_eq!(Rungs::new(Vec::new()), None);
     assert_eq!(Leveled::default().options(), vec![Choice::default()], "nothing to show is one option of nothing");
+    let (rungs, tags) = Rungs::kept(300, "whole", [(300, "same"), (120, "summary"), (200, "bigger"), (40, "pointer")]);
+    assert_eq!((rungs.costs().to_vec(), tags), (vec![300, 120, 40], vec!["whole", "summary", "pointer"]), "one tag per rung, aligned");
 }
 
 // what this catches (Cormac on #5426, the view's rule): an item with no level between its whole and

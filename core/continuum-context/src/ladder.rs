@@ -33,6 +33,23 @@ impl Rungs {
         (!kept.is_empty()).then_some(Self(kept))
     }
 
+    /// An item's levels from its whole down, each with what it is (`tag`, the producer's own name
+    /// for that level), aligned: the tags returned are exactly one per rung, in rung order. A level
+    /// no smaller than the one kept above it is not a level and leaves with its tag. It cannot
+    /// fail: the whole is always a level, so a producer never needs a fallback for "no levels"
+    /// (a fallback could only price a real item at a level it does not have).
+    pub fn kept<T>(whole: u32, whole_tag: T, smaller: impl IntoIterator<Item = (u32, T)>) -> (Self, Vec<T>) {
+        let mut costs = vec![whole];
+        let mut tags = vec![whole_tag];
+        for (cost, tag) in smaller {
+            if costs.last().is_some_and(|&above| cost < above) {
+                costs.push(cost);
+                tags.push(tag);
+            }
+        }
+        (Self(costs), tags)
+    }
+
     /// An item with one level: shown whole or not at all, and never smaller (input she must read).
     pub fn whole(cost: u32) -> Self {
         Self(vec![cost])

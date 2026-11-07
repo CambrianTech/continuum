@@ -203,17 +203,12 @@ impl LlmDeliberationFaculty {
         // action statement.
         let required_tokens = required.stimulus.saturating_add(required.action_statement);
         let newest_levels = self.newest_result_levels(&all_messages);
-        // Her newest result's levels in the allocation's unit; a level whose charged cost is no
-        // smaller than the one above is not a level (`Rungs::new`), so keep which each rung is.
-        let mut newest_rungs: Vec<u32> = Vec::new();
-        let mut newest_rung_levels: Vec<usize> = Vec::new();
-        for (level, &cost) in newest_levels.iter().enumerate() {
-            let charged = claim(cost);
-            if newest_rungs.last().is_none_or(|&above| charged < above) {
-                newest_rungs.push(charged);
-                newest_rung_levels.push(level);
-            }
-        }
+        use continuum_context::ladder::{Leveled, Rungs};
+        // Her newest result's levels in the allocation's unit, each rung with the level it is
+        // (`Rungs::kept`); `None` when this act carries no result.
+        let newest = newest_levels.split_first().map(|(&whole, smaller)| {
+            Rungs::kept(claim(whole), 0, smaller.iter().enumerate().map(|(level, &cost)| (claim(cost), level + 1)))
+        });
         // Her hands and her framing (the head of her prompt), and her grounding: each a consumer
         // whose levels come from its items' shapes and whose hard limit is derived from them.
         let tools_offer = self.tools_offer(ws, &claim);
@@ -251,7 +246,6 @@ impl LlmDeliberationFaculty {
             source
         }).collect();
         let reply_need = reply.floor_tokens;
-        use continuum_context::ladder::{Leveled, Rungs};
         let started = std::time::Instant::now();
         let act = continuum_context::allocation::allocate(
             context_window,
@@ -259,7 +253,7 @@ impl LlmDeliberationFaculty {
                 framing: continuum_context::allocation::Head { leveled: framing_offer.leveled.clone(), held: framing_offer.held.clone() },
                 // Input she must read: its whole is its hard limit.
                 required: Leveled::one(Rungs::whole(claim(required_tokens))),
-                newest: Rungs::new(newest_rungs).map_or_else(Leveled::default, Leveled::one), // map_or_else: no result this act
+                newest: newest.as_ref().map_or_else(Leveled::default, |(rungs, _)| Leveled::one(rungs.clone())), // map_or_else: no result this act
                 tools: tools_offer.head(),
                 grounding: grounding_offer.leveled.clone(),
                 // The newest complete interaction is whole (goal 7): its whole is its hard limit.
@@ -292,7 +286,7 @@ impl LlmDeliberationFaculty {
 
         // Her newest result at the level the allocation chose: whole when the window holds it,
         // else the largest of its levels that fits, never a bare pointer (goal 7, `newest_result.rs`).
-        let newest_level = newest_rung_levels.get(act.newest_level()).copied();
+        let newest_level = newest.as_ref().map(|(_, levels)| levels[act.newest_level()]);
         let newest_result_reduced = match newest_level.and_then(|level| newest_levels.get(level)) {
             Some(&level_cost) => self.fit_newest_result(&mut all_messages, level_cost),
             None => false, // no result this act

@@ -188,8 +188,8 @@ impl<'a> GroundingPiece<'a> {
 pub(in super::super) struct GroundingOffer<'a> {
     /// Per contribution (importance order), its levels.
     pieces: Vec<Vec<GroundingPiece<'a>>>,
-    /// Per item, the piece level of each rung (charged costs no smaller than the rung above are
-    /// not rungs).
+    /// Per item, the piece level of each rung, exactly one per rung (`None`: it left the turn);
+    /// charged costs no smaller than the rung above are not rungs (`Rungs::kept`).
     rung_levels: Vec<Vec<Option<usize>>>,
     pub(in super::super) leveled: Leveled,
 }
@@ -209,20 +209,11 @@ impl<'a> GroundingOffer<'a> {
             let levels = GroundingPiece::levels(c);
             // The header renders with the block, so the most important item carries it.
             let with_header = |tokens: usize| if index + 1 == count { tokens + header } else { tokens };
-            let mut costs: Vec<u32> = Vec::new();
-            let mut map: Vec<Option<usize>> = Vec::new();
-            for (level, piece) in levels.iter().enumerate() {
-                let cost = charge(with_header(piece.tokens));
-                if costs.last().is_none_or(|&above| cost < above) {
-                    costs.push(cost);
-                    map.push(Some(level));
-                }
-            }
-            if levels.last().is_some_and(|last| last.body != Body::Handle) {
-                costs.push(0);
-                map.push(None);
-            }
-            items.push(Rungs::new(costs).unwrap_or_else(|| Rungs::whole(0))); // unwrap_or_else: a contribution always has its whole
+            // Below its last level it leaves the turn, unless that level is its handle.
+            let leaves = levels.last().is_some_and(|last| last.body != Body::Handle).then_some((0, None));
+            let smaller = levels.iter().enumerate().skip(1).map(|(level, piece)| (charge(with_header(piece.tokens)), Some(level))).chain(leaves);
+            let (rungs, map) = Rungs::kept(charge(with_header(levels[0].tokens)), Some(0), smaller);
+            items.push(rungs);
             pieces.push(levels);
             rung_levels.push(map);
         }
@@ -235,7 +226,7 @@ impl<'a> GroundingOffer<'a> {
         if rungs.len() != self.pieces.len() {
             return Vec::new();
         }
-        let chosen: Vec<Option<usize>> = self.rung_levels.iter().zip(rungs).map(|(map, &rung)| map.get(rung).copied().flatten()).collect();
+        let chosen: Vec<Option<usize>> = self.rung_levels.iter().zip(rungs).map(|(map, &rung)| map[rung]).collect();
         if chosen.last().is_some_and(Option::is_none) {
             return Vec::new();
         }
