@@ -12,6 +12,10 @@ pub struct PromptCalibration {
     /// Whether the request this prices is admitted by the engine's exact count of its finalized
     /// prompt: only then may a price fall below the estimate ([`Self::charge`]).
     pub(in super::super) admission: crate::ai::provenance::PromptAdmission,
+    /// The serving model's chat-template tokens around each message, measured from the engine
+    /// her request reaches ([`Self::with_template`]); `Unmeasured` prices text at its density
+    /// alone. Part of the estimate when measured, so her density calibrates the rest.
+    pub(in super::super) template: super::template::TemplateEstimate,
 }
 
 impl Default for PromptCalibration {
@@ -21,6 +25,7 @@ impl Default for PromptCalibration {
             measured: std::num::NonZeroU32::MIN,
             input_identity: None,
             admission: crate::ai::provenance::PromptAdmission::Estimated,
+            template: super::template::TemplateEstimate::Unmeasured,
         }
     }
 }
@@ -42,6 +47,7 @@ impl PromptCalibration {
             measured: std::num::NonZeroU32::new(measured.max(at_least_estimate))?,
             input_identity,
             admission: crate::ai::provenance::PromptAdmission::Estimated,
+            template: super::template::TemplateEstimate::Unmeasured,
         })
     }
 
@@ -55,6 +61,7 @@ impl PromptCalibration {
             measured: std::num::NonZeroU32::new(counted)?,
             input_identity: Some(input_identity),
             admission: crate::ai::provenance::PromptAdmission::EngineCounted,
+            template: super::template::TemplateEstimate::Unmeasured,
         })
     }
 
@@ -64,6 +71,34 @@ impl PromptCalibration {
     /// [`PromptAdmission::EngineCounted`]: crate::ai::provenance::PromptAdmission::EngineCounted
     pub(in super::super) fn behind(self, admission: crate::ai::provenance::PromptAdmission) -> Self {
         Self { admission, ..self }
+    }
+
+    /// This density with the template overhead the engine her request reaches measured.
+    pub(in super::super) fn with_template(self, template: super::template::TemplateEstimate) -> Self {
+        Self { template, ..self }
+    }
+
+    /// `message`'s estimate for allocation: its text estimate ([`LlmDeliberationFaculty::message_cost`])
+    /// plus what the measured template adds around a message of its kind
+    /// ([`super::template::TemplateEstimate`]). Unmeasured, the text estimate stands as it is: her
+    /// density carries the template inside its ratio, which is what pricing at density alone means.
+    /// An estimate that errs high, never an exact count (the engine's quote is the authority).
+    pub(in super::super) fn estimate(self, message: &ChatMessage) -> usize {
+        let text = LlmDeliberationFaculty::message_cost(message);
+        match self.template.around(message) {
+            Some(template) => text.saturating_add(template),
+            None => text,
+        }
+    }
+
+    /// The system message's estimate for allocation ([`Self::estimate`] of a system message).
+    pub(in super::super) fn estimate_system(self, system: &str) -> usize {
+        use continuum_engine::inference::llama_server::{MessageKind, MessageShape};
+        let text = LlmDeliberationFaculty::framing_cost(system);
+        match self.template.around_shape(MessageShape { kind: MessageKind::System, units: 1, parameters: 0 }) {
+            Some(template) => text.saturating_add(template),
+            None => text,
+        }
     }
 
     /// The calibration identity a receipt names: estimated tokens against the engine's count.
@@ -86,7 +121,7 @@ impl PromptCalibration {
         let text_density = u128::from(self.measured.get())
             <= self.estimated.get() as u128 * continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN as u128;
         match self.input_identity {
-            Some(key) if key != input && !text_density => Self::default().behind(self.admission),
+            Some(key) if key != input && !text_density => Self::default().behind(self.admission).with_template(self.template),
             _ => self,
         }
     }
@@ -153,9 +188,10 @@ type DensitySample = (std::num::NonZeroUsize, std::num::NonZeroU32);
 /// itself, `PromptCalibration::default()` (follow-up: one `/tokenize` count, or the model's
 /// measured density on this node, for the first act).
 ///
-/// The chat template's own tokens around each message (role markers, the generation prompt) are
-/// part of what it measures: the engine counts the templated prompt and the estimate counts the
-/// text, so no per-message constant sits beside it (it was `PER_MESSAGE_TEMPLATE_TOKENS = 5`).
+/// The chat template's own tokens around each message are no constant (it was
+/// `PER_MESSAGE_TEMPLATE_TOKENS = 5`): when the engine measured its template, each message's
+/// estimate carries its kind's measured share (`prompt/template.rs`) and this ratio calibrates the
+/// rest; unmeasured, the estimate counts text and this ratio carries the template too.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in super::super) enum Density {
     #[default]
@@ -198,7 +234,7 @@ impl Density {
             bound_milli: milli(u128::from(bound_measured.get()), bound_estimated.get() as u128),
         };
         // Priced behind the admission the next request has (`fit_within` sets it per binding).
-        let price = PromptCalibration { estimated: bound_estimated, measured: bound_measured, input_identity: None, admission: crate::ai::provenance::PromptAdmission::Estimated };
+        let price = PromptCalibration { estimated: bound_estimated, measured: bound_measured, input_identity: None, admission: crate::ai::provenance::PromptAdmission::Estimated, template: super::template::TemplateEstimate::Unmeasured };
         Some((Self::Measured { served: served.to_owned(), samples }, price, reading))
     }
 

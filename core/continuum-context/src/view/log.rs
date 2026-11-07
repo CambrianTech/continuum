@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{claim, key, Claim, Level, SourceId, FOLD_KEY};
 use crate::cause::ElementId;
-use crate::cost::Cost;
+use crate::cost::Estimate;
 use crate::epoch::Block;
 use crate::motion::{Motion, Unit};
 use crate::source::{Item, Source};
@@ -76,7 +76,7 @@ type Slot<'a, T> = (&'a dyn Source<T>, Vec<Item<T>>, Claim, usize);
 
 /// Order `sources` and her `log` for a start ([`Motion::rank`]), each claim priced by `cost`. The
 /// order itself is measured in characters (`Motion` keeps what held in chars), never in `cost`.
-pub(super) fn arrange<'a, T: Block>(cost: &dyn Cost<T>, motion: &Motion, sources: &[&'a dyn Source<T>], log: &[Logged<T>]) -> Arranged<'a, T> {
+pub(super) fn arrange<'a, T: Block>(cost: &dyn Estimate<T>, motion: &Motion, sources: &[&'a dyn Source<T>], log: &[Logged<T>]) -> Arranged<'a, T> {
     let retained: Vec<bool> = log.iter().map(|entry| sources.iter().any(|source| source.name() == entry.source)).collect();
     let charged: Vec<Logged<T>> = log.iter().zip(&retained).filter(|(_, kept)| **kept).map(|(entry, _)| entry.clone()).collect();
     let ids = logged_ids(&charged);

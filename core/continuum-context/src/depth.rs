@@ -37,7 +37,7 @@ pub struct Collapsible {
 /// clock that measured it (its recorded birth, never its position: a source idle for acts or
 /// batching several items in one would sample the wrong bucket); `Unmeasured` where nothing
 /// measured that age.
-pub(crate) fn collapsible<T: crate::epoch::Block>(items: &[crate::source::Item<T>], rereads: &crate::rereads::Rereads, cost: &dyn crate::cost::Cost<T>) -> Vec<Collapsible> {
+pub(crate) fn collapsible<T: crate::epoch::Block>(items: &[crate::source::Item<T>], rereads: &crate::rereads::Rereads, cost: &dyn crate::cost::Estimate<T>) -> Vec<Collapsible> {
     items
         .iter()
         .rev()

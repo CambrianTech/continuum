@@ -224,6 +224,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // The same reading decides what this engine process can take (`tail_tools`); an
             // error keeps the evidence only while the same incarnation serves (Codex on #5491).
             observe_served_engine(ctrl.served_incarnation(), served_engine_probe.as_ref().map(Option::as_deref).map_err(|_| ()));
+            observe_template(ctrl, target.model_id()).await;
             let served_engine = match served_engine_probe {
                 Ok(build) => build,
                 Err(_) => None, // a probe error is "engine OK", as for the window and lanes
@@ -356,7 +357,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // relaunched lane starts clean" — this is the site that makes it true.
             reset_real_decode_failures();
             mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
-            observe_launched_engine(ctrl).await;
+            observe_launched_engine(ctrl, target.model_id()).await;
             EnsureOutcome::Spawned {
                 model: target.model_id().to_string(),
             }
@@ -375,7 +376,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                 Ok(()) => {
                     reset_real_decode_failures();
                     mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
-                    observe_launched_engine(ctrl).await;
+                    observe_launched_engine(ctrl, target.model_id()).await;
                     EnsureOutcome::Spawned {
                         model: target.model_id().to_string(),
                     }
@@ -395,9 +396,21 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
 /// A lane this reconcile launched answered ready: read its own build now, not at the next
 /// reconcile that happens to pass the convergence check, so her tool head is decided by what the
 /// running engine says before her acts reach it.
-async fn observe_launched_engine<C: LlamaServerControl + ?Sized>(ctrl: &C) {
+async fn observe_launched_engine<C: LlamaServerControl + ?Sized>(ctrl: &C, model: &str) {
     let probe = ctrl.served_engine_build().await;
     observe_served_engine(ctrl.served_incarnation(), probe.as_ref().map(Option::as_deref).map_err(|_| ()));
+    observe_template(ctrl, model).await;
+}
+
+/// Measure the serving model's chat-template tokens around one message, once per engine process
+/// and model ([`super::template_overhead`]): a new engine or a new model measures afresh, an
+/// unchanged one reads what it measured.
+async fn observe_template<C: LlamaServerControl + ?Sized>(ctrl: &C, model: &str) {
+    let now = ctrl.served_incarnation();
+    if super::template_overhead::measured_for(now, model) {
+        return;
+    }
+    super::template_overhead::record(now, model, ctrl.served_template_overhead().await);
 }
 
 /// The refusal last reported by [`keep_incumbent`], so an unchanged one is said once, not on

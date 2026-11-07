@@ -552,6 +552,10 @@ impl AIProviderAdapter for PlacementSwitch {
     fn counts_prompts_exactly(&self) -> bool {
         self.current().counts_prompts_exactly()
     }
+    /// The template overhead of the engine her request goes to now, like every capability here.
+    fn template_overhead(&self, model: &str) -> continuum_engine::inference::llama_server::TemplateMeasurement {
+        self.current().template_overhead(model)
+    }
     /// Asked of the adapter her request actually goes to, like every other capability here: a
     /// home lane on our fork's gateway may take her learned tool head, a remote seat may not.
     /// Left to the trait default, every resident read `false` behind this switch, so the head

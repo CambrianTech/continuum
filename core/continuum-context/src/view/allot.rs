@@ -7,7 +7,7 @@
 //! pointers at ~190 chars each, ~4.5k tokens before anything whole fit); one block does not.
 
 use crate::epoch::Block;
-use crate::cost::Cost;
+use crate::cost::Estimate;
 use crate::source::{Item, Source};
 
 pub(super) use crate::level::Level;
@@ -38,7 +38,7 @@ fn fold_of<T: Block>(
     source: &(impl Source<T> + ?Sized),
     run: &[Item<T>],
     pointers: usize,
-    cost: &dyn Cost<T>,
+    cost: &dyn Estimate<T>,
 ) -> Option<T> {
     if run.is_empty() {
         return None;
@@ -70,7 +70,7 @@ fn standing_head<T: Block>(items: &[Item<T>]) -> usize {
 /// What `items` of `source` cost at their floor, priced by the caller's `cost`: the one owner of a
 /// source's floor, for the view's own claim and any caller pricing it for its allocation.
 /// Whether the floor is the fold block or the pointers is [`fold_of`]'s decision, the view's.
-pub fn floor<T: Block>(cost: &dyn Cost<T>, source: &(impl Source<T> + ?Sized), items: &[Item<T>]) -> usize {
+pub fn floor<T: Block>(cost: &dyn Estimate<T>, source: &(impl Source<T> + ?Sized), items: &[Item<T>]) -> usize {
     let head = standing_head(items);
     let pointers = |run: &[Item<T>]| -> usize {
         run.iter()
@@ -86,7 +86,7 @@ pub fn floor<T: Block>(cost: &dyn Cost<T>, source: &(impl Source<T> + ?Sized), i
         }
 }
 
-/// The level a `grant` gives each item, every level priced by the caller's `cost` (the oracle its
+/// The level a `grant` gives each item, every level priced by the caller's `cost` (the allocation estimate its
 /// grants are made in, never an average converting them). Every item starts at the floor (folded
 /// with the rest when its source folds, else its pointer); what the grant leaves above it is
 /// spent newest first, each item taking the most detail that still fits, and never more detail
@@ -112,7 +112,7 @@ pub(super) fn allot<T: Block>(
     source: &(impl Source<T> + ?Sized),
     items: &[Item<T>],
     grant: usize,
-    cost: &dyn Cost<T>,
+    cost: &dyn Estimate<T>,
 ) -> Allotment<T> {
     let mut pointers = Vec::with_capacity(items.len() + 1);
     pointers.push(0);

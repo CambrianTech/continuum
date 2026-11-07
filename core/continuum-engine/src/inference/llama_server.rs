@@ -92,6 +92,8 @@ use genome::engine_help_lists_train_dir;
 use genome::{answer_for, needs_asking, train_dir_known, train_dir_support, ProbeOutcome};
 mod engine_install;
 mod engine_features;
+mod template_overhead;
+pub use template_overhead::{probe_messages, serving_template_overhead, MessageKind, MessageShape, TemplateMeasurement, TemplateSample};
 pub use engine_features::serving_engine_takes_tail_tools;
 use engine_features::{observe_served_engine, serving_lane_evidence, LaunchedEvidence, ServedEvidence};
 #[cfg(windows)]
