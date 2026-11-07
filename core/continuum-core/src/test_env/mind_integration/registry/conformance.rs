@@ -292,11 +292,21 @@ async fn a_malformed_call_is_refused_as_malformed_never_as_a_missing_field() {
 // field: the executor checks the call against the command's own params before it runs.
 #[tokio::test]
 async fn a_wrong_typed_field_is_refused_before_dispatch_naming_the_field() {
-    let (is_error, content, verdict) = dispatch_input(json!({ "mode": 5 })).await;
+    let (is_error, content, verdict) = dispatch_input(json!({ "mode": ["ok"] })).await;
     assert_eq!(is_error, Some(true));
     assert!(verdict.failed(), "{verdict:?}");
-    assert!(content.contains("`mode` must be a string; you sent a number"), "{content}");
+    assert!(content.contains("`mode` must be a string; you sent a list"), "{content}");
     assert!(content.contains("Here is the correct call"), "her next move carries the manual: {content}");
+}
+
+// what this catches (card 9ed04d88, Sahar's Windows capture): a field wrapped in an object keyed
+// by its own name, the shape a collapsed `{}` offer taught, refused although it had one reading.
+// Through her executor, the registry's declared schema and dispatch, it now runs.
+#[tokio::test]
+async fn a_field_wrapped_in_its_own_name_runs_instead_of_refusing() {
+    let (is_error, content, verdict) = dispatch_input(json!({ "mode": { "mode": "ok" } })).await;
+    assert_ne!(is_error, Some(true), "{content}");
+    assert!(verdict.succeeded(), "the command ran with `ok`: {verdict:?} {content}");
 }
 
 /// Params of the effect probe: a token naming the run that wrote it.

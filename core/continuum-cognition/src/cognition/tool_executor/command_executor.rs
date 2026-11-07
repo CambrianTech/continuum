@@ -603,16 +603,19 @@ impl ToolExecutor for CommandToolExecutor {
                 // day (M5, 09-16). Each verb refused in its own words and she tried again.
                 // One seam names the FIELD and what belongs in it, and never dispatches.
                 let canonical = crate::ai::tool_dialect::resolve_wire_name(&call.name);
-                if let Some(refusal) = super::arguments::refusal_before_dispatch(&canonical, &call.input) {
-                    continuum_base::probe!(
-                        class = "tool.call.arguments_refused",
-                        persona = %ctx.persona_name,
-                        command = %canonical,
-                        refusal = %refusal,
-                        "a tool call's arguments did not decode as its command's params — refused before it ran"
-                    );
-                    return (call.id.clone(), Err(Refused::Arguments { canonical, refusal }));
-                }
+                let input = match super::arguments::accept_before_dispatch(&canonical, &call.input) {
+                    Ok(input) => input,
+                    Err(refusal) => {
+                        continuum_base::probe!(
+                            class = "tool.call.arguments_refused",
+                            persona = %ctx.persona_name,
+                            command = %canonical,
+                            refusal = %refusal,
+                            "a tool call's arguments did not decode as its command's params — refused before it ran"
+                        );
+                        return (call.id.clone(), Err(Refused::Arguments { canonical, refusal }));
+                    }
+                };
                 let outcome: Result<Value, Refused> = match manual_blanks_in(&call.input) {
                     // A reported note is answered here, before the router: never a command path to
                     // permission-check or resolve, and her teacher text is the whole result.
@@ -648,7 +651,7 @@ impl ToolExecutor for CommandToolExecutor {
                     }
                     _ => {
                         conn.commands()
-                            .execute_value(command.as_ref(), call.input.clone())
+                            .execute_value(command.as_ref(), input.into_owned())
                             .await
                             .map_err(Refused::Client)
                     }
@@ -793,6 +796,7 @@ impl ToolExecutor for CommandToolExecutor {
                             reason = %raw,
                             "a command refused her act"
                         );
+                        crate::cognition::health_ledger::note_refused_of(ctx.persona_id);
                     }
                     // A transport failure IS a failure, and the typed carrier must
                     // say the same thing `is_error` does — a receipt that reads one

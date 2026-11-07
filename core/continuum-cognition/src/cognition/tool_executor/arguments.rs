@@ -9,15 +9,22 @@
 //! engine's marker, and was refused as "missing field `file_path`", a story about a field she had
 //! written. The parse error and her raw text were dropped on the way (Benchy, the M5, 2026-11-05).
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 use crate::ai::types::{CallEnding, ToolCall, UnparsedArguments};
 use crate::sdk_codegen::{command_descriptor, AccessLevel, ArgumentsRefusal};
 
-/// Why a committed call to `canonical` must not run with `input`, or `None` when it may: its
-/// arguments decoded as the command's own params, through the same decoder its dispatch uses.
-pub(crate) fn refusal_before_dispatch(canonical: &str, input: &Value) -> Option<ArgumentsRefusal> {
-    command_descriptor(canonical)?.arguments.check(input).err()
+/// The arguments a committed call to `canonical` runs with, or why it must not run: decoded as the
+/// command's own params through the same decoder its dispatch uses, and when they do not decode
+/// as sent, read once against the command's declared schema (refusal is the last resort, card
+/// 9ed04d88). A command with no descriptor is checked by its own dispatch.
+pub(crate) fn accept_before_dispatch<'a>(canonical: &str, input: &'a Value) -> Result<Cow<'a, Value>, ArgumentsRefusal> {
+    match command_descriptor(canonical) {
+        Some(descriptor) => descriptor.accept(input),
+        None => Ok(Cow::Borrowed(input)),
+    }
 }
 
 /// Why a held call never ran: the engine's marker when it wrote one, else the classifier's

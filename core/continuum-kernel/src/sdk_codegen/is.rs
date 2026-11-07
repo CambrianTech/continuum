@@ -357,6 +357,20 @@ fn check_arguments<P: serde::de::DeserializeOwned>(arguments: &serde_json::Value
 }
 
 impl CommandDescriptor {
+    /// Her call's arguments as this command accepts them, or why it refuses them: checked against
+    /// its `Params`, and when they do not decode as sent, read once against its declared schema
+    /// (`accepted_shape`) before the refusal stands. The value returned is the one to dispatch.
+    pub fn accept<'a>(
+        &self,
+        arguments: &'a serde_json::Value,
+    ) -> Result<std::borrow::Cow<'a, serde_json::Value>, ArgumentsRefusal> {
+        let check = |v: &serde_json::Value| self.arguments.check(v);
+        crate::runtime::arguments::accepted_shape::decode_accepting(self.name, &self.params_schema, arguments, check)
+            .map(|((), accepted)| accepted)
+    }
+}
+
+impl CommandDescriptor {
     /// The TS type a caller PASSES — the inner params, wrapped in
     /// `CommandRequest<P>` for `Enveloped` commands, bare otherwise.
     pub(super) fn ts_param_type(&self) -> String {

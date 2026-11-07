@@ -13,6 +13,7 @@
 //! 3d7931b7): its next move is a retry of the same command with the fields fixed, except a
 //! [`UnparsedArguments::Cut`], whose way out is never a retry.
 
+pub mod accepted_shape;
 mod json_args;
 #[cfg(test)]
 mod tests;
@@ -93,7 +94,7 @@ pub enum FieldProblem {
 pub struct DecoderSaid(String);
 
 /// The JSON type of what she sent, read from the value at the refused path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JsonKind {
     Null,
     Bool,
