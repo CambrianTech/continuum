@@ -5,7 +5,7 @@
 //! - **whole**: the schema as built;
 //! - **summary**: its description at the codec's summary level and every parameter with its type,
 //!   without the parameters' own descriptions;
-//! - **pointer**: its name, every parameter's name (any value), and the expand handle naming the
+//! - **pointer**: its callable parameter contract and the expand handle naming the
 //!   verb that shows its whole (`commands/help`, [`crate::cognition::tool_head::FINDER`]).
 //!
 //! Every level keeps every parameter: the served engine builds its tool-call grammar and parser
@@ -107,14 +107,14 @@ fn summary(spec: &NativeToolSpec) -> NativeToolSpec {
     }
 }
 
-/// The verb's pointer: its name, its parameters' names (any value), and how to open its whole.
+/// The verb's pointer: its callable schema and how to open its whole documentation.
+/// The engine still accepts calls at this level, so shedding documentation must never
+/// widen values beyond the command decoder or discard referenced definitions.
 fn pointer(spec: &NativeToolSpec, canonical: &str, finder: &str) -> NativeToolSpec {
-    let names = spec.input_schema.properties.as_object().map(|props| props.keys().cloned().collect::<Vec<_>>()).unwrap_or_default(); // unwrap_or_default: a verb with no parameters names none
-    let properties = serde_json::Value::Object(names.into_iter().map(|name| (name, serde_json::json!({}))).collect());
     NativeToolSpec {
         name: spec.name.clone(),
         description: expand_handle(finder, canonical),
-        input_schema: ToolInputSchema { schema_type: spec.input_schema.schema_type.clone(), properties, required: spec.input_schema.required.clone(), definitions: None },
+        input_schema: summary(spec).input_schema,
     }
 }
 
@@ -201,6 +201,42 @@ impl ToolSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_callable_pointer_preserves_the_parameter_value_contract() {
+        // Windows capture fc7c4003: the offered bash.cmd was {}, and the engine
+        // returned {"cmd":{"cmd":"Get-Content ..."}}. The decoder requires a string.
+        // Exercise the same level owner rather than coercing that invalid argument.
+        let whole = spec();
+        let levels = VerbLevels::of(&whole, "code/edit", "commands_help", Floor::Pointer);
+        for index in 0..levels.len() {
+            for name in ["file_path", "old_string", "new_string", "replace_all"] {
+                assert_eq!(levels.spec(index).input_schema.properties[name]["type"],
+                    whole.input_schema.properties[name]["type"],
+                    "callable level {index} widened {name} beyond its decoder");
+            }
+        }
+    }
+
+    #[test]
+    fn callable_levels_retain_references_and_nested_validation() {
+        let mut whole = spec();
+        whole.input_schema.properties = serde_json::json!({
+            "file_path": {"$ref": "#/definitions/Path"},
+            "old_string": {"type":"string", "minLength":1},
+            "new_string": {"anyOf":[{"type":"string"},{"type":"null"}]},
+            "replace_all": {"type":"boolean", "enum":[false]},
+            "nested": {"type":"array", "items":{"type":"object", "properties":{"cmd":{"type":"string"}}, "required":["cmd"], "additionalProperties":false}}
+        });
+        whole.input_schema.definitions = Some(serde_json::json!({"Path":{"type":"string","pattern":"^[a-z]+$"}}));
+        let levels = VerbLevels::of(&whole, "code/edit", "commands_help", Floor::Pointer);
+        for index in 0..levels.len() {
+            let schema = &levels.spec(index).input_schema;
+            assert_eq!(schema.properties, whole.input_schema.properties);
+            assert_eq!(schema.definitions, whole.input_schema.definitions);
+            assert_eq!(schema.required, whole.input_schema.required);
+        }
+    }
 
     fn spec() -> NativeToolSpec {
         NativeToolSpec {
