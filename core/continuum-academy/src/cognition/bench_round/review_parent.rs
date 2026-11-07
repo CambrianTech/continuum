@@ -74,7 +74,6 @@ pub fn observe_card_event(payload: &Value) {
     match round.settle_card(card, state) {
         SettleOutcome::NotOurs | SettleOutcome::AlreadySettled => {}
         SettleOutcome::Settled { remaining } => {
-            crate::cognition::health_ledger::note_settle();
             continuum_base::probe!(
                 class = "bench.round.card_settled",
                 round_id = %round_id,
@@ -85,7 +84,6 @@ pub fn observe_card_event(payload: &Value) {
             );
         }
         SettleOutcome::RoundDone => {
-            crate::cognition::health_ledger::note_settle();
             let (dispatched, benchmark) = (round.dispatched(), round.benchmark.clone());
             continuum_base::probe!(
                 class = "bench.round.done",

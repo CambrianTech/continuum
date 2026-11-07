@@ -192,6 +192,7 @@ pub const SUBSTRATE_ORM_COLLECTIONS: &[&str] = &[
     <training_producer::reviewed::CreditReviewAcceptance as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::CreditSubmitRefusal as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::boundaries::ProcessedReviewBoundary as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::reviewed::CountedCreditOutcome as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::CreditTransferAcceptance as crate::orm::OrmEntity>::COLLECTION,
     <obligation::PersonaObligation as crate::orm::OrmEntity>::COLLECTION,
 ];
@@ -222,6 +223,7 @@ pub fn register_substrate_orm_entities(
     registry.register::<training_producer::reviewed::CreditReviewAcceptance>()?;
     registry.register::<training_producer::reviewed::CreditSubmitRefusal>()?;
     registry.register::<training_producer::reviewed::boundaries::ProcessedReviewBoundary>()?;
+    registry.register::<training_producer::reviewed::CountedCreditOutcome>()?;
     registry.register::<training_producer::reviewed::CreditTransferAcceptance>()?;
     registry.register::<obligation::PersonaObligation>()?;
     Ok(())

@@ -71,6 +71,96 @@ use super::*;
         );
     }
 
+    // what this catches: the health line blind to ordinary learning (the M5, 2026-11-07): Aiko's
+    // reviewed credit really settled (acceptance c88bf229) and the line read 0, because only the
+    // benchmark verdict counted. A Passed review by another reviewer, accepted in process, counts
+    // her accepted credit exactly once, at the acceptance write; its replay counts nothing more.
+    #[tokio::test]
+    pub(super) async fn an_accepted_independent_review_counts_her_accepted_credit_once() {
+        use airc_work::WorkEvent;
+        use crate::cognition::health_ledger::{credit_outcomes_of, CreditOutcome};
+        let (fx, _capture) = exact_review().await;
+        let (executor, persona, name, reviewer, room) = (fx.executor.clone(), fx.persona, fx.name, fx.reviewer, fx.room);
+        let board = fx.project(vec![(WorkEvent::WorkSubmissionReviewed(fx.pass.clone()), reviewer)]);
+        let (board, review_id) = (&board, fx.pass.review_id);
+        let consume = |conn| async move {
+            reviewed::consume_review_with_boundary(&conn, name, persona, room, board, review_id, &reviewed::SelfReview::NotAdmitted, None)
+                .await
+                .unwrap() // unwrap: the store under test
+                .state
+        };
+        let accepted = || credit_outcomes_of(persona).of(CreditOutcome::Accepted);
+        assert_eq!(accepted(), 0);
+        let submit = continuum_client::mock::MockTransport::new();
+        script_settlement_reply(
+            &submit,
+            &fx.selected,
+            Some(json!({"success":true,"acceptance":{"submissionId":fx.selected.id,"replayed":false}})),
+        );
+        assert_eq!(consume(settlement_connection(executor.clone(), persona, submit, None)).await, reviewed::ReviewedCreditState::Accepted);
+        assert_eq!(accepted(), 1, "learning that settled is on the line");
+        let never_submit = continuum_client::mock::MockTransport::new();
+        never_submit.respond_to("genome/training-trigger/submit", |_| panic!("an accepted binding must not dispatch again"));
+        assert_eq!(consume(settlement_connection(executor, persona, never_submit, None)).await, reviewed::ReviewedCreditState::Accepted);
+        assert_eq!(accepted(), 1, "a replay of an accepted credit never counts it twice");
+    }
+
+    // what this catches (Cormac on #5810): a non-accepted outcome counted per consumption, so every
+    // registration replay (each core start) re-counted the same failed review. Decided twice, the
+    // failed review counts once; a different outcome of the same review is its own count.
+    #[tokio::test]
+    pub(super) async fn a_replayed_failed_review_counts_once() {
+        use airc_work::{WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
+        use crate::cognition::health_ledger::{credit_outcomes_of, CreditOutcome};
+        let (fx, _capture) = exact_review().await;
+        let (executor, persona, name, reviewer, room) = (fx.executor.clone(), fx.persona, fx.name, fx.reviewer, fx.room);
+        let failed = WorkSubmissionReview { outcome: WorkReviewOutcome::Failed, ..fx.pass.clone() };
+        let board = fx.project(vec![(WorkEvent::WorkSubmissionReviewed(failed.clone()), reviewer)]);
+        for _ in 0..2 {
+            let never_submit = continuum_client::mock::MockTransport::new();
+            never_submit.respond_to("genome/training-trigger/submit", |_| panic!("a failed review must not submit"));
+            let conn = settlement_connection(executor.clone(), persona, never_submit, None);
+            let state = reviewed::consume_review_with_boundary(&conn, name, persona, room, &board, failed.review_id, &reviewed::SelfReview::NotAdmitted, None)
+                .await
+                .unwrap() // unwrap: the store under test
+                .state;
+            assert_eq!(state, reviewed::ReviewedCreditState::FailedReview);
+        }
+        assert_eq!(credit_outcomes_of(persona).of(CreditOutcome::FailedReview), 1, "a replay re-decides, never re-counts");
+    }
+
+    // what this catches (Cormac on #5810): an acceptance whose write committed but whose
+    // acknowledgement was lost went uncounted (the branch that reads the prior row back). It
+    // settled, so it counts, once.
+    #[tokio::test]
+    pub(super) async fn an_acceptance_with_a_lost_acknowledgement_counts_once() {
+        use airc_work::WorkEvent;
+        use crate::cognition::health_ledger::{credit_outcomes_of, CreditOutcome};
+        let (fx, _capture) = exact_review().await;
+        let (executor, persona, name, reviewer, room) = (fx.executor.clone(), fx.persona, fx.name, fx.reviewer, fx.room);
+        let board = fx.project(vec![(WorkEvent::WorkSubmissionReviewed(fx.pass.clone()), reviewer)]);
+        let submit = continuum_client::mock::MockTransport::new();
+        script_settlement_reply(
+            &submit,
+            &fx.selected,
+            Some(json!({"success":true,"acceptance":{"submissionId":fx.selected.id,"replayed":false}})),
+        );
+        let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let inner = SettlementTransport {
+            data: InProcessTransport::new(executor, Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona)))),
+            submit,
+            pause: None,
+        };
+        let lossy = Connection::new(LostAck { inner, collection: reviewed::CreditReviewAcceptance::COLLECTION, lost: lost.clone() });
+        let state = reviewed::consume_review_with_boundary(&lossy, name, persona, room, &board, fx.pass.review_id, &reviewed::SelfReview::NotAdmitted, None)
+            .await
+            .unwrap() // unwrap: the store under test
+            .state;
+        assert_eq!(state, reviewed::ReviewedCreditState::Accepted, "the committed acceptance reads back");
+        assert!(lost.load(std::sync::atomic::Ordering::SeqCst), "the fixture lost the acknowledgement");
+        assert_eq!(credit_outcomes_of(persona).of(CreditOutcome::Accepted), 1, "it settled, so it counts");
+    }
+
     // what this catches: 6c36c24d — only an accepted independent exact-artifact
     // review may transfer a bound snapshot; lost ACK/replacement/reopen cannot
     // relabel the evidence or submit it under a fresh destination identity.
@@ -713,3 +803,44 @@ use super::*;
         assert_eq!(accepted.staged_revision_id, Some(fx.selected.id), "the issuing turn's row");
         Ok(())
     }
+
+/// A transport that commits the first `data/batch` writing `collection`, then answers it with an
+/// error: a lost acknowledgement after commit.
+struct LostAck<T> {
+    inner: T,
+    collection: &'static str,
+    lost: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl<T: Transport> Transport for LostAck<T> {
+    async fn execute(&self, command: &str, params: serde_json::Value) -> Result<serde_json::Value, ClientError> {
+        let writes_it = command == "data/batch"
+            && params["operations"].as_array().is_some_and(|ops| ops.iter().any(|op| op["collection"] == self.collection));
+        let answer = self.inner.execute(command, params).await?;
+        if writes_it && !self.lost.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Err(ClientError::Transport("acknowledgement lost after commit".into()));
+        }
+        Ok(answer)
+    }
+
+    async fn subscribe(&self, class: &str) -> Result<continuum_client::event::EventStream, ClientError> {
+        self.inner.subscribe(class).await
+    }
+
+    async fn emit(&self, class: &str, payload: serde_json::Value) -> Result<(), ClientError> {
+        self.inner.emit(class, payload).await
+    }
+
+    async fn provide(&self, command: &str, handler: Arc<dyn continuum_client::ServeHandler>) -> Result<(), ClientError> {
+        self.inner.provide(command, handler).await
+    }
+
+    async fn revoke(&self, command: &str) -> Result<(), ClientError> {
+        self.inner.revoke(command).await
+    }
+
+    async fn close(&self) -> Result<(), ClientError> {
+        self.inner.close().await
+    }
+}

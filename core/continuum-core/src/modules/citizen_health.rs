@@ -5,7 +5,7 @@
 //! take stock") was found by an operator querying probes by hand; every number was
 //! already in the process and nobody owned the drift. This module owns it: an
 //! in-process ledger fed at the three seams that already probe (an act observed, a
-//! lane granted, a card settled), snapshotted once an hour beside residency and the
+//! lane granted, her reviewed credit decided), snapshotted once an hour beside residency and the
 //! served lanes, judged by one pure rule, probed, and said in the org room in one line.
 //!
 //! The rule names the shape, not a score: STARVED (more minds than lanes can turn),
@@ -30,6 +30,7 @@ use crate::cognition::health_ledger::*;
 mod rest_seats;
 pub use rest_seats::*;
 mod resident_service;
+mod review_queue;
 pub use resident_service::current_resident_alarms;
 
 #[cfg(test)]

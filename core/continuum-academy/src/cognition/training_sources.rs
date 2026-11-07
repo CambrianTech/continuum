@@ -22,7 +22,7 @@
 ///   be answered — so a gene that learned to pass everything fails the gym and is
 ///   never paged in ([[fallbacks-are-illegal-fail-loud]]);
 /// - `quality = 1.0`: a curated domain with its own floor — a 4-char completion
-///   scores below `MIN_TRAINING_QUALITY` by construction, and the chat score was
+///   scores below `TRAINING_QUALITY_BAR` by construction, and the chat score was
 ///   built for a different shape.
 pub const SPEECH_DISCIPLINE_TRAIT: &str = "speech-discipline";
 

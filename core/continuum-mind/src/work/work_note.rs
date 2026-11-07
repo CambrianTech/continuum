@@ -64,7 +64,7 @@ pub struct WorkNoteResult {
 #[async_trait]
 impl ActionCommand for WorkNote {
     const NAME: &'static str = "work/note";
-    const ALIASES: &'static [&'static str] = &["ledger", "note_task"];
+    const ALIASES: &'static [&'static str] = crate::cognition::work_preconditions::WorkVerb::Note.aliases();
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =

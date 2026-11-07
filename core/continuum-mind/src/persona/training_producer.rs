@@ -33,7 +33,7 @@
 //!
 //! ## The quality gate is a data filter, not a cognition heuristic
 //!
-//! [`MIN_TRAINING_QUALITY`] gates which turns enter the TRAINING corpus — the same
+//! [`TRAINING_QUALITY_BAR`] gates which turns enter the TRAINING corpus — the same
 //! role as `dataset.rs` dropping empty/system-only captures. It does not read or
 //! steer the persona's behavior or output ([[no-hardcoded-heuristics-to-steer-cognition]]
 //! is about puppeting cognition; this is corpus hygiene).
@@ -73,6 +73,7 @@ pub use credit_acceptance_region::{CreditAcceptanceRegion, Resolve};
 mod claim_following;
 pub use claim_following::{ClaimFollowingCapture, OpenCapture};
 mod settle_card_credit_bound;
+mod reconcile_tally;
 pub use settle_card_credit_bound::*;
 
 #[cfg(test)]
@@ -136,7 +137,7 @@ pub mod test_support {
     ///
     // THE FIXTURE MUST CLEAR THE QUALITY GATE ON ITS OWN (the cc34ac0f lesson below):
     // a FAILED outcome scores `0.20 + 0.3*substance`, so only the ≥500-char substance
-    // step reaches 0.47 and clears MIN_TRAINING_QUALITY 0.45. With a shorter fixture
+    // step reaches 0.47 and clears TRAINING_QUALITY_BAR 0.45. With a shorter fixture
     // the gate refuses the turn, `plan` returns `None` for the wrong reason, and the
     // failed-case assertion passes while proving nothing.
     pub fn claimed_card_fixture(

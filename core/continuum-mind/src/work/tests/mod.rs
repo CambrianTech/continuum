@@ -473,6 +473,8 @@
         let json = serde_json::to_string(&WorkListResult {
             total_on_board: 60,
             claimable_now: 58,
+            awaiting_reviewer: 2,
+            unsubmitted_pull_requests: 1,
             note: Some("the board is NOT empty".to_string()),
             cards,
         })
@@ -487,7 +489,7 @@
         );
         let receipt: String = json.chars().take(RECEIPT_CAP).collect();
 
-        for field in ["total_on_board", "claimable_now", "note"] {
+        for field in ["total_on_board", "claimable_now", "awaiting_reviewer", "unsubmitted_pull_requests", "note"] {
             assert!(
                 receipt.contains(field),
                 "`{field}` must survive truncation — declare the summary BEFORE `cards`, \
@@ -604,17 +606,22 @@
         use crate::cognition::work_preconditions::{names, WorkVerb};
         use super::submission::{WorkReview, WorkSubmission, WorkSubmit};
         for verb in WorkVerb::ALL {
-            let registered = match verb {
-                WorkVerb::Claim => <WorkClaim as ActionCommand>::NAME,
-                WorkVerb::Heartbeat => <WorkHeartbeat as ActionCommand>::NAME,
-                WorkVerb::Note => <WorkNote as ActionCommand>::NAME,
-                WorkVerb::Release => <WorkRelease as ActionCommand>::NAME,
-                WorkVerb::Review => <WorkReview as ActionCommand>::NAME,
-                WorkVerb::State => <WorkState as ActionCommand>::NAME,
-                WorkVerb::Submission => <WorkSubmission as ActionCommand>::NAME,
-                WorkVerb::Submit => <WorkSubmit as ActionCommand>::NAME,
+            let (registered, aliases) = match verb {
+                WorkVerb::Claim => (<WorkClaim as ActionCommand>::NAME, <WorkClaim as ActionCommand>::ALIASES),
+                WorkVerb::Heartbeat => (<WorkHeartbeat as ActionCommand>::NAME, <WorkHeartbeat as ActionCommand>::ALIASES),
+                WorkVerb::Note => (<WorkNote as ActionCommand>::NAME, <WorkNote as ActionCommand>::ALIASES),
+                WorkVerb::Release => (<WorkRelease as ActionCommand>::NAME, <WorkRelease as ActionCommand>::ALIASES),
+                WorkVerb::Review => (<WorkReview as ActionCommand>::NAME, <WorkReview as ActionCommand>::ALIASES),
+                WorkVerb::State => (<WorkState as ActionCommand>::NAME, <WorkState as ActionCommand>::ALIASES),
+                WorkVerb::Submission => (<WorkSubmission as ActionCommand>::NAME, <WorkSubmission as ActionCommand>::ALIASES),
+                WorkVerb::Submit => (<WorkSubmit as ActionCommand>::NAME, <WorkSubmit as ActionCommand>::ALIASES),
             };
             assert_eq!(verb.command(), registered, "{verb:?}");
+            // A move her text names is the name her tool list offers (6c): the verb's aliases are
+            // the command's, so `offered` renders what `wire_name` offers the command under.
+            assert_eq!(verb.aliases(), aliases, "{verb:?}");
+            let offered = crate::sdk_codegen::wire_name(registered, crate::sdk_codegen::primary_alias(aliases), crate::sdk_codegen::offer_style_for(None));
+            assert_eq!(verb.offered(), offered, "{verb:?}");
             for grant in verb.grants() {
                 let known = [<continuum_hands::commands::code::run::CodeRun as ActionCommand>::NAME, <WorkSubmission as ActionCommand>::NAME];
                 assert!(known.iter().any(|command| names(grant, command)), "{verb:?} grants {grant}, which names no registered command");
