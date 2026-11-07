@@ -1,0 +1,372 @@
+name: promote-integration-recovery-to-canary
+
+# Integration and recovery are the two streams that feed canary:
+#   integration  — where feature work lands after review
+#   recovery     — where critical fixes land (hotfixes, rollbacks)
+#
+# This workflow promotes each stream independently to canary on a schedule
+# (and allows manual dispatch). It follows the same pattern as promote-main.yml:
+#   1. Check if source is ahead of canary (tree diff, not just commit count)
+#   2. Verify the tip is green (its own push's check suites, excluding this workflow)
+#   3. Create a promote branch via `git merge -s ours`, open a PR to canary
+#   4. Optionally squash-merge when green
+#
+# If either source branch does not exist, that source is skipped with a notice.
+# Both sources run in the same job, sequentially — if integration has nothing
+# new it skips; if recovery has nothing new it skips; both can promote in one run.
+#
+# TOKEN. GITHUB_TOKEN can push the promote branches and open PRs. If branch
+# protection is later added on canary, set PROMOTE_TOKEN (fine-grained PAT with
+# contents + pull-requests: write) so its checks run and auto-merge can arm.
+#
+# This workflow is excluded from the deploy verdict (tip_checks, track-canary.sh
+# tip_checks, deploy_tracker.rs parse_tip_checks) so a red run here never turns
+# canary's tip red. Expected non-promotions exit 0 with a notice.
+
+on:
+  schedule:
+    - cron: '37 10 * * *'   # daily, 10:37 UTC — same quiet hour as promote-main
+  workflow_dispatch:
+    inputs:
+      merge_integration:
+        description: 'Merge the integration→canary PR (false = open it and stop)'
+        type: boolean
+        default: true
+      merge_recovery:
+        description: 'Merge the recovery→canary PR (false = open it and stop)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: promote-integration-recovery-to-canary
+  cancel-in-progress: false
+
+env:
+  TARGET_BRANCH: canary
+  # base: canary (the PR destination branch for both integration and recovery)
+  # Exclude this workflow (and core-binaries) from tip-green checks, just like
+  # promote-main.yml does for its own promotion.
+  NON_DEPLOY_PATHS: '.github/workflows/promote-integration-recovery-to-canary.yml,.github/workflows/core-binaries.yml'
+
+jobs:
+  promote-integration-recovery-to-canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.PROMOTE_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout (full history, all branches)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PROMOTE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # ──────────────── INTEGRATION ────────────────
+      - name: Integration → canary — is it ahead?
+        id: integration_ahead
+        env:
+          SOURCE_BRANCH: integration
+        run: |
+          set -euo pipefail
+          git fetch -q origin "$TARGET_BRANCH" "refs/heads/$SOURCE_BRANCH" 2>/dev/null || {
+            echo "::notice::integration branch does not exist — skipping"
+            echo "exists=false" >> "$GITHUB_OUTPUT"; exit 0
+          }
+          cmp="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${TARGET_BRANCH}...${SOURCE_BRANCH}" --jq '{status,ahead_by,behind_by}' || echo '{"status":"unknown"}')"
+          echo "compare ${TARGET_BRANCH}...${SOURCE_BRANCH}: $cmp"
+          ahead="$(printf '%s' "$cmp" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ahead_by",0))')"
+          tip="$(git rev-parse "refs/heads/$SOURCE_BRANCH")"
+          canary_tree="$(git rev-parse "origin/${TARGET_BRANCH}^{tree}")"
+          source_tree="$(git rev-parse "refs/heads/$SOURCE_BRANCH^{tree}")"
+          echo "tip=$tip" >> "$GITHUB_OUTPUT"
+          if [ "$ahead" = "0" ] || [ "$canary_tree" = "$source_tree" ]; then
+            echo "::notice::nothing to promote: ${SOURCE_BRANCH} is not ahead of or already matches ${TARGET_BRANCH}'s tree"
+            echo "promote=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "promote=true" >> "$GITHUB_OUTPUT"
+          echo "${SOURCE_BRANCH} ${tip:0:9} is ahead by $ahead commit(s) and its tree differs from ${TARGET_BRANCH}'s"
+
+      - name: Integration → canary — is the tip green?
+        id: integration_green
+        if: steps.integration_ahead.outputs.promote == 'true' && steps.integration_ahead.outputs.exists == 'true'
+        env:
+          TIP: ${{ steps.integration_ahead.outputs.tip }}
+        run: |
+          set -euo pipefail
+          checks="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TIP}/check-runs?per_page=100" || echo '{"check_runs":[]}')"
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TIP}&per_page=100" 2>/dev/null || echo '{}')"
+          verdict="$(python3 - "$checks" "$runs" <<'PY'
+          import json, sys
+          OWN_EVENTS = ("push", "pull_request", "workflow_dispatch")
+          NON_DEPLOY_PATHS = [p.strip() for p in """${{ env.NON_DEPLOY_PATHS }}""".split(",")]
+          HARD_FAIL = ("failure", "timed_out", "cancelled", "action_required")
+          checks = json.loads(sys.argv[1]).get("check_runs", [])
+          w = json.loads(sys.argv[2]).get("workflow_runs")
+          if w is not None:
+              own = {r.get("check_suite_id") for r in w
+                     if r.get("event") in OWN_EVENTS and (r.get("path") or "") not in NON_DEPLOY_PATHS}
+              checks = [c for c in checks if (c.get("check_suite") or {}).get("id") in own]
+          if not checks:
+              print("unknown"); sys.exit()
+          bad = [c["name"] for c in checks if c.get("conclusion") in HARD_FAIL]
+          if bad:
+              print("red " + ", ".join(bad)); sys.exit()
+          if any(c.get("status") != "completed" for c in checks):
+              print("pending"); sys.exit()
+          print("green %d" % len(checks))
+          PY
+          )"
+          echo "tip ${TIP:0:9} checks: $verdict"
+          case "$verdict" in
+            green*) echo "green=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::notice::not promoting integration: tip ${TIP:0:9} is $verdict"; echo "green=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Integration → canary — promote branch and PR
+        id: integration_pr
+        if: steps.integration_ahead.outputs.promote == 'true' && steps.integration_green.outputs.green == 'true'
+        env:
+          TIP: ${{ steps.integration_ahead.outputs.tip }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          short="${TIP:0:9}"
+          branch="promote/integration-to-canary-$(date -u +%Y%m%d)-${short}"
+          
+          # Find the range of commits to list. Since canary may already carry some
+          # integration history, we fall back to full diff if needed.
+          count="$(git rev-list --count "refs/heads/integration" --not "origin/${TARGET_BRANCH}" || echo 1)"
+          commits="$(git log --oneline -n 50 "refs/heads/integration" --not "origin/${TARGET_BRANCH}" || true)"
+          
+          git checkout -q -B "$branch" "refs/heads/integration"
+          git merge -q -s ours --no-ff "origin/${TARGET_BRANCH}" \
+            -m "promote: record ${TARGET_BRANCH}'s history — the tree is integration's (${short})"
+          [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse 'refs/heads/integration^{tree}')" ] \
+          git push -q --force origin "HEAD:refs/heads/${branch}"
+
+          # title: promote: canary := integration (${short})
+          title="promote: ${TARGET_BRANCH} := integration (${short})"
+          body="$(cat <<BODY
+${TARGET_BRANCH} tracks integration on a cadence. This PR moves ${TARGET_BRANCH}'s tree to integration's tested tip \`${TIP}\` (its own push's checks green).
+
+Built by \`git checkout -B ${branch} refs/heads/integration && git merge -s ours origin/${TARGET_BRANCH}\` — ${TARGET_BRANCH}'s history is recorded, the tree is integration's byte for byte. Squash-merge only.
+
+## Commits promoted (${count}; first 50)
+
+\`\`\`
+${commits:-(none visible)}
+\`\`\`
+
+Promoted-Integration-Sha: ${TIP}
+
+_Opened by the promote-integration-recovery-to-canary workflow (run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})._
+BODY
+)"
+          existing="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body" >/dev/null
+            number="$existing"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base "$TARGET_BRANCH" --head "$branch" --title "$title" --body "$body" >/dev/null
+            number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number')"
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "::notice::integration→canary promote PR #${number}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${number}"
+
+      - name: Integration → canary — squash-merge
+        id: integration_merge
+        if: steps.integration_pr.outputs.number != '' && (github.event_name != 'workflow_dispatch' || inputs.merge_integration)
+        env:
+          NUMBER: ${{ steps.integration_pr.outputs.number }}
+          TITLE: "promote: ${TARGET_BRANCH} := integration"
+          TIP: ${{ steps.integration_ahead.outputs.tip }}
+        run: |
+          set -uo pipefail
+          body="${TARGET_BRANCH}'s tree := integration's tested tip, promoted on cadence by the promote-integration-recovery-to-canary workflow.
+
+Promoted-Integration-Sha: ${TIP}"
+          if out="$(gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --squash --auto --subject "$TITLE" --body "$body" 2>&1)"; then
+            echo "auto-merge armed: $out"; echo "merged=auto" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if out="$(gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --squash --subject "$TITLE" --body "$body" 2>&1)"; then
+            echo "merged: $out"; echo "merged=direct" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "::warning::integration→canary PR #${NUMBER} could not be merged — left open. Set PROMOTE_TOKEN if canary is protected."
+          echo "merged=no" >> "$GITHUB_OUTPUT"
+
+      # ──────────────── RECOVERY ────────────────
+      - name: Recovery → canary — is it ahead?
+        id: recovery_ahead
+        env:
+          SOURCE_BRANCH: recovery
+        run: |
+          set -euo pipefail
+          git fetch -q origin "$TARGET_BRANCH" "refs/heads/$SOURCE_BRANCH" 2>/dev/null || {
+            echo "::notice::recovery branch does not exist — skipping"
+            echo "exists=false" >> "$GITHUB_OUTPUT"; exit 0
+          }
+          cmp="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${TARGET_BRANCH}...${SOURCE_BRANCH}" --jq '{status,ahead_by,behind_by}' || echo '{"status":"unknown"}')"
+          echo "compare ${TARGET_BRANCH}...${SOURCE_BRANCH}: $cmp"
+          ahead="$(printf '%s' "$cmp" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ahead_by",0))')"
+          tip="$(git rev-parse "refs/heads/$SOURCE_BRANCH")"
+          canary_tree="$(git rev-parse "origin/${TARGET_BRANCH}^{tree}")"
+          source_tree="$(git rev-parse "refs/heads/$SOURCE_BRANCH^{tree}")"
+          echo "tip=$tip" >> "$GITHUB_OUTPUT"
+          if [ "$ahead" = "0" ] || [ "$canary_tree" = "$source_tree" ]; then
+            echo "::notice::nothing to promote: ${SOURCE_BRANCH} is not ahead of or already matches ${TARGET_BRANCH}'s tree"
+            echo "promote=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "promote=true" >> "$GITHUB_OUTPUT"
+          echo "${SOURCE_BRANCH} ${tip:0:9} is ahead by $ahead commit(s) and its tree differs from ${TARGET_BRANCH}'s"
+
+      - name: Recovery → canary — is the tip green?
+        id: recovery_green
+        if: steps.recovery_ahead.outputs.promote == 'true' && steps.recovery_ahead.outputs.exists == 'true'
+        env:
+          TIP: ${{ steps.recovery_ahead.outputs.tip }}
+        run: |
+          set -euo pipefail
+          checks="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TIP}/check-runs?per_page=100" || echo '{"check_runs":[]}')"
+          runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TIP}&per_page=100" 2>/dev/null || echo '{}')"
+          verdict="$(python3 - "$checks" "$runs" <<'PY'
+          import json, sys
+          OWN_EVENTS = ("push", "pull_request", "workflow_dispatch")
+          NON_DEPLOY_PATHS = [p.strip() for p in """${{ env.NON_DEPLOY_PATHS }}""".split(",")]
+          HARD_FAIL = ("failure", "timed_out", "cancelled", "action_required")
+          checks = json.loads(sys.argv[1]).get("check_runs", [])
+          w = json.loads(sys.argv[2]).get("workflow_runs")
+          if w is not None:
+              own = {r.get("check_suite_id") for r in w
+                     if r.get("event") in OWN_EVENTS and (r.get("path") or "") not in NON_DEPLOY_PATHS}
+              checks = [c for c in checks if (c.get("check_suite") or {}).get("id") in own]
+          if not checks:
+              print("unknown"); sys.exit()
+          bad = [c["name"] for c in checks if c.get("conclusion") in HARD_FAIL]
+          if bad:
+              print("red " + ", ".join(bad)); sys.exit()
+          if any(c.get("status") != "completed" for c in checks):
+              print("pending"); sys.exit()
+          print("green %d" % len(checks))
+          PY
+          )"
+          echo "tip ${TIP:0:9} checks: $verdict"
+          case "$verdict" in
+            green*) echo "green=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::notice::not promoting recovery: tip ${TIP:0:9} is $verdict"; echo "green=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Recovery → canary — promote branch and PR
+        id: recovery_pr
+        if: steps.recovery_ahead.outputs.promote == 'true' && steps.recovery_green.outputs.green == 'true'
+        env:
+          TIP: ${{ steps.recovery_ahead.outputs.tip }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          short="${TIP:0:9}"
+          branch="promote/recovery-to-canary-$(date -u +%Y%m%d)-${short}"
+          
+          count="$(git rev-list --count "refs/heads/recovery" --not "origin/${TARGET_BRANCH}" || echo 1)"
+          commits="$(git log --oneline -n 50 "refs/heads/recovery" --not "origin/${TARGET_BRANCH}" || true)"
+          
+          git checkout -q -B "$branch" "refs/heads/recovery"
+          git merge -q -s ours --no-ff "origin/${TARGET_BRANCH}" \
+            -m "promote: record ${TARGET_BRANCH}'s history — the tree is recovery's (${short})"
+          [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse 'refs/heads/recovery^{tree}')" ] \
+            || { echo "::error::the promote tree is not recovery's tree"; exit 1; }
+          git push -q --force origin "HEAD:refs/heads/${branch}"
+          
+          # title: promote: canary := recovery (${short})
+          title="promote: ${TARGET_BRANCH} := recovery (${short})"
+
+\`\`\`
+${commits:-(none visible)}
+\`\`\`
+
+Promoted-Recovery-Sha: ${TIP}
+
+_Opened by the promote-integration-recovery-to-canary workflow (run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})._
+BODY
+)"
+          existing="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body" >/dev/null
+            number="$existing"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base "$TARGET_BRANCH" --head "$branch" --title "$title" --body "$body" >/dev/null
+            number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --base "$TARGET_BRANCH" --state open --json number --jq '.[0].number')"
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "::notice::recovery→canary promote PR #${number}: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${number}"
+
+      - name: Recovery → canary — squash-merge
+        id: recovery_merge
+        if: steps.recovery_pr.outputs.number != '' && (github.event_name != 'workflow_dispatch' || inputs.merge_recovery)
+        env:
+          NUMBER: ${{ steps.recovery_pr.outputs.number }}
+          TITLE: "promote: ${TARGET_BRANCH} := recovery"
+          TIP: ${{ steps.recovery_ahead.outputs.tip }}
+        run: |
+          set -uo pipefail
+          body="${TARGET_BRANCH}'s tree := recovery's tested tip, promoted on cadence by the promote-integration-recovery-to-canary workflow.
+
+Promoted-Recovery-Sha: ${TIP}"
+          if out="$(gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --squash --auto --subject "$TITLE" --body "$body" 2>&1)"; then
+            echo "auto-merge armed: $out"; echo "merged=auto" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if out="$(gh pr merge "$NUMBER" --repo "$GITHUB_REPOSITORY" --squash --subject "$TITLE" --body "$body" 2>&1)"; then
+            echo "merged: $out"; echo "merged=direct" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "::warning::recovery→canary PR #${NUMBER} could not be merged — left open. Set PROMOTE_TOKEN if canary is protected."
+          echo "merged=no" >> "$GITHUB_OUTPUT"
+
+      - name: Run summary
+        if: always()
+        run: |
+          {
+            echo "## promote-integration-recovery-to-canary"
+            echo ""
+            
+            echo "- **integration → canary**:"
+            case "${{ steps.integration_ahead.outputs.promote }}" in
+              false) echo "  - nothing to promote (not ahead or tree matches)" ;;
+              true)
+                if [ "${{ steps.integration_green.outputs.green }}" != "true" ]; then
+                  echo "  - NOT promoted — tip checks not green"
+                else
+                  case "${{ steps.integration_merge.outputs.merged }}" in
+                    auto) echo "  - auto-merge armed (squash)" ;;
+                    direct) echo "  - MERGED (squash)" ;;
+                    no) echo "  - PR left OPEN — token could not merge" ;;
+                    *) echo "  - PR opened, merge not attempted" ;;
+                  esac
+                fi ;;
+              *) echo "  - skipped (branch may not exist or check did not reach verdict)" ;;
+            esac
+            
+            echo "- **recovery → canary**:"
+            case "${{ steps.recovery_ahead.outputs.promote }}" in
+              false) echo "  - nothing to promote (not ahead or tree matches)" ;;
+              true)
+                if [ "${{ steps.recovery_green.outputs.green }}" != "true" ]; then
+                  echo "  - NOT promoted — tip checks not green"
+                else
+                  case "${{ steps.recovery_merge.outputs.merged }}" in
+                    auto) echo "  - auto-merge armed (squash)" ;;
+                    direct) echo "  - MERGED (squash)" ;;
+                    no) echo "  - PR left OPEN — token could not merge" ;;
+                    *) echo "  - PR opened, merge not attempted" ;;
+                  esac
+                fi ;;
+              *) echo "  - skipped (branch may not exist or check did not reach verdict)" ;;
+            esac
+            
+            echo ""
+            echo "_Built by the promote-integration-recovery-to-canary workflow (run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})._"
+          } >> "$GITHUB_STEP_SUMMARY"
