@@ -68,9 +68,9 @@ fn the_roster_line_carries_no_liveness_flag() {
     };
     let units = RagRenderable::units(&view, Uuid::from_u128(7));
     assert_eq!(units.len(), 1);
-    assert!(units[0].content.starts_with("Anwen"), "{units:?}");
+    assert!(units[0].full.starts_with("Anwen"), "{units:?}");
     assert!(
-        !units[0].content.contains("[busy]") && !units[0].content.contains('['),
+        !units[0].full.contains("[busy]") && !units[0].full.contains('['),
         "{units:?}"
     );
 }
@@ -98,16 +98,16 @@ fn a_citizens_own_row_is_marked_and_only_hers() {
     };
     let units = RagRenderable::units(&view, me);
     assert_eq!(units.len(), 2, "she stays listed: {units:?}");
-    let mine: Vec<_> = units.iter().filter(|u| u.content.contains("YOU")).collect();
+    let mine: Vec<_> = units.iter().filter(|u| u.full.contains("YOU")).collect();
     assert_eq!(mine.len(), 1, "exactly one row marked: {units:?}");
     assert!(
-        mine[0].content.starts_with("Saoirse"),
+        mine[0].full.starts_with("Saoirse"),
         "the READER's row: {units:?}"
     );
     assert!(
         units
             .iter()
-            .any(|u| u.content.starts_with("Paige") && !u.content.contains("YOU")),
+            .any(|u| u.full.starts_with("Paige") && !u.full.contains("YOU")),
         "the peer stays unmarked: {units:?}"
     );
 }
@@ -135,7 +135,7 @@ fn a_viewer_absent_from_the_roster_marks_nobody() {
     let units = RagRenderable::units(&view, Uuid::from_u128(0xdead));
     assert_eq!(units.len(), 2);
     assert!(
-        !units.iter().any(|u| u.content.contains("YOU")),
+        !units.iter().any(|u| u.full.contains("YOU")),
         "{units:?}"
     );
 }
@@ -359,3 +359,38 @@ async fn an_empty_view_renders_no_block_rather_than_an_empty_header() {
     assert!(!delivery.truncated);
 }
 
+
+// what this catches (OUTLIER B for the one collapse contract, `continuum_context::nav`): a view
+// unlike a card list (people, their presence) collapsing by code of its own. The roster declares
+// only its shape (attached members are her room; paged-out members are the "away" group by when
+// they were last seen) and gets the same navigation as the board: the attached whole, the most
+// recently seen away members standing, the rest ONE node naming `room/members`; a change to one
+// member changes that member's keyed item alone.
+#[test]
+fn the_roster_declares_only_its_shape_and_collapses_like_every_view() {
+    let me = Uuid::from_u128(1);
+    let slot = |n: u128, name: &str, active: bool| {
+        let mut slot = continuum_positron::chat::test_roster_slot(Uuid::from_u128(n), name, SenderKind::Agent);
+        slot.active = active;
+        slot.last_seen_ms = n as u64;
+        slot
+    };
+    let mut roster = vec![slot(1, "Benchy", true), slot(2, "Atlas", true)];
+    roster.extend((3..12).map(|n| slot(n, &format!("Sleeper{n:02}"), false)));
+    let view = RosterViewState { room_id: Uuid::from_u128(ROOM), roster };
+    let items = rag_items(RagRenderable::units(&view, me));
+    let node = items.iter().find(|i| i.key == "nav:away").expect("the away group folds"); // expect: nine paged-out members
+    let standing = continuum_context::nav::standing(9);
+    assert_eq!(node.content, format!("▸ away ({}) → `room/members`", 9 - standing));
+    assert!(node.tally(), "a node's count moves as its group does");
+    let shown: Vec<&str> = items.iter().filter(|i| !i.key.starts_with("nav:")).map(|i| i.content.as_str()).collect();
+    assert_eq!(shown.len(), 2 + standing, "{shown:?}");
+    assert!(shown.iter().any(|t| t.starts_with("Benchy") && t.contains("YOU")) && shown.iter().any(|t| t.starts_with("Atlas")));
+    assert!(shown.iter().any(|t| t.starts_with("Sleeper11")) && !shown.iter().any(|t| t.starts_with("Sleeper03")), "the most recently seen stand: {shown:?}");
+
+    let mut changed = view.clone();
+    changed.roster[1].role_label = Some("reviewer".into());
+    let after = rag_items(RagRenderable::units(&changed, me));
+    let differing: Vec<&str> = after.iter().filter(|a| !items.iter().any(|b| b.key == a.key && b.content == a.content)).map(|a| a.key.as_str()).collect();
+    assert_eq!(differing, [Uuid::from_u128(2).to_string()], "one member changed, one keyed item changed");
+}
