@@ -409,7 +409,7 @@ fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window:
     let act = allocate(
         window,
         ActClaims {
-            framing: Head { leveled: framing.leveled.clone(), held: framing.held.clone() },
+            framing: Head { held: framing.held.clone(), ..Head::free(framing.leveled.clone()) },
             required: Leveled::default(),
             newest: Leveled::default(),
             tools: offer.head(),

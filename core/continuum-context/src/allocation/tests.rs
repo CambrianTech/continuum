@@ -38,7 +38,7 @@ fn claims(window_newest: Leveled, view: Vec<FlexClaim>, reply_priority: u8) -> A
         last_move: Leveled::one(Rungs::whole(200)),
         history: Span { floor: 0, min: 0, want: 600 },
         reply: reply(800, 2_400, reply_priority),
-        view,
+        view: view.into_iter().map(ViewClaim::from).collect(),
         price: ContextPrice::Unmeasured,
     }
 }
@@ -251,7 +251,7 @@ fn every_leveled_claims_floor_is_its_items_hard_limit() {
         last_move: Leveled::one(Rungs::whole(38)),
         history: Span { floor: 0, min: 0, want: 4_000 },
         reply: reply(446, 2_000, 10),
-        view: vec![FlexClaim { required: true, ..view_source("conversation", 4, 1_500, 9_000) }],
+        view: vec![FlexClaim { required: true, ..view_source("conversation", 4, 1_500, 9_000) }.into()],
         price: ContextPrice::Unmeasured,
     };
     let limits = 1_900 + 11 + 12 + 300 + 23 * 25 + 38 + 1_500;
@@ -280,7 +280,7 @@ fn every_leveled_claims_floor_is_its_items_hard_limit() {
 fn held_head_levels_stay_while_they_fit_are_lost_loudly_and_rise_at_the_next_epoch() {
     let tools = || Leveled::new((0..4).map(|_| item(&[500, 100, 20])).collect());
     let act = |held: Vec<usize>| ActClaims {
-        tools: Head { leveled: tools(), held: Some(held) },
+        tools: Head { held: Some(held), ..Head::free(tools()) },
         ..claims(Leveled::default(), Vec::new(), 8)
     };
     let collapsed = allocate(40_000, act(vec![2, 2, 1, 1]));
@@ -361,7 +361,7 @@ fn act_through_the_view(day: &Recorded, view: &mut View<String>, sources: &[&dyn
         last_move: Leveled::default(),
         history: Span::default(),
         reply: reply(day.reply_tokens.value, day.reply_tokens.value, 8),
-        view: source_claims.iter().map(as_claim).collect(),
+        view: source_claims.iter().map(as_claim).map(ViewClaim::from).collect(),
         price: ContextPrice::Unmeasured,
     };
     let plan = allocate(day.aris_window.value, act_claims);

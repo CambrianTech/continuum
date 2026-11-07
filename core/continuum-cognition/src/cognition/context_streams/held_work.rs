@@ -119,6 +119,11 @@ impl Source<ContextMessage> for HeldWorkStream {
         priority::GROUNDING
     }
 
+    /// Her held card is what she acts through: a price choice never shows it below its whole.
+    fn consumer(&self) -> continuum_context::ladder::Consumer {
+        continuum_context::ladder::Consumer::Actionable
+    }
+
     fn items(&self) -> Vec<Item<ContextMessage>> {
         let work = &self.work;
         let mut items: Vec<_> = work.ended.iter().map(|ended| self.ended(ended)).collect();

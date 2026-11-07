@@ -31,7 +31,7 @@
 //! reproduction 7) with no faculty, engine or I/O.
 
 use crate::flex::{flex_allocate, turn_need, AllocationState, FlexAllocation, FlexClaim};
-pub use crate::ladder::{Choice, Leveled, Rungs};
+pub use crate::ladder::{Choice, Consumer, Leveled, Rungs};
 pub mod priced;
 pub mod search;
 use crate::price::ContextPrice;
@@ -80,12 +80,14 @@ pub struct Span {
 pub struct Head {
     pub leveled: Leveled,
     pub held: Option<Vec<usize>>,
+    /// What it is to her: her tools are actionable, a choice never shows them below summaries.
+    pub consumer: Consumer,
 }
 
 impl Head {
     /// A head part no epoch holds yet.
     pub fn free(leveled: Leveled) -> Self {
-        Self { leveled, held: None }
+        Self { leveled, held: None, consumer: Consumer::Context }
     }
 
     /// The held levels while they still name one level of each item.
@@ -94,6 +96,21 @@ impl Head {
         let fits = rungs.len() == self.leveled.items().len()
             && rungs.iter().zip(self.leveled.items()).all(|(&rung, item)| rung < item.costs().len());
         fits.then(|| Choice { cost: self.leveled.cost_of(rungs), rungs: rungs.clone() })
+    }
+}
+
+/// One source of her view as the allocation sees it: its claim, and what it is to her (her held
+/// card is actionable: a choice never shows it below its whole, [`priced`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewClaim {
+    pub claim: FlexClaim,
+    pub consumer: Consumer,
+}
+
+impl From<FlexClaim> for ViewClaim {
+    /// A source she reads.
+    fn from(claim: FlexClaim) -> Self {
+        Self { claim, consumer: Consumer::Context }
     }
 }
 
@@ -127,7 +144,7 @@ pub struct ActClaims {
     /// it never takes from another claim's floor; its uncapped floor is her need.
     pub reply: FlexClaim,
     /// Each source of her view, `view/<source>`, at the source's priority.
-    pub view: Vec<FlexClaim>,
+    pub view: Vec<ViewClaim>,
     /// What holding context costs her act on the node and model serving her ([`crate::price`]):
     /// the allocation holds the window where her value per second peaks ([`priced`]).
     /// `Unmeasured` prices nothing and fills the window as before.
@@ -249,7 +266,7 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
 /// Every hard limit of `claims` that the search never reduces: framing, the required input, her
 /// tools and her last move at their hard limits, and her view's required floors.
 fn hard_limits(claims: &ActClaims) -> u32 {
-    let view_floors = turn_need(&claims.view.iter().filter(|claim| claim.required).cloned().collect::<Vec<_>>());
+    let view_floors = turn_need(&claims.view.iter().map(|view| &view.claim).filter(|claim| claim.required).cloned().collect::<Vec<_>>());
     claims
         .framing
         .leveled
@@ -286,7 +303,7 @@ fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
     reply.min_tokens = reply.floor_tokens;
     reply.source_id = id::REPLY.to_owned();
     let mut continuous = vec![span(id::HISTORY, HISTORY_PRIORITY, history, false)];
-    continuous.extend(view);
+    continuous.extend(view.into_iter().map(|view| view.claim));
     continuous.push(reply);
     let whole = |id: &'static str, leveled: &Leveled| Group { id: id.to_owned(), priority: FIXED_PRIORITY, options: vec![leveled.want()] };
     let singles = [whole(id::REQUIRED, &required), whole(id::LAST_MOVE, &last_move), Group { id: id::NEWEST.to_owned(), priority: FIXED_PRIORITY, options: vec![newest_choice.cost] }];

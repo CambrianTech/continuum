@@ -226,6 +226,7 @@ impl WorkingMemory {
             context_view: self.view.lock().clone(),
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
+            act_times: self.act_times.lock().clone(),
         }
     }
 
@@ -310,6 +311,7 @@ impl WorkingMemory {
         *self.last_action.lock() = snap.last_action;
         *self.receipt_children.lock() = snap.receipt_children;
         *self.view.lock() = snap.context_view;
+        *self.act_times.lock() = snap.act_times;
         *self.open_views.lock() = super::super::open_views::OpenViews::from_saved(snap.open_views);
         // Restored bodies stay resident until the memory owner sheds: neither the window (a
         // floor here once folded what the served window held, card df0035bf; FLOW §2d) nor a

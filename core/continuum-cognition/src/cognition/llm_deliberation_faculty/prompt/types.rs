@@ -263,10 +263,6 @@ pub(in super::super) struct PromptFeedback {
     pub(in super::super) available: u32,
     /// Her replies' measured density on this binding; a refusal carries it through unchanged.
     pub(in super::super) density: Density,
-    /// Her acts' engine timings on this binding: what holding context costs her act
-    /// (`continuum_context::price`), the price her allocation holds its window at. A refusal
-    /// carries it through unchanged.
-    pub(in super::super) act_time: continuum_context::price::ActTimeFit,
 }
 
 impl PromptFeedback {

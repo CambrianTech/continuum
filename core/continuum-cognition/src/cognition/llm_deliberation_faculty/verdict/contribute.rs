@@ -371,7 +371,6 @@ impl LlmDeliberationFaculty {
                         available: fit_window,
                         // Her replies' density survives the refusal; the next reply prices at its bound again.
                         density: self.density_on(&binding),
-                        act_time: self.act_time_on(&binding),
                     })));
                     continuum_base::probe!(
                         class = "delib.prompt.refit",

@@ -50,6 +50,9 @@
 //!
 //! `--act-price` measures what holding context costs an act on this node, per model
 //! (`replay/price.rs`, `continuum_context::price`).
+//!
+//! `--allocate` drives each captured act's claims through the one allocation, priced and unpriced:
+//! the allocation's dyno (`replay/allocate.rs`).
 
 use std::collections::BTreeMap;
 
@@ -69,6 +72,8 @@ mod outline;
 mod paged;
 #[path = "replay/price.rs"]
 mod price;
+#[path = "replay/allocate.rs"]
+mod allocate;
 #[path = "replay/sediment.rs"]
 mod sediment;
 use continuum_context::view::View;
@@ -546,6 +551,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if args.iter().any(|arg| arg == "--act-price") {
         return price::main(args.into_iter().filter(|arg| arg != "--act-price").collect());
+    }
+    if args.iter().any(|arg| arg == "--allocate") {
+        return allocate::main(args.into_iter().filter(|arg| arg != "--allocate").collect());
     }
     let (mut room, mut purpose, mut keyed_turn, mut trace, mut paths) = (String::new(), String::from("deliberation"), false, false, Vec::new());
     // The growing sources' share of what a start leaves: `start_grants` gives them half.

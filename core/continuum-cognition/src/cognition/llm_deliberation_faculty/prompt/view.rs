@@ -82,10 +82,9 @@ impl LlmDeliberationFaculty {
     ) {
         // No timing on the reply = nothing measured as reused = nothing rides free.
         let engine_cached_tokens = timing.map_or(0, |t| t.cached_tokens); // map_or: no timing reused nothing
-        // Her act's engine timing joins what holding context costs her on this binding.
-        let mut act_time = self.act_time_on(binding);
-        if let Some(t) = timing {
-            act_time.observe(&continuum_context::price::ActSample {
+        // Her act's engine timing joins what holding context costs her on this engine and model.
+        if let (Some(t), Some(memory)) = (timing, self.working_memory.as_deref()) {
+            memory.observe_act(Self::served_by(binding), &continuum_context::price::ActSample {
                 input: engine_prompt_tokens,
                 cached: t.cached_tokens,
                 fresh: t.prefill_tokens,
@@ -104,7 +103,6 @@ impl LlmDeliberationFaculty {
             calibration,
             available,
             density,
-            act_time,
         })));
         continuum_base::probe!(
             class = "delib.prompt.density",
@@ -124,11 +122,16 @@ impl LlmDeliberationFaculty {
         );
     }
 
-    /// Her acts' timing fit on `binding`: the one her last feedback carried when it applies to this
-    /// binding, else empty (a new model, adapter or window measures afresh, as her density does).
+    /// The engine and model `binding` reaches: the key her act time is measured under, whatever
+    /// her window (seconds per held token are the engine's and the model's, never her window's).
+    fn served_by(binding: &ModelBinding) -> crate::cognition::working_memory::act_times::ServedBy {
+        crate::cognition::working_memory::act_times::ServedBy { provider: binding.adapter.provider_id().to_owned(), model: binding.requested_model().to_owned() }
+    }
+
+    /// Her acts' timing fit on the engine and model `binding` reaches, kept across window changes
+    /// and restarts with her working memory; empty with no working memory (nothing measured).
     pub(in super::super) fn act_time_on(&self, binding: &ModelBinding) -> continuum_context::price::ActTimeFit {
-        let feedback = self.prompt_feedback.load();
-        feedback.as_ref().filter(|feedback| feedback.applies_to(binding)).map_or_else(Default::default, |feedback| feedback.act_time) // map_or_else: no feedback on this binding has measured nothing
+        self.working_memory.as_deref().map_or_else(Default::default, |memory| memory.act_time(&Self::served_by(binding))) // map_or_else: a faculty with no working memory has measured nothing
     }
 
     /// Her measured density on `binding`: the ring her last feedback carried when it applies to
@@ -268,8 +271,8 @@ impl LlmDeliberationFaculty {
         let acting = kind == TurnKind::Act;
         // Already in the allocation's tokens: her view's allocation estimate charges each block at this calibration.
         let view_claims: Vec<_> = self.view_claims(&all_messages.streams, super::epoch::AllocationEstimate(calibration)).into_iter().map(|mut source| {
-            source.max_tokens = source.max_tokens.max(source.floor_tokens);
-            source.required = source.required || acting;
+            source.claim.max_tokens = source.claim.max_tokens.max(source.claim.floor_tokens);
+            source.claim.required = source.claim.required || acting;
             source
         }).collect();
         let reply_need = reply.floor_tokens;
@@ -277,7 +280,7 @@ impl LlmDeliberationFaculty {
         let act = continuum_context::allocation::allocate(
             context_window,
             continuum_context::allocation::ActClaims {
-                framing: continuum_context::allocation::Head { leveled: framing_offer.leveled.clone(), held: framing_offer.held.clone() },
+                framing: continuum_context::allocation::Head { held: framing_offer.held.clone(), ..continuum_context::allocation::Head::free(framing_offer.leveled.clone()) },
                 // Input she must read: its whole is its hard limit.
                 required: Leveled::one(Rungs::whole(claim(required_tokens))),
                 newest: newest.as_ref().map_or_else(Leveled::default, |(rungs, _)| Leveled::one(rungs.clone())), // map_or_else: no result this act

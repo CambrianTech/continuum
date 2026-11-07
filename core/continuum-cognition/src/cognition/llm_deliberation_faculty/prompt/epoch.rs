@@ -71,20 +71,23 @@ impl LlmDeliberationFaculty {
     /// (a stored body at its measured size), at the source's priority. There is no separate
     /// history claim for the view, so the allocation that weighs her reply also decides, once, how
     /// much of her context she reads, in the very prices the start keeps within.
-    pub(in super::super) fn view_claims(&self, streams: &Streams, cost: AllocationEstimate) -> Vec<continuum_context::flex::FlexClaim> {
+    pub(in super::super) fn view_claims(&self, streams: &Streams, cost: AllocationEstimate) -> Vec<continuum_context::allocation::ViewClaim> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
         continuum_context::view::claims(&cost, &sources)
             .into_iter()
             .zip(&sources)
-            .map(|(claim, source)| continuum_context::flex::FlexClaim {
-                source_id: format!("{VIEW_CLAIM}{}", claim.source),
-                priority: claim.priority,
-                floor_tokens: Self::clamp_u32(claim.floor),
-                min_tokens: Self::clamp_u32(claim.floor),
-                max_tokens: Self::clamp_u32(claim.full),
-                required: source.required(),
+            .map(|(claim, source)| continuum_context::allocation::ViewClaim {
+                claim: continuum_context::flex::FlexClaim {
+                    source_id: format!("{VIEW_CLAIM}{}", claim.source),
+                    priority: claim.priority,
+                    floor_tokens: Self::clamp_u32(claim.floor),
+                    min_tokens: Self::clamp_u32(claim.floor),
+                    max_tokens: Self::clamp_u32(claim.full),
+                    required: source.required(),
+                },
+                consumer: source.consumer(),
             })
             .collect()
     }

@@ -40,7 +40,7 @@ pub struct ActSample {
 
 /// A weighted least-squares line kept as running co-moments (West's update: stable where the
 /// context's mean dwarfs its spread).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Moments {
     acts: u32,
     weight: f64,
@@ -112,7 +112,7 @@ impl Line {
 }
 
 /// The running fit of one model's acts on one node.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ActTimeFit {
     decode: Moments,
     prefill: Moments,
@@ -179,6 +179,12 @@ pub struct ActTime {
 }
 
 impl ActTime {
+    /// The prompt contexts her acts were measured over: the curve is a measurement inside, an
+    /// extrapolation outside, and a price choice never leaves it (`allocation::priced`).
+    pub fn measured(&self) -> (u32, u32) {
+        self.observed.context
+    }
+
     /// Her fresh tokens per act holding `context`: never below none, never above the prompt.
     pub fn fresh_at(&self, context: f64) -> f64 {
         self.fresh.at(context).clamp(0.0, context.max(0.0))
