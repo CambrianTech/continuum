@@ -258,6 +258,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // thread exists (`set_var` must not race a reader). A launcher that applied it to the
     // child froze it into a supervisor's plist/task at install time; the core owning it
     // means "edit the file, reboot" holds under launchd exactly as on the direct path.
+    // Every saved value records the build that wrote it: provenance, never compared.
+    continuum_saved_state::record_build(env!("CONTINUUM_BUILD_GIT_SHA"));
     let applied = continuum_base::config_env::apply_to_process();
     if applied > 0 {
         eprintln!("continuum-core: applied {applied} assignment(s) from config.env");

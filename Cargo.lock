@@ -2990,6 +2990,7 @@ dependencies = [
  "continuum-perception",
  "continuum-positron",
  "continuum-process",
+ "continuum-saved-state",
  "continuum-sentinel",
  "continuum-service",
  "continuum-serving",
@@ -3128,6 +3129,7 @@ dependencies = [
  "continuum-host",
  "continuum-kernel",
  "continuum-process",
+ "continuum-saved-state",
  "continuum-service",
  "continuum-tool-protocol",
  "dashmap",
@@ -3237,6 +3239,7 @@ dependencies = [
  "continuum-host",
  "continuum-kernel",
  "continuum-process",
+ "continuum-saved-state",
  "dashmap",
  "futures",
  "inventory",
@@ -3671,6 +3674,20 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-saved-state"
+version = "0.1.0"
+dependencies = [
+ "continuum-base",
+ "continuum-host",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "tracing",
  "uuid",
 ]

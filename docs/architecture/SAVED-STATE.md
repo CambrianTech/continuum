@@ -218,6 +218,14 @@ pub enum Loaded<T, C> {
 
 ## Review answers (Cormac, 2026-11-07, review a52c79c4)
 
-- **No `Retention::Decay`.** Forgetting belongs to the observer (controller card 8a983e31), not to persistence; see §4.
+- **No `Retention::Decay`.** Forgetting belongs to the observer (controller card 8a983e31), not to persistence; see §5 item 4.
 - **ORM format** is per collection, declared in its registration and folded into the envelope at `OrmRow<T>`, never per row.
 - **Grants** are `Derived` from demand: dropped loudly on restart, never restored as authoritative.
+
+## Review answers (Codex, 2026-11-07)
+
+- **Provenance is not validity.** An engine store records the model and the engine build/config that measured a value as provenance, kept apart from the observer's freshness and variance and from persistence age. The medium never invents rate confidence or a reset policy; compatibility comes from the kind's declared format and contract, never from rejecting every other build.
+- **The medium suite covers the failures, not only the round trip:** an interrupted write (payload landed, rename did not), a concurrent writer that read a stale generation, and a restart that reopens the store. Every kind runs it.
+- **A save receipt binds what was written:** the generation and a digest of the placed bytes, never a bare confirmed flag.
+- **Captures (append segments):** an append receipt binds the segment generation, the entry's offset, length and digest, and the index commit. A payload written before its index leaves a detectable unindexed tail; reopen reconciles or truncates it under the existing writer lock before any retry.
+- **`ExternalBlob` (KV pages):** `Matched` metadata means eligible to try, never an engine-confirmed restore or prefix reuse. `confirm` binds the operation, the engine incarnation, the slot and the page revision, and the entry is invalidated before any overwrite. `Diverged { at }` comes only from the engine's report of what it reused, never fabricated from a low cached count.

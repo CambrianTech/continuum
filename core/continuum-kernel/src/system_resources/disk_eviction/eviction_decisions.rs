@@ -243,4 +243,23 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
             "charter S3/S6 engine trainer: delete every `<uuid>.gguf` whose job is not \
              live on the TrainingJobBoard; a live job's file is never touched",
         ),
+        // Saved state: small measured or recorded facts, one file per key, never a cache. Losing
+        // one costs a re-measure, so byte pressure is never a reason; what can go is a key with no
+        // live owner (a model no longer served, a persona gone), which the saved-state trunk's
+        // retention sweep decides from each kind's declared Retention.
+        (
+            "state",
+            "SAVED-STATE slice 5 (#5831): the trunk sweeps keys no live owner holds, by each \
+             kind's declared Retention; bounded meanwhile by one file per key",
+        ),
+        (
+            "training-demand",
+            "SAVED-STATE slice 5 (#5831): a persona's demand file leaves with the persona; \
+             bounded meanwhile by one file per persona with parked examples",
+        ),
+        (
+            "training-rate",
+            "SAVED-STATE slice 5 (#5831): one file per node, one row per (base, chunk) ever \
+             trained; nothing to evict",
+        ),
 ];

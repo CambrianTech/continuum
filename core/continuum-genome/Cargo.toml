@@ -16,6 +16,7 @@ continuum-kernel = { path = "../continuum-kernel" }  # the ORM derive names it (
 continuum-engine = { path = "../continuum-engine" }
 continuum-base = { path = "../continuum-base" }
 continuum-host = { path = "../continuum-host" }
+continuum-saved-state = { path = "../continuum-saved-state" } # training demand and rates save and load through the one contract
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -36,6 +37,7 @@ ts-rs.workspace = true  # TypeScript type generation
 tempfile = { workspace = true, optional = true }  # test-fixtures: the job board's test storage
 
 [dev-dependencies]
+continuum-saved-state = { path = "../continuum-saved-state", features = ["test-fixtures"] } # every kind runs the one round trip
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 axum = { workspace = true }  # tests: a stand-in engine training endpoint

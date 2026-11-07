@@ -22,6 +22,7 @@ members = [
     "core/continuum-flow",
     "core/continuum-git",
     "core/continuum-host",
+    "core/continuum-saved-state",
     "core/continuum-context",
     "core/continuum-proving-types",
     "core/continuum-core",

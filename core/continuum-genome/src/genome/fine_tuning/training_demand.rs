@@ -20,8 +20,10 @@
 //! re-dispatch unchanged): `<genome root>/training-demand/<persona>.json`.
 
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 
+use continuum_saved_state::{Loaded, OwnedFile, Rebuildable, Retention, SaveError, SavedState, Store};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -49,10 +51,51 @@ struct Recorded {
     reservation: Option<Reservation>,
 }
 
+/// One persona's outstanding demand, saved through the one saved-state contract
+/// (`<genome root>/training-demand/<persona>.json`).
+struct Demand;
+impl SavedState for Demand {
+    const KIND: &'static str = "training-demand";
+    const FORMAT: u32 = 1;
+    const RETENTION: Retention = Retention::PerKey { bound: "one file per persona with parked examples" };
+    type Key = Uuid;
+    type Contract = ();
+    type Value = Recorded;
+    type Medium = OwnedFile;
+    /// The file before the envelope was this value: adopted once, rewritten by the next save.
+    fn upgrade(found: u32, old: serde_json::Value) -> Option<Self::Value> {
+        continuum_saved_state::adopt_bare(found, old)
+    }
+}
+/// Rebuildable for the lenient readers: the next partition re-records a demand it finds missing.
+/// The strict readers ([`TrainingDemand::clear`], [`TrainingDemand::records_all`]) match the verdict.
+impl Rebuildable for Demand {}
+
+/// Why the demand store could not answer or keep a change.
+#[derive(Debug)]
+pub enum DemandError {
+    /// The store holds no readable record (no home, corrupt, another format).
+    Unanswered(Loaded<Infallible>),
+    /// The changed record was not saved.
+    Unsaved(SaveError),
+}
+
+impl std::fmt::Display for DemandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DemandError::Unanswered(found) => write!(f, "the demand store cannot answer: {found}"),
+            DemandError::Unsaved(e) => write!(f, "the demand change was not saved: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DemandError {}
+
 /// One persona's outstanding training demand.
 pub struct TrainingDemand {
-    /// `None` with no continuum home: nothing persists and nothing is outstanding.
-    path: Option<PathBuf>,
+    /// Unrooted with no continuum home: nothing persists and nothing is outstanding.
+    store: Store<Demand>,
+    persona: Uuid,
 }
 
 impl TrainingDemand {
@@ -68,12 +111,7 @@ impl TrainingDemand {
 
     /// `persona`'s demand in `dir` (a tuner's own store, a test's temp dir); `None`: nothing persists.
     pub fn in_dir(dir: Option<&Path>, persona: Uuid) -> Self {
-        Self { path: dir.map(|dir| dir.join(format!("{persona}.json"))) }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn at(path: PathBuf) -> Self {
-        Self { path: Some(path) }
+        Self { store: Store::new(dir.map(Path::to_path_buf)), persona }
     }
 
     /// The stable key of one example: its content, so the same lived turn keys the same after a
@@ -84,11 +122,7 @@ impl TrainingDemand {
     }
 
     fn read(&self) -> Recorded {
-        let Some(path) = &self.path else { return Recorded::default() };
-        match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(), // unwrap_or_default: a torn file is re-recorded by the next partition; it never blocks serving
-            Err(_) => Recorded::default(),
-        }
+        self.store.load_rebuildable(&self.persona, &())
     }
 
     /// Record what changed: `parked` examples need these windows; `settled` ones owe nothing more
@@ -96,8 +130,10 @@ impl TrainingDemand {
     /// other entry is kept. `reservation` is what the largest parked window costs, as a
     /// partition's footprints price it.
     pub fn record(&self, parked: &[(String, u32)], settled: &[String], reservation: Option<Reservation>) -> std::io::Result<()> {
-        let Some(path) = &self.path else { return Ok(()) };
-        let before = self.read();
+        if self.store.dir().is_none() {
+            return Ok(()); // no store: nothing persists, and nothing is outstanding to change
+        }
+        let (before, generation) = self.store.rebuildable_at_generation(&self.persona, &());
         let mut now = before.clone();
         for key in settled {
             now.examples.remove(key);
@@ -113,20 +149,14 @@ impl TrainingDemand {
         if now == before {
             return Ok(());
         }
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&now).map_err(std::io::Error::other)?)?; // disk boundary: training-demand/<persona>.json, read back by serving's requirements_for
-        continuum_host::durable::replace(&tmp, path)
+        Ok(self.store.save_over(&self.persona, &(), &now, generation).map(|_saved| ())?)
     }
 
     /// Settle `keys` strictly: a store that cannot be read or parsed (or no store) is an error,
     /// never an empty one, so a caller that must clear before it commits never commits over a
     /// clear that did not happen (Codex on #5572). A missing file has nothing to clear.
-    pub fn clear(&self, keys: &[String]) -> Result<(), String> {
-        let Some(path) = &self.path else { return Err("no continuum home: no demand store".into()) };
-        let before = self.read_strict()?;
+    pub fn clear(&self, keys: &[String]) -> Result<(), DemandError> {
+        let (before, generation) = self.read_strict().map_err(DemandError::Unanswered)?;
         let mut now = before.clone();
         for key in keys {
             now.examples.remove(key);
@@ -137,9 +167,7 @@ impl TrainingDemand {
         if now == before {
             return Ok(());
         }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&now).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", tmp.display()))?; // disk boundary: training-demand/<persona>.json, read back by serving's requirements_for
-        continuum_host::durable::replace(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+        self.store.save_over(&self.persona, &(), &now, generation).map(|_saved| ()).map_err(DemandError::Unsaved)
     }
 
     /// The largest window an outstanding example needs. `None` when nothing waits.
@@ -151,19 +179,19 @@ impl TrainingDemand {
     /// need. Empty `keys` is false: nothing to wait for is not a recorded demand. `Err` when the
     /// store cannot answer (no store, unreadable, corrupt): never read as "not recorded", since
     /// a caller acting on that would return examples it cannot record (Codex on #5569).
-    pub fn records_all(&self, keys: &[String]) -> Result<bool, String> {
-        let examples = self.read_strict()?.examples;
+    pub fn records_all(&self, keys: &[String]) -> Result<bool, Loaded<Infallible>> {
+        let examples = self.read_strict()?.0.examples;
         Ok(!keys.is_empty() && keys.iter().all(|key| examples.contains_key(key)))
     }
 
-    /// The store as recorded: a missing file is an empty store; no store, or a file that cannot
-    /// be read or parsed, is an error.
-    fn read_strict(&self) -> Result<Recorded, String> {
-        let Some(path) = &self.path else { return Err("no continuum home: no demand store".into()) };
-        match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: not a demand record ({e})", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Recorded::default()),
-            Err(e) => Err(format!("{}: {e}", path.display())),
+    /// The store as recorded: a missing file is an empty store; every other verdict (no store, a
+    /// file that cannot be read or parsed, another format) is an error.
+    fn read_strict(&self) -> Result<(Recorded, u64), Loaded<Infallible>> {
+        let (loaded, generation) = self.store.load_at_generation(&self.persona, &());
+        match loaded.matched() {
+            Ok(recorded) => Ok((recorded, generation)),
+            Err(Loaded::Absent) => Ok((Recorded::default(), generation)),
+            Err(found) => Err(found),
         }
     }
 
@@ -210,7 +238,8 @@ mod tests {
     fn only_a_trained_example_clears_and_a_price_holds_only_for_its_window() {
         use crate::inference::planning::training_plan::{ExampleFit, MeasuredExample, NeedSource};
         let dir = tempfile::tempdir().expect("test: dir");
-        let demand = TrainingDemand::at(dir.path().join("kimi.json"));
+        let kimi = Uuid::from_u128(0x41);
+        let demand = TrainingDemand::in_dir(Some(dir.path()), kimi);
         assert_eq!(demand.reservation(), None, "nothing parked, nothing reserved");
         let ex = |c: &str| TrainingExample { prompt: "p".into(), completion: c.into(), metadata: None, lived: None };
         let (a, b, c) = (ex("a"), ex("b"), ex("c"));
@@ -232,7 +261,7 @@ mod tests {
         assert_eq!((left.window, left.recorded_price(), left.job), (51_712, None, None), "64,256's price is never read as 51,712's: unknown until priced");
         demand.record(&[], &[key(&a), key(&ex("c"))], None).expect("test: a and c trained");
         assert_eq!(demand.reservation(), None);
-        assert_eq!(TrainingDemand::at(dir.path().join("kimi.json")).waiting(), 0, "durable: a reload reads what was recorded");
+        assert_eq!(TrainingDemand::in_dir(Some(dir.path()), kimi).waiting(), 0, "durable: a reload reads what was recorded");
     }
 
     // what this catches: a lived turn keyed by something a return or a re-dispatch changes, so
@@ -243,5 +272,19 @@ mod tests {
         assert_eq!(TrainingDemand::key_of(&example), TrainingDemand::key_of(&example.clone()));
         let other = TrainingExample { completion: "d".into(), ..example.clone() };
         assert_ne!(TrainingDemand::key_of(&example), TrainingDemand::key_of(&other));
+    }
+
+    // what this catches: a torn, newer or pre-envelope demand file read as an empty demand by the
+    // strict readers (a clear that never happened committed over), or a save that does not come
+    // back: every outcome of the saved-state contract, for this kind.
+    #[test]
+    fn the_demand_round_trips_and_any_other_file_is_a_typed_outcome() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let recorded = Recorded { examples: BTreeMap::from([("k".to_string(), 64_256)]), reservation: None };
+        continuum_saved_state::round_trip::every_outcome::<Demand>(dir.path(), Uuid::from_u128(0x41), (), None, recorded);
+        let torn = TrainingDemand::in_dir(Some(dir.path()), Uuid::from_u128(0x42));
+        std::fs::write(dir.path().join(format!("{}.json", Uuid::from_u128(0x42))), b"{ torn").expect("test: torn");
+        assert!(matches!(torn.records_all(&["k".to_string()]), Err(Loaded::Corrupt { .. })), "a strict reader refuses a torn store");
+        assert_eq!(torn.waiting(), 0, "a lenient reader starts empty; the next partition re-records");
     }
 }

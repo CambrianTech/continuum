@@ -51,6 +51,7 @@ pub mod prefill_rate;
 pub mod prefill_spike;
 pub mod served_window_store;
 pub mod serving_rates;
+pub(crate) mod node_state;
 pub mod lane_registry;
 pub mod weights_stamp;
 pub mod engine_residency;
