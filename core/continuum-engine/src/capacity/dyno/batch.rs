@@ -1,5 +1,5 @@
 //! The engine's BATCH SCHEDULER as the decision under test (ONE-ACT 4b/5d/5e), replayed on the
-//! M5's recorded hour (2026-11-06 16:13-19:17Z, `dyno/2026-11-06-m5-batches.json`): "like load
+//! M5's recorded hour (2026-11-06 16:13-19:17Z, `fixtures/dyno/2026-11-06-m5-batches.json`): "like load
 //! balance testing, but really decision making" (Joel).
 //!
 //! One trait, [`BatchScheduler`], holds what the fork's `update_slots` decides each iteration:
@@ -27,7 +27,7 @@ use serde::Deserialize;
 use super::knee::Knee;
 use super::recorded::Receipted;
 
-const EVIDENCE_JSON: &str = include_str!("2026-11-06-m5-batches.json");
+const EVIDENCE_JSON: &str = include_str!("../../../fixtures/dyno/2026-11-06-m5-batches.json");
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Evidence {

@@ -4,7 +4,7 @@
 //! design's invariant; each fixing slice turns its reproduction green.
 //!
 //! - [`recorded`]: the ONE fixture module: the typed `Recorded` over the day's data file
-//!   (`dyno/2026-11-04.json`, every measured value beside its receipt) and the engine's refusal wording.
+//!   (`fixtures/dyno/2026-11-04.json`, every measured value beside its receipt) and the engine's refusal wording.
 //! - [`expected`]: the outcomes the design names that the code does not have yet (the typed
 //!   restore outcome of ONE-ACT §5b.1, the seams a reproduction still needs). Test-side
 //!   expectations; the fixing slice replaces each with the production type, by rename.
