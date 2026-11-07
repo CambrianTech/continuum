@@ -1,6 +1,27 @@
 //! Genome regression fixtures.
 #![cfg(test)]
 use super::*;
+
+#[cfg(windows)]
+#[tokio::test]
+async fn review_failed_other_binary_probe_preserves_the_first_binary_answer() {
+    let key_a = "review-successful-engine-a";
+    let key_b = "review-failed-engine-b";
+    let help = || {
+        let mut command = tokio::process::Command::new("cmd.exe");
+        command.args(["/D", "/C", "echo --train-dir PATH"]);
+        command
+    };
+    ensure_engine_kv_support_recorded(key_a, help()).await;
+    assert!(engine_accepts_train_dir(key_a), "fixture binary A advertises train-dir");
+    let missing = tempfile::tempdir().expect("fixture directory");
+    ensure_engine_kv_support_recorded(
+        key_b,
+        tokio::process::Command::new(missing.path().join("absent-engine.exe")),
+    ).await;
+    ensure_engine_kv_support_recorded(key_a, help()).await;
+    assert!(engine_accepts_train_dir(key_a), "returning to A must retain or re-probe A, never inherit the failed B record");
+}
 // what this catches (Codex on #4467): two retires where the engine frees the first and
 // refuses the second (a turn holds it) left the core advertising BOTH, though the engine
 // had freed one. The served set must name exactly what the engine holds after a busy
