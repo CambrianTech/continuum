@@ -40,9 +40,9 @@ pub fn decode(mut detail: PlaybackDetail) -> Result<CapturedCall, String> {
     if !detail.issues.is_empty() {
         return Err(format!("capture integrity: {}", detail.issues.join("; ")));
     }
-    let submitted: SubmittedCapture = serde_json::from_value(
+    let submitted: SubmittedCapture = serde_json::from_value( // BOUNDARY: deserialize the persisted capture submission.
         detail.submitted.take().ok_or("capture has no submitted request")?,
-    ) // BOUNDARY: validate the complete persisted submission before exposing a typed call.
+    )
     .map_err(|error| format!("captured submission: {error}"))?;
     let response = match detail.terminal.as_mut().and_then(|v| v.get_mut("response")) {
         Some(value) if !value.is_null() => Some(
