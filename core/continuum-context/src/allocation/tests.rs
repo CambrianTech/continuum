@@ -18,14 +18,24 @@ fn view_source(name: &str, priority: u8, floor: u32, want: u32) -> FlexClaim {
     }
 }
 
-fn claims(window_newest: Newest, view: Vec<FlexClaim>, reply_priority: u8) -> ActClaims {
+/// One item at `levels`, most detail first.
+fn item(levels: &[u32]) -> Rungs {
+    Rungs::new(levels.iter().copied()).expect("test: levels") // JUSTIFIED: test fixture
+}
+
+/// Her newest result at `levels`, whole first; none when empty.
+fn newest_at(levels: &[u32]) -> Leveled {
+    Rungs::new(levels.iter().copied()).map_or_else(Leveled::default, Leveled::one) // map_or_else: no levels is no result
+}
+
+fn claims(window_newest: Leveled, view: Vec<FlexClaim>, reply_priority: u8) -> ActClaims {
     ActClaims {
-        framing: 4_000,
-        required: 500,
+        framing: Head::free(Leveled::one(Rungs::whole(4_000))),
+        required: Leveled::one(Rungs::whole(500)),
         newest: window_newest,
-        tools: Span { floor: 1_000, min: 1_000, want: 3_000 },
-        grounding: Span { floor: 0, min: 300, want: 1_200 },
-        last_move: 200,
+        tools: Head::free(Leveled::one(item(&[3_000, 1_000]))),
+        grounding: Leveled::one(item(&[1_200, 300])),
+        last_move: Leveled::one(Rungs::whole(200)),
         history: Span { floor: 0, min: 0, want: 600 },
         reply: reply(800, 2_400, reply_priority),
         view,
@@ -40,7 +50,7 @@ fn claims(window_newest: Newest, view: Vec<FlexClaim>, reply_priority: u8) -> Ac
 // wire test: as a span her result took every token left and a room update in her view vanished).
 #[test]
 fn the_newest_result_is_the_largest_of_its_levels_that_fits_and_the_rest_reaches_her_view() {
-    let newest = || Newest { levels: vec![9_000, 2_000, 900] };
+    let newest = || newest_at(&[9_000, 2_000, 900]);
     let view = || vec![view_source("conversation", 4, 600, 20_000)];
     let roomy = allocate(40_000, claims(newest(), view(), 8));
     assert_eq!((roomy.newest_level(), roomy.granted(id::NEWEST)), (0, 9_000), "whole");
@@ -63,7 +73,7 @@ fn the_newest_result_is_the_largest_of_its_levels_that_fits_and_the_rest_reaches
 #[test]
 fn optional_claims_shed_before_her_newest_result_is_shown_smaller() {
     let view = vec![view_source("conversation", 4, 600, 20_000)];
-    let plan = allocate(15_500, claims(Newest { levels: vec![9_000, 2_000, 900] }, view, 8));
+    let plan = allocate(15_500, claims(newest_at(&[9_000, 2_000, 900]), view, 8));
     assert_eq!((plan.newest_level(), plan.granted(id::NEWEST)), (0, 9_000), "whole: it fits beside every required floor");
     assert_eq!(plan.granted(id::LAST_MOVE), 200, "her last move whole");
     let optional = plan.granted(id::HISTORY) + plan.view_granted() + plan.granted(id::GROUNDING);
@@ -80,14 +90,18 @@ fn optional_claims_shed_before_her_newest_result_is_shown_smaller() {
 fn a_reply_need_past_the_window_keeps_her_view_floor_and_reports_the_shortfall() {
     let mut view = view_source("conversation", 4, 600, 20_000);
     view.required = true; // an act: her view at its collapsed minimum is required
-    let mut act = claims(Newest::default(), vec![view], 8);
+    let mut act = claims(Leveled::default(), vec![view], 8);
     act.reply = reply(9_000, 9_000, 8);
     let window = 8_192;
     let plan = allocate(window, act);
     assert!(plan.view_granted() >= 600, "her view keeps its floor: {}", plan.view_granted());
     // Required floors: framing 4,000 + required 500 + tools 1,000 + last move 200 + view 600 = 6,300.
     assert_eq!(plan.granted(id::REPLY), window - 6_300, "the reply gets what the required floors leave");
-    assert_eq!(plan.irreducible_shortfall(), Some(IrreducibleShortfall { needed: 6_300 + 9_000, window }));
+    assert_eq!(
+        plan.irreducible_shortfall(),
+        Some(IrreducibleShortfall { needed: 6_300 + 9_000, window, binding: id::REPLY.to_owned(), binding_limit: 9_000 }),
+        "the reply's measured need is the binding hard limit"
+    );
     // At an epoch START (Codex on #5779): the reply's want beyond its grant left a start room of 0,
     // so `start_shares` could drop the required 600. The start holds every required view floor.
     let start = plan.start_room();
@@ -129,7 +143,7 @@ fn an_underfunded_required_floor_is_refused_never_minted() {
 // equal the window exactly, the whole is chosen; one token less and the next level is.
 #[test]
 fn the_newest_result_is_whole_at_the_exact_boundary_and_the_next_level_one_token_under() {
-    let newest = || Newest { levels: vec![9_000, 2_000, 900] };
+    let newest = || newest_at(&[9_000, 2_000, 900]);
     let view = || vec![view_source("conversation", 4, 600, 20_000)];
     // Required: framing 4,000 + required 500 + tools 1,000 + last move 200 + reply 800 = 6,500.
     let exact = 6_500 + 9_000;
@@ -149,7 +163,7 @@ fn the_newest_result_is_whole_at_the_exact_boundary_and_the_next_level_one_token
 fn on_a_tight_window_her_last_move_and_reply_floor_survive_and_optional_claims_shed() {
     let view = vec![view_source("conversation", 4, 600, 20_000)];
     // Required: framing 4,000 + required 500 + tools 1,000 + last move 200 + reply 800 = 6,500.
-    let plan = allocate(6_600, claims(Newest::default(), view, 8));
+    let plan = allocate(6_600, claims(Leveled::default(), view, 8));
     assert_eq!(plan.granted(id::LAST_MOVE), 200, "her last move whole");
     assert!(plan.granted(id::REPLY) >= 800, "her reply keeps its floor: {}", plan.granted(id::REPLY));
     assert!(plan.view_granted() < 600, "the optional view source shed below its floor: {}", plan.view_granted());
@@ -161,7 +175,7 @@ fn on_a_tight_window_her_last_move_and_reply_floor_survive_and_optional_claims_s
 // bigger grant on a reducible overflow). Irreducible growth is typed apart.
 #[test]
 fn required_floors_past_the_window_are_an_irreducible_shortfall() {
-    let plan = allocate(5_000, claims(Newest { levels: vec![9_000, 900] }, Vec::new(), 8));
+    let plan = allocate(5_000, claims(newest_at(&[9_000, 900]), Vec::new(), 8));
     let short = plan.irreducible_shortfall().expect("test: the floors exceed 5,000"); // JUSTIFIED: test fixture
     assert_eq!(short.window, 5_000);
     assert!(short.needed > 5_000, "{short:?}");
@@ -172,7 +186,7 @@ fn required_floors_past_the_window_are_an_irreducible_shortfall() {
 // second allocation with the reply seated at its want used to prevent. One plan, the same start.
 #[test]
 fn a_pass_and_the_act_after_it_start_her_view_alike() {
-    let newest = Newest::default;
+    let newest = Leveled::default;
     let view = || vec![view_source("conversation", 4, 600, 30_000)];
     let pass = allocate(16_384, claims(newest(), view(), 4));
     let act = allocate(16_384, claims(newest(), view(), 10));
@@ -218,6 +232,62 @@ fn a_growing_source_holds_its_newest_item_whatever_the_grants_divide() {
     let (pass, act) = (start(3_197), start(2_003));
     assert!(pass[1] >= 438 && act[1] >= 438, "the newest turn is held on both: pass {pass:?}, act {act:?}");
     assert!(pass.iter().sum::<u32>() <= 766 && act.iter().sum::<u32>() <= 766);
+}
+
+// what this catches (Joel, 2026-11-07: "It should know how each budgeted item reduces or
+// collapses"): a budgeted part whose floor is declared beside its items instead of derived from
+// them, so a small window refuses a turn its items could have collapsed into. Every leveled
+// part's claim is at least its items' hard limit, the plan's irreducible sum is exactly those
+// limits, and on a window that holds only the limits each part sits at them and nothing refuses.
+#[test]
+fn every_leveled_claims_floor_is_its_items_hard_limit() {
+    let act = || ActClaims {
+        framing: Head::free(Leveled::new(vec![Rungs::whole(1_900), item(&[40, 11]), item(&[60, 12])])),
+        required: Leveled::one(Rungs::whole(300)),
+        newest: newest_at(&[2_000, 781]),
+        tools: Head::free(Leveled::new((0..23).map(|_| item(&[480, 120, 25])).collect())),
+        grounding: Leveled::new(vec![item(&[900, 200, 30]), item(&[400, 40])]),
+        last_move: Leveled::one(Rungs::whole(38)),
+        history: Span { floor: 0, min: 0, want: 4_000 },
+        reply: reply(446, 2_000, 10),
+        view: vec![FlexClaim { required: true, ..view_source("conversation", 4, 1_500, 9_000) }],
+    };
+    let limits = 1_900 + 11 + 12 + 300 + 23 * 25 + 38 + 1_500;
+    let roomy = allocate(60_000, act());
+    for (id, limit) in [(id::FRAMING, 1_923), (id::TOOLS, 23 * 25)] {
+        let claim = roomy.claims().iter().find(|c| c.source_id == id).expect("test: claimed"); // JUSTIFIED: test fixture
+        assert!(claim.floor_tokens >= limit, "{id}: floor {} below its hard limit {limit}", claim.floor_tokens);
+    }
+    assert_eq!(roomy.chosen(id::TOOLS).map(|c| c.cost), Some(23 * 480), "a roomy window shows every verb whole");
+    assert_eq!(roomy.irreducible(), limits + 2_000, "the irreducible sum is the items' hard limits, her newest whole");
+    let tight = allocate(limits + 781 + 446, act());
+    assert!(tight.irreducible_shortfall().is_none(), "every part at its hard limit fits: nothing refuses");
+    assert_eq!(tight.chosen(id::TOOLS).map(|c| c.cost), Some(23 * 25), "every verb at its pointer");
+    assert_eq!(tight.chosen(id::GROUNDING).map(|c| c.cost), Some(0), "grounding leaves rather than refusing");
+    let over = allocate(limits + 781 + 445, act());
+    let short = over.irreducible_shortfall().expect("test: one token under every hard limit"); // JUSTIFIED: test fixture
+    assert_eq!((short.binding.as_str(), short.binding_limit), (id::FRAMING, 1_923), "the binding hard limit is named");
+}
+
+// what this catches: her head's levels moving mid-epoch (every level change at the head re-prefills
+// the whole prompt), held levels kept on a window that can no longer hold them (refusing instead of
+// re-choosing), or a collapse that never rises again (both ways). Held levels stay while they fit;
+// a window that cannot hold them re-chooses and says so; a held level below what the window now
+// buys is reported as the rise for the next start of her head's epoch.
+#[test]
+fn held_head_levels_stay_while_they_fit_are_lost_loudly_and_rise_at_the_next_epoch() {
+    let tools = || Leveled::new((0..4).map(|_| item(&[500, 100, 20])).collect());
+    let act = |held: Vec<usize>| ActClaims {
+        tools: Head { leveled: tools(), held: Some(held) },
+        ..claims(Leveled::default(), Vec::new(), 8)
+    };
+    let collapsed = allocate(40_000, act(vec![2, 2, 1, 1]));
+    assert_eq!(collapsed.chosen(id::TOOLS).map(|c| c.rungs.clone()), Some(vec![2, 2, 1, 1]), "held while it fits");
+    assert!(!collapsed.lost(id::TOOLS));
+    assert_eq!(collapsed.rise(id::TOOLS).map(|c| c.rungs.clone()), Some(vec![0, 0, 0, 0]), "the room now holds every verb whole");
+    let whole = allocate(5_800, act(vec![0, 0, 0, 0]));
+    assert!(whole.lost(id::TOOLS), "2,000 of whole verbs beside 5,500 of other hard limits cannot fit 5,800");
+    assert!(whole.chosen(id::TOOLS).is_some_and(|c| c.cost <= 300), "re-chosen within the window: {:?}", whole.chosen(id::TOOLS));
 }
 
 /// One recorded fact and its receipt, the dyno's shape (fable/dyno `capacity/dyno/2026-11-04.json`).
@@ -281,12 +351,12 @@ fn act_through_the_view(day: &Recorded, view: &mut View<String>, sources: &[&dyn
     let source_claims = view_claims(sources);
     let as_claim = |claim: &Claim| view_source(&claim.source, claim.priority, tokens(claim.floor_chars) as u32, tokens(claim.full_chars) as u32);
     let act_claims = ActClaims {
-        framing: tokens(day.head_chars.value) as u32,
-        required: 0,
-        newest: Newest::default(),
-        tools: Span::default(),
-        grounding: Span::default(),
-        last_move: 0,
+        framing: Head::free(Leveled::one(Rungs::whole(tokens(day.head_chars.value) as u32))),
+        required: Leveled::default(),
+        newest: Leveled::default(),
+        tools: Head::default(),
+        grounding: Leveled::default(),
+        last_move: Leveled::default(),
         history: Span::default(),
         reply: reply(day.reply_tokens.value, day.reply_tokens.value, 8),
         view: source_claims.iter().map(as_claim).collect(),
