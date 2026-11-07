@@ -36,6 +36,15 @@ pub(super) fn answer_for(probes: &BTreeMap<String, ProbeOutcome>, bin: &str) -> 
     probes.get(bin).map(|outcome| matches!(outcome, ProbeOutcome::Answered { train_dir: true }))
 }
 
+/// PURE: what a decision may rest on: `bin`'s answer when it answered, else nothing (never asked,
+/// or asked without an answer), and the caller asks it now.
+pub(super) fn train_dir_known(probes: &BTreeMap<String, ProbeOutcome>, bin: &str) -> Option<bool> {
+    match probes.get(bin) {
+        Some(ProbeOutcome::Answered { train_dir }) => Some(*train_dir),
+        _ => None,
+    }
+}
+
 /// PURE: whether `bin` needs asking: never asked, or asked without an answer.
 pub(super) fn needs_asking(probes: &BTreeMap<String, ProbeOutcome>, bin: &str) -> bool {
     !matches!(probes.get(bin), Some(ProbeOutcome::Answered { .. }))
