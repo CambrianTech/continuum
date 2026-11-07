@@ -206,7 +206,18 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
     ) -> BTreeMap<K, u32> {
         // Her need is never trimmed: a need above what one sequence can hold right now (a small pool)
         // waits for room. The model's own trained limit is applied by the caller before this.
-        let holds = |d: &Demand<K>| held.get(&d.mind).copied().unwrap_or(0).min(d.ceiling); // unwrap_or: a mind with no grant yet holds nothing
+        // What she holds, as the policy reads it. A settled mind with no turn in flight holds no more
+        // than her target: what she holds above it is released at her next view start (the M5,
+        // 2026-11-07, 19426f454: grants grown to 197k toward untrimmed demand made every act slower,
+        // 71 acts and a 104 s median against 158 and 50 s the hour before; Fable on 7b7a696a). A mind
+        // that has not served on her grant, or whose turn is in flight, keeps all of it.
+        let holds = |d: &Demand<K>| {
+            let held = held.get(&d.mind).copied().unwrap_or(0).min(d.ceiling); // unwrap_or: a mind with no grant yet holds nothing
+            match d.settled && !d.in_flight {
+                true => held.min(d.target.get().min(d.ceiling)),
+                false => held,
+            }
+        };
         // Only a mind who holds nothing is dropped for a need above what one sequence holds now (she
         // waits). A holder whose need outgrew it keeps what she holds as her need: her binding stays
         // counted, so it can never be bound beside the pool uncounted (Cormac on #5745: A holding 40k,
@@ -398,9 +409,12 @@ mod tests {
     fn a_held_grant_survives_drift_and_a_running_turn_keeps_its_grant() {
         let pool = 257_536;
         let held = BTreeMap::from([(1, 50_000), (2, 30_000)]);
-        let drift = DemandFollowing.grant(&[demand(1, 44_000, false, pool), demand(2, 31_000, false, pool)], &held, pool);
-        assert_eq!(drift[&1], 50_000, "her need drifted down: she keeps what she holds");
-        assert_eq!(drift[&2], 31_000, "her need rose above what she holds: she grows to it");
+        // Targets as production builds them: her held need with the sent headroom (x1.25). A drift
+        // inside the headroom keeps her grant; that headroom is what makes drift free (7b7a696a).
+        let real = |m, need: u32| Demand { mind: m, need: t(need), target: t(need + need / 4), wish: t(need), in_flight: false, settled: true, ceiling: pool };
+        let drift = DemandFollowing.grant(&[real(1, 44_000), real(2, 31_000)], &held, pool);
+        assert_eq!(drift[&1], 50_000, "her need drifted down inside her headroom: she keeps what she holds");
+        assert_eq!(drift[&2], 38_750, "her need rose above what she holds: she grows to her target");
         let pool = 65_536;
         let held = BTreeMap::from([(1, 40_000), (2, 20_000)]);
         let tight = DemandFollowing.grant(
@@ -485,7 +499,9 @@ mod tests {
         let grants = DemandFollowing.grant(&demands, &held, pool);
         assert_eq!(grants, BTreeMap::from([(1, 78_000), (2, 35_000), (3, 51_000), (4, 42_000)]), "every target: {grants:?}");
         let roomy = DemandFollowing.grant(&demands, &BTreeMap::from([(1, 100_000)]), pool);
-        assert_eq!(roomy[&1], 100_000, "everything fits as held: she keeps her surplus, no rebind");
+        // A settled holder above her target is released to it even when the pool has room: every held
+        // token slows every act (the M5, 2026-11-07: grants grown to 197k, 71 acts vs 158; 7b7a696a).
+        assert_eq!(roomy[&1], 78_000, "a settled holder above her target is released to it");
         assert_eq!(DemandFollowing.grant(&demands, &grants, pool), grants, "a steady demand is a steady grant");
     }
 
@@ -529,6 +545,24 @@ mod tests {
         let unserved = [mind(1, 30_000, 60_000, false), demands[1], demands[2], demands[3]];
         let grants = DemandFollowing.grant(&unserved, &held, pool);
         assert_eq!(grants, held, "nothing moves until the holder above her share has served: {grants:?}");
+    }
+
+    // what this catches (the M5, 2026-11-07, 19426f454; card 7b7a696a): grants grown toward
+    // untrimmed demand kept. After the pool regrew to 755,456, minds held up to 197k, prompts grew to
+    // 35-75k and every act slowed (71 acts at a 104 s median against 158 at 50 s). A settled mind with
+    // no turn in flight is released down to her target (her held need with headroom) at her next
+    // start; one that has not served on her grant keeps it until she has.
+    #[test]
+    fn a_settled_holder_above_her_target_is_released_to_it() {
+        let pool = 755_456;
+        let mind = |m, settled| Demand { mind: m, need: t(30_000), target: t(37_500), wish: t(400_000), in_flight: false, settled, ceiling: pool };
+        let held = BTreeMap::from([(1, 197_000), (2, 30_000)]);
+        let grants = DemandFollowing.grant(&[mind(1, true), mind(2, true)], &held, pool);
+        assert_eq!(grants[&1], 37_500, "released to her target: {grants:?}");
+        let grants = DemandFollowing.grant(&[mind(1, false), mind(2, true)], &held, pool);
+        assert_eq!(grants[&1], 197_000, "not yet served on it: kept until she has: {grants:?}");
+        let in_flight = Demand { in_flight: true, ..mind(1, true) };
+        assert_eq!(DemandFollowing.grant(&[in_flight, mind(2, true)], &held, pool)[&1], 197_000, "never under a turn in flight");
     }
 
     // what this catches (Cormac on #5758): growing on every upward move of a target recomputed every
