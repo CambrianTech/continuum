@@ -158,50 +158,16 @@ fn charge_tensor_name(name: &str, remaining: &mut usize) -> Result<(), String> {
     Ok(())
 }
 
-/// The share mode a launch input's pin holds at `depth` along its path (0 = the input itself,
-/// then each ancestor directory). Every pin omits FILE_SHARE_DELETE, so neither the input nor
-/// any directory on its path can be renamed, deleted or replaced while the engine runs: the
-/// path stays the path that was verified. The input itself shares READ only (its bytes cannot
-/// be rewritten). A DIRECTORY also shares WRITE: a rename, create or delete of a file INSIDE a
-/// directory opens that directory for write, so a read-only share on an ancestor froze every
-/// rename beneath it. Measured on the 5090 2026-10-10: once gene 1 (~/.continuum/genome/...)
-/// became a launch input, renames in ~/.continuum, genome, Kimi and code all failed with os
-/// error 32 for the lane's lifetime, so training footprints, gene moves and install receipts
-/// could not be written.
-#[cfg(windows)]
-fn pin_share_mode(depth: usize) -> u32 {
-    const FILE_SHARE_READ: u32 = 0x1;
-    const FILE_SHARE_WRITE: u32 = 0x2;
-    if depth == 0 { FILE_SHARE_READ } else { FILE_SHARE_READ | FILE_SHARE_WRITE }
-}
-
+/// Hold the input and every directory on its path (`continuum_host::read_pin`), so the path stays
+/// the path that was verified while the engine runs. The host owns the share modes, including
+/// why a directory still allows renames inside it (the 5090, 2026-10-10).
 fn pin_mapping(
     path: &Path,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<Arc<std::fs::File>>, String> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        let mut guards = Vec::new();
-        for (depth, ancestor) in path.ancestors().enumerate() {
-            if cancelled() {
-                return Err("local input capture cancelled".into());
-            }
-            let guard = std::fs::OpenOptions::new()
-                .read(true)
-                .share_mode(pin_share_mode(depth))
-                .custom_flags(0x02200000) // OPEN_REPARSE_POINT | BACKUP_SEMANTICS: pin links/directories themselves.
-                .open(ancestor)
-                .map_err(|e| format!("local input mapping pin: {e}"))?;
-            guards.push(Arc::new(guard));
-        }
-        Ok(guards)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (path, cancelled);
-        Ok(Vec::new())
-    }
+    let held = continuum_host::read_pin::mapping(path, cancelled)
+        .map_err(|e| format!("local input mapping pin: {e}"))?;
+    Ok(held.into_iter().map(Arc::new).collect())
 }
 
 impl InputFile {
@@ -224,15 +190,8 @@ impl InputFile {
             // must remain fixed too, not only the snapshot spelling opened by the engine.
             path_guards.extend(pin_mapping(&canonical, cancelled)?);
         }
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true);
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            options.share_mode(1); // FILE_SHARE_READ: the original bytes cannot be rewritten/deleted.
-        }
-        let mut file = options
-            .open(&canonical)
+        // Pinned: where the host can, the original bytes cannot be rewritten or deleted.
+        let mut file = continuum_host::read_pin::file(&canonical)
             .map_err(|e| format!("local input pin: {e}"))?;
         let metadata = file.metadata().map_err(|e| e.to_string())?;
         if !metadata.is_file() {
