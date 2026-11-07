@@ -77,3 +77,23 @@ fn a_refusal_with_no_move_says_why() {
     assert_eq!(refusal.next().calls().count(), 0);
     assert!(refusal.to_string().ends_with(". no call recovers it; what you were shown is all there is"), "{refusal}");
 }
+
+// what this catches: a refusal losing its next move or its cause chain where it crosses a seam
+// (the executor to her client, one node to another). The wire form keeps the chain outermost
+// first and each call by its canonical command, and decodes back to the same value.
+#[test]
+fn a_refusal_crosses_a_seam_with_its_chain_and_next_call() {
+    let Ok(next) = NextCall::new(reopen::REOPEN, &reopen::P { act: 3 }, "your latest act") else {
+        panic!("a struct of named fields is a next call's arguments")
+    };
+    let wire = Refusal::new(
+        UnknownAct { act: 9, because: std::io::Error::other("the record ends at #3") },
+        NextMoves::call(next),
+    )
+    .to_wire();
+    assert_eq!(wire.cause, ["act #9 is not on your record", "the record ends at #3"]);
+    let continuum_airc_protocol::NextMoves::Calls(calls) = &wire.next else { panic!("one next call") };
+    assert_eq!(calls[0].command, "fixture/refusal-reopen", "the canonical name crosses; the offered name is her renderer's");
+    let Ok(text) = serde_json::to_value(&wire) else { panic!("a refusal serializes") };
+    assert!(matches!(serde_json::from_value::<continuum_airc_protocol::CommandRefusal>(text), Ok(back) if back == wire));
+}
