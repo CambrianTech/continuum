@@ -183,6 +183,8 @@ pub trait WindowPolicy<K> {
 /// - her want is her need, capped at what one sequence holds; a mind already holding at least her need
 ///   keeps what she holds, so a drifting estimate never rebinds her (each rebind resizes her view and
 ///   costs her prompt cache: the M5 rebound all four every 2-3 minutes);
+/// - when the wants fit but the targets do not, the surplus above them grows minds toward their
+///   targets (a turn in flight first, then the smallest growth), never leaving room idle;
 /// - when the wants do not all fit, surplus is reclaimed first: a mind not in a turn gives back what
 ///   she holds above her need; a turn in flight keeps what it holds;
 /// - when the needs still do not all fit, minds are admitted in order (turns in flight, then minds
@@ -242,8 +244,33 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         if total(&target) <= pool {
             return demands.iter().map(|d| (d.mind, target(d))).collect();
         }
+        // Every want fits but not every target: the surplus above the wants is searched toward the
+        // targets instead of sitting idle (the M5, 2026-11-07 06:50Z, fe91c2b55: four residents at
+        // their 24-34k held needs beside 35k of a 152,832 pool granted to no one, their targets
+        // 150-557k; Joel: "it's an optimizer too, it sort of searches to fit"). Never below a want,
+        // so no mind is divided. Value, until a measured activity temperature exists (card b4eed65c):
+        // a turn in flight first, then the smallest growth to her target, so the most views read
+        // whole; the last mind reached takes what is left. A grant becomes what she holds, which is
+        // her want next tick, so a steady demand is a steady grant.
         if total(&want) <= pool {
-            return demands.iter().map(|d| (d.mind, want(d))).collect();
+            let mut left = pool - total(&want);
+            let growth = |d: &Demand<K>| target(d).saturating_sub(want(d));
+            let mut order: Vec<&Demand<K>> = demands.iter().copied().filter(|d| growth(d) > 0).collect();
+            order.sort_by_key(|d| (!d.in_flight, growth(d))); // stable: ties keep the caller's order
+            let mut grants: BTreeMap<K, u32> = demands.iter().map(|d| (d.mind, want(d))).collect();
+            for d in order {
+                // `left` past u32 is more than any growth, so the whole growth fits.
+                let add = match u32::try_from(left) {
+                    Ok(left) => growth(d).min(left),
+                    Err(_) => growth(d),
+                };
+                if add == 0 {
+                    break;
+                }
+                left -= u64::from(add);
+                grants.insert(d.mind, want(d) + add);
+            }
+            return grants;
         }
         // Surplus reclaimed: only a turn in flight keeps more than its need.
         let reclaimed = |d: &Demand<K>| match d.in_flight {
@@ -402,15 +429,16 @@ mod tests {
 
     // what this catches (the M5, 2026-11-03, b7c815484): grants sized from her wish instead of her
     // need. Benchy's wish took the model's whole 262,144 of a 524,288 pool, Aiko's 104,015 and
-    // Aris's 88,380, and Atlas got nothing. Needs are granted first; targets only when every target
-    // fits.
+    // Aris's 88,380, and Atlas got nothing. Every need is granted before any growth; the surplus then
+    // grows the smallest growths to their whole targets and the last mind reached takes what is left.
     #[test]
     fn needs_are_granted_before_any_target_and_targets_only_when_all_fit() {
         let pool = 524_288;
         let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, ceiling: 262_144 };
         let wishes = [mind(1, 70_000, 262_144), mind(2, 60_000, 104_015), mind(3, 50_000, 88_380), mind(4, 40_000, 90_000)];
         let grants = DemandFollowing.grant(&wishes, &BTreeMap::new(), pool);
-        assert_eq!(grants, BTreeMap::from([(1, 70_000), (2, 60_000), (3, 50_000), (4, 40_000)]), "every need, no target: the targets sum past the pool");
+        // 220,000 of needs leave 304,288: 3, 2 and 4 grow whole (38,380 + 44,015 + 50,000), 1 takes the rest.
+        assert_eq!(grants, BTreeMap::from([(1, 70_000 + 171_893), (2, 104_015), (3, 88_380), (4, 90_000)]), "every need first, then the surplus: {grants:?}");
         let modest = [mind(1, 70_000, 100_000), mind(2, 60_000, 104_015), mind(3, 50_000, 88_380), mind(4, 40_000, 90_000)];
         let grants = DemandFollowing.grant(&modest, &BTreeMap::new(), pool);
         assert_eq!(grants, BTreeMap::from([(1, 100_000), (2, 104_015), (3, 88_380), (4, 90_000)]), "every target fits: each reads whole");
@@ -433,6 +461,31 @@ mod tests {
         let roomy = DemandFollowing.grant(&demands, &BTreeMap::from([(1, 100_000)]), pool);
         assert_eq!(roomy[&1], 100_000, "everything fits as held: she keeps her surplus, no rebind");
         assert_eq!(DemandFollowing.grant(&demands, &grants, pool), grants, "a steady demand is a steady grant");
+    }
+
+    // what this catches (the M5, 2026-11-07 06:50Z, fe91c2b55): surplus left idle when the wants fit
+    // and the targets do not. Benchy 24,012 / Aiko 30,195 / Aris 29,589 / Atlas 34,018 held needs on a
+    // 152,832 pool, targets 150-557k: 35,018 was granted to no one. The surplus is searched toward the
+    // targets (a turn in flight first, then the smallest growth), the pool is spent, no grant falls
+    // below a need, and the next tick on those grants moves nothing.
+    #[test]
+    fn surplus_above_every_need_grows_minds_toward_their_targets() {
+        let pool = 152_832;
+        let mind = |m, need, target, in_flight| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight, ceiling: pool };
+        let demands = [mind(1, 24_012, 150_000, false), mind(2, 30_195, 557_000, false), mind(3, 29_589, 200_000, true), mind(4, 34_018, 180_000, false)];
+        // Negative control: the needs alone leave the surplus this spends.
+        let needs: u32 = demands.iter().map(|d| d.need.get()).sum();
+        assert_eq!(pool - needs, 35_018, "precondition: the 06:50Z ungranted surplus");
+        let grants = DemandFollowing.grant(&demands, &BTreeMap::new(), pool);
+        assert_eq!(grants[&3], 29_589 + 35_018, "the turn in flight grows first and takes the surplus: {grants:?}");
+        assert!(demands.iter().all(|d| grants[&d.mind] >= d.need.get()), "never below a need: {grants:?}");
+        assert_eq!(grants.values().sum::<u32>(), pool, "the pool is spent: {grants:?}");
+        assert_eq!(DemandFollowing.grant(&demands, &grants, pool), grants, "a steady demand is a steady grant");
+        // With no turn in flight, the smallest growth to target is reached first. Targets are capped at
+        // one sequence (152,832), so the growths are 125,988 / 122,637 / 123,243 / 118,814: Atlas's.
+        let idle = demands.map(|d| Demand { in_flight: false, ..d });
+        let grants = DemandFollowing.grant(&idle, &BTreeMap::new(), pool);
+        assert_eq!(grants[&4], 34_018 + 35_018, "Atlas's capped growth (118,814) is the smallest: {grants:?}");
     }
 
     // what this catches (Cormac on #5758): growing on every upward move of a target recomputed every
