@@ -470,6 +470,7 @@ pub(super) async fn exact_review_staged(
         claim_id: airc_work::ClaimId::from_uuid(selection.claim_id),
         instance: selection.instance.clone(),
         base_sha: selection.base_sha.clone(),
+        head: airc_work::SubmissionHead::Unrecorded,
         artifact: selection.artifact.clone(),
         publisher: owner,
         submitted_at_ms: 3,

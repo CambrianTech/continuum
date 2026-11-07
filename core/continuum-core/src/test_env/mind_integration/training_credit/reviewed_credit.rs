@@ -745,6 +745,7 @@ use super::*;
             claim_id: airc_work::ClaimId::from_uuid(fx.selection.claim_id),
             instance: fx.selection.instance.clone(),
             base_sha: fx.selection.base_sha.clone(),
+            head: airc_work::SubmissionHead::Unrecorded,
             artifact: fx.selection.artifact.clone(),
             publisher: fx.owner,
             submitted_at_ms: 3,

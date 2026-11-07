@@ -292,6 +292,7 @@
                     claim_id,
                     instance: "ordinary".into(),
                     base_sha: base_sha.clone(),
+                    head: airc_work::SubmissionHead::Unrecorded,
                     artifact: artifact.clone(),
                     publisher,
                     submitted_at_ms: 10,
@@ -592,14 +593,19 @@
         let add = run(&["add", "solution.py"]);
         assert!(add.status.success());
         let card = uuid::Uuid::new_v4();
+        // A submission is a commit (card c3504a71: the merge gate needs its head): an uncommitted
+        // change is refused by name, naming the commit verb.
+        let uncommitted = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.err().expect("an uncommitted change is refused");
+        assert!(uncommitted.to_string().contains("code/git/commit"), "{uncommitted}");
+        assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "solution"]).status.success());
+        let clean_base = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string();
         let derived = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.expect("derive without ambient hands");
         assert_eq!(derived.instance, card.to_string());
         assert_eq!(derived.base_sha, base);
-        let expected = String::from_utf8(run(&["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "HEAD", "--", "solution.py"]).stdout).expect("diff");
+        assert_eq!(derived.head, clean_base, "the submission records the commit its patch ends at");
+        let expected = String::from_utf8(run(&["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", &base, "HEAD", "--", "solution.py"]).stdout).expect("diff");
         assert_eq!(derived.artifact.hash, artifact_of_patch(&expected).hash);
         assert!(derived.artifact.size_bytes > 0);
-        assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "solution"]).status.success());
-        let clean_base = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string();
         // Regression for Kimi's oversized submissions: advancing the remote default
         // must neither swallow committed work nor change the stored creation base.
         assert!(run(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base, ""]).status.success());
@@ -674,6 +680,7 @@
             claim_id: super::ClaimId::from_uuid(uuid::Uuid::from_u128(4)),
             instance: "card".into(),
             base_sha: airc_work::GitObjectId::new("a".repeat(40)).expect("a full sha"), // expect: 40 hex is a valid sha
+            head: airc_work::SubmissionHead::Unrecorded,
             artifact: artifact_of_patch("diff --git a/x b/x\n").into_artifact().expect("a patch reference"), // expect: a sha-256 reference
             publisher: airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(2)),
             submitted_at_ms: 7,

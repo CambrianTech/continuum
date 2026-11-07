@@ -553,6 +553,7 @@ pub fn fixture_submission(card: &WorkCard) -> airc_work::WorkSubmission {
         claim_id: card.claim_id.expect("an owned fixture has a claim"), // expect: the fixture claims an owned card
         instance: "i".into(),
         base_sha: airc_work::GitObjectId::new("abc123").expect("hex"), // expect: a literal hex id
+        head: airc_work::SubmissionHead::At(airc_work::GitObjectId::new("def456").expect("hex")), // expect: a literal hex id
         artifact: airc_blobs::MediaRef { hash: airc_blobs::ContentHash::from_bytes(b"patch"), size_bytes: 5, mime: None },
         publisher: card.owner.expect("an owned fixture"), // expect: the fixture names its owner
         submitted_at_ms: 1,

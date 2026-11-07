@@ -405,6 +405,7 @@ use super::*;
         let submitted = airc.submit_work_in(&current_room, airc_lib::SubmitWork {
             submission_id: airc_work::SubmissionId::new(), card_id: local_card, claim_id: claim,
             instance: "ordinary".into(), base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+            head: airc_work::GitObjectId::new("c".repeat(40)).expect("hex"), // expect: a literal 40-hex id
             artifact: artifact.clone(),
         }).await.unwrap();
         let review_card = airc.create_work_card(CreateWorkCard::new(
@@ -544,6 +545,7 @@ async fn a_pass_closes_superseded_rounds_and_leaves_newer_ones_open() {
                 claim_id: claim,
                 instance: "ordinary".into(),
                 base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+                head: airc_work::GitObjectId::new("c".repeat(40)).expect("hex"), // expect: a literal 40-hex id
                 artifact: artifact.clone(),
             },
         )
@@ -568,6 +570,7 @@ async fn a_pass_closes_superseded_rounds_and_leaves_newer_ones_open() {
                 claim_id: claim,
                 instance: "ordinary".into(),
                 base_sha: airc_work::GitObjectId::new("b".repeat(40)).unwrap(),
+                head: airc_work::GitObjectId::new("c".repeat(40)).expect("hex"), // expect: a literal 40-hex id
                 artifact,
             },
         )
@@ -658,6 +661,7 @@ async fn a_pass_leaves_rounds_reviewing_newer_work_open() {
                 claim_id: claim,
                 instance: "ordinary".into(),
                 base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+                head: airc_work::GitObjectId::new("c".repeat(40)).expect("hex"), // expect: a literal 40-hex id
                 artifact: artifact.clone(),
             },
         )
@@ -682,6 +686,7 @@ async fn a_pass_leaves_rounds_reviewing_newer_work_open() {
                 claim_id: claim,
                 instance: "ordinary".into(),
                 base_sha: airc_work::GitObjectId::new("b".repeat(40)).unwrap(),
+                head: airc_work::GitObjectId::new("c".repeat(40)).expect("hex"), // expect: a literal 40-hex id
                 artifact,
             },
         )
