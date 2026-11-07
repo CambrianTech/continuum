@@ -419,6 +419,7 @@ fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window:
             reply,
             view: Vec::new(),
             price: continuum_context::price::ContextPrice::Unmeasured,
+            trained: continuum_context::allocation::TrainedContext::Unreported,
         },
     );
     (faculty.granted_tools(ws, offer, &framing, &act, &charge), act)

@@ -40,6 +40,17 @@ impl ModelBinding {
     pub fn requested_model(&self) -> &str {
         self.model.as_deref().unwrap_or_else(|| self.adapter.default_model()) // unwrap_or_else: an omitted model selects the adapter default, the same one request construction sends
     }
+
+    /// The trained context of the model this binding is served by, as its model row reports it
+    /// (hydrated from the artifact's header, or the catalog's deliberate correction): the most her
+    /// need can be. Unreported when the registry is not up or holds no row for the model.
+    pub fn trained_context(&self) -> continuum_context::allocation::TrainedContext {
+        use continuum_context::allocation::TrainedContext;
+        crate::model_registry::try_global()
+            .and_then(|registry| registry.model(self.requested_model()))
+            .and_then(|model| std::num::NonZeroU32::new(model.context_window))
+            .map_or(TrainedContext::Unreported, TrainedContext::Reported) // map_or: no row (or a zero sentinel) is unreported, a state
+    }
 }
 
 /// Atomic binding plus a wake edge. Notifications carry no policy: consumers

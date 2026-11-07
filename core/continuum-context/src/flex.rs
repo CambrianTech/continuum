@@ -83,10 +83,9 @@ impl FlexAllocation {
     }
 }
 
-/// What one turn needs of a lane: the sum of its claims' FLOORS, never what the budget granted.
-/// The flexbox grows a turn into whatever window it is given, so a grant measured on a 102k
-/// lane reads as a 48.6k "need" and refuses a second lane at 46k (the M5, 2026-10-18).
-pub fn turn_need(claims: &[FlexClaim]) -> u32 {
+/// The sum of `claims`' floors, saturating. Never her need: that is the window her act's
+/// allocation chose (`allocation::need`), and a sum of requested floors overstated it.
+pub fn floors(claims: &[FlexClaim]) -> u32 {
     claims.iter().map(|c| c.floor_tokens).fold(0, u32::saturating_add)
 }
 

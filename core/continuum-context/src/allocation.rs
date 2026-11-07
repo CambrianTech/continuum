@@ -25,15 +25,19 @@
 //!   [`start_shares`]), never a second allocation;
 //! - irreducible growth is typed apart from reducible history: required floors past the window
 //!   are an [`IrreducibleShortfall`] (her need grows or she waits), while a view that outgrew its
-//!   grant is reducible and turns over (collapse older items to handles), never a grant.
+//!   grant is reducible and turns over (collapse older items to handles), never a grant;
+//! - her NEED is the window the plan chose ([`need`]): the priced optimum, never a sum of floors
+//!   and never what her view lacked uncollapsed, and never past the model's trained context.
 //!
 //! Pure and allocation-only, so a validator drives it with recorded items in seconds (the dyno's
 //! reproduction 7) with no faculty, engine or I/O.
 
-use crate::flex::{flex_allocate, turn_need, AllocationState, FlexAllocation, FlexClaim};
+use crate::flex::{flex_allocate, floors, AllocationState, FlexAllocation, FlexClaim};
 pub use crate::ladder::{Choice, Consumer, Leveled, Rungs};
+pub mod need;
 pub mod priced;
 pub mod search;
+pub use need::{ActNeed, BeyondTrained, NeedWindow, TrainedContext};
 use crate::price::ContextPrice;
 pub use priced::Priced;
 use search::{overflow, search, Group, Searched};
@@ -149,6 +153,8 @@ pub struct ActClaims {
     /// the allocation holds the window where her value per second peaks ([`priced`]).
     /// `Unmeasured` prices nothing and fills the window as before.
     pub price: ContextPrice,
+    /// The model's trained context: the most her need can be ([`need`]).
+    pub trained: TrainedContext,
 }
 
 /// Every hard limit and her reply's measured need past the window: growth no collapse can make,
@@ -170,8 +176,6 @@ pub struct ActPlan {
     pub window: u32,
     pub plan: FlexAllocation,
     claims: Vec<FlexClaim>,
-    /// The reply's floor before the cap: her measured need.
-    reply_need: u32,
     /// Which of her newest result's levels the allocation chose (an index into its rungs).
     newest_level: usize,
     /// Each part's hard limit as the search saw it, the reply at its uncapped need among them.
@@ -190,6 +194,8 @@ pub struct ActPlan {
     pub searched: Option<Searched>,
     /// What the time price of context decided: the window this plan holds within the served one.
     pub priced: Priced,
+    /// Her need as this act measured it: the window the price chose ([`need`]).
+    pub need: ActNeed,
 }
 
 /// The fixed, required claim of one part.
@@ -266,7 +272,7 @@ pub fn allocate(window: u32, claims: ActClaims) -> ActPlan {
 /// Every hard limit of `claims` that the search never reduces: framing, the required input, her
 /// tools and her last move at their hard limits, and her view's required floors.
 fn hard_limits(claims: &ActClaims) -> u32 {
-    let view_floors = turn_need(&claims.view.iter().map(|view| &view.claim).filter(|claim| claim.required).cloned().collect::<Vec<_>>());
+    let view_floors = floors(&claims.view.iter().map(|view| &view.claim).filter(|claim| claim.required).cloned().collect::<Vec<_>>());
     claims
         .framing
         .leveled
@@ -284,7 +290,7 @@ fn hard_limits(claims: &ActClaims) -> u32 {
 /// ([`ActPlan::irreducible_shortfall`], naming the binding one).
 fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
     let hard = hard_limits(&claims);
-    let ActClaims { framing, required, newest, tools, grounding, last_move, history, reply, view, price: _ } = claims;
+    let ActClaims { framing, required, newest, tools, grounding, last_move, history, reply, view, price: _, trained: _ } = claims;
     // Her newest result is chosen before the search, among its own levels: whole whenever the
     // window holds it beside every HARD LIMIT (the reply's measured need included), else the
     // largest level that does, else its coarsest. The detail above any part's hard limit and every
@@ -411,7 +417,7 @@ fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
         (id::GROUNDING, 0),
     ];
     chosen.push((id::NEWEST, newest_choice));
-    ActPlan { window, plan, claims: all, reply_need, newest_level, limits, hard_limits, chosen, lost, rise, searched, priced: Priced::Unmeasured }
+    ActPlan { window, plan, claims: all, newest_level, limits, hard_limits, chosen, lost, rise, searched, priced: Priced::Unmeasured, need: ActNeed::Unpriced }
 }
 
 impl ActPlan {
@@ -493,13 +499,6 @@ impl ActPlan {
             .filter(|a| a.allocated_tokens < a.requested_floor && a.state != AllocationState::UnderProvisioned)
             .filter_map(|a| a.source_id.strip_prefix(id::VIEW))
             .collect()
-    }
-
-    /// Her held need: every claim's floor with the reply at its uncapped need. What a lane must
-    /// hold for this act, never what the window granted (`turn_need`).
-    pub fn held_need(&self) -> u32 {
-        let capped = self.reply().map_or(0, |reply| reply.floor_tokens); // map_or: no reply claimed
-        turn_need(&self.claims).saturating_sub(capped).saturating_add(self.reply_need)
     }
 
     /// Every hard limit (framing's irreducible blocks, the required input, her newest result at its

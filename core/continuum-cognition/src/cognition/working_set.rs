@@ -121,16 +121,15 @@ pub struct PersonaDemand {
     /// Next slot to overwrite in `recent`.
     #[serde(default)]
     pub recent_next: u8,
-    /// The last [`RECENT_TURNS`] post-fit sizes of turns the fit HELD — her NEED, as
-    /// opposed to `recent` (her WISH, the untrimmed assembly). A turn counts here only
-    /// when `fit_messages` kept the source's truthful minimum and something survived
-    /// the fit: dropping optional history is the fit working, not starvation. The
-    /// allocator GATES on the median of this ring (no headroom — she was served at
-    /// that size) and TARGETS the wish (card 70706a9e: Kimi's wish 99k × 1.25 read as
-    /// "over the grid" at a 75,776 seat her turns were fitting into every time).
-    /// Legacy files read empty → no need known → the wish stands in, as before. Each slot is
-    /// typed exact or censored ([`NeedSample`]): a turn whose view overflowed its grant records
-    /// what she would have held as a lower bound, never as a size.
+    /// The last [`RECENT_TURNS`] windows her held turns' allocations CHOSE (the priced optimum,
+    /// `continuum_context::allocation::need`) — her NEED, as opposed to `recent` (her WISH, the
+    /// untrimmed assembly). A turn counts here only when `fit_messages` kept the source's
+    /// truthful minimum and something survived the fit, and its act time was priced. The
+    /// allocator GATES on the median of this ring and TARGETS the wish (card 70706a9e: Kimi's
+    /// wish 99k × 1.25 read as "over the grid" at a 75,776 seat her turns were fitting into
+    /// every time). Legacy files read empty → no need known → the wish stands in, as before.
+    /// Each slot is typed exact or censored ([`NeedSample`]): an optimum past her grant is a
+    /// lower bound, never a size.
     #[serde(default)]
     pub need_recent: [NeedSample; RECENT_TURNS],
     /// Next slot to overwrite in `need_recent`.

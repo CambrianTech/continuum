@@ -124,6 +124,20 @@ impl LlmDeliberationFaculty {
 
     /// The engine and model `binding` reaches: the key her act time is measured under, whatever
     /// her window (seconds per held token are the engine's and the model's, never her window's).
+    /// A need past the model's trained context (`what`: her irreducible window, or the priced
+    /// point): no lane of this model can hold it, so it is a measurement defect, named, never
+    /// recorded (card bf3b6d68).
+    fn probe_need_beyond_trained(&self, what: &'static str, beyond: continuum_context::allocation::BeyondTrained) {
+        continuum_base::probe!(
+            class = "persona.need.beyond_trained",
+            persona = %self.persona_name,
+            what,
+            needed = beyond.needed,
+            trained = beyond.trained.get(),
+            "a need past the model's trained context: a measurement defect, never recorded as her need (card bf3b6d68)"
+        );
+    }
+
     fn served_by(binding: &ModelBinding) -> crate::cognition::working_memory::act_times::ServedBy {
         crate::cognition::working_memory::act_times::ServedBy { provider: binding.adapter.provider_id().to_owned(), model: binding.requested_model().to_owned() }
     }
@@ -276,6 +290,10 @@ impl LlmDeliberationFaculty {
             source
         }).collect();
         let reply_need = reply.floor_tokens;
+        // Her price and the model's trained context from the one binding snapshot this act is
+        // priced on.
+        let binding = self.binding.load();
+        let trained = binding.trained_context();
         let started = std::time::Instant::now();
         let act = continuum_context::allocation::allocate(
             context_window,
@@ -293,7 +311,9 @@ impl LlmDeliberationFaculty {
                 view: view_claims,
                 // What holding context costs her act on this binding, measured from her own acts:
                 // the allocation holds the window where her value per second peaks.
-                price: self.act_time_on(&self.binding.load()).price(),
+                price: self.act_time_on(&binding).price(),
+                // The most her need can be: the window the price chooses never passes it.
+                trained,
             },
         );
         let allocation_us = started.elapsed().as_micros() as u64;
@@ -336,13 +356,16 @@ impl LlmDeliberationFaculty {
         // is a state, not a number). Recorded held or refused, so a turn short by 123 tokens raises
         // her need by them. A record, never a grant: the governor sizes residency from it
         // (`requirements_for`) or she waits.
+        // Past the model's trained context it is a measurement defect, never a floor.
         if let Some(reg) = &self.working_set {
-            let irreducible_window = act.irreducible().saturating_add(reply_need);
-            reg.record_floor(
-                self.persona_id,
-                irreducible_window,
-                ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps the newest, not a time series)
-            );
+            match continuum_context::allocation::NeedWindow::within(act.irreducible().saturating_add(reply_need), trained) {
+                Ok(irreducible_window) => reg.record_floor(
+                    self.persona_id,
+                    irreducible_window.tokens(),
+                    ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps the newest, not a time series)
+                ),
+                Err(beyond) => self.probe_need_beyond_trained("irreducible", beyond),
+            }
         }
         // IRREDUCIBLE growth, typed apart from a view that outgrew its grant (reducible, a turnover):
         // KEEP THE OVERFLOW, by part, so a turn over its window says which part and by how much.
@@ -376,7 +399,6 @@ impl LlmDeliberationFaculty {
         let framing_tokens = Self::framing_cost(
             &self.compose_system_split(&tools_choice.menu, ws.directed_at_self(), ws.self_initiated, ws.now_ms, holds_live_work).stable,
         );
-        let budget_floor = act.held_need();
         // Her reply's grant is her measured need from the one allocation, the reserve her view is
         // sized beside (a pass's `max_tokens`; an act's cap is its room, `request_allowance`).
         // What no claim took is her view's to grow into by appends (`fit_view`), never the
@@ -431,19 +453,19 @@ impl LlmDeliberationFaculty {
         // Her view within what the allocation granted its sources (`epoch.rs`): the only place
         // it is ever collapsed. A broken allocator contract refuses the turn (`budget_fault`),
         // never a prompt sent anyway. An overflow also says how far beyond its grant her view would
-        // have held: a reducible overflow, recorded as her censored need, never a grant.
+        // have held: a reducible overflow, collapsed at the next start, never her need.
         // A start the plan did not fund (a required floor underfunded or past the room) is this
         // turn's CAPACITY refusal, typed, never a sent prompt and never budget minted; distinct
         // from the reply-only IrreducibleShortfall, with which an act proceeds at what is left.
         let head_growth = tools_choice.next.as_ref().map_or(0, |next| next.growth); // map_or: no next head adds nothing
-        let (view_beyond, head_funded, view_fault, start_refusal) =
+        let (head_funded, view_fault, start_refusal) =
             match self.fit_view(&mut all_messages, view, &act, calibration, head_growth) {
-                Ok(fitted) => (fitted.beyond, fitted.head_funded, None, None),
+                Ok(fitted) => (fitted.head_funded, None, None),
                 Err(super::epoch::ViewSizing::Start(start)) => {
                     let (needed, had) = start.needed_and_had();
-                    (None, false, None, Some(crate::cognition::workspace::PromptCapacityError { required_tokens: needed as usize, budget_tokens: had as usize }))
+                    (false, None, Some(crate::cognition::workspace::PromptCapacityError { required_tokens: needed as usize, budget_tokens: had as usize }))
                 }
-                Err(mismatch) => (None, false, Some(format!("her view could not be sized: {mismatch}")), None),
+                Err(mismatch) => (false, Some(format!("her view could not be sized: {mismatch}")), None),
             };
         // What a sent tail already showed her is in her view now: never sent twice. Then what this
         // tail shows that her sources also render, for her view to cover once it is sent.
@@ -579,43 +601,61 @@ impl LlmDeliberationFaculty {
                 sample,
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
             );
-            // HER NEED, the allocator's gate (card 70706a9e): the BUDGETER'S FLOOR on a held
-            // turn, never its post-fit size, which the flexbox grows to any window (the M5,
-            // 10-18: ~48.6k on a 102k lane refused a second lane; 4 residents on 1 slot).
+            // HER NEED, the allocator's gate (card 70706a9e): the window her act's allocation CHOSE
+            // (`continuum_context::allocation::need`), the priced optimum between what she must
+            // hold and the model's trained context. Never every claim's floor (sizes each part
+            // requested), never her post-fit size (the flexbox grows it to any window), and never the
+            // window plus what her view lacked uncollapsed: Aiko recorded 902,158 on a 262,144-token
+            // model (the M5, 2026-11-07 16:21Z), where her view's whole files and folded navigation
+            // are collapsed, not needed. Learned only from a turn the fit held.
             let sent_tokens = sent.min(u32::MAX as usize) as u32;
             let framing = framing_tokens.min(u32::MAX as usize) as u32;
             let fit_ok = capacity_error.is_none();
-            // HER VIEW OVERFLOWED ITS GRANT: this turn's need is censored by the window, so what she
-            // would have held (the window plus what her view lacked, `overflow_beyond`) is recorded
-            // as a lower bound in place of the size the fit held her at. Measured only from held
-            // sizes, her need could never exceed her grant (Aris on the M5, 2026-11-04: 55,672
-            // granted of a 654,336 pool, a turnover on most acts, the same files re-read).
             use crate::cognition::working_set::NeedSample;
-            let censored = view_beyond.map(|beyond| {
-                let at_least = (context_window as usize).saturating_add(beyond).min(u32::MAX as usize) as u32;
-                continuum_base::probe!(
-                    class = "persona.need.censored",
-                    persona = %self.persona_name,
-                    context_window,
-                    beyond_grant = beyond,
-                    at_least,
-                    "her view overflowed its grant: her need is recorded as at least the window plus what her view lacked to hold this act and the next one's appends"
-                );
-                NeedSample::AtLeast { at_least }
-            });
-            let held = crate::cognition::working_set::need_sample(sent_tokens, framing, fit_ok).map(|_| NeedSample::Exact(budget_floor));
-            match censored.or(held) {
-                Some(need) => reg.record_need(
+            use continuum_context::allocation::ActNeed;
+            let held = crate::cognition::working_set::need_sample(sent_tokens, framing, fit_ok).is_some();
+            let chosen = match act.need {
+                ActNeed::Chosen(window) => Some(NeedSample::Exact(window.tokens())),
+                ActNeed::Censored(window) => {
+                    continuum_base::probe!(
+                        class = "persona.need.censored",
+                        persona = %self.persona_name,
+                        context_window,
+                        at_least = window.tokens(),
+                        priced = ?act.priced,
+                        "the priced point lies past her grant: her need is recorded as at least the window her act would have chosen"
+                    );
+                    Some(NeedSample::AtLeast { at_least: window.tokens() })
+                }
+                ActNeed::Unpriced => {
+                    continuum_base::probe!(
+                        class = "persona.need.unpriced",
+                        persona = %self.persona_name,
+                        context_window,
+                        priced = ?act.priced,
+                        "no priced point this act (act time unmeasured, or no window inside its measured contexts): no need recorded; her irreducible window stands"
+                    );
+                    None
+                }
+                ActNeed::BeyondTrained(beyond) => {
+                    self.probe_need_beyond_trained("priced", beyond);
+                    None
+                }
+            };
+            match (held, chosen) {
+                (true, Some(need)) => reg.record_need(
                     self.persona_id,
                     need,
                     ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
                 ),
+                // Held, with no priced point: said above, by its cause.
+                (true, None) => {}
                 // THE UNHELD TURN IS SAID, not skipped (card 39822816): a mind the
                 // allocator labels `wish:` after a deploy carrying #4325 must be
                 // distinguishable, from the ledger alone, between "every turn was
                 // starved", "every turn emptied to the framing", and "this seam was
                 // never reached". One row per unheld turn, with the reason.
-                None => continuum_base::probe!(
+                (false, _) => continuum_base::probe!(
                     class = "persona.need.unheld",
                     persona = %self.persona_name,
                     sent_tokens,

@@ -30,11 +30,10 @@ const VIEW_CLAIM: &str = continuum_context::allocation::id::VIEW;
 /// The source a sent prompt's tail joins her view under (`view_served`).
 const SENT_TAIL: &str = "sent";
 
-/// What fitting her view decided: how far beyond its grant it would have held, and whether a start
-/// funded her head's next epoch.
+/// What fitting her view decided: whether a start funded her head's next epoch. What her view lacked
+/// past its grant is collapsed at the next start, never her need (`allocation::need`).
 #[derive(Clone, Copy, Debug)]
 pub(in super::super) struct ViewFitted {
-    pub(in super::super) beyond: Option<usize>,
     pub(in super::super) head_funded: bool,
 }
 
@@ -105,9 +104,7 @@ impl LlmDeliberationFaculty {
     /// (Atlas in 11c1a7ac: starts of ~259k chars, 1,902 tokens of room, ~9.4k chars appended
     /// per act; 3-11% of consecutive prompts shared).
     ///
-    /// Returns how far beyond what this act allowed her view she would have held, when it
-    /// OVERFLOWED ([`overflow_beyond`]): the evidence her need is censored by her grant; and
-    /// whether a start in this act funded `head_growth` (what her head's next epoch adds, charged),
+    /// Returns whether a start in this act funded `head_growth` (what her head's next epoch adds, charged),
     /// taken from the start's room beside every required floor, so the next head can be adopted.
     pub(in super::super) fn fit_view(
         &self,
@@ -117,9 +114,9 @@ impl LlmDeliberationFaculty {
         calibration: super::types::PromptCalibration,
         head_growth: usize,
     ) -> Result<ViewFitted, ViewSizing> {
-        let kept = |beyond| Ok(ViewFitted { beyond, head_funded: false });
+        let kept = || Ok(ViewFitted { head_funded: false });
         if view.len == 0 {
-            return kept(None);
+            return kept();
         }
         let room = act.room() as usize;
         // A start the plan did not fund (`StartRefused`) is carried out typed: the view's closure
@@ -170,9 +167,8 @@ impl LlmDeliberationFaculty {
         let due = turnover_due(view_tokens, granted + room, next_act_tokens, || self.view_would_restore(cost, &prompt.streams, &sized))
             .map_err(&typed)?;
         if due == Turnover::Keep {
-            return kept(None);
+            return kept();
         }
-        let beyond = overflow_beyond(due, view.started, view_tokens, granted + room, next_act_tokens);
         let fits = due == Turnover::Restore;
         // Admission before a turnover: redo this act's append within what the act granted her
         // view, an arrival too large for it reduced to its outline or pointer
@@ -193,7 +189,7 @@ impl LlmDeliberationFaculty {
                     );
                     prompt.grounding_at = admitted.len();
                     prompt.history.splice(0..view.len, admitted);
-                    return kept(beyond);
+                    return kept();
                 }
             }
         }
@@ -223,7 +219,7 @@ impl LlmDeliberationFaculty {
             "her view outgrew what the window granted its sources and started a new epoch, \
              its growing sources leaving a reserve as large as their start"
         );
-        Ok(ViewFitted { beyond, head_funded: funds_head })
+        Ok(ViewFitted { head_funded: funds_head })
     }
 
     /// Append this act's changes to her view and return its messages, and whether this act
@@ -609,24 +605,6 @@ pub(in super::super) fn turnover_due<E>(
         return Ok(Turnover::Keep);
     }
     Ok(if would_restore()? { Turnover::Restore } else { Turnover::Keep })
-}
-
-/// PURE: how many tokens beyond `allowed` her view would have held, on an act whose view
-/// OVERFLOWED what the window granted it: the view as it stands (this act's appends included) plus
-/// one act's measured appends (`next_act_tokens`), so the epoch could have kept appending, less
-/// what was allowed. The window censored her need by exactly this; it is a lower bound on what she
-/// needed, never a size (`working_set::NeedSample::AtLeast`). `None` on every other act: one that
-/// keeps or restores measured no shortfall (it fit), and one that STARTED the view renders every
-/// source whole, her whole history rather than her working set, so its size is no demand.
-pub(in super::super) fn overflow_beyond(
-    due: Turnover,
-    started: bool,
-    view_tokens: usize,
-    allowed: usize,
-    next_act_tokens: Option<usize>,
-) -> Option<usize> {
-    let held = next_act_tokens.map_or(view_tokens, |next| view_tokens.saturating_add(next)); // map_or: no act measured yet in the epoch it replaces: the view alone
-    (due == Turnover::Overflow && !started).then(|| held.saturating_sub(allowed))
 }
 
 #[cfg(test)]
