@@ -9,8 +9,10 @@ use super::*;
 /// `max_tokens`, so her own evidence bounds her output and her latency. An act's request carries
 /// the room its prompt leaves instead (`request_allowance`): her answer is payload, and a claim
 /// measured on reads cut every write (the M5, 2026-11-04). The cost accepted: a write larger than any she has measured is cut once (a
-/// turn lost; `delib.emission.cut_mid_answer` counts it), recorded at double, and the next claim
-/// grows. A cap here instead reserved 12,288 tokens for acts that measured 809-1,641 and starved
+/// turn lost; `delib.emission.cut_mid_answer` counts it), recorded as a lower bound on her
+/// answer, and the next claim's floor holds the median past it at once
+/// (`OutputNeed::answer_room`). A cap here instead reserved 12,288 tokens for acts that measured
+/// 809-1,641 and starved
 /// her view of the reads she had just made, so every act re-read them (the M5, 2026-10-30,
 /// ONE-BUDGET.md slice 6).
 ///
@@ -28,8 +30,8 @@ use super::*;
 ///   measured; at least a pending cut's measured peak, retained until that concern settles
 ///   (the ordinary need decays through the short reads between, and the retried write would
 ///   be claimed small and cut again). The peak is evidence the registry already recorded
-///   (a cut channel counts double there); it is demand, never doubled again here: what she
-///   is granted is the one allocation's decision (Codex on slice 6).
+///   (the sum of the channels as measured); it is demand, never doubled here: what she is
+///   granted is the one allocation's decision (Codex on slice 6).
 /// - priority: an ambient pass 4, a directed pass 6, an act 8, an act on live held work or
 ///   after a pending cut 10:
 ///   the weight the reply grows by against history (5) and grounding (6).
@@ -59,13 +61,14 @@ pub fn reply_claim(
     // with no measured rate it does not test upward at all (Cormac's design, card b726a311).
     // An act's floor already holds that bound (`act_room`) and her think is closed at what her
     // grant leaves past her answer (`act_reasoning_budget`), so a think censored there would read
-    // the same bound forever: her upward test is the doubled bound, the answer channel's own growth
-    // path, under the same measured time term (both ways, or it ratchets down).
+    // the same bound forever: her upward test is the doubled bound under the same measured time
+    // term (both ways, or it ratchets down). A cut ANSWER needs no test here: her floor already
+    // holds its estimate past the bound (`OutputNeed::answer_room`).
     let upward = |at_least: u32| match kind {
         TurnKind::Act => at_least.saturating_mul(2),
         TurnKind::Pass => at_least,
     };
-    let tested = match (need.and_then(|n| n.reasoning_at_least.map(|at_least| upward(at_least).saturating_add(n.answer))), time_term) {
+    let tested = match (need.and_then(|n| n.reasoning_at_least.map(|at_least| upward(at_least).saturating_add(n.answer_room()))), time_term) {
         (Some(upward), Some(ceiling)) => upward.min(ceiling),
         _ => 0,
     };

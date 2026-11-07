@@ -201,22 +201,19 @@
         assert_eq!(reg.ceiling(), Some(31_000));
     }
 
-    // what this catches: the growth path of the measured reply reserve. A turn that
-    // stopped at its output cap is a CLAMPED observation — recording it verbatim
-    // would freeze the reserve at whatever strangled it (the same measure-the-clamp
-    // trap the demand side documents). It must record at double so the next turn's
-    // reserve is larger than the cap that cut this one.
+    // what this catches: the measure-the-clamp trap on the reply reserve. A turn that
+    // stopped at its output cap is a CLAMPED observation: read as a size it would freeze
+    // the reserve at whatever strangled it. It is kept as a BOUND (her answer is above what
+    // she wrote), never a size and never a guessed factor; the peak is what was written.
     #[test]
-    fn a_capped_emission_records_double_and_an_uncapped_one_verbatim() {
+    fn a_capped_emission_records_its_bound_and_an_uncapped_one_verbatim() {
         let reg = WorkingSetRegistry::new();
         reg.record_emission_in_memory(p(1), 2_500, 0, EmissionStop::Landed, 1_000);
         assert_eq!(reg.emission_of(p(1)).map(|e| e.peak_tokens), Some(2_500));
         reg.record_emission_in_memory(p(1), 3_000, 0, EmissionStop::CutMidAnswer, 2_000);
         let e = reg.emission_of(p(1)).expect("observed");
-        assert_eq!(
-            e.peak_tokens, 6_000,
-            "a Length stop is a floor, not a measurement"
-        );
+        assert_eq!(e.peak_tokens, 3_000, "the peak is what was written, never a factor of it");
+        assert_eq!(e.answer_samples[1], ChannelSample::AtLeast { at_least: 3_000 }, "a Length stop is a bound, not a measurement");
         assert_eq!(e.turns, 2);
         // A later small reply lowers the peak, but only by the decay step — it must not
         // collapse to the size of one ack (that is the tiny-talker trap the floor exists
@@ -227,13 +224,13 @@
             .emission_of(p(1))
             .map(|e| e.peak_tokens)
             .expect("observed");
-        assert!(decayed < 6_000, "a peak that can only rise is a ratchet");
+        assert!(decayed < 3_000, "a peak that can only rise is a ratchet");
         assert!(decayed > 40, "one small reply must not erase a real measurement");
-        assert_eq!(decayed, 6_000 * 7 / 8);
+        assert_eq!(decayed, 3_000 * 7 / 8);
     }
 
     // what this catches: the poisoned-record half of the 2026-09-18 identity defect. A
-    // capped turn records at DOUBLE, and with an all-time `.max()` that value outlived
+    // capped turn recorded at DOUBLE (before 2026-11-07), and with an all-time `.max()` that value outlived
     // every restart because emission.json is persisted on purpose ("a restart is a pause").
     // One truncation therefore reserved half of every future window forever. The decay must
     // make such a record heal ON ITS OWN — no migration, no operator step, no command —
@@ -241,8 +238,9 @@
     #[test]
     fn a_peak_that_was_never_real_heals_itself_without_a_migration() {
         let reg = WorkingSetRegistry::new();
-        // Exactly the poisoned value read off a real citizen's emission.json.
-        reg.record_emission_in_memory(p(7), 8_192, 0, EmissionStop::CutMidAnswer, 1_000);
+        // Exactly the poisoned value read off a real citizen's emission.json (written when a cut
+        // recorded double; a persisted file still carries it, so the decay must still heal it).
+        reg.record_emission_in_memory(p(7), 16_384, 0, EmissionStop::Landed, 1_000);
         assert_eq!(
             reg.emission_of(p(7)).map(|e| e.peak_tokens),
             Some(16_384),
@@ -308,13 +306,16 @@
             assert!(e.peak_tokens <= peak_landed.max(cap), "never output × 2: peak {}", e.peak_tokens);
             cap = need.total();
         }
-        // A cut inside the ANSWER is the growth path, on that channel only: the peak is
-        // the sum of the channels, not the whole output doubled.
+        // A cut inside the ANSWER is the growth path, on that channel only: the answer is a
+        // bound, the think verbatim, and the peak the output as written, never doubled.
         reg.record_emission_in_memory(p(8), 7_003, 7_000, EmissionStop::classify(true, true), 1);
-        assert_eq!(reg.emission_of(p(8)).expect("recorded").peak_tokens, 7_006, "7,006, not 14,006");
+        assert_eq!(reg.emission_of(p(8)).expect("recorded").peak_tokens, 7_003, "7,003, not 14,006");
         reg.record_emission_in_memory(p(7), 7_000, 1_000, EmissionStop::classify(true, true), 1);
         let write = reg.emission_of(p(7)).expect("recorded");
-        assert_eq!((write.peak_tokens, write.answer_samples[0], write.reasoning_samples[0]), (13_000, 12_000, 1_000));
+        assert_eq!(
+            (write.peak_tokens, write.answer_samples[0], write.reasoning_samples[0]),
+            (7_000, ChannelSample::AtLeast { at_least: 6_000 }, 1_000)
+        );
         // Classification is by channel; only a cap hit is a cut.
         assert_eq!(EmissionStop::classify(false, false), EmissionStop::Landed);
         assert_eq!(EmissionStop::classify(false, true), EmissionStop::Landed);
@@ -352,7 +353,7 @@
         assert_eq!(after.emission_of(persona), before.emission_of(persona));
         assert_eq!(
             after.emission_of(persona).map(|e| (e.need_turns, e.reasoning_samples[0], e.answer_samples[0])),
-            Some((1, 200, 121)),
+            Some((1, 200, ChannelSample::Exact(121))),
             "the channel split rides the same file: her reasoning need is not re-earned per boot"
         );
         assert!(home.path().join("personas").join(persona.to_string()).join("working-set.json").is_file(), "written under the class, in her own directory");
@@ -381,9 +382,9 @@
         reg.record_emission_in_memory(p(3), 768, 768, EmissionStop::CutMidThought, 4);
         let need = reg.need_of(p(3)).expect("measured");
         assert_eq!((need.reasoning, need.turns), (900, 3), "a think-only cut is not a need sample");
-        // A Length stop WITH an answer cut the answer: that channel records at double.
+        // A Length stop WITH an answer cut the answer: that channel records as its bound.
         reg.record_emission_in_memory(p(3), 1_000, 600, EmissionStop::CutMidAnswer, 5);
-        assert_eq!(reg.emission_of(p(3)).map(|e| e.answer_samples[3]), Some(800));
+        assert_eq!(reg.emission_of(p(3)).map(|e| e.answer_samples[3]), Some(ChannelSample::AtLeast { at_least: 400 }));
         // The ring: sixteen quiet turns age the loud one out.
         for t in 6..=22u64 {
             reg.record_emission_in_memory(p(3), 400, 300, EmissionStop::Landed, t);
@@ -719,4 +720,67 @@ fn two_bounds_among_fourteen_exact_samples_raise_her_need_to_the_larger_at_once(
         reg.record_need_in_memory(aris, NeedSample::Exact(30_000), 16 + t);
     }
     assert!(need_tokens(&reg.demand_of(aris).expect("recorded")).is_some_and(|need| !need.is_bound()), "both bounds aged out: the exact median again");
+}
+
+// what this catches (the M5, 2026-11-07, fe91c2b55: acts cut at max_tokens mid-answer at rooms of
+// 853, 288 and 435): a cut answer pushed DOUBLED into a p90 ring of 16 is its largest sample, and
+// the p90 of 16 reads the second largest, so one cut left her next room unchanged and only a
+// second wasted act grew it. The cut is a bound read by the censored estimator: ONE cut raises the
+// next room above what the cut act wrote, and her answer keeps that room inside it (the think's
+// budget is the room past her answer, `ActRoom::think_within`).
+#[test]
+fn one_cut_answer_raises_the_next_room_above_the_cuts_demand() {
+    let reg = WorkingSetRegistry::default();
+    for t in 0..15u64 {
+        reg.record_emission_in_memory(p(5), 600, 400, EmissionStop::Landed, t);
+    }
+    let before = ActRoom::of(reg.need_of(p(5)));
+    assert_eq!(before.needed(), Some(600), "her landed act: 400 think + 200 answer");
+    // One act thinks less and writes a longer call: cut at the room, 300 tokens into its answer.
+    let cap = before.needed().expect("measured");
+    reg.record_emission_in_memory(p(5), cap, 300, EmissionStop::classify(true, true), 15);
+    let need = reg.need_of(p(5)).expect("measured");
+    assert_eq!(need.answer_at_least, Some(300), "the cut answer is a bound, raised at once");
+    let after = ActRoom::of(Some(need));
+    let room = after.needed().expect("measured");
+    assert!(room > cap, "one cut must raise the next room above the cut's demand: {room} <= {cap}");
+    assert!(room - after.think_within(room).expect("measured") >= 300, "her answer keeps the room the cut proved");
+}
+
+// what this catches: the opposite failure, a bound that never lets the room fall. A cut ages out of
+// her last 16 acts like any sample, so uncut acts bring her room back to what they measure.
+#[test]
+fn uncut_acts_bring_the_room_back_down_after_a_cut() {
+    let reg = WorkingSetRegistry::default();
+    for t in 0..8u64 {
+        reg.record_emission_in_memory(p(6), 600, 400, EmissionStop::Landed, t);
+    }
+    reg.record_emission_in_memory(p(6), 1_500, 400, EmissionStop::CutMidAnswer, 8);
+    assert_eq!(reg.need_of(p(6)).expect("measured").answer_room(), 2_200, "the median past the cut's bound of 1,100");
+    for t in 9..(9 + NEED_SAMPLES as u64) {
+        reg.record_emission_in_memory(p(6), 600, 400, EmissionStop::Landed, t);
+    }
+    let need = reg.need_of(p(6)).expect("measured");
+    assert_eq!((need.answer_at_least, need.act_room()), (None, 600), "the bound aged out: her landed room again");
+}
+
+// what this catches: a cut inside an open tool call read as a cut THOUGHT (no text, so "nothing was
+// said"), which records no answer bound and never grows the room for the write. The call is her
+// answer: a Length stop carrying a call is `CutMidAnswer`, and the call's arguments are answer
+// bytes even when the response carries no mirrored content parts.
+#[test]
+fn a_cut_inside_an_open_tool_call_is_a_cut_answer() {
+    use crate::ai::types::{FinishReason, ToolCall, UnparsedArguments};
+    let call = ToolCall {
+        id: "call-write".into(),
+        name: "code/write".into(),
+        input: UnparsedArguments::Cut { raw: "{\"path\":\"src/a.rs\",\"content\":\"pub fn create_accounts(".into() }.into_input(),
+    };
+    let mut resp = crate::cognition::llm_deliberation_faculty::test_support::make_response(FinishReason::Length, "", Some(vec![call]));
+    resp.usage.output_tokens = 900;
+    resp.reasoning = Some("I will write the file.".into());
+    let read = ResponseEmission::of(&resp, None, 900);
+    assert_eq!(read.stop, EmissionStop::CutMidAnswer, "the open call is her answer");
+    assert!(read.answered);
+    assert!(read.reasoning_tokens < 900, "the call's bytes are answer, not think: {}", read.reasoning_tokens);
 }

@@ -75,11 +75,10 @@ pub(super) struct ShortRoom {
 /// is a budget of ZERO (no thinking: the template's `enable_thinking = false` on every pin, and the
 /// sampler's zero budget from the fork fix on, `request_body::apply_think`).
 pub(super) fn act_reasoning_budget(room: ActRoom, reserve: u32) -> crate::ai::types::ThinkBudget {
-    let answer = match room {
-        ActRoom::Needs { answer, .. } => answer,
-        ActRoom::Unmeasured => LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS,
-    };
-    crate::ai::types::ThinkBudget(reserve.saturating_sub(answer))
+    crate::ai::types::ThinkBudget(
+        room.think_within(reserve)
+            .unwrap_or_else(|| reserve.saturating_sub(LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS)), // unwrap_or_else: unmeasured, past the smallest usable reply
+    )
 }
 
 impl LlmDeliberationFaculty {

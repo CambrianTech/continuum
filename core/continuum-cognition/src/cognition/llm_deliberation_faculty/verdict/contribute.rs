@@ -502,41 +502,16 @@ impl LlmDeliberationFaculty {
                 }
             }
         };
-        // The channel split the NEXT turn's allowance is sized from: the server's
-        // count apportioned by the bytes the adapter separated into `reasoning`
-        // and `text` (a think-only turn is all reasoning; a native call all answer).
-        // The answer share is the rest of the output count; whether she answered at all
-        // is presence, never this split (`EmissionStop::classify`).
-        let (reasoning_tokens, _) = reasoning_answer_split(
-            resp.usage.output_tokens,
-            resp.reasoning.as_ref().map_or(0, |r| r.len()),
-            answer_payload_bytes(&resp.text, resp.content.as_deref()),
-        );
-        // WHERE the cap fell decides what the cut measures: inside the answer, the
-        // answer channel grows (a write cut mid-payload gets its room); inside the
-        // think, nothing was said and the need ring does not take it — a thinking
-        // model fills any allowance, and doubling that walked her to the deadline
-        // (`EmissionStop`). The cut itself is the fault paths' business below.
-        // A deliberation's think that stopped AT its budget is censored, not measured
-        // (Cormac on #4409): the classifier records it at the allowance so the need ring
-        // never learns the budget and contracts the next allowance geometrically.
+        // WHERE the cap fell decides what the cut measures (`EmissionStop`: inside the answer her
+        // answer is a censored bound; inside the think nothing was said and the need ring does not
+        // take it). Read once by the emission's owner (`ResponseEmission::of`): the server's count
+        // split by channel bytes, whether she answered (text or a call, presence: a stream may not
+        // report usage), against the think's bound the request carried (`act_room.rs`). Counted
+        // here before any await after the generation: a cancellation at the read receipt below
+        // must not lose the stop of a generation that already completed (Codex on #5616).
         let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
-        // The think's bound the request carried (`act_room.rs`), for an act and a pass alike.
-        let reasoning_budget = sent_reasoning_budget;
-        // The one classification, from what the response carries (an answer is text or a call;
-        // a stream may not report usage), counted here before any await after the generation: a
-        // cancellation at the read receipt below must not lose the stop of a generation that
-        // already completed (Codex on #5616).
-        let answered = answer_payload_bytes(resp.text.trim(), resp.content.as_deref()) > 0
-            || resp.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty());
-        let reasoned = resp.reasoning.as_deref().is_some_and(|r| !r.trim().is_empty());
-        let stop = super::super::super::working_set::EmissionStop::classify_with_budget(
-            matches!(resp.finish_reason, FinishReason::Length),
-            answered,
-            reasoning_tokens,
-            reasoning_budget,
-            allowance,
-        );
+        let crate::cognition::working_set::ResponseEmission { reasoning_tokens, answered, reasoned, stop } =
+            crate::cognition::working_set::ResponseEmission::of(&resp, sent_reasoning_budget, allowance);
         crate::cognition::health_ledger::note_stop(stop.counted(answered, reasoned));
         // Sent and answered: she read what this prompt rendered (read_receipt.rs), never before.
         self.send_read_receipt(ws).await;
@@ -559,7 +534,7 @@ impl LlmDeliberationFaculty {
         // MEASURE THE REPLY — the observation the reply's claim ([`reply_claim`]) is
         // sized from. The server's own count (reasoning included), recorded
         // for every completed generation; a cut inside the answer records that channel
-        // at double inside the registry (the growth path), a cut inside the think is not
+        // as its lower bound inside the registry (the growth path), a cut inside the think is not
         // a need sample.
         // This is the seam that turns the reserve from a `window/2` prior into a
         // measurement.
@@ -605,7 +580,7 @@ impl LlmDeliberationFaculty {
                     allowance,
                     output_tokens = resp.usage.output_tokens,
                     peak = measured.as_ref().map_or(0, |m| m.peak_tokens), // map_or: an unrecorded emission has no peak to report
-                    "an answer cut at its measured grant: recorded at double, the next claim grows"
+                    "an answer cut at its measured grant: recorded as its lower bound, the next claim holds it"
                 );
                 if let (Some(wm), Some(measured)) = (&self.working_memory, measured) {
                     wm.retain_truncated_emission(ws.activity_room_id, measured.peak_tokens);

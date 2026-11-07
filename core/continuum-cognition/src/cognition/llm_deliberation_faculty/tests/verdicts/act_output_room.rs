@@ -48,7 +48,7 @@ fn the_live_cut_caps_become_her_measured_room_behind_the_engines_count() {
     let bounded = request_allowance(TurnKind::Act, 434, leased.min(slot), prompt).expect("room");
     assert_eq!(bounded, leased - prompt as u32 - 1);
     assert!(prompt as u32 + bounded < leased, "prompt plus cap strictly inside her grant");
-    let need = crate::cognition::working_set::OutputNeed { reasoning: 338, answer: 96, turns: 3, reasoning_at_least: None };
+    let need = crate::cognition::working_set::OutputNeed { reasoning: 338, answer: 96, turns: 3, reasoning_at_least: None, answer_at_least: None };
     let claim = reply_claim(TurnKind::Act, Some(need), 0, true, false, None);
     assert_eq!(claim.floor_tokens, 434, "her floor is think plus answer, never the answer alone");
     assert!(new >= claim.floor_tokens);

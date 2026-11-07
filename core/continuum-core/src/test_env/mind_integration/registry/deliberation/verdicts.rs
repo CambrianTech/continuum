@@ -4,9 +4,9 @@ use super::*;
 // what this catches: Benchy's first write cut mid-call (2026-10-18 02:10Z). Three
 // read-only turns landed at 2,702; the reply's reserve was twice that peak, 5,404;
 // the write cut mid-answer at 5,404 — and the retry was sized by the same carve-off.
-// Now the cut's doubled answer is in her need and the pending cut raises the act to
-// priority 10: on her 46,848 window the retry's REQUEST carries at least the doubled
-// cut and never past the act's runaway bound, and prompt + reply fit the window.
+// Now the cut is a bound on her answer, her need holds the median past it (twice what
+// was written), and the pending cut raises the act to priority 10: on her 46,848 window
+// the retry's REQUEST carries at least that median and never past the act's runaway bound, and prompt + reply fit the window.
 #[tokio::test]
 async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
     use crate::cognition::working_memory::WorkingMemory;
@@ -20,7 +20,8 @@ async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
         reg.record_emission_in_memory(persona, 2_702, 0, EmissionStop::Landed, tick);
     }
     let cut = reg.record_emission_in_memory(persona, 5_404, 0, EmissionStop::CutMidAnswer, 4);
-    assert_eq!(cut.peak_tokens, 10_808, "a cut mid-answer records the answer at double");
+    assert_eq!(cut.peak_tokens, 5_404, "a cut mid-answer records what was written");
+    assert_eq!(reg.need_of(persona).map(|n| n.answer_room()), Some(10_808), "her answer room is the median past the bound");
     let wm = Arc::new(WorkingMemory::new(8));
     let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
     let faculty = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", adapter.clone())
@@ -37,7 +38,7 @@ async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
     let seen = adapter.seen.lock().unwrap();
     let request = &seen[0];
     let reply = request.max_tokens.expect("the reply is bounded");
-    assert!(reply >= 10_808, "the retried write gets at least the doubled cut: {reply}");
+    assert!(reply >= 10_808, "the retried write gets at least the cut answer's median: {reply}");
     let wire_tokens =
         LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
             + LlmDeliberationFaculty::messages_cost(&request.messages)

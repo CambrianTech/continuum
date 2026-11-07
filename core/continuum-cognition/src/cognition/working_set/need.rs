@@ -3,10 +3,19 @@
 //! of a lower bound ("at least this much"), so it is read as a CENSORED sample, never as a
 //! measurement (Benchy on the M5, 2026-10-31: his reasoning need read 520 while every think
 //! past ~600 was cut, and a cut was not recorded at all, so the need could never grow).
+//! A turn cut inside its ANSWER is the same evidence for that channel: her answer is at least
+//! what she wrote before the cap ([`ChannelSample`]), read by the same estimator
+//! ([`product_limit`], `answer_need`) beside her landed answers (the M5, 2026-11-07, fe91c2b55).
+
+/// One channel's sample from one turn: `Exact` when she ended it herself, `AtLeast` when the cap
+/// cut it (what she wrote before it). The one censoring type every need reads
+/// ([`crate::inference::planning::window_allocator::observed::Observed`]); persisted untagged, so
+/// a slot written before the bound existed reads exact.
+pub type ChannelSample = crate::inference::planning::window_allocator::observed::Observed<u32>;
 
 /// How many recent turns the reasoning / answer NEED is read from — a p90 over this
 /// many is the mind's measured demand per channel; a peak alone is one loud turn.
-pub(super) const NEED_SAMPLES: usize = 16;
+pub const NEED_SAMPLES: usize = 16;
 /// What ONE turn of this mind needs to generate, per channel: her measured reasoning
 /// (the `<think>` / `reasoning_content` channel) and her measured answer — each the p90
 /// of recent turns, as measured: no headroom here (the reply claim grows its grant above this
@@ -18,7 +27,8 @@ pub(super) const NEED_SAMPLES: usize = 16;
 pub struct OutputNeed {
     /// Tokens of reasoning a turn needs: the p90 over the turns that landed.
     pub reasoning: u32,
-    /// Tokens of answer a turn needs: the p90.
+    /// Tokens of answer a turn needs: the p90, a cut answer read as a lower bound
+    /// ([`product_limit`]; with no cut the plain p90).
     pub answer: u32,
     /// Turns the need was read from — how much to trust it (the claim decides; one sample's
     /// p90 is that sample).
@@ -30,12 +40,18 @@ pub struct OutputNeed {
     /// turns, `EmissionStop::ThinkBudgetHit`). The reply claim may test upward toward it
     /// only under a measured ceiling (the turn's time term); nothing here grants it.
     pub reasoning_at_least: Option<u32>,
+    /// Her largest cut answer among her last [`NEED_SAMPLES`] turns (what she wrote before the
+    /// cap), `None` when none was cut. A cut answer proves she needed more than she wrote, so it
+    /// raises her room at once ([`Self::answer_room`]): the answer is payload (a call ends by
+    /// itself at its file's size), never a runaway like the think, and the bound is never more
+    /// than a room she was already given.
+    pub answer_at_least: Option<u32>,
 }
 
 impl OutputNeed {
-    /// The whole turn: think, then answer.
+    /// The whole turn: think, then answer (raised past a recent cut, [`Self::answer_room`]).
     pub fn total(self) -> u32 {
-        self.reasoning.saturating_add(self.answer)
+        self.reasoning.saturating_add(self.answer_room())
     }
 
     /// What one ACT needs to write, as ONE claim: her think (raised to its censored bound after a
@@ -48,8 +64,29 @@ impl OutputNeed {
             Some(bound) => bound.max(self.reasoning),
             None => self.reasoning,
         };
-        think.saturating_add(self.answer)
+        think.saturating_add(self.answer_room())
     }
+
+    /// Her answer's room: the landed p90, or after a recent cut the median of what the cut answer
+    /// needed ([`cut_answer_median`]), whichever is larger.
+    pub fn answer_room(self) -> u32 {
+        self.answer_at_least.map_or(self.answer, |bound| cut_answer_median(bound).max(self.answer)) // map_or: no recent cut raises it
+    }
+}
+
+/// The median of an answer's whole size, given that the cap cut it after `written` tokens.
+///
+/// A bound alone grants exactly what she was given: when her think fills its budget (the room
+/// past her answer, `ActRoom::think_within`), the answer's bound IS its old share, so a room read
+/// from bounds stays at the cap that cut her and every retry is cut at the same token (the replay,
+/// `examples/act_room_replay.rs`: Aris cut six times at 241). Something past the bound must be
+/// granted, and the evidence says only where the cap fell inside an answer of unknown size. With
+/// nothing known of that size the cut is as likely early in it as late (a scale-free position,
+/// Gott's delta-t argument): the share written is uniform, so P(whole > k × written) = 1/k and the
+/// median of the whole is twice what was written. This is that median, derived, not a tuned
+/// factor; it is read from a bound that ages out with her ring, never written into a sample.
+fn cut_answer_median(written: u32) -> u32 {
+    written.saturating_add(written)
 }
 
 /// An act's output room as her measurements know it. Unknown is a state, never a number: a cold
@@ -65,7 +102,7 @@ pub enum ActRoom {
 
 impl ActRoom {
     pub fn of(need: Option<OutputNeed>) -> Self {
-        match need.and_then(|n| std::num::NonZeroU32::new(n.act_room()).map(|room| (room, n.answer))) {
+        match need.and_then(|n| std::num::NonZeroU32::new(n.act_room()).map(|room| (room, n.answer_room()))) {
             Some((room, answer)) => Self::Needs { room, answer },
             None => Self::Unmeasured,
         }
@@ -76,6 +113,16 @@ impl ActRoom {
         match self {
             Self::Unmeasured => None,
             Self::Needs { room, .. } => Some(room.get()),
+        }
+    }
+
+    /// Her think's room inside `cap`: what is left past her measured answer, so the answer always
+    /// keeps its room; `None` when unmeasured (the request bounds it from its own floor,
+    /// `act_room.rs`).
+    pub fn think_within(self, cap: u32) -> Option<u32> {
+        match self {
+            Self::Unmeasured => None,
+            Self::Needs { answer, .. } => Some(cap.saturating_sub(answer)),
         }
     }
 }
@@ -99,9 +146,26 @@ pub(super) fn reasoning_at_least(landed: &[u32], cut: &[u32], landed_need: u32) 
     if cut.is_empty() {
         return None;
     }
-    // The p90: the share of turns still running past it falls to a tenth.
-    product_limit(landed, cut, |survival_num, survival_den| survival_num * 10 <= survival_den)
-        .filter(|&need| need > landed_need)
+    product_limit(landed, cut, reached_p90).filter(|&need| need > landed_need)
+}
+
+/// The p90 as [`product_limit`] reads it: the share of turns still running past it falls to a tenth.
+fn reached_p90(survival_num: u128, survival_den: u128) -> bool {
+    survival_num * 10 <= survival_den
+}
+
+/// Her answer need from her last answers (`samples`, the ring's filled slots): the p90 by the
+/// censored estimator ([`product_limit`], a cut answer a lower bound: with no cut the plain p90),
+/// and her largest live cut bound (`None` with no cut). Read through the p90 alone, one bound
+/// among sixteen samples carries a sixteenth of the mass, below a p90's tenth, so a single cut
+/// changed nothing and only a second wasted act moved it (the M5, 2026-11-07, fe91c2b55); the
+/// bound is kept beside it so the room can answer it at once ([`OutputNeed::answer_room`]).
+pub(super) fn answer_need(samples: &[ChannelSample]) -> (u32, Option<u32>) {
+    let (bounds, exact): (Vec<ChannelSample>, Vec<ChannelSample>) = samples.iter().copied().partition(ChannelSample::is_bound);
+    let exact: Vec<u32> = exact.into_iter().map(ChannelSample::value).collect();
+    let bounds: Vec<u32> = bounds.into_iter().map(ChannelSample::value).collect();
+    let p90 = product_limit(&exact, &bounds, reached_p90).unwrap_or(0); // unwrap_or: no sample at all is no answer measured, as `p90` of an empty ring reads
+    (p90, bounds.iter().copied().max())
 }
 
 /// A quantile over `landed` measurements and `cut` lower bounds, by the product-limit
