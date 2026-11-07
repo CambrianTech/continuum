@@ -245,14 +245,14 @@ mod tests {
         snapshots: Vec<String>,
     }
 
-    /// A captured snapshot's units, offered as `RoomBoardSource` now offers them: a card is a unit
-    /// from its `card <id>` line (a title's continuation and its submission guidance ride with it),
-    /// a lead a unit from its `[...]` header. Her cards and her lead whole, last; every other card in
-    /// its group (claimable, held by others), the group's newest `nav::standing` on their own (priced
-    /// at their captured line, an upper bound on the source's glance) and the rest one node. The capture's order, oldest card first, stands in for the
-    /// source's order by last change, which the capture does not carry.
+    /// A captured snapshot declared as `RoomBoardSource` declares its shape, collapsed by the one
+    /// contract (`nav::collapse`): a card is an entry from its `card <id>` line (a title's
+    /// continuation and its submission guidance ride with it), a lead an entry from its `[...]`
+    /// header; her cards and her lead are her focus, every other card is in its group (claimable,
+    /// held by others). The capture's order, oldest card first, stands in for each card's last
+    /// change, which the capture does not carry.
     fn units(snapshot: &str) -> Vec<RagItem> {
-        use continuum_context::nav::{standing, Expand, Node};
+        use continuum_context::nav::{collapse, Entry, Expand, Fold, Group};
         let mut raw: Vec<String> = Vec::new();
         for line in snapshot.lines() {
             match raw.last_mut() {
@@ -263,39 +263,36 @@ mod tests {
                 _ => raw.push(line.to_owned()),
             }
         }
-        let (mut leads, mut hers, mut claimable, mut held): (Vec<RagItem>, Vec<RagItem>, Vec<RagItem>, Vec<RagItem>) = Default::default();
-        for unit in raw {
+        let group = |label: &'static str| Group { label, expand: Expand::verb("work/list"), fold: Fold::Recent };
+        let (mut entries, mut hers): (Vec<Entry<bool>>, Vec<Entry<bool>>) = Default::default();
+        for (at, unit) in raw.into_iter().enumerate() {
             let first = unit.lines().next().unwrap_or_default().to_owned(); // unwrap_or_default: a unit has at least its own line
             if let Some(rest) = first.strip_prefix("card ") {
                 let id = rest.split(' ').next().unwrap_or_default(); // unwrap_or_default: the line names its card
                 let tag = rest.split_once('[').and_then(|(_, t)| t.split_once(']')).map(|(t, _)| t).unwrap_or_default(); // unwrap_or_default: an untagged card keeps its id
+                let entry = Entry::new(format!("card:{id}"), unit.clone(), false).summary(first.clone());
                 if unit.contains(", owner YOU)") {
-                    hers.push(RagItem::whole(format!("card:{id}"), unit.clone(), serde_json::Value::Null).with_summary(first.clone()).with_pointer(format!("[card {id}] [{tag}] — work/get {id}")));
+                    hers.push(entry.pointer(format!("[card {id}] [{tag}] — work/get {id}")));
                     continue;
                 }
-                let glance = RagItem::whole(format!("card:{id}"), unit.clone(), serde_json::Value::Null).with_pointer(format!("[card {id}] [{tag}]"));
-                if tag == "Open" || tag.starts_with("CLAIMABLE") { claimable.push(glance) } else { held.push(glance) }
+                let label = if tag == "Open" || tag.starts_with("CLAIMABLE") { "claimable" } else { "held by others" };
+                entries.push(entry.pointer(format!("[card {id}] [{tag}]")).in_group(group(label), at as u64));
             } else {
                 let header = first.split_once(']').map(|(h, _)| format!("{h}]")).unwrap_or_default(); // unwrap_or_default: every lead opens with its header
-                let item = RagItem::whole(header.clone(), unit.clone(), serde_json::Value::Null).with_pointer(format!("{header} — work/list"));
-                match header.as_str() {
-                    "[your work]" => hers.insert(0, item),
-                    _ => leads.push(item.as_tally()),
-                }
+                let entry = Entry::new(header.clone(), unit.clone(), false).pointer(format!("{header} — work/list"));
+                if header == "[your work]" { hers.insert(0, entry) } else { entries.push(entry.tally()) }
             }
         }
-        let mut offered = Vec::new();
-        for (label, group) in [("claimable", claimable), ("held by others", held)] {
-            let folded = group.len() - standing(group.len());
-            if folded > 0 {
-                let node = Node::new(label, folded, Expand::verb("work/list")).to_string();
-                leads.push(RagItem::whole(format!("nav:{label}"), node.clone(), serde_json::Value::Null).with_pointer(node).as_tally());
-            }
-            offered.extend(group.into_iter().skip(folded));
-        }
-        offered.extend(hers);
-        offered.extend(leads);
-        offered
+        entries.extend(hers);
+        collapse(entries)
+            .into_iter()
+            .map(|unit| {
+                let mut item = RagItem::whole(unit.key, unit.full, serde_json::Value::Null);
+                item.summary = unit.summary;
+                item.pointer = unit.pointer;
+                if unit.tally { item.as_tally() } else { item }
+            })
+            .collect()
     }
 
     // what this catches: the whole board appended on every change, every card rendered whole (Benchy,

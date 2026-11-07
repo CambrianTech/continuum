@@ -56,7 +56,8 @@ use airc_core::doctrine::WallPostPublished;
 use airc_lib::AircError;
 use async_trait::async_trait;
 
-use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagSource};
+use crate::persona::viewstate_rag::RagRenderUnit;
 
 use crate::cognition::faculty_ids::WALL;
 
@@ -273,32 +274,30 @@ impl WallSource {
         format!("{}{}", Self::label(post), post.body)
     }
 
-    /// One pinned post as an item: whole `[category]\n{body}`, keyed by its post id.
-    /// Summary = `[category] <first line>` (a line boundary, never a mid-text cut), only
-    /// when the post has more than that line; pointer = the post id and the verb that
-    /// lists the wall again.
-    fn item(post: &WallPostPublished) -> RagItem {
+    /// One pinned post's SHAPE (`continuum_context::nav`): whole `[category]\n{body}`, keyed by
+    /// its post id; summary = `[category] <first line>` (a line boundary, never a mid-text cut);
+    /// pointer = the post id and the verb that lists the wall again. A post the room pinned is
+    /// her room's standing word, her focus; a card ledger is a record among many, in the
+    /// "ledgers" group by when it was published. How it collapses is the contract's.
+    fn item(post: &WallPostPublished) -> RagRenderUnit {
         let content = Self::render(post);
-        let first_line = post.body.lines().map(str::trim).find(|l| !l.is_empty());
-        let summary = first_line
-            .map(|line| format!("[{}] {line}", post.category))
-            .filter(|summary| summary.len() < content.len());
-        let mut item = RagItem::whole(
-            post.post_id.to_string(),
-            content,
-            serde_json::json!({
-                "post_id": post.post_id.to_string(),
-                "category": post.category,
-                "supersedes": post.supersedes.map(|u| u.to_string()),
-                "published_by": post.published_by.as_uuid().to_string(),
-                "published_at_ms": post.published_at_ms,
-            }),
-        )
-        .with_pointer(format!("[wall post {} ({}): persona/wall/list]", post.post_id, post.category));
-        if let Some(summary) = summary {
-            item = item.with_summary(summary);
+        let mut meta = serde_json::Map::new();
+        meta.insert("post_id".into(), serde_json::json!(post.post_id.to_string()));
+        meta.insert("category".into(), serde_json::json!(post.category));
+        meta.insert("supersedes".into(), serde_json::json!(post.supersedes.map(|u| u.to_string())));
+        meta.insert("published_by".into(), serde_json::json!(post.published_by.as_uuid().to_string()));
+        meta.insert("published_at_ms".into(), serde_json::json!(post.published_at_ms));
+        let mut unit = RagRenderUnit::new(post.post_id, content, meta)
+            .pointer(format!("[wall post {} ({}): persona/wall/list]", post.post_id, post.category));
+        if let Some(line) = post.body.lines().map(str::trim).find(|l| !l.is_empty()) {
+            unit = unit.summary(format!("[{}] {line}", post.category));
         }
-        item
+        if post.category == crate::experience::ledger::LEDGER_WALL_CATEGORY {
+            use continuum_context::nav::{Expand, Fold, Group};
+            let ledgers = Group { label: "ledgers", expand: Expand::verb("persona/wall/list"), fold: Fold::Recent };
+            unit = unit.in_group(ledgers, post.published_at_ms);
+        }
+        unit
     }
 }
 
@@ -416,7 +415,7 @@ impl RagSource for WallSource {
         if posts.is_empty() {
             return empty();
         }
-        let items: Vec<RagItem> = posts.iter().map(Self::item).collect();
+        let items = super::viewstate_rag::rag_items(posts.iter().map(Self::item).collect());
 
         tracing::debug!(
             persona_id = %self.persona_id,
