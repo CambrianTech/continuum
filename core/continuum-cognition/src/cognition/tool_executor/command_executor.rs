@@ -61,6 +61,15 @@ const CODE_EDIT: VerbRef<CodeEdit> = VerbRef::in_hands();
 const CODE_LIST: VerbRef<CodeList> = VerbRef::in_hands();
 const CODE_SHELL: VerbRef<CodeShell> = VerbRef::in_hands();
 
+/// `code/read` of `path` as her offered call: typed params through the one call renderer.
+fn read_call(path: &str) -> String {
+    let params = continuum_hands::modules::code_commands::CodeReadParams { file_path: path.to_owned(), start_line: None, end_line: None };
+    match crate::sdk_codegen::NextCall::new(CODE_READ, &params, "reads it") {
+        Ok(call) => call.call(),
+        Err(unserializable) => unserializable.to_string(),
+    }
+}
+
 /// Routes a persona's native tool calls to core commands through the uniform
 /// `continuum_client` [`Connection`] over the local [`InProcessTransport`]. The
 /// persona's hands — the same client every other citizen uses.
@@ -351,10 +360,11 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
             "You emitted tool ARGUMENTS with no tool NAME, so nothing ran:\n{raw}\n\n\
              The arguments look right — they just need a tool in front of them. The form is:\n\
              `tool/name({{\"arg\": \"value\"}})`\n\n\
-             For example: `{CODE_READ}({{\"file_path\": \"src/main.rs\"}})`.\n\
+             For example: `{}`.\n\
              Naming the tool in prose (\"I will release the card\") does not call it — the \
              name has to be in the call itself. Call `commands/help` with no arguments for \
-             the list of tools you can name, then retry with the same arguments."
+             the list of tools you can name, then retry with the same arguments.",
+            read_call("src/main.rs")
         );
     }
 
@@ -412,9 +422,10 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
                 crate::ai::tool_dialect::NotAVerb::Path => format!(
                     "`{attempted}` is a PATH, not a tool — you put the path where the tool \
                      NAME goes, so nothing ran. A path is an argument; the verb goes first:\n\
-                     `{CODE_READ}({{\"file_path\": \"{attempted}\"}})` to read it, `{CODE_WRITE}` or \
+                     `{}` to read it, `{CODE_WRITE}` or \
                      `{CODE_EDIT}` to change it, `{CODE_LIST}` for a directory, `{CODE_SHELL}` with \
-                     `cwd` to run a command there. Retry with the verb in front."
+                     `cwd` to run a command there. Retry with the verb in front.",
+                    read_call(attempted)
                 ),
                 crate::ai::tool_dialect::NotAVerb::Identifier => format!(
                     "`{attempted}` is not a tool, and is not near one — it reads like a symbol \

@@ -259,11 +259,9 @@
             edit_call(call.clone()).unwrap_or_else(|refusal| panic!("the schema's own alternative {call} is refused: {refusal}"));
         }
 
-        let manual = crate::sdk_codegen::ai_help::render_ai_help("code/edit", "edit", &schema);
-        let envelope = manual.split_once("\n{").unwrap().1;
-        let envelope = format!("{{{}", envelope.split_once("\n\nArguments:").unwrap().0);
-        let envelope: serde_json::Value = serde_json::from_str(&envelope).unwrap();
-        let mut params = edit_call(envelope["tool_call"]["arguments"].clone()).expect("the manual's example decodes");
+        let manual = crate::sdk_codegen::ai_help::render_ai_help(crate::sdk_codegen::command_descriptor("code/edit").unwrap());
+        let (_, example) = crate::sdk_codegen::read_call(&manual).unwrap();
+        let mut params = edit_call(serde_json::Value::Object(example)).expect("the manual's example decodes");
         // Fill the path blank; retain the generated numeric addresses unchanged and
         // exercise the real executor, which rejects zero-based line positions.
         let dir = tempfile::tempdir().unwrap();
