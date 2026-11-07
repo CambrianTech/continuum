@@ -46,7 +46,8 @@ impl LlmDeliberationFaculty {
             (window, PromptCalibration::default()),
             |f| (window.min(f.available), f.calibration),
         );
-        (window, calibration.behind(admission))
+        // The template overhead of the engine this request reaches, measured there (never a constant).
+        (window, calibration.behind(admission).with_template(super::template::TemplateEstimate::from_measurement(&binding.adapter.template_overhead(binding.requested_model()))))
     }
 
     /// The window this faculty's turn is fitted to (its binding's served window): the shares
@@ -101,6 +102,9 @@ impl LlmDeliberationFaculty {
             // next prompt is priced at.
             density_mean_milli = reading.mean_milli,
             density_bound_milli = reading.bound_milli,
+            // The chat template's tokens around each message, as the estimate counted them:
+            // measured from the engine, or unmeasured (her density then carries them).
+            template = ?super::template::TemplateEstimate::from_measurement(&binding.adapter.template_overhead(binding.requested_model())),
             "the engine's count of this prompt, retained in her density; the next prompt is fitted at its bound"
         );
     }
@@ -238,8 +242,8 @@ impl LlmDeliberationFaculty {
         // typed IrreducibleShortfall (Cormac on #5779). On a pass her view's optional sources shed
         // first as before.
         let acting = kind == TurnKind::Act;
-        // Already in the allocation's tokens: her view's oracle charges each block at this calibration.
-        let view_claims: Vec<_> = self.view_claims(&all_messages.streams, super::epoch::ViewCost(calibration)).into_iter().map(|mut source| {
+        // Already in the allocation's tokens: her view's allocation estimate charges each block at this calibration.
+        let view_claims: Vec<_> = self.view_claims(&all_messages.streams, super::epoch::AllocationEstimate(calibration)).into_iter().map(|mut source| {
             source.max_tokens = source.max_tokens.max(source.floor_tokens);
             source.required = source.required || acting;
             source
@@ -645,8 +649,12 @@ impl LlmDeliberationFaculty {
         // This is the native request estimate, not a backend tokenizer count.
         // Adapters may add model-specific framing; live acceptance still checks
         // their captured request/usage rather than assuming this estimate exact.
-        let estimated_prompt_tokens = Self::framing_cost(&system)
-            .saturating_add(Self::messages_cost(&messages))
+        // The system message and every message after it carry the template's share around them,
+        // by kind, when the engine measured it: then the density this estimate is learned against
+        // calibrates the rest, as her view's allocation estimate prices it (`epoch/allocation_estimate.rs`).
+        let estimated_prompt_tokens = calibration
+            .estimate_system(&system)
+            .saturating_add(messages.iter().map(|message| calibration.estimate(message)).sum::<usize>())
             .saturating_add(selected.tokens);
         // THE ONE BUDGET'S INVARIANT (`budget.rs`), at the one place the messages are final.
         // A required input that cannot fit is a capacity refusal, decided by the fit above.

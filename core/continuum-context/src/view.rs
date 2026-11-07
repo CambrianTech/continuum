@@ -15,7 +15,7 @@
 use std::collections::HashSet;
 
 use crate::epoch::{Block, Epoch, Mark, Observed, SourceId};
-use crate::cost::Cost;
+use crate::cost::Estimate;
 use crate::motion::{fingerprint, Motion};
 use crate::source::{Item, Source};
 
@@ -194,7 +194,7 @@ fn key(source: &str, item: &str) -> SourceId {
     SourceId(format!("{source}/{item}"))
 }
 
-fn claim<T: Block>(cost: &dyn Cost<T>, source: &dyn Source<T>, items: &[Item<T>], rereads: &crate::rereads::Rereads) -> Claim {
+fn claim<T: Block>(cost: &dyn Estimate<T>, source: &dyn Source<T>, items: &[Item<T>], rereads: &crate::rereads::Rereads) -> Claim {
     Claim {
         source: source.name().to_owned(),
         priority: source.priority(),
@@ -211,7 +211,7 @@ fn claim<T: Block>(cost: &dyn Cost<T>, source: &dyn Source<T>, items: &[Item<T>]
 /// caller's one allocation weighs these beside its own claims and hands its grants back to
 /// [`View::start`] / [`View::turn_over`]. With no view there is no measured re-read: a fresh
 /// clock's, every age Unmeasured.
-pub fn claims<T: Block>(cost: &dyn Cost<T>, sources: &[&dyn Source<T>]) -> Vec<Claim> {
+pub fn claims<T: Block>(cost: &dyn Estimate<T>, sources: &[&dyn Source<T>]) -> Vec<Claim> {
     let fresh = crate::rereads::Rereads::default();
     sources.iter().map(|source| claim(cost, *source, &source.items(), &fresh)).collect()
 }
@@ -221,7 +221,7 @@ impl<T: Block> View<T> {
     /// of a block (the one it charges the final prompt with): the start keeps within each grant
     /// as `cost` prices what it renders, never through a converted unit.
     pub fn start(
-        cost: &dyn Cost<T>,
+        cost: &dyn Estimate<T>,
         head: Vec<T>,
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
@@ -233,7 +233,7 @@ impl<T: Block> View<T> {
     /// grants the allocator makes now, in `cost`.
     pub fn turn_over(
         &mut self,
-        cost: &dyn Cost<T>,
+        cost: &dyn Estimate<T>,
         head: Vec<T>,
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
@@ -272,7 +272,7 @@ impl<T: Block> View<T> {
     /// gives ([`GrantMismatch`]), never a quiet "nothing to restore" (Codex on #5564).
     /// An item her collapsed log holds rises too: whole at the front of its source's items, its log
     /// entry kept where it was (`view/log.rs`).
-    pub fn start_would_restore(&self, cost: &dyn Cost<T>, sources: &[&dyn Source<T>], allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, GrantMismatch> {
+    pub fn start_would_restore(&self, cost: &dyn Estimate<T>, sources: &[&dyn Source<T>], allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, GrantMismatch> {
         let arranged = log::arrange(cost, &self.motion, sources, &self.log);
         let grants = allocate(&arranged.claims);
         if grants.len() != arranged.claims.len() {
@@ -310,7 +310,7 @@ impl<T: Block> View<T> {
     /// (`previous`, [`lead_with_what_held`]). A refusal hands `motion` and the log back.
     #[allow(clippy::type_complexity)] // the refusal returns what it was handed: the mismatch, the measurements and the log
     fn begin(
-        cost: &dyn Cost<T>,
+        cost: &dyn Estimate<T>,
         head: Vec<T>,
         sources: &[&dyn Source<T>],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
@@ -594,7 +594,7 @@ impl<T: Block> View<T> {
     /// start a new epoch, the one full re-prefill (Aiko, the M5, 2026-10-25: 11 turnovers in
     /// 43 acts). Reduced, it costs its outline or pointer, she can reopen it by its key, and
     /// the epoch keeps appending.
-    pub fn readmit(&mut self, cost: &dyn Cost<T>, sources: &[&dyn Source<T>], limit: usize, oversized: usize) -> Option<Advance> {
+    pub fn readmit(&mut self, cost: &dyn Estimate<T>, sources: &[&dyn Source<T>], limit: usize, oversized: usize) -> Option<Advance> {
         let mark = self.act?;
         self.epoch.rewind(mark);
         self.appended.pop();
@@ -602,7 +602,7 @@ impl<T: Block> View<T> {
     }
 
     /// What the whole view costs, head included, priced by `cost`.
-    fn cost(&self, cost: &dyn Cost<T>) -> usize {
+    fn cost(&self, cost: &dyn Estimate<T>) -> usize {
         self.epoch.render().map(|block| cost.block(block)).sum()
     }
 
@@ -805,7 +805,7 @@ impl<T: Block> View<T> {
 struct Admission<'a, T> {
     limit: usize,
     oversized: usize,
-    cost: &'a dyn Cost<T>,
+    cost: &'a dyn Estimate<T>,
 }
 
 /// What a start carries over from the view it replaces: its epoch id, her measured motion, the

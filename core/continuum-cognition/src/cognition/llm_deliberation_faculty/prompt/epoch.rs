@@ -17,8 +17,8 @@
 use continuum_context::source::Source;
 use continuum_context::view::{Claim, View};
 
-mod oracle;
-pub(in super::super) use oracle::ViewCost;
+mod allocation_estimate;
+pub(in super::super) use allocation_estimate::AllocationEstimate;
 
 use super::*;
 use crate::cognition::context_streams::{ContextMessage, MemoryStreams};
@@ -66,12 +66,12 @@ impl LlmDeliberationFaculty {
     }
 
     /// Her view's sources as claims in the window's one allocation, each `view/<source>`, priced by
-    /// the view's own claims ([`continuum_context::view::claims`]) at `cost`, the oracle her view
-    /// starts by ([`ViewCost`]): floor = the source folded or collapsed, want = the source whole
+    /// the view's own claims ([`continuum_context::view::claims`]) at `cost`, the allocation estimate her view
+    /// starts by ([`AllocationEstimate`]): floor = the source folded or collapsed, want = the source whole
     /// (a stored body at its measured size), at the source's priority. There is no separate
     /// history claim for the view, so the allocation that weighs her reply also decides, once, how
     /// much of her context she reads, in the very prices the start keeps within.
-    pub(in super::super) fn view_claims(&self, streams: &Streams, cost: ViewCost) -> Vec<continuum_context::flex::FlexClaim> {
+    pub(in super::super) fn view_claims(&self, streams: &Streams, cost: AllocationEstimate) -> Vec<continuum_context::flex::FlexClaim> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
@@ -131,8 +131,8 @@ impl LlmDeliberationFaculty {
         // so the view is charged too. Compared raw, a view near its grant passed here and the
         // final fit, which converts its budget back to raw, cut 96-99 of its oldest messages
         // from the front with no turnover (Benchy, the M5, 2026-10-23: a head clip, goal 7).
-        // Her view's oracle: each block at what this prompt charges it, the unit of every grant.
-        let cost = ViewCost(calibration);
+        // Her view's allocation estimate: each block as this prompt is priced, the unit of every grant.
+        let cost = AllocationEstimate(calibration);
         let view_tokens = calibration.charge(Self::messages_cost(&prompt.history[..view.len]));
         let granted = act.view_granted() as usize;
         // The epoch keeps appending into window no claim took: its rendering carries the
@@ -255,7 +255,7 @@ impl LlmDeliberationFaculty {
             );
         } else {
             let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
-            match View::start(&ViewCost::estimate(), Vec::new(), &sources, whole) {
+            match View::start(&AllocationEstimate::uncalibrated(), Vec::new(), &sources, whole) {
                 Ok((view, _)) => {
                     *held = Some(view);
                     self.tool_head_turned_over();
@@ -278,9 +278,9 @@ impl LlmDeliberationFaculty {
     }
 
     /// Redo this act's append to her view within `budget_tokens`, every block priced by her view's
-    /// oracle (`cost`), the unit of the budget (the caller re-checks the result in tokens). `None`
+    /// allocation estimate (`cost`), the unit of the budget (the caller re-checks the result in tokens). `None`
     /// when there is no unsent act to redo.
-    fn admit_view(&self, cost: ViewCost, streams: &Streams, budget_tokens: usize) -> Option<Vec<ChatMessage>> {
+    fn admit_view(&self, cost: AllocationEstimate, streams: &Streams, budget_tokens: usize) -> Option<Vec<ChatMessage>> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
@@ -385,7 +385,7 @@ impl LlmDeliberationFaculty {
 
     /// Whether her view, started now under `allocate`'s grants in `cost`, would show her more than
     /// it holds.
-    fn view_would_restore(&self, cost: ViewCost, streams: &Streams, allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, continuum_context::view::GrantMismatch> {
+    fn view_would_restore(&self, cost: AllocationEstimate, streams: &Streams, allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, continuum_context::view::GrantMismatch> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
@@ -396,7 +396,7 @@ impl LlmDeliberationFaculty {
     /// renders, without the `shed` sources.
     fn turn_over_view_with(
         &self,
-        cost: ViewCost,
+        cost: AllocationEstimate,
         streams: &Streams,
         shed: &[&str],
         allocate: impl FnOnce(&[Claim]) -> Vec<usize>,
@@ -464,7 +464,7 @@ impl LlmDeliberationFaculty {
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
         let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
-        match View::start(&ViewCost::estimate(), Vec::new(), &sources, whole) {
+        match View::start(&AllocationEstimate::uncalibrated(), Vec::new(), &sources, whole) {
             Ok((view, _)) => Self::render(Some(&view)),
             Err(mismatch) => {
                 continuum_base::probe!(
@@ -627,8 +627,8 @@ thread_local! {
 }
 
 /// Each view source's grant at a turnover, in the allocation's tokens (the unit her view's claims
-/// are priced in, [`ViewCost`]): the start the next epoch re-prefills, leaving a growth reserve for
-/// the acts that follow to append into. The view keeps within each grant as her oracle prices what
+/// are priced in, [`AllocationEstimate`]): the start the next epoch re-prefills, leaving a growth reserve for
+/// the acts that follow to append into. The view keeps within each grant as her allocation estimate prices what
 /// it renders; no grant is converted into characters.
 ///
 /// `available` is what the window's one allocation leaves her view (its sources' grants plus
@@ -778,7 +778,7 @@ pub(in super::super) fn start_grants(
         .map(|((claim, grant), &share)| match grant {
             // Granted all it asked: the start renders it whole.
             Some(a) if share >= a.requested_max => claim.full,
-            // The share itself: the view keeps within it as her oracle prices each item.
+            // The share itself: the view keeps within it as her allocation estimate prices each item.
             Some(_) => share as usize,
             None => 0,
         })

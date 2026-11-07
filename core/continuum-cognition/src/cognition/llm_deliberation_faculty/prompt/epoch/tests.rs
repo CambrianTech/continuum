@@ -39,7 +39,7 @@ fn a_view_start_keeps_its_token_grant_with_uneven_message_sizes() {
             warnings: Vec::new(),
         };
         let sources: Vec<&dyn Source<ContextMessage>> = vec![&conversation];
-        let (view, _) = View::start(&ViewCost::estimate(), Vec::new(), &sources, |claims| {
+        let (view, _) = View::start(&AllocationEstimate::uncalibrated(), Vec::new(), &sources, |claims| {
             start_grants(claims, &plan, granted as usize, None).expect("funded optional source")
         }).expect("matching source grants");
         let rendered: Vec<_> = view.render().map(ContextMessage::to_chat).collect();
@@ -205,7 +205,7 @@ fn an_overflow_measures_what_her_view_would_have_held() {
     assert_eq!(overflow_beyond(Turnover::Keep, false, 40_000, allowed, Some(next)), None, "a kept view fit: no shortfall");
 }
 
-/// One growing source, priced in the allocation's tokens (her view's oracle), whose one older item
+/// One growing source, priced in the allocation's tokens (her view's allocation estimate), whose one older item
 /// is measured as never asked for again, so the depth collapses it and starts the source at its
 /// base: her 1-token floor with her 6-token newest item whole.
 fn depth_one_token_under_her_newest() -> (Vec<continuum_context::view::Claim>, continuum_context::flex::FlexAllocation) {
@@ -238,7 +238,7 @@ fn depth_one_token_under_her_newest() -> (Vec<continuum_context::view::Claim>, c
 // by a char (`reply_priority_grows_the_reply_not_at_history_or_required_input`, 2026-11-06). The
 // depth priced her newest item in rounded tokens (chars times an average) and `StartSource::newest`
 // in ceiled ones, so a depth that lowered her grant, or sized her start, to its own sum started her
-// a token under her newest item whole. Priced by her oracle both are one number; the depth's lowered
+// a token under her newest item whole. Priced by her allocation estimate both are one number; the depth's lowered
 // grant still never falls under it.
 #[test]
 fn a_measured_depth_never_starts_her_under_her_newest_item() {
@@ -282,7 +282,7 @@ fn started_conversation(old: usize, long: &str, newest: usize, short: &str, gran
     };
     let sources: Vec<&dyn Source<ContextMessage>> = vec![&conversation];
     let sized = |claims: &[Claim]| start_grants(claims, &plan, grant as usize, None).expect("an optional source is never refused");
-    let (view, _) = View::start(&ViewCost::estimate(), Vec::new(), &sources, sized).expect("test: one grant per source");
+    let (view, _) = View::start(&AllocationEstimate::uncalibrated(), Vec::new(), &sources, sized).expect("test: one grant per source");
     let rendered: Vec<ChatMessage> = view.render().map(ContextMessage::to_chat).collect();
     (LlmDeliberationFaculty::messages_cost(&rendered), rendered.len())
 }
@@ -293,7 +293,7 @@ fn started_conversation(old: usize, long: &str, newest: usize, short: &str, gran
 // message is the estimator's: it counts bytes, and a CJK character is three bytes, one estimated
 // token, against an ASCII character's third. A start that converted its TOKEN grant into
 // characters at the source's AVERAGE tokens per character bought characters enough for several
-// dense newest turns whose own cost overran the grant (red before the oracle: 36 tokens in 3
+// dense newest turns whose own cost overran the grant (red before the allocation estimate: 36 tokens in 3
 // messages against 32). The start prices each item with the cost the final prompt is charged with,
 // so what it renders never exceeds its grant.
 #[test]
@@ -304,7 +304,7 @@ fn a_view_start_keeps_its_token_grant_when_her_newest_turns_are_denser() {
     assert!(rendered <= 32, "the start rendered {rendered} tokens in {messages} messages against a 32-token grant");
 }
 
-// what this catches: the oracle changing what a start keeps when every message costs alike: with
+// what this catches: the allocation estimate changing what a start keeps when every message costs alike: with
 // uniform sizes the average was exact, and a start keeps the same newest turns it kept before.
 #[test]
 fn a_view_start_with_uniform_message_sizes_keeps_what_it_kept() {
@@ -312,4 +312,58 @@ fn a_view_start_with_uniform_message_sizes_keeps_what_it_kept() {
     let (rendered, messages) = started_conversation(20, &line, 20, &line, 300);
     assert_eq!(messages, 5, "half the grant (150 tokens) at 30 tokens a turn: her newest five");
     assert!(rendered <= 300, "within its grant: {rendered}");
+}
+
+// what this catches: Codex's 100 > 32 on a base whose estimate counted message text only (#5814
+// dropped the per-message template constant and measured nothing in its place). His conversation
+// (20 long old turns, 20 "ok" turns): text alone prices an "ok" turn at 0 tokens, so a start
+// priced that way keeps all twenty, while the recorded engine counts 6 tokens for each "ok" user
+// turn in a conversation (`template::recorded_qwen36`): 120 against a 32-token grant. Her allocation
+// estimate carries the engine-measured template share of a user turn, so the start keeps within
+// every grant, as estimated and as the recorded engine counts those turns.
+#[test]
+fn a_view_start_keeps_its_token_grant_with_the_measured_template_overhead() {
+    use continuum_context::flex::{AllocationState, FlexAllocation, SourceAllocation};
+    let measured = PromptCalibration::default().with_template(super::super::template::TemplateEstimate::from_measurement(&super::super::template::recorded_qwen36()));
+    // The recorded engine's count of one "ok" user turn in a conversation (the fixture's sixth probe).
+    let engine_ok_turn = 6;
+    let conversation = Conversation {
+        turns: (0..40)
+            .map(|n| Turn { key: format!("density-{n}"), role: Role::User, line: if n < 20 { "long old message ".repeat(100) } else { "ok".to_owned() }, pointer: None })
+            .collect(),
+        ..Default::default()
+    };
+    let sources: Vec<&dyn Source<ContextMessage>> = vec![&conversation];
+    // What the final prompt prices a start's messages at: each at its allocation estimate.
+    let counted = |rendered: &[ChatMessage]| measured.charge(rendered.iter().map(|message| measured.estimate(message)).sum());
+    // A start priced by `cost`, its plan's want that cost's own claim, `granted` tokens.
+    let start = |cost: AllocationEstimate, granted: u32| -> (usize, usize) {
+        let full = continuum_context::view::claims(&cost, &sources)[0].full;
+        let plan = FlexAllocation {
+            allocations: vec![SourceAllocation {
+                source_id: format!("{VIEW_CLAIM}conversation"),
+                allocated_tokens: granted,
+                requested_floor: 0,
+                requested_min: 0,
+                requested_max: LlmDeliberationFaculty::clamp_u32(full),
+                required: false,
+                state: AllocationState::Satisfied,
+            }],
+            unallocated: 0,
+            escalation_needed: false,
+            warnings: Vec::new(),
+        };
+        let (view, _) = View::start(&cost, Vec::new(), &sources, |claims| start_grants(claims, &plan, granted as usize, None).expect("funded optional source"))
+            .expect("matching source grants");
+        let rendered: Vec<ChatMessage> = view.render().map(ContextMessage::to_chat).collect();
+        (counted(&rendered), rendered.len())
+    };
+    let (_, kept) = start(AllocationEstimate::uncalibrated(), 32);
+    assert!(kept * engine_ok_turn > 32, "precondition: priced by text alone the start keeps {kept} turns, {} engine tokens against 32", kept * engine_ok_turn);
+    for granted in [32, 64, 128, 256, 512] {
+        let (estimated, kept) = start(AllocationEstimate(measured), granted);
+        assert!(kept >= 1, "her newest turn is kept whole");
+        assert!(estimated <= granted as usize, "start estimated at {estimated} tokens in {kept} turns against grant {granted}");
+        assert!(kept * engine_ok_turn <= estimated, "the estimate errs high: {kept} turns the engine counts at {}", kept * engine_ok_turn);
+    }
 }

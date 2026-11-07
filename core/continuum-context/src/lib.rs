@@ -2,7 +2,7 @@
 //! Its own crate so the monolith never grows by it and its tests run in seconds.
 //!
 //! - [`cause`]: what each element follows from: its occurrence id, its cause, its content.
-//! - [`cost`]: the caller's price of a block, in the unit its grants are made in (its oracle).
+//! - [`cost`]: the caller's allocation estimate of a block, in the unit its grants are made in.
 //! - [`epoch`]: a stable head, then keyed blocks that only append.
 //! - [`source`]: what a context source offers: its current items, each under a stable key.
 //! - [`level`]: how much of an item the view rendered (whole, summary, pointer, folded).
