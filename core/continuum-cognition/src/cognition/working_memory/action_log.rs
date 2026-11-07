@@ -20,15 +20,20 @@ const POINTER_INDEX: usize = 12;
 /// refusal naming the act, never a fallback to some other output.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ActOutputRefusal {
-    /// No record of hers carries this number.
+    /// No record of hers carries this number. `newest_saved` is her newest act with a saved
+    /// output, the one a reopen can reach (`None` when none is saved).
     #[error("act #{act} is not on your record; use a #n your view names")]
-    Unknown { act: u64 },
+    Unknown { act: u64, newest_saved: Option<u64> },
     /// The act is on record but its save failed: what her view showed of it is all there is.
     #[error("act #{act} has no saved output: its save failed, so what your view showed of it is all there is")]
     Unsaved { act: u64 },
-    /// The caller has no resident mind whose record could resolve the number.
-    #[error("act #{act} cannot be resolved: no resident mind runs for this caller")]
-    NoResident { act: u64 },
+}
+
+/// Both are hers to read and act on: the number names nothing she can reopen.
+impl crate::sdk_codegen::RefusalCause for ActOutputRefusal {
+    fn category(&self) -> crate::sdk_codegen::Category {
+        crate::sdk_codegen::Category::NotFound
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -224,8 +224,11 @@ impl ActionCommand for ToolOutput {
                 ))
             })?;
 
-        let act_handle =
-            |act| crate::cognition::persona_workspace::global().act_output_handle(persona_id, act);
+        let act_handle = |act| {
+            crate::cognition::persona_workspace::global()
+                .act_output_handle(persona_id, act)
+                .map_err(|fault| CommandError::Internal(fault.to_string()))
+        };
         let handle = named_output(params.handle.take(), params.act, act_handle)?;
         let path = spill::resolve(persona_id, &handle)
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
@@ -312,23 +315,40 @@ impl ProjectsOutcome for ToolOutput {
 }
 
 /// The saved output a call names: its `outputId`, or her act number resolved by `act_handle`
-/// (her working memory's record). Exactly one; an act that does not resolve is its typed
-/// refusal, never another output.
+/// (her working memory's record; the outer error is the substrate's). Exactly one; an act that
+/// does not resolve is her typed refusal with its next move, never another output.
 fn named_output(
     handle: Option<String>,
     act: Option<u64>,
-    act_handle: impl FnOnce(u64) -> Result<String, crate::cognition::working_memory::ActOutputRefusal>,
+    act_handle: impl FnOnce(u64) -> Result<Result<String, crate::cognition::working_memory::ActOutputRefusal>, CommandError>,
 ) -> Result<String, CommandError> {
     match (handle, act) {
         (Some(handle), None) => Ok(handle),
-        (None, Some(act)) => {
-            act_handle(act).map_err(|refusal| CommandError::Invalid(refusal.to_string()))
-        }
+        (None, Some(act)) => act_handle(act)?.map_err(act_refused),
         _ => Err(CommandError::Invalid(
             "give exactly one of outputId (from the preview) or act (one of your act numbers)"
                 .into(),
         )),
     }
+}
+
+/// Her act refusal with its next move: her newest saved act when the number names nothing, or
+/// why there is none.
+fn act_refused(refusal: crate::cognition::working_memory::ActOutputRefusal) -> CommandError {
+    use crate::cognition::working_memory::ActOutputRefusal;
+    use crate::sdk_codegen::{NextCall, NextMoves, NoMove, Refusal};
+    let next = match refusal {
+        ActOutputRefusal::Unknown { newest_saved: Some(act), .. } => {
+            let reopen = ToolOutputParams { act: Some(act), ..Default::default() };
+            match NextCall::new(TOOL_OUTPUT, &reopen, "your newest act with a saved output") {
+                Ok(call) => NextMoves::call(call),
+                Err(unwritable) => return CommandError::Internal(unwritable.to_string()),
+            }
+        }
+        ActOutputRefusal::Unknown { newest_saved: None, .. } => NextMoves::None(NoMove::NothingSaved),
+        ActOutputRefusal::Unsaved { .. } => NextMoves::None(NoMove::NothingMoreExists),
+    };
+    Refusal::new(refusal, next).into()
 }
 
 fn read_saved(
@@ -551,10 +571,10 @@ mod tests {
         };
         let path = dir.path().join("h1");
         assert!(std::fs::write(&path, "line one\nerror here\nline three\n").is_ok());
-        let Ok(by_act) = named_output(None, Some(1), |act| memory.saved_handle(act)) else {
+        let Ok(by_act) = named_output(None, Some(1), |act| Ok(memory.saved_handle(act))) else {
             panic!("act #1 was saved")
         };
-        let Ok(by_handle) = named_output(Some("h1".into()), None, |act| memory.saved_handle(act))
+        let Ok(by_handle) = named_output(Some("h1".into()), None, |act| Ok(memory.saved_handle(act)))
         else {
             panic!("a handle names itself")
         };
@@ -568,27 +588,31 @@ mod tests {
             (act_read.content, act_read.handle),
             (handle_read.content, handle_read.handle)
         );
-        for (act, says) in [
-            (2, "act #2 has no saved output"),
-            (99, "act #99 is not on your record"),
-        ] {
-            match named_output(None, Some(act), |act| memory.saved_handle(act)) {
-                Err(CommandError::Invalid(refusal)) => {
-                    assert!(refusal.starts_with(says), "{refusal}")
-                }
-                other => panic!("act #{act} must refuse, got {other:?}"),
-            }
-        }
+        // An act that reopens nothing is her typed refusal with its next move: an unknown number
+        // points at her newest saved act (#1, never the unsaved #2), and a failed save says there
+        // is no move, typed, never a guess at some other output.
+        let refused = |act| match named_output(None, Some(act), |act| Ok(memory.saved_handle(act))) {
+            Err(CommandError::Refused(refusal)) => refusal,
+            other => panic!("act #{act} must refuse, got {other:?}"),
+        };
+        let unknown = refused(99);
+        assert!(unknown.to_string().starts_with("act #99 is not on your record"), "{unknown}");
+        let next: Vec<_> = unknown.next().calls().map(|call| (call.verb().canonical(), call.args().clone())).collect();
+        let mut newest_saved = serde_json::Map::new();
+        newest_saved.insert("act".into(), 1.into());
+        assert_eq!(next, [(TOOL_OUTPUT.canonical(), newest_saved)]);
+        let unsaved = refused(2);
+        assert_eq!(unsaved.next(), &crate::sdk_codegen::NextMoves::None(crate::sdk_codegen::NoMove::NothingMoreExists));
         assert!(
             matches!(
-                named_output(Some("h1".into()), Some(1), |act| memory.saved_handle(act)),
+                named_output(Some("h1".into()), Some(1), |act| Ok(memory.saved_handle(act))),
                 Err(CommandError::Invalid(_))
             ),
             "both: refused"
         );
         assert!(
             matches!(
-                named_output(None, None, |act| memory.saved_handle(act)),
+                named_output(None, None, |act| Ok(memory.saved_handle(act))),
                 Err(CommandError::Invalid(_))
             ),
             "neither: refused"
