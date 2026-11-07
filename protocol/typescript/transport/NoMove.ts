@@ -3,4 +3,4 @@
 /**
  * Why a refusal has no call that would make progress.
  */
-export type NoMove = "nothing_more_exists";
+export type NoMove = "nothing_more_exists" | "nothing_saved";
