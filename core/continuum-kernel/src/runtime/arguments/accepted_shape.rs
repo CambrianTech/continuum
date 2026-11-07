@@ -11,13 +11,16 @@
 //! number or boolean; `Option` of one counts):
 //! - an object of exactly one key, that key the property's own name: unwrapped (and its value
 //!   read again as a scalar, below);
-//! - an object of exactly one key under another name whose value already IS the declared kind:
-//!   unwrapped;
+//! - an object of exactly one key that is a WORD of the property's name (`card_id: {"id": …}`,
+//!   `file_path: {"path": …}`), never an encoding (`base64`, `b64`, `hex`), whose value already IS
+//!   the declared kind: unwrapped;
 //! - a string that is exactly a declared integer, number or boolean's canonical text: converted;
 //! - a number or boolean where a string is declared: rendered.
 //!
 //! Anything with more than one plausible reading still refuses with the decoder's typed refusal:
-//! an object of two or more keys, a one-key object holding an object or list, a string that only
+//! an object of two or more keys, a one-key object under a key that is not a word of the field's
+//! name (`content: {"base64": …}` would write the encoded text, `title: {"text": …}`), a one-key
+//! object holding an object or list, a string that only
 //! loosely reads as a number (`"5 lines"`, `"+5"`, `"1e3"`), a number where a boolean is declared
 //! (0/1 is a guess), a declared union of scalar types, a nested field, a list where a scalar is
 //! declared, or a string holding JSON where an object is declared.
@@ -81,7 +84,8 @@ impl Scalar {
 pub enum Reading {
     /// `{"cmd": {"cmd": "ls"}}`: the value wrapped in an object keyed by its own name.
     WrappedInOwnName,
-    /// `{"card_id": {"id": "08ece9e8"}}`: one key under another name, its value the declared kind.
+    /// `{"card_id": {"id": "08ece9e8"}}`: one key that is a word of the field's name, its value the
+    /// declared kind.
     WrappedInOneKey,
     /// `"30000"` where an integer or number is declared, `"true"` where a boolean is.
     TextAsScalar,
@@ -181,6 +185,9 @@ fn read_property(name: &str, scalar: Scalar, sent: &Value) -> Option<(Value, Vec
             _ => return None,
         };
         let own_name = key == name;
+        if !own_name && !names_a_part_of(key, name) {
+            return None;
+        }
         let unwrapped = shape(if own_name { Reading::WrappedInOwnName } else { Reading::WrappedInOneKey }, JsonKind::Object);
         if scalar.holds(inner) {
             return Some((inner.clone(), vec![unwrapped]));
@@ -195,6 +202,35 @@ fn read_property(name: &str, scalar: Scalar, sent: &Value) -> Option<(Value, Vec
     }
     let converted = convert(scalar, sent)?;
     Some((converted, vec![shape(reading_of(scalar), JsonKind::of(sent))]))
+}
+
+/// Keys that say how a value is ENCODED, never what it is: `content: {"base64": "…"}` holds base64
+/// text whose decoding is the content, so unwrapping it would write the encoded text itself (Cormac
+/// on #5836: silent data corruption in `code/write`). Never unwrapped under another name.
+const ENCODING_KEYS: &[&str] = &["base64", "b64", "hex"];
+
+/// Whether `key` is one of the words of `property`'s name (split on `_` and case boundaries,
+/// compared lowercase): `card_id: {"id": …}` and `filePath: {"path": …}` say the same field, while
+/// `title: {"text": …}` or `content: {"base64": …}` name something else, and refuse.
+fn names_a_part_of(key: &str, property: &str) -> bool {
+    let key = key.to_lowercase();
+    !ENCODING_KEYS.contains(&key.as_str()) && words(property).any(|word| word == key)
+}
+
+/// The lowercase words of a field name: `file_path` and `filePath` are both `file`, `path`.
+fn words(name: &str) -> impl Iterator<Item = String> + '_ {
+    name.split('_').flat_map(|part| {
+        let mut words = Vec::new();
+        let mut word = String::new();
+        for c in part.chars() {
+            if c.is_uppercase() && !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            word.extend(c.to_lowercase());
+        }
+        words.push(word);
+        words.into_iter().filter(|w| !w.is_empty())
+    })
 }
 
 fn reading_of(scalar: Scalar) -> Reading {

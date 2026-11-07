@@ -119,6 +119,47 @@ fn ambiguous_shapes_still_refuse() {
     assert_eq!(field, "force", "0/1 for a boolean is a guess");
 }
 
+/// `code/write`'s shape: a content field, a path, a title.
+#[derive(Debug, Deserialize, PartialEq, schemars::JsonSchema)]
+struct Write {
+    content: String,
+    #[serde(default)]
+    file_path: Option<String>,
+    /// A camelCase wire name, for the case-boundary split.
+    #[serde(default, rename = "filePath")]
+    file_path_camel: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    content_base64: Option<String>,
+}
+
+// what this catches (Cormac on #5836, review 03a7f577): `content: {"base64": "…"}` unwrapped to
+// the base64 TEXT and written into the file, silent data corruption. A key that is not a word of
+// the field's name refuses; an encoding key never unwraps, even when it IS a word of the name.
+#[test]
+fn a_key_that_is_not_a_word_of_the_field_refuses() {
+    assert_eq!(refused_field::<Write>(json!({"content": {"base64": "aGk="}})).0, "content");
+    assert_eq!(refused_field::<Write>(json!({"content": "x", "title": {"text": "Spec"}})).0, "title");
+    for encoding in ["base64", "b64", "hex", "Base64"] {
+        let (field, _) = refused_field::<Write>(json!({"content": "x", "content_base64": {encoding: "aGk="}}));
+        assert_eq!(field, "content_base64", "`{encoding}` is how a value is encoded, never what it is");
+    }
+}
+
+// what this catches: the token readings still unwrap, split on `_` and on case boundaries.
+#[test]
+fn a_key_that_is_a_word_of_the_field_unwraps() {
+    let card: GetTask = accepted(json!({"card_id": {"id": "08ece9e8"}}));
+    assert_eq!(card.card_id, CardRef("08ece9e8".into()));
+    let snake: Write = accepted(json!({"content": "x", "file_path": {"path": "src/lib.rs"}}));
+    assert_eq!(snake.file_path.as_deref(), Some("src/lib.rs"));
+    let camel: Write = accepted(json!({"content": "x", "filePath": {"path": "src/lib.rs"}}));
+    assert_eq!(camel.file_path_camel.as_deref(), Some("src/lib.rs"));
+    let own: Write = accepted(json!({"content": {"content": "body"}}));
+    assert_eq!(own.content, "body", "its own name always unwraps");
+}
+
 // what this catches: a read call that still does not decode is refused on the field that is
 // still wrong, not on the one the reading fixed, so her next move is the right field.
 #[test]
