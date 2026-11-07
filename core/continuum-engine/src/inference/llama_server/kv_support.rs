@@ -75,7 +75,10 @@ impl LlamaServerProcess {
     /// the engine cold). The answer is the binary's own, keyed by it ([`super::genome::train_dir_support`]).
     pub(super) async fn engine_takes_train_dir(&self) -> Result<bool, LlamaServerError> {
         let bin = self.engine_bin()?;
-        if let Some(answer) = super::genome::train_dir_support(&bin) {
+        // Asked and answered: its answer. Never asked, or asked without an answer: ask now, so a
+        // binary whose first probe timed out is not "no" for every in-place change until a relaunch
+        // (Codex on #5817: Unanswered read as an answer here).
+        if let Some(answer) = super::genome::train_dir_known(&super::genome::ENGINE_PROBES.lock(), &bin) {
             return Ok(answer);
         }
         let receipt = crate::inference::engine_install::EngineInstallReceipt::prepare(bin.clone())
