@@ -1,6 +1,17 @@
 #![cfg(test)]
 use super::*;
 
+// This allocation simulation defines its synthetic backend token units by the
+// same wire-cost model asserted below. It is not a real tokenizer replay.
+fn allocation_fixture_prompt(request: &crate::ai::types::TextGenerationRequest) -> u32 {
+    let system = request.system_prompt.as_ref().expect("fixture system prompt");
+    let tools = request.tools.as_ref().expect("fixture native tools");
+    let prompt = LlmDeliberationFaculty::framing_cost(system)
+        + LlmDeliberationFaculty::messages_cost(&request.messages)
+        + crate::cognition::tool_surface::tool_surface_tokens_of(tools);
+    u32::try_from(prompt).expect("fixture prompt fits token counter")
+}
+
 // what this catches: Benchy's first write cut mid-call (2026-10-18 02:10Z). Three
 // read-only turns landed at 2,702; the reply's reserve was twice that peak, 5,404;
 // the write cut mid-answer at 5,404 — and the retry was sized by the same carve-off.
@@ -22,7 +33,8 @@ async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
     let cut = reg.record_emission_in_memory(persona, 5_404, 0, EmissionStop::CutMidAnswer, 4);
     assert_eq!(cut.peak_tokens, 10_808, "a cut mid-answer records the answer at double");
     let wm = Arc::new(WorkingMemory::new(8));
-    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
+    let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)])
+        .with_prompt_counter(allocation_fixture_prompt));
     let faculty = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", adapter.clone())
         .with_context_window(window)
         .with_tools(persona_tools::native_tool_specs())
@@ -278,7 +290,7 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
             FinishReason::Stop,
             "PASS",
             None,
-        )]));
+        )]).with_prompt_counter(allocation_fixture_prompt));
         let wm = Arc::new(WorkingMemory::new(8));
         wm.record_receipt("latest complete tool receipt");
         // Optional history does not outrank the reply reserve. Give this

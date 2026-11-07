@@ -747,6 +747,12 @@ pub mod test_support {
         }
     }
 
+    /// Explicit synthetic counting model. Neither mode claims real tokenizer evidence.
+    pub enum FixturePromptCounter {
+        RecordedUsage,
+        Request(fn(&TextGenerationRequest) -> u32),
+    }
+
     /// Adapter that replays a canned response sequence and records every
     /// request it received — so a test can assert the agent loop both
     /// re-generated and threaded the tool results back into the re-prompt.
@@ -758,6 +764,7 @@ pub mod test_support {
         pub live_window: Option<u32>,
         /// The adapter admits by the engine's exact prompt count (`counts_prompts_exactly`).
         pub counts_exactly: bool,
+        pub prompt_counter: FixturePromptCounter,
         /// The dispatch terms of every request, in order (`generate_admitted`), aligned with `seen`.
         pub terms_seen: Mutex<Vec<crate::ai::types::DispatchTerms>>,
         pub window_sequence: Mutex<VecDeque<u32>>,
@@ -773,11 +780,18 @@ pub mod test_support {
                 rejections: Mutex::new(VecDeque::new()),
                 live_window: None,
                 counts_exactly: false,
+                prompt_counter: FixturePromptCounter::RecordedUsage,
                 terms_seen: Mutex::new(Vec::new()),
                 window_sequence: Mutex::new(VecDeque::new()),
                 on_window_read: Mutex::new(None),
                 on_request: Mutex::new(None),
             }
+        }
+        /// Select a deterministic request counter for allocation simulations.
+        /// Recorded tokenizer replays retain the canned-usage model instead.
+        pub fn with_prompt_counter(mut self, counter: fn(&TextGenerationRequest) -> u32) -> Self {
+            self.prompt_counter = FixturePromptCounter::Request(counter);
+            self
         }
         fn check_fixture_dispatch(&self, request: &TextGenerationRequest) -> Result<(), crate::ai::inference_error::InferenceError> {
             let injected = self.on_request.lock().expect("fixture request hook")
@@ -805,15 +819,18 @@ pub mod test_support {
         ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
             self.terms_seen.lock().expect("fixture terms log").push(terms); // JUSTIFIED: test fixture lock, never poisoned
             self.check_fixture_dispatch(&request)?;
-            // Canned backend: the scripted usage is its independent counter oracle,
-            // including explicit zero. This models consumer contracts, not a real tokenizer.
+            // The selected synthetic counter owns both dispatch and returned usage.
+            // This models consumer contracts, not a real tokenizer.
             let dispatch = match terms.output {
                 crate::ai::reply_room::OutputIntent::Fixed(reply)
                     if !terms.admission.is_some_and(|a| a.lease.is_some() || a.priced == crate::ai::types::PromptAdmission::EngineCounted) =>
                     crate::ai::reply_room::DispatchReceipt::ProviderFixed { reply: reply.get() },
                 _ => {
-                    let prompt = self.responses.lock().expect("fixture response script").front()
-                        .ok_or_else(|| crate::ai::inference_error::InferenceError::Protocol("scripted counter exhausted".into()))?.usage.input_tokens;
+                    let prompt = match self.prompt_counter {
+                        FixturePromptCounter::Request(counter) => counter(&request),
+                        FixturePromptCounter::RecordedUsage => self.responses.lock().expect("fixture response script").front()
+                            .ok_or_else(|| crate::ai::inference_error::InferenceError::Protocol("scripted counter exhausted".into()))?.usage.input_tokens,
+                    };
                     let admission = terms.admission.ok_or_else(|| crate::ai::inference_error::InferenceError::Protocol("scripted adaptive admission missing".into()))?;
                     let room = terms.output.resolve(prompt, admission.window, admission.window)
                         .map_err(|short| crate::ai::inference_error::InferenceError::ContextExceeded { requested: short.prompt, available: short.window })?;
@@ -823,6 +840,9 @@ pub mod test_support {
             let mut request = request;
             request.max_tokens = Some(dispatch.admitted_reply()?);
             let mut response = self.generate_stream(request, sink).await.map_err(crate::ai::inference_error::InferenceError::from)?;
+            if let crate::ai::reply_room::DispatchReceipt::Counted { room } = dispatch {
+                response.usage.input_tokens = room.prompt;
+            }
             response.dispatch = dispatch;
             Ok(response)
         }
