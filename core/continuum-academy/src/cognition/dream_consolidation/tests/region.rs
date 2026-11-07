@@ -95,7 +95,7 @@ async fn reviewed_boundary_retries_failed_distillation_with_bounded_receipt_stat
         .generate_text(TextGenerationRequest {
             messages: vec![ChatMessage::text("user", "a reusable observation")],
             ..Default::default()
-        })
+        }, crate::ai::adapter::Dispatched::fixture())
         .await
         .unwrap();
     let mut empty = good.clone();

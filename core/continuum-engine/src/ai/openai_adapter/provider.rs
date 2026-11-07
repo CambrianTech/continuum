@@ -3,9 +3,7 @@
 use super::embedding::{build_embedding_body, parse_embedding_response, parse_embedding_usage};
 use super::*;
 
-// `apply_no_think_switch` / `close_trailing_assistant` live in `crate::inference::request_body` (S3b decompose).
-
-// `apply_enable_thinking_false` lives in `crate::inference::request_body` (S3b decompose).
+// `close_trailing_assistant` lives in `crate::inference::request_body` (S3b decompose).
 
 #[async_trait]
 impl AIProviderAdapter for OpenAICompatibleAdapter {
@@ -312,8 +310,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
-        crate::ai::stream_sinks::drain_generation(|sink| self.generate_stream(request, sink)).await
+        crate::ai::stream_sinks::drain_generation(|sink| self.generate_stream(request, sink, dispatched)).await
     }
 
     /// Streaming-first generation: each token reaches `sink` the INSTANT the
@@ -325,8 +324,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self,
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
-        self.generate_stream_checked(request, sink)
+        self.generate_stream_checked(request, sink, dispatched)
             .await
             .map_err(|error| error.to_string())
     }
@@ -335,8 +335,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         &self,
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        self.stream_checked(request, crate::ai::types::DispatchTerms::default(), sink).await
+        self.stream_checked(request, dispatched.terms(), sink).await
     }
 
     /// Create embeddings over the OpenAI-compatible `/v1/embeddings` endpoint.

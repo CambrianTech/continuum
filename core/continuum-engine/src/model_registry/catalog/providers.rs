@@ -205,22 +205,20 @@ pub fn providers() -> Vec<Provider> {
             // future model ships without one, the GGUF's stripped template would
             // silently ignore tools — the forge MUST write the sidecar (#32/#52).
             // It is a REASONING model: thinking is its primary feature and the
-            // persona's interiority, never suppressed by default. (We once set
-            // `suppress_thinking: true` because the forged 4B rambled/looped its
+            // persona's interiority, never suppressed by a provider flag. (We once set
+            // a gateway-wide suppression because the forged 4B rambled/looped its
             // `<think>` block to the token budget — but that is a fitness/sampling
             // gap to train away (genome loop #32) and to bound with the forwarded
             // `repeat_penalty`, NOT a feature to amputate. Suppressing it also
             // routed thinking-trained genes' answers into `reasoning_content`,
             // reading 0 in eval; the real fix is to let her think and read the
-            // post-`</think>` answer from `content`.) Operator may still force
-            // suppression per-run with the adapter's ThinkingMode override; the
-            // gateway default is to THINK. It serves OpenAI-compatible embeddings
+            // post-`</think>` answer from `content`.) Whether a request thinks is its
+            // think term's alone (`request_body::apply_think`). It serves OpenAI-compatible embeddings
             // and holds ONE resident model (so the adapter pre-flights
             // activation). These flags are what the adapter reads instead of
             // branching on the provider id (#55).
             capabilities: ProviderCapabilities {
                 tool_protocol: ToolProtocol::NativeFunctionCalling,
-                suppress_thinking: false,
                 // Embeddings are a MODEL fact: the resident forged GGUF row
                 // declares `Capability::Embedding` (llama-server serves
                 // /v1/embeddings from it via `--embedding`); the adapter

@@ -2,9 +2,7 @@
 
 use super::*;
 use crate::inference::lane_send::PRE_STREAM_HEADER_TIMEOUT_SECS;
-use crate::inference::request_body::{
-    apply_enable_thinking_false, apply_no_think_switch, close_trailing_assistant,
-};
+use crate::inference::request_body::close_trailing_assistant;
 use crate::inference::serving_guard::{
     settled_on_another_model, snapshot_guarantees, unguaranteed_model_refusal,
 };
@@ -38,7 +36,6 @@ fn test_adapter() -> OpenAICompatibleAdapter {
         model_prefixes: Vec::new(),
         requires_auth: false,
         tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
-        thinking: ThinkingMode::Default,
         single_resident_model: false,
         dynamic_model_catalog: false,
         llamacpp_sampling_extensions: false,

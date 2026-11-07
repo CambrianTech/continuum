@@ -264,7 +264,7 @@
         }
         async fn generate_text(
             &self,
-            _request: crate::ai::types::TextGenerationRequest,
+            _request: crate::ai::types::TextGenerationRequest, _dispatched: crate::ai::adapter::Dispatched,
         ) -> Result<crate::ai::types::TextGenerationResponse, String> {
             Err("not used".into())
         }

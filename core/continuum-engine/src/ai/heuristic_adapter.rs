@@ -26,7 +26,7 @@
 //!
 //! ### What the response looks like
 //!
-//! `[heuristic:<8-char-hash>] ack: "<last-200-chars-of-last-user-message>"`
+//! `[heuristic:<8-char-hash>] ack: "<last-user-message>"`
 //!
 //! Enough to prove (a) the inference command surface is wired,
 //! (b) the prompt actually reached the adapter, (c) the response is
@@ -69,10 +69,6 @@ pub const HEURISTIC_PROVIDER_ID: &str = "heuristic";
 /// adapter handled the request.
 pub const HEURISTIC_DEFAULT_MODEL: &str = "heuristic-echo-v1";
 
-/// Echo length cap — last N chars of the most recent user message
-/// surfaces in the response.
-// context-budget-exempt: a TEST-ONLY canned adapter's echo width (gated behind test-fixtures); never a live bound
-const ECHO_CHARS: usize = 200;
 
 /// The adapter struct itself. No mutable state, no clock access, no
 /// external resources — instances are cheap and interchangeable.
@@ -267,8 +263,8 @@ impl HeuristicInferenceAdapter {
             }
         }
         let digest = hasher.finalize();
-        let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
-        hex
+        // The 8-hex-char prefix: the digest's leading u32.
+        format!("{:08x}", u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]))
     }
 
     /// Build the response text from the request. Pure function —
@@ -287,15 +283,8 @@ impl HeuristicInferenceAdapter {
     /// algorithms."
     pub fn build_response_text(req: &TextGenerationRequest) -> String {
         let prefix = Self::determinism_prefix(req);
-        let last = Self::last_user_text(&req.messages);
-        let echoed: String = last
-            .chars()
-            .rev()
-            .take(ECHO_CHARS)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
+        // The whole message, never a width this fixture picked.
+        let echoed = Self::last_user_text(&req.messages);
         let plain = if echoed.is_empty() {
             format!("[heuristic:{prefix}] ack: (no user text in prompt)")
         } else {
@@ -392,6 +381,7 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        _dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         // Observer fires for substrate-side hot-path inference call
         // counts.
@@ -598,8 +588,8 @@ mod tests {
         let adapter = HeuristicInferenceAdapter::new();
         let req_a = req_with(vec![user_msg("hello world")]);
         let req_b = req_with(vec![user_msg("hello world")]);
-        let resp_a = adapter.generate_text(req_a).await.unwrap();
-        let resp_b = adapter.generate_text(req_b).await.unwrap();
+        let resp_a = adapter.generate_text(req_a, crate::ai::adapter::Dispatched::fixture()).await.unwrap();
+        let resp_b = adapter.generate_text(req_b, crate::ai::adapter::Dispatched::fixture()).await.unwrap();
         assert_eq!(
             resp_a.text, resp_b.text,
             "determinism contract: same prompt → identical text"
@@ -610,11 +600,11 @@ mod tests {
     async fn different_prompts_yield_different_response_text() {
         let adapter = HeuristicInferenceAdapter::new();
         let resp_a = adapter
-            .generate_text(req_with(vec![user_msg("alpha")]))
+            .generate_text(req_with(vec![user_msg("alpha")]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         let resp_b = adapter
-            .generate_text(req_with(vec![user_msg("beta")]))
+            .generate_text(req_with(vec![user_msg("beta")]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert_ne!(resp_a.text, resp_b.text);
@@ -629,7 +619,7 @@ mod tests {
                 user_msg("first question"),
                 assistant_msg("first answer"),
                 user_msg("second question — please answer this"),
-            ]))
+            ]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert!(
@@ -648,7 +638,7 @@ mod tests {
     async fn no_user_message_still_produces_marker_response() {
         let adapter = HeuristicInferenceAdapter::new();
         let resp = adapter
-            .generate_text(req_with(vec![system_msg("system only, no user")]))
+            .generate_text(req_with(vec![system_msg("system only, no user")]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert!(resp.text.contains("(no user text in prompt)"));
@@ -659,7 +649,7 @@ mod tests {
     async fn finish_reason_is_stop_for_every_request() {
         let adapter = HeuristicInferenceAdapter::new();
         let resp = adapter
-            .generate_text(req_with(vec![user_msg("anything")]))
+            .generate_text(req_with(vec![user_msg("anything")]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert_eq!(resp.finish_reason, FinishReason::Stop);
@@ -671,7 +661,7 @@ mod tests {
         let resp = adapter
             .generate_text(req_with(vec![user_msg(
                 "a long-ish prompt here for token estimation",
-            )]))
+            )]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert!(resp.usage.input_tokens > 0);
@@ -686,7 +676,7 @@ mod tests {
     async fn provider_field_in_response_matches_provider_id_constant() {
         let adapter = HeuristicInferenceAdapter::new();
         let resp = adapter
-            .generate_text(req_with(vec![user_msg("hi")]))
+            .generate_text(req_with(vec![user_msg("hi")]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert_eq!(resp.provider, HEURISTIC_PROVIDER_ID);
@@ -816,8 +806,8 @@ mod tests {
         let mut req_b = req_with(vec![user_msg("same prompt text")]);
         req_a.temperature = Some(0.0);
         req_b.temperature = Some(0.9);
-        let resp_a = adapter.generate_text(req_a).await.unwrap();
-        let resp_b = adapter.generate_text(req_b).await.unwrap();
+        let resp_a = adapter.generate_text(req_a, crate::ai::adapter::Dispatched::fixture()).await.unwrap();
+        let resp_b = adapter.generate_text(req_b, crate::ai::adapter::Dispatched::fixture()).await.unwrap();
         assert_ne!(
             resp_a.text, resp_b.text,
             "different sampling params should change the determinism prefix"

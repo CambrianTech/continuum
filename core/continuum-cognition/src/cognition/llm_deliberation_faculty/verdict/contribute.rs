@@ -323,7 +323,7 @@ impl LlmDeliberationFaculty {
             // bound the reply to a window the prompt no longer leaves.
             request.max_tokens = Some(allowance);
             let (terms, output_room) = self.dispatch_terms(kind, &view, calibration, (fit_window, rendered_lease), &request);
-            sent_reasoning_budget = terms.think.map(|think| think.0);
+            sent_reasoning_budget = terms.think.budget().map(|think| think.0);
             let allocation = view.allocation.clone().map(|allocation| crate::ai::provenance::AllocationReceipt { output_room, ..allocation });
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
             if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {

@@ -72,7 +72,7 @@ async fn a_lane_refused_as_overloaded_does_not_ask_again_until_the_seat_offers_a
         })
     }))
     .with_target_peer(peer.to_string());
-    let ask = || lane.generate_text(crate::ai::types::TextGenerationRequest::default());
+    let ask = || lane.generate_text(crate::ai::types::TextGenerationRequest::default(), crate::ai::adapter::Dispatched::fixture());
     assert!(ask().await.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 1, "the seat refused once");
     assert!(ask().await.is_err());

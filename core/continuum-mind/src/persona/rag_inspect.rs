@@ -501,8 +501,10 @@ async fn run_inference_probe(
         );
     }
 
+    // No think: today's behaviour (its JSON format closed the think), now stated by the one owner.
+    let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::Budget(crate::ai::types::ThinkBudget(0)));
     let response = adapter
-        .generate_text(request)
+        .generate_under(request, terms)
         .await
         .map_err(|e| format!("rag_inspect inference probe failed: {e}"))?;
 
@@ -543,18 +545,14 @@ async fn run_inference_probe(
 /// any missing field or wrong type errors visibly — the substrate
 /// doesn't silently default a decision the model didn't make.
 fn parse_decide_and_respond(raw: &str) -> Result<(bool, String), String> {
-    let v: serde_json::Value =
-        serde_json::from_str(raw.trim()).map_err(|e| format!("JSON parse: {e}"))?;
-    let will_respond = v
-        .get("will_respond")
-        .and_then(|x| x.as_bool())
-        .ok_or_else(|| "missing or non-bool `will_respond`".to_string())?;
-    let response = v
-        .get("response")
-        .and_then(|x| x.as_str())
-        .ok_or_else(|| "missing or non-string `response`".to_string())?
-        .to_string();
-    Ok((will_respond, response))
+    // Both fields required by the type: serde names an absent or mistyped one.
+    #[derive(serde::Deserialize)]
+    struct DecideAndRespond {
+        will_respond: bool,
+        response: String,
+    }
+    let decided: DecideAndRespond = serde_json::from_str(raw.trim()).map_err(|e| format!("JSON parse: {e}"))?;
+    Ok((decided.will_respond, decided.response))
 }
 
 fn render_prompt_text(system_prompt: &str, messages: &[crate::ai::types::ChatMessage]) -> String {

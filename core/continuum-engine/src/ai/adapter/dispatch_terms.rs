@@ -14,10 +14,40 @@
 //! - the in-process llama adapter has no reasoning-budget sampler in our bindings (the fork's
 //!   `common_reasoning_budget_init` is not reached from `llama`), so it refuses a think budget
 //!   typed rather than let a turn think unbounded.
+//!
+//! Every generation goes through [`DispatchTermsPolicy::generate_admitted`]: the terms-less paths
+//! (`generate_text`, `generate_stream`, `generate_stream_checked`) take a [`Dispatched`] witness
+//! only the engine builds, so no caller outside it can generate without stating its think.
 
 use super::GenerationChunk;
 use crate::ai::inference_error::InferenceError;
-use crate::ai::types::{DispatchTerms, PromptAdmission, TextGenerationRequest, TextGenerationResponse};
+use crate::ai::types::{DispatchTerms, PromptAdmission, TextGenerationRequest, TextGenerationResponse, Think};
+
+/// The witness that a generation was dispatched under stated [`DispatchTerms`]. Its field is
+/// private and its one constructor is the engine's, so a caller outside the engine reaches a
+/// terms-less adapter path only by forwarding a witness it was handed (an adapter that wraps
+/// another), never by building one: every core generation states its think.
+#[derive(Debug, Clone, Copy)]
+pub struct Dispatched(DispatchTerms);
+
+impl Dispatched {
+    /// Built where the engine dispatches under `terms`.
+    pub(crate) fn under(terms: &DispatchTerms) -> Self {
+        Self(*terms)
+    }
+
+    /// The terms it attests: a wrapping adapter's inner path honours them as stated.
+    pub fn terms(self) -> DispatchTerms {
+        self.0
+    }
+
+    /// A test's witness, under the model's default think: an adapter fixture's own contract is
+    /// exercised directly. Behind the test-fixtures gate, so a production binary cannot build one.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn fixture() -> Self {
+        Self(DispatchTerms::thinking(Think::ModelDefault))
+    }
+}
 
 /// Generate a mind's turn under the terms her faculty rendered it with ([`DispatchTerms`]),
 /// enforced at DISPATCH. No default: every adapter states how it honours them.
@@ -29,6 +59,12 @@ pub trait DispatchTermsPolicy: Send + Sync {
         terms: DispatchTerms,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, InferenceError>;
+
+    /// [`Self::generate_admitted`] for a caller that wants only the whole answer: the stream is
+    /// drained (`stream_sinks::drain_generation`) and the assembled response returned.
+    async fn generate_under(&self, request: TextGenerationRequest, terms: DispatchTerms) -> Result<TextGenerationResponse, InferenceError> {
+        crate::ai::stream_sinks::drain_generation(|sink| self.generate_admitted(request, terms, sink)).await
+    }
 }
 
 /// The refusal of an admission this adapter cannot enforce (no exact prompt count, no grant to
@@ -54,14 +90,14 @@ pub async fn generate_without_thinking<A: super::AIProviderAdapter + ?Sized>(
     sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
 ) -> Result<TextGenerationResponse, InferenceError> {
     refuse_unenforceable_admission(&request, &terms)?;
-    adapter.generate_stream_checked(request, sink).await
+    adapter.generate_stream_checked(request, sink, Dispatched::under(&terms)).await
 }
 
 /// The refusal of a think budget an adapter cannot carry, when the terms carry one.
 pub fn refuse_think_budget(request: &TextGenerationRequest, terms: &DispatchTerms) -> Result<(), InferenceError> {
     match terms.think {
-        Some(_) => Err(InferenceError::ThinkUnenforceable { model: model_of(request) }),
-        None => Ok(()),
+        Think::Budget(_) => Err(InferenceError::ThinkUnenforceable { model: model_of(request) }),
+        Think::ModelDefault => Ok(()),
     }
 }
 
@@ -120,7 +156,7 @@ mod tests {
     // estimate) is refused typed before anything is generated.
     #[test]
     fn an_unthinking_adapter_keeps_a_budget_and_refuses_an_admission_it_cannot_enforce() {
-        let think = DispatchTerms { think: Some(ThinkBudget(0)), admission: None };
+        let think = DispatchTerms::thinking(Think::Budget(ThinkBudget(0)));
         assert_eq!(refuse_unenforceable_admission(&request(), &think), Ok(()));
         let counted = DispatchTerms {
             admission: Some(RequestAdmission { window: 4_096, lease: None, priced: PromptAdmission::EngineCounted }),
@@ -144,7 +180,7 @@ mod tests {
         });
         let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
         for think in [ThinkBudget(0), ThinkBudget(338)] {
-            let terms = DispatchTerms { think: Some(think), admission: None };
+            let terms = DispatchTerms::thinking(Think::Budget(think));
             let refused = adapter.generate_admitted(request(), terms, sink.clone()).await;
             assert_eq!(refused.err(), Some(InferenceError::ThinkUnenforceable { model: "m".into() }), "{think:?}");
         }

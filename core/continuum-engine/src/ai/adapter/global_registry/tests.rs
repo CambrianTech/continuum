@@ -58,7 +58,6 @@
                 model_prefixes: Vec::new(),
                 requires_auth: false,
                 tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
-                thinking: crate::ai::openai_adapter::ThinkingMode::Default,
                 single_resident_model: false,
                 dynamic_model_catalog: false,
                 llamacpp_sampling_extensions: false,

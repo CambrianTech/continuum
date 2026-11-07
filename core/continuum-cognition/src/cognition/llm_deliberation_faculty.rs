@@ -793,7 +793,7 @@ pub mod test_support {
             sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
         ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
             self.terms_seen.lock().expect("fixture terms log").push(terms); // JUSTIFIED: test fixture lock, never poisoned
-            self.generate_stream_checked(request, sink).await
+            self.generate_stream_checked(request, sink, crate::ai::adapter::Dispatched::fixture()).await
         }
     }
 
@@ -831,6 +831,7 @@ pub mod test_support {
             &self,
             request: TextGenerationRequest,
             sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
+            dispatched: crate::ai::adapter::Dispatched,
         ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>
         {
             let injected = self.on_request.lock().expect("fixture request hook")
@@ -848,7 +849,7 @@ pub mod test_support {
                 self.seen.lock().expect("fixture request log").push(request);
                 return Err(error);
             }
-            self.generate_stream(request, sink)
+            self.generate_stream(request, sink, dispatched)
                 .await
                 .map_err(Into::into)
         }
@@ -856,6 +857,7 @@ pub mod test_support {
         async fn generate_text(
             &self,
             request: TextGenerationRequest,
+            _dispatched: crate::ai::adapter::Dispatched,
         ) -> Result<TextGenerationResponse, String> {
             self.seen.lock().unwrap().push(request);
             self.responses
