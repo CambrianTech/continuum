@@ -141,11 +141,35 @@ pub fn legacy_projection(
     Ok(Some(record.into()))
 }
 
+/// A capture segment retains its directory instead of recovering it from a path.
+/// External directory entries cross the single-file-name boundary once.
+pub struct CaptureSegment {
+    directory: std::path::PathBuf,
+    path: std::path::PathBuf,
+}
+impl CaptureSegment {
+    pub fn for_persona(directory: &Path, persona: Uuid, previous: bool) -> Self {
+        let suffix = if previous { ".prev" } else { "" };
+        Self { directory: directory.to_owned(), path: directory.join(format!("{persona}{suffix}.jsonl")) }
+    }
+    pub fn from_file_name(directory: &Path, name: impl AsRef<std::ffi::OsStr>) -> std::io::Result<Self> {
+        let name = name.as_ref();
+        let mut components = Path::new(name).components();
+        match (components.next(), components.next()) {
+            (Some(std::path::Component::Normal(part)), None) if part == name =>
+                Ok(Self { directory: directory.to_owned(), path: directory.join(name) }),
+            _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "capture segment must be one file name")),
+        }
+    }
+}
+
 /// Compatibility reader for a single capture segment. Index scans are bounded
 /// by retention; payload IO is bounded separately. Offline dataset consumers use
 /// the same completed-call projection instead of guessing lifecycle joins.
-pub fn completed_file(path: &Path, limit: usize) -> std::io::Result<Vec<serde_json::Value>> {
+pub fn completed_file(segment: &CaptureSegment, limit: usize) -> std::io::Result<Vec<serde_json::Value>> {
     use std::io::Read;
+    let path = &segment.path;
+    let dir = &segment.directory;
     const READ_BUDGET: u64 = 64 * 1024 * 1024;
     let limit = limit.max(1);
     let mut file = match std::fs::File::open(path) {
@@ -196,9 +220,6 @@ pub fn completed_file(path: &Path, limit: usize) -> std::io::Result<Vec<serde_js
         .ok_or_else(|| std::io::Error::other("invalid capture file name"))?;
     let persona = Uuid::parse_str(filename.strip_suffix(".prev").unwrap_or(filename)) // Both current and previous segment names encode the same persona UUID.
         .map_err(|_| std::io::Error::other("capture file name must identify its persona"))?;
-    let dir = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("capture directory missing"))?;
     let generation = store::file_generation(path)?;
     let mut position = None;
     let mut calls = Vec::new();
@@ -262,6 +283,28 @@ pub fn completed_file(path: &Path, limit: usize) -> std::io::Result<Vec<serde_js
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn segments_keep_the_directory_and_accept_only_one_file_name() {
+        let dir = Path::new("capture-root");
+        for name in ["", ".", "..", "../other", "nested/file", "/absolute", "file/"] {
+            assert!(CaptureSegment::from_file_name(dir, name).is_err(), "{name:?}");
+        }
+        #[cfg(windows)]
+        for name in [r"C:\absolute", r"nested\file", r"..\other", "C:relative"] {
+            assert!(CaptureSegment::from_file_name(dir, name).is_err(), "{name:?}");
+        }
+        let legacy = CaptureSegment::from_file_name(dir, "legacy.jsonl").expect("single name");
+        assert_eq!(legacy.directory, dir);
+        assert_eq!(legacy.path, dir.join("legacy.jsonl"));
+        let persona = Uuid::nil();
+        for previous in [false, true] {
+            let segment = CaptureSegment::for_persona(dir, persona, previous);
+            let suffix = if previous { ".prev" } else { "" };
+            assert_eq!(segment.directory, dir);
+            assert_eq!(segment.path, dir.join(format!("{persona}{suffix}.jsonl")));
+        }
+    }
 
     #[test]
     fn submitted_capture_requires_a_supported_schema_and_typed_request() {

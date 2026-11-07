@@ -443,7 +443,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
 
 #[path = "prompt_capture_playback.rs"]
 mod playback;
-pub use playback::{completed_file, decode, legacy_projection, CapturedCall};
+pub use playback::{completed_file, decode, legacy_projection, CapturedCall, CaptureSegment};
 
 #[cfg(test)]
 mod tests {
@@ -671,7 +671,8 @@ mod tests {
         let path = dir.path().join(format!("{}.jsonl", Uuid::new_v4()));
         std::fs::write(&path, "{\"schema_version\":3,\"system\":\"identity\",\"messages\":[],\"response\":{\"text\":\"answer\"}}\n")
             .expect("legacy capture");
-        let rows = completed_file(&path, 1).expect("bounded legacy reader");
+        let segment = CaptureSegment::from_file_name(dir.path(), path.file_name().expect("fixture file name")).expect("fixture segment");
+        let rows = completed_file(&segment, 1).expect("bounded legacy reader");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["response"]["text"], "answer");
         assert_eq!(rows[0]["provenance"], "legacy_missing");
@@ -689,7 +690,8 @@ mod tests {
         ].into_iter().map(|response| serde_json::json!({"schema_version": 3, "response": response}).to_string())
             .collect::<Vec<_>>().join("\n");
         std::fs::write(&path, rows).expect("legacy file");
-        let rows = completed_file(&path, 10).expect("legacy compatibility projection");
+        let segment = CaptureSegment::from_file_name(dir.path(), "legacy.jsonl").expect("fixture segment");
+        let rows = completed_file(&segment, 10).expect("legacy compatibility projection");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["response"]["text"], "valid answer");
         assert_eq!(rows[1]["response"]["finishReason"], "length");

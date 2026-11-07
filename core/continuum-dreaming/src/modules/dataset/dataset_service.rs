@@ -195,7 +195,9 @@ impl DatasetService {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            let captures = crate::cognition::prompt_capture::completed_file(&path, usize::MAX)
+            let segment = crate::cognition::prompt_capture::CaptureSegment::from_file_name(&dir, entry.file_name())
+                .map_err(|error| format!("capture {}: {error}", path.display()))?;
+            let captures = crate::cognition::prompt_capture::completed_file(&segment, usize::MAX)
                 .map_err(|error| format!("capture {}: {error}", path.display()))?;
             for cap in captures {
                 if let Some(pid) = p.persona_id.as_ref().map(|r| r.as_str()) {

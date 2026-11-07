@@ -412,7 +412,7 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
         );
     }
     let legacy =
-        prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+        prompt_capture::completed_file(&prompt_capture::CaptureSegment::for_persona(dir.path(), persona, false), 10)
             .expect("existing prompt/dataset reader");
     assert_eq!(legacy.len(), 1);
     assert!(legacy[0]["messages"]
@@ -481,7 +481,7 @@ async fn playback_records_inference_failure_without_a_fake_response() {
         .expect("failure cause")
         .contains("exhausted"));
     assert!(
-        prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+        prompt_capture::completed_file(&prompt_capture::CaptureSegment::for_persona(dir.path(), persona, false), 10)
             .expect("compatibility reader")
             .is_empty(),
         "failed calls must not become training examples"
@@ -559,7 +559,7 @@ async fn playback_excludes_typed_error_responses_from_completed_training_rows() 
         );
     }
     let completed =
-        prompt_capture::completed_file(&dir.path().join(format!("{persona}.jsonl")), 10)
+        prompt_capture::completed_file(&prompt_capture::CaptureSegment::for_persona(dir.path(), persona, false), 10)
             .expect("completed reader");
     assert_eq!(
         completed.len(),
