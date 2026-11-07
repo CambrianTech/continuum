@@ -16,8 +16,25 @@ use uuid::Uuid;
 /// handle keeps it live and stays in the log (`receipt_keys`, `prune`).
 const POINTER_INDEX: usize = 12;
 
-/// Why an act number does not reopen a saved output (`tool/output` with `act`): a typed
-/// refusal naming the act, never a fallback to some other output.
+/// The act a reopen names (`tool/output`): one of her act numbers, or, for a call naming no
+/// output at all, her newest act with a saved output (the one she most likely means).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActRef {
+    Numbered(u64),
+    NewestSaved,
+}
+
+impl std::fmt::Display for ActRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ActRef::Numbered(act) => write!(f, "act #{act}"),
+            ActRef::NewestSaved => f.write_str("your newest saved act"),
+        }
+    }
+}
+
+/// Why a reopen does not reach a saved output (`tool/output`): a typed refusal naming what she
+/// named, never a fallback to some other output.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ActOutputRefusal {
     /// No record of hers carries this number. `newest_saved` is her newest act with a saved
@@ -27,12 +44,24 @@ pub enum ActOutputRefusal {
     /// The act is on record but its save failed: what her view showed of it is all there is.
     #[error("act #{act} has no saved output: its save failed, so what your view showed of it is all there is")]
     Unsaved { act: u64 },
+    /// A call naming no output, and none of her acts has a saved one yet.
+    #[error("none of your acts has a saved output yet, so there is nothing to reopen")]
+    NothingSaved,
+    /// She named an output and an act, and they are not the same output: two readings, so the
+    /// call is hers to make again with one. `act_output` is the act's own saved output, if any.
+    #[error("outputId {output} and act #{act} name different outputs; name one")]
+    Disagree { act: u64, output: String, act_output: Option<String> },
 }
 
-/// Both are hers to read and act on: the number names nothing she can reopen.
+/// Hers to read and act on: what she named reopens nothing, or names two things.
 impl crate::sdk_codegen::RefusalCause for ActOutputRefusal {
     fn category(&self) -> crate::sdk_codegen::Category {
-        crate::sdk_codegen::Category::NotFound
+        match self {
+            ActOutputRefusal::Disagree { .. } => crate::sdk_codegen::Category::Invalid,
+            ActOutputRefusal::Unknown { .. } | ActOutputRefusal::Unsaved { .. } | ActOutputRefusal::NothingSaved => {
+                crate::sdk_codegen::Category::NotFound
+            }
+        }
     }
 }
 

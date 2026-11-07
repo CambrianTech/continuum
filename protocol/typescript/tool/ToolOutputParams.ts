@@ -2,8 +2,9 @@
 import type { OutputFilter } from "./OutputFilter";
 
 /**
- * Inputs to `tool/output`. Exactly one of `outputId` (from the preview) or `act` (one of
- * her act numbers); everything else selects WHAT to pull back.
+ * Inputs to `tool/output`. `outputId` (from the preview) or `act` (one of her act numbers),
+ * or both when they name the same output, or neither for her newest saved output; everything
+ * else selects WHAT to pull back.
  */
 export type ToolOutputParams = { 
 /**

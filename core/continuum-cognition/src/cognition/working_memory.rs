@@ -619,7 +619,7 @@ mod perception;
 mod residency;
 mod thought_log;
 
-pub use action_log::ActOutputRefusal;
+pub use action_log::{ActOutputRefusal, ActRef};
 pub(crate) use ledger::operation_level;
 pub(crate) use residency::{RecordId, ResidentResults, ShedCandidate};
 pub use thought_log::ThoughtRecord;

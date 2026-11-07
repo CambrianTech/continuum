@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::cognition::tool_executor::spill;
+use crate::cognition::working_memory::{ActOutputRefusal, ActRef};
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, ProjectsOutcome, ToolVerdict, VerbRef};
 
 // It never sizes what she sees (ONE-BUDGET: the view is the only sizer). It returns the
@@ -64,8 +65,9 @@ impl OutputFilter {
     }
 }
 
-/// Inputs to `tool/output`. Exactly one of `outputId` (from the preview) or `act` (one of
-/// her act numbers); everything else selects WHAT to pull back.
+/// Inputs to `tool/output`. `outputId` (from the preview) or `act` (one of her act numbers),
+/// or both when they name the same output, or neither for her newest saved output; everything
+/// else selects WHAT to pull back.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
@@ -232,16 +234,7 @@ impl ActionCommand for ToolOutput {
         let handle = named_output(params.handle.take(), params.act, act_handle)?;
         let path = spill::resolve(persona_id, &handle)
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
-        let range = match (params.start_line, params.end_line) {
-            (Some(s), Some(e)) => Some((s, e)),
-            // A half-given range is ambiguous — name it rather than guess.
-            (Some(_), None) | (None, Some(_)) => {
-                return Err(CommandError::Invalid(
-                    "give BOTH startLine and endLine for a range read, or neither".into(),
-                ))
-            }
-            (None, None) => None,
-        };
+        let range = line_range(params.start_line, params.end_line);
 
         if params.byte_length.is_some() && params.byte_offset.is_none() {
             return Err(CommandError::Invalid(
@@ -314,41 +307,62 @@ impl ProjectsOutcome for ToolOutput {
     }
 }
 
-/// The saved output a call names: its `outputId`, or her act number resolved by `act_handle`
-/// (her working memory's record; the outer error is the substrate's). Exactly one; an act that
-/// does not resolve is her typed refusal with its next move, never another output.
-fn named_output(
-    handle: Option<String>,
-    act: Option<u64>,
-    act_handle: impl FnOnce(u64) -> Result<Result<String, crate::cognition::working_memory::ActOutputRefusal>, CommandError>,
-) -> Result<String, CommandError> {
-    match (handle, act) {
-        (Some(handle), None) => Ok(handle),
-        (None, Some(act)) => act_handle(act)?.map_err(act_refused),
-        _ => Err(CommandError::Invalid(
-            "give exactly one of outputId (from the preview) or act (one of your act numbers)"
-                .into(),
-        )),
+/// The lines a range names, each half read as she would mean it: `endLine` alone is from the
+/// first line, `startLine` alone is to the last (the reader stops at the end). Neither is no range.
+fn line_range(start: Option<usize>, end: Option<usize>) -> Option<(usize, usize)> {
+    match (start, end) {
+        (None, None) => None,
+        (start, end) => Some((start.unwrap_or(1), end.unwrap_or(usize::MAX))), // unwrap_or: a missing half is the output's own edge
     }
 }
 
-/// Her act refusal with its next move: her newest saved act when the number names nothing, or
-/// why there is none.
-fn act_refused(refusal: crate::cognition::working_memory::ActOutputRefusal) -> CommandError {
-    use crate::cognition::working_memory::ActOutputRefusal;
+/// The saved output a call names: its `outputId`, her act number resolved by `act_handle` (her
+/// working memory's record; the outer error is the substrate's), both when they agree, or her
+/// newest saved output when she named neither. Refused only when what she named reopens nothing
+/// or names two different outputs, each a typed refusal with its next move, never another output.
+fn named_output(
+    handle: Option<String>,
+    act: Option<u64>,
+    act_handle: impl FnOnce(ActRef) -> Result<Result<String, ActOutputRefusal>, CommandError>,
+) -> Result<String, CommandError> {
+    match (handle, act) {
+        (Some(handle), None) => Ok(handle),
+        (None, Some(act)) => act_handle(ActRef::Numbered(act))?.map_err(act_refused),
+        (None, None) => act_handle(ActRef::NewestSaved)?.map_err(act_refused),
+        (Some(output), Some(act)) => match act_handle(ActRef::Numbered(act))? {
+            Ok(same) if same == output => Ok(output),
+            act_output => Err(act_refused(ActOutputRefusal::Disagree { act, output, act_output: act_output.ok() })),
+        },
+    }
+}
+
+/// Her reopen refusal with its next move: her newest saved act when the number names nothing,
+/// each name alone when she named two outputs, or why there is none.
+fn act_refused(refusal: ActOutputRefusal) -> CommandError {
     use crate::sdk_codegen::{NextCall, NextMoves, NoMove, Refusal};
-    let next = match refusal {
+    let call = |reopen: Reopen<'_>, why| NextCall::new(TOOL_OUTPUT, &reopen.params(), why);
+    let next = match &refusal {
         ActOutputRefusal::Unknown { newest_saved: Some(act), .. } => {
-            let reopen = ToolOutputParams { act: Some(act), ..Default::default() };
-            match NextCall::new(TOOL_OUTPUT, &reopen, "your newest act with a saved output") {
-                Ok(call) => NextMoves::call(call),
-                Err(unwritable) => return CommandError::Internal(unwritable.to_string()),
-            }
+            call(Reopen::Act(*act), "your newest act with a saved output").map(NextMoves::call)
         }
-        ActOutputRefusal::Unknown { newest_saved: None, .. } => NextMoves::None(NoMove::NothingSaved),
-        ActOutputRefusal::Unsaved { .. } => NextMoves::None(NoMove::NothingMoreExists),
+        ActOutputRefusal::Unknown { newest_saved: None, .. } | ActOutputRefusal::NothingSaved => {
+            Ok(NextMoves::None(NoMove::NothingSaved))
+        }
+        ActOutputRefusal::Unsaved { .. } => Ok(NextMoves::None(NoMove::NothingMoreExists)),
+        ActOutputRefusal::Disagree { act, output, act_output } => {
+            call(Reopen::Output(output), "the output you named by id").and_then(|first| {
+                let more = match act_output {
+                    Some(_) => vec![call(Reopen::Act(*act), "the output of the act you named")?],
+                    None => Vec::new(),
+                };
+                Ok(NextMoves::Calls { first, more })
+            })
+        }
     };
-    Refusal::new(refusal, next).into()
+    match next {
+        Ok(next) => Refusal::new(refusal, next).into(),
+        Err(unwritable) => CommandError::Internal(unwritable.to_string()),
+    }
 }
 
 fn read_saved(
@@ -571,10 +585,10 @@ mod tests {
         };
         let path = dir.path().join("h1");
         assert!(std::fs::write(&path, "line one\nerror here\nline three\n").is_ok());
-        let Ok(by_act) = named_output(None, Some(1), |act| Ok(memory.saved_handle(act))) else {
+        let Ok(by_act) = named_output(None, Some(1), |act| Ok(memory.reopened_handle(act))) else {
             panic!("act #1 was saved")
         };
-        let Ok(by_handle) = named_output(Some("h1".into()), None, |act| Ok(memory.saved_handle(act)))
+        let Ok(by_handle) = named_output(Some("h1".into()), None, |act| Ok(memory.reopened_handle(act)))
         else {
             panic!("a handle names itself")
         };
@@ -591,7 +605,7 @@ mod tests {
         // An act that reopens nothing is her typed refusal with its next move: an unknown number
         // points at her newest saved act (#1, never the unsaved #2), and a failed save says there
         // is no move, typed, never a guess at some other output.
-        let refused = |act| match named_output(None, Some(act), |act| Ok(memory.saved_handle(act))) {
+        let refused = |act| match named_output(None, Some(act), |act| Ok(memory.reopened_handle(act))) {
             Err(CommandError::Refused(refusal)) => refusal,
             other => panic!("act #{act} must refuse, got {other:?}"),
         };
@@ -603,20 +617,54 @@ mod tests {
         assert_eq!(next, [(TOOL_OUTPUT.canonical(), newest_saved)]);
         let unsaved = refused(2);
         assert_eq!(unsaved.next(), &crate::sdk_codegen::NextMoves::None(crate::sdk_codegen::NoMove::NothingMoreExists));
-        assert!(
-            matches!(
-                named_output(Some("h1".into()), Some(1), |act| Ok(memory.saved_handle(act))),
-                Err(CommandError::Invalid(_))
-            ),
-            "both: refused"
-        );
-        assert!(
-            matches!(
-                named_output(None, None, |act| Ok(memory.saved_handle(act))),
-                Err(CommandError::Invalid(_))
-            ),
-            "neither: refused"
-        );
+    }
+
+    // what this catches: a call refused though it has one reading (IntelMac 11-07: "give exactly
+    // one of outputId or act" refused 64 calls, the empty call 35). Both names that agree reopen
+    // that output; neither reopens her newest saved one; only two names for different outputs
+    // refuse, and the refusal offers each name alone.
+    #[test]
+    fn a_reopen_with_one_reading_is_served_and_only_two_readings_refuse() {
+        use crate::ai::types::ResultCustody;
+        use crate::cognition::working_memory::WorkingMemory;
+        use crate::sdk_codegen::{NextMoves, NoMove};
+        let memory = WorkingMemory::new(8);
+        let name = |handle: Option<&str>, act| named_output(handle.map(str::to_owned), act, |act| Ok(memory.reopened_handle(act)));
+        let Err(CommandError::Refused(empty)) = name(None, None) else { panic!("nothing saved yet: refused") };
+        assert_eq!(empty.next(), &NextMoves::None(NoMove::NothingSaved));
+        for handle in ["h1", "h2"] {
+            memory.record_receipt_typed(&[], "saved result", None, ResultCustody::Whole { handle: handle.into() });
+        }
+        memory.record_receipt_typed(&[], "unsaved result", None, ResultCustody::Unsaved);
+        assert_eq!(name(None, None).ok().as_deref(), Some("h2"), "neither: her newest saved output, past the unsaved #3");
+        assert_eq!(name(Some("h1"), Some(1)).ok().as_deref(), Some("h1"), "both, agreeing");
+        let next_of = |handle, act| match name(Some(handle), Some(act)) {
+            Err(CommandError::Refused(refusal)) => {
+                refusal.next().calls().map(|call| serde_json::Value::Object(call.args().clone())).collect::<Vec<_>>()
+            }
+            other => panic!("{handle} and #{act} disagree: refused, got {other:?}"),
+        };
+        assert_eq!(next_of("h1", 2), [serde_json::json!({"outputId": "h1"}), serde_json::json!({"act": 2})]);
+        assert_eq!(next_of("h1", 99), [serde_json::json!({"outputId": "h1"})], "an act naming nothing offers only the id");
+    }
+
+    // what this catches: a half range refused ("give BOTH startLine and endLine"): endLine alone
+    // reads from the first line, startLine alone to the last.
+    #[test]
+    fn a_half_range_reads_to_the_output_s_edge() {
+        let Ok(dir) = tempfile::tempdir() else { panic!("a temp dir") };
+        let path = dir.path().join("lines");
+        assert!(std::fs::write(&path, "one\ntwo\nthree\nfour\n").is_ok());
+        let read = |start, end| {
+            match read_saved(&path, "h".into(), ToolOutputParams::default(), line_range(start, end), spill::Allowance::Whole) {
+                Ok(read) => read.content.lines().map(|line| line.split_whitespace().last().unwrap_or_default().to_owned()).collect::<Vec<_>>(), // unwrap_or_default: a blank row has no word
+                Err(e) => panic!("{start:?}..{end:?}: {e}"),
+            }
+        };
+        assert_eq!(read(None, Some(2)), ["one", "two"]);
+        assert_eq!(read(Some(3), None), ["three", "four"]);
+        assert_eq!(read(Some(2), Some(3)), ["two", "three"]);
+        assert_eq!(line_range(None, None), None);
     }
 
     // what this catches: the real command projection preserves exact byte continuation,
