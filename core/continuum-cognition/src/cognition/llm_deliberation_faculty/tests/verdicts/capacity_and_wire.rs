@@ -148,9 +148,9 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             .any(|message| message.content_text().contains(stimulus)));
         // WHAT IS GUARANTEED ON THE WIRE (FOCUS-CONTRACT rule 4). The 2026-09-10 mute (one
         // `code/read` required whole, 836 refusals) was first cured by a head cut at a window
-        // share (`split_action_result`); that cut is gone. Her newest result is reduced by LEVEL
-        // in the one allocation: whole when it fits, else its summary or pointer, which names
-        // the handle the whole is read through. Either way it is the last thing she reads.
+        // share (`split_action_result`); that cut is gone. Her newest result is irreducible at its
+        // whole in the one allocation: whole when it fits, else its first page, which names the
+        // handle she reads on through. Either way it is the last thing she reads.
         let ending = result
             .rsplit_once('\n')
             .map(|(_, last)| last)
@@ -159,7 +159,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         let last = request.messages.last().expect("test: a request has messages").content_text();
         assert!(
             last.ends_with(ending) || last.contains("wire-evidence"),
-            "her newest result is the last thing she reads, whole or at a level naming its handle"
+            "her newest result is the last thing she reads, whole or as a page naming its handle"
         );
 
         // The held card's context reaches her in the assembled-context message after her

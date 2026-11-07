@@ -233,7 +233,8 @@ impl LlmDeliberationFaculty {
         // "Flexbox is the right way. It's like the governor: if you don't use it for literally
         // everything it doesn't work." Every part of her prompt is a claim in it, in the
         // allocation's unit (engine-calibrated tokens), and it runs ONCE: framing, the required
-        // input, her newest result (the largest of its levels that fits beside every other floor), her
+        // input, her newest result (irreducible at its whole; its first page only past what the
+        // window holds beside every other hard limit), her
         // hands, the standing grounding, the fresh history, the reply and each source of her view.
         // Nothing is sized beside it: the room her newest result gets, the grounding's budget and
         // her view's start are all its grants or arithmetic on them. (Before: three side budgets
@@ -247,13 +248,9 @@ impl LlmDeliberationFaculty {
         // than the standing grounding (enrichment, its own optional claim): the stimulus and her
         // action statement.
         let required_tokens = required.stimulus.saturating_add(required.action_statement);
-        let newest_levels = self.newest_result_levels(&all_messages);
         use continuum_context::ladder::{Leveled, Rungs};
-        // Her newest result's levels in the allocation's unit, each rung with the level it is
-        // (`Rungs::kept`); `None` when this act carries no result.
-        let newest = newest_levels.split_first().map(|(&whole, smaller)| {
-            Rungs::kept(claim(whole), 0, smaller.iter().enumerate().map(|(level, &cost)| (claim(cost), level + 1)))
-        });
+        // Her newest result whole and at its least page, in the allocation's unit (`newest_result.rs`).
+        let newest = self.newest_result_claim(&all_messages);
         // Her hands and her framing (the head of her prompt), and her grounding: each a consumer
         // whose levels come from its items' shapes and whose hard limit is derived from them.
         let tools_offer = self.tools_offer(ws, &claim);
@@ -301,7 +298,7 @@ impl LlmDeliberationFaculty {
                 framing: continuum_context::allocation::Head { held: framing_offer.held.clone(), ..continuum_context::allocation::Head::free(framing_offer.leveled.clone()) },
                 // Input she must read: its whole is its hard limit.
                 required: Leveled::one(Rungs::whole(claim(required_tokens))),
-                newest: newest.as_ref().map_or_else(Leveled::default, |(rungs, _)| Leveled::one(rungs.clone())), // map_or_else: no result this act
+                newest: newest.charged(&claim),
                 tools: tools_offer.head(),
                 grounding: grounding_offer.leveled.clone(),
                 // The newest complete interaction is whole (goal 7): its whole is its hard limit.
@@ -337,12 +334,12 @@ impl LlmDeliberationFaculty {
             output_room: None,
         });
 
-        // Her newest result at the level the allocation chose: whole when the window holds it,
-        // else the largest of its levels that fits, never a bare pointer (goal 7, `newest_result.rs`).
-        let newest_level = newest.as_ref().map(|(_, levels)| levels[act.newest_level()]);
-        let newest_result_reduced = match newest_level.and_then(|level| newest_levels.get(level)) {
-            Some(&level_cost) => self.fit_newest_result(&mut all_messages, level_cost),
-            None => false, // no result this act
+        // Her newest result as the allocation showed it: whole, or its first page (content with
+        // reading on named, never a summary or a bare handle, goal 7), cut below once her view is
+        // fitted, to the room its grant gives and the fit actually has beside it.
+        let newest_page = match act.newest_shown() {
+            continuum_context::allocation::NewestShown::Page { tokens } => Some(calibration.prompt_budget(tokens as usize)),
+            continuum_context::allocation::NewestShown::Whole | continuum_context::allocation::NewestShown::Absent => None,
         };
         // The grounding at the levels the allocation chose: less of each under pressure, then
         // handles, never refusing the turn (`grounding.rs`).
@@ -387,7 +384,7 @@ impl LlmDeliberationFaculty {
                 stimulus_tokens = required.stimulus,
                 action_statement_tokens = required.action_statement,
                 latest_result_tokens = required.latest_result,
-                latest_result_levels = newest_levels.len(),
+                latest_result_least = newest.least(),
                 latest_results = required.latest_result_count,
                 "every part at its hard limit still does not fit the served window: growth no collapse can make, by this much, the binding part named"
             );
@@ -540,6 +537,20 @@ impl LlmDeliberationFaculty {
             std::mem::take(&mut all_messages.result_pointers).into_iter().partition(|(index, _)| *index < view_len);
         all_messages.result_pointers = tail_pointers.into_iter().map(|(index, pointer)| (index - view_len, pointer)).collect();
         let tail_budget = msg_budget.saturating_sub(calibration.estimate_all(&view_messages));
+        // The page is cut to the space actually available: its grant, and never more than the
+        // tail's budget leaves beside the rest of the required input and her last move (what her
+        // view holds is fitted already and may sit above its grant until its next start).
+        let newest_result_reduced = match newest_page {
+            Some(granted) => {
+                let newest_now = calibration.estimate_all(&all_messages.latest_result);
+                let beside = all_messages
+                    .required_tokens()
+                    .saturating_sub(newest_now)
+                    .saturating_add(calibration.prompt_budget(act.granted(claim_id::LAST_MOVE) as usize));
+                self.fit_newest_result(&mut all_messages, granted.min(tail_budget.saturating_sub(beside)))
+            }
+            None => false,
+        };
         let (mut fitted, capacity_error) = match self.fit_messages(all_messages, tail_budget) {
             Ok(mut fitted) => {
                 fitted.messages.splice(0..0, view_messages);

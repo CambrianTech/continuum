@@ -620,6 +620,9 @@ mod residency;
 mod thought_log;
 
 pub use action_log::{ActOutputRefusal, ActRef};
+// Its one caller outside the ledger is the spill tests: her newest result pages, it is never leveled
+// by summary (`prompt/newest_result.rs`).
+#[cfg(test)]
 pub(crate) use ledger::operation_level;
 pub(crate) use residency::{RecordId, ResidentResults, ShedCandidate};
 pub use thought_log::ThoughtRecord;

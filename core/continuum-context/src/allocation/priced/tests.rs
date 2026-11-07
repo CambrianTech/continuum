@@ -1,5 +1,5 @@
 use super::*;
-use crate::allocation::{allocate, ActNeed, Head, Leveled, NeedWindow, Rungs, Span, TrainedContext, ViewClaim};
+use crate::allocation::{allocate, ActNeed, Head, Leveled, NeedWindow, Newest, NewestShown, Rungs, Span, TrainedContext, ViewClaim};
 use crate::flex::FlexClaim;
 use crate::price::Line;
 
@@ -41,11 +41,11 @@ fn source(name: &str, priority: u8, floor: u32, want: u32, consumer: Consumer) -
 
 /// An act whose view wants far more than it needs (a conversation of 300k, results of 100k),
 /// with twenty verbs she acts through and her held card.
-fn act(newest: &[u32], price: ContextPrice) -> ActClaims {
+fn act(newest: Newest, price: ContextPrice) -> ActClaims {
     ActClaims {
         framing: Head::free(Leveled::one(Rungs::whole(4_000))),
         required: Leveled::one(Rungs::whole(500)),
-        newest: Rungs::new(newest.iter().copied()).map_or_else(Leveled::default, Leveled::one), // map_or_else: no levels is no result
+        newest,
         tools: Head { consumer: Consumer::Actionable, ..Head::free(Leveled::new((0..VERBS).map(|_| item(&VERB)).collect())) },
         grounding: Leveled::one(item(&[3_000, 400])),
         last_move: Leveled::one(Rungs::whole(1_200)),
@@ -72,10 +72,10 @@ fn held(plan: &ActPlan) -> u32 {
 #[test]
 fn a_large_window_is_not_filled_when_its_tokens_cost_more_than_they_add() {
     let window = 755_456;
-    let filled = allocate(window, act(&[6_000, 600], ContextPrice::Unmeasured));
+    let filled = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Unmeasured));
     assert_eq!(filled.priced, Priced::Unmeasured);
     assert!(held(&filled) > 400_000, "unpriced, the view takes the window: {}", held(&filled));
-    let priced = allocate(window, act(&[6_000, 600], m5()));
+    let priced = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
     let Priced::Held { held: kept, at_window, measured, .. } = priced.priced else {
         panic!("a measured act time on a large window holds a priced window: {:?}", priced.priced)
     };
@@ -94,12 +94,12 @@ fn a_large_window_is_not_filled_when_its_tokens_cost_more_than_they_add() {
 fn the_price_never_chooses_outside_the_measured_contexts() {
     let window = 755_456;
     let high = (60_000, 145_858);
-    let priced = allocate(window, act(&[6_000, 600], ContextPrice::Measured(m5_over(high))));
+    let priced = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(m5_over(high))));
     assert!(matches!(priced.priced, Priced::Held { .. }), "{:?}", priced.priced);
     assert!(held(&priced) >= high.0, "never below the measured contexts: {}", held(&priced));
     let low = (5_000, 9_000);
-    let before = allocate(window, act(&[6_000, 600], ContextPrice::Unmeasured));
-    let unmeasured_there = allocate(window, act(&[6_000, 600], ContextPrice::Measured(m5_over(low))));
+    let before = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Unmeasured));
+    let unmeasured_there = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(m5_over(low))));
     assert_eq!(unmeasured_there.priced, Priced::OutsideMeasured { measured: low });
     assert_eq!(ActPlan { priced: Priced::Unmeasured, need: ActNeed::Unpriced, ..unmeasured_there }, before, "planned as before");
 }
@@ -111,7 +111,7 @@ fn the_price_never_chooses_outside_the_measured_contexts() {
 // hard-limit path.
 #[test]
 fn what_she_acts_through_is_never_priced_below_its_summary() {
-    let priced = allocate(755_456, act(&[6_000, 600], m5()));
+    let priced = allocate(755_456, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
     let tools = priced.chosen(id::TOOLS).map_or(0, |choice| choice.cost); // map_or: tools are always chosen
     assert!(tools >= VERBS * VERB[1], "every verb at least its summary: {tools}");
     assert_eq!(priced.granted("view/held"), 900, "her held card whole");
@@ -120,8 +120,8 @@ fn what_she_acts_through_is_never_priced_below_its_summary() {
     // with every verb at its summary and her held card whole: 18,800. A window between the two
     // plans as before, names and all.
     let tight = 18_500;
-    let before = allocate(tight, act(&[6_000, 600], ContextPrice::Unmeasured));
-    let binds = allocate(tight, act(&[6_000, 600], m5()));
+    let before = allocate(tight, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Unmeasured));
+    let binds = allocate(tight, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
     assert_eq!(binds.priced, Priced::WindowBinds);
     assert_eq!(ActPlan { priced: Priced::Unmeasured, need: ActNeed::Unpriced, ..binds }, before);
 }
@@ -130,10 +130,10 @@ fn what_she_acts_through_is_never_priced_below_its_summary() {
 // what she must hold plans exactly as before; so does a window the price would fill anyway.
 #[test]
 fn a_small_window_plans_as_before() {
-    let at_least = least(&choosable(&act(&[6_000, 600], m5())));
+    let at_least = least(&choosable(&act(Newest::Pageable { whole: 6_000, least: 600 }, m5())));
     for window in [at_least / 2, at_least - 1, at_least] {
-        let before = allocate(window, act(&[6_000, 600], ContextPrice::Unmeasured));
-        let priced = allocate(window, act(&[6_000, 600], m5()));
+        let before = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Unmeasured));
+        let priced = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
         assert_eq!(priced.priced, Priced::WindowBinds, "{window}");
         assert_eq!(ActPlan { priced: Priced::Unmeasured, need: ActNeed::Unpriced, ..priced }, before, "{window}");
     }
@@ -144,10 +144,10 @@ fn a_small_window_plans_as_before() {
 // window holds it whole, beside her last move whole and her reply's need.
 #[test]
 fn her_newest_result_is_never_priced_out() {
-    let newest = [40_000, 4_000, 400];
+    let newest = Newest::Pageable { whole: 40_000, least: 400 };
     for window in [70_000, 200_000, 755_456] {
-        let plan = allocate(window, act(&newest, m5()));
-        assert_eq!((plan.newest_level(), plan.granted(id::NEWEST)), (0, 40_000), "{window}: {:?}", plan.priced);
+        let plan = allocate(window, act(newest, m5()));
+        assert_eq!((plan.newest_shown(), plan.granted(id::NEWEST)), (NewestShown::Whole, 40_000), "{window}: {:?}", plan.priced);
         assert_eq!(plan.granted(id::LAST_MOVE), 1_200, "{window}");
         assert!(plan.granted(id::REPLY) >= 2_000, "{window}: her reply's need");
         assert!(plan.irreducible_shortfall().is_none(), "{window}");
@@ -158,7 +158,7 @@ fn her_newest_result_is_never_priced_out() {
 // The same act on a node where context costs a tenth as much holds more of it.
 #[test]
 fn a_cheaper_context_holds_more() {
-    let held_at = |price: ContextPrice| match allocate(755_456, act(&[6_000, 600], price)).priced {
+    let held_at = |price: ContextPrice| match allocate(755_456, act(Newest::Pageable { whole: 6_000, least: 600 }, price)).priced {
         Priced::Held { held, .. } => held,
         other => panic!("{other:?}"),
     };
@@ -176,7 +176,7 @@ fn trained() -> TrainedContext {
 
 /// The act above on the M5's model, her view's conversation wanting `overflow` uncollapsed.
 fn overflowing(overflow: u32, price: ContextPrice) -> ActClaims {
-    let mut claims = act(&[6_000, 600], price);
+    let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, price);
     claims.trained = trained();
     for view in claims.view.iter_mut().filter(|view| view.claim.source_id == format!("{}conversation", id::VIEW)) {
         view.claim.max_tokens = overflow;
@@ -230,7 +230,7 @@ fn a_grant_below_the_priced_point_records_that_point_censored() {
 // typed defect; an unmeasured act time records no need at all.
 #[test]
 fn a_need_past_the_trained_context_is_a_defect_and_an_unmeasured_price_records_none() {
-    let mut small = act(&[6_000, 600], m5());
+    let mut small = act(Newest::Pageable { whole: 6_000, least: 600 }, m5());
     small.trained = TrainedContext::Reported(std::num::NonZeroU32::new(12_000).expect("test: nonzero")); // JUSTIFIED: test fixture
     let binds = allocate(12_000, small);
     assert_eq!(binds.priced, Priced::WindowBinds);

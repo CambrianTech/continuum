@@ -411,7 +411,7 @@ fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window:
         ActClaims {
             framing: Head { held: framing.held.clone(), ..Head::free(framing.leveled.clone()) },
             required: Leveled::default(),
-            newest: Leveled::default(),
+            newest: continuum_context::allocation::Newest::Absent,
             tools: offer.head(),
             grounding: Leveled::default(),
             last_move: Leveled::default(),

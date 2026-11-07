@@ -5,9 +5,9 @@ use super::*;
 // what this catches: the live 2026-09-10 mute (a `code/read` result several times the window
 // required whole: 836 consecutive refusals) WITHOUT its old cure, a head cut by a window share
 // (`split_action_result`, deleted with RESULT_SHARE_DENOM: FOCUS-CONTRACT rule 4, a result is
-// reduced by LEVEL in the one allocation, never cut). A legacy result (no native call ids) with
-// a saved handle goes through the real `prompt_view`: never refused, and what she reads names the
-// handle she can read the whole through. Native results are covered below (Aris).
+// shown as its first page by the one allocation, never cut by a share). A legacy result (no
+// native call ids) with a saved handle goes through the real `prompt_view`: never refused, and
+// what she reads names the handle she reads on through. Native results are covered below (Aris).
 #[tokio::test]
 async fn a_huge_legacy_result_arrives_reduced_with_its_handle_never_refused() {
     use crate::ai::types::ResultCustody;
@@ -91,7 +91,8 @@ mod the_newest_result_over_her_window {
             output: ToolOutput {
                 image: None,
                 additional_images: None,
-                result: crate::ai::types::ToolResult { tool_use_id: "call-aris".into(), content: content.into(), is_error: None, custody: Default::default() },
+                // Saved whole under its handle, as the executor saves every call (`whole_or_handle`).
+                result: crate::ai::types::ToolResult { tool_use_id: "call-aris".into(), content: content.into(), is_error: None, custody: ResultCustody::Whole { handle: HANDLE.into() } },
                 verb: ToolVerb::classify("work/submission"),
                 paths: Vec::new(),
                 verdict: Default::default(),
@@ -103,6 +104,16 @@ mod the_newest_result_over_her_window {
         LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter)
             .with_context_window(window)
             .with_working_memory(wm)
+    }
+
+    /// `shown` is her result's FIRST PAGE: a note naming the call that reads on in her saved
+    /// output, then a non-empty run of her result from its start, in its own words (never a
+    /// summary, never a bare handle; card 8a12dcd1).
+    fn assert_first_page(shown: &str, whole: &str) {
+        let (note, page) = shown.split_once('\n').expect("test: a note, then the page"); // JUSTIFIED: test fixture
+        assert!(note.contains("this is its first page") && note.contains(&format!("\"outputId\":\"{HANDLE}\"")), "{note}");
+        assert!(!page.is_empty() && whole.starts_with(page), "content from her result's start: {}", &page[..page.len().min(300)]);
+        assert!(page.len() < whole.len(), "a page, not the whole");
     }
 
     /// Every tool result's content the view sends, with the ids it answers.
@@ -122,8 +133,8 @@ mod the_newest_result_over_her_window {
     }
 
     // what this catches: Aris's stall. A newest result larger than her window was required whole,
-    // so every request overflowed and she never acted again. It must render under her window at
-    // its summary level, with the handle that reopens it and a line saying why, never dropped.
+    // so every request overflowed and she never acted again. It must render under her window as
+    // its first page, with the call that reads on, never dropped.
     #[test]
     fn aris_340k_result_renders_under_her_window_with_its_handle() {
         let whole = evidence_answer(578);
@@ -138,9 +149,7 @@ mod the_newest_result_over_her_window {
         assert_eq!(results.len(), 1, "the native call/result pair is intact");
         let (id, shown) = &results[0];
         assert_eq!(id, "call-aris");
-        assert!(shown.contains("too large to show whole") && shown.contains(&crate::cognition::tool_executor::tool_output::Reopen::Output(HANDLE).to_string()), "{}", &shown[..shown.len().min(600)]);
-        assert!(shown.contains("lines between"), "it is her result's summary level, not only a pointer");
-        assert!(shown.chars().count() * 4 <= whole.chars().count(), "a smaller level: {} of {}", shown.chars().count(), whole.chars().count());
+        assert_first_page(shown, &whole);
     }
 
     // what this catches: Kimi on the windows 5090 (2026-10-28, refusal 1eef970d). Her view's
@@ -148,7 +157,7 @@ mod the_newest_result_over_her_window {
     // against the window less framing and tools alone: it fit there, stayed whole, and the view's
     // floor then took its room, so the fit refused required 33,719 > 30,243 before sending, with
     // no reduction offered. A result that fits the window alone but not beside her required view
-    // comes in at its summary with its handle, and the turn goes.
+    // comes in as its first page, and the turn goes.
     #[test]
     fn a_result_her_required_view_leaves_no_room_for_comes_in_reduced_not_refused() {
         // context-budget-exempt: a fixture window this test is run at (a result that fits it alone,
@@ -169,42 +178,63 @@ mod the_newest_result_over_her_window {
         assert!(view.capacity_error.is_none(), "beside her required view the turn is not refused: {:?}", view.capacity_error);
         let results = tool_results(&view);
         assert_eq!(results.len(), 1, "the native call/result pair is intact");
-        assert!(results[0].1.contains("too large to show whole") && results[0].1.contains(&crate::cognition::tool_executor::tool_output::Reopen::Output(HANDLE).to_string()),
-            "it comes in reduced with its handle: {}", &results[0].1[..results[0].1.len().min(400)]);
+        assert_first_page(&results[0].1, &whole);
     }
 
-    // what this catches: her newest result falling to a bare pointer when its first summary is
-    // still over her window (`prompt/newest_result.rs`, before ONE-ACT slice 2): the step that ends
-    // her recursion arrived with no content, so her next input could equal her last (goal 7). It
-    // comes in at a coarser level of its summary, with its handle, and content from both ends.
+    // what this catches: her newest result shown as a summary and a handle (a summary of a summary
+    // when the first was still over her window): the M5, 2026-11-07, 159 times in a day, ~105
+    // follow-on re-reads, 52 of them again too large (card 8a12dcd1). A result many times her
+    // window comes in as its first page: content from its start, cut at a line to fit what the
+    // window leaves, with the call that reads on in the saved output it IS (byte-identical).
     #[test]
-    fn a_result_whose_summary_is_still_over_her_window_comes_in_coarser_never_a_pointer() {
-        // context-budget-exempt: a fixture window this test is run at (one where a quarter of the
-        // result is still over it), not a budget the code sizes anything by.
+    fn a_result_many_times_her_window_comes_in_as_its_first_page_of_content() {
+        // context-budget-exempt: a fixture window this test is run at (one the result is several
+        // times), not a budget the code sizes anything by.
         const WINDOW: u32 = 30_000;
         let whole = format!("BUILD START\n{}error[E0308]: mismatched types\n", "   compiling one crate of the workspace, step\n".repeat(9_000));
         let faculty = faculty_at(&whole, Arc::new(HeuristicInferenceAdapter::new()), WINDOW);
         let ws = Workspace::new("what did the build say?");
         let view = faculty.prompt_view_with_visual_feedback(&ws, WINDOW, PromptCalibration::default(), None);
         assert!(view.newest_result_reduced, "precondition: the result is over her window");
+        assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
         let results = tool_results(&view);
         assert_eq!(results.len(), 1, "the native call/result pair is intact");
         let shown = &results[0].1;
-        assert!(shown.contains("this is its summary") && shown.contains(&crate::cognition::tool_executor::tool_output::Reopen::Output(HANDLE).to_string()), "{}", &shown[..shown.len().min(600)]);
-        assert!(shown.contains("BUILD START") && shown.contains("error[E0308]"), "content from both ends, never a bare pointer");
-        // SEMANTIC: every line it shows (besides the note and the elision markers) is a line of
-        // her result, in its own words; and the handle it names is the one her act's whole is
-        // saved under, which reopens byte-identical (`spill::saved_whole`, round-trip pinned by
-        // `spill_then_resolve_round_trips`).
-        let original: std::collections::HashSet<&str> = whole.lines().collect();
-        for line in shown.lines().filter(|line| !line.is_empty() && !line.starts_with('[') && !line.starts_with('…')) {
-            assert!(original.contains(line), "a shown line that is not hers: {line:?}");
-        }
+        assert_first_page(shown, &whole);
+        let (note, page) = shown.split_once('\n').expect("test: a note, then the page"); // JUSTIFIED: test fixture
+        assert!(page.ends_with('\n'), "cut at a line end, never mid-line");
+        let next = page.lines().count() + 1;
+        assert!(note.contains(&format!("\"startLine\":{next}")), "reading on starts at the first line not shown: {note}");
+        assert!(page.len() * 4 >= WINDOW as usize, "the page fills what the window leaves, not a sliver: {} chars", page.len());
         let memory = faculty.working_memory.as_ref().expect("test: her memory"); // JUSTIFIED: test fixture
         let (seq, _) = memory.active_action_full().expect("test: her act"); // JUSTIFIED: test fixture
-        assert_eq!(memory.saved_handle(seq).ok().as_deref(), Some(HANDLE), "the handle shown is her act's saved whole");
-        assert!(shown.chars().count() * 8 <= whole.chars().count(), "a level below the first summary: {} of {}", shown.chars().count(), whole.chars().count());
-        assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
+        assert_eq!(memory.saved_handle(seq).ok().as_deref(), Some(HANDLE), "the output named is her act's saved whole");
+    }
+
+    // what this catches (card 8a12dcd1): a page that is itself only a handle. A window that leaves
+    // her newest result less than its least page still shows her its least page: its note and at
+    // least as much of her result as the note, from its start.
+    #[test]
+    fn a_page_never_shrinks_to_a_bare_handle() {
+        let whole = "x".repeat(400_000);
+        let faculty = faculty_at(&whole, Arc::new(HeuristicInferenceAdapter::new()), ARIS_WINDOW);
+        let prompt = faculty.messages_with_visual_feedback(&Workspace::new("and?"), None, None);
+        let continuum_context::allocation::Newest::Pageable { whole: whole_tokens, least } = faculty.newest_result_claim(&prompt) else {
+            panic!("a saved result has a page");
+        };
+        assert!(least < whole_tokens, "its least page is smaller than its whole");
+        let mut paged = faculty.messages_with_visual_feedback(&Workspace::new("and?"), None, None);
+        assert!(faculty.fit_newest_result(&mut paged, 0), "paged");
+        let shown = paged
+            .latest_result
+            .iter()
+            .filter_map(|m| match &m.content { MessageContent::Parts(parts) => Some(parts), MessageContent::Text(_) => None })
+            .flatten()
+            .find_map(|part| match part { ContentPart::ToolResult { content, .. } => Some(content.clone()), _ => None })
+            .expect("test: her result's slot"); // JUSTIFIED: test fixture
+        let (note, page) = shown.split_once('\n').expect("test: a note, then the page"); // JUSTIFIED: test fixture
+        assert!(note.contains("its first line alone is longer than the room") && note.contains("\"byteOffset\""), "{note}");
+        assert!(page.len() >= note.len().min(whole.len()) && whole.starts_with(page), "as much content as its note, from the start");
     }
 
     // what this catches: the collapse firing on a result that fits, which would cost her the
@@ -250,8 +280,8 @@ mod the_newest_result_over_her_window {
     // what this catches: Aris's permanent stall after a restart (the M5, 2026-10-27 03:54-04:29Z).
     // With no measured density the bytes/3 estimate let her 340k-char result go whole; the
     // engine refused 214,671 > 187,136 and she parked, never using the density it measured.
-    // The refusal must refit her view at that density, resend ONCE with the result at its
-    // summary and handle, under her window, and the turn proceeds.
+    // The refusal must refit her view at that density, resend ONCE with the result as its first
+    // page, under her window, and the turn proceeds.
     #[tokio::test]
     async fn a_refusal_refits_her_newest_result_and_resends_once() {
         let whole = evidence_answer(578);
@@ -263,8 +293,7 @@ mod the_newest_result_over_her_window {
         assert_eq!(seen.len(), 2, "the refused request and exactly one resend");
         assert_eq!(sent_result(&seen[0]), whole, "precondition: with no measured density the result went whole");
         let resent = sent_result(&seen[1]);
-        assert!(resent.contains("too large to show whole") && resent.contains(&crate::cognition::tool_executor::tool_output::Reopen::Output(HANDLE).to_string()), "{}", &resent[..resent.len().min(600)]);
-        assert!(resent.contains("lines between"), "her result's summary level, not only a pointer");
+        assert_first_page(&resent, &whole);
         // Priced at the density the refusal measured, the resend and its reply fit her slot.
         let priced = (estimate(&seen[1]) as u128 * 214_671).div_ceil(estimate(&seen[0]) as u128) as usize;
         let reply = seen[1].max_tokens.expect("test: the resend carries its allowance") as usize; // JUSTIFIED: test fixture
@@ -301,7 +330,7 @@ mod the_newest_result_over_her_window {
     // 222,348 for 148,275 estimated: 1.50 averaged over the whole request, and at 1.50 her ~113.6k
     // result still fit the room the window left it, so it stayed whole and the resend path never
     // ran. This fixture holds HER ratio and her result's share of the estimate; the refusal's
-    // excess, charged to the result, must bring it in at its summary and resend once.
+    // excess, charged to the result, must bring it in as its first page and resend once.
     #[tokio::test]
     async fn her_averaged_density_still_refits_a_denser_result() {
         // Her refusal (05:20:57Z): the engine's count over our estimate of the same request.
@@ -333,7 +362,7 @@ mod the_newest_result_over_her_window {
         assert_eq!(seen.len(), 2, "the refused request and exactly one resend");
         assert_eq!(estimate(&seen[0]), estimate(&first_request(&first, &seen[0])), "precondition: the refusal is scaled from the view she sent");
         let resent = sent_result(&seen[1]);
-        assert!(resent.contains("too large to show whole") && resent.contains(&crate::cognition::tool_executor::tool_output::Reopen::Output(HANDLE).to_string()), "{}", &resent[..resent.len().min(600)]);
+        assert_first_page(&resent, &whole);
     }
 
     /// `view` as the request `sent` carried it (its messages; the rest is the request's own).

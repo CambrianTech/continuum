@@ -8,10 +8,12 @@
 //! view's sources. Each was a second owner of a fact the allocation already decided.
 //!
 //! Now:
-//! - every part is a claim ([`ActClaims`]): framing, the required input, her NEWEST result (the
-//!   largest of its own levels that fits beside every hard limit: whole whenever the window holds
-//!   it, goal 7), her hands, her LAST MOVE (required, whole), the standing grounding, the rest of
-//!   the fresh history (optional), the reply, her view's sources;
+//! - every part is a claim ([`ActClaims`]): framing, the required input, her NEWEST result
+//!   (irreducible at its whole: chosen before everything that collapses, so it is whole whenever
+//!   the window holds it beside every hard limit, else its first page cut to the room left, never
+//!   a summary or a bare handle, [`newest`], goal 7), her hands, her LAST MOVE (required, whole),
+//!   the standing grounding, the rest of the fresh history (optional), the reply, her view's
+//!   sources;
 //! - every part made of items is a [`Leveled`] consumer (the one contract, [`crate::ladder`]): its
 //!   items' levels come from their shapes and its hard limit is derived from them, never declared.
 //!   Their levels are searched together ([`search`]) and the continuous parts share what
@@ -35,10 +37,12 @@
 use crate::flex::{flex_allocate, floors, AllocationState, FlexAllocation, FlexClaim};
 pub use crate::ladder::{Choice, Consumer, Leveled, Rungs};
 pub mod need;
+pub mod newest;
 pub mod priced;
 pub mod search;
 pub use need::{ActNeed, BeyondTrained, NeedWindow, TrainedContext};
 use crate::price::ContextPrice;
+pub use newest::{Newest, NewestShown};
 pub use priced::Priced;
 use search::{overflow, search, Group, Searched};
 
@@ -130,9 +134,9 @@ pub struct ActClaims {
     /// The required input other than her newest result: the stimulus, her action statement. Input
     /// she must read: its hard limit is its whole.
     pub required: Leveled,
-    /// Her newest result: one item, whole first and each level smaller (its summary chain to the
-    /// end, each with its handle). An unsaved result has only its whole. Empty: no result.
-    pub newest: Leveled,
+    /// Her newest result: whole, or (a saved one, past what the window holds beside every other
+    /// hard limit) its first page cut to the room left ([`Newest`]).
+    pub newest: Newest,
     /// Her hands: each verb whole, at its summary, or at its pointer (its name, expanded by
     /// `commands/help`).
     pub tools: Head,
@@ -176,14 +180,14 @@ pub struct ActPlan {
     pub window: u32,
     pub plan: FlexAllocation,
     claims: Vec<FlexClaim>,
-    /// Which of her newest result's levels the allocation chose (an index into its rungs).
-    newest_level: usize,
+    /// What the allocation showed of her newest result: whole, or its first page.
+    newest_shown: NewestShown,
     /// Each part's hard limit as the search saw it, the reply at its uncapped need among them.
     limits: Vec<Group>,
-    /// Each leveled part's own hard limit (her newest result at its coarsest level): what a
-    /// receipt names as the part's floor.
+    /// Each leveled part's own hard limit (her newest result at its least page): what a receipt
+    /// names as the part's floor.
     hard_limits: Vec<(&'static str, u32)>,
-    /// The levels chosen for each leveled part, by claim id.
+    /// The levels chosen for each leveled part (framing, tools, grounding), by claim id.
     chosen: Vec<(&'static str, Choice)>,
     /// Head parts whose held levels the window could no longer hold: re-chosen this act, loudly.
     lost: Vec<&'static str>,
@@ -291,35 +295,74 @@ fn hard_limits(claims: &ActClaims) -> u32 {
 fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
     let hard = hard_limits(&claims);
     let ActClaims { framing, required, newest, tools, grounding, last_move, history, reply, view, price: _, trained: _ } = claims;
-    // Her newest result is chosen before the search, among its own levels: whole whenever the
-    // window holds it beside every HARD LIMIT (the reply's measured need included), else the
-    // largest level that does, else its coarsest. The detail above any part's hard limit and every
-    // optional part reduce before it (goal 7: the newest end is never cut; Cormac on #5779:
-    // counting every floor showed it at a summary on a window that held it whole).
+    // Her newest result is irreducible at its WHOLE: chosen before the search, against every other
+    // part at its HARD LIMIT (the reply's measured need included), so the detail above any part's
+    // hard limit and every optional part collapse before it (goal 7; Cormac on #5779). Only past
+    // what the window can hold beside them is it its first page, cut to exactly that room
+    // (`newest.rs`): content, never a summary or a bare handle.
+    // A page leaves her reply its whole want: a page that took the reply's growth too would
+    // trade her answer for more of what she already has a handle to.
     let left = window.saturating_sub(hard.saturating_add(reply.floor_tokens));
-    let newest_options = newest.options();
-    let newest_choice = newest_options.iter().find(|option| option.cost <= left).or(newest_options.last()).cloned().unwrap_or_default(); // unwrap_or_default: no result, no choice
-    let newest_level = newest_choice.rungs.first().copied().unwrap_or(0); // unwrap_or: no result has only level 0 of nothing
+    // Her grounding keeps its handles beside a page: enrichment at its least, never her result's room.
+    let page_room = window.saturating_sub(hard.saturating_add(reply.max_tokens.max(reply.floor_tokens)).saturating_add(grounding.hard_limit()));
+    let (mut newest_shown, mut newest_cost) = newest.shown(left, page_room);
+    let paged = matches!(newest_shown, NewestShown::Page { .. });
+    // A page needs no particular size, but a head level that changes re-prefills her whole prompt
+    // (context is a FIFO with a stable head). So while she pages, each held head level that fits
+    // beside her LEAST page stays, highest priority first (framing, then tools); only one that
+    // cannot drops to its hard limit, and the page takes what the kept levels leave (Cormac on
+    // #5840).
+    let mut keeps_held = [false; 2];
+    if paged {
+        let mut above = 0u32;
+        for (keep, head) in keeps_held.iter_mut().zip([&framing, &tools]) {
+            let Some(held) = head.holding() else { continue };
+            let held_above = held.cost.saturating_sub(head.leveled.hard_limit());
+            if hard.saturating_add(reply.floor_tokens).saturating_add(newest.least()).saturating_add(above).saturating_add(held_above) <= window {
+                *keep = true;
+                above = above.saturating_add(held_above);
+            }
+        }
+        (newest_shown, newest_cost) = newest.shown(left, page_room.saturating_sub(above));
+    }
     // The reply never takes from a hard limit: its floor is what the window leaves after them,
-    // her newest result at its chosen level among them (the required input once refused at 275 of
+    // her newest result as shown among them (the required input once refused at 275 of
     // 0 when the reply's floor filled an 8,192 window to the token).
     let mut reply = reply;
     let reply_need = reply.floor_tokens;
-    reply.floor_tokens = reply_need.min(window.saturating_sub(hard.saturating_add(newest_choice.cost)));
+    reply.floor_tokens = reply_need.min(window.saturating_sub(hard.saturating_add(newest_cost)));
     reply.min_tokens = reply.floor_tokens;
     reply.source_id = id::REPLY.to_owned();
     let mut continuous = vec![span(id::HISTORY, HISTORY_PRIORITY, history, false)];
     continuous.extend(view.into_iter().map(|view| view.claim));
     continuous.push(reply);
     let whole = |id: &'static str, leveled: &Leveled| Group { id: id.to_owned(), priority: FIXED_PRIORITY, options: vec![leveled.want()] };
-    let singles = [whole(id::REQUIRED, &required), whole(id::LAST_MOVE, &last_move), Group { id: id::NEWEST.to_owned(), priority: FIXED_PRIORITY, options: vec![newest_choice.cost] }];
+    let singles = [whole(id::REQUIRED, &required), whole(id::LAST_MOVE, &last_move), Group { id: id::NEWEST.to_owned(), priority: FIXED_PRIORITY, options: vec![newest_cost] }];
     // A head part offers only its held levels while they fit beside every other hard limit (a level
     // change at the head re-prefills the whole prompt); else every reduction, and the loss is said.
     let parts_with = |hold: bool| -> (Vec<Part<'_>>, Vec<&'static str>) {
         let mut lost = Vec::new();
         let mut parts = Vec::new();
-        for (id, priority, head) in [(id::FRAMING, FIXED_PRIORITY, &framing), (id::TOOLS, TOOLS_PRIORITY, &tools)] {
-            let others = hard.saturating_sub(head.leveled.hard_limit()).saturating_add(newest_choice.cost).saturating_add(reply_need.min(window));
+        for ((id, priority, head), keep) in [(id::FRAMING, FIXED_PRIORITY, &framing), (id::TOOLS, TOOLS_PRIORITY, &tools)].into_iter().zip(keeps_held) {
+            let others = hard.saturating_sub(head.leveled.hard_limit()).saturating_add(newest_cost).saturating_add(reply_need.min(window));
+            // While her newest result pages, a head keeps its held level when it fits beside her
+            // least page (above); else it sits at its hard limit, loudly: every other token above a
+            // hard limit is one her result wants (goal 7, card 8a12dcd1).
+            if paged {
+                let least = head.leveled.at_limit();
+                let options = match head.holding() {
+                    Some(held) if keep => vec![held],
+                    Some(held) => {
+                        if held.rungs != least.rungs {
+                            lost.push(id);
+                        }
+                        vec![least]
+                    }
+                    None => vec![least],
+                };
+                parts.push(Part { id, priority, leveled: &head.leveled, options });
+                continue;
+            }
             let options = match head.holding().filter(|_| hold) {
                 Some(held) if held.cost.saturating_add(others) <= window => vec![held],
                 Some(_) => {
@@ -332,7 +375,9 @@ fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
         }
         // Grounding is enrichment: below its handles it leaves the turn (the empty choice), never
         // a reason to refuse one.
-        let mut options = grounding.options();
+        // While her newest result pages, it sits at its handles (the page left their room), or
+        // leaves when even they do not fit.
+        let mut options = if paged { vec![grounding.at_limit()] } else { grounding.options() };
         if grounding.hard_limit() > 0 {
             options.push(Choice::default());
         }
@@ -388,8 +433,8 @@ fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
     let cost_of = |id: &str| chosen.iter().find(|(c, _)| *c == id).map_or(0, |(_, choice)| choice.cost); // map_or: every leveled part is chosen
     let mut all = vec![fixed(id::FRAMING, cost_of(id::FRAMING)), fixed(id::REQUIRED, required.want())];
     // An act with no result makes no newest claim.
-    if !newest.is_empty() {
-        all.push(fixed(id::NEWEST, newest_choice.cost));
+    if !newest.is_absent() {
+        all.push(fixed(id::NEWEST, newest_cost));
     }
     all.push(fixed(id::TOOLS, cost_of(id::TOOLS)));
     all.push(fixed(id::LAST_MOVE, last_move.want()));
@@ -403,6 +448,11 @@ fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
     for (part, group) in parts.iter().zip(limits.iter_mut()) {
         group.options = vec![if part.id == id::GROUNDING { 0 } else { part.leveled.hard_limit() }];
     }
+    // Her newest result binds at its whole while it is whole (irreducible at full), and at its
+    // least page once it pages: a page is never a reason to grow her window to the page itself.
+    if let (NewestShown::Page { .. }, Some(group)) = (newest_shown, limits.iter_mut().find(|g| g.id == id::NEWEST)) {
+        group.options = vec![newest.least()];
+    }
     limits.extend(continuous.iter().filter(|c| c.required).map(|c| Group {
         id: c.source_id.clone(),
         priority: c.priority,
@@ -411,13 +461,12 @@ fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
     let hard_limits = vec![
         (id::FRAMING, framing.leveled.hard_limit()),
         (id::REQUIRED, required.hard_limit()),
-        (id::NEWEST, newest.hard_limit()),
+        (id::NEWEST, newest.least()),
         (id::TOOLS, tools.leveled.hard_limit()),
         (id::LAST_MOVE, last_move.hard_limit()),
         (id::GROUNDING, 0),
     ];
-    chosen.push((id::NEWEST, newest_choice));
-    ActPlan { window, plan, claims: all, newest_level, limits, hard_limits, chosen, lost, rise, searched, priced: Priced::Unmeasured, need: ActNeed::Unpriced }
+    ActPlan { window, plan, claims: all, newest_shown, limits, hard_limits, chosen, lost, rise, searched, priced: Priced::Unmeasured, need: ActNeed::Unpriced }
 }
 
 impl ActPlan {
@@ -431,10 +480,9 @@ impl ActPlan {
         &self.claims
     }
 
-    /// Which of her newest result's levels this act shows (an index into its levels: 0 is
-    /// whole).
-    pub fn newest_level(&self) -> usize {
-        self.newest_level
+    /// What this act shows of her newest result: whole, or its first page.
+    pub fn newest_shown(&self) -> NewestShown {
+        self.newest_shown
     }
 
     /// The reply's claim as allocated (its floor capped).
@@ -501,8 +549,8 @@ impl ActPlan {
             .collect()
     }
 
-    /// Every hard limit (framing's irreducible blocks, the required input, her newest result at its
-    /// chosen level, each verb at its pointer, her last move, her view's required floors), charged:
+    /// Every hard limit (framing's irreducible blocks, the required input, her newest result whole
+    /// or at its least page once it pages, each verb at its pointer, her last move, her view's required floors), charged:
     /// what no reduction goes below.
     pub fn irreducible(&self) -> u32 {
         self.limits.iter().filter(|g| g.id != id::REPLY).flat_map(|g| g.options.first().copied()).fold(0, u32::saturating_add)
@@ -523,8 +571,8 @@ impl ActPlan {
         })
     }
 
-    /// The levels the allocation chose for the leveled part `id` (framing, tools, grounding,
-    /// newest): one rung per item, or no rungs when it left the turn.
+    /// The levels the allocation chose for the leveled part `id` (framing, tools, grounding): one
+    /// rung per item, or no rungs when it left the turn.
     pub fn chosen(&self, id: &str) -> Option<&Choice> {
         self.chosen.iter().find(|(part, _)| *part == id).map(|(_, choice)| choice)
     }
