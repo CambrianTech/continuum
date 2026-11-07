@@ -58,7 +58,7 @@ impl From<PromptCapacityError> for CapacityRefusal {
 }
 impl From<IrreducibleShortfall> for CapacityRefusal {
     fn from(short: IrreducibleShortfall) -> Self {
-        Self { output_room: Some(short), ..Self::from(PromptCapacityError::from(short)) }
+        Self { output_room: Some(short.clone()), ..Self::from(PromptCapacityError::from(short)) }
     }
 }
 /// One park and one disposition per refusal, shared across settlement projections.

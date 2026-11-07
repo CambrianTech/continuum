@@ -226,12 +226,14 @@ mod the_newest_result_over_her_window {
         const WINDOW: u32 = 31_218; // Recorded served window, not a policy budget.
         let content = "result line\n".repeat(225);
         let mut faculty = faculty_at(&content, Arc::new(HeuristicInferenceAdapter::new()), WINDOW);
-        faculty.system_prompt = "stable framing ".repeat(5_000);
+        // Leave the fixed 2,573-token measurement error crossing prompt-plus-reply room
+        // even after the menu levels remove their former template overhead.
+        faculty.system_prompt = "stable framing ".repeat(5_020);
         let ws = Workspace::new("what does the evidence say?");
         let first = faculty.prompt_view_with_visual_feedback(&ws, WINDOW, PromptCalibration::default(), None);
         assert!(first.capacity_error.is_none() && !first.newest_result_reduced, "fixture must fit before refusal");
         let measured = u32::try_from(first.estimated_prompt_tokens + 2_573).expect("fixture count");
-        assert!(measured + first.completion_reserve > WINDOW, "fixture refusal must exceed prompt plus reply capacity");
+        assert!(measured + first.completion_reserve > WINDOW, "fixture refusal must exceed prompt plus reply capacity: estimate={}, measured={}, reserve={}", first.estimated_prompt_tokens, measured, first.completion_reserve);
         let global = PromptCalibration::observed(first.estimated_prompt_tokens, measured, Some(first.input_identity)).expect("positive fixture");
         let ordinarily_priced = faculty.prompt_view_with_visual_feedback(&ws, WINDOW, global, None);
         assert!(ordinarily_priced.capacity_error.is_none(), "whole-prompt measurement fits this fixture");

@@ -271,16 +271,12 @@ impl LlmDeliberationFaculty {
             // The view retains the tool level bought by the shared allocation for this epoch.
             // Send that same selection so accounting, wire bytes and prefix reuse agree.
             if request_template.is_none() {
-                // What her view's allocation bought; a server that refuses `tail_tools` gets the
-                // activity surface at the same grant, without her learned head.
-                let mut selected = if tail_refused {
-                    match self.surface.select_granted(&ws.room_affordances, &ws.held.move_commands(), view.tools_grant) {
-                        Ok(activity) => activity.into_owned(),
-                        Err(_) => view.tools.clone(), // unreachable in practice: the view ran this same activity selection at this grant and it succeeded
-                    }
-                } else {
-                    view.tools.clone()
-                };
+                // What her view's allocation bought, at its levels; a server that refuses `tail_tools`
+                // gets the same head without the verbs that would have ridden the tail.
+                let mut selected = view.tools.clone();
+                if tail_refused {
+                    selected.tail.clear();
+                }
                 // Verbs she loaded into the tail ride beside the head, callable natively.
                 let tail = std::mem::take(&mut selected.tail);
                 // Selection and budget accounting borrow the cached schemas. Only the

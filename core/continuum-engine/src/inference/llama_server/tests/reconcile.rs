@@ -349,6 +349,22 @@ fn a_train_dir_answer_is_about_the_binary_asked_and_no_other() {
     assert_eq!(answer_for(&probes, "/slots/engine-c/llama-server"), None, "a promoted binary is unasked, never inherits");
 }
 
+// what this catches (Codex on #5817): the in-place gene path reading a probe that did not answer as
+// "no", so a binary whose first probe timed out stayed "no" for every in-place change until a
+// relaunch re-asked it. A decision rests only on an answer; anything else is asked now.
+#[test]
+fn an_in_place_decision_rests_only_on_an_answer() {
+    let probes = std::collections::BTreeMap::from([
+        ("answered-yes".to_string(), ProbeOutcome::Answered { train_dir: true }),
+        ("answered-no".to_string(), ProbeOutcome::Answered { train_dir: false }),
+        ("timed-out".to_string(), ProbeOutcome::Unanswered),
+    ]);
+    assert_eq!(train_dir_known(&probes, "answered-yes"), Some(true));
+    assert_eq!(train_dir_known(&probes, "answered-no"), Some(false));
+    assert_eq!(train_dir_known(&probes, "timed-out"), None, "a probe that did not answer is asked again, never read as no");
+    assert_eq!(train_dir_known(&probes, "never-asked"), None);
+}
+
 // what this catches (Codex on #5817, review_failed_other_binary_probe_preserves_the_first_binary_answer):
 // the real probe, through its one record. A answers yes; a failed probe of another binary B; A asked
 // again must keep its yes and not be probed again (here its second command would answer no).

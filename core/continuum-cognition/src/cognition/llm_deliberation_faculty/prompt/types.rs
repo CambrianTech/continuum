@@ -152,6 +152,10 @@ type DensitySample = (std::num::NonZeroUsize, std::num::NonZeroU32);
 /// is priced at it. `Unmeasured` (no reply on this binding and model yet) prices at the estimate
 /// itself, `PromptCalibration::default()` (follow-up: one `/tokenize` count, or the model's
 /// measured density on this node, for the first act).
+///
+/// The chat template's own tokens around each message (role markers, the generation prompt) are
+/// part of what it measures: the engine counts the templated prompt and the estimate counts the
+/// text, so no per-message constant sits beside it (it was `PER_MESSAGE_TEMPLATE_TOKENS = 5`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in super::super) enum Density {
     #[default]
@@ -251,8 +255,6 @@ pub struct PromptMessages {
     pub(in super::super) streams: Streams,
     /// Source-owned compact alternatives, indexed into history; never inferred from prose.
     pub(in super::super) result_pointers: Vec<(usize, ChatMessage)>,
-    /// Kept before the append-only result ring even when older history yields.
-    pub(in super::super) grounding_tokens: usize,
     pub(in super::super) grounding_at: usize,
     pub(in super::super) stimulus: Option<ChatMessage>,
     /// Atomic required native call/result group (one prose message for legacy receipts).
@@ -451,7 +453,6 @@ impl PromptMessages {
             action_statement: cost(&mut self.action_statement.iter()),
             latest_result: cost(&mut self.latest_result.iter()),
             latest_result_count: self.latest_result.len(),
-            grounding: self.grounding_tokens,
         }
     }
 
@@ -467,12 +468,11 @@ pub struct RequiredParts {
     pub action_statement: usize,
     pub latest_result: usize,
     pub latest_result_count: usize,
-    pub grounding: usize,
 }
 
 impl RequiredParts {
     pub fn total(&self) -> usize {
-        self.stimulus + self.action_statement + self.latest_result + self.grounding
+        self.stimulus + self.action_statement + self.latest_result
     }
 }
 
@@ -513,7 +513,6 @@ pub(in super::super) struct FitReceipt {
     pub(in super::super) dropped_tokens: usize,
     pub(in super::super) required_tokens: usize,
     pub(in super::super) history_budget: usize,
-    pub(in super::super) quantum: usize,
 }
 
 impl FitReceipt {

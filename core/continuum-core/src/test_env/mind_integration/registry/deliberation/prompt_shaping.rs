@@ -20,6 +20,9 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
 
     let home = tempfile::tempdir().unwrap();
     let _native = crate::paths::NativeHomeOverride::install(home.path());
+    // `LivePin::retain` saves through the kernel's disk-ownership registry; install it here so
+    // the save never depends on another test in this process having installed it first.
+    crate::system_resources::disk_reporters::prepare_writer_fixture().await;
     crate::model_registry::init_global().unwrap();
 
     let persona = Uuid::new_v4();
@@ -168,7 +171,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     let guard_text = format!("{grep_result}日本語訳");
     assert_eq!(
         LlmDeliberationFaculty::message_cost(&ChatMessage::text("user", &guard_text)),
-        estimate_guard_tokens(&guard_text) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS,
+        estimate_guard_tokens(&guard_text),
     );
     assert!(required >= estimate_guard_tokens(&grep_result));
     assert!(faculty.fit_messages(prompt, required - 1).is_err(), "native pair cannot be split under pressure");
@@ -784,16 +787,21 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // that carry her work out (`code/git/push`, `code/github/pr-create`, `pr-comment`; Joel:
     // "git is perfect for all project work") and by `yield_turn`, which now rides every
     // surface (`Disclosure::Always`). At 8192 they no longer fit beside her framing, so the
-    // second invariant above binds: the turn refuses with the real number and sends nothing
-    // smaller (a smaller set of hands is the #206 cliff). The roomy control below still
-    // pins that the newest line reaches her once the window holds her hands.
-    let refused = view.capacity_error.as_ref().expect(
-        "at 8192 her core hands do not fit beside her framing: the turn must say so with a number",
-    );
+    // second invariant above bound and the turn refused.
+    //
+    // 2026-11-07 (Aiko on the M5: her hands whole refused her turns on a 30,566 window; Joel:
+    // "collapse rather than crap out"): her hands are a leveled consumer (`tool_surface::levels`),
+    // so at 8192 they collapse to their summaries and pointers instead: every verb still sent
+    // (the #206 cliff was FEWER verbs, never smaller ones), the turn proceeds, and the newest line
+    // reaches her. The roomy control below pins that the newest line reaches her there too.
+    assert!(view.capacity_error.is_none(), "at 8192 her hands collapse, never refuse: {:?}", view.capacity_error);
     assert!(
-        refused.required_tokens > refused.budget_tokens,
-        "the refusal names what she needs beyond what the window gives: {refused:?}"
+        view.tools.tokens < view.tools.demand_tokens(),
+        "her hands are shown below their whole ({} of {})",
+        view.tools.tokens,
+        view.tools.demand_tokens()
     );
+    assert!(view.user_text().contains("LATEST: did the deploy fix land?"), "and the newest message reaches her");
     assert!(
         view.system.contains("Taking your turn"),
         "framing survives regardless"

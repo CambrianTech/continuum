@@ -238,16 +238,19 @@ async fn an_8192_window_keeps_required_content_and_refuses_an_act_past_her_need(
     assert!(short.needed > window && short.window == window, "{short:?}");
     let contribution = faculty.contribute(&ws).await.expect("a typed refusal");
     let refusal = contribution.capacity_refusal.as_ref().expect("refused for capacity");
-    let refused = refusal.output_room.expect("typed as her output room");
+    let refused = refusal.output_room.clone().expect("typed as her output room"); // JUSTIFIED: test fixture
     assert!(refused.needed > window && refused.window == window, "{refused:?}");
     assert_eq!(adapter.call_count(), 0, "never sent with less than her need");
 }
 
-// what this catches (Codex on #5779: required means refuse if underfunded, never mint budget):
-// the cognition refusal boundary. A window that holds exactly her act's input floors (framing,
-// required input, her hands, her last move, her view at its collapsed minimum) proceeds, the reply
-// at what is left (the reply-only shortfall, which does not refuse); one token less underfunds a
-// required floor and refuses the turn typed (`capacity_error`), never a raised start.
+// what this catches (Codex on #5779: required means refuse if underfunded, never mint budget;
+// Joel 2026-11-07: "Rejection should be rare"): the cognition refusal boundary. A window that holds
+// exactly her act's HARD LIMITS (framing's irreducible blocks and collapsed menu, the required
+// input, her newest result at its coarsest, every verb at its pointer, her last move, her view at
+// its collapsed minimum) proceeds, every part collapsed and the reply at what is left (the
+// reply-only shortfall, which does not refuse); one token less refuses the turn typed
+// (`capacity_error`), never a raised start. Her hands whole are not a floor: a window below them
+// collapses them.
 #[test]
 fn a_turn_whose_input_floors_exactly_fit_proceeds_and_one_token_short_is_refused_typed() {
     let build = |window: u32| {
@@ -262,6 +265,11 @@ fn a_turn_whose_input_floors_exactly_fit_proceeds_and_one_token_short_is_refused
         ["framing", "required_input", "newest_result", "tools", "last_move"].contains(&source) || source.starts_with("view/")
     };
     let floors: u32 = receipt.claims.iter().filter(|claim| input(&claim.source)).map(|claim| claim.floor).sum();
+    let whole: u32 = receipt.claims.iter().filter(|claim| input(&claim.source) && !claim.source.starts_with("view/")).map(|claim| claim.grant).sum();
+    let view_floors: u32 = receipt.claims.iter().filter(|claim| claim.source.starts_with("view/")).map(|claim| claim.floor).sum();
+    assert!(floors < whole + view_floors, "precondition: her parts collapse below their whole: floors {floors}, whole {}", whole + view_floors);
+    let collapsing = build(whole + view_floors - 1).prompt_view(&ws);
+    assert!(collapsing.capacity_error.is_none(), "one token under her parts whole collapses a part, never refuses: {:?}", collapsing.capacity_error);
     let fits = build(floors).prompt_view(&ws);
     assert!(fits.capacity_error.is_none(), "exactly her input floors: the turn proceeds: {:?}", fits.capacity_error);
     assert!(fits.budget_fault.is_none(), "{:?}", fits.budget_fault);
@@ -583,7 +591,7 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
         let rebuilt = &seen[1];
         assert!(rebuilt.tail_tools.is_none(), "the rebuilt request carries no tail");
         let offered: Vec<&str> = rebuilt.tools.iter().flatten().map(|tool| tool.name.as_str()).collect();
-        let activity = faculty.tool_surface().select_granted(&ws.room_affordances, &ws.held.move_commands(), faculty.prompt_view(&ws).tools_grant).expect("activity fits granted tools");
+        let activity = faculty.tool_surface().select(&ws.room_affordances, &ws.held.move_commands());
         let expected: Vec<&str> = activity.specs.iter().flat_map(|specs| specs.iter()).map(|tool| tool.name.as_str()).collect();
         assert!(!offered.is_empty() && offered == expected, "she is offered exactly her activity's surface: {offered:?}");
         if refusals == 1 {

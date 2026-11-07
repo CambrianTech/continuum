@@ -112,9 +112,13 @@ fn an_unmeasured_mind_reserves_a_reply_not_a_fraction_of_her_window() {
         assert!(reply <= prior, "window {window} granted {reply}, above the reply-sized prior {prior}");
 
         // (2) Above the degenerate low end it is FLAT — the same reply on a 32k
-        //     laptop lane and a 1M frontier seat.
+        //     laptop lane and a 1M frontier seat — to within one level of the grounding it
+        //     competes with: the act's search trades the reply's last tokens against a whole
+        //     grounding level by priority, never against a fraction of the window.
         if window >= prior * 4 {
-            assert_eq!(reply, prior, "the reply tracked the window at {window}");
+            let offer = super::super::super::prompt::grounding::GroundingOffer::of(&ws, &|tokens| tokens as u32);
+            let step = offer.leveled.items().iter().flat_map(|item| item.costs().windows(2).map(|w| w[0] - w[1])).max().unwrap_or(0); // unwrap_or: a grounding with one level moves nothing
+            assert!(prior - reply <= step, "the reply tracked the window at {window}: {reply} of {prior}, beyond one grounding level ({step})");
             // (3) The consequence that actually broke a citizen: prompt room. As a
             //     RATIO, so it holds on every window size.
             let prompt_room = window.saturating_sub(reply);
@@ -302,7 +306,6 @@ fn stable_framing_serializes_before_higher_salience_volatile_grounding() {
     let block = faculty.render_assembled_context_within(
         &ws,
         4096,
-        &GroundingPlan::default(),
         ContextComposition::default(),
     );
     let roster_at = block.find("[room-roster]").expect("roster present");
@@ -364,7 +367,6 @@ fn stable_tier_bytes_are_identical_however_salience_ranks_them() {
         faculty.render_assembled_context_within(
             &ws,
             4096,
-            &GroundingPlan::default(),
             ContextComposition::default(),
         )
     };
@@ -422,7 +424,6 @@ fn stable_tier_bytes_are_identical_however_salience_ranks_them() {
         faculty.render_assembled_context_within(
             &ws,
             4096,
-            &GroundingPlan::default(),
             ContextComposition::default(),
         )
     };
@@ -494,7 +495,6 @@ fn a_truncated_block_names_the_exact_verb_that_yields_the_rest() {
     let block = faculty.render_assembled_context_within(
         &ws,
         120,
-        &GroundingPlan::default(),
         ContextComposition::default(),
     );
     assert!(
@@ -521,7 +521,7 @@ fn a_block_its_source_cut_short_says_so_even_when_every_part_fits() {
     let render = |board: Contribution, budget: usize| {
         let mut ws = Workspace::new("anything open?");
         ws.broadcast.push(board);
-        faculty.render_assembled_context_within(&ws, budget, &GroundingPlan::default(), ContextComposition::default())
+        faculty.render_assembled_context_within(&ws, budget, ContextComposition::default())
     };
 
     let fits = render(board_like(2).with_expand_command(Some("work/list")).with_source_truncated(true), 4_000);
@@ -555,7 +555,6 @@ fn a_source_with_no_expansion_verb_states_only_the_omission() {
     let block = faculty.render_assembled_context_within(
         &ws,
         120,
-        &GroundingPlan::default(),
         ContextComposition::default(),
     );
     assert!(
@@ -591,7 +590,6 @@ fn a_divisible_grounding_block_contributes_its_leads_when_the_whole_will_not_fit
     let block = faculty.render_assembled_context_within(
         &ws,
         budget,
-        &GroundingPlan::default(),
         ContextComposition::default(),
     );
 
@@ -627,11 +625,10 @@ fn a_divisible_grounding_block_contributes_its_leads_when_the_whole_will_not_fit
 // see. The divisible case is already covered above (a board contributes its
 // leads); this is its opposite number — nothing to cut, so it goes to zero.
 //
-// It also pins the PREMISE THE SENSOR RESTS ON: selection is
-// highest-salience-FIRST, so ranking alone can never produce this. If that
-// ordering is ever lost, the inversion stops meaning "the budget could not
-// afford what mattered" and the probe becomes noise — silently. This test is
-// what makes that regression loud.
+// Since the grounding became a leveled consumer (`prompt/grounding.rs`) a strictly MORE salient
+// block is never shown less whole than a lesser one (pinned there); what this pins is the tie, the
+// live shape: among equals, arrival decides which keeps detail, and an indivisible block with no
+// level that fits and no handle leaves the turn rather than arriving cut mid-content.
 #[test]
 fn an_indivisible_top_salience_block_can_lose_its_slot_to_a_cheaper_lesser_one() {
     let persona = Uuid::new_v4();
@@ -675,7 +672,6 @@ fn an_indivisible_top_salience_block_can_lose_its_slot_to_a_cheaper_lesser_one()
     let block = faculty.render_assembled_context_within(
         &ws,
         budget,
-        &GroundingPlan::default(),
         ContextComposition::default(),
     );
 
@@ -715,7 +711,6 @@ fn an_indivisible_contribution_is_still_dropped_whole_never_cut_mid_content() {
     let block = faculty.render_assembled_context_within(
         &ws,
         40,
-        &GroundingPlan::default(),
         ContextComposition::default(),
     );
     assert!(
@@ -744,7 +739,6 @@ fn a_budget_too_small_for_even_one_unit_emits_no_header_at_all() {
     let block = faculty.render_assembled_context_within(
         &ws,
         4,
-        &GroundingPlan::default(),
         ContextComposition::default(),
     );
     assert!(

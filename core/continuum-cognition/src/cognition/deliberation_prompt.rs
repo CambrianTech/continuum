@@ -179,9 +179,8 @@ pub(super) fn churn_of(faculty: &str) -> PromptChurn {
 /// the whole region behind it; a block that moves forfeits everything after the move.
 ///
 /// This is the ONE ordering rule for grounding blocks wherever they are laid down: the
-/// system message's stable tier (`render_assembled_context_within`), the standing
-/// grounding that rides the conversation tail (`GroundingPlan::trailing_messages`) and
-/// the trailing proprioception turns (`messages_unfitted`). Churn class first
+/// assembled context's stable tier (`prompt/grounding.rs`, `GroundingOffer::rendered`), her
+/// view's grounding blocks and the trailing proprioception turns (`messages_unfitted`). Churn class first
 /// ([`PromptChurn`]), then the source name — never salience, never arrival order, both
 /// of which are recomputed every turn. Salience still decides WHAT is selected; it no
 /// longer decides WHERE the survivors sit, which it never needed to.

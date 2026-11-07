@@ -471,9 +471,7 @@ mod tests {
         use crate::cognition::tool_surface::ToolSurface;
         let surface = ToolSurface::build(crate::cognition::persona_tools::native_offers(), Vec::new(), |s| s);
         for declared in [vec![], vec!["code/git/**".to_string()], vec!["code/read".to_string()]] {
-            let Ok(selected) = surface.select_granted(&declared, &[], usize::MAX) else {
-                panic!("an unbounded grant selects her surface for {declared:?}")
-            };
+            let selected = surface.select(&declared, &[]);
             let names = surface.names_of(&selected);
             assert!(
                 names.iter().any(|name| name == TOOL_OUTPUT.canonical()),

@@ -6,12 +6,12 @@
 
 use super::*;
 
-/// What her core hands cost on the wire: the whole of what an ordinary room claims for tools.
+/// What her core hands cost on the wire whole: what an ordinary room shows when the window holds it.
 fn core_tokens(faculty: &LlmDeliberationFaculty) -> usize {
-    faculty.tool_surface().claim_tokens(&[], &[]).0
+    faculty.tool_surface().select(&[], &[]).tokens
 }
 
-/// The first aligned window whose shared allocation admits her core hands, and its predecessor.
+/// The first aligned window whose shared allocation shows her core hands whole, and its predecessor.
 fn calibrated_windows() -> (u32, u32) {
     let core = core_tokens(&faculty_with_the_real_registry(1024));
     let admits = (1..=512)
@@ -65,18 +65,21 @@ fn a_turn_is_budgeted_for_her_hands_not_for_the_registry() {
     }
 }
 
-// what this catches: silently re-deriving a cap from a send. Her core hands are indivisible: a
-// window whose allocation cannot hold them refuses the turn loudly, naming at least their whole
-// cost, and never sends a smaller surface priced as if it were what she wanted.
-// The window is calibrated on a work turn, so the test asks with one.
+// what this catches (Aiko on the M5, 2026-11-07: her core hands whole refused her turns): a window
+// that cannot hold her core hands whole refusing the turn, or sending fewer verbs. Her hands
+// collapse by their levels (`tool_surface::levels`): every verb still sent, the turn proceeds, and
+// demand still prices them whole so the window can grow for them. The window is calibrated on a
+// work turn, so the test asks with one.
 #[test]
-fn a_window_that_cannot_hold_her_core_hands_refuses_and_never_sends_fewer() {
-    let (_fits, narrow) = calibrated_windows();
+fn a_window_that_cannot_hold_her_core_hands_whole_collapses_them_and_never_sends_fewer() {
+    let (fits, narrow) = calibrated_windows();
     let faculty = faculty_with_the_real_registry(narrow);
     let view = faculty.prompt_view(&work_turn());
-    assert_eq!((view.tools.tokens, view.tools.specs.is_none()), (0, true), "no partial surface: {:?}", view.tools.reason);
-    let refusal = view.capacity_error.expect("the window that cannot hold her core hands refuses loudly");
-    assert!(refusal.required_tokens >= core_tokens(&faculty), "{refusal:?}");
+    assert!(view.capacity_error.is_none() && view.budget_fault.is_none(), "collapse, never refuse: {:?} {:?}", view.capacity_error, view.budget_fault);
+    assert!(view.tools.tokens < core_tokens(&faculty), "her hands collapsed: {} of {}", view.tools.tokens, core_tokens(&faculty));
+    let whole = faculty_with_the_real_registry(fits).prompt_view(&work_turn()).tools;
+    assert_eq!(faculty.tool_surface().names_of(&view.tools), faculty.tool_surface().names_of(&whole), "every verb still sent");
+    assert_eq!(view.tools.demand_tokens(), core_tokens(&faculty), "her demand prices them whole");
 }
 
 // what this catches: the mirror error, inflating `over_window` on a turn that sent what it
@@ -95,8 +98,7 @@ fn an_untruncated_surface_does_not_inflate_demand() {
 #[test]
 fn the_cost_reported_is_always_the_cost_of_the_surface_reported() {
     let (fits, narrow) = calibrated_windows();
-    let _ = narrow; // the narrow window refuses (a_window_that_cannot_hold_her_core_hands_refuses_and_never_sends_fewer)
-    for (label, window) in [("core hands", fits), ("roomy", fits * 4)] {
+    for (label, window) in [("collapsed", narrow), ("core hands", fits), ("roomy", fits * 4)] {
         let faculty = faculty_with_the_real_registry(window);
         let selected = faculty.prompt_view(&work_turn()).tools;
         let specs = selected.specs.as_deref().expect("a tool surface was offered");

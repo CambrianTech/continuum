@@ -29,7 +29,7 @@ pub use command::{
 };
 pub use inbound::{
     classify as classify_inbound, Addressing, ConversationEvent, InboundEvent, ProtocolEnvelope,
-    ProtocolKind,
+    ProtocolKind, NODE_TELEMETRY_BODY_HINT,
 };
 pub use ws::{WsClientMessage, WsServerMessage};
 pub use event::{
