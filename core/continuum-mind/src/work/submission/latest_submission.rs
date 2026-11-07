@@ -121,7 +121,7 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
-    /// The commit your patch ends at; defaults to your checkout's committed HEAD.
+    /// Omit: your checkout's committed HEAD.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub head: Option<String>,

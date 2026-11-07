@@ -179,6 +179,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         "claim_id": short(claim.as_uuid()),
         "instance": "generic-project-work",
         "base_sha": "a".repeat(40),
+        "head": "b".repeat(40),
         "artifact": { "hash": patch_hash, "size_bytes": patch.len(), "mime": "text/x-diff" },
         "staged_revision_id": selected.id.to_string(),
     }))
