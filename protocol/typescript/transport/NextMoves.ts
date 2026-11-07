@@ -3,7 +3,6 @@ import type { NoMove } from "./NoMove";
 import type { SuggestedCall } from "./SuggestedCall";
 
 /**
- * What she can do after a refusal: one or more calls, or the typed reason there is none. An
- * empty list of calls is not a value of this type: it fails to decode.
+ * What she can do after a refusal: one or more calls, or the typed reason there is none.
  */
 export type NextMoves = { "calls": Array<SuggestedCall> } | { "none": NoMove };

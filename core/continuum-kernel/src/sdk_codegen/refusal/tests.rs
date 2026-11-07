@@ -20,7 +20,7 @@ mod reopen {
         disclosure: Always,
         params: P,
         output: R,
-        run(_this, _ctx, _p) => { Ok(R { success: true }) }
+        run(_this, _ctx, _p) => { let done = R { success: true }; Ok(done) }
     }
     crate::projects_success_on_return! { Reopen => R }
     pub const REOPEN: crate::sdk_codegen::VerbRef<Reopen> = crate::sdk_codegen::VerbRef::always();
@@ -93,7 +93,7 @@ fn a_refusal_crosses_a_seam_with_its_chain_and_next_call() {
     .to_wire();
     assert_eq!(wire.cause, ["act #9 is not on your record", "the record ends at #3"]);
     let continuum_airc_protocol::NextMoves::Calls(calls) = &wire.next else { panic!("one next call") };
-    assert_eq!(calls[0].command, "fixture/refusal-reopen", "the canonical name crosses; the offered name is her renderer's");
+    assert_eq!(calls.all()[0].command, "fixture/refusal-reopen", "the canonical name crosses; the offered name is her renderer's");
     let Ok(text) = serde_json::to_value(&wire) else { panic!("a refusal serializes") };
     assert!(matches!(serde_json::from_value::<continuum_airc_protocol::CommandRefusal>(text), Ok(back) if back == wire));
 }

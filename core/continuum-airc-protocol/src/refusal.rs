@@ -64,51 +64,42 @@ pub struct SuggestedCall {
     pub why: String,
 }
 
-/// What she can do after a refusal: one or more calls, or the typed reason there is none. An
-/// empty list of calls is not a value of this type: it fails to decode.
+/// What she can do after a refusal: one or more calls, or the typed reason there is none.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/transport/NextMoves.ts")]
-#[serde(rename_all = "snake_case", try_from = "NextMovesWire")]
+#[serde(rename_all = "snake_case")]
 pub enum NextMoves {
-    Calls(Vec<SuggestedCall>),
+    Calls(#[ts(as = "Vec<SuggestedCall>")] Calls),
     None(NoMove),
 }
 
 impl NextMoves {
-    /// At least one call; `None` for an empty list, which says nothing she can do.
+    /// At least one call, by construction.
     pub fn calls(first: SuggestedCall, more: Vec<SuggestedCall>) -> Self {
         let mut calls = Vec::with_capacity(1 + more.len());
         calls.push(first);
         calls.extend(more);
-        NextMoves::Calls(calls)
+        NextMoves::Calls(Calls(calls))
     }
 }
 
-/// The decoded shape before the non-empty check.
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum NextMovesWire {
-    Calls(Vec<SuggestedCall>),
-    None(NoMove),
-}
+/// One or more next calls. An empty list is not a value of this type: it fails to decode, so a
+/// refusal never reaches her as "do one of these:" followed by nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Calls(Vec<SuggestedCall>);
 
-/// A decoded list of next calls that was empty.
-#[derive(Debug)]
-pub struct NoCallsListed;
-
-impl std::fmt::Display for NoCallsListed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("a refusal's next calls must name at least one call; with none it says no_move")
+impl Calls {
+    pub fn all(&self) -> &[SuggestedCall] {
+        &self.0
     }
 }
 
-impl TryFrom<NextMovesWire> for NextMoves {
-    type Error = NoCallsListed;
-    fn try_from(wire: NextMovesWire) -> Result<Self, Self::Error> {
-        match wire {
-            NextMovesWire::Calls(calls) if calls.is_empty() => Err(NoCallsListed),
-            NextMovesWire::Calls(calls) => Ok(NextMoves::Calls(calls)),
-            NextMovesWire::None(none) => Ok(NextMoves::None(none)),
+impl<'de> Deserialize<'de> for Calls {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let calls = Vec::<SuggestedCall>::deserialize(deserializer)?;
+        match calls.is_empty() {
+            true => Err(serde::de::Error::custom("a refusal's next calls must name at least one call; with none it says no_move")),
+            false => Ok(Calls(calls)),
         }
     }
 }
