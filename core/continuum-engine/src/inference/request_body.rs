@@ -33,13 +33,16 @@ pub const VISION_DESCRIPTION_PURPOSE: &str = "cognition/vision-describe";
 /// The ONE owner of a request's thinking: its think term (`DispatchTerms::think`) and nothing
 /// else. Returns the budget it applied.
 ///
-/// - `Some(ThinkBudget(n))`, `n > 0`: she thinks, bounded at `n` (`reasoning_budget_tokens`); the
-///   template's `enable_thinking` is left at its default, on.
-/// - `Some(ThinkBudget(0))`: the caller's explicit intent is no think. Both levers say it: the
-///   template's `enable_thinking = false` (it renders an empty think; `chat_template_kwargs` at the
-///   body's top level, ignored by a template without the branch and by cloud providers) and a zero
-///   budget for the fork's sampler.
-/// - `None`: no measured need; the model's own default.
+/// - `Think::Budget(ThinkBudget(n))`, `n > 0`: she thinks, bounded at `n`
+///   (`reasoning_budget_tokens`); the template's `enable_thinking` is left at its default, on.
+/// - `Think::Budget(ThinkBudget(0))`: the caller's explicit no-think. Both levers say it: the
+///   template's `enable_thinking = false` and a zero budget for the fork's sampler. The template
+///   reads `enable_thinking` only in its generation prompt (Qwen3.6-35B-A3B, served by fork
+///   0d7dda6ae: `<think>\n\n</think>\n\n` instead of `<think>\n`; prior turns render by
+///   `preserve_thinking` / the last query index), so flipping it per turn keeps her prefix.
+///   `chat_template_kwargs` sits at the body's top level, ignored by a template without the branch
+///   and by cloud providers.
+/// - `Think::ModelDefault`: no think term on the body; the model's own default.
 ///
 /// The budget is the caller's MEASURED need (her grant past her measured answer,
 /// `llm_deliberation_faculty::act_room`), never a rule here. A fixed act budget of 1,024 stood here
@@ -49,8 +52,8 @@ pub const VISION_DESCRIPTION_PURPOSE: &str = "cognition/vision-describe";
 /// fork's template wraps the schema in its reasoning rule and the budget sampler runs before the
 /// grammar (Cormac's probe, fork 0d7dda6ae, 2026-11-06: budget 40, a forced `</think>`, then
 /// schema-valid JSON); a gateway-wide suppression flag and a purpose match did too.
-pub fn apply_think(think: Option<crate::ai::types::ThinkBudget>, body: &mut Value) -> Option<u64> {
-    let budget = think?.0;
+pub fn apply_think(think: crate::ai::types::Think, body: &mut Value) -> Option<u64> {
+    let budget = think.budget()?.0;
     let obj = body.as_object_mut()?;
     if budget == 0 {
         obj.insert("chat_template_kwargs".to_string(), json!({ "enable_thinking": false }));
@@ -70,13 +73,13 @@ pub(crate) fn finish_body(
     request: &TextGenerationRequest,
     model: &str,
     tail_tools: bool,
-    // The think's bound her caller sized (`DispatchTerms::think`), zero included; `None` leaves it to the model.
-    reasoning_budget: Option<crate::ai::types::ThinkBudget>,
+    // The think her caller stated (`DispatchTerms::think`).
+    think: crate::ai::types::Think,
     body: &mut Value,
 ) -> Result<(), crate::ai::inference_error::InferenceError> {
     // Her thinking is her think term's alone (`apply_think`): bounded at what her caller sized from
     // her measured need, so the answer keeps its measured room.
-    if let Some(budget) = apply_think(reasoning_budget, body) {
+    if let Some(budget) = apply_think(think, body) {
         let budget_class = match request.purpose.as_deref() {
             Some(ACT_PURPOSE | FORK_ACT_PURPOSE) => "delib.act.reasoning_budgeted",
             Some(VISION_DESCRIPTION_PURPOSE) => "vision.description.reasoning_budgeted",
@@ -624,44 +627,48 @@ mod tests {
     // quarter-share rule. Only a zero budget, the caller's explicit no-think, closes the template.
     #[test]
     fn the_think_budget_is_the_callers_measured_one_and_nothing_else() {
+        use crate::ai::types::{Think, ThinkBudget};
         let mut act = json!({ "model": "m", "max_tokens": 434 });
-        assert_eq!(apply_think(Some(crate::ai::types::ThinkBudget(338)), &mut act), Some(338));
+        assert_eq!(apply_think(Think::Budget(ThinkBudget(338)), &mut act), Some(338));
         assert_eq!(act["reasoning_budget_tokens"], json!(338));
         assert!(act.get("chat_template_kwargs").is_none(), "a budget thinks");
         let mut closed = json!({ "model": "m", "max_tokens": 96 });
-        assert_eq!(apply_think(Some(crate::ai::types::ThinkBudget(0)), &mut closed), Some(0), "zero is a budget: no thinking");
+        assert_eq!(apply_think(Think::Budget(ThinkBudget(0)), &mut closed), Some(0), "zero is a budget: no thinking");
         assert_eq!(closed["reasoning_budget_tokens"], json!(0));
         assert_eq!(closed["chat_template_kwargs"]["enable_thinking"], json!(false), "her caller said no think");
         let mut none = json!({ "model": "m", "max_tokens": 400 });
-        assert_eq!(apply_think(None, &mut none), None);
+        assert_eq!(apply_think(Think::ModelDefault, &mut none), None);
         assert!(none.get("reasoning_budget_tokens").is_none(), "no caller budget, no rule of its own");
-        assert!(none.get("chat_template_kwargs").is_none(), "no caller intent: the model's default");
+        assert!(none.get("chat_template_kwargs").is_none(), "no think term: the model's default");
     }
 
     // what this catches: a side rule deciding her thinking (Cormac, fork 0d7dda6ae, 2026-11-06: ANY
     // response_format, Text included, set `enable_thinking = false`, so a format-bound request
     // never thought whatever budget it carried; a purpose match and a gateway flag did too). A
-    // JSON or Text request with a budget thinks within it; only her caller's zero turns it off,
-    // a sensory description's included.
+    // JSON or Text request with a budget thinks within it; only her caller's zero turns it off.
+    // And a format alone never leaves the think to the model: a body without a think term is the
+    // `ModelDefault` its caller named (an external passthrough), never one a format produced.
     #[test]
     fn a_response_format_never_turns_her_thinking_off_only_her_think_term_does() {
-        use crate::ai::types::{ResponseFormat, ThinkBudget};
+        use crate::ai::types::{ResponseFormat, Think, ThinkBudget};
         for format in [ResponseFormat::JsonObject, ResponseFormat::Text] {
             let request = TextGenerationRequest { purpose: Some(ACT_PURPOSE.into()), response_format: Some(format.clone()), ..Default::default() };
             let mut body = json!({ "model": "m", "max_tokens": 434 });
-            assert!(finish_body(&gateway(true), &request, "m", false, Some(ThinkBudget(40)), &mut body).is_ok());
+            assert!(finish_body(&gateway(true), &request, "m", false, Think::Budget(ThinkBudget(40)), &mut body).is_ok());
             assert!(body.get("chat_template_kwargs").is_none(), "{format:?}: the format constrains the answer, not the think");
             assert_eq!(body["reasoning_budget_tokens"], json!(40), "{format:?}: at her budget");
             assert!(body.get("response_format").is_some(), "{format:?}: forwarded");
 
             let mut off = json!({ "model": "m", "max_tokens": 96 });
-            assert!(finish_body(&gateway(true), &request, "m", false, Some(ThinkBudget(0)), &mut off).is_ok());
+            assert!(finish_body(&gateway(true), &request, "m", false, Think::Budget(ThinkBudget(0)), &mut off).is_ok());
             assert_eq!(off["chat_template_kwargs"]["enable_thinking"], json!(false), "{format:?}: her caller said no think");
+            assert_eq!(off["reasoning_budget_tokens"], json!(0), "{format:?}: and the sampler hears it");
+
+            let mut passthrough = json!({ "model": "m", "max_tokens": 96 });
+            assert!(finish_body(&gateway(true), &request, "m", false, Think::ModelDefault, &mut passthrough).is_ok());
+            assert!(passthrough.get("reasoning_budget_tokens").is_none() && passthrough.get("chat_template_kwargs").is_none(),
+                "{format:?}: only a named ModelDefault leaves the think to the model");
         }
-        let describe = TextGenerationRequest { purpose: Some(VISION_DESCRIPTION_PURPOSE.into()), ..Default::default() };
-        let mut unstated = json!({ "model": "m", "max_tokens": 50 });
-        assert!(finish_body(&gateway(true), &describe, "m", false, None, &mut unstated).is_ok());
-        assert!(unstated.get("chat_template_kwargs").is_none(), "a purpose is not a think term");
     }
 
     fn gateway(llamacpp: bool) -> OpenAICompatibleConfig {
@@ -736,16 +743,16 @@ mod tests {
         };
         let cfg = gateway;
         let mut served = json!({ "model": "m" });
-        assert!(finish_body(&cfg(true), &request, "m", true, None, &mut served).is_ok());
+        assert!(finish_body(&cfg(true), &request, "m", true, crate::ai::types::Think::ModelDefault, &mut served).is_ok());
         assert_eq!(served["tools"].as_array().map(Vec::len), Some(1), "the head holds only its own verbs");
         assert_eq!(served["tail_tools"][0]["function"]["name"], "code_git_apply");
         // A tail the destination cannot take is refused for a rebuild, never silently dropped.
         let mut cloud = json!({ "model": "m" });
         assert_eq!(
-            finish_body(&cfg(false), &request, "m", false, None, &mut cloud),
+            finish_body(&cfg(false), &request, "m", false, crate::ai::types::Think::ModelDefault, &mut cloud),
             Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model: "m".into() })
         );
         let headless = TextGenerationRequest { tail_tools: None, ..request.clone() };
-        assert!(finish_body(&cfg(false), &headless, "m", false, None, &mut json!({ "model": "m" })).is_ok(), "no tail, nothing to refuse");
+        assert!(finish_body(&cfg(false), &headless, "m", false, crate::ai::types::Think::ModelDefault, &mut json!({ "model": "m" })).is_ok(), "no tail, nothing to refuse");
     }
 }

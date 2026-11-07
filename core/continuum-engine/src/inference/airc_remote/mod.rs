@@ -11,10 +11,10 @@
 //!
 //! ```ignore
 //! // LOCAL — LlamaCppAdapter on Apple Silicon via Metal
-//! let response = adapter.generate_text(request).await?;
+//! let response = adapter.generate_under(request, terms).await?;
 //!
 //! // REMOTE — AircRemoteInferenceAdapter routing over airc to a peer
-//! let response = remote_adapter.generate_text(request).await?;
+//! let response = remote_adapter.generate_under(request, terms).await?;
 //! ```
 //!
 //! Both impls return `TextGenerationResponse`. Everything above the

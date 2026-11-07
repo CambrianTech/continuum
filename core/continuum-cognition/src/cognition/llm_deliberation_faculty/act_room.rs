@@ -96,7 +96,7 @@ impl LlmDeliberationFaculty {
     ) -> (crate::ai::types::DispatchTerms, Option<crate::ai::provenance::OutputRoom>) {
         let terms = crate::ai::types::DispatchTerms {
             admission: Some(crate::ai::types::RequestAdmission { window, lease, priced: calibration.admission }),
-            think: Some(act_reasoning_budget(view.act_room, view.completion_reserve)),
+            think: crate::ai::types::Think::Budget(act_reasoning_budget(view.act_room, view.completion_reserve)),
         };
         let Some(cap) = request.max_tokens.filter(|_| kind == TurnKind::Act) else {
             return (terms, None);
@@ -105,7 +105,7 @@ impl LlmDeliberationFaculty {
         let room = crate::ai::provenance::OutputRoom {
             model: request.model.clone().unwrap_or_default(), // unwrap_or_default: a request naming no model is the adapter's default, said as empty
             cap,
-            reasoning_budget: terms.think.map(|think| think.0),
+            reasoning_budget: terms.think.budget().map(|think| think.0),
             need: view.act_room.needed(),
             density_estimated,
             density_measured,

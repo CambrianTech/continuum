@@ -146,10 +146,13 @@ pub async fn teacher_generate(
         turn_bound: None,
     };
 
+    // The teacher states no think term yet: the model's own default, as it always ran (measured
+    // per-purpose think budgets: card, owner Fable).
+    let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
     let response: TextGenerationResponse = adapter
-        .generate_text(request)
+        .generate_under(request, terms)
         .await
-        .map_err(CommandError::Internal)?;
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
     let receipt = GenerationReceipt::from_response(request_id, &response);
     if let GenerationOutcome::Faulted { detail, .. } = &receipt.outcome {
         // An Ok transport response can still report failed generation. Its partial

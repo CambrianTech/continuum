@@ -189,7 +189,7 @@ pub(super) fn smoke_body(cap: SmokeCap, scratch: Option<u32>) -> serde_json::Val
         "stream": false,
         "temperature": 0.0,
     });
-    crate::inference::request_body::apply_think(Some(crate::ai::types::ThinkBudget(0)), &mut body);
+    crate::inference::request_body::apply_think(crate::ai::types::Think::Budget(crate::ai::types::ThinkBudget(0)), &mut body);
     if let Some(obj) = body.as_object_mut() {
         if let SmokeCap::Answer(max_tokens) = cap {
             obj.insert("max_tokens".to_string(), serde_json::json!(max_tokens));

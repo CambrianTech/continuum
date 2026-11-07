@@ -32,9 +32,8 @@ maxTokens?: number,
  */
 timeoutMs?: number, 
 /**
- * Rust-owned admission policy for this generation. When omitted,
- * `evaluate_response` applies the local-generation defaults above.
- * Hosts that know tighter resource limits should pass them here;
- * they should not coordinate slots outside Rust.
+ * Rust-owned admission policy for this generation: REQUIRED, the host's resource limits for
+ * it (no local default stands in for them: a sized constant here was a consumer sizing
+ * itself). Hosts pass them here; they never coordinate slots outside Rust.
  */
-admission?: GenerateResponseAdmissionPolicy, };
+admission: GenerateResponseAdmissionPolicy, };

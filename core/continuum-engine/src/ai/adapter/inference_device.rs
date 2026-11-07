@@ -556,21 +556,28 @@ pub trait AIProviderAdapter: super::DispatchTermsPolicy + Send + Sync {
     /// Generate with typed transport/admission failures. Backends can migrate
     /// their existing streaming implementation without changing legacy callers
     /// or fabricating a classification for an untyped provider error.
+    ///
+    /// Reached only under stated terms: `dispatched` is built by the engine's dispatch
+    /// ([`super::Dispatched`]), so a caller outside it generates through
+    /// [`super::DispatchTermsPolicy::generate_admitted`] and states its think.
     async fn generate_stream_checked(
         &self,
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        dispatched: super::Dispatched,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        self.generate_stream(request, sink)
+        self.generate_stream(request, sink, dispatched)
             .await
             .map_err(Into::into)
     }
 
     /// Generate text (convenience drain over [`generate_stream`])
-    /// Handles both plain text generation AND tool calling
+    /// Handles both plain text generation AND tool calling. Reached only under stated terms
+    /// (`dispatched`, [`super::Dispatched`]).
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        dispatched: super::Dispatched,
     ) -> Result<TextGenerationResponse, String>;
 
     /// Generate, delivering each [`GenerationChunk`] to `sink` the INSTANT the
@@ -596,8 +603,9 @@ pub trait AIProviderAdapter: super::DispatchTermsPolicy + Send + Sync {
         &self,
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        dispatched: super::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
-        let response = self.generate_text(request).await?;
+        let response = self.generate_text(request, dispatched).await?;
         if sink.is_closed() {
             return Ok(response); // No observer: keep the result without cloning discarded chunks.
         }

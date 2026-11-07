@@ -71,7 +71,7 @@ async fn adapter_parks_without_caller_lane_and_reacquires_before_http(
     let (sink, _receiver) = tokio::sync::mpsc::unbounded_channel();
     let mut call = Box::pin(with_serving_lane(
         caller,
-        adapter.generate_admitted(request, crate::ai::types::DispatchTerms::default(), sink),
+        adapter.generate_admitted(request, crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault), sink),
     ));
     assert!(futures::poll!(&mut call).is_pending());
     let borrower = tokio::time::timeout(Duration::from_secs(2), async {
