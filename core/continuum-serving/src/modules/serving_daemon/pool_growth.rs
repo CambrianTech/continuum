@@ -27,11 +27,15 @@ impl ServingDaemonModule {
         if crate::inference::llama_server::growth_requested(engine.pid) {
             return true;
         }
-        if self.pool_growth_models.lock().contains(desired) {
-            return false;
-        }
         let Some(model) = (self.model_resolver)(desired) else { return false };
         let running = self.served_pool.load(Ordering::Relaxed);
+        // A relaunch that came back below the largest pool this model ran at (an engine exit
+        // relaunched from a gap reading, the M5 2026-11-07 16:14Z, card 9ffcb1b5) is a repair to
+        // what this node already held, never a chain upward: the one-try record does not hold it.
+        let proven = self.last_healthy_pool.lock().get(&model.id).copied().unwrap_or(0); // unwrap_or: a model not yet run has proven nothing
+        if !recovering(running, proven) && self.pool_growth_models.lock().contains(desired) {
+            return false;
+        }
         let (per_slot, sequences) = self.engine_pool(&model, served_ctx, lanes);
         let wanted = u64::from(per_slot) * u64::from(sequences);
         // The last plan's budget and its credit fact, read together: "steady" is the budget
@@ -41,7 +45,7 @@ impl ServingDaemonModule {
         if !grows(planned.credit, budget, running, wanted) {
             return false;
         }
-        if !first_try(&mut self.pool_growth_models.lock(), desired) {
+        if !first_try(&mut self.pool_growth_models.lock(), desired) && !recovering(running, proven) {
             return false;
         }
         let pid = engine.pid;
@@ -81,6 +85,12 @@ pub(super) fn first_try(tried: &mut std::collections::BTreeSet<String>, model: &
     tried.insert(model.to_owned())
 }
 
+/// PURE: whether the running pool is below the largest this model ran at this core run, so growing to it
+/// repairs a relaunch rather than chaining one. A pool not yet read (0) is not a recovery.
+pub(super) fn recovering(running_tokens: u32, proven_tokens: u64) -> bool {
+    running_tokens > 0 && u64::from(running_tokens) < proven_tokens
+}
+
 /// PURE: whether a steady plan proves the pool should grow. Steady (the budget already held
 /// serving's own bytes, so it was sampled with the engine up), a sampled budget, a known running
 /// pool, and a wanted pool strictly larger. Equal or smaller never relaunches.
@@ -95,7 +105,7 @@ pub(super) fn grows(credit: OwnCredit, budget_bytes: u64, running_tokens: u32, w
 
 #[cfg(test)]
 mod tests {
-    use super::{first_try, grows, OwnCredit};
+    use super::{first_try, grows, recovering, OwnCredit};
 
     // what this catches (the M5 2026-11-03, 81aef1844: a 16,640 pool launched from a boot-time
     // transient and kept): a pool that never grows from a bad launch, or a bridge that relaunches
@@ -126,4 +136,15 @@ mod tests {
         assert!(first_try(&mut tried, "qwen3.6-27b"), "a different model is a new launch");
     }
 
+    // what this catches (the M5, 2026-11-07, card 9ffcb1b5): the one-try record holding a relaunch
+    // that came back smaller after an engine exit, so for 45 minutes nothing grew it. Below the
+    // largest pool this model ran at is a repair; at or above it, the one-try rule stands.
+    #[test]
+    fn a_pool_below_the_largest_this_model_ran_at_is_a_recovery() {
+        assert!(recovering(176_640, 997_390), "the 16:14Z relaunch: below the proven pool");
+        assert!(!recovering(997_390, 997_390), "at the proven pool: no recovery");
+        assert!(!recovering(1_100_000, 997_390), "above it is growth, held to one try");
+        assert!(!recovering(0, 997_390), "a pool not yet read is not a recovery");
+        assert!(!recovering(176_640, 0), "nothing proven: no recovery");
+    }
 }

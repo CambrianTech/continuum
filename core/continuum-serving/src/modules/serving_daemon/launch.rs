@@ -1,6 +1,7 @@
 //! Launch ownership for the serving daemon.
 
 use super::*;
+use crate::inference::planning::window_allocator::Measure;
 
 /// Owned inputs that passed the reconcile decision guards. The operation remains held
 /// through launch and is moved into the same asynchronous lifecycle task.
@@ -37,6 +38,7 @@ impl ServingDaemonModule {
             lanes,
             sequences,
             model.context_window,
+            self.seated_for(model),
         );
         // `-c` is the CLI's `slots x per-slot`: the pool carried in that shape, not anyone's window.
         let per_slot = u32::try_from(pool / u64::from(sequences)).unwrap_or(u32::MAX); // unwrap_or: a pool over u32 x sequences is no real engine; the CLI caps it
@@ -187,6 +189,7 @@ impl ServingDaemonModule {
         let force_relaunch = self.force_relaunch.clone();
         let server = self.server.clone();
         let served_pool = Arc::clone(&self.served_pool);
+        let last_healthy_pool = Arc::clone(&self.last_healthy_pool);
         let serving_tx = self.serving_tx.clone();
         let verified_target = self.verified_target.clone();
         let intent_owner = self.intent.clone();
@@ -342,6 +345,9 @@ impl ServingDaemonModule {
                     (true, Some(true)) => match server.served_pool_tokens().await {
                         Ok(pool) => {
                             served_pool.store(pool, Ordering::Relaxed);
+                            let mut proven = last_healthy_pool.lock();
+                            let held = proven.entry(target.model.id.clone()).or_insert(0);
+                            *held = (*held).max(u64::from(pool));
                             sequence_share(pool, served_lanes, target.model.context_window)
                         }
                         Err(e) => {
@@ -710,7 +716,15 @@ impl ServingDaemonModule {
 
 /// The pool an engine launches with: the most memory the host's measured capacity proves fits.
 /// That is the fit at `sequences` (a window within `budget_bytes` for each, capped at the trained
-/// window) or the plan's own window x its lanes, whichever is larger.
+/// window) or the plan's own window x its lanes, whichever is larger, and never less than what the
+/// seated minds need while this node has proven it can hold that ([`Seated`]).
+///
+/// The floor is the relaunch fix (the M5, 2026-11-07 16:14Z, card 9ffcb1b5): the engine aborted, its
+/// own bytes read 0, so the plan's budget was a gap reading (usable 0) and the pool fell to the plan's
+/// window x 2 lanes, 176,640 split over 5 sequences = 35,328 each, while the five minds needed 44-70k.
+/// Every mind was refused for 45 minutes. Their needs had survived the abort (the working set); only
+/// the launch ignored them. Capped by the larger of the live fit and the pool this model last ran
+/// healthy at, so the floor never asks for more than this node has already held.
 ///
 /// `budget_bytes` is the published plan's live budget. `--kv-unified` allocates the whole pool up
 /// front and one launch keeps it, so the budget must be what memory holds now: the host's physical
@@ -725,10 +739,51 @@ pub(super) fn launch_pool(
     lanes: u32,
     sequences: u32,
     trained_window: u32,
+    seated: Seated,
 ) -> u64 {
     let plan_pool = u64::from(plan_window) * u64::from(lanes);
     let fit_pool = footprint.map_or(0, |fp| {
         u64::from(fp.window_within(budget_bytes, sequences).min(trained_window)) * u64::from(sequences)
     }); // map_or: no footprint proves no fit beyond the plan's own pool
-    plan_pool.max(fit_pool)
+    let held = seated.need.min(fit_pool.max(seated.proven));
+    plan_pool.max(fit_pool).max(held)
+}
+
+/// What the seated minds need of the pool, and what this node has proven it can hold for the model:
+/// the launch's floor ([`launch_pool`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Seated {
+    /// The sum of the seated minds' HELD needs (what a held turn measured), each capped at the model's
+    /// trained window (a need above it is a measurement defect, card bf3b6d68, never a size). A mind
+    /// with no held turn adds nothing: her wish is a target with headroom, not a need.
+    pub(super) need: u64,
+    /// The largest pool this model ran at in this core run, counted only while the live budget is a
+    /// gap reading (no engine credited, e.g. after an exit): a steady budget's fit is the live truth,
+    /// and a pool proven earlier never overrides it. 0 when steady or before any run.
+    pub(super) proven: u64,
+}
+
+impl ServingDaemonModule {
+    /// The launch floor for `model`: the seated minds' needs (the working set keeps them across an
+    /// engine exit), and while the budget is a gap reading, the largest pool this model ran at.
+    pub(super) fn seated_for(&self, model: &crate::model_registry::types::Model) -> Seated {
+        let trained = u64::from(model.context_window);
+        let need = self
+            .serving_demand()
+            .requirements
+            .iter()
+            .filter_map(|requirement| match requirement.measure {
+                // Only a need a held turn measured: a wish's target carries headroom and untrimmed
+                // overflow (Fable, 2026-11-07: Aiko's 902k on a 262k model), never a size to launch.
+                Measure::Held { need, .. } => Some(u64::from(need.value().get()).min(trained)),
+                Measure::Unmeasured | Measure::Wished { .. } | Measure::Declared { .. } => None,
+            })
+            .sum();
+        let steady = matches!(*self.planned_budget.lock(), Some(PlannedBudget { credit: OwnCredit::Included { .. }, .. }));
+        let proven = match steady {
+            true => 0,
+            false => self.last_healthy_pool.lock().get(&model.id).copied().unwrap_or(0), // unwrap_or: a model not yet run has proven nothing
+        };
+        Seated { need, proven }
+    }
 }

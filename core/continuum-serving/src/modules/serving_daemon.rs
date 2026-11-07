@@ -366,6 +366,10 @@ pub struct ServingDaemonModule {
     /// The pool the running engine reports (`served_pool_tokens`, its `context_geometry`), as
     /// the launch's ready path last read it; `0` = not read. The grants' one source for the pool.
     served_pool: Arc<std::sync::atomic::AtomicU32>,
+    /// The largest pool each model ran at in this core run (model id -> tokens): what this node has
+    /// proven it holds, the cap on a gap-budget relaunch's floor from the seated minds' needs, and the
+    /// pool a smaller relaunch may grow back to (card 9ffcb1b5). An engine exit leaves it as it was.
+    last_healthy_pool: Arc<parking_lot::Mutex<std::collections::BTreeMap<String, u64>>>,
 
     /// L10 (#438): consecutive plan ticks wanting a DIFFERENT base model than the
     /// ready incumbent, and which model that was. A model swap re-homes every
@@ -559,6 +563,7 @@ impl ServingDaemonModule {
             fair_grants: Arc::new(parking_lot::Mutex::new(crate::capacity::window_grant::FairGrantState::default())),
             shared_pool_of: Arc::new(parking_lot::Mutex::new(None)),
             served_pool: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            last_healthy_pool: Arc::new(parking_lot::Mutex::new(std::collections::BTreeMap::new())),
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
             serving_hold: Arc::new(parking_lot::Mutex::new(None)),

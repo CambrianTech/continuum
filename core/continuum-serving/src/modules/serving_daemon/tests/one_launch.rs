@@ -122,18 +122,46 @@ fn model_swap_on_a_ready_lane_needs_a_sustained_streak() {
 #[test]
 fn the_launch_pool_is_the_live_plans_never_the_physical_totals() {
     let launch_pool = super::super::launch::launch_pool;
+    let none = super::super::launch::Seated { need: 0, proven: 0 };
     let m5_trained = 262_144;
     let mut m5 = footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, m5_trained, true, None)
         .expect("a footprint from the weights");
     m5.kv_per_token = 8_317;
     let m5_live = 23 * GB;
     assert_eq!(m5.window_within(m5_live, 5), 0, "the M5's live budget fits no window at five sequences beside the plan");
-    assert_eq!(launch_pool(Some(&m5), m5_live, 128_768, 2, 5, m5_trained), 257_536, "the M5 launches its plan's 2 x 128,768");
-    assert!(launch_pool(Some(&m5), m5_live, 128_768, 2, 5, m5_trained) < 5 * u64::from(m5_trained), "never 5 x the trained window (590df4bc3)");
+    assert_eq!(launch_pool(Some(&m5), m5_live, 128_768, 2, 5, m5_trained, none), 257_536, "the M5 launches its plan's 2 x 128,768");
+    assert!(launch_pool(Some(&m5), m5_live, 128_768, 2, 5, m5_trained, none) < 5 * u64::from(m5_trained), "never 5 x the trained window (590df4bc3)");
 
     let intel_trained = 32_768;
     let mut intel = footprint_from_parts("intelmac", 5 * GB, intel_trained, true, None).expect("a footprint");
     intel.kv_per_token = 8_192;
-    assert_eq!(launch_pool(Some(&intel), 30 * GB, 32_768, 2, 9, intel_trained), 294_912, "the IntelMac: its fit, 9 x 32,768");
-    assert_eq!(launch_pool(None, 30 * GB, 32_768, 2, 9, intel_trained), 65_536, "no footprint: the plan's own window x lanes");
+    assert_eq!(launch_pool(Some(&intel), 30 * GB, 32_768, 2, 9, intel_trained, none), 294_912, "the IntelMac: its fit, 9 x 32,768");
+    assert_eq!(launch_pool(None, 30 * GB, 32_768, 2, 9, intel_trained, none), 65_536, "no footprint: the plan's own window x lanes");
+}
+
+// what this catches (the M5, 2026-11-07 16:14Z, card 9ffcb1b5): a relaunch after an engine exit read
+// a gap budget (the dead engine credited nothing: usable 0) and launched its plan's 2 lanes, 176,640
+// split over 5 sequences = 35,328 each, while the five minds held 44-70k: every mind refused for 45
+// minutes. The floor is the seated held needs, each capped at the trained window, and capped in sum
+// by the pool this model already ran at, never by the gap reading and never above what was proven.
+#[test]
+fn a_relaunch_from_a_gap_budget_holds_every_seated_need_up_to_the_proven_pool() {
+    use super::super::launch::{launch_pool, Seated};
+    let trained = 262_144;
+    let mut m5 = footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, trained, true, None)
+        .expect("a footprint from the weights");
+    m5.kv_per_token = 8_317;
+    let gap = 0;
+    // Benchy, Aris, Aiko (her 902,158 is a measurement defect, capped at the trained window), and two at their turns' sizes.
+    let held: u64 = [136_694_u64, 70_538, 902_158, 56_431, 44_252].iter().map(|need| (*need).min(u64::from(trained))).sum();
+    assert_eq!(held, 570_059, "test: the capped held needs");
+    let none = Seated { need: 0, proven: 0 };
+    assert_eq!(launch_pool(Some(&m5), gap, 88_320, 2, 5, trained, none), 176_640, "today's relaunch, reproduced: 5 x 35,328");
+    let proven = 997_390;
+    assert_eq!(launch_pool(Some(&m5), gap, 88_320, 2, 5, trained, Seated { need: held, proven }), held, "every seated need is held");
+    assert_eq!(launch_pool(Some(&m5), gap, 88_320, 2, 5, trained, Seated { need: held, proven: 300_000 }), 300_000, "never above the proven pool");
+    assert_eq!(launch_pool(Some(&m5), gap, 88_320, 2, 5, trained, Seated { need: held, proven: 0 }), 176_640, "nothing proven, nothing floored: the plan's own pool");
+    let steady = 60 * GB;
+    let fit = launch_pool(Some(&m5), steady, 88_320, 2, 5, trained, none);
+    assert_eq!(launch_pool(Some(&m5), steady, 88_320, 2, 5, trained, Seated { need: held, proven: 0 }), fit, "a steady budget: the floor (proven 0) never lifts the pool past its live fit");
 }
