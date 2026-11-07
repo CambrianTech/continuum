@@ -17,33 +17,6 @@ pub(super) fn cut_act_fact(text: &str) -> String {
     )
 }
 
-/// Apportion the server's output count between the reasoning channel and the answer
-/// by the bytes each channel carried — the server counts tokens, the adapter splits
-/// text. No channel text at all (a native tool call) is all answer.
-pub(super) fn reasoning_answer_split(output_tokens: u32, reasoning_chars: usize, answer_chars: usize) -> (u32, u32) {
-    let total = reasoning_chars.saturating_add(answer_chars);
-    if total == 0 || reasoning_chars == 0 {
-        return (0, output_tokens);
-    }
-    let reasoning = ((output_tokens as u64 * reasoning_chars as u64) / total as u64) as u32;
-    let reasoning = reasoning.min(output_tokens);
-    (reasoning, output_tokens - reasoning)
-}
-
-/// Native tool arguments are generated answer bytes too. `text` is the adapter's
-/// plain-text projection, so counting it alone turns thinking + tools into a
-/// think-only sample. Do not count Text parts again: they mirror that projection.
-pub(super) fn answer_payload_bytes(text: &str, parts: Option<&[crate::ai::types::ContentPart]>) -> usize {
-    parts.unwrap_or_default().iter().fold(text.len(), |bytes, part| {
-        match part {
-            crate::ai::types::ContentPart::ToolUse { name, input, .. } => {
-                bytes.saturating_add(name.len()).saturating_add(input.to_string().len())
-            }
-            _ => bytes,
-        }
-    })
-}
-
 impl LlmDeliberationFaculty {
     /// Turn an emitted tool-call into an [`Decision::Act`] verdict — the persona
     /// has chosen to use her hands. The faculty does NOT run the calls; the

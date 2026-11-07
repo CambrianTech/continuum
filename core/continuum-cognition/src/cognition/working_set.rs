@@ -224,16 +224,16 @@ pub fn requirement_tokens(d: &PersonaDemand) -> u32 {
 /// 2026-08-31, the meta-loop spiral). Both reserve comments named this exact
 /// registry pattern as the honest endgame; this is it.
 mod need;
-pub use need::{ActRoom, OutputNeed};
-use need::{p90, reasoning_at_least, NEED_SAMPLES};
+pub use need::{ActRoom, ChannelSample, OutputNeed, NEED_SAMPLES};
+mod emission;
+pub use emission::{answer_payload_bytes, reasoning_answer_split, EmissionStop, ResponseEmission};
+use need::{answer_need, p90, reasoning_at_least};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonaEmission {
-    /// High-water mark, in tokens, of a completed generation. A turn that hit
-    /// its output cap records DOUBLE its emission — the observation is a floor
-    /// on true demand, not a measurement of it, and doubling is the growth
-    /// path that keeps a measured reserve from freezing itself too small
-    /// (the same measure-the-clamp trap `demand_tokens` documents).
+    /// High-water mark, in tokens, of a completed generation: the sum of its channels as
+    /// measured. A turn cut at its cap records what it wrote; that its true demand is higher is
+    /// the answer ring's bound ([`Self::answer_samples`]), never a factor here.
     pub peak_tokens: u32,
     /// The most recent observation — the peak's honest companion.
     pub last_tokens: u32,
@@ -246,9 +246,10 @@ pub struct PersonaEmission {
     /// need measured, never a zero need.
     #[serde(default)]
     pub reasoning_samples: [u32; NEED_SAMPLES],
-    /// The last [`NEED_SAMPLES`] turns' answer tokens, the same ring.
+    /// The last [`NEED_SAMPLES`] turns' answer tokens, the same ring: exact when she ended it,
+    /// a bound when the cap cut it ([`EmissionStop::CutMidAnswer`]; an untagged slot reads exact).
     #[serde(default)]
-    pub answer_samples: [u32; NEED_SAMPLES],
+    pub answer_samples: [ChannelSample; NEED_SAMPLES],
     /// Turns recorded into the rings (saturating). `0` = no need measured yet.
     #[serde(default)]
     pub need_turns: u32,
@@ -266,111 +267,6 @@ pub struct PersonaEmission {
     /// Cuts recorded into the cut ring (saturating).
     #[serde(default)]
     pub cut_count: u32,
-}
-
-/// How a generation ENDED, as the emission record has to know it. The registry sizes
-/// the next allowance from what it records here, so the record must say not only that
-/// a generation was cut at its cap but WHICH CHANNEL the cap fell in.
-///
-/// Why (BigMama, Kimi, 2026-09-26): every `FinishReason::Length` used to record at DOUBLE
-/// — "clamped by the reserve, so the true demand is above the count". Kimi's turns
-/// refuted that reading: 41% of her requests failed, and the failed ones were exactly
-/// the large ones (`maxTokens` ≥ 9,848 against a completed p50 of 6,448). A pass cut
-/// inside its think doubled the need, the next allowance grew to hold it, the longer
-/// generation ran past the turn deadline and failed outright — and a failure records
-/// nothing, so only the cuts were ever measured. A one-way ratchet; her live
-/// `emission.json` held think-only cuts at 14,272 and 18,154 and a peak of 18,154.
-///
-/// The first revision halved such a cut. Cormac's review of #4406 showed that is a
-/// ratchet the other way once the loop closes — a smaller need cuts her earlier, which
-/// halves again, C → C/2 → C/4 down to the floor — and that "committed = a parsed tool
-/// call" mislabels a `code/write` cut mid-payload, the very cut that needed more room.
-/// So the classification is by CHANNEL, and no factor below one exists anywhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EmissionStop {
-    /// The model stopped on its own (stop token or tool call): both channels record
-    /// verbatim — this is her real size for that turn.
-    Landed,
-    /// Cut at the cap WITH answer tokens: she was saying or calling something and the
-    /// cap fell in it. The answer channel records at double (the growth path), the
-    /// think verbatim, and the peak is the SUM of the two — never `output × 2`, which
-    /// is what walked a 7,000-token think with a three-token answer to 14,006.
-    CutMidAnswer,
-    /// Cut at the cap with NO answer tokens: the think consumed the whole allowance and
-    /// nothing was said. Not a sample of her need at all — a thinking model fills
-    /// whatever room it is given, so a censored think says only "at least this much
-    /// think fits in this allowance"; pushed into the need ring it would carry the
-    /// landed turns' headroom on top of a value that already IS the allowance, and the
-    /// loop would drift up ×5/4 a turn to the share. The peak takes it verbatim (so the
-    /// reserve holds), `turns` counts it, the need ring does not: the allowance stays
-    /// sized by the turns in which she said something, which is the branch's name.
-    /// The cut itself is the fault paths' business (`persona.act.think_only`,
-    /// `delib.truncated_not_an_answer`), not the measurement's.
-    CutMidThought,
-    /// The turn LANDED, but its think stopped AT the reasoning budget the request set
-    /// (three quarters of the allowance, `deliberation_reasoning_budget`). The reasoning
-    /// sample is censored: a thinking model fills whatever room it is given, so the
-    /// count says only "at least the budget", not her need. Pushed verbatim it would
-    /// teach the need ring the budget, and with the 5/4 headroom the next allowance is
-    /// 5/4 × (3/4 A + answer) = 15/16 A + 5/4 answer — a geometric contraction toward
-    /// max(time floor, 20 × answer), the forbidden clamp arrived at by feedback (Cormac
-    /// on #4409). Recording it AT the allowance instead compounds the other way: a
-    /// thinking model fills every budget, so "at least what she was given" ×5/4 each
-    /// turn drives every deliberating mind to the full reserve (simulated: 8k → 184k in
-    /// 20 turns), and on a slow lane that is the latency law broken. So a budget-hit is
-    /// NOT a need sample, exactly as a think-only cut is not: the need ring keeps her
-    /// landed shape, the peak takes the turn verbatim, and growth comes only from turns
-    /// she ends on her own or from a cut inside the answer.
-    ThinkBudgetHit { allowance: u32 },
-}
-
-impl EmissionStop {
-    /// Classify a finished generation by where the cap fell. `hit_cap` is a
-    /// `FinishReason::Length` stop; `answered` is whether the response CARRIES an answer
-    /// (text or a call), never a token count, which a stream may not report: a cut with an
-    /// answer present and usage missing is a cut in the answer (Codex on #5616). Only a
-    /// cap hit is a cut. This is the one classification: the allowance policy, its probes
-    /// and the hour line's counter ([`Self::counted`]) all read it.
-    pub fn classify(hit_cap: bool, answered: bool) -> Self {
-        match (hit_cap, answered) {
-            (false, _) => Self::Landed,
-            (true, false) => Self::CutMidThought,
-            (true, true) => Self::CutMidAnswer,
-        }
-    }
-
-    /// [`Self::classify`] with the request's reasoning budget in hand: a landed turn
-    /// whose think reached the budget is a `ThinkBudgetHit`, the rest classify as before.
-    /// The reasoning count is a measurement: missing usage reads 0 and so never claims a hit.
-    pub fn classify_with_budget(
-        hit_cap: bool,
-        answered: bool,
-        reasoning_tokens: u32,
-        reasoning_budget: Option<u32>,
-        allowance: u32,
-    ) -> Self {
-        match reasoning_budget {
-            Some(budget) if !hit_cap && budget > 0 && reasoning_tokens >= budget => {
-                Self::ThinkBudgetHit { allowance }
-            }
-            _ => Self::classify(hit_cap, answered),
-        }
-    }
-
-    /// The hour line's count of this stop (`health_ledger::Stop`). A landed turn splits by
-    /// what it carries: an answer is landed, reasoning alone ended in thought, nothing is empty.
-    /// `answered` is the same presence [`Self::classify`] was given.
-    pub fn counted(self, answered: bool, reasoned: bool) -> continuum_vitals::health_ledger::Stop {
-        use continuum_vitals::health_ledger::Stop;
-        match self {
-            Self::CutMidAnswer => Stop::CutAnswer,
-            Self::CutMidThought => Stop::CutThink,
-            Self::ThinkBudgetHit { .. } => Stop::ThinkBudget,
-            Self::Landed if answered => Stop::Landed,
-            Self::Landed if reasoned => Stop::ThinkEnded,
-            Self::Landed => Stop::Empty,
-        }
-    }
 }
 
 /// Per-persona observed turn demand for ONE core.
@@ -638,10 +534,10 @@ impl WorkingSetRegistry {
     /// reasoning channel took (the faculty apportions the server's count by channel
     /// bytes), so the answer is the remainder. `stop` says where it ended
     /// ([`EmissionStop`]): a landed generation records verbatim; a cut inside the
-    /// answer records the answer at double (a floor on true demand, and the growth
-    /// path — see [`PersonaEmission::peak_tokens`]) and the peak as the sum of the
-    /// channels; a cut inside the think records the peak verbatim and is not a need
-    /// sample. Zero-token completions
+    /// answer records the think verbatim and the answer as its lower bound (censored,
+    /// [`PersonaEmission::answer_samples`]); a cut inside the think records the peak
+    /// verbatim and is not a need sample. The peak is always the sum of the channels as
+    /// measured. Zero-token completions
     /// are the empty-completion fault's territory, not a data point to drag the peak with.
     /// Returns this exact measurement even when persistence fails, so concern-owned
     /// demand can retain its evidence without racing a later registry observation.
@@ -666,7 +562,7 @@ impl WorkingSetRegistry {
 
     /// How much of a past peak survives each new observation (7/8).
     ///
-    /// The peak must be able to FALL, or a mid-answer cut's doubling is a one-way ratchet to the
+    /// The peak must be able to FALL, or one loud turn is a one-way ratchet to the
     /// ceiling (see [`Self::record_emission_in_memory`]). 7/8 per observation is ~16 turns
     /// to forget a measurement that was never real — fast enough that a poisoned record
     /// heals within a work session, slow enough that a citizen who genuinely writes long
@@ -690,16 +586,14 @@ impl WorkingSetRegistry {
     ) -> PersonaEmission {
         let reasoning = reasoning_tokens.min(output_tokens);
         let answer = output_tokens - reasoning;
-        // The cut channel takes the growth, and the peak is the SUM of the channels as
-        // measured — never `output × 2`: a 7,000-token think cut three tokens into its
-        // answer needs 7,006, not 14,006 (see [`EmissionStop`]).
-        let (reasoning, answer) = match stop {
-            EmissionStop::Landed | EmissionStop::CutMidThought => (reasoning, answer),
-            EmissionStop::CutMidAnswer => (reasoning, answer.saturating_mul(2)),
-            // A censored think is recorded verbatim on the peak side; the need ring skips it.
-            EmissionStop::ThinkBudgetHit { .. } => (reasoning, answer),
+        // The peak is the SUM of the channels as measured. A cut inside the answer is censored
+        // evidence of that channel (her need is above what she wrote): a bound in the answer
+        // ring, read by the one censored estimator (`need::answer_need`), never a factor.
+        let answer_sample = match stop {
+            EmissionStop::CutMidAnswer => ChannelSample::AtLeast { at_least: answer },
+            EmissionStop::Landed | EmissionStop::CutMidThought | EmissionStop::ThinkBudgetHit { .. } => ChannelSample::Exact(answer),
         };
-        let observed = reasoning.saturating_add(answer);
+        let observed = output_tokens;
         let push_need = |e: &mut PersonaEmission| {
             // A think-only cut is not a sample of her need ([`EmissionStop::CutMidThought`]):
             // it is a lower bound on it, kept in its own ring at the turn it happened.
@@ -712,7 +606,7 @@ impl WorkingSetRegistry {
             }
             let slot = (e.need_turns as usize) % NEED_SAMPLES;
             e.reasoning_samples[slot] = reasoning;
-            e.answer_samples[slot] = answer;
+            e.answer_samples[slot] = answer_sample;
             e.need_turns = e.need_turns.saturating_add(1);
         };
         *self
@@ -721,8 +615,8 @@ impl WorkingSetRegistry {
             .and_modify(|e| {
                 push_need(&mut *e);
                 // A RECENT high-water mark, not an eternal one. `.max()` alone is a
-                // one-way ratchet: a mid-answer cut records its answer at DOUBLE, so a single truncated
-                // turn pins the peak at twice the cap forever, the reserve derived from
+                // one-way ratchet: a mid-answer cut once recorded its answer at DOUBLE, so a single truncated
+                // turn pinned the peak at twice the cap forever, the reserve derived from
                 // it saturates at the ceiling, and — because this file is persisted so a
                 // mind "must not re-earn its reply size per boot" — the poisoned value
                 // outlives every restart. Measured 2026-09-18 (Cormac): emission.json
@@ -733,7 +627,7 @@ impl WorkingSetRegistry {
                 //
                 // Decaying by PEAK_DECAY_NUM/PEAK_DECAY_DEN each observation keeps both
                 // properties that mattered: a genuine large reply still takes the peak
-                // instantly (the growth path `CutMidAnswer` exists for), and a peak that was
+                // instantly, and a peak that was
                 // never real fades on its own — so poisoned records SELF-HEAL over a few
                 // dozen turns with no migration and no operator step.
                 e.peak_tokens = observed.max(
@@ -752,7 +646,7 @@ impl WorkingSetRegistry {
                     last_seen_ms: now_ms,
                     turns: 1,
                     reasoning_samples: [0; NEED_SAMPLES],
-                    answer_samples: [0; NEED_SAMPLES],
+                    answer_samples: [ChannelSample::default(); NEED_SAMPLES],
                     need_turns: 0,
                     cut_samples: [0; NEED_SAMPLES],
                     cut_at_turn: [0; NEED_SAMPLES],
@@ -786,11 +680,13 @@ impl WorkingSetRegistry {
             .filter(|&slot| e.turns.saturating_sub(e.cut_at_turn[slot]) <= NEED_SAMPLES as u64)
             .map(|slot| e.cut_samples[slot])
             .collect();
+        let (answer, answer_at_least) = answer_need(&e.answer_samples[..filled]);
         Some(OutputNeed {
             reasoning,
-            answer: p90(&e.answer_samples[..filled]),
+            answer,
             turns: e.need_turns.min(NEED_SAMPLES as u32),
             reasoning_at_least: reasoning_at_least(landed, &recent, reasoning),
+            answer_at_least,
         })
     }
 

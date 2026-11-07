@@ -451,8 +451,8 @@ impl LlmDeliberationFaculty {
     ///
     /// `MIN_SERVE_CTX` and not a new literal, deliberately: the smallest window the serving
     /// stack hands out. It is only the unmeasured WANT of the reply's claim; measurement
-    /// replaces it with her need, and a turn cut inside its answer records that channel at
-    /// DOUBLE, so an act that really needs more room earns it back within a turn. What no
+    /// replaces it with her need, and a turn cut inside its answer records that channel as
+    /// its lower bound, so an act that really needs more room has it on the next turn. What no
     /// claim takes is her view's room, never the reply's (ONE-BUDGET.md slice 6: a runaway
     /// cap claimed above her context brought this defect back on 2026-10-30).
     const COMPLETION_COLD_PRIOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX;

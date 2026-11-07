@@ -723,7 +723,7 @@ async fn an_acts_room_refusal_shrinks_the_cap_and_keeps_her_view() {
 // what this catches: a write cut at the output limit (the M5, 2026-11-04: write-shaped calls as
 // `__malformed_tool_arguments` with finish `length`) read as a cut THOUGHT or run as a call. It is
 // a cut of the ANSWER channel: nothing runs, she gets the cut-act record and its sentinel, the cut
-// records her answer at double, and that peak is held for her retry so the next claim has room.
+// records her answer as its bound, and that peak is held for her retry so the next claim has room.
 #[tokio::test]
 async fn a_tool_call_cut_at_the_limit_is_an_answer_cut_held_for_the_retry() {
     use crate::cognition::working_memory::WorkingMemory;
@@ -763,7 +763,8 @@ async fn a_tool_call_cut_at_the_limit_is_an_answer_cut_held_for_the_retry() {
         other => panic!("expected the cut-act sentinel, got {other:?}"),
     }
     let peak = reg.emission_of(persona).expect("the cut was measured").peak_tokens;
-    assert_eq!(peak, 1_800, "the answer channel recorded at double");
+    assert_eq!(peak, 900, "the peak is what she wrote");
+    assert_eq!(reg.need_of(persona).and_then(|n| n.answer_at_least), Some(900), "her answer is a bound, raised at once");
     assert_eq!(wm.pending_emission_peak(ws.activity_room_id), peak, "held for the retry");
 
     // Codex on #5779: an incomplete tool call never executes, even when its arguments happen to

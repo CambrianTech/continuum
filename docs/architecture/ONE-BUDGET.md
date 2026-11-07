@@ -375,8 +375,9 @@ itself reports (the engine's KV capacity, #5188), never from another machine's c
    her measured answer channel); each view source (floor: folded, want: whole); grounding. What no claim
    takes stays unclaimed: it is the room her view grows into by appends.
 3. Output is not context and is not reserved beyond its measured need. The request's `max_tokens` is the
-   reply's grant (its measured need, no cap). A turn cut at it records its cut channel at double, so the
-   next claim grows from the evidence. (A whole-remaining-window bound was tried and removed: the provider
+   reply's grant (its measured need, no cap). A turn cut at it records its cut channel as a censored
+   lower bound (her need is above what she wrote), read by the one censored estimator, so the next claim's
+   floor holds the median past it at once (twice what was written, derived from where the cap fell, `need::cut_answer_median`; 2026-11-07). (A whole-remaining-window bound was tried and removed: the provider
    refusal-and-refit protocol assumes a fixed bound, and a bigger one changed what a refusal means.)
 4. A runaway generation is a time fault: a decode deadline from her node's measured decode rate, owned by
    the scheduler with every other time bound. No token cap constant.
