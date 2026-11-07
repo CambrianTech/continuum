@@ -153,6 +153,14 @@ pub struct View<T: Block> {
     /// joined the view, which covered nothing.
     #[serde(default)]
     covered: HashSet<SourceId>,
+    /// Items of a source the start's allocation SHED for want of its floor ([`View::withhold`]):
+    /// they wait for a start that funds them, never arriving on their own mid-epoch. A shed
+    /// source's backlog arriving whole on the next act appended 270k chars and turned the epoch
+    /// over on every other act (Atlas, the M5, 2026-11-07: `thoughts:287/270351`). Its items
+    /// that arise after the start arrive as any new item does. Absent in a view saved before it,
+    /// which withheld nothing.
+    #[serde(default)]
+    withheld: HashSet<SourceId>,
     /// Her collapsed history, in the order it collapsed, each block as first rendered: laid down
     /// again byte for byte at every start (`view/log.rs`). Absent in a view saved before it, which
     /// starts its log at its next start.
@@ -281,6 +289,10 @@ impl<T: Block> View<T> {
     }
 
     fn restores(&self, id: &SourceId, level: &Level) -> bool {
+        // A withheld item holds nothing: any rise past a pointer gives her back what the shed took.
+        if self.withheld.contains(id) {
+            return rank(level) > rank(&Level::Pointer);
+        }
         (self.epoch.holds(id) || self.folded.contains(id))
             && rank(level) > rank(&self.held_level(id))
             && rank(level) > rank(&Level::Pointer)
@@ -347,6 +359,7 @@ impl<T: Block> View<T> {
             folded: HashSet::new(),
             repeats: HashSet::new(),
             covered: HashSet::new(),
+            withheld: HashSet::new(),
             log: Vec::new(),
             appended: Vec::new(),
             motion: Motion::default(),
@@ -563,6 +576,19 @@ impl<T: Block> View<T> {
         held || self.covered.contains(id)
     }
 
+    /// The sources this epoch's start SHED (the allocation could not grant their floor): every
+    /// item each holds now waits for a later start that funds it, as a folded item waits, instead
+    /// of arriving whole at the next [`advance`](View::advance), which turned the epoch over at once
+    /// and measured the backlog as one act's growth, so the start after it reserved nothing.
+    /// [`start_would_restore`](View::start_would_restore) counts a start that would show one as a
+    /// restore. Called right after the start that shed them; a later start re-decides each.
+    pub fn withhold(&mut self, shed: &[&dyn Source<T>]) {
+        for source in shed {
+            let name = source.name();
+            self.withheld.extend(source.items().iter().map(|item| key(name, &item.key)));
+        }
+    }
+
     pub fn advance(&mut self, sources: &[&dyn Source<T>]) -> Advance {
         self.act = Some(self.epoch.mark());
         let advance = self.append(sources, None);
@@ -629,7 +655,8 @@ impl<T: Block> View<T> {
                 // A folded item is held by its source's fold block, fixed at the start: it
                 // arrives on its own only when a later start raises it (the prefix never moves).
                 // A covered item is in her view already, in the bytes a sent tail showed her.
-                if self.folded.contains(&id) || self.covered.contains(&id) {
+                // A withheld item waits for a start that funds its source (`View::withhold`).
+                if self.folded.contains(&id) || self.covered.contains(&id) || self.withheld.contains(&id) {
                     continue;
                 }
                 // An item with no pointer would leave her view entirely if collapsed (a peer's

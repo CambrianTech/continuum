@@ -191,7 +191,9 @@ impl LlmDeliberationFaculty {
         // A source the allocation could not grant its floor is shed from this epoch: its
         // floor is what it renders collapsed, so starting it anyway put the view over its
         // grant and left the fit to cut it (an atomic standing block, its minimum the whole
-        // block, 21,857 tokens on an 8,192 window). A later act's advance offers it again.
+        // block, 21,857 tokens on an 8,192 window). Its items wait for a later start that funds it
+        // (`View::withhold`), never arriving whole on the next act: Atlas's 287 shed thoughts did
+        // (270,351 chars), turning her epoch over every other act (the M5, 2026-11-07).
         // A required source is never shed: it got its floor first, or it is under-provisioned
         // and kept anyway, so the view runs over its grant and the turn is refused
         // (`budget_fault` / `capacity_error`, view.rs), never sent without it.
@@ -383,8 +385,6 @@ impl LlmDeliberationFaculty {
         }
     }
 
-    /// Start a new epoch of her view within `budget_chars`, the flexbox granting each
-    /// source its share by priority, without the `shed` sources.
     /// Whether her view, started now under `allocate`'s grants, would show her more than it holds.
     fn view_would_restore(&self, streams: &Streams, allocate: impl FnOnce(&[Claim]) -> Vec<usize>) -> Result<bool, continuum_context::view::GrantMismatch> {
         let memory = self.working_memory.as_deref();
@@ -393,6 +393,8 @@ impl LlmDeliberationFaculty {
         self.context_view.lock().as_ref().map_or(Ok(false), |view| view.start_would_restore(&sources, allocate)) // map_or: no view yet holds nothing to restore
     }
 
+    /// Start a new epoch of her view under `allocate`'s grants without the `shed` sources, whose
+    /// items wait for a later start that funds them ([`View::withhold`]).
     fn turn_over_view_with(
         &self,
         streams: &Streams,
@@ -401,8 +403,8 @@ impl LlmDeliberationFaculty {
     ) -> Result<Vec<ChatMessage>, continuum_context::view::GrantMismatch> {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
-        let mut sources = Self::view_sources(streams, memory_streams.as_ref());
-        sources.retain(|source| !shed.contains(&source.name()));
+        let (withheld, sources): (Vec<_>, Vec<_>) =
+            Self::view_sources(streams, memory_streams.as_ref()).into_iter().partition(|source| shed.contains(&source.name()));
         let mut held = self.context_view.lock();
         let started = if let Some(view) = held.as_mut() {
             view.turn_over(Vec::new(), &sources, allocate)
@@ -417,6 +419,9 @@ impl LlmDeliberationFaculty {
         };
         match started {
             Ok(start) => {
+                if let Some(view) = held.as_mut() {
+                    view.withhold(&withheld);
+                }
                 continuum_base::probe!(
                     class = "delib.view.turnover",
                     persona = %self.persona_name,

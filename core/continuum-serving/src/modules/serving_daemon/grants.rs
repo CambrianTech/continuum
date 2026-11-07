@@ -88,6 +88,8 @@ impl ServingDaemonModule {
                     target: r.measure.target()?.min(trained),
                     wish: r.wish?.min(trained),
                     in_flight: crate::cognition::turn_ledger::turn_in_flight(r.persona),
+                    // read off her receipts by the fair publisher, which owns them (`publish_fair_grants`)
+                    settled: false,
                     ceiling: per_sequence_cap,
                 })
             })
