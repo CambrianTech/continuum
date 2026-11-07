@@ -88,6 +88,8 @@ pub use genome::{engine_accepts_train_dir, engine_train_dir, GenomeInPlace};
 use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR};
 mod engine_install;
 mod engine_features;
+mod template_overhead;
+pub use template_overhead::{probe_messages, serving_template_overhead, MessageKind, MessageShape, TemplateMeasurement, TemplateSample};
 pub use engine_features::serving_engine_takes_tail_tools;
 use engine_features::{observe_served_engine, serving_lane_evidence, LaunchedEvidence, ServedEvidence};
 #[cfg(windows)]

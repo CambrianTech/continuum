@@ -6,6 +6,7 @@ mod view;
 mod system;
 mod messages;
 mod epoch;
+mod template;
 #[cfg(test)]
 pub(in super) use epoch::SHORT_GRANTS;
 mod budget;

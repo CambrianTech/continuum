@@ -195,8 +195,8 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
         let mut turnover = view.is_none();
         if turnover {
             let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
-            let whole = |claims: &[continuum_context::view::Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-            view = Some(View::start(sediment.heads(&cut.head), &every, whole)?.0);
+            let whole = |claims: &[continuum_context::view::Claim]| claims.iter().map(|claim| claim.full).collect();
+            view = Some(View::start(&continuum_context::cost::Chars, sediment.heads(&cut.head), &every, whole)?.0);
         }
         let Some(open) = view.as_mut() else { continue };
         let limit = head_chars + available;
@@ -208,7 +208,7 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
             refs.extend(sources.iter().filter(|s| s.name != "actions").map(|s| s as &dyn Source<String>));
             open.advance(&refs);
             if open.chars() > limit {
-                open.readmit(&refs, limit, limit / 2);
+                open.readmit(&continuum_context::cost::Chars, &refs, limit, limit / 2);
             }
         }
         if open.chars() > limit {
@@ -222,7 +222,7 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
                 // the start would give them; a sediment past its share re-renders.
                 let (asked, grants) = {
                     let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
-                    let asked = claims(&every);
+                    let asked = claims(&continuum_context::cost::Chars, &every);
                     let grants = start(Rule::Reserved, &asked, available, per_act, share);
                     (asked, grants)
                 };
@@ -237,7 +237,7 @@ pub fn replay(label: &str, cuts: &[Cut], window: usize, share: usize, (chars_per
             }
             let every: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
             let chosen = std::cell::Cell::new(None);
-            open.turn_over(sediment.heads(&cut.head), &every, |claims| {
+            open.turn_over(&continuum_context::cost::Chars, sediment.heads(&cut.head), &every, |claims| {
                 if options.measured {
                     let (grants, depth) = crate::measured(claims, available, per_act, share);
                     chosen.set(Some(depth.map(|(depth, half)| ((depth.rereads_per_act, depth.rereads_observed_per_act), depth.start, half))));

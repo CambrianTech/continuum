@@ -7,7 +7,8 @@
 //! pointers at ~190 chars each, ~4.5k tokens before anything whole fit); one block does not.
 
 use crate::epoch::Block;
-use crate::source::{whole_chars, Item, Source};
+use crate::cost::Estimate;
+use crate::source::{Item, Source};
 
 pub(super) use crate::level::Level;
 
@@ -29,21 +30,22 @@ pub(super) struct Allotment<T> {
 }
 
 /// The fold block standing for the oldest run `run` when its source folds it and the block
-/// is smaller than the run's pointers (`pointer_chars`), else `None`: the run floors at its
-/// pointers. Decided once, in chars (the view's unit), so the view and every caller pricing
-/// the floor in another unit ([`floor`]) price the same rendering. `Source::fold` reads only
-/// the run's ends, so asking it once per item a start raises is O(1) each.
+/// costs less than the run's pointers (`pointers`), else `None`: the run floors at its pointers.
+/// Decided in the caller's cost, the one the view allots by, so the view and the caller's claim
+/// ([`floor`]) price the same rendering. `Source::fold` reads only the run's ends, so asking it
+/// once per item a start raises is O(1) each.
 fn fold_of<T: Block>(
     source: &(impl Source<T> + ?Sized),
     run: &[Item<T>],
-    pointer_chars: usize,
+    pointers: usize,
+    cost: &dyn Estimate<T>,
 ) -> Option<T> {
     if run.is_empty() {
         return None;
     }
     source
         .fold(run)
-        .filter(|block| block.chars() < pointer_chars)
+        .filter(|block| cost.block(block) < pointers)
 }
 
 /// How many of `items`' leading items stand as themselves: an item with no summary, nothing
@@ -65,30 +67,27 @@ fn standing_head<T: Block>(items: &[Item<T>]) -> usize {
         .count()
 }
 
-/// What `items` of `source` cost at their floor, in the unit `cost` prices a block in: the one
-/// owner of a source's floor, for the view's own claim and any caller pricing it in tokens.
+/// What `items` of `source` cost at their floor, priced by the caller's `cost`: the one owner of a
+/// source's floor, for the view's own claim and any caller pricing it for its allocation.
 /// Whether the floor is the fold block or the pointers is [`fold_of`]'s decision, the view's.
-pub fn floor<T: Block>(
-    source: &(impl Source<T> + ?Sized),
-    items: &[Item<T>],
-    cost: impl Fn(&T) -> usize,
-) -> usize {
+pub fn floor<T: Block>(cost: &dyn Estimate<T>, source: &(impl Source<T> + ?Sized), items: &[Item<T>]) -> usize {
     let head = standing_head(items);
-    let pointers = |run: &[Item<T>], cost: &dyn Fn(&T) -> usize| -> usize {
+    let pointers = |run: &[Item<T>]| -> usize {
         run.iter()
-            .map(|item| item.pointer.as_ref().map_or(0, cost))
+            .map(|item| item.pointer.as_ref().map_or(0, |pointer| cost.block(pointer)))
             .sum() // map_or: an item that leaves when collapsed costs nothing
     };
     let (standing, rest) = items.split_at(head);
-    let rest_chars = pointers(rest, &|block: &T| block.chars());
-    pointers(standing, &cost)
-        + match fold_of(source, rest, rest_chars) {
-            Some(block) => cost(&block),
-            None => pointers(rest, &cost),
+    let rest_pointers = pointers(rest);
+    pointers(standing)
+        + match fold_of(source, rest, rest_pointers, cost) {
+            Some(block) => cost.block(&block),
+            None => rest_pointers,
         }
 }
 
-/// The level a `grant` of characters gives each item. Every item starts at the floor (folded
+/// The level a `grant` gives each item, every level priced by the caller's `cost` (the allocation estimate its
+/// grants are made in, never an average converting them). Every item starts at the floor (folded
 /// with the rest when its source folds, else its pointer); what the grant leaves above it is
 /// spent newest first, each item taking the most detail that still fits, and never more detail
 /// than the item after it: shrinking is oldest first (goal 7), so an older item is never kept
@@ -113,24 +112,21 @@ pub(super) fn allot<T: Block>(
     source: &(impl Source<T> + ?Sized),
     items: &[Item<T>],
     grant: usize,
+    cost: &dyn Estimate<T>,
 ) -> Allotment<T> {
     let mut pointers = Vec::with_capacity(items.len() + 1);
     pointers.push(0);
     for item in items {
         let below = pointers[pointers.len() - 1];
-        pointers.push(below + item.pointer.as_ref().map_or(0, Block::chars)); // map_or: an item that leaves when collapsed costs nothing
+        pointers.push(below + item.pointer.as_ref().map_or(0, |pointer| cost.block(pointer))); // map_or: an item that leaves when collapsed costs nothing
     }
     let head = standing_head(items);
     let floor = |count: usize| {
         if count <= head {
             return (pointers[count], None);
         }
-        match fold_of(
-            source,
-            &items[head..count],
-            pointers[count] - pointers[head],
-        ) {
-            Some(block) => (pointers[head] + block.chars(), Some(block)),
+        match fold_of(source, &items[head..count], pointers[count] - pointers[head], cost) {
+            Some(block) => (pointers[head] + cost.block(&block), Some(block)),
             None => (pointers[count], None),
         }
     };
@@ -144,8 +140,8 @@ pub(super) fn allot<T: Block>(
         let (below, _) = floor(run - 1);
         let budget = spare + paid;
         let afford = |size: usize| size + below <= budget;
-        let full = whole_chars(item);
-        let summary = item.summary.as_ref().map(Block::chars);
+        let full = crate::cost::whole(item, cost);
+        let summary = item.summary.as_ref().map(|summary| cost.block(summary));
         let rise = if ceiling == Level::Full && afford(full) {
             Some((Level::Full, full))
         } else if ceiling == Level::Summary || ceiling == Level::Full {
@@ -161,7 +157,7 @@ pub(super) fn allot<T: Block>(
         } else {
             None
         };
-        let pointer = item.pointer.as_ref().map_or(0, Block::chars); // map_or: an item that leaves when collapsed costs nothing
+        let pointer = item.pointer.as_ref().map_or(0, |pointer| cost.block(pointer)); // map_or: an item that leaves when collapsed costs nothing
         let Some((level, size)) =
             rise.or_else(|| afford(pointer).then_some((Level::Pointer, pointer)))
         else {

@@ -339,6 +339,10 @@ impl LlamaServerControl for LlamaServerProcess {
         crate::inference::lane_registry::live_incarnation().filter(|lane| lane.port == port)
     }
 
+    async fn served_template_overhead(&self) -> Option<Vec<super::template_overhead::TemplateSample>> {
+        super::template_overhead::measure(&self.client, &self.root).await
+    }
+
     fn launch_kv(&self) -> Option<crate::inference::lane_process::LaunchKv> {
         let (_host, port) = split_host_port(&self.root);
         let record = crate::inference::lane_registry::live_lane().filter(|r| r.port == port)?;

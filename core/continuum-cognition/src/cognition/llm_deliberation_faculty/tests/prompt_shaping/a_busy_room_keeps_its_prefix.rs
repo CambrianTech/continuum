@@ -49,17 +49,17 @@ fn turn_chars() -> usize {
     turn(0).1.chars().count()
 }
 
-/// The window's one allocation over her view's claims, priced one token per char as
-/// `view_claims` prices them before calibration.
+/// The window's one allocation over her view's claims, priced by the `Chars` oracle (one unit a
+/// char): `start_grants` answers in whatever unit the claims and plan share.
 fn window_plan(claims: &[Claim], window: u32) -> FlexAllocation {
     let budgets: Vec<FlexClaim> = claims
         .iter()
         .map(|claim| FlexClaim {
             source_id: format!("view/{}", claim.source),
             priority: claim.priority,
-            floor_tokens: claim.floor_chars as u32,
-            min_tokens: claim.floor_chars as u32,
-            max_tokens: claim.full_chars as u32,
+            floor_tokens: claim.floor as u32,
+            min_tokens: claim.floor as u32,
+            max_tokens: claim.full as u32,
             required: false,
         })
         .collect();
@@ -76,8 +76,8 @@ fn rendered(view: &View<String>) -> String {
 fn slide(window: u32, acts: usize, sized: impl Fn(&[Claim], &FlexAllocation, usize, Option<usize>) -> Vec<usize>) -> (usize, usize) {
     let grounding = Stream { name: "identity", priority: GROUNDING, items: vec![("block".into(), "g".repeat(2_000))] };
     let mut conversation = Stream { name: "conversation", priority: CONVERSATION, items: (0..TURNS_SHOWN).map(turn).collect() };
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-    let (mut view, _) = View::start(Vec::new(), &[&grounding as &dyn Source<String>, &conversation], whole).expect("one grant per source");
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
+    let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&grounding as &dyn Source<String>, &conversation], whole).expect("one grant per source");
     let (mut turnovers, mut run, mut longest) = (0, 0, 0);
     for act in TURNS_SHOWN..TURNS_SHOWN + acts {
         conversation.items.remove(0);
@@ -85,11 +85,11 @@ fn slide(window: u32, acts: usize, sized: impl Fn(&[Claim], &FlexAllocation, usi
         let sources = [&grounding as &dyn Source<String>, &conversation];
         let before = rendered(&view);
         view.advance(&sources);
-        let plan = window_plan(&claims(&sources), window);
+        let plan = window_plan(&claims(&continuum_context::cost::Chars, &sources), window);
         let available = plan.allocations.iter().map(|a| a.allocated_tokens as usize).sum::<usize>() + plan.unallocated as usize;
         if view.chars() > available {
             let per_act = view.appended_per_act();
-            view.turn_over(Vec::new(), &sources, |claims: &[Claim]| sized(claims, &plan, available, per_act)).expect("one grant per source");
+            view.turn_over(&continuum_context::cost::Chars, Vec::new(), &sources, |claims: &[Claim]| sized(claims, &plan, available, per_act)).expect("one grant per source");
             turnovers += 1;
         }
         if rendered(&view).starts_with(&before) {
@@ -113,7 +113,7 @@ fn a_sliding_room_appends_for_many_acts_after_a_turnover() {
     // reply has taken its runaway bound.
     let window = (2_000 + TURNS_SHOWN * turn_chars()) as u32;
     let restart_whole = |claims: &[Claim], _: &FlexAllocation, _: usize, _: Option<usize>| {
-        claims.iter().map(|claim| claim.full_chars).collect()
+        claims.iter().map(|claim| claim.full).collect()
     };
     let (turnovers, longest) = slide(window, 30, restart_whole);
     assert_eq!((turnovers, longest), (30, 0), "precondition: restarting whole turns over every act of a sliding room");
@@ -135,14 +135,14 @@ fn a_turnover_keeps_grounding_whole_and_takes_the_reserve_from_the_conversation(
     let grounding = Stream { name: "identity", priority: GROUNDING, items: vec![("block".into(), "g".repeat(6_000))] };
     let conversation = Stream { name: "conversation", priority: CONVERSATION, items: (0..TURNS_SHOWN).map(turn).collect() };
     let sources = [&grounding as &dyn Source<String>, &conversation];
-    let claimed = claims(&sources);
+    let claimed = claims(&continuum_context::cost::Chars, &sources);
     let available = 6_000 + TURNS_SHOWN * turn_chars();
     let plan = window_plan(&claimed, available as u32);
 
     let grants = start_grants(&claimed, &plan, available, None).expect("test: no required floor in this start"); // JUSTIFIED: test fixture
     assert_eq!(grants[0], 6_000, "grounding starts whole");
     assert!(grants[1] <= (available - 6_000) / 2, "the conversation leaves a reserve as large as its start: {grants:?}");
-    let (view, _) = View::start(Vec::new(), &sources, |_: &[Claim]| grants.clone()).expect("one grant per source");
+    let (view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &sources, |_: &[Claim]| grants.clone()).expect("one grant per source");
     let text = rendered(&view);
     assert!(text.contains("[turn-0000 collapsed]"), "the oldest turn collapses first");
     assert!(text.ends_with(&turn(TURNS_SHOWN - 1).1), "the newest turn stays whole");
@@ -165,7 +165,7 @@ fn a_start_keeps_the_derived_half_of_what_she_read() {
     let grounding = Stream { name: "identity", priority: GROUNDING, items: vec![("block".into(), "g".repeat(6_000))] };
     let conversation = Stream { name: "conversation", priority: CONVERSATION, items: (0..TURNS_SHOWN).map(turn).collect() };
     let sources = [&grounding as &dyn Source<String>, &conversation];
-    let claimed = claims(&sources);
+    let claimed = claims(&continuum_context::cost::Chars, &sources);
     let available = 6_000 + TURNS_SHOWN * turn_chars();
     let plan = window_plan(&claimed, available as u32);
     let growable = available - 6_000;

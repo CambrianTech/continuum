@@ -392,6 +392,14 @@ pub trait LlamaServerControl: Send + Sync {
         None
     }
 
+    /// The chat template observed through this endpoint's own
+    /// `/apply-template` and `/tokenize`: each probe message and the tokens it added
+    /// ([`super::template_overhead`]). `None` = not measured (a
+    /// fake or remote control, or an engine whose endpoints did not answer).
+    async fn served_template_overhead(&self) -> Option<Vec<super::template_overhead::TemplateSample>> {
+        None
+    }
+
     /// The multimodal capabilities the running server ITSELF reports in `/props`
     /// (`modalities.vision` / `modalities.audio`) — the endpoint-side truth of
     /// whether the `--mmproj` projector actually loaded (#106). `Ok(None)` means

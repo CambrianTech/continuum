@@ -54,8 +54,8 @@ fn her_view_survives_a_restart_in_her_checkpoint() {
     memory.record_receipt("I ran code/list Result: 4 files");
     memory.record_settlement("listed", None);
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-    let (view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
+    let (view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
     let rendered = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>();
     let before = rendered(&view);
     memory.keep_view(Some(view));
@@ -81,8 +81,8 @@ fn a_view_from_an_older_build_is_dropped_and_authoritative_state_survives() {
     memory.record_receipt("I ran code/list Result: 4 files");
     memory.record_settlement("listed the four files", None);
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-    let (view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
+    let (view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
     memory.keep_view(Some(view));
     // Text, never `serde_json::Value`: the view's element ids are u128, which a Value cannot hold.
     let good = serde_json::to_string(&memory.snapshot()).expect("encode");
@@ -169,7 +169,7 @@ fn an_evicted_result_is_still_seen_whole_through_its_stored_level() {
         .into_iter()
         .find(|item| item.key() == seq.to_string())
         .expect("test: the act's item");
-    assert_eq!(continuum_context::source::whole_chars(&item), chars);
+    assert_eq!(continuum_context::cost::whole(&item, &continuum_context::cost::Chars), chars);
     let whole = continuum_context::source::whole(&source, item);
     assert_eq!(whole.text, resident_whole, "loaded back whole, exactly as it read resident");
 }
@@ -187,8 +187,8 @@ fn her_notices_append_once_and_an_ended_one_is_retired() {
     memory.pin_fact("hands", "[hands] your hands stand in the card's checkout");
     memory.record_fact("[rebuilt] the substrate was rebuilt while you were away");
     let notices = Notices { memory: &memory, persona: uuid::Uuid::nil() };
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-    let (mut view, _) = View::start(Vec::new(), &[&notices as &dyn Source<_>], whole).unwrap();
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
+    let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&notices as &dyn Source<_>], whole).unwrap();
     let text = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");
     assert!(text(&view).contains(crate::cognition::framing_echo::NOTICES_HEADER), "the framing that says these are not her words");
 
@@ -264,14 +264,14 @@ fn her_newest_thought_is_whole_and_the_allocation_levels_the_older_ones() {
     memory.record(newest);
     let thoughts = super::thoughts::Thoughts { memory: &memory, persona: uuid::Uuid::nil() };
     let levels = |grant: &dyn Fn(&[Claim]) -> Vec<usize>| {
-        let (view, _) = View::start(Vec::new(), &[&thoughts as &dyn Source<_>], grant).unwrap(); // unwrap: one grant per claim cannot mismatch
+        let (view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&thoughts as &dyn Source<_>], grant).unwrap(); // unwrap: one grant per claim cannot mismatch
         let text = view.render().map(|m: &super::ContextMessage| m.text.clone()).collect::<Vec<_>>().join("\n");
         (text, view.receipt().items.into_iter().map(|item| item.level).collect::<Vec<Level>>())
     };
-    let (text, tight) = levels(&|claims: &[Claim]| claims.iter().map(|claim| claim.newest_chars + claim.floor_chars).collect());
+    let (text, tight) = levels(&|claims: &[Claim]| claims.iter().map(|claim| claim.newest + claim.floor).collect());
     assert!(text.contains(newest), "her newest thought is whole: {text}");
     assert!(tight.iter().any(|level| *level != Level::Full), "a tight grant shows older thoughts smaller: {tight:?}");
-    let (_, roomy) = levels(&|claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect());
+    let (_, roomy) = levels(&|claims: &[Claim]| claims.iter().map(|claim| claim.full).collect());
     assert!(roomy.iter().all(|level| *level == Level::Full), "a grant of every whole shows every one whole: {roomy:?}");
 }
 
@@ -336,8 +336,8 @@ fn a_repeated_settlement_reaches_her_view_as_its_own_occurrence() {
     use continuum_context::view::{Claim, View};
     let memory = WorkingMemory::new(8);
     let thoughts = super::thoughts::Thoughts { memory: &memory, persona: uuid::Uuid::nil() };
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-    let (mut view, _) = View::start(Vec::new(), &[&thoughts as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
+    let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&thoughts as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
     for state in ["passed", "failed", "passed"] {
         memory.record_settlement(&format!("all regression tests {state}"), None);
         view.advance(&[&thoughts as &dyn Source<_>]);
@@ -357,11 +357,11 @@ fn her_unchanged_reread_reaches_her_view_as_a_repeat_and_an_undeclared_act_never
     use crate::cognition::act_observe::test_support::act;
     use continuum_context::view::{Claim, View};
 
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
     let body = "fn parse(&mut self) -> Result<Tree, Error> { self.step()?; }\n".repeat(40);
     let memory = WorkingMemory::new(8);
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
-    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
+    let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
     let unsaved = || crate::ai::types::ResultCustody::Unsaved;
     // Each act settles before the next, as her turn does: an act still in flight rides whole
     // after her view, so it enters the actions stream once it is settled.
@@ -377,7 +377,7 @@ fn her_unchanged_reread_reaches_her_view_as_a_repeat_and_an_undeclared_act_never
 
     let memory = WorkingMemory::new(8);
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
-    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
+    let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
     for _ in 0..2 {
         memory.record_receipt_typed(&[act("code/write", Some("src/parse.rs"))], "wrote 40 lines", None, unsaved());
         memory.record_settlement("wrote", None);
@@ -388,7 +388,7 @@ fn her_unchanged_reread_reaches_her_view_as_a_repeat_and_an_undeclared_act_never
     // declared through action_command!'s `effect:` clause, so an unchanged status is a repeat.
     let memory = WorkingMemory::new(8);
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
-    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
+    let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap(); // unwrap: one grant per claim cannot mismatch
     let status = "On branch main\nnothing to commit, working tree clean\n".repeat(20);
     let mut repeats = 0;
     for _ in 0..2 {
@@ -408,10 +408,10 @@ fn her_facts_append_once_end_when_they_stop_and_her_perceived_events_stay() -> R
     use super::facts::{Fact, Facts};
     use continuum_context::view::{Claim, View};
 
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
     let bounds = || Fact::state("context_bounds", "[context] 3 input turns were available".to_owned());
     let mut facts = Facts { persona: uuid::Uuid::nil(), facts: vec![bounds(), Fact::state("own_repetition", "[pattern] I said that twice".to_owned())] };
-    let (mut view, _) = View::start(Vec::new(), &[&facts as &dyn Source<_>], whole)?;
+    let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&facts as &dyn Source<_>], whole)?;
     let text = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");
     assert_eq!(view.advance(&[&facts as &dyn Source<_>]).items, 0, "unchanged facts append nothing");
     facts.facts = vec![bounds(), Fact::event("e1", "[board] card 1b23 moved to review".to_owned())];
@@ -446,11 +446,11 @@ fn a_blocks_tally_moves_without_rewriting_its_body() -> Result<(), continuum_con
     };
     let first = board(192);
     assert_eq!(first.iter().map(|b| b.faculty.as_str()).collect::<Vec<_>>(), ["room-kanban", "room-kanban counts"]);
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
     fn sources(blocks: &[Grounding]) -> Vec<&dyn Source<super::ContextMessage>> {
         blocks.iter().map(|b| b as &dyn Source<super::ContextMessage>).collect()
     }
-    let (mut view, _) = View::start(Vec::new(), &sources(&first), whole)?;
+    let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &sources(&first), whole)?;
     let before: Vec<String> = view.render().map(|m| m.text.clone()).collect();
     assert!(before[0].starts_with("[room-kanban]\ncard 0000"), "the body leads with its cards: {}", before[0]);
     let next = board(195);
