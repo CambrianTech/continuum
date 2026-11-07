@@ -94,6 +94,8 @@ async fn reviewed_boundary_retries_failed_distillation_with_bounded_receipt_stat
     let good = HeuristicInferenceAdapter::new()
         .generate_text(TextGenerationRequest {
             messages: vec![ChatMessage::text("user", "a reusable observation")],
+            // A distillation answers in the lesson's shape: the canned reply is one.
+            response_format: Some(super::super::lesson::DistilledLesson::format()),
             ..Default::default()
         }, crate::ai::adapter::Dispatched::fixture())
         .await

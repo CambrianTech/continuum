@@ -186,14 +186,13 @@ async fn lens_system_prompt_reaches_the_adapter() {
     );
 }
 
-// what this catches: the supersession verdict parse (#221 slice 2) — the
-// model's trailing `SUPERSEDES: n[,m]` line maps 1-based indices onto the
-// PRESENTED prior beliefs and is stripped from the fact text (a belief must
-// read as knowledge, not a grading transcript). Tolerant: no line → no
-// supersessions; junk/out-of-range indices ignored; the word "supersedes"
-// in the fact BODY never triggers.
+// what this catches: the supersession verdict (#221 slice 2) arriving as the lesson's typed field.
+// Her 1-based numbers map onto the PRESENTED prior beliefs; a number no listed belief carries is kept
+// apart as her slip and never applied; the sentences are the belief's text, with no verdict in them.
+// Before the shape was a type, a decorated `**SUPERSEDES: 3,6**` line was discarded and baked into
+// the stored belief (2026-08-13); a field cannot be decorated.
 #[test]
-fn parse_supersedes_line_maps_indices_and_strips() {
+fn a_lessons_superseded_numbers_map_onto_the_listed_beliefs() {
     let mk = |content: &str| Engram {
         id: Uuid::new_v4(),
         context_id: None,
@@ -208,88 +207,33 @@ fn parse_supersedes_line_maps_indices_and_strips() {
         admission_trace_id: None,
     };
     let priors = vec![mk("old belief one"), mk("old belief two"), mk("old three")];
+    let read = |raw: &str| super::lesson::DistilledLesson::read(raw, &priors);
 
-    let (body, ids) = parse_supersedes_line(
-        "The project is python; mathlib.py is the target.\nSUPERSEDES: 1,3",
-        &priors,
-    );
-    assert_eq!(body, "The project is python; mathlib.py is the target.");
-    assert_eq!(ids, vec![priors[0].id, priors[2].id]);
+    let Ok(lesson) = read(r#"{"sentences":["The project is python.","mathlib.py is the target."],"supersedes":[1,3,0,9]}"#) else {
+        panic!("a lesson in its shape reads")
+    };
+    assert_eq!(lesson.content, "The project is python. mathlib.py is the target.");
+    assert_eq!(lesson.supersedes, vec![priors[0].id, priors[2].id]);
+    assert_eq!(lesson.unlisted, vec![0, 9], "numbers no listed belief carries are her slip, never applied");
 
-    // No verdict line → untouched, nothing superseded.
-    let (body, ids) = parse_supersedes_line("A plain fact, nothing replaced.", &priors);
-    assert_eq!(body, "A plain fact, nothing replaced.");
-    assert!(ids.is_empty());
-
-    // 'supersedes' in the BODY (not last line) never triggers.
-    let (body, ids) = parse_supersedes_line(
-        "This supersedes: nothing, really.\nJust a two-line fact.",
-        &priors,
-    );
-    assert!(body.contains("supersedes"));
-    assert!(ids.is_empty());
-
-    // Out-of-range + junk indices are ignored, valid ones kept.
-    let (_body, ids) = parse_supersedes_line("fact\nSUPERSEDES: 0, 2, 9, banana", &priors);
-    assert_eq!(ids, vec![priors[1].id], "only the in-range index maps");
+    let Ok(kept) = read(r#"{"sentences":["A plain fact."],"supersedes":[]}"#) else { panic!("an empty verdict reads") };
+    assert!(kept.supersedes.is_empty(), "[] is a decision to keep every prior");
+    assert!(read("A plain fact.\nSUPERSEDES: 1").is_err(), "prose is not the lesson's shape");
 }
 
-// what this catches: a DECORATED verdict line silently discarding the
-// model's ruling. Glass-boxed live 2026-08-13 — probe dream.review.raw_tail
-// carried `**SUPERSEDES: 3,6**`, which matched none of the three exact
-// prefixes, so the else-branch returned "no supersessions" AND left the
-// marker baked into the stored belief. Both halves failed silently: the
-// judgment was lost (#221's review no-ops) and the belief was contaminated.
-// Goes RED if the normalization is ever narrowed back to exact prefixes.
+// what this catches: the instruction she reads and the schema the engine holds her answer to
+// drifting apart. Both come from DistilledLesson: the schema requires both fields and holds the
+// lesson to one or two sentences, and the instruction names both fields.
 #[test]
-fn a_decorated_verdict_line_is_still_the_models_judgment() {
-    let mk = |content: &str| Engram {
-        id: Uuid::new_v4(),
-        context_id: None,
-        kind: crate::cognition::engram::EngramKind::Semantic,
-        content: content.to_string(),
-        origin: crate::cognition::engram::EngramOrigin::SelfReflection {
-            parent_engram_id: Uuid::nil(),
-        },
-        recall_keys: vec![],
-        admitted_at_ms: 1,
-        trust_state_at_admission: crate::cognition::engram::TrustState::SelfTrust,
-        admission_trace_id: None,
+fn the_lesson_schema_and_its_instruction_are_one_shape() {
+    let crate::ai::types::ResponseFormat::JsonSchema { json_schema } = super::lesson::DistilledLesson::format() else {
+        panic!("a lesson is asked for by its schema")
     };
-    let priors = vec![mk("one"), mk("two"), mk("three")];
-
-    // The exact live shape: bold-wrapped on BOTH ends, so the trailing `**`
-    // also has to come off or `3**` fails to parse as an index.
-    let (body, ids) =
-        parse_supersedes_line("A consolidated fact.\n**SUPERSEDES: 1,3**", &priors);
-    assert_eq!(
-        body, "A consolidated fact.",
-        "the marker must never survive into the belief"
-    );
-    assert_eq!(
-        ids,
-        vec![priors[0].id, priors[2].id],
-        "the ruling must be honored"
-    );
-
-    // Other decorations models reach for, and case variance.
-    for line in [
-        "*Supersedes: 2*",
-        "`SUPERSEDES: 2`",
-        "__supersedes: 2__",
-        "## SUPERSEDES: 2",
-        "**SUPERSEDES: 2**",
-    ] {
-        let (body, ids) = parse_supersedes_line(&format!("Fact.\n{line}"), &priors);
-        assert_eq!(body, "Fact.", "marker leaked into the body for {line:?}");
-        assert_eq!(ids, vec![priors[1].id], "ruling dropped for {line:?}");
-    }
-
-    // The explicit no-op still strips and supersedes nothing — the shape
-    // that reached #general as speech.
-    let (body, ids) = parse_supersedes_line("Fact.\n**SUPERSEDES: none**", &priors);
-    assert_eq!(body, "Fact.");
-    assert!(ids.is_empty(), "'none' is a decision to keep every prior");
+    let schema = &json_schema.schema;
+    assert_eq!(schema["required"], serde_json::json!(["sentences", "supersedes"]));
+    assert_eq!((schema["properties"]["sentences"]["minItems"].as_u64(), schema["properties"]["sentences"]["maxItems"].as_u64()), (Some(1), Some(2)));
+    let instruction = super::lesson::DistilledLesson::instruction();
+    assert!(instruction.contains("\"sentences\"") && instruction.contains("\"supersedes\""), "{instruction}");
 }
 
 pub(crate) mod region;

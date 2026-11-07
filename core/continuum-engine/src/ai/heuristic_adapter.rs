@@ -301,7 +301,43 @@ impl HeuristicInferenceAdapter {
             let inner = serde_json::to_string(&plain).expect("plain string serializes");
             return format!("{{\"will_respond\":true,\"response\":{inner}}}");
         }
+        if let Some(crate::ai::types::ResponseFormat::JsonSchema { json_schema }) = &req.response_format {
+            // The smallest value the schema accepts, its strings the echo: a caller's typed parse
+            // is exercised end to end, whatever its shape, with no shape known here.
+            return Self::minimal_instance(&json_schema.schema, &plain).to_string();
+        }
         plain
+    }
+
+    /// The smallest value `schema` accepts: every required property, the fewest array items it
+    /// allows, each string `text`.
+    fn minimal_instance(schema: &serde_json::Value, text: &str) -> serde_json::Value {
+        use serde_json::Value;
+        let kind = schema.get("type").and_then(Value::as_str);
+        match kind {
+            Some("object") => {
+                let required: Vec<&str> = schema
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .map(|names| names.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default(); // unwrap_or_default: a schema with no `required` requires nothing
+                let properties = schema.get("properties").and_then(Value::as_object);
+                let object = required
+                    .into_iter()
+                    .filter_map(|name| properties?.get(name).map(|p| (name.to_owned(), Self::minimal_instance(p, text))))
+                    .collect();
+                Value::Object(object)
+            }
+            Some("array") => {
+                let fewest = schema.get("minItems").and_then(Value::as_u64).unwrap_or(0); // unwrap_or: no minItems allows an empty array
+                let item = schema.get("items").map(|items| Self::minimal_instance(items, text));
+                Value::Array(item.into_iter().cycle().take(fewest as usize).collect())
+            }
+            Some("string") => Value::String(text.to_owned()),
+            Some("integer" | "number") => Value::from(0),
+            Some("boolean") => Value::Bool(false),
+            _ => Value::Null,
+        }
     }
 }
 

@@ -41,6 +41,7 @@ use crate::runtime::brain_region::{BrainRegion, CadenceHint, ComputeClass, Memor
 
 mod consolidate;
 mod distiller;
+mod lesson;
 mod passes;
 mod region;
 mod review_boundary_ledger;
@@ -49,6 +50,8 @@ pub use distiller::*;
 pub use region::*;
 pub use review_boundary_ledger::*;
 use passes::*;
+use lesson::DistilledLesson;
+pub use lesson::UnreadableLesson;
 
 #[async_trait]
 impl BrainRegion for DreamConsolidationRegion {
