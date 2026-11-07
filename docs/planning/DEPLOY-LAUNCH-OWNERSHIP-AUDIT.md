@@ -114,6 +114,36 @@ and writes the manifest's machine state; the core's modules own runtime
 concerns; `start-server.sh` shrinks to nothing or to the developer's
 from-source convenience it says it is.
 
+## 5a. F: Verify, the responsibility nobody owned (2026-11-03)
+
+A sixth responsibility the table above leaves out: **is the build that just came up healthy, and if not, back
+to the last good one.** On 2026-11-03 the M5 took six canary deploys in a day, and five had to be rolled back:
+5 x 2,048 pool, 5 x 262,144 at 91% memory, a 16,640 pool, and twice no resident hosted. Every check and
+rollback was a session's scratchpad shell script (Joel: "You always make some slop manager or startup script").
+One of them read a stale probe row from the OLD core and passed a build that hosted nobody.
+
+**Owner: the deploy actuator** (`modules/deploy_actuator.rs`), which already runs the consumer and, at the next
+boot, records whether the actuation produced the tip. Verify extends that verdict from *produced* to *produced
+and healthy*. No new module, no script, no second owner.
+
+**What healthy means, read from what this core owns, never from a file tail:**
+- **the engine's pool** is in the range the published plan proves (`context_geometry` through the serving
+  snapshot; not the boot plan's placeholder, and not over the plan's live fit);
+- **memory** is not in the authority's `High` pressure level (the `ResourceDaemon` snapshot);
+- **the residents are hosted by this core's process** (the hosting reconciler's own `booted` state, an in-process
+  fact, so another core's row can never satisfy it);
+- **they act**: at least one turn completes in the window a restart-only control takes (measured per node from
+  the last good build's own first turn after a restart, recorded on its receipt, never a constant).
+
+**The verdict and its action:** each check is a typed `VerifyOutcome` on the actuation receipt (`Healthy`, or
+`Failed { check, measured }`, or `Pending` until its window is over). `Failed` re-runs the consumer on the
+previous good tip (the receipt already names it), through the same supported lifecycle, and says why on the
+deploy outcome. A node never retries a tip that failed verification until a new tip lands. Every node gets
+this; no agent watches a deploy by hand.
+
+**Deletes:** the session scripts (deleted on 11-03), and `safe-deploy.sh`'s Node-era "external watchdog" (§2),
+whose job this is.
+
 ## 6. Receipts to judge any change by (from Fable's latency law and Joel's laws)
 
 - a logoff, RDP switch or console lock during serving leaves the citizens perceiving;
