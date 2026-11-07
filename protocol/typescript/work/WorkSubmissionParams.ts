@@ -7,13 +7,13 @@ export type WorkSubmissionParams = {
  */
 room?: string, 
 /**
- * Parent card — board handle or full UUID.
+ * Card (a review card reads its parent) — handle or UUID.
  */
 card_id: string, 
 /**
- * The submission to read — handle or full UUID.
+ * `latest` (default) or a submission id.
  */
-submission_id: string, 
+submission_id?: "latest" | string, 
 /**
  * Inspect only: no binding/training. Answers a summary; rows only with evidence_limit.
  */

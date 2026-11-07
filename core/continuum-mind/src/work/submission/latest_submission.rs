@@ -86,8 +86,9 @@ pub struct WorkSubmit {
     pub benchmark: Arc<dyn BenchmarkSubmissionAdapter>,
 }
 
-// Deserialize only: the `Shown` ids are read from her call, never re-rendered.
-#[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
+// Serialize: a refusal names `work/submit` as her next call with these params; a shown id
+// goes back only in full (`shown_in_full`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/work/WorkSubmitParams.ts"
@@ -105,7 +106,7 @@ pub struct WorkSubmitParams {
     #[ts(type = "string")]
     pub card_id: String,
     /// Minted when omitted.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none", serialize_with = "optional_shown_in_full")]
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]
     pub submission_id: Option<Shown<airc_work::SubmissionId>>,
@@ -260,25 +261,6 @@ pub(super) fn followed_room(recorded: &[crate::persona::held_claims::HeldClaim],
 /// 3a8a243a, whose worktree rightly had no changes.
 pub(super) const CONCLUDE_WITHOUT_A_PATCH: &str =
     "if this card's result is what you found rather than a change, record it with work/note (known: what you established) and close the card with work/state closed";
-
-/// PURE: where a submission handle comes from, said with the handles themselves. A
-/// refused handle used to name only its SHAPE ("a full UUID or at least 4 leading hex
-/// characters"), and Kimi, wanting a card's submissions, sent `placeholder` (2026-10-05
-/// 12:01Z): a citizen with no handle cannot type one. The card's submissions are already
-/// in hand where the handle is resolved, so the refusal lists them, each as the leading
-/// eight hex characters the resolver accepts as a prefix.
-pub(super) fn submissions_on_card(on_card: &[(Uuid, Uuid)]) -> String {
-    if on_card.is_empty() {
-        return format!(
-            "this card has no submissions yet: work/submit publishes one once your checkout has changes; {CONCLUDE_WITHOUT_A_PATCH}"
-        );
-    }
-    let lines: Vec<String> = on_card
-        .iter()
-        .map(|(id, publisher)| format!("{} by {}", airc_core::shown_id::shown_form(*id), airc_core::shown_id::shown_form(*publisher)))
-        .collect();
-    format!("submissions on this card: {}", lines.join(", "))
-}
 
 /// PURE: `e` with the where-it-is hint appended, keeping its error class.
 pub(super) fn with_hint(e: CommandError, hint: Option<String>) -> CommandError {

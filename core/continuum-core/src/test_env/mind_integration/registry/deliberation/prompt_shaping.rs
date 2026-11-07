@@ -753,7 +753,12 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // which the merge gate requires (airc #1660); without it a typed submit fell back to deriving
     // from a checkout. Its doc was cut to "Omit: your checkout's committed HEAD." (it measured 17969
     // first); the 29 left are the param itself. Measured in CI at 6b5069c06 (job 128439607272).
-    const AGENTIC_SURFACE_CEILING: u32 = 17956;
+    // 17956 -> 17986 (2026-11-07, the M5: 19 `submission_id=latest` reads refused in six hours):
+    // work/submission's and work/review's submission_id is the typed handle, `latest` (default) or
+    // an id, so the schema carries the value she means; its pattern was dropped and its docs cut.
+    // Both verbs now declare `OnDemand`, so neither schema rides her prompt unless a held card puts
+    // it in hand: this registry total grows, her act's surface shrinks. Measured locally at 17986.
+    const AGENTIC_SURFACE_CEILING: u32 = 17986;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(

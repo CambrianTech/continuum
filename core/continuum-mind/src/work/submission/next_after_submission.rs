@@ -388,11 +388,10 @@ pub struct WorkReviewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub card_id: Option<String>,
-    /// Submission; defaults to latest.
+    /// `latest` (default) or a submission id.
     #[serde(default)]
-    #[ts(optional, type = "string")]
-    #[schemars(with = "Option<String>")]
-    pub submission_id: Option<Shown<airc_work::SubmissionId>>,
+    #[ts(optional, type = "\"latest\" | string")]
+    pub submission_id: SubmissionHandle,
     /// Artifact; defaults to board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -451,6 +450,9 @@ impl From<&airc_work::WorkSubmissionReview> for WorkReviewResult {
 #[async_trait]
 impl ActionCommand for WorkReview {
     const NAME: &'static str = "work/review";
+    // In hand only on a review card she holds (`work_preconditions::in_hand`): never offered on
+    // her own implementation card, where it can only be refused.
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str = "Verdict under a reviewer claim, not training completion. Own work: work/submit.";
@@ -517,16 +519,17 @@ impl ActionCommand for WorkReview {
             now_ms,
         )
         .map_err(super::super::refused)?;
-        // The parent's submissions are the ones a review can name (Benchy's short id,
-        // M5 2026-11-04 17:51:56Z, is the form the board shows).
-        let requested = p
-            .submission_id
-            .as_ref()
-            .map(|shown| submission_named(shown, board.card(card_id)))
-            .transpose()
-            .map_err(shown_refused)?;
-        let submission = board.candidate_for_review(review_card.card_id, requested)
-            .map_err(|e| CommandError::Invalid(format!("review candidate: {e}")))?;
+        // The parent's submissions are the ones a review can name, through the one handle
+        // resolver `work/submission` reads by too (Benchy's short id, M5 2026-11-04 17:51:56Z).
+        let submission = match p.submission_id.read(&board, review_card) {
+            Ok(SubmissionRead::Found { submission, .. }) => submission,
+            Ok(SubmissionRead::NoneYet { on }) => {
+                return Err(submission_refused(SubmissionRefusal::NoneYet { card: on.card_id }, &p.submission_id, review_card.card_id, on, airc.peer_id(), now_ms))
+            }
+            Err(unread) => {
+                return Err(submission_refused(SubmissionRefusal::Unread(unread), &p.submission_id, review_card.card_id, review_card, airc.peer_id(), now_ms))
+            }
+        };
         // SELF-REVIEW IS THE ROOM'S CALL (card fa4aaaaa). The author reviewing her own
         // submission is admitted only where the room's policy says `self`; a room that
         // declares no policy keeps today's behaviour. Refused up front, by name, rather
@@ -561,7 +564,7 @@ impl ActionCommand for WorkReview {
             review_card = %short8(review_uuid),
             card = %card_id,
             submission = %submission.submission_id,
-            derived = p.submission_id.is_none() || p.artifact.is_none() || p.review_claim_id.is_none() || p.card_id.is_none(),
+            derived = p.submission_id == SubmissionHandle::Latest || p.artifact.is_none() || p.review_claim_id.is_none() || p.card_id.is_none(),
             "the review as it goes to the board"
         );
         let review = airc
@@ -645,7 +648,8 @@ pub struct WorkSubmission {
     pub executor_slot: Arc<LateBound<CommandExecutor>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+// Serialize: a refusal names `work/submission` as her next call with these params.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/work/WorkSubmissionParams.ts"
@@ -655,12 +659,13 @@ pub struct WorkSubmissionParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub room: Option<String>,
-    /// Parent card — board handle or full UUID.
+    /// Card (a review card reads its parent) — handle or UUID.
     #[ts(type = "string")]
     pub card_id: String,
-    /// The submission to read — handle or full UUID.
-    #[ts(type = "string")]
-    pub submission_id: String,
+    /// `latest` (default) or a submission id.
+    #[serde(default)]
+    #[ts(optional, type = "\"latest\" | string")]
+    pub submission_id: SubmissionHandle,
     /// Inspect only: no binding/training. Answers a summary; rows only with evidence_limit.
     #[serde(default)]
     pub include_staged_evidence: bool,
