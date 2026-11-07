@@ -7,6 +7,47 @@ use crate::cognition::context_streams::blocks::Grounding;
 use crate::cognition::context_streams::conversation::{Conversation, Turn};
 use crate::cognition::context_streams::Role;
 
+// A source's average full-message density is not necessarily the density of its
+// retained newest messages. Exercise the actual start and final message pricing.
+#[test]
+fn a_view_start_keeps_its_token_grant_with_uneven_message_sizes() {
+    use continuum_context::flex::{AllocationState, FlexAllocation, SourceAllocation};
+    let conversation = Conversation {
+        turns: (0..40).map(|n| Turn {
+            key: format!("density-{n}"),
+            role: Role::User,
+            line: if n < 20 { "long old message ".repeat(100) } else { "ok".to_owned() },
+            pointer: None,
+        }).collect(),
+        ..Default::default()
+    };
+    let items = conversation.items();
+    let full: usize = items.iter().map(|item| LlmDeliberationFaculty::message_cost(&item.full().to_chat())).sum();
+    for granted in [32, 64, 128, 256, 512] {
+        let plan = FlexAllocation {
+            allocations: vec![SourceAllocation {
+                source_id: format!("{VIEW_CLAIM}conversation"),
+                allocated_tokens: granted,
+                requested_floor: 0,
+                requested_min: 0,
+                requested_max: full as u32,
+                required: false,
+                state: AllocationState::Satisfied,
+            }],
+            unallocated: 0,
+            escalation_needed: false,
+            warnings: Vec::new(),
+        };
+        let sources: Vec<&dyn Source<ContextMessage>> = vec![&conversation];
+        let (view, _) = View::start(Vec::new(), &sources, |claims| {
+            start_grants(claims, &plan, granted as usize, None).expect("funded optional source")
+        }).expect("matching source grants");
+        let rendered: Vec<_> = view.render().map(ContextMessage::to_chat).collect();
+        let actual = LlmDeliberationFaculty::messages_cost(&rendered);
+        assert!(actual <= granted as usize, "start rendered {actual} tokens against grant {granted}");
+    }
+}
+
 fn block(faculty: &str, text: &str) -> Grounding {
     Grounding::atomic(uuid::Uuid::nil(), faculty, text)
 }
