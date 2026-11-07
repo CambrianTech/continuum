@@ -274,9 +274,35 @@ esac
 # ── idempotency ──────────────────────────────────────────────────────
 if [ "$FORCE" -eq 0 ] && [ -x "$INSTALL_BIN" ] && [ -f "$STAMP_FILE" ] \
    && [ "$(cat "$STAMP_FILE" 2>/dev/null)" = "$STAMP_WANT" ]; then
-  echo "✓ llama-server already current at $INSTALL_BIN ($STAMP_WANT)" >&2
-  echo "$INSTALL_BIN"
-  exit 0
+  # POSTCONDITION GATE: verify the installed binary actually works for the intended backend.
+  # A stamp match proves nothing about the current artifact if it was swapped out-of-band;
+  # only running it can prove that. Fall through to rebuild on any probe failure.
+  _stamp_ok=1
+  if ! "$INSTALL_BIN" --version >/dev/null 2>&1; then
+    _stamp_ok=0
+  fi
+  if [ "$_stamp_ok" = "1" ] && [ "$BACKEND" != "cpu" ]; then
+    # Reproduce the postcondition probe so a stale GPU binary falls through to rebuild.
+    _gpudev="$("$INSTALL_BIN" --list-devices 2>&1 || true)"
+    if ! printf "%s" "$_gpudev" \
+         | grep -viE "^[[:space:]]*(\(none\)|(BLAS|CPU)[0-9]*:)" \
+         | grep -qE "^[[:space:]]+[^[:space:]:]+:[[:space:]]+[^[:space:]]"; then
+      _stamp_ok=0
+    fi
+    if [ "$_stamp_ok" = "1" ]; then
+      _off="$("$INSTALL_BIN" -m /nonexistent/probe.gguf --n-gpu-layers 999 2>&1 || true)"
+      if printf "%s" "$_off" | grep -qF "no usable GPU found"; then
+        _stamp_ok=0
+      fi
+    fi
+  fi
+  if [ "$_stamp_ok" = "0" ]; then
+    echo "⚠ stamp matches but installed binary failed backend probe; rebuilding…" >&2
+  else
+    echo "✓ llama-server already current at $INSTALL_BIN ($STAMP_WANT)" >&2
+    echo "$INSTALL_BIN"
+    exit 0
+  fi
 fi
 
 # ── build ────────────────────────────────────────────────────────────
