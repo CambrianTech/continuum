@@ -327,7 +327,7 @@ no faculty re-implements them:
 | prompt messages built outside the view and the fresh tail's one renderer (`ChatMessage::text`/`tool_results` in `llm_deliberation_faculty/prompt`) | 13 | the tail's single renderer only |
 | collapse outside the view (`collapse_over` / `collapse_results_over_cap` callers) | 4 | 0: working memory bounds RAM by handle, never what she sees |
 | hand churn labels (`churn_of` callers; production lines, ratchet `hand_churn_labels`) | 3 | 0: `Motion` orders every start |
-| positron `ViewState` kinds that are not context `Source`s | 13 | 0: one adapter, items with levels and expand handles |
+| positron `ViewState` kinds that are not context `Source`s | 13; 10 on 2026-11-07 (the kanban, the wall and the roster declare their shape through `continuum_context::nav`; one keyed item per card, post and member) | 0: one adapter, items with levels and expand handles |
 
 **Media is the same codec** (Joel, 2026-10-26: "Should be positron. This is common across so
 much."). A frame (a screen, a camera, a room the minds share, an image in chat) is a positron
@@ -354,6 +354,15 @@ surface, observed back through her eyes and ears.
    `summary` with `continuum_context::levels::summarize(full, Shape::…)` (`Code` with the producer's
    line parser, `Output`, `List`). Its `pointer` names the handle that expands it. A source
    whose items accumulate (her acts) implements `fold` so its floor is one block.
+   A view a mind and a person both navigate (a board, a wall, a roster, an activity's controls)
+   declares only its SHAPE as `continuum_context::nav::Entry`s: a typed key, its whole, an optional
+   summary (else derived by `levels`), its pointer, and what it is to her: `Need::Focus`, or a
+   member of a `Group { label, expand, fold }` with its recency. `nav::collapse` does the rest for
+   every view alike: her focus whole and last; each group's most recently changed
+   `nav::standing(n)` entries (the geometric mean of 1 and n) on their own and the rest ONE
+   `nav::Node` (label, count, the typed command that opens it); a `Fold::All` group (history) only
+   its node. A source's folded oldest run is a `Node` too (`Source::fold`). In continuum-mind a
+   view returns its entries and calls `viewstate_rag::rag_items`; it never collapses on its own.
 3. Add the source to the view's source list. Never push a prompt message, never collapse, never
    pick an order: the view appends, levels, admits, orders by measured motion and turns over.
 4. Prove it with a fixture in the source's test mod, then with the replay validator.

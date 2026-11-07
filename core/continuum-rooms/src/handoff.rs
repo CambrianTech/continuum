@@ -416,7 +416,6 @@ fn clock(at_ms: u64) -> String {
 /// The `[handoff]` fact pinned FIRST on wake — before `[resumed]` and `[rebuilt]`, because it
 /// is the one that names what she was doing. `current_build` is the sha that actually booted.
 pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
-    let short = |s: &str| s.chars().take(9).collect::<String>();
     let age = {
         let mins = now_ms.saturating_sub(h.written_ms) / 60_000;
         if mins == 0 {
@@ -427,18 +426,19 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
     };
     let torn = match &h.torn_by {
         TornBy::Deploy(claim) => {
-            if claim.target_sha.starts_with(&short(current_build))
-                || current_build.starts_with(&short(&claim.target_sha))
+            // a short build sha and a full one name the same commit when either prefixes the other
+            if claim.target_sha.starts_with(current_build)
+                || current_build.starts_with(claim.target_sha.as_str())
             {
                 format!(
                     "a deploy to {} interrupted you; it LANDED and you are running it now",
-                    short(&claim.target_sha)
+                    claim.target_sha
                 )
             } else {
                 format!(
                     "a deploy to {} interrupted you; it did NOT land — you are running {}",
-                    short(&claim.target_sha),
-                    short(current_build)
+                    claim.target_sha,
+                    current_build
                 )
             }
         }
@@ -449,35 +449,23 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
     };
     let mut out = format!(
         "[handoff] written {age} on build {}: {torn}.",
-        short(&h.build_sha)
+        h.build_sha
     );
     match &h.card {
         Some(card) => {
-            let id8: String = card
-                .card_id
-                .as_uuid()
-                .simple()
-                .to_string()
-                .chars()
-                .take(8)
-                .collect();
+            let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
             let claim =
                 match (card.claim_id, card.claim_expires_at_ms) {
                     (Some(c), Some(exp)) => {
                         format!(
                     "claim {} whose lease {} — holding is UNVERIFIED until the board answers",
-                    c.as_uuid().simple().to_string().chars().take(8).collect::<String>(),
+                    airc_core::shown_id::shown_form(c.as_uuid()),
                     lease_phrase(exp, now_ms)
                 )
                     }
                     (Some(c), None) => format!(
                         "claim {} with no lease edge recorded",
-                        c.as_uuid()
-                            .simple()
-                            .to_string()
-                            .chars()
-                            .take(8)
-                            .collect::<String>()
+                        airc_core::shown_id::shown_form(c.as_uuid())
                     ),
                     _ => "no claim recorded on the card".to_string(),
                 };
@@ -486,7 +474,7 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
                 card.title.trim(),
                 card.state
             ));
-            if let Some(sub) = crate::card_holder::latest_submission(card) {
+            if let Some(sub) = card.latest_submission() {
                 out.push_str(&format!(
                     "\n  Latest submission on it: {}, made {} (re-fetch by id; do not re-make it).",
                     sub.submission_id.as_uuid(),
@@ -508,8 +496,8 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
                 out.push_str(&format!(
                     "\n  Staged at {root}: {} dirty path(s) [{}], working diff sha256 {} — the diff is on disk there (code/git/diff), resume it, do not re-derive it.",
                     dirty_paths.len(),
-                    dirty_paths.iter().take(8).cloned().collect::<Vec<_>>().join(", "),
-                    &diff_sha256[..12.min(diff_sha256.len())]
+                    dirty_paths.join(", "),
+                    diff_sha256
                 ));
             }
         }
@@ -545,15 +533,8 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
     }
     if !h.obligations.is_empty() {
         out.push_str("\n  Open obligations at the seam:");
-        for card in h.obligations.iter().take(6) {
-            let id8: String = card
-                .card_id
-                .as_uuid()
-                .simple()
-                .to_string()
-                .chars()
-                .take(8)
-                .collect();
+        for card in &h.obligations {
+            let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
             let who = if card.reviews.is_some() {
                 "you owe a review on"
             } else {
@@ -858,6 +839,7 @@ mod tests {
             claim_id: held.claim_id.expect("claim"),
             instance: "card".into(),
             base_sha: airc_work::GitObjectId::new("a".repeat(40)).expect("base"),
+            head: airc_work::SubmissionHead::Unrecorded,
             artifact: airc_blobs::MediaRef {
                 hash: airc_blobs::ContentHash::from_bytes(b"corrected patch"),
                 size_bytes: 15,

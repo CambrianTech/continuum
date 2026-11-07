@@ -45,14 +45,15 @@ async fn consecutive_acts_in_one_activity_send_byte_identical_tool_schemas() {
             assert_eq!(act, first, "a {who:?} {kind} act changed the tool schemas");
         }
     }
-    // A reviewer's verdict and the submission she reviews are her core hands: reviewing is how
-    // residents work as a team, and with work/review one commands/help away Benchy reached for
-    // work_submit with a zero hash instead (the M5, 2026-11-04 16:51-17:16Z).
-    for must in ["edit_file", "bash", "list_commands", "help", "work_review", "work_submission"] {
+    for must in ["edit_file", "bash", "list_commands", "help"] {
         assert!(first.1.contains(&format!("\"{must}\"")), "{must} rides natively: {}", first.1);
     }
     // An on-demand verb (concluding an activity) is one commands/help away, not a schema every act.
-    for absent in ["conclude_activity"] {
+    // The reviewer's verbs are in hand when her held card puts them there (a review card she
+    // holds: `work_preconditions::in_hand`, the fix for Benchy's 2026-11-04 review card), never
+    // as core hands: offered on every card, residents called work/review on their own card 22
+    // times and work/submission on cards with nothing submitted 27 times (the M5, 2026-11-07).
+    for absent in ["conclude_activity", "work_review", "work_submission"] {
         assert!(!first.1.contains(&format!("\"{absent}\"")), "{absent} stays one commands/help away: {}", first.1);
     }
 }
@@ -157,7 +158,7 @@ fn the_real_registry_declares_her_own_work_as_core_hands() {
             "code/git/status", "code/github/pr-comment", "code/github/pr-create", "code/list",
             "code/read", "code/run", "code/search", "code/shell", "code/shell-poll", "code/tree",
             "code/write", "work/claim", "work/create", "work/get", "work/heartbeat", "work/list",
-            "work/note", "work/release", "work/review", "work/state", "work/submission", "work/submit",
+            "work/note", "work/release", "work/state", "work/submit",
         ],
         "her core hands are exactly these; a new native command declares where it sits"
     );

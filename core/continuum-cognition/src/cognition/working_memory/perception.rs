@@ -150,7 +150,10 @@ impl WorkingMemory {
     /// is never shown as less than whole.
     pub fn saved_handle(&self, seq: u64) -> Result<String, ActOutputRefusal> {
         let actions = self.actions.lock();
-        let record = actions.get(seq).ok_or(ActOutputRefusal::Unknown { act: seq })?;
+        let Some(record) = actions.get(seq) else {
+            let newest_saved = actions.records().rev().find(|record| record.handle.is_some()).map(|record| record.seq);
+            return Err(ActOutputRefusal::Unknown { act: seq, newest_saved });
+        };
         record.handle.clone().ok_or(ActOutputRefusal::Unsaved { act: seq })
     }
 

@@ -43,13 +43,14 @@
 //!   wall sources).
 //! - Enriching framing, NOT a participation gate: the board shapes WHAT a
 //!   persona knows about the room's work, it does not decide WHETHER it speaks
-//!   (that is doctrine). Whole board = all owners, so the source imposes no
-//!   continuum-side ordering or filtering heuristic that would steer cognition
-//!   ([[no-hardcoded-heuristics-to-steer-cognition]]) — it delivers EVERY card,
-//!   ordered by what she can act on, and never takes a size: the one allocation
-//!   in her prompt view chooses each item's level (whole line, else the
-//!   card's pointer), so a long board shrinks oldest-first, never silently.
-//! - Atomic unit = ONE card, keyed by its id.
+//!   (that is doctrine). It is collapsed navigation, like a person's board UI:
+//!   her focus (her cards) whole; every other live card in a group by what she
+//!   can do with it (claimable, held by others), its most recently changed cards
+//!   at a glance and the rest one node with its count and the `work/list` that
+//!   opens it; settled cards one node per state. Every card stays reachable; she
+//!   opens a node with the same command a person's click maps to, and never takes
+//!   a size: the one allocation in her prompt view chooses each item's level.
+//! - Atomic unit = ONE card, keyed by its id; a change appends that card alone.
 
 use continuum_base::time::EpochMs;
 use std::sync::Arc;
@@ -59,7 +60,8 @@ use airc_work::BoardSnapshot;
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::cognition::rag_budget::{RagContext, RagDelivery, RagItem, RagSource};
+use crate::cognition::rag_budget::{RagContext, RagDelivery, RagSource};
+use crate::persona::viewstate_rag::RagRenderUnit;
 
 use crate::cognition::faculty_ids::ROOM_BOARD;
 
@@ -310,7 +312,7 @@ impl RoomBoardSource {
     /// Current signed candidate state is independent of a potentially long title.
     /// Reuse the submission owner's next-action semantics and evidence address.
     fn submission_guidance(card: &airc_work::WorkCard, board: &BoardSnapshot) -> Option<String> {
-        let candidate = crate::cognition::card_holder::latest_submission(card)?;
+        let candidate = card.latest_submission()?;
         let reviews: Vec<_> = board.submission_reviews.iter().filter(|review| {
             review.card_id == card.card_id && review.submission_id == candidate.submission_id
         }).collect();
@@ -340,6 +342,14 @@ impl RoomBoardSource {
 /// predicate itself moved there so the anchor, `work/list`, and this source
 /// cannot drift apart on what "held" means. Kept as a named local so the
 /// call sites below read as liveness questions rather than enum matches.
+/// A unit's provenance as the object its metadata is.
+fn fields(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    match value {
+        serde_json::Value::Object(fields) => fields,
+        _ => serde_json::Map::new(),
+    }
+}
+
 fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
     crate::cognition::card_holder::hold_of(card, now_ms) == crate::cognition::card_holder::Hold::Held
 }
@@ -474,7 +484,7 @@ impl RoomBoardSource {
             return RagDelivery::empty(ROOM_BOARD);
         }
 
-        let mut items: Vec<RagItem> = Vec::new();
+        let mut items: Vec<RagRenderUnit> = Vec::new();
         // One clock reading per delivery — every lease judgment in this block
         // (held / lapsed / available) agrees on the same instant.
         let now_ms = continuum_base::time::EpochMs::now().millis();
@@ -549,41 +559,43 @@ impl RoomBoardSource {
             // Its own pointer: the headline is itself the shortest statement of the board, so a
             // collapsed board still says what she holds and what is claimable in this room.
             items.push(
-                RagItem::whole(
+                RagRenderUnit::new(
                     "headline",
                     headline.clone(),
-                    json!({
+                    fields(json!({
                         "kind": "board-headline",
                         "held_count": mine.len(),
                         "open_count": open.len(),
                         "open_lead_suppressed": working,
-                    }),
+                    })),
                 )
-                .with_pointer(headline)
+                .pointer(headline)
                 // Its counts move whenever anyone claims or files a card: a tally, held after the
                 // board's stable body so a count never rewrites the cards in front of it.
-                .as_tally(),
+                .tally(),
             );
         }
 
-        // The focused candidate's next action/evidence handle rides ahead of incidental
-        // board detail, as one atomic, truthful unit keyed by its card.
+        // The focused candidate's next action/evidence handle: her focus, the board's newest unit,
+        // one atomic, truthful unit keyed by its card.
         let mut focused_submission = None;
+        let mut submission = None;
         if let Some(card) = crate::persona::work_focus::focus_workspace_card(mine.iter().copied()) {
             if let Some(content) = Self::submission_guidance(card, &board) {
                 focused_submission = Some(card.card_id);
                 let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
-                items.push(
-                    RagItem::whole(
+                submission = Some(
+                    RagRenderUnit::new(
                         format!("submission:{}", card.card_id.as_uuid()),
                         content,
-                        json!({ "kind": "focused-submission", "card_id": card.card_id.as_uuid().to_string() }),
+                        fields(json!({ "kind": "focused-submission", "card_id": card.card_id.as_uuid().to_string() })),
                     )
-                    .with_pointer(format!("[card {id8}] signed verdicts on its submission — work/submission")),
+                    .pointer(format!("[card {id8}] signed verdicts on its submission — work/submission")),
                 );
             }
         }
 
+        let mut your_lead = None;
         if !mine.is_empty() {
             // Every card she holds, each with its checkout: her holds are few, and this lead is where
             // their checkouts are named; the view collapses the item whole when it must.
@@ -601,9 +613,9 @@ impl RoomBoardSource {
                  released (work/release); your tools do the work.",
                 n = mine.len(),
             );
-            items.push(
-                RagItem::whole("lead:yours", lead, json!({ "kind": "your-work-lead" }))
-                    .with_pointer(format!("[your work] you hold {} card(s) here — work/list", mine.len())),
+            your_lead = Some(
+                RagRenderUnit::new("lead:yours", lead, fields(json!({ "kind": "your-work-lead" })))
+                    .pointer(format!("[your work] you hold {} card(s) here — work/list", mine.len())),
             );
         }
 
@@ -617,25 +629,26 @@ impl RoomBoardSource {
         // verbatim in airc's own order — this adds salience, it does not re-rank or
         // filter the board itself.
         if !working && !open.is_empty() {
-            // The count, not a sample of titles: every live card follows this lead whole, her holds
-            // first and then the claimable cards oldest first, so a card dispatched minutes ago is
-            // the last she reads, nearest her newest context. Five titles here repeated what follows
-            // and were the literal ceiling a touched file may not keep (self_sized).
+            // The count, not a sample of titles: every live card is its own item of her view, the
+            // least recently changed first, so the card changed last is the last she reads, nearest
+            // her newest context. Five titles here repeated what follows and were the literal ceiling
+            // a touched file may not keep (self_sized).
             let lead = format!(
                 "[available work] {n} card(s) on this board are claimable — unclaimed, \
-                 or their holder's claim lease lapsed; they are listed oldest first, the newest last. A card is \
+                 or their holder's claim lease lapsed; the most recently changed are listed last, and \
+                 the rest are counted under `work/list`. A card is \
                  picked up with `work/claim` (its id); once claimed it is yours to \
                  work with your tools. Claimable work waits until someone chooses it.",
                 n = open.len(),
             );
             items.push(
-                RagItem::whole(
+                RagRenderUnit::new(
                     "lead:available",
                     lead,
-                    json!({ "kind": "available-work-lead", "open_count": open.len() }),
+                    fields(json!({ "kind": "available-work-lead", "open_count": open.len() })),
                 )
-                .with_pointer(format!("[available work] {} card(s) claimable here — work/list", open.len()))
-                .as_tally(),
+                .pointer(format!("[available work] {} card(s) claimable here — work/list", open.len()))
+                .tally(),
             );
         }
 
@@ -655,89 +668,72 @@ impl RoomBoardSource {
         }
         let names = self.reader.peer_names(&owner_peers).await;
 
-        // RELEVANCE ORDER, delivered whole. Her own holds first, then the claimable cards oldest
-        // first: a new card APPENDS to the block instead of rewriting it from its first card, so
-        // the cards she already read stay a reused prefix (the M5, 2026-11-06: newest-first put
-        // every new card at the head of a 30k-char list and every epoch start re-prefilled it),
-        // and the newest stand last, nearest the rest of her newest context. Every LIVE card is
-        // delivered: when the prompt view must shrink it collapses the oldest cards to
-        // their pointers (measured 2026-08-17: 38 cards were 49.7% of a system prompt;
-        // that is the allocation's problem to solve by level, not a count cap here).
-        // A merged or closed card carries no decision for her: it is history, one counted
-        // line, and `work/list` still shows each. On the M5 (2026-10-31) Benchy's board block
-        // was 31,185 chars of 840 closed cards, the room her own results then lacked (they
-        // collapsed to handles and she read them again: 133 exact re-reads in 885 acts).
-        let (history, live): (Vec<&airc_work::WorkCard>, Vec<&airc_work::WorkCard>) = board
-            .cards
-            .iter()
-            .partition(|card| matches!(card.state, airc_work::CardState::Merged | airc_work::CardState::Closed));
-        if !history.is_empty() {
-            items.push(
-                RagItem::whole(
-                    "history",
-                    format!("[board history] {} card(s) merged or closed in this room — work/list shows them", history.len()),
-                    json!({ "kind": "board-history", "settled_count": history.len() }),
-                )
-                .with_pointer(format!("[board history] {} merged/closed — work/list", history.len()))
-                .as_tally(),
-            );
-        }
-        let mut ordered: Vec<&airc_work::WorkCard> = live;
-        ordered.sort_by_key(|c| {
-            let mine_first = !(c.owner.map(|o| o.as_uuid()) == Some(self.persona_id));
-            // Oldest first: a new card appends.
-            (mine_first, c.created_at_ms)
-        });
-
-        for card in ordered {
-            let content = Self::render(card, &board, self.persona_id, now_ms, &names, focused_submission != Some(card.card_id));
+        // THE BOARD'S SHAPE, declared once (`continuum_context::nav`): its focus and its groups.
+        // How it collapses (her focus whole and last, each group's most recently changed cards
+        // standing and the rest one node with its count and the `work/list` that opens it, history
+        // only its node), how each item levels and how a change supersedes are the contract's and
+        // her view's, never this source's (Joel, 2026-11-07: "all positronic controls collapse
+        // easily without having to independently manage this at each consumer"). Before, each
+        // claim anywhere appended the whole board again (Benchy, the M5, 2026-11-07: 7 snapshots of
+        // ~30k chars, 47% of her prompt), and 840 closed cards were 31,185 chars of it (2026-10-31).
+        use continuum_context::nav::{Expand, Fold, Group};
+        let list = || Expand::verb("work/list");
+        let hers = |card: &airc_work::WorkCard| card.owner.map(|o| o.as_uuid()) == Some(self.persona_id);
+        let group = |card: &airc_work::WorkCard| -> Option<Group> {
+            if matches!(card.state, airc_work::CardState::Merged | airc_work::CardState::Closed) {
+                let label = crate::cognition::card_facts::state_str(&card.state);
+                return Some(Group { label, expand: list().with("state", label), fold: Fold::All });
+            }
+            if hers(card) {
+                return None;
+            }
+            Some(if crate::cognition::card_holder::claimable_now(card, now_ms) {
+                Group { label: "claimable", expand: list().with("claimable", "true"), fold: Fold::Recent }
+            } else {
+                Group { label: "held by others", expand: list(), fold: Fold::Recent }
+            })
+        };
+        let card_entry = |card: &airc_work::WorkCard| {
             let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
-            // The pointer keeps what a teammate decides on (the card and its takeable /
-            // held tag) once the line collapses; the title returns with `work/list`. Only a card she
-            // owns keeps one: every other card leaves a collapsed board, where the headline and the
-            // available-work lead count it and `work/list` lists it (Benchy, the M5, 2026-11-01: 592
-            // one-line card pointers, 21k chars, were her collapsed board).
-            let tag = crate::cognition::card_holder::holder(card, self.persona_id, now_ms, &names).state_tag();
-            let hers = card.owner.map(|o| o.as_uuid()) == Some(self.persona_id);
-            items.push(RagItem {
-                key: format!("card:{}", card.card_id.as_uuid()),
-                tokens: continuum_base::token_estimate::estimate_prompt_tokens(&content),
-                content,
-                summary: None,
-                pointer: hers.then(|| format!("[card {id8}] [{tag}] — work/list")),
-                metadata: json!({
+            let holder = crate::cognition::card_holder::holder(card, self.persona_id, now_ms, &names);
+            let full = Self::render(card, &board, self.persona_id, now_ms, &names, focused_submission != Some(card.card_id));
+            // What a teammate decides on: the card, its takeable/held tag, its title, who holds it.
+            let glance = format!("card {id8} [{}] \"{}\" ({})", holder.state_tag(), card.title, holder.render());
+            let pointer = if hers(card) { format!("[card {id8}] [{}] — work/get {id8}", holder.state_tag()) } else { format!("[card {id8}] [{}]", holder.state_tag()) };
+            let entry = RagRenderUnit::new(
+                format!("card:{}", card.card_id.as_uuid()),
+                full,
+                fields(json!({
                     "card_id": card.card_id.as_uuid().to_string(),
-                    // Serde, NOT `format!("{:?}")`. Debug output is a developer convenience
-                    // with NO stability guarantee — renaming a variant silently changes it
-                    // and nothing fails to compile. It also gave the substrate TWO string
-                    // forms of one enum: `{:?}` wrote "Claimed" here while `work/list`'s
-                    // serde wrote "claimed", so a reader that guessed wrong compared against
-                    // a spelling that never occurs. Consumers parse this straight back into
-                    // `CardState` and match on VARIANTS, so the compiler owns the mapping.
-                    // Joel 2026-08-06: "use constants or enums so you can't make
-                    // capitalization type issues. Use rust as it is meant to be used, for
-                    // predictable behavior."
+                    // Serde, never `format!("{:?}")`: consumers parse this back into `CardState` and
+                    // match on variants, so the compiler owns the mapping (Joel, 2026-08-06).
                     "state": card.state,
                     "owner": card.owner.map(|o| o.as_uuid().to_string()),
-                    // Is the hold STILL GOOD? `state` alone cannot answer it: a card sits in
-                    // `Claimed` forever while its lease quietly expires, so a consumer reading
-                    // only the state sees "taken" for work that is free to take. That is the
-                    // exact blindness that stalled every citizen on this node 2026-08-06 —
-                    // 19 cards, all Claimed, all leases stale, all held by the four residents,
-                    // and each of them read the board as "nothing available" and passed.
-                    //
-                    // Carried as a BOOLEAN FACT from the same `claim_is_live` the card line
-                    // renders from, so the anchor and the line can never disagree about whether
-                    // work is takeable. A consumer that wants "available" must not re-derive it
-                    // from a string.
+                    // Is the hold STILL GOOD, from the same `claim_is_live` the line renders from, so
+                    // the anchor and the line never disagree about whether work is takeable (every
+                    // citizen on this node stalled on 19 stale Claimed cards, 2026-08-06).
                     "claim_live": claim_is_live(card, now_ms),
                     "priority": card.priority,
                     "lane_id": card.lane_id.map(|l| l.as_uuid().to_string()),
-                }),
-            });
-        }
+                })),
+            )
+            .summary(glance)
+            .pointer(pointer);
+            match group(card) {
+                Some(group) => entry.in_group(group, card.updated_at_ms),
+                None => entry,
+            }
+        };
+        // Her focus in the order she reads it, after the groups: her lead, her cards (the focused one
+        // last), the focused card's submission.
+        let mut mine_any: Vec<&airc_work::WorkCard> = board.cards.iter().filter(|c| hers(c) && group(c).is_none()).collect();
+        mine_any.sort_by_key(|c| (focused_submission == Some(c.card_id), c.updated_at_ms));
+        items.extend(board.cards.iter().filter(|c| group(c).is_some()).map(card_entry));
+        items.extend(your_lead);
+        items.extend(mine_any.into_iter().map(card_entry));
+        items.extend(submission);
 
-        let delivery = RagDelivery::of(ROOM_BOARD, items, false);
+        let delivery = RagDelivery::of(ROOM_BOARD, super::viewstate_rag::rag_items(items), false);
         tracing::debug!(
             persona_id = %self.persona_id,
             cards = board.cards.len(),

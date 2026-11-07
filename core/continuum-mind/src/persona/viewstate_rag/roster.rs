@@ -36,7 +36,12 @@ impl RagRenderable for continuum_positron::RosterViewState {
         });
         ordered
             .into_iter()
-            .map(|slot| member_unit(slot.member_id, &slot.display_name, slot.kind, slot.role_label.as_deref(), viewer))
+            .map(|slot| {
+                // Its shape: who is attached is her room; who is paged out is the "away" group,
+                // by when they were last seen (`nav::collapse` folds it).
+                let away = (!slot.active && slot.member_id != viewer).then_some(slot.last_seen_ms);
+                member_unit(slot.member_id, &slot.display_name, slot.kind, slot.role_label.as_deref(), viewer, away)
+            })
             .collect()
     }
 
@@ -55,13 +60,15 @@ impl RagRenderable for continuum_positron::RosterViewState {
 /// in her own room. NO liveness flag (2026-09-04): `[ready]`/`[busy]` flipped with every
 /// heartbeat and forfeited the cached prefix; who, kind and role are the stable facts.
 /// Key = peer id (stable across turns); pointer = the bare name, so a collapsed row still says
-/// WHO, and `room/members` yields the rest.
+/// WHO, and `room/members` yields the rest. `away` = when a paged-out member was last seen: a
+/// member of the roster's "away" group, which collapses into its node, never a line each.
 pub(crate) fn member_unit(
     member_id: uuid::Uuid,
     display_name: &str,
     kind: continuum_positron::SenderKind,
     role: Option<&str>,
     viewer: uuid::Uuid,
+    away: Option<u64>,
 ) -> RagRenderUnit {
     let mut line = if member_id == viewer {
         format!("{display_name} ({kind:?}, YOU)")
@@ -71,9 +78,18 @@ pub(crate) fn member_unit(
     if let Some(role) = role.filter(|r| !r.is_empty()) {
         line.push_str(&format!(" — {role}"));
     }
-    let mut unit = RagRenderUnit::new(member_id.to_string(), line);
-    unit.pointer = Some(display_name.to_string());
-    unit.metadata.insert("peer_id".into(), serde_json::json!(member_id));
-    unit.metadata.insert("display_name".into(), serde_json::json!(display_name));
-    unit
+    let mut meta = serde_json::Map::new();
+    meta.insert("peer_id".into(), serde_json::json!(member_id));
+    meta.insert("display_name".into(), serde_json::json!(display_name));
+    let unit = RagRenderUnit::new(member_id, line, meta).pointer(display_name);
+    match away {
+        Some(last_seen_ms) => unit.in_group(away_group(), last_seen_ms),
+        None => unit,
+    }
+}
+
+/// The roster's members who are paged out: the most recently seen stand, the rest one node.
+fn away_group() -> continuum_context::nav::Group {
+    use continuum_context::nav::{Expand, Fold, Group};
+    Group { label: "away", expand: Expand::verb("room/members"), fold: Fold::Recent }
 }

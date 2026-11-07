@@ -179,6 +179,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         "claim_id": short(claim.as_uuid()),
         "instance": "generic-project-work",
         "base_sha": "a".repeat(40),
+        "head": "b".repeat(40),
         "artifact": { "hash": patch_hash, "size_bytes": patch.len(), "mime": "text/x-diff" },
         "staged_revision_id": selected.id.to_string(),
     }))
@@ -239,7 +240,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
             room: params.room.clone(),
             review_id: Some(shown(Uuid::new_v4()).expect("a full id parses")), // expect: a full uuid's own rendering
             card_id: Some(card.as_uuid().to_string()),
-            submission_id: Some(shown(published.submission_id).expect("a full id parses")), // expect: a full uuid's own rendering
+            submission_id: SubmissionHandle::Id(shown(published.submission_id).expect("a full id parses")), // expect: a full uuid's own rendering
             artifact: params.artifact.clone(),
             review_card_id: review_card.as_uuid().to_string(),
             review_claim_id: Some(shown(review_claim.as_uuid()).expect("a full id parses")), // expect: a full uuid's own rendering
@@ -267,7 +268,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
             room: params.room.clone(),
             review_id: Some(shown(Uuid::new_v4()).expect("a full id parses")), // expect: a full uuid's own rendering
             card_id: Some(card.as_uuid().to_string()),
-            submission_id: Some(shown(submitted_as).expect("a full id parses")), // expect: a full uuid's own rendering
+            submission_id: SubmissionHandle::Id(shown(submitted_as).expect("a full id parses")), // expect: a full uuid's own rendering
             artifact: Some(
                 params
                     .artifact
@@ -509,6 +510,7 @@ pub(super) async fn a_claim_taken_during_a_turn_credits_from_that_act_on() {
         claim_id: reclaimed.claim_id.expect("reclaimed fixture has a claim"),
         instance: "ordinary-project-work".into(),
         base_sha: airc_work::GitObjectId::new("a".repeat(40)).expect("sha fixture"),
+        head: airc_work::SubmissionHead::Unrecorded,
         artifact: serde_json::from_value(json!({"hash":"b".repeat(64),"size_bytes":12})).expect("artifact fixture"),
         publisher: owner,
         submitted_at_ms: 3,

@@ -325,7 +325,7 @@ impl KanbanProjection {
     /// The latest review of `card`'s latest submission, its reviewer resolved like a creator
     /// and its finding as the reviewer wrote it.
     fn latest_review(&self, card: &WorkCard) -> Option<KanbanReviewView> {
-        let submission = crate::cognition::card_holder::latest_submission(card)?.submission_id;
+        let submission = card.latest_submission()?.submission_id;
         let review = self
             .reviews
             .iter()

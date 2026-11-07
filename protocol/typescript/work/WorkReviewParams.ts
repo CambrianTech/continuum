@@ -28,9 +28,9 @@ review_id?: string,
  */
 card_id?: string, 
 /**
- * Submission; defaults to latest.
+ * `latest` (default) or a submission id.
  */
-submission_id?: string, 
+submission_id?: "latest" | string, 
 /**
  * Artifact; defaults to board.
  */

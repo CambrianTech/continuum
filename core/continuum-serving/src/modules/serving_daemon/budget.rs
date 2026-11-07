@@ -184,7 +184,7 @@ impl ServingDaemonModule {
     /// the plan picks fewer lanes / a smaller model; load clears, it flows back.
     /// Delegates to the free [`live_host_budget`] so the autonomic tick and the
     /// `serving/pin` fit-gate compute the budget from the ONE source.
-    pub(super) fn host_budget_snapshot(&self) -> (HostBudget, Vec<crate::resources::lease::ResourceLease>) {
+    pub(super) fn host_budget_snapshot(&self) -> PlanBudget {
         // The autonomic plan's budget = the LIVE governed available of the lane's POOL
         // (`serving_pool_kind`: the Ram row for a CPU-placed lane, the Vram row otherwise;
         // the Vram wording below predates that split and reads for the GPU arm) — net of every
@@ -213,10 +213,17 @@ impl ServingDaemonModule {
         // anti-pattern the memory-authority arc exists to kill. Pressure sensing stays live
         // via the drive mode below (which still reads system available for the fraction).
         let available = self.system.snapshot().memory.available_bytes;
-        let (measured, leases) = self.resource_daemon
-            .replacement_budget_snapshot(SERVING_CONSUMER_ID, serving_pool_kind());
-        let (live, charged) = if measured > 0 {
-            (measured, leases)
+        let pool = serving_pool_kind();
+        let read = self.resource_daemon.replacement_budget_snapshot(SERVING_CONSUMER_ID, pool);
+        // Whether this budget holds serving's own bytes, from the read that made it.
+        let credit = OwnCredit::of_own_bytes(read.own_bytes);
+        // A pool with a scanned capacity has MEASURED its budget, and a measured zero is the
+        // answer: a fully leased pool. The substitute ladder is for a pool with no reading
+        // only. Before, a zero read fell to the ladder, whose first rung is the board's
+        // `budget_for_replacing` without the other holders' leases: it handed the plan
+        // serving's own bytes back after they were leased away, and dropped those leases.
+        let (live, charged) = if read.capacity_bytes > 0 {
+            (read.bytes, read.charged)
         } else {
             // A substitute ceiling carries no authority to credit live holders.
             (governed_vram_ceiling_or_report(&self.resource_daemon, "host_budget"), Vec::new())
@@ -238,8 +245,15 @@ impl ServingDaemonModule {
         } else {
             Some(crate::capacity::power_mode::PowerMode::Comfort)
         };
-        let pressure_mode =
-            crate::capacity::power_mode::serving_mode_for_pressure_from(available, previous);
+        // The pressure in the budget's own view: the bytes `live` credited back are not an
+        // external squeeze (the M5, 2026-11-04 16:41Z: Eco's 0.55 of an engine-only budget,
+        // below the weights, no resident hosted for 9 minutes; `own_credit`).
+        let pressure_mode = super::own_credit::pressure_mode(
+            available,
+            credit,
+            super::own_credit::own_bytes_in_system_memory(pool, self.system.gpu_memory_mode()),
+            previous,
+        );
         LAST_PRESSURE_MODE_ECO.store(
             pressure_mode == crate::capacity::power_mode::PowerMode::Eco,
             Ordering::Relaxed,
@@ -282,11 +296,12 @@ impl ServingDaemonModule {
         // at once. The M5, 2026-10-18 15:27-15:28Z: the instantaneous budget read 22.9, 29.8,
         // 29.1 then 41.9 GB within 22 s (ledger flat at 41.68 GB) and the plan it fed
         // relaunched the engine at 15:06, 15:18 and 15:24, every resident cold each time.
-        let usable_bytes = self
-            .budget_readings
-            .lock()
-            .observe(continuum_base::time::EpochMs::now().millis(), instant)
-            .min;
+        // Within one credit view: an uncredited reading is not a minimum of a credited one.
+        let usable_bytes = self.budget_readings.lock().sustained_min(
+            continuum_base::time::EpochMs::now().millis(),
+            credit,
+            instant,
+        );
         if usable_bytes != instant {
             continuum_base::probe!(
                 target: "continuum_core::modules::serving_daemon", class = "serving.budget.sustained",
@@ -298,10 +313,14 @@ impl ServingDaemonModule {
         }
         // The sustained minimum cannot exceed this atomic reading after mode
         // reduction. Its historical conservatism cannot spend the charged bytes.
-        (HostBudget {
-            usable_bytes,
-            perf_cores: perf_cores(),
-        }, charged)
+        PlanBudget {
+            host: HostBudget {
+                usable_bytes,
+                perf_cores: perf_cores(),
+            },
+            credit,
+            leases: charged,
+        }
     }
 
     /// The serving budget this host has when the box is OURS — physical capacity at

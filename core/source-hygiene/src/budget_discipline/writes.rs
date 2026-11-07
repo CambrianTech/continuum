@@ -9,10 +9,13 @@ use crate::{sites, SourceFile, SourceRule, Violation};
 
 /// The owners of persistent bytes: the ORM (stores), the disk classes (`ClassWriter`), and the
 /// one primitive both place files through (`continuum_host::durable`: staging, placement, locks).
+/// `continuum_host::read_pin` writes nothing: it is the one owner of a read-only open under an OS
+/// share mode (an `OpenOptions` chain), so a pinned reader elsewhere never spells one.
 const OWNERS: &[&str] = &[
     "core/continuum-kernel/src/orm/",
     "core/continuum-kernel/src/system_resources/disk_reporters",
     "core/continuum-host/src/durable/",
+    "core/continuum-host/src/read_pin/",
 ];
 
 /// The ways Rust code creates or appends to a file.

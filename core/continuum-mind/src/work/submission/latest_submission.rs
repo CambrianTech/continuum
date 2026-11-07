@@ -86,8 +86,9 @@ pub struct WorkSubmit {
     pub benchmark: Arc<dyn BenchmarkSubmissionAdapter>,
 }
 
-// Deserialize only: the `Shown` ids are read from her call, never re-rendered.
-#[derive(Debug, Clone, Deserialize, TS, JsonSchema)]
+// Serialize: a refusal names `work/submit` as her next call with these params; a shown id
+// goes back only in full (`shown_in_full`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/work/WorkSubmitParams.ts"
@@ -105,7 +106,7 @@ pub struct WorkSubmitParams {
     #[ts(type = "string")]
     pub card_id: String,
     /// Minted when omitted.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none", serialize_with = "optional_shown_in_full")]
     #[ts(optional, type = "string")]
     #[schemars(with = "Option<String>")]
     pub submission_id: Option<Shown<airc_work::SubmissionId>>,
@@ -121,6 +122,10 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_sha: Option<String>,
+    /// Omit: your checkout's committed HEAD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub head: Option<String>,
     /// Omit: computed from your checkout. Not a git sha.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -257,25 +262,6 @@ pub(super) fn followed_room(recorded: &[crate::persona::held_claims::HeldClaim],
 pub(super) const CONCLUDE_WITHOUT_A_PATCH: &str =
     "if this card's result is what you found rather than a change, record it with work/note (known: what you established) and close the card with work/state closed";
 
-/// PURE: where a submission handle comes from, said with the handles themselves. A
-/// refused handle used to name only its SHAPE ("a full UUID or at least 4 leading hex
-/// characters"), and Kimi, wanting a card's submissions, sent `placeholder` (2026-10-05
-/// 12:01Z): a citizen with no handle cannot type one. The card's submissions are already
-/// in hand where the handle is resolved, so the refusal lists them, each as the leading
-/// eight hex characters the resolver accepts as a prefix.
-pub(super) fn submissions_on_card(on_card: &[(Uuid, Uuid)]) -> String {
-    if on_card.is_empty() {
-        return format!(
-            "this card has no submissions yet: work/submit publishes one once your checkout has changes; {CONCLUDE_WITHOUT_A_PATCH}"
-        );
-    }
-    let lines: Vec<String> = on_card
-        .iter()
-        .map(|(id, publisher)| format!("{} by {}", airc_core::shown_id::shown_form(*id), airc_core::shown_id::shown_form(*publisher)))
-        .collect();
-    format!("submissions on this card: {}", lines.join(", "))
-}
-
 /// PURE: `e` with the where-it-is hint appended, keeping its error class.
 pub(super) fn with_hint(e: CommandError, hint: Option<String>) -> CommandError {
     match (e, hint) {
@@ -356,6 +342,8 @@ pub(super) fn submission_named(
 pub(super) struct DerivedSubmission {
     pub(super) instance: String,
     pub(super) base_sha: String,
+    /// Her checkout's committed HEAD, the commit the patch ends at.
+    pub(super) head: String,
     pub(super) artifact: WorkArtifactReference,
 }
 
@@ -493,15 +481,7 @@ pub(super) async fn base_sha_of(benchmark: &dyn BenchmarkSubmissionAdapter, chec
 /// remote-ref inventory refuses automatic derivation: a wider fallback can publish unrelated
 /// upstream work as her candidate. An explicitly supplied base remains caller-owned.
 pub(super) fn past_upstream(checkout: &std::path::Path, created: &str, repo: Option<&airc_work::RepoId>, repository_url: Option<&str>) -> Result<String, CommandError> {
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(checkout)
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-    };
+    let git = |args: &[&str]| git_in(checkout, args).ok().map(|out| out.trim().to_string());
     // A shallow boundary can retain the creation object but hide its relation to HEAD.
     // Reproduced in Kimi's checkout after c82b5f9c (179 upstream files): every candidate
     // was skipped and the old base silently won. Do not turn missing proof into authorship.
@@ -600,8 +580,7 @@ pub(super) fn submission_integration_branch(
 /// Only the tracked-integration exception needs host authority. Ordinary automatic
 /// submissions and unknown policies retain their existing local behavior.
 pub(super) async fn submission_repository_url(checkout: &std::path::Path, repo: &airc_work::RepoId) -> Result<Option<String>, CommandError> {
-    let git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(checkout)
-        .output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let git = |args: &[&str]| git_in(checkout, args).ok().map(|out| out.trim().to_string());
     let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"]).unwrap_or_default(); // unwrap_or_default: detached has no own branch
     let integration = submission_integration_branch(checkout, Some(repo), &branch)?;
     let tracked = git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).unwrap_or_default(); // unwrap_or_default: no tracked ref needs no exception
@@ -616,6 +595,37 @@ pub(super) async fn submission_repository_url(checkout: &std::path::Path, repo: 
         return Err(CommandError::Invalid("GitHub repository authority returned an invalid or mismatched URL".into()));
     }
     Ok(Some(url))
+}
+
+/// The patch of a submission: exactly `git diff --binary base..head`. A commit that touches a path a
+/// submission never publishes (substrate or build byproducts, `SOLUTION_PATH_EXCLUDES`) is refused
+/// by name, since the gate would merge it unreviewed.
+fn commit_patch(checkout: &std::path::Path, base: &str, head: &str) -> Result<String, CommandError> {
+    let names = |pathspec: &[&str]| -> Result<Vec<String>, CommandError> {
+        let mut args = vec!["diff", "--name-only", base, head, "--", "."];
+        args.extend_from_slice(pathspec);
+        Ok(git_in(checkout, &args).map_err(CommandError::Internal)?.lines().map(str::to_owned).collect())
+    };
+    let published = names(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES)?;
+    let unpublished: Vec<String> = names(&[])?.into_iter().filter(|path| !published.contains(path)).collect();
+    if !unpublished.is_empty() {
+        return Err(CommandError::Invalid(format!(
+            "your commit {head} carries {} path(s) a submission never publishes ({}): substrate or build byproducts. Remove them from the commit, then work/submit",
+            unpublished.len(),
+            unpublished.join(", ")
+        )));
+    }
+    git_in(checkout, &["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", base, head])
+        .map_err(CommandError::Internal)
+}
+
+/// One git read in `checkout`: its stdout, or why it failed. The one place this module runs git.
+fn git_in(checkout: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git").args(args).current_dir(checkout).output().map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    match out.status.success() {
+        true => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        false => Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim())),
+    }
 }
 
 /// Read the submission off her checkout: instance, base, and the patch's hash + size.
@@ -659,7 +669,11 @@ pub(super) async fn derive_submission(
     }
     let base = airc_work::GitObjectId::new(&base_sha)
         .map_err(|e| CommandError::Invalid(format!("candidate base must name a single git commit: {e}")))?;
-    let patch = benchmark.candidate_diff(checkout, Some(&base))?;
+    // The commit the patch ends at, and the patch is exactly base..head: the gate merges that commit,
+    // so a patch that dropped any of it would land the rest unreviewed (Fable on #5824; airc's CLI
+    // submit enforces the same).
+    let head = committed_head(checkout)?;
+    let patch = commit_patch(checkout, base.as_str(), &head)?;
     if patch.trim().is_empty() {
         return Err(CommandError::Invalid(format!(
             "nothing to submit: {} has no changes since {} (substrate paths excluded). A submit publishes a \
@@ -675,8 +689,29 @@ pub(super) async fn derive_submission(
     Ok(DerivedSubmission {
         instance,
         base_sha,
+        head,
         artifact,
     })
+}
+
+/// Her checkout's committed HEAD, the commit a submission records so a verdict covers exactly it
+/// (the merge gate refuses a submission without one: airc #1660). While she holds changes the
+/// commit does not carry (tracked or untracked, outside the substrate paths the patch excludes), it
+/// is refused, naming the commit verb: a submission is a commit, never her working tree, and the
+/// substrate never commits for her.
+fn committed_head(checkout: &std::path::Path) -> Result<String, CommandError> {
+    let git = |args: &[&str]| git_in(checkout, args).map_err(CommandError::Internal);
+    let mut status = vec!["status", "--porcelain", "--untracked-files=normal", "--", "."];
+    status.extend_from_slice(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES);
+    let pending = git(&status)?;
+    if !pending.trim().is_empty() {
+        return Err(CommandError::Invalid(format!(
+            "{} change(s) in {} are not committed. A submission is a commit: commit them (code/git/commit), then work/submit publishes that commit",
+            pending.lines().count(),
+            checkout.display()
+        )));
+    }
+    Ok(git(&["rev-parse", "HEAD"])?.trim().to_string())
 }
 
 pub(super) fn retain_patch(store: &airc_blobs::FsStore, patch: &str) -> Result<WorkArtifactReference, CommandError> {

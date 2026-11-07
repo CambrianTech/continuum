@@ -32,7 +32,7 @@ impl ServingDaemonModule {
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
         let pool = launch_pool(
             footprint_for(model).as_ref(),
-            self.plan_budget_bytes.load(Ordering::Relaxed),
+            self.planned_budget.lock().map_or(0, |b| b.usable_bytes), // map_or: no plan computed yet is no sampled budget, which launch_pool reads as 0 exactly as before
             served_ctx,
             lanes,
             sequences,

@@ -120,14 +120,6 @@ pub struct WithheldVerb {
 /// verb is among her hands is the value its command declares (`CommandSpec::DISCLOSURE`).
 pub fn withheld_from_hands(name: &str) -> Option<WithheldVerb> {
     match name.replace('_', "/").as_str() {
-        "work/review" => Some(WithheldVerb {
-            why: "`work/review` records a reviewer's verdict under a REVIEW claim for someone else's work. It does not inspect or submit your own implementation card.",
-            instead: "For your own card: `work/get` to read it, `work/note` to record progress, `work/submit` to hand it in. To give a review word on a peer's PR, say it in the room: \"APPROVED at <sha>\" or \"CHANGES REQUESTED at <sha>: <why>\".",
-        }),
-        "work/submission" => Some(WithheldVerb {
-            why: "`work/submission` inspects a submitted artifact for review; use `work/get` to inspect your own card.",
-            instead: "For your own card: `work/get` to read it, `work/submit` to hand it in (that IS the submission).",
-        }),
         "code/git/apply" => Some(WithheldVerb {
             why: "`code/git/apply` applies a peer's unified diff; it is not the command for authoring your own edits.",
             instead: "Your edits land with `code/edit` and `code/write`; commit them with `code/git/commit`.",

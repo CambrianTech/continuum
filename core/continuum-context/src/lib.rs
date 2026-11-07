@@ -6,6 +6,7 @@
 //! - [`source`]: what a context source offers: its current items, each under a stable key.
 //! - [`level`]: how much of an item the view rendered (whole, summary, pointer, folded).
 //! - [`levels`]: each item's summary level, generated from its shape (mipmaps for context).
+//! - [`nav`]: a folded group of items: its label, its count and the typed command that opens it.
 //! - [`motion`]: how each source moves between epoch starts, which orders the next start.
 //! - [`rereads`]: how often she asks again for what she observed, by its age.
 //! - [`depth`]: how deep a turnover collapses her history, from those re-reads and her growth.
@@ -26,6 +27,7 @@ mod fixtures;
 pub mod level;
 pub mod levels;
 pub mod motion;
+pub mod nav;
 pub mod rereads;
 pub mod source;
 pub mod view;

@@ -38,6 +38,7 @@ use super::*;
             claim_id: airc_work::ClaimId::from_uuid(selected.claim_id.unwrap()),
             instance: "ordinary-project-card".into(),
             base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+            head: airc_work::SubmissionHead::Unrecorded,
             artifact: serde_json::from_value(
                 json!({"hash":"b".repeat(64),"size_bytes":5,"mime":"text/x-diff"}),
             )
@@ -502,6 +503,7 @@ use super::*;
                 claim_id: airc_work::ClaimId::from_uuid(claim),
                 instance: "ordinary-project-card".into(),
                 base_sha: airc_work::GitObjectId::new("a".repeat(40))?,
+                head: airc_work::SubmissionHead::Unrecorded,
                 artifact: serde_json::from_value(
                     json!({"hash": byte.to_string().repeat(64), "size_bytes": 5, "mime": "text/x-diff"}),
                 )?,

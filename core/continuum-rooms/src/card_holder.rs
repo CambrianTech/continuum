@@ -323,13 +323,6 @@ pub fn held_of_owned(
         .collect()
 }
 
-/// Latest accepted candidate in the board's transcript order. AIRC projects submissions
-/// newest first; publisher wall clocks do not define recency. Keep handoff and review
-/// consumers on this contract so a resumed citizen sees the candidate being reviewed.
-pub fn latest_submission(card: &airc_lib::WorkCard) -> Option<&airc_work::WorkSubmission> {
-    card.submissions.first()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

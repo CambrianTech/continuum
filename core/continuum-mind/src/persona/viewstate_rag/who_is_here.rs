@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use super::rag_item;
+use super::rag_items;
 use super::roster::member_unit;
 use crate::cognition::rag_budget::{CriticalSource, Grounded, RagContext, RagSource};
 
@@ -49,17 +49,16 @@ impl CriticalSource for WhoIsHere {
         let mut others = delivery.items;
         let mine = match others.iter().position(|item| item.key == me) {
             Some(at) => others.remove(at),
-            None => rag_item(
-                member_unit(
+            None => rag_items(
+                vec![member_unit(
                     self.me,
                     &self.my_name,
                     continuum_positron::SenderKind::Agent,
                     None,
                     ctx.persona_id,
-                ),
-                continuum_positron::RosterViewState::KIND,
-                <continuum_positron::RosterViewState as super::RagRenderable>::BLOCK,
-            ),
+                    None,
+                )])
+                .remove(0),
         };
         // Others unknown (no shared rows outside her private room) is partial, never "only you".
         let room = ctx.airc_room.as_ref().map(|r| r.as_uuid());

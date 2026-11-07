@@ -1,6 +1,7 @@
 #![cfg(test)]
     use super::*;
     use airc_work::{CardState, Priority, RepoId, WorkCard, WorkCardId};
+    use crate::cognition::rag_budget::RagItem;
     use std::sync::Mutex;
     use uuid::Uuid;
 
@@ -184,14 +185,13 @@
     // renders into the [room-kanban] grounding block — every card with its
     // column, title, priority, and owner. This is the Observer perceiving the
     // board (task #117 O6), distinct from active-work's own-claims-only view.
-    // what this catches: the board delivering a SLICE. Sources no longer take a size or a
-    // count cap (the one allocation in her prompt view picks each item's level), so a
-    // 41-card board delivers 41 keyed cards in relevance order — her OWN card first even
-    // when it is the oldest — her card with a pointer to collapse to and every other card
-    // leaving a collapsed board (the M5, 2026-11-01: 592 one-line pointers were her collapsed
-    // board), and the headline still reports the true totals.
+    // what this catches: a board that renders every card whole (Benchy, the M5, 2026-11-07: ~200
+    // cards, 30k chars per snapshot) or drops cards for size. Collapsed navigation: her card whole
+    // and last (her focus, kept whole longest) with its expand handle; the claimable group's most
+    // recently changed cards at a glance; the rest ONE node counting them with the `work/list` that
+    // opens them, so every card stays reachable; the headline still reports the true totals.
     #[tokio::test]
-    async fn a_large_board_delivers_every_card_keyed_with_her_own_first() {
+    async fn a_large_board_is_her_card_whole_a_glance_of_the_newest_and_one_node_for_the_rest() {
         let mut cards: Vec<WorkCard> = Vec::new();
         let mut mine = card("MY held card", CardState::InProgress, Some(
             airc_core::PeerId::from_uuid(persona()),
@@ -200,33 +200,28 @@
         cards.push(mine);
         for i in 0..40 {
             let mut c = card(&format!("filler card {i}"), CardState::Open, None);
-            c.created_at_ms = 1_000_000 + i as u64; // all newer than hers
+            c.created_at_ms = 1_000_000 + i as u64;
+            c.updated_at_ms = 1_000_000 + i as u64; // filler 39 changed last
             cards.push(c);
         }
-        let total = cards.len();
 
         let reader = Arc::new(StubReader::new(snapshot(cards)));
         let source = RoomBoardSource::new(persona(), reader);
         let delivery = source.deliver(&ctx()).await;
 
-        let rendered: Vec<&RagItem> = delivery
-            .items
-            .iter()
-            .filter(|i| i.key.starts_with("card:"))
-            .collect();
-        assert_eq!(rendered.len(), total, "every card is delivered, none dropped for size");
-        assert!(
-            rendered[0].content.contains("MY held card"),
-            "her OWN card leads, even as the oldest on the board: {}",
-            rendered[0].content
-        );
-        let keys: std::collections::HashSet<_> = rendered.iter().map(|i| i.key.as_str()).collect();
-        assert_eq!(keys.len(), total, "one stable key per card");
-        assert!(rendered[0].pointer.as_deref().is_some_and(|p| p.contains("work/list")), "her card keeps its pointer");
-        assert!(rendered[1..].iter().all(|i| i.pointer.is_none()), "every other card leaves a collapsed board");
+        let rendered: Vec<&RagItem> = delivery.items.iter().filter(|i| i.key.starts_with("card:")).collect();
+        let standing = continuum_context::nav::standing(40);
+        assert_eq!(rendered.len(), 1 + standing, "her card and the newest of the rest");
+        let last = rendered.last().expect("her card"); // expect: she holds one
+        assert!(last.content.contains("MY held card") && last.content.contains("(P"), "her card, whole, last: {}", last.content);
+        assert!(last.pointer.as_deref().is_some_and(|p| p.contains("work/get")), "her card keeps its expand handle");
+        assert!(rendered[..standing].iter().all(|i| i.pointer.is_some() && i.summary.is_some()), "a card off her focus keeps its glance and its pointer");
+        assert!(rendered[standing - 1].content.contains("filler card 39"), "the most recently changed stands newest: {}", rendered[standing - 1].content);
+        let node = delivery.items.iter().find(|i| i.key == "nav:claimable").expect("the rest fold into one node"); // expect: 40 claimable cards fold
+        assert_eq!(node.metadata["count"], 40 - standing);
+        assert!(node.content.contains(&format!("({})", 40 - standing)) && node.content.contains("work/list claimable=true"), "{}", node.content);
         assert!(!delivery.truncated);
-        let headline = &delivery.items[0];
-        assert_eq!(headline.key, "headline");
+        let headline = delivery.items.iter().find(|i| i.key == "headline").expect("the headline"); // expect: she holds a card
         assert_eq!(headline.metadata["kind"], "board-headline");
         assert_eq!(headline.metadata["held_count"], 1);
         assert_eq!(headline.metadata["open_count"], 40);
@@ -235,9 +230,9 @@
 
     // what this catches: settled history crowding out her live work (the M5, 2026-10-31: 840
     // closed cards, 31,185 chars of her prompt, while her own results collapsed to handles).
-    // Live cards are delivered; merged and closed ones are one counted line naming work/list.
+    // Live cards are delivered; each settled state is one navigation node naming its work/list.
     #[tokio::test]
-    async fn settled_cards_are_one_counted_history_line_not_cards() {
+    async fn settled_cards_are_one_navigation_node_per_state_not_cards() {
         let mut cards = vec![
             card("live open", CardState::Open, None),
             card("live review", CardState::Review, None),
@@ -251,9 +246,9 @@
         let titles: Vec<&str> = delivery.items.iter().filter(|i| i.key.starts_with("card:")).map(|i| i.content.as_str()).collect();
         assert_eq!(titles.len(), 2, "only live cards are delivered as cards: {titles:?}");
         assert!(titles.iter().all(|t| !t.contains("closed") && !t.contains("merged")), "{titles:?}");
-        let history = delivery.items.iter().find(|i| i.key == "history").expect("a history line counts the settled cards"); // expect: the board above holds six settled cards
-        assert_eq!(history.metadata["settled_count"], 6);
-        assert!(history.content.contains("work/list"), "{}", history.content);
+        let node = |key: &str| delivery.items.iter().find(|i| i.key == key).map(|i| i.content.clone());
+        assert_eq!(node("nav:closed").as_deref(), Some("▸ closed (5) → `work/list state=closed`"));
+        assert_eq!(node("nav:merged").as_deref(), Some("▸ merged (1) → `work/list state=merged`"));
     }
 
     #[tokio::test]
@@ -267,11 +262,11 @@
         let delivery = source
             .deliver(&ctx())
             .await;
-        // Headline first, then the available-work lead, then the card list.
+        // The cards, the headline and the available-work lead, each keyed.
         assert_eq!(delivery.items.len(), 4);
-        assert_eq!(delivery.items[0].metadata["kind"], "board-headline");
-        assert_eq!(delivery.items[1].metadata["kind"], "available-work-lead");
-        assert_eq!(delivery.items[1].key, "lead:available");
+        let kind = |key: &str| delivery.items.iter().find(|i| i.key == key).map(|i| i.metadata["kind"].clone());
+        assert_eq!(kind("headline"), Some(serde_json::json!("board-headline")));
+        assert_eq!(kind("lead:available"), Some(serde_json::json!("available-work-lead")));
         let cards: Vec<&RagItem> = delivery
             .items
             .iter()
@@ -320,11 +315,8 @@
             .deliver(&ctx())
             .await;
 
-        let first = &delivery.items[0];
-        assert_eq!(
-            first.metadata["kind"], "board-headline",
-            "the headline must LEAD"
-        );
+        // Keyed, not placed: her view orders a source's tallies after its body itself.
+        let first = delivery.items.iter().find(|i| i.metadata["kind"] == "board-headline").expect("the headline"); // expect: she holds a card
         assert_eq!(first.key, "headline");
         assert_eq!(first.pointer.as_deref(), Some(first.content.as_str()), "the headline is its own shortest statement, kept collapsed");
         assert!(first.content.contains("hold 1"), "{}", first.content);
@@ -349,7 +341,7 @@
             let full = source
                 .deliver_with_workspace(&ctx(), true)
                 .await;
-            let headline = &full.items[0];
+            let headline = full.items.iter().find(|i| i.key == "headline").expect("the headline"); // expect: two claimable cards
             assert_eq!(headline.metadata["kind"], "board-headline");
             assert_eq!(headline.metadata["held_count"], usize::from(local_hold));
             assert_eq!(headline.metadata["open_count"], 2);
@@ -528,6 +520,7 @@
             submission_id: airc_work::SubmissionId::new(), card_id: mine.card_id,
             claim_id: mine.claim_id.unwrap(), instance: "ordinary".into(),
             base_sha: airc_work::GitObjectId::new("b".repeat(40)).unwrap(),
+            head: airc_work::SubmissionHead::Unrecorded,
             artifact: artifact.clone(), publisher: airc_core::PeerId::from_uuid(me), submitted_at_ms: 10,
         };
         mine.submissions.push(candidate.clone());
@@ -704,12 +697,9 @@
             all.contains("claim lapsed (was YOURS) — claimable"),
             "the lapsed card renders its lapse honestly: {all}"
         );
-        // A settled card is counted in the history line, not rendered as a card (#5677).
+        // A settled card is counted in its state's node, not rendered as a card (#5677).
         assert!(!all.contains("finished work"), "the closed card is not a card line: {all}");
-        assert!(
-            all.contains("[board history] 1 card(s) merged or closed"),
-            "the closed card is counted in the history line: {all}"
-        );
+        assert!(all.contains("▸ closed (1) → `work/list state=closed`"), "the closed card is counted in its node: {all}");
     }
 
     // what this catches: the exam-bleed regression (glass-boxed live 2026-07-10,

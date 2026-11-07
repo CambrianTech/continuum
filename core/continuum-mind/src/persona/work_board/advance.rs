@@ -388,7 +388,7 @@ pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Re
         // A room's own card (not a bench card): its review card comes from the parent
         // itself, under the room's policy (card fa4aaaaa). The bench branch below is
         // unchanged.
-        return open_room_review_card(airc, &room, &card, parent, crate::cognition::card_holder::latest_submission(&card).map(|s| s.submission_id)).await;
+        return open_room_review_card(airc, &room, &card, parent, card.latest_submission().map(|s| s.submission_id)).await;
     };
     let owner = card
         .owner
