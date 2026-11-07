@@ -15,28 +15,8 @@ use serde::Serialize;
 
 use super::{wire_name, offer_style_for, primary_alias, CommandSpec, VerbRef};
 use continuum_base::tool_disclosure::Disclosure;
-
-/// What kind of refusal a cause is: the classification a client or log reads without parsing
-/// prose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Category {
-    /// The call decoded but failed a check of the request or a precondition of the domain.
-    Invalid,
-    /// What the call names (an output, a file, a card) does not exist.
-    NotFound,
-    /// The caller may not do this.
-    Denied,
-}
-
-impl Category {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Category::Invalid => "invalid",
-            Category::NotFound => "not_found",
-            Category::Denied => "denied",
-        }
-    }
-}
+pub use continuum_airc_protocol::refusal::{Category, NoMove};
+use continuum_airc_protocol::refusal as wire;
 
 /// A tool's typed reason for refusing a call. Each tool's own error enum implements it; its
 /// chain of causes is `Error::source`.
@@ -127,21 +107,6 @@ impl std::fmt::Display for NextCall {
     }
 }
 
-/// Why a refusal has no call that would make progress.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoMove {
-    /// What she asked for no longer exists anywhere: what she was shown of it is all there is.
-    NothingMoreExists,
-}
-
-impl std::fmt::Display for NoMove {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NoMove::NothingMoreExists => f.write_str("no call recovers it; what you were shown is all there is"),
-        }
-    }
-}
-
 /// What she can do after a refusal: at least one call, or the typed reason there is none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NextMoves {
@@ -207,6 +172,29 @@ impl std::fmt::Display for Refusal {
                 Ok(())
             }
         }
+    }
+}
+
+impl Refusal {
+    /// The refusal as it crosses a seam ([`wire::CommandRefusal`]): its cause chain outermost
+    /// first, and each next call by its canonical command name.
+    pub fn to_wire(&self) -> wire::CommandRefusal {
+        let mut cause = vec![self.cause.to_string()];
+        let mut source = self.cause.source();
+        while let Some(inner) = source {
+            cause.push(inner.to_string());
+            source = inner.source();
+        }
+        let suggested = |call: &NextCall| wire::SuggestedCall {
+            command: call.verb.canonical().to_owned(),
+            args: call.args.clone(),
+            why: call.why.to_owned(),
+        };
+        let next = match &self.next {
+            NextMoves::Calls { first, more } => wire::NextMoves::calls(suggested(first), more.iter().map(suggested).collect()),
+            NextMoves::None(none) => wire::NextMoves::None(*none),
+        };
+        wire::CommandRefusal { category: self.category(), cause, next }
     }
 }
 
