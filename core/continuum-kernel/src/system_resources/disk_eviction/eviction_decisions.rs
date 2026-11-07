@@ -249,17 +249,19 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
         // retention sweep decides from each kind's declared Retention.
         (
             "state",
-            "SAVED-STATE slice 5 (#5831): the trunk sweeps keys no live owner holds, by each \
-             kind's declared Retention; bounded meanwhile by one file per key",
+            "8a983e31: the decode knee, prefill rate and lane footprint files still written here \
+             by hand move onto the saved-state contract with their observers (controller card); \
+             bf0574a4: each kind's pre-envelope upgrade (adopt_bare) is removed once no node \
+             reports state.load.upgraded over a deploy cycle. Bounded meanwhile by one file per key",
         ),
         (
             "training-demand",
-            "SAVED-STATE slice 5 (#5831): a persona's demand file leaves with the persona; \
-             bounded meanwhile by one file per persona with parked examples",
+            "bf0574a4: the pre-envelope upgrade leaves once no node reports state.load.upgraded \
+             over a deploy cycle; bounded by one file per persona with parked examples",
         ),
         (
             "training-rate",
-            "SAVED-STATE slice 5 (#5831): one file per node, one row per (base, chunk) ever \
-             trained; nothing to evict",
+            "bf0574a4: one file per node, one row per (base, chunk) ever trained; nothing to \
+             evict, only the upgrade seam to retire",
         ),
 ];

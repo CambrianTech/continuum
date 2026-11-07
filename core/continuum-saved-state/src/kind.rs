@@ -36,6 +36,7 @@ pub trait SavedState {
 
 /// An upgrade for a kind whose file before the envelope was exactly its value: adopts format 0,
 /// refuses every other. One line in each kind that moved onto the contract without changing shape.
+/// Removed by card bf0574a4 once no node reports `state.load.upgraded` over a deploy cycle.
 pub fn adopt_bare<V: DeserializeOwned>(found: u32, old: serde_json::Value) -> Option<V> {
     if found != 0 {
         return None;

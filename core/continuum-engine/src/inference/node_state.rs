@@ -1,6 +1,6 @@
 //! This node's measured serving state, `<continuum home>/state/<kind>.json`: the one root every
 //! engine kind saved through `continuum_saved_state` lives under (serving rates first; the decode
-//! knee, prefill rate and lane footprint join once their observers own their trust thresholds),
+//! knee, prefill rate and lane footprint join with their observers, controller card 8a983e31),
 //! tracked as the `state` disk class.
 
 use continuum_saved_state::{OwnedFile, SavedState, Store};
