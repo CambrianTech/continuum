@@ -76,14 +76,24 @@ impl OutputNeed {
 
 /// The median of an answer's whole size, given that the cap cut it after `written` tokens.
 ///
+/// Why the censored p90 cannot answer one cut by itself: over her last [`NEED_SAMPLES`] (16)
+/// answers, one cut carries 1/16 of the mass. The product-limit estimate moves that mass only to
+/// answers LONGER than the cut. When the cut is her longest, nothing is longer, so its mass stays
+/// in a tail of 1/16, below the p90's tenth: the survival reaches 1/10 at her longest LANDED
+/// answer, and the p90 is that, not the cut. (The plain p90 of 16 is the second largest, so the
+/// old doubled sample was never read either.) Only when cuts hold more than a tenth of the ring,
+/// two of 16, does the estimate reach a bound. So the largest live bound is kept beside the p90
+/// (`answer_need`), and this function reads it.
+///
 /// A bound alone grants exactly what she was given: when her think fills its budget (the room
 /// past her answer, `ActRoom::think_within`), the answer's bound IS its old share, so a room read
 /// from bounds stays at the cap that cut her and every retry is cut at the same token (the replay,
 /// `examples/act_room_replay.rs`: Aris cut six times at 241). Something past the bound must be
 /// granted, and the evidence says only where the cap fell inside an answer of unknown size. With
 /// nothing known of that size the cut is as likely early in it as late (a scale-free position,
-/// Gott's delta-t argument): the share written is uniform, so P(whole > k × written) = 1/k and the
-/// median of the whole is twice what was written. This is that median, derived, not a tuned
+/// Gott's delta-t argument): the share written, U = written / whole, is uniform on (0, 1), so
+/// whole = written / U and P(whole > k × written) = P(U < 1/k) = 1/k. That probability is one half
+/// at k = 2: the median of the whole is twice what was written. This is that median, derived, not a tuned
 /// factor; it is read from a bound that ages out with her ring, never written into a sample.
 fn cut_answer_median(written: u32) -> u32 {
     written.saturating_add(written)
