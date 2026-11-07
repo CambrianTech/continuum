@@ -80,7 +80,7 @@ impl NextCall {
         C::Params: Serialize,
     {
         let refused = |problem: String| NextCallArgs { verb: C::NAME, problem };
-        match serde_json::to_value(params).map_err(|e| refused(e.to_string()))? {
+        match serde_json::to_value(params).map_err(|e| refused(e.to_string()))? { // boundary: her tool-call wire, the arguments object she sends back as a call
             serde_json::Value::Object(args) => Ok(Self { verb: CommandId::of(verb), args, why }),
             other => Err(refused(format!("they serialized as {other}"))),
         }

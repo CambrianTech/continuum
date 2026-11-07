@@ -60,10 +60,10 @@ fn a_refusal_renders_its_cause_chain_and_a_next_call_she_can_make() {
     );
     let Some(call) = refusal.next().calls().next() else { panic!("one next call") };
     assert_eq!(call.verb().canonical(), "fixture/refusal-reopen");
-    let decoded: Result<reopen::P, _> = serde_json::from_value(serde_json::Value::Object(call.args().clone()));
+    let decoded: Result<reopen::P, _> = serde_json::from_value(serde_json::Value::Object(call.args().clone())); // boundary: her tool-call wire, decoded as the verb's params
     assert!(matches!(decoded, Ok(reopen::P { act: 3 })), "the next call's arguments decode as the verb's params");
     let error: crate::sdk_codegen::CommandError = refusal.into();
-    assert!(error.to_string().starts_with("[not_found] act #9"), "{error}");
+    assert!(matches!(&error, crate::sdk_codegen::CommandError::Refused(refused) if refused.category() == Category::NotFound), "{error}");
 }
 
 // what this catches: a refusal with nothing she can do still says why, typed, never an empty
@@ -94,6 +94,6 @@ fn a_refusal_crosses_a_seam_with_its_chain_and_next_call() {
     assert_eq!(wire.cause, ["act #9 is not on your record", "the record ends at #3"]);
     let continuum_airc_protocol::NextMoves::Calls(calls) = &wire.next else { panic!("one next call") };
     assert_eq!(calls.all()[0].command, "fixture/refusal-reopen", "the canonical name crosses; the offered name is her renderer's");
-    let Ok(text) = serde_json::to_value(&wire) else { panic!("a refusal serializes") };
+    let Ok(text) = serde_json::to_value(&wire) else { panic!("a refusal serializes") }; // boundary: the grid wire a refusal crosses, round-tripped
     assert!(matches!(serde_json::from_value::<continuum_airc_protocol::CommandRefusal>(text), Ok(back) if back == wire));
 }
