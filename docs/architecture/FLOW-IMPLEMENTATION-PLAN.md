@@ -463,8 +463,9 @@ The shape:
   downward grant has a scheduled upward test. A grant carries its generation; a grant in use by
   an in-flight turn never shrinks under it: down-grants apply at an acknowledged safe boundary,
   and every reader of one turn uses the same captured grant. A measured answer peak is evidence
-  for the reserve, not a guarantee that no answer exceeds it. Today the allocator takes per-mind
-  requirements but emits ONE window; uneven grants are new allocator work.
+  for the reserve, not a guarantee that no answer exceeds it. The allocator already grants
+  unevenly: `window_grant`'s `DemandFollowing` gives each mind her own window from her measured
+  need (#5813, #5816, #5823); what remains is pricing the surplus (#5822, card 7b7a696a step 2).
 - **The engine honours uneven grants.** Slots share one KV pool (the fork's `--kv-unified`), so a
   grant is a live budget, not a relaunch. `--kv-unified` alone does not prove mutable per-slot
   caps: a fork capability test on the serving revision proves it before any no-relaunch claim.
