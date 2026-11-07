@@ -3684,6 +3684,7 @@ version = "0.1.0"
 dependencies = [
  "continuum-base",
  "continuum-host",
+ "parking_lot",
  "serde",
  "serde_json",
  "sha2",

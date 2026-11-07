@@ -15,7 +15,10 @@
 //!   whether a value still holds is the kind's declared format and contract, and how far to trust
 //!   a measurement is its observer's business, never the medium's;
 //! - one typed verdict per load ([`Loaded`]): `Absent | Matched | Upgraded | Diverged | Stale | Newer |
-//!   Older | Corrupt | Unrooted`, and one probe class per verdict (`state.load.<outcome>`, the kind a field);
+//!   Older | Corrupt | Unrooted`, and one probe class per verdict (`state.load.<outcome>`, the kind a field),
+//!   probed when a key's verdict changes, never on every load;
+//! - the disk is read once per key in a process's life: the store is the only writer of its
+//!   files, so later loads answer from the process's copy and a save replaces it (`memory`);
 //! - a failed save never latches the owner dead: the store is asked again on the next save and
 //!   reports consecutive failures (`state.save.failed`, then `state.save.recovered`);
 //! - one migration seam ([`SavedState::upgrade`]): an older file read into the current value loads
@@ -50,6 +53,7 @@
 mod envelope;
 mod kind;
 mod loaded;
+mod memory;
 mod provenance;
 mod store;
 
