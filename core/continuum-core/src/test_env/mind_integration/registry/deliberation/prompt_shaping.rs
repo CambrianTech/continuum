@@ -20,6 +20,9 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
 
     let home = tempfile::tempdir().unwrap();
     let _native = crate::paths::NativeHomeOverride::install(home.path());
+    // `LivePin::retain` saves through the kernel's disk-ownership registry; install it here so
+    // the save never depends on another test in this process having installed it first.
+    crate::system_resources::disk_reporters::prepare_writer_fixture().await;
     crate::model_registry::init_global().unwrap();
 
     let persona = Uuid::new_v4();
