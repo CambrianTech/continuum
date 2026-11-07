@@ -345,11 +345,12 @@ fn rag_item(unit: continuum_context::nav::Unit<serde_json::Map<String, serde_jso
     use continuum_context::nav::Origin;
     let metadata = match unit.origin {
         Origin::Entry(metadata) => metadata,
-        Origin::Node { group, count } => {
+        Origin::Node { group, count, expand } => {
             let mut node = serde_json::Map::new();
             node.insert("kind".into(), serde_json::json!("nav"));
             node.insert("group".into(), serde_json::json!(group));
             node.insert("count".into(), serde_json::json!(count));
+            node.insert("expand".into(), serde_json::json!(expand.to_string()));
             node
         }
     };
