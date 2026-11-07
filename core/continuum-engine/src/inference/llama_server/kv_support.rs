@@ -29,7 +29,7 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
                 let mut text = String::from_utf8_lossy(&out.stdout.bytes).into_owned();
                 text.push('\n');
                 text.push_str(&String::from_utf8_lossy(&out.stderr.bytes));
-                ENGINE_TRAIN_DIR.store(engine_help_lists_train_dir(&text), std::sync::atomic::Ordering::Relaxed);
+                ENGINE_TRAIN_DIR.store(if engine_help_lists_train_dir(&text) { TRAIN_DIR_YES } else { TRAIN_DIR_NO }, std::sync::atomic::Ordering::Relaxed);
                 match crate::inference::kv_cache_plan::parse_engine_kv_support(&text) {
                     Some(v) => ("answered", Some(v), String::new()),
                     None => ("did_not_enumerate", None, String::new()),
@@ -38,7 +38,7 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
         },
     };
     crate::inference::kv_cache_plan::record_engine_quantized_kv_support(support); // None = unanswered: the backend table decides
-    if matches!(outcome, "answered" | "did_not_enumerate") { *ANSWERED_BY.lock() = Some(bin.to_owned()) } else { ENGINE_TRAIN_DIR.store(false, std::sync::atomic::Ordering::Relaxed) }
+    if matches!(outcome, "answered" | "did_not_enumerate") { *ANSWERED_BY.lock() = Some(bin.to_owned()) } else { ENGINE_TRAIN_DIR.store(TRAIN_DIR_NO, std::sync::atomic::Ordering::Relaxed) } // asked and unanswered is no; the next launch asks again
     continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.kv_cache.engine_support",
         bin = bin,
         outcome = outcome,
@@ -49,4 +49,33 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
         "what the serving binary says its build accepts for --cache-type-k; unanswered \
          falls through to the backend table, never to a guess"
     );
+}
+
+/// The command that runs the engine binary `bin`: its install receipt's (a controlled cwd and
+/// environment) when it has one. The one place both the launch and the support probe build it.
+pub(super) fn engine_command_of(
+    receipt: &Option<crate::inference::engine_install::EngineInstallReceipt>,
+    bin: &str,
+) -> Result<tokio::process::Command, LlamaServerError> {
+    match receipt {
+        Some(receipt) => receipt.command().map_err(LlamaServerError::Spawn),
+        None => Ok(tokio::process::Command::new(bin)),
+    }
+}
+
+impl LlamaServerProcess {
+    /// Ask the engine binary what it supports when nothing has yet: a core that adopts a live
+    /// engine decides a gene change in place before any launch of its own asked (IntelMac
+    /// 2026-11-07: from=0 to=7 read the unasked flag as no and relaunched the engine cold).
+    pub(super) async fn ensure_engine_support_asked(&self) -> Result<(), LlamaServerError> {
+        if super::genome::train_dir_support().is_some() {
+            return Ok(());
+        }
+        let bin = self.engine_bin()?;
+        let receipt = crate::inference::engine_install::EngineInstallReceipt::prepare(bin.clone())
+            .await
+            .map_err(LlamaServerError::Spawn)?;
+        ensure_engine_kv_support_recorded(&bin, engine_command_of(&receipt, &bin)?).await;
+        Ok(())
+    }
 }

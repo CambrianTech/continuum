@@ -84,8 +84,10 @@ mod genome;
 mod gene_pages;
 pub use gene_pages::{gene_seats, page_gene, GeneMove, GenePageError, GeneSeat};
 pub(crate) use genome::gene_stage_name;
+#[cfg(test)]
+use genome::genome_paths_of;
 pub use genome::{engine_accepts_train_dir, engine_train_dir, GenomeInPlace};
-use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR};
+use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR, TRAIN_DIR_NO, TRAIN_DIR_YES};
 mod engine_install;
 mod engine_features;
 pub use engine_features::serving_engine_takes_tail_tools;

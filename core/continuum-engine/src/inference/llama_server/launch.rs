@@ -401,9 +401,9 @@ impl LlamaServerProcess {
         *self.retained_page_dir.lock() = page_dir_reservation
             .is_held()
             .then_some(page_dir_reservation);
-        // Remember the genome set this child was launched with — the truthful
-        // catalog record for the relaunch decision (llama.cpp can't report it).
-        *self.served_adapters.lock().unwrap() = target.adapter_paths();
+        // Remember the genome set this child was launched with: what the relaunch decision
+        // compares against while this process owns it.
+        *self.served_adapters.lock().unwrap() = Some(target.adapter_paths()); // JUSTIFIED: poison means a prior panic while recording the served set.
 
         let tail = super::ready_tail::ReadyTail {
             prepared: prepared.clone(),

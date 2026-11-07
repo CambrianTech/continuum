@@ -162,7 +162,7 @@ impl LlamaServerControl for FakeControl {
             Err(m) => Err(LlamaServerError::Unreachable(m.to_string())),
         }
     }
-    async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
+    async fn active_adapters(&self, _target: &ServingTarget) -> Result<Vec<String>, LlamaServerError> {
         if self.adapters_unreadable {
             return Err(LlamaServerError::Unreachable("adapter set unreadable".into()));
         }

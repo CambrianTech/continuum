@@ -183,7 +183,8 @@ pub trait LlamaServerControl: Send + Sync {
     /// this against the desired set to detect a genome change (a new gene
     /// trained, or one retired) that requires a relaunch — page-in/out *within* a
     /// loaded set is per-request scale and never reaches here.
-    async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError>;
+    /// `target` names the genes an adopted engine's staged adapters are matched back to.
+    async fn active_adapters(&self, target: &ServingTarget) -> Result<Vec<String>, LlamaServerError>;
 
     /// Converge the running engine's adapter set onto `target`'s WITHOUT a relaunch:
     /// load each new gene (dormant until a request gives it a scale) and retire each one

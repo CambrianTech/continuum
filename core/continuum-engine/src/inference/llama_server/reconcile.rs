@@ -78,7 +78,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
         // empty (the common no-genome case): the error became an empty Vec that COMPARED
         // EQUAL to the target, short-circuiting to AlreadyServing — the exact silent
         // stale-serve the comment promises never happens. Honor the stated policy.
-        let genome_matches = match ctrl.active_adapters().await {
+        let genome_matches = match ctrl.active_adapters(target).await {
             Ok(active) if active == desired => true,
             Ok(active) => {
                 // A KNOWN set that differs: the engine takes the change in place (fork #26:
@@ -419,7 +419,7 @@ async fn keep_incumbent<C: LlamaServerControl + ?Sized>(
     serves_target: bool,
     why: &RetirementRefusal,
 ) -> EnsureOutcome {
-    let genome_is_target = matches!(ctrl.active_adapters().await, Ok(active) if active == target.adapter_paths());
+    let genome_is_target = matches!(ctrl.active_adapters(target).await, Ok(active) if active == target.adapter_paths());
     let decodes = serves_target && genome_is_target && ctrl.decode_smoke_ok().await;
     if decodes {
         if REPLACEMENT_REFUSED.lock().as_ref() != Some(why) {

@@ -111,7 +111,7 @@ impl LlamaServerControl for FakeServer {
             None => Err(LlamaServerError::Unreachable("test: nothing up".into())),
         }
     }
-    async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
+    async fn active_adapters(&self, _target: &ServingTarget) -> Result<Vec<String>, LlamaServerError> {
         Ok(Vec::new())
     }
     async fn idle(&self) -> Result<(), LlamaServerError> {

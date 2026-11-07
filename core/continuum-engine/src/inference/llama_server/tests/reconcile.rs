@@ -310,6 +310,27 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     assert!(!a.contains('/') && !a.contains("..") && a.len() <= 200);
 }
 
+// what this catches (IntelMac 2026-11-07, from=0 to=7): a core adopting a live engine reading
+// its adapter set as empty and relaunching it cold. The engine's own report maps back to genome
+// paths: a gene loaded at launch by its path, one loaded in place by its staged name, matched to
+// the target's gene; a gene the target dropped keeps the engine's path (to retire); and a target
+// whose genes the engine already holds compares equal to it, so nothing relaunches.
+#[test]
+fn an_adopted_engines_report_reads_back_as_the_genes_it_holds() {
+    let kimi = "/genome/kimi/adapter.gguf".to_string();
+    let asha = "/genome/asha/adapter.gguf".to_string();
+    let staged = format!("/cache/engine-train/{}", gene_stage_name(std::path::Path::new(&asha)).expect("stageable"));
+    let dropped = "/genome/old/retired.gguf".to_string();
+    let mut genes = vec![kimi.clone(), asha.clone()];
+    genes.sort();
+    let held = genome_paths_of(&[(0, kimi.clone()), (2, staged.clone())], &genes);
+    assert_eq!(held, genes, "launch path and staged name both read back as the target's genes");
+    let with_dropped = genome_paths_of(&[(0, kimi.clone()), (1, dropped.clone()), (2, staged)], &genes);
+    assert!(with_dropped.contains(&dropped), "a gene the target dropped stays visible to retire: {with_dropped:?}");
+    assert_ne!(with_dropped, genes);
+    assert!(genome_paths_of(&[], &genes).is_empty(), "an engine with nothing loaded holds nothing");
+}
+
 // what this catches: nothing running (Unreachable) is NOT an error — it's
 // the normal pre-spawn state, so we serve, not degrade.
 #[tokio::test]
