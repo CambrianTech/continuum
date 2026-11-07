@@ -89,7 +89,7 @@ use genome::genome_paths_of;
 pub use genome::{engine_accepts_train_dir, engine_train_dir, GenomeInPlace};
 use genome::engine_help_lists_train_dir;
 #[cfg(test)]
-use genome::{answer_for, needs_asking, train_dir_support, ProbeOutcome};
+use genome::{answer_for, needs_asking, train_dir_known, train_dir_support, ProbeOutcome};
 mod engine_install;
 mod engine_features;
 pub use engine_features::serving_engine_takes_tail_tools;
