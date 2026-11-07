@@ -630,15 +630,25 @@ impl TailFit {
     }
 }
 
-/// Read a retained byte extent without consuming a shared cursor. `budget` bounds
+/// How much a read of a saved output may return. `Whole`: what was asked, bounded only by the
+/// saved file itself (it was held in memory once, when saved); her view sizes what she sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Allowance {
+    Whole,
+    Chars(usize),
+}
+
+impl Allowance {
+    fn chars(self) -> usize {
+        match self { Allowance::Whole => usize::MAX, Allowance::Chars(chars) => chars } // Whole: no cap of the read's own; the file bounds it
+    }
+}
+
+/// Read a retained byte extent without consuming a shared cursor. `allowance` bounds
 /// the encoded result, including base64 expansion if the extent is not UTF-8.
 /// No byte is discarded: `next_byte_offset` names the next unread source byte.
-pub fn read_extent(
-    path: &Path,
-    offset: u64,
-    length: Option<usize>,
-    budget: usize,
-) -> Result<ByteExtent, String> {
+pub fn read_extent(path: &Path, offset: u64, length: Option<usize>, allowance: Allowance) -> Result<ByteExtent, String> {
+    let budget = allowance.chars();
     use base64::Engine;
     let file = fs::File::open(path).map_err(|e| format!("open saved output: {e}"))?;
     let total_bytes = file.metadata().map_err(|e| e.to_string())?.len();
@@ -700,28 +710,14 @@ pub fn investigate_file(
     pattern: Option<&str>,
     context_lines: usize,
     range: Option<(usize, usize)>,
-    max_matches: usize,
-    budget: usize,
+    max_matches: Option<usize>,
+    allowance: Allowance,
 ) -> Result<Investigation, String> {
     let file = fs::File::open(path).map_err(|e| format!("open saved output: {e}"))?;
     let end = file.metadata().map_err(|e| e.to_string())?.len();
-    let cursor = || {
-        std::io::BufReader::new(ExtentReader {
-            file: &file,
-            offset: 0,
-            end,
-        })
-    };
-    investigate_readers(
-        cursor(),
-        cursor(),
-        cursor(),
-        pattern,
-        context_lines,
-        range,
-        max_matches,
-        budget,
-    )
+    let cursor = || std::io::BufReader::new(ExtentReader { file: &file, offset: 0, end });
+    let max_matches = max_matches.unwrap_or(usize::MAX); // unwrap_or: none asked for = every match
+    investigate_readers(cursor(), cursor(), cursor(), pattern, context_lines, range, max_matches, allowance.chars())
 }
 
 // Independent positioned cursors over ONE opened file, never try_clone + seek.
@@ -769,7 +765,7 @@ impl<R: std::io::BufRead> Scan<R> {
             let n = newline.map_or(chunk.len(), |i| i + 1);
             if retain {
                 if n > self.allowance.saturating_sub(bytes.len()) {
-                    return Err(format!("line {} at byteOffset {offset} exceeds scan allowance {} bytes; use tool/output with byteOffset {offset} for exact byte pages (regex was not evaluated on a partial line)", self.line + 1, self.allowance));
+                    return Err(format!("line {} at byteOffset {offset} exceeds scan allowance {} bytes; use {} with byteOffset {offset} for exact byte pages (regex was not evaluated on a partial line)", self.line + 1, self.allowance, crate::cognition::tool_executor::tool_output::TOOL_OUTPUT));
                 }
                 bytes.extend_from_slice(&chunk[..n]);
             }
@@ -867,7 +863,7 @@ fn investigate_readers<R: std::io::BufRead>(
     let mut next_byte_offset = first_unselected;
     let mut result_truncated = first_unselected.is_some();
     let tail_from = if tail {
-        let header = |lines: usize| format!("(no pattern or range given — showing the last {lines} lines, all this read's budget holds; grep with a `pattern` like \"error\" or \"panic\" to find a specific failure)\n");
+        let header = |lines: usize| format!("(no pattern or range given — showing the newest {lines} of {total_lines} lines; grep with a `pattern` like \"error\" or \"panic\" to find a specific failure)\n");
         let from = match tail_fit.fit(budget.saturating_sub(header(tail_fit.lines()).len()), total_lines) {
             Tail::From(number) => {
                 rendered = header(tail_fit.lines());

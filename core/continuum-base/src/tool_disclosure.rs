@@ -26,17 +26,17 @@ pub enum Disclosure {
 
 impl Disclosure {
     /// Whether the verb is one of her hands at all (in her prompt or one `commands/help` away).
-    pub fn in_hands(self) -> bool {
+    pub const fn in_hands(self) -> bool {
         matches!(self, Disclosure::Always | Disclosure::Core | Disclosure::OnDemand)
     }
 
     /// Whether the verb rides her prompt every act.
-    pub fn in_core(self) -> bool {
+    pub const fn in_core(self) -> bool {
         matches!(self, Disclosure::Always | Disclosure::Core)
     }
 
     /// Whether the verb rides every surface, a room's declared one included.
-    pub fn in_every_surface(self) -> bool {
-        self == Disclosure::Always
+    pub const fn in_every_surface(self) -> bool {
+        matches!(self, Disclosure::Always)
     }
 }

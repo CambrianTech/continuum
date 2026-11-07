@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::ai::types::{ToolCall, ToolResult};
+use crate::cognition::tool_executor::tool_output::Reopen;
 
 use super::recency::{
     humanize_result_content, render_act_for_recall,
@@ -314,7 +315,7 @@ impl Observation {
         );
         if let Some(handle) = self.output.result.custody.handle() {
             recall.push_str(&format!(
-                "Saved result: `tool/output` {{\"outputId\":\"{handle}\"}}\n\n"
+                "Saved result: {}\n\n", Reopen::Output(handle)
             ));
         }
         recall
@@ -520,7 +521,7 @@ mod tests {
                     o.output.result.custody = custody;
                     let recall = o.render_recall("");
                     assert!(!recall.contains("END_OF_SAVED_RESULT"));
-                    assert!(recall.contains(&format!("`tool/output` {{\"outputId\":\"{handle}\"}}")));
+                    assert!(recall.contains(&format!(r#"Saved result: read_output({{"outputId":"{handle}"}})"#)));
                     assert_eq!(o.output.result.content, content);
                 }
             }

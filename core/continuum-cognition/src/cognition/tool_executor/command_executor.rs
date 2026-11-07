@@ -45,12 +45,21 @@ use super::types::{
     CallVerdict, NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
 use super::ToolExecutor;
-use crate::ai::types::{CallBatch, Disposed, ToolCall as NativeToolCall, ToolResult as NativeToolResult};
+use crate::ai::types::{CallBatch, Disposed, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
 use crate::sdk_codegen::{command_registry, AccessLevel, ActVerdict};
 use continuum_client::{ClientError, Connection};
 use std::sync::Arc;
+
+// The verbs her refusals name, by type: each is one she holds, rendered as her list offers it.
+use crate::sdk_codegen::VerbRef;
+use continuum_hands::modules::code_commands::{CodeEdit, CodeList, CodeRead, CodeShell, CodeWrite};
+const CODE_READ: VerbRef<CodeRead> = VerbRef::in_hands();
+const CODE_WRITE: VerbRef<CodeWrite> = VerbRef::in_hands();
+const CODE_EDIT: VerbRef<CodeEdit> = VerbRef::in_hands();
+const CODE_LIST: VerbRef<CodeList> = VerbRef::in_hands();
+const CODE_SHELL: VerbRef<CodeShell> = VerbRef::in_hands();
 
 /// Routes a persona's native tool calls to core commands through the uniform
 /// `continuum_client` [`Connection`] over the local [`InProcessTransport`]. The
@@ -342,7 +351,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
             "You emitted tool ARGUMENTS with no tool NAME, so nothing ran:\n{raw}\n\n\
              The arguments look right — they just need a tool in front of them. The form is:\n\
              `tool/name({{\"arg\": \"value\"}})`\n\n\
-             For example: `code/read({{\"file_path\": \"src/main.rs\"}})`.\n\
+             For example: `{CODE_READ}({{\"file_path\": \"src/main.rs\"}})`.\n\
              Naming the tool in prose (\"I will release the card\") does not call it — the \
              name has to be in the call itself. Call `commands/help` with no arguments for \
              the list of tools you can name, then retry with the same arguments."
@@ -403,8 +412,8 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
                 crate::ai::tool_dialect::NotAVerb::Path => format!(
                     "`{attempted}` is a PATH, not a tool — you put the path where the tool \
                      NAME goes, so nothing ran. A path is an argument; the verb goes first:\n\
-                     `code/read({{\"file_path\": \"{attempted}\"}})` to read it, `code/write` or \
-                     `code/edit` to change it, `code/list` for a directory, `code/shell` with \
+                     `{CODE_READ}({{\"file_path\": \"{attempted}\"}})` to read it, `{CODE_WRITE}` or \
+                     `{CODE_EDIT}` to change it, `{CODE_LIST}` for a directory, `{CODE_SHELL}` with \
                      `cwd` to run a command there. Retry with the verb in front."
                 ),
                 crate::ai::tool_dialect::NotAVerb::Identifier => format!(
@@ -412,7 +421,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
                      from what you were working on (a field, a variable, a name) put where the \
                      tool NAME goes, so nothing ran. The verb goes first: \
                      `tool/name({{\"arg\": \"value\"}})`. If you were composing an edit, the \
-                     text belongs in the arguments of `code/edit` or `code/write`. Call \
+                     text belongs in the arguments of `{CODE_EDIT}` or `{CODE_WRITE}`. Call \
                      `commands/help` with no arguments for the verbs you can name."
                 ),
             };
@@ -439,7 +448,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
                     "\n\nIf `{attempted}` is not a verb you meant but a symbol from what you \
                      were working on (a field, a variable, a name), the verb goes first: \
                      `tool/name({{\"arg\": \"value\"}})` — an edit's text belongs in the \
-                     arguments of `code/edit` or `code/write`."
+                     arguments of `{CODE_EDIT}` or `{CODE_WRITE}`."
                 )
             };
             return format!(
@@ -864,7 +873,8 @@ pub mod test_support {
     use serde_json::Value;
     use uuid::Uuid;
 
-    use super::{CommandToolExecutor, NativeToolCall};
+    use super::CommandToolExecutor;
+    use crate::ai::types::ToolCall as NativeToolCall;
     use crate::cognition::tool_executor::types::{PersonaMediaConfigLite, ToolExecutionContext};
     use crate::cognition::tool_executor::ToolExecutor;
     use crate::runtime::{CommandExecutor, ModuleRegistry};

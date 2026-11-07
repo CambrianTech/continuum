@@ -256,8 +256,8 @@ impl WorkingMemory {
                 let attribution = ResultAttribution::of(record);
                 let workspace = workspace_label(record.scope.as_deref());
                 let whole = record.result.as_deref().map(|result| format!("[result {attribution}{workspace}] {result}"));
-                let pointer = match (&record.handle, &whole, &record.head) {
-                    (Some(_), _, _) => format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"),
+                let pointer = match (CollapsedReceipt::of(record), &whole, &record.head) {
+                    (Some(receipt), _, _) => receipt.to_string(),
                     // Retained but never saved: no handle could reopen a collapsed line, so it stays
                     // whole (goal 7: the full result stays reachable; Cormac on #5255).
                     (None, Some(whole), _) => whole.clone(),
@@ -273,7 +273,7 @@ impl WorkingMemory {
                     _ => None,
                 };
                 let full = whole.unwrap_or_else(|| pointer.clone());
-                let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary; expand with tool/output] {summary}"));
+                let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary] {summary}"));
                 let content = record.result.as_deref().map_or(continuum_context::cause::Content::Absent, |result| {
                     continuum_context::cause::Content::Hashed(continuum_context::cause::ContentHash::of(result))
                 });
@@ -307,7 +307,7 @@ impl WorkingMemory {
         let active = self.in_flight_action_seq();
         let actions = self.actions.lock();
         let eligible = |record: &&action_log::ActionRecord| Some(record.seq) != active;
-        let visible_pointers: Vec<String> = actions.indexed_pointers().into_iter().map(collapsed_pointer).collect();
+        let visible_pointers: Vec<String> = actions.indexed_pointers().into_iter().filter_map(CollapsedReceipt::of).map(|receipt| receipt.to_string()).collect();
         if !actions.retained().any(|record| eligible(&record)) && visible_pointers.is_empty() {
             return Vec::new();
         }
@@ -328,7 +328,7 @@ impl WorkingMemory {
             let result = record.result.as_deref()?;
             let attribution = ResultAttribution::of(record);
             let workspace = workspace_label(record.scope.as_deref());
-            let pointer = record.handle.as_ref().map(|_| format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"));
+            let pointer = CollapsedReceipt::of(record).map(|receipt| receipt.to_string());
             Some((format!("[result {attribution}{workspace}] {result}"), pointer))
         }));
         // Collapsed-results index LAST — it CHANGES on every collapse, and message order is
@@ -336,7 +336,7 @@ impl WorkingMemory {
         // byte-stable prefix; only this one small message re-prefills.
         if !visible_pointers.is_empty() {
             out.push((format!(
-                "Older results, collapsed to pointers (query to expand):\n{}",
+                "Older results, collapsed (each reopens with the call it names):\n{}",
                 visible_pointers.join("\n")
             ), None));
         }

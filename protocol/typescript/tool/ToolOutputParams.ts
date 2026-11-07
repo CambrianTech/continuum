@@ -7,50 +7,42 @@ import type { OutputFilter } from "./OutputFilter";
  */
 export type ToolOutputParams = { 
 /**
- * The output id from the elision marker (e.g. `"deadbeefcafe0001"`). This is
- * the spill the preview told you was saved.
+ * The saved output's id.
  */
 outputId?: string, 
 /**
- * One of your act numbers (the `#n` your actions name, folded ones included), in
- * place of `outputId`: reopens that act's saved output. Give exactly one of the two.
+ * Or an act number (#n): its saved output.
  */
 act?: number, 
 /**
- * A PREBUILT filter — the easy path, no regex needed: `errors` (what broke?),
- * `warnings`, `failures` (which tests failed?), or `summary` (how did it end?).
- * Start here on a flooded build/test log. Overridden by an explicit `pattern`.
+ * A preset grep, no regex needed.
  */
 filter?: OutputFilter, 
 /**
- * A regex to grep for — the power-user path when a preset isn't specific enough.
- * e.g. `"error\\[E0308\\]"` for one exact error. Omit to use `filter`, a range,
- * or the tail.
+ * A regex to grep for (overrides filter).
  */
 pattern?: string, 
 /**
- * Lines of context to keep around each grep match (default 2, like `grep -C`).
+ * Context lines per match.
  */
 contextLines?: number, 
 /**
- * Read an explicit 1-based line range instead of grepping: the first line.
+ * First line of a range (1-based).
  */
 startLine?: number, 
 /**
- * Read an explicit 1-based line range instead of grepping: the last line.
+ * Last line of the range.
  */
 endLine?: number, 
 /**
- * Cap on the number of grep match windows returned (default 50).
+ * Most matches shown.
  */
 maxMatches?: number, 
 /**
- * Absolute byte position for exact, non-consuming retrieval. Mutually exclusive
- * with line/regex queries. Follow nextByteOffset to recover the remaining bytes.
+ * Exact bytes from here (alone); continue at nextByteOffset.
  */
 byteOffset?: number, 
 /**
- * Requested byte count; a page fits the live render allowance. No bytes are
- * discarded when this request spans multiple pages: nextByteOffset continues it.
+ * Bytes wanted from byteOffset.
  */
 byteLength?: number, };

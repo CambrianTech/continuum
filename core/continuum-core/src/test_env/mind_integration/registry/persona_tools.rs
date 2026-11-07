@@ -55,6 +55,9 @@ fn native_surface_is_derived_from_the_per_command_native_flag() {
         // that never declares NATIVE is invisible to every citizen — this list is
         // the reachability contract, not a nicety.
         "room/members",
+        // The recovery verb every handle names (2026-11-06, the M5: catalog-only, so no act
+        // could call it while every folded act, saved result and thought named it).
+        "tool/output",
     ] {
         assert!(
             names.contains(expected),
@@ -86,8 +89,11 @@ fn native_surface_is_derived_from_the_per_command_native_flag() {
     // focus/continue, focus/nudge and focus/mute joined, her self-determination verbs,
     // which were registered and documented but never offered (NATIVE unset); Kimi
     // reported "present in the registry, absent from my menu" twice before this.
+    // < 52 -> < 53, stated plainly (2026-11-06, the M5): tool/output joined, `Always`, the verb
+    // every handle she is shown names; catalog-only, no act could call it while every folded
+    // act, saved result and thought named it.
     assert!(
-        names.len() < 52,
+        names.len() < 53,
         "native set stayed bounded ({} tools); a full dump would re-mute personas",
         names.len()
     );

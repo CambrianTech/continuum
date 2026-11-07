@@ -689,24 +689,30 @@ pub(in super::super) fn start_grants(
     // growable start converted to 1,885 chars, less than her one newest turn of 2,040, so her
     // history rendered empty after a scaled calibration (a_scaled_calibration_after_turnovers).
     // The start covers each growing source's newest item whole when the growable room can.
+    let newest_of = |claim: &Claim, a: &continuum_context::flex::SourceAllocation| {
+        (claim.newest_chars as u64 * u64::from(a.requested_max)).div_ceil(claim.full_chars.max(1) as u64) as usize
+    };
     let newest: usize = claims
         .iter()
         .zip(&grants)
         .filter(|(claim, _)| claim.priority == lowest)
-        .filter_map(|(claim, grant)| {
-            grant.map(|a| (claim.newest_chars as u64 * u64::from(a.requested_max)).div_ceil(claim.full_chars.max(1) as u64) as usize)
-        })
+        .filter_map(|(claim, grant)| grant.map(|a| newest_of(claim, a)))
         .sum();
     let growing = growing.max(newest.min(growable));
     // Each source's share of the start: arithmetic on the one plan's grants, never a second
     // allocation (`continuum_context::allocation::start_shares`). A REQUIRED floor (her view's
     // collapsed minimum on an act) is never shared away: the start holds every one of them.
+    // Each growing source carries its newest item's cost, so the room raised above for it reaches
+    // it whatever the shares (`StartSource::newest`).
     let sources: Vec<continuum_context::allocation::StartSource> = claims
         .iter()
         .zip(&grants)
         .map(|(claim, grant)| {
-            let (floor, max, required) = grant.map_or((0, 0, false), |a| (a.requested_floor, a.allocated_tokens, a.required)); // map_or: a source the window granted nothing starts collapsed
-            continuum_context::allocation::StartSource { priority: claim.priority, fixed: claim.priority > lowest, required, floor, grant: max }
+            let (floor, max, required, newest) = grant.map_or((0, 0, false, 0), |a| {
+                let newest = if claim.priority == lowest { newest_of(claim, a) as u32 } else { 0 };
+                (a.requested_floor, a.allocated_tokens, a.required, newest)
+            }); // map_or: a source the window granted nothing starts collapsed
+            continuum_context::allocation::StartSource { priority: claim.priority, fixed: claim.priority > lowest, required, floor, grant: max, newest }
         })
         .collect();
     // The start holds the required floors when the room the plan gave it can (raised toward them,

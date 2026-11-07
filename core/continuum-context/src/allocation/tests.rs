@@ -93,7 +93,7 @@ fn a_reply_need_past_the_window_keeps_her_view_floor_and_reports_the_shortfall()
     let start = plan.start_room();
     assert!(start >= 600, "a start holds her required view floor: {start}");
     let source = plan.plan.of("view/conversation").expect("test: the view claim was made"); // JUSTIFIED: test fixture
-    let shares = start_shares(start, &[StartSource { priority: 4, fixed: false, required: source.required, floor: source.requested_floor, grant: source.allocated_tokens }])
+    let shares = start_shares(start, &[StartSource { priority: 4, fixed: false, required: source.required, floor: source.requested_floor, grant: source.allocated_tokens, newest: 0 }])
         .expect("test: the start holds the required floor"); // JUSTIFIED: test fixture
     assert!(shares[0] >= 600, "her view starts at least at its required floor: {shares:?}");
 }
@@ -103,8 +103,8 @@ fn a_reply_need_past_the_window_keeps_her_view_floor_and_reports_the_shortfall()
 #[test]
 fn a_start_too_small_for_a_required_floor_is_refused_typed() {
     let sources = [
-        StartSource { priority: 4, fixed: false, required: true, floor: 600, grant: 600 },
-        StartSource { priority: 6, fixed: true, required: false, floor: 50, grant: 400 },
+        StartSource { priority: 4, fixed: false, required: true, floor: 600, grant: 600, newest: 0 },
+        StartSource { priority: 6, fixed: true, required: false, floor: 50, grant: 400, newest: 0 },
     ];
     assert_eq!(start_shares(500, &sources), Err(StartRefused::OverRoom { required: 600, start: 500 }));
     let shares = start_shares(700, &sources).expect("test: the required floor fits"); // JUSTIFIED: test fixture
@@ -117,7 +117,7 @@ fn a_start_too_small_for_a_required_floor_is_refused_typed() {
 // floor of 600 granted 500 is refused typed even when the start itself could hold 600.
 #[test]
 fn an_underfunded_required_floor_is_refused_never_minted() {
-    let sources = [StartSource { priority: 4, fixed: false, required: true, floor: 600, grant: 500 }];
+    let sources = [StartSource { priority: 4, fixed: false, required: true, floor: 600, grant: 500, newest: 0 }];
     assert_eq!(start_shares(600, &sources), Err(StartRefused::Underfunded { floor: 600, grant: 500 }));
     let funded = [StartSource { grant: 600, ..sources[0] }];
     let shares = start_shares(600, &funded).expect("test: a funded floor starts"); // JUSTIFIED: test fixture
@@ -186,9 +186,9 @@ fn a_pass_and_the_act_after_it_start_her_view_alike() {
 #[test]
 fn start_shares_keep_floors_fill_fixed_sources_and_share_the_rest() {
     let sources = [
-        StartSource { priority: 9, fixed: true, required: false, floor: 100, grant: 2_000 },
-        StartSource { priority: 4, fixed: false, required: false, floor: 200, grant: 6_000 },
-        StartSource { priority: 4, fixed: false, required: false, floor: 200, grant: 2_000 },
+        StartSource { priority: 9, fixed: true, required: false, floor: 100, grant: 2_000, newest: 0 },
+        StartSource { priority: 4, fixed: false, required: false, floor: 200, grant: 6_000, newest: 0 },
+        StartSource { priority: 4, fixed: false, required: false, floor: 200, grant: 2_000, newest: 0 },
     ];
     let shares = start_shares(5_000, &sources).expect("test: no required floor"); // JUSTIFIED: test fixture
     assert_eq!(shares[0], 2_000, "the fixed source starts at its grant");
@@ -196,6 +196,28 @@ fn start_shares_keep_floors_fill_fixed_sources_and_share_the_rest() {
     assert!(shares.iter().zip(&sources).all(|(share, s)| *share <= s.grant), "{shares:?}");
     assert!(shares.iter().sum::<u32>() <= 5_000, "{shares:?}");
     assert!(shares[1] > shares[2], "a source that lacks more gets more: {shares:?}");
+}
+
+// what this catches: her newest turn collapsing on an act and not on the pass before it. The
+// growing sources shared the start by what each lacks of its grant, and the reply's priority moves
+// the grants (her conversation 3,197 tokens on a pass, 2,003 on the act, one 16,384 window), so the
+// same start left the conversation 449 tokens on the pass and 437 on the act, 1 char short of her
+// newest turn (#5807's CI, 2026-11-06). Each growing source's newest item comes first, so the
+// start holds it on both turns whatever the grants.
+#[test]
+fn a_growing_source_holds_its_newest_item_whatever_the_grants_divide() {
+    let start = |conversation_grant| {
+        let sources = [
+            StartSource { priority: 5, fixed: false, required: false, floor: 120, grant: 120, newest: 0 },
+            StartSource { priority: 5, fixed: false, required: false, floor: 0, grant: conversation_grant, newest: 438 },
+            StartSource { priority: 6, fixed: true, required: false, floor: 196, grant: 196, newest: 0 },
+            StartSource { priority: 5, fixed: false, required: false, floor: 0, grant: 57, newest: 57 },
+        ];
+        start_shares(766, &sources).expect("test: no required floor") // JUSTIFIED: test fixture
+    };
+    let (pass, act) = (start(3_197), start(2_003));
+    assert!(pass[1] >= 438 && act[1] >= 438, "the newest turn is held on both: pass {pass:?}, act {act:?}");
+    assert!(pass.iter().sum::<u32>() <= 766 && act.iter().sum::<u32>() <= 766);
 }
 
 /// One recorded fact and its receipt, the dyno's shape (fable/dyno `capacity/dyno/2026-11-04.json`).
@@ -282,7 +304,7 @@ fn act_through_the_view(day: &Recorded, view: &mut View<String>, sources: &[&dyn
             .iter()
             .map(|claim| {
                 let grant = grant_of(claim).map_or(0, |a| a.allocated_tokens); // map_or: an unclaimed source starts collapsed
-                StartSource { priority: claim.priority, fixed: false, required: false, floor: tokens(claim.floor_chars) as u32, grant }
+                StartSource { priority: claim.priority, fixed: false, required: false, floor: tokens(claim.floor_chars) as u32, grant, newest: 0 }
             })
             .collect();
         start_shares(start, &starts)

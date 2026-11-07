@@ -138,7 +138,7 @@ mod the_newest_result_over_her_window {
         assert_eq!(results.len(), 1, "the native call/result pair is intact");
         let (id, shown) = &results[0];
         assert_eq!(id, "call-aris");
-        assert!(shown.contains("too large to show whole") && shown.contains(&format!("tool/output {HANDLE}")), "{}", &shown[..shown.len().min(600)]);
+        assert!(shown.contains("too large to show whole") && shown.contains(&crate::cognition::tool_executor::tool_output::Reopen::Output(HANDLE).to_string()), "{}", &shown[..shown.len().min(600)]);
         assert!(shown.contains("lines between"), "it is her result's summary level, not only a pointer");
         assert!(shown.chars().count() * 4 <= whole.chars().count(), "a smaller level: {} of {}", shown.chars().count(), whole.chars().count());
     }
@@ -169,7 +169,7 @@ mod the_newest_result_over_her_window {
         assert!(view.capacity_error.is_none(), "beside her required view the turn is not refused: {:?}", view.capacity_error);
         let results = tool_results(&view);
         assert_eq!(results.len(), 1, "the native call/result pair is intact");
-        assert!(results[0].1.contains("too large to show whole") && results[0].1.contains(&format!("tool/output {HANDLE}")),
+        assert!(results[0].1.contains("too large to show whole") && results[0].1.contains(&crate::cognition::tool_executor::tool_output::Reopen::Output(HANDLE).to_string()),
             "it comes in reduced with its handle: {}", &results[0].1[..results[0].1.len().min(400)]);
     }
 
@@ -190,7 +190,7 @@ mod the_newest_result_over_her_window {
         let results = tool_results(&view);
         assert_eq!(results.len(), 1, "the native call/result pair is intact");
         let shown = &results[0].1;
-        assert!(shown.contains("this is its summary") && shown.contains(&format!("tool/output {HANDLE}")), "{}", &shown[..shown.len().min(600)]);
+        assert!(shown.contains("this is its summary") && shown.contains(&crate::cognition::tool_executor::tool_output::Reopen::Output(HANDLE).to_string()), "{}", &shown[..shown.len().min(600)]);
         assert!(shown.contains("BUILD START") && shown.contains("error[E0308]"), "content from both ends, never a bare pointer");
         // SEMANTIC: every line it shows (besides the note and the elision markers) is a line of
         // her result, in its own words; and the handle it names is the one her act's whole is
@@ -263,7 +263,7 @@ mod the_newest_result_over_her_window {
         assert_eq!(seen.len(), 2, "the refused request and exactly one resend");
         assert_eq!(sent_result(&seen[0]), whole, "precondition: with no measured density the result went whole");
         let resent = sent_result(&seen[1]);
-        assert!(resent.contains("too large to show whole") && resent.contains(&format!("tool/output {HANDLE}")), "{}", &resent[..resent.len().min(600)]);
+        assert!(resent.contains("too large to show whole") && resent.contains(&crate::cognition::tool_executor::tool_output::Reopen::Output(HANDLE).to_string()), "{}", &resent[..resent.len().min(600)]);
         assert!(resent.contains("lines between"), "her result's summary level, not only a pointer");
         // Priced at the density the refusal measured, the resend and its reply fit her slot.
         let priced = (estimate(&seen[1]) as u128 * 214_671).div_ceil(estimate(&seen[0]) as u128) as usize;
@@ -333,7 +333,7 @@ mod the_newest_result_over_her_window {
         assert_eq!(seen.len(), 2, "the refused request and exactly one resend");
         assert_eq!(estimate(&seen[0]), estimate(&first_request(&first, &seen[0])), "precondition: the refusal is scaled from the view she sent");
         let resent = sent_result(&seen[1]);
-        assert!(resent.contains("too large to show whole") && resent.contains(&format!("tool/output {HANDLE}")), "{}", &resent[..resent.len().min(600)]);
+        assert!(resent.contains("too large to show whole") && resent.contains(&crate::cognition::tool_executor::tool_output::Reopen::Output(HANDLE).to_string()), "{}", &resent[..resent.len().min(600)]);
     }
 
     /// `view` as the request `sent` carried it (its messages; the rest is the request's own).
