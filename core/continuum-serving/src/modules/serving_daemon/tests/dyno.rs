@@ -3,7 +3,6 @@
 //! what the M5 recorded on 2026-11-04 (`continuum_engine::capacity::dyno::recorded`).
 #![cfg(test)]
 
-use super::*;
 use crate::capacity::dyno::expected::MissingSeam;
 use crate::capacity::dyno::recorded::*;
 
@@ -42,6 +41,7 @@ fn no_launch_sizes_from_a_reading_taken_while_the_old_engine_is_wired() {
         1,
         sequences,
         day.qwen36_trained_window.value,
+        super::super::launch::Seated { need: 0, proven: 0 },
     );
     assert_eq!(pool, u64::from(cold_boot.launched_pool), "test: today's launch, reproduced (-c 125,640)");
     assert_eq!(
