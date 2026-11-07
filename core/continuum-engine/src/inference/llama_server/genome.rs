@@ -1,28 +1,47 @@
 //! Genome responsibility of the llama-server process owner.
 use super::*;
 /// Whether the serving engine accepts `--train-dir`, read off its own `--help` by the same
-/// once-per-process probe that reads its KV cache types. An engine older than the flag REJECTS
+/// once-per-binary probe that reads its KV cache types. An engine older than the flag REJECTS
 /// it and the lane does not start (2026-09-27: #4438 on canary would have put `--train-dir` on
 /// the 5090's lane while its engine was still b10765-965d38a90, because the deploy consumer
-/// converges the core but not the engine). Three states, because "not asked yet" and "no" decide
-/// differently: a launch treats both as no (in-engine training is never worth a lane), but an
-/// in-place gene change must ask first (IntelMac 2026-11-07: a core adopting a live engine read
-/// the unasked flag as no 71 ms before the probe answered yes, and relaunched the engine cold).
-pub(super) static ENGINE_TRAIN_DIR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(TRAIN_DIR_UNASKED);
-pub(super) const TRAIN_DIR_UNASKED: u8 = 0;
-pub(super) const TRAIN_DIR_NO: u8 = 1;
-pub(super) const TRAIN_DIR_YES: u8 = 2;
+/// converges the core but not the engine). The record is the binary the probe last asked with its
+/// answer, because the answer is about that binary alone: a promoted binary (or another endpoint's)
+/// is not asked until it is asked itself (Codex on #5817). "Not asked yet" and "no" decide
+/// differently: a launch reads both as no (in-engine training is never worth a lane), but an
+/// in-place gene change asks first (IntelMac 2026-11-07: a core adopting a live engine read the
+/// unasked flag as no 71 ms before the probe answered yes, and relaunched the engine cold).
+pub(super) static ENGINE_TRAIN_DIR: parking_lot::Mutex<Option<(String, TrainDirSupport)>> = parking_lot::Mutex::new(None);
 
-/// What the engine said about `--train-dir`: `None` before anything asked it.
-pub fn train_dir_support() -> Option<bool> {
-    match ENGINE_TRAIN_DIR.load(std::sync::atomic::Ordering::Relaxed) {
-        TRAIN_DIR_UNASKED => None,
-        answer => Some(answer == TRAIN_DIR_YES),
+/// What a binary said about `--train-dir`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TrainDirSupport {
+    /// It does not list the flag, or it was asked and did not answer.
+    No,
+    Yes,
+}
+
+/// What `bin` said about `--train-dir`: `None` until `bin` itself was asked.
+pub(super) fn train_dir_support(bin: &str) -> Option<bool> {
+    answer_for(ENGINE_TRAIN_DIR.lock().as_ref(), bin)
+}
+
+/// PURE: what the record says about `bin`: its answer when it is the binary asked, else nothing.
+pub(super) fn answer_for(record: Option<&(String, TrainDirSupport)>, bin: &str) -> Option<bool> {
+    match record {
+        Some((asked, answer)) if asked == bin => Some(*answer == TrainDirSupport::Yes),
+        _ => None,
     }
 }
 
-pub fn engine_accepts_train_dir() -> bool {
-    train_dir_support() == Some(true) // a launch reads unasked as no: the one answer that cannot keep a lane from starting
+/// Record what `bin` said.
+pub(super) fn record_train_dir_support(bin: &str, answer: TrainDirSupport) {
+    *ENGINE_TRAIN_DIR.lock() = Some((bin.to_owned(), answer));
+}
+
+/// Whether `bin` accepts `--train-dir`. A launch reads "not asked yet" as no: the one answer that
+/// cannot keep a lane from starting.
+pub fn engine_accepts_train_dir(bin: &str) -> bool {
+    train_dir_support(bin) == Some(true)
 }
 
 
@@ -163,14 +182,17 @@ impl LlamaServerProcess {
         // retire, an error) leaves the served set naming exactly what the engine holds;
         // the next tick converges the rest (Codex on #4467: two retires, the second busy,
         // left the first advertised although the engine had freed it).
-        let record = |gene: &str, held: bool| {
+        let record = |gene: &str, held: bool| -> Result<(), LlamaServerError> {
             let mut guard = self.served_adapters.lock().unwrap(); // JUSTIFIED: poison means a prior panic while recording the served set.
-            let served = guard.get_or_insert_with(Vec::new); // read above: Some by now
+            let Some(served) = guard.as_mut() else {
+                return Err(LlamaServerError::Unreachable("the engine's adapter set was never read: converge reads it first (active_adapters)".into()));
+            };
             served.retain(|p| p != gene);
             if held {
                 served.push(gene.to_string());
                 served.sort();
             }
+            Ok(())
         };
         // Retire first, so a refused retire (a turn holds the gene) stops the change before
         // any new gene joins.
@@ -183,12 +205,12 @@ impl LlamaServerProcess {
                     (path == *gene || (stage.is_some() && base == stage.as_deref())).then_some(*id)
                 });
                 let Some(id) = id else {
-                    record(gene, false); // not loaded: nothing to retire, and not served
+                    record(gene, false)?; // not loaded: nothing to retire, and not served
                     continue;
                 };
                 match self.lora_post("unload", serde_json::json!({ "id": id })).await? {
                     LoraPost::Done => {
-                        record(gene, false);
+                        record(gene, false)?;
                         if let Some(name) = &stage {
                             let _ = std::fs::remove_file(dir.join(name)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
                         }
@@ -206,7 +228,7 @@ impl LlamaServerProcess {
                 .map_err(|e| LlamaServerError::Spawn(format!("staging a gene panicked: {e}")))?
                 .map_err(|e| LlamaServerError::AdapterNotFound(format!("{name}: {e}")))?;
             match self.lora_post("load", serde_json::json!({ "name": name })).await? {
-                LoraPost::Done => record(&gene_key, true),
+                LoraPost::Done => record(&gene_key, true)?,
                 LoraPost::Busy => return Ok(GenomeInPlace::Busy),
                 LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
             }

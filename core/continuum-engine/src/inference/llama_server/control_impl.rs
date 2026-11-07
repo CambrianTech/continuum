@@ -79,8 +79,9 @@ impl LlamaServerControl for LlamaServerProcess {
         &self,
         target: &ServingTarget,
     ) -> Result<GenomeInPlace, LlamaServerError> {
-        self.ensure_engine_support_asked().await?; // an unasked engine is asked, never read as no
-        let Some(dir) = engine_train_dir().filter(|_| engine_accepts_train_dir()) else {
+        // an unasked binary is asked, never read as no; another binary's answer is not this one's
+        let takes = self.engine_takes_train_dir().await?;
+        let Some(dir) = engine_train_dir().filter(|_| takes) else {
             return Ok(GenomeInPlace::Unsupported);
         };
         self.converge_genome(&dir, target).await

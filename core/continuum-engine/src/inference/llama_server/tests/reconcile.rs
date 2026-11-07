@@ -331,6 +331,20 @@ fn an_adopted_engines_report_reads_back_as_the_genes_it_holds() {
     assert!(genome_paths_of(&[], &genes).is_empty(), "an engine with nothing loaded holds nothing");
 }
 
+// what this catches (Codex on #5817): one process-global train-dir answer standing in for a
+// binary that was never asked. After a promotion (or on another endpoint) the next binary's in-place
+// decision read its predecessor's answer. The record answers only for the binary it asked; any
+// other binary is unasked, so it is asked itself before a gene change is decided.
+#[test]
+fn a_train_dir_answer_is_about_the_binary_asked_and_no_other() {
+    let asked = ("/slots/engine-a/llama-server".to_string(), TrainDirSupport::Yes);
+    assert_eq!(answer_for(Some(&asked), "/slots/engine-a/llama-server"), Some(true));
+    assert_eq!(answer_for(Some(&asked), "/slots/engine-b/llama-server"), None, "a promoted binary is unasked, never inherits");
+    let refused = ("/slots/engine-b/llama-server".to_string(), TrainDirSupport::No);
+    assert_eq!(answer_for(Some(&refused), "/slots/engine-b/llama-server"), Some(false));
+    assert_eq!(answer_for(None, "/slots/engine-a/llama-server"), None, "nothing asked yet");
+}
+
 // what this catches: nothing running (Unreachable) is NOT an error — it's
 // the normal pre-spawn state, so we serve, not degrade.
 #[tokio::test]

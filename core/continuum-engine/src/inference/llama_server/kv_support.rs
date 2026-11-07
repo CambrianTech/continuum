@@ -29,7 +29,7 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
                 let mut text = String::from_utf8_lossy(&out.stdout.bytes).into_owned();
                 text.push('\n');
                 text.push_str(&String::from_utf8_lossy(&out.stderr.bytes));
-                ENGINE_TRAIN_DIR.store(if engine_help_lists_train_dir(&text) { TRAIN_DIR_YES } else { TRAIN_DIR_NO }, std::sync::atomic::Ordering::Relaxed);
+                super::genome::record_train_dir_support(bin, if engine_help_lists_train_dir(&text) { TrainDirSupport::Yes } else { TrainDirSupport::No });
                 match crate::inference::kv_cache_plan::parse_engine_kv_support(&text) {
                     Some(v) => ("answered", Some(v), String::new()),
                     None => ("did_not_enumerate", None, String::new()),
@@ -38,13 +38,13 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
         },
     };
     crate::inference::kv_cache_plan::record_engine_quantized_kv_support(support); // None = unanswered: the backend table decides
-    if matches!(outcome, "answered" | "did_not_enumerate") { *ANSWERED_BY.lock() = Some(bin.to_owned()) } else { ENGINE_TRAIN_DIR.store(TRAIN_DIR_NO, std::sync::atomic::Ordering::Relaxed) } // asked and unanswered is no; the next launch asks again
+    if matches!(outcome, "answered" | "did_not_enumerate") { *ANSWERED_BY.lock() = Some(bin.to_owned()) } else { super::genome::record_train_dir_support(bin, TrainDirSupport::No) } // asked and unanswered is no; the next launch asks again
     continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.kv_cache.engine_support",
         bin = bin,
         outcome = outcome,
         answered = support.is_some(),
         quantized_kv = support.unwrap_or(false), // probe field: read it WITH `answered`
-        train_dir = engine_accepts_train_dir(),
+        train_dir = super::genome::engine_accepts_train_dir(bin),
         error = %error,
         "what the serving binary says its build accepts for --cache-type-k; unanswered \
          falls through to the backend table, never to a guess"
@@ -64,18 +64,19 @@ pub(super) fn engine_command_of(
 }
 
 impl LlamaServerProcess {
-    /// Ask the engine binary what it supports when nothing has yet: a core that adopts a live
-    /// engine decides a gene change in place before any launch of its own asked (IntelMac
-    /// 2026-11-07: from=0 to=7 read the unasked flag as no and relaunched the engine cold).
-    pub(super) async fn ensure_engine_support_asked(&self) -> Result<(), LlamaServerError> {
-        if super::genome::train_dir_support().is_some() {
-            return Ok(());
-        }
+    /// Whether the engine binary accepts `--train-dir`, asking it first when it has not been
+    /// asked: a core that adopts a live engine decides a gene change in place before any launch of
+    /// its own asked (IntelMac 2026-11-07: from=0 to=7 read the unasked flag as no and relaunched
+    /// the engine cold). The answer is the binary's own, keyed by it ([`super::genome::train_dir_support`]).
+    pub(super) async fn engine_takes_train_dir(&self) -> Result<bool, LlamaServerError> {
         let bin = self.engine_bin()?;
+        if let Some(answer) = super::genome::train_dir_support(&bin) {
+            return Ok(answer);
+        }
         let receipt = crate::inference::engine_install::EngineInstallReceipt::prepare(bin.clone())
             .await
             .map_err(LlamaServerError::Spawn)?;
         ensure_engine_kv_support_recorded(&bin, engine_command_of(&receipt, &bin)?).await;
-        Ok(())
+        Ok(super::genome::engine_accepts_train_dir(&bin))
     }
 }
