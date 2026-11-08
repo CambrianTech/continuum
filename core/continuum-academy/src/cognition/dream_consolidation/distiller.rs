@@ -52,6 +52,9 @@ pub enum DistillError {
     /// for her first act, the cluster kept (`lens_terms`).
     #[error("no measured act need for this mind yet: the distillation waits for her first act")]
     Unmeasured,
+    /// The lesson's response schema did not serialize, so no request can hold her answer to it.
+    #[error("the lesson schema did not serialize: {0}")]
+    Schema(#[from] serde_json::Error),
 }
 
 /// Distills clusters of episodic engrams into durable semantic facts via the
@@ -341,7 +344,7 @@ impl SemanticDistiller {
             tail_tools: None,
             view_messages: None,
             tool_choice: None,
-            response_format: Some(DistilledLesson::format(listed)),
+            response_format: Some(DistilledLesson::format(listed)?),
             active_adapters: None,
             request_id: None,
             user_id: None,

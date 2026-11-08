@@ -31,7 +31,7 @@
 
     #[test]
     fn test_detect_returns_nonzero() {
-        let (total, name) = detect_gpu();
+        let (total, name) = detect_gpu().expect("this test host has a GPU");
         assert!(total > 0, "Total VRAM should be > 0");
         assert!(!name.is_empty(), "GPU name should not be empty");
     }

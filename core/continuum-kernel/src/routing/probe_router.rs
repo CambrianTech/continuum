@@ -61,7 +61,8 @@
 //! don't fire.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -156,11 +157,11 @@ impl ProbeRouterLayer {
     /// `RecvError::Lagged` from `recv()`.
     pub fn subscribe(&self, class: &str) -> broadcast::Receiver<ProbeEvent> {
         // Fast path: class already has a sender.
-        if let Some(sender) = self.routes.read().unwrap().get(class) {
+        if let Some(sender) = self.routes.read().get(class) {
             return sender.subscribe();
         }
         // Slow path: create the channel.
-        let mut routes = self.routes.write().unwrap();
+        let mut routes = self.routes.write();
         let sender = routes
             .entry(class.to_string())
             .or_insert_with(|| broadcast::channel(self.capacity).0);
@@ -171,7 +172,7 @@ impl ProbeRouterLayer {
     /// have had one at some point — channels persist for the
     /// router's lifetime).
     pub fn known_classes(&self) -> Vec<String> {
-        self.routes.read().unwrap().keys().cloned().collect()
+        self.routes.read().keys().cloned().collect()
     }
 
     /// Send a [`ProbeEvent`] to the class's broadcast channel if any
@@ -181,7 +182,7 @@ impl ProbeRouterLayer {
     /// a channel with no receivers is a HashMap miss + early return,
     /// no allocation.
     fn fan_out(&self, event: ProbeEvent) -> usize {
-        let routes = self.routes.read().unwrap();
+        let routes = self.routes.read();
         let Some(sender) = routes.get(&event.class) else {
             return 0;
         };

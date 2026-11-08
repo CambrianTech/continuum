@@ -179,7 +179,7 @@ pub fn load_manifests(dir: &Path, shipped: &[&str]) -> (Vec<LoadedCommand>, Vec<
                     refused.push(ManifestError::Duplicate { path, name: cmd.manifest.name.clone() });
                     continue;
                 }
-                let descriptor = cmd.descriptor();
+                let descriptor = cmd.process_descriptor();
                 loaded.push(LoadedCommand { command: Arc::new(cmd), descriptor });
             }
             Err(e) => refused.push(e),
@@ -316,13 +316,9 @@ impl ProcessCommand {
     }
 }
 
-#[async_trait]
-impl DynCommand for ProcessCommand {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn descriptor(&self) -> CommandDescriptor {
+impl ProcessCommand {
+    /// Always describable: an authored command carries its own schema and no TS types.
+    fn process_descriptor(&self) -> CommandDescriptor {
         // Runtime-only: this descriptor feeds the catalogue, the tool surface, the ACL and
         // the recipe gate. It never enters codegen (the compile-time registry is
         // untouched), so the TypeRefs are a stable placeholder, not a TS type.
@@ -347,6 +343,17 @@ impl DynCommand for ProcessCommand {
             result: json.clone(),
             type_refs: vec![json],
         }
+    }
+}
+
+#[async_trait]
+impl DynCommand for ProcessCommand {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn descriptor(&self) -> Result<CommandDescriptor, crate::sdk_codegen::CodegenDefect> {
+        Ok(self.process_descriptor())
     }
 
     async fn invoke(

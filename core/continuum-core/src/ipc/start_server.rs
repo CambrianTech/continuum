@@ -79,7 +79,7 @@ pub fn start_server(
         runtime,
         gpu_manager,
         system_monitor,
-    } = foundation_modules::register_foundation_modules(&pressure_monitor);
+    } = foundation_modules::register_foundation_modules(&pressure_monitor).map_err(std::io::Error::other)?;
 
     let (model_catalog, resource_daemon) =
         resource_authority::build_model_catalog_and_resource_daemon(&rt_handle, &system_monitor);

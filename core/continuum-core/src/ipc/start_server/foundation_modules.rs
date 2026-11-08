@@ -12,13 +12,13 @@ pub(super) struct Foundation {
 
 pub(super) fn register_foundation_modules(
     pressure_monitor: &Arc<crate::system_resources::MemoryPressureMonitor>,
-) -> Foundation {
+) -> Result<Foundation, crate::gpu::NoGpuDetected> {
     // Create modular runtime
     log_info!("ipc", "server", "Initializing modular runtime...");
     let runtime = Arc::new(Runtime::new());
 
     // Phase 0: GPU Memory Manager (detect VRAM, create budgets)
-    let gpu_manager = Arc::new(GpuMemoryManager::detect());
+    let gpu_manager = Arc::new(GpuMemoryManager::detect()?);
 
     // Provide GPU manager to TTS and renderer subsystems for VRAM tracking.
     // (Embedding no longer loads an in-process ONNX model — it is adapter-routed,
@@ -123,9 +123,9 @@ pub(super) fn register_foundation_modules(
     let system_resource_module = Arc::new(SystemResourceModule::new(system_monitor.clone()));
     system_resource_module.set_pressure_monitor(pressure_monitor.clone());
     runtime.register(system_resource_module);
-    Foundation {
+    Ok(Foundation {
         runtime,
         gpu_manager,
         system_monitor,
-    }
+    })
 }

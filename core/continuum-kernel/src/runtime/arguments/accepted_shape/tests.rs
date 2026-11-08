@@ -41,7 +41,7 @@ struct Mixed {
 
 /// The dispatch seam itself: the declared schema, the envelope's decoder.
 fn dispatch<P: serde::de::DeserializeOwned + schemars::JsonSchema>(sent: &Value) -> Result<(P, Cow<'_, Value>), ArgumentsRefusal> {
-    let schema = crate::sdk_codegen::input_schema::<P>();
+    let schema = crate::sdk_codegen::input_schema::<P>().expect("a fixture schema serializes");
     decode_accepting("test/accepted-shape", &schema, sent, |v| CommandRequest::<P>::decode(v).map(|r| r.params))
 }
 
@@ -173,7 +173,7 @@ fn a_read_call_refuses_on_the_field_still_wrong() {
 // data the offer's owner fixes the source from.
 #[test]
 fn readings_name_property_and_shapes() {
-    let schema = crate::sdk_codegen::input_schema::<Shell>();
+    let schema = crate::sdk_codegen::input_schema::<Shell>().expect("a fixture schema serializes");
     let read = read(&schema, &json!({"cmd": {"cmd": "ls"}, "wait_ms": "7"})).expect("two readings"); // test: no reading here is the failure being caught
     let mut shapes: Vec<(String, Reading, JsonKind, Scalar)> =
         read.shapes.into_iter().map(|s| (s.property, s.reading, s.from, s.to)).collect();
@@ -242,10 +242,10 @@ mod wrapped {
     fn resolve(name: &str) -> Option<&'static CommandDescriptor> {
         static ALL: std::sync::LazyLock<Vec<CommandDescriptor>> = std::sync::LazyLock::new(|| {
             vec![
-                CommandDescriptor::of::<Shell>(),
-                CommandDescriptor::of::<List>(),
-                CommandDescriptor::of::<Read>(),
-                CommandDescriptor::of::<Claim>(),
+                CommandDescriptor::of::<Shell>().expect("a describable fixture"),
+                CommandDescriptor::of::<List>().expect("a describable fixture"),
+                CommandDescriptor::of::<Read>().expect("a describable fixture"),
+                CommandDescriptor::of::<Claim>().expect("a describable fixture"),
             ]
         });
         ALL.iter().find(|d| d.name == name || d.aliases.contains(&name) || d.name.replace('/', "_") == name)

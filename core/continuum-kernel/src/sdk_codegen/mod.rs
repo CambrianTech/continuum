@@ -61,6 +61,8 @@ pub use call_form::CallForm;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub use call_form::{read_call, CallFormMiss};
 pub mod command;
+mod defect;
+pub use defect::CodegenDefect;
 pub mod ext;
 pub mod conformance;
 #[cfg(feature = "ts-codegen")]
@@ -86,7 +88,7 @@ pub use continuum_base::tool_effect::ToolEffect;
 /// Where a command's verb sits in a mind's hands, declared on it (`ActionCommand::DISCLOSURE`);
 /// re-exported so `action_command!`'s `disclosure:` clause resolves in any crate that expands it.
 pub use continuum_base::tool_disclosure::Disclosure;
-pub use events::{event_registry, EventDescriptor, EventSpec};
+pub use events::{event_registry, event_registry_defects, EventDescriptor, EventSpec};
 #[cfg(feature = "ts-codegen")]
 pub use events::{generate_event_api, generate_event_map};
 pub use handler::{dispatch, dispatch_with_caller, CommandError, CommandHandler, Ctx, Outcome};

@@ -29,7 +29,7 @@ pub use eviction_registry::{
 };
 pub use memory_manager::{
     AllocationsByPriority, GpuAllocationGuard, GpuError, GpuMemoryManager, GpuPriority, GpuStats,
-    GpuSubsystem, SubsystemStats, PRESSURE_CRITICAL, PRESSURE_HIGH, PRESSURE_WARNING,
+    GpuSubsystem, NoGpuDetected, SubsystemStats, PRESSURE_CRITICAL, PRESSURE_HIGH, PRESSURE_WARNING,
 };
 // No `cfg` below this line, deliberately. `backends` has already answered the
 // which-platform question, so there is no second gate here to drift onto the wrong

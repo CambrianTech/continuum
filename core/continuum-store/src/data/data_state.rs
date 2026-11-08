@@ -341,7 +341,7 @@ impl DataState {
             crate::orm::OrmEntityRegistry::global().resolve(collection)
         {
             rust_schema
-        } else if let Some(entity) = crate::entity_schemas::resolve(collection) {
+        } else if let Some(entity) = crate::entity_schemas::resolve(collection).map_err(|e| e.to_string())? {
             crate::entity_schemas::to_collection_schema(entity)
         } else {
             return Err(format!(

@@ -7,10 +7,8 @@ impl PersonaAircRuntime {
     /// (`citizens/humans/<label>/airc/`), so it can never be mistaken for a
     /// citizen by the persona resumer or the roster.
     pub async fn bootstrap_as(
-        kind: crate::identity::IdentityKind,
-        // Agent kinds REQUIRE a provider (citizens/agents/<provider>/<label>/);
-        // every other kind passes None (citizen_path enforces the contract).
-        provider: Option<&str>,
+        // An agent carries its provider (citizens/agents/<provider>/<label>/) in the kind.
+        kind: crate::identity::citizen_path::CitizenKind<'_>,
         persona_id: Uuid,
         agent_name: impl Into<String>,
         continuum_root: &Path,
@@ -25,14 +23,13 @@ impl PersonaAircRuntime {
         let home = crate::identity::citizen_path::citizen_home_path(
             continuum_root,
             kind,
-            provider,
             &agent_name,
         );
 
         // Migration: refuse to use the pre-Slice-4 layout. Hard-error
         // with the exact `mv` command per [[no-fallbacks-ever]].
         if let Some(legacy) =
-            crate::identity::citizen_path::legacy_home_path(continuum_root, kind, &agent_name)
+            crate::identity::citizen_path::legacy_home_path(continuum_root, kind.identity_kind(), &agent_name)
         {
             if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
                 let new_parent = home
@@ -92,7 +89,7 @@ impl PersonaAircRuntime {
         // continuum_kind. "interactive" is the projection's one Human marker
         // (SenderKind::from_runtime) — the operator self-peer rendering as a
         // persona/agent was the who-panel's you-vs-joel confusion.
-        let (runtime_label, kind_label) = match kind {
+        let (runtime_label, kind_label) = match kind.identity_kind() {
             crate::identity::IdentityKind::Human => ("interactive", "human"),
             crate::identity::IdentityKind::Agent => ("agent", "agent"),
             _ => ("persona", "persona"),
