@@ -3,6 +3,7 @@
 //! it lives with the hands; the code commands resolve an engine over it, and a mind that
 //! needs her workspace (replay, the workspace map) asks it here.
 
+use crate::code::git_actor::GitActor;
 use crate::code::git_bridge::{run_git, run_git_with_env};
 use crate::sdk_codegen::CommandError;
 use std::time::Duration;
@@ -42,7 +43,8 @@ pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, Comma
         .join("workspace"))
 }
 
-pub async fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
+/// `actor` is the peer the layer belongs to: its refresh commits her in-flight work as hers.
+pub async fn ensure_citizen_layer(peer: &str, actor: &GitActor) -> Result<std::path::PathBuf, CommandError> {
     // The shared base is OUR checkout, as this node recorded it (never the cwd: a
     // launchd core runs in its data dir, card 2a2cd6f1). Resolved ONCE here, then handed
     // to the provisioning body as a concrete base so it is a pure function of
@@ -51,7 +53,7 @@ pub async fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, Comm
     let base = crate::code::repo_registry::own_checkout()
         .await
         .map_err(|e| CommandError::Internal(format!("shared base unavailable: {e}")))?;
-    ensure_citizen_layer_from_base(peer, &base).await
+    ensure_citizen_layer_from_base(peer, &base, actor).await
 }
 
 /// Provision (or refresh) a peer's citizen layer, cloning from `base` — the shared
@@ -62,6 +64,7 @@ pub async fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, Comm
 pub async fn ensure_citizen_layer_from_base(
     peer: &str,
     base: &std::path::Path,
+    actor: &GitActor,
 ) -> Result<std::path::PathBuf, CommandError> {
     let layer = citizen_layer_path(peer)?;
     if layer.is_dir() {
@@ -74,7 +77,7 @@ pub async fn ensure_citizen_layer_from_base(
         // autocommits + merges, shared wins framework conflicts). Non-fatal: a sync
         // that fails logs LOUD but still returns the usable (if stale) workspace
         // rather than denying the persona her hands.
-        match crate::code::git_bridge::git_sync_from_shared(&layer, base).await {
+        match crate::code::git_bridge::git_sync_from_shared(&layer, base, actor).await {
             Ok(report) if report.synced => {
                 write_workspace_sync_note(&layer, &report.summary);
                 continuum_base::probe!(
@@ -169,7 +172,7 @@ pub(crate) async fn init_vendor_submodule(layer: &std::path::Path, base: &std::p
     let deadline = tokio::time::Instant::now() + BOUND;
     match crate::code::git_bridge::within(deadline, run_git(layer, &args)).await {
         Ok(_) => "shared".to_string(),
-        Err(why) if crate::code::git_bridge::out_of_time(&why) => format!("failed: timed out after {} s: {why}", BOUND.as_secs()),
+        Err(why) if tokio::time::Instant::now() >= deadline => format!("failed: timed out after {} s: {why}", BOUND.as_secs()),
         Err(why) => format!("failed: {why}"),
     }
 }
@@ -222,7 +225,7 @@ pub(crate) async fn share_layer_objects_with_base(layer: &std::path::Path, base:
     let started = std::time::Instant::now();
     let outcome = async {
         std::fs::create_dir_all(objects.join("info")).map_err(|e| e.to_string())?;
-        std::fs::write(&alternates, &want).map_err(|e| e.to_string())?;
+        continuum_host::durable::write_replace(&alternates, want.as_bytes()).map_err(|e| e.to_string())?;
         run_git(layer, &["repack", "-a", "-d", "-l", "-q"]).await?;
         // Worktree entries the copy inherited point at the BASE's trees, never hers.
         let mut dropped = 0usize;
@@ -276,5 +279,7 @@ pub(crate) fn write_workspace_sync_note(layer: &std::path::Path, summary: &str) 
          Uncommitted edits are auto-saved before a sync, but committing yourself \
          (with a real message) keeps your history clean and your work clearly yours.\n"
     );
-    let _ = std::fs::write(layer.join("WORKSPACE.md"), note);
+    if let Err(error) = continuum_host::durable::write_replace(&layer.join("WORKSPACE.md"), note.as_bytes()) {
+        tracing::warn!(layer = %layer.display(), %error, "workspace sync note not written; her hands go on without it");
+    }
 }

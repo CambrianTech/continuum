@@ -10,16 +10,25 @@ use super::*;
 /// 2. Reads stdout/stderr line-by-line into the shared ExecutionState
 /// 3. Handles timeouts by killing the process
 /// 4. Detects kill requests by checking the status flag
+/// Who a shell child is for and what it carries beyond the session: its confinement (a caller
+/// from outside this node), its cargo cache grant, and a resident's brokered variables
+/// ([`resident_env`]), set after every other variable.
+pub(super) struct ChildSpec<'a> {
+    pub confinement: Option<&'a crate::system_resources::confinement::Confinement>,
+    pub who: &'a str,
+    pub cargo_grant: Option<&'a crate::system_resources::confinement::CargoTargetGrant>,
+    pub brokered: &'a [(String, String)],
+}
+
 pub(super) async fn run_shell_command(
     state: Arc<Mutex<ExecutionState>>,
     command: &str,
     cwd: &Path,
     env: &HashMap<String, String>,
     timeout_ms: Option<u64>,
-    confinement: Option<&crate::system_resources::confinement::Confinement>,
-    who: &str,
-    cargo_grant: Option<&crate::system_resources::confinement::CargoTargetGrant>,
+    child: ChildSpec<'_>,
 ) {
+    let ChildSpec { confinement, who, cargo_grant, brokered } = child;
     // Resolve a REAL POSIX shell. `TokioCommand::new("bash")` finds
     // C:\Windows\System32\bash.exe on Windows — the WSL launcher, not a shell —
     // and every persona's `code/shell` died with
@@ -96,8 +105,8 @@ pub(super) async fn run_shell_command(
         _ => command.to_string(),
     };
 
-    // A citizen's child is confined to her roots at the kernel (card d598c806:
-    // eleven citizens ran `find /` as the operator); the operator's is not.
+    // A caller from outside this node is confined to its roots at the kernel (card
+    // d598c806); the operator's and a resident's children are not.
     let mut cmd = crate::system_resources::confinement::command_for(
         confinement,
         who,
@@ -138,6 +147,11 @@ pub(super) async fn run_shell_command(
 
     // Apply session environment variables
     for (k, v) in env {
+        cmd.env(k, v);
+    }
+    // A resident's identity and brokered credential, after the session's: nothing she or the
+    // inherited environment set can put another name on her commits.
+    for (k, v) in brokered {
         cmd.env(k, v);
     }
     // The command text rides in the environment when a login shell hands it to bash
@@ -379,7 +393,7 @@ pub(super) async fn run_shell_command(
                     "code",
                     "shell",
                     "Execution {} finished: exit={} cmd={}",
-                    &s.id[..8],
+                    &s.id,
                     s.exit_code.unwrap_or(-1), // killed/no-status path reads as conventional -1 in the error line
                     &s.command
                 );

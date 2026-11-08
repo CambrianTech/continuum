@@ -2,7 +2,7 @@
 
 export type GithubPrCreateParams = { 
 /**
- * The PR title.
+ * The PR title (required, non-blank).
  */
 title: string, 
 /**

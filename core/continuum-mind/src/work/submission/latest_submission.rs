@@ -760,9 +760,9 @@ pub enum SubmitOutcome {
 
 /// The answer to a submit of a submission the card already holds: that submission, as success,
 /// with what became of it so far.
-pub(super) fn already_submitted(existing: &airc_work::WorkSubmission, room_id: Uuid, outcomes: &[airc_work::WorkReviewOutcome], bench: bool) -> WorkSubmitResult {
+pub(super) fn already_submitted(existing: &airc_work::WorkSubmission, room_id: Uuid, outcomes: &[airc_work::WorkReviewOutcome], bench: bool, pull_request: Option<&airc_work::PullRequestRef>) -> WorkSubmitResult {
     let id = existing.submission_id.as_uuid();
-    let verdict = next_after_submission(Some(id), outcomes, bench, None).unwrap_or_default(); // unwrap_or_default: Some(..) in, so always Some
+    let verdict = next_after_submission(Some(id), outcomes, bench, None, pull_request).unwrap_or_default(); // unwrap_or_default: Some(..) in, so always Some
     WorkSubmitResult {
         outcome: SubmitOutcome::AlreadySubmitted,
         submission_id: id,

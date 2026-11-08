@@ -231,9 +231,13 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
         let acting_root_present = acting.is_some();
         let root = match acting {
             Some(r) => r,
-            None => crate::code::citizen_layer::ensure_citizen_layer(&self.peer)
-                .await
-                .map_err(|e| format!("citizen layer unavailable: {e}"))?,
+            None => {
+                let actor = crate::code::git_actor::GitActor::of_key(&self.peer, crate::persona::git_actor::name_of)
+                .map_err(|e| format!("citizen layer unavailable: {e}"))?;
+                crate::code::citizen_layer::ensure_citizen_layer(&self.peer, &actor)
+                    .await
+                    .map_err(|e| format!("citizen layer unavailable: {e}"))?
+            }
         };
         continuum_base::probe!(
             class = "workspace.map.rendered",

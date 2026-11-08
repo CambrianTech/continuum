@@ -415,6 +415,9 @@ test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtur
 # `#[cfg(test)] mod tests` block (chat, generator, data cursors,
 # airc realtime_store as of this writing). Greppable by:
 #     grep -rln 'cfg(feature = "stress-tests")' src/
+# The resident-parity cases that need GitHub, the network or installs (test_env/mind_integration/
+# resident_parity.rs `live`): run on a node holding a `gh` login; CI has no credential to broker.
+resident-parity-live = []
 stress-tests = ["continuum-kernel/stress-tests", "continuum-mind/stress-tests", "continuum-dreaming/stress-tests", "continuum-store/stress-tests"]
 
 # Integration tests that link a `test-fixtures`-gated lib symbol (the

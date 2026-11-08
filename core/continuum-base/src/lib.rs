@@ -8,6 +8,7 @@ pub mod config_env;
 pub mod population;
 pub mod home;
 pub mod id_resolve;
+pub mod non_empty_text;
 pub mod probe;
 pub mod repo_id;
 pub mod secrets;

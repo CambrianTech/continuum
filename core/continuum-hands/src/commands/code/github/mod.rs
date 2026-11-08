@@ -27,9 +27,11 @@ use std::sync::Arc;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::{CommandError, DynCommand};
 
+pub mod branch_pull_request;
 pub mod issue_create;
 pub mod pr_comment;
 pub mod pr_create;
+pub mod pr_view;
 
 use issue_create::CodeGithubIssueCreate;
 
@@ -38,7 +40,7 @@ use issue_create::CodeGithubIssueCreate;
 /// citizen-authored PR, comment or issue carries a footer naming her by peer id. Citizens
 /// hold these verbs exactly as Claude or Codex do (Joel, 2026-09-28: the point is a system
 /// that replaces them); attribution is what keeps authorship legible, never a gate.
-pub(crate) fn attributed(body: String, ctx: &crate::sdk_codegen::Ctx) -> String {
+pub fn attributed(body: String, ctx: &crate::sdk_codegen::Ctx) -> String {
     use crate::routing::auth_policy::CallerSource;
     match ctx.caller.as_ref() {
         Some(c) if matches!(c.source, CallerSource::Airc | CallerSource::LocalPersona) => format!(
@@ -51,6 +53,7 @@ pub(crate) fn attributed(body: String, ctx: &crate::sdk_codegen::Ctx) -> String 
 
 use pr_comment::CodeGithubPrComment;
 use pr_create::CodeGithubPrCreate;
+use pr_view::CodeGithubPrView;
 
 /// Reuse the git family's workspace-root resolution — a `gh` command operates on the
 /// SAME per-caller repo checkout `code/git/*` does.
@@ -107,6 +110,14 @@ pub async fn run_gh_within(root: &Path, args: &[String], bound: std::time::Durat
 /// Run one `gh` invocation in `root` as an owned process. Returns trimmed stdout on success; a
 /// non-zero exit or a missing/unauthenticated `gh` FAILS LOUD with the fix. `gh` reads the
 /// repo + auth from the workspace + the host's gh config — never a param.
+/// Where a resident's GitHub credential comes from: the core's own `gh` login, read fresh for each
+/// command her shell runs (`code::shell_session::resident_env`), never left where she reads it.
+pub fn credential_source() -> crate::code::shell_session::resident_env::GithubCredentialSource {
+    std::sync::Arc::new(|| {
+        Box::pin(async { run_gh(std::env::temp_dir(), vec!["auth".into(), "token".into()]).await.map_err(|error| error.to_string()) })
+    })
+}
+
 pub async fn run_gh(root: PathBuf, args: Vec<String>) -> Result<String, CommandError> {
     run_gh_owned(&root, &args, None).await.map_err(|e| match e {
         GhRunError::Spawn(e) => CommandError::Internal(format!(
@@ -136,6 +147,9 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(CodeGithubPrComment {
             state: state.clone(),
         }),
+        Arc::new(CodeGithubPrView {
+            state: state.clone(),
+        }),
         Arc::new(CodeGithubIssueCreate { state }),
     ]
 }
@@ -154,6 +168,7 @@ mod tests {
         assert_eq!(pr_create::CodeGithubPrCreate::NAME, "code/github/pr-create");
         assert_eq!(pr_comment::CodeGithubPrComment::NAME, "code/github/pr-comment");
         assert_eq!(issue_create::CodeGithubIssueCreate::NAME, "code/github/issue-create");
+        assert_eq!(pr_view::CodeGithubPrView::NAME, "code/github/pr-view");
         // pr-create and pr-comment are a capable citizen's working set, offered natively
         // (Joel, 2026-09-28); issue-create stays one call away (the 9/03 spam was issues)
         assert!(pr_create::CodeGithubPrCreate::NATIVE);

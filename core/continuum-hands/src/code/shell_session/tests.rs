@@ -99,14 +99,16 @@
         assert!(session.cwd().ends_with("src"));
     }
 
+    // what this catches: her shell caged to one workspace, so she could not stand in another
+    // repository's checkout (airc beside continuum) the way an agent does.
     #[test]
-    fn test_cd_outside_workspace_blocked() {
+    fn a_cd_outside_the_workspace_goes_where_she_asks() {
         let (dir, _rt) = setup_workspace();
         let mut session = ShellSession::new("test", "p1", dir.path()).unwrap();
 
         let result = session.cd("..");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("outside workspace"));
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(session.cwd(), dir.path().parent().unwrap().canonicalize().unwrap().as_path());
     }
 
     #[test]
@@ -530,4 +532,64 @@
 
         assert_eq!(result.status, ShellExecutionStatus::Completed);
         assert!(result.stderr.unwrap().contains("error_msg"));
+    }
+
+    /// A resident's session and her actor; her commands run `as_her` (what `code/shell` passes for
+    /// a LocalPersona caller), with a credential source that holds no `gh` login.
+    fn resident_session(dir: &std::path::Path) -> (ShellSession, crate::code::git_actor::GitActor) {
+        let her = crate::code::git_actor::GitActor::citizen(uuid::Uuid::from_u128(0xA215), Some("Aris"));
+        (ShellSession::new("t", "p1", dir).unwrap(), her)
+    }
+
+    fn as_her(her: &crate::code::git_actor::GitActor) -> Option<(crate::code::git_actor::GitActor, super::resident_env::GithubCredentialSource)> {
+        let no_login: super::resident_env::GithubCredentialSource = std::sync::Arc::new(|| Box::pin(async { Err("no gh login in this test".to_string()) }));
+        Some((her.clone(), no_login))
+    }
+
+    // what this catches: a resident's shell committing under the node's git config (the
+    // operator's name on e5c80c7f and b51f4b59), or her identity overridable by the session or
+    // the inherited environment. Her shell carries her as author AND committer, set last.
+    #[test]
+    fn a_residents_shell_carries_her_identity_as_author_and_committer() {
+        let (dir, rt) = setup_workspace();
+        let (mut session, her) = resident_session(dir.path());
+        session.set_env("GIT_AUTHOR_NAME".into(), "someone else".into());
+        let out = session
+            .execute_and_wait_as("echo \"$GIT_AUTHOR_NAME|$GIT_AUTHOR_EMAIL|$GIT_COMMITTER_NAME|$GIT_COMMITTER_EMAIL\"", Some(20_000), rt.handle(), as_her(&her))
+            .unwrap();
+        let line = out.stdout.unwrap();
+        assert_eq!(line.trim(), format!("{0}|{1}|{0}|{1}", her.name(), her.email()), "her, twice, over any session value");
+        assert!(session.confinement().is_none(), "a resident's shell has no confinement wrapper");
+    }
+
+    // what this catches: plain `git commit` from her shell attributed to the repository's or the
+    // node's configured identity instead of to her (the config here stands in for the node's: a
+    // repo-local identity outranks the global one, so a leak would show).
+    #[test]
+    fn a_commit_from_her_shell_is_hers() {
+        let (dir, rt) = setup_workspace();
+        let (mut session, her) = resident_session(dir.path());
+        let script = "git init -q . && git config user.name Operator && git config user.email operator@host \
+                      && git add -A && git commit -q -m 'her work' && git log -1 --format='%an|%ae|%cn|%ce'";
+        let out = session.execute_and_wait_as(script, Some(30_000), rt.handle(), as_her(&her)).unwrap();
+        assert_eq!(out.exit_code, Some(0), "stderr: {:?}", out.stderr);
+        let who = out.stdout.unwrap();
+        assert_eq!(who.trim().lines().last().expect("git log printed a line"), format!("{0}|{1}|{0}|{1}", her.name(), her.email()));
+    }
+
+    // what this catches: the brokered credential written somewhere she reads it (a credential
+    // store or config file), or handed to git without resetting the helpers the host already
+    // has (a stale stored token answering first). It lives only in her process environment:
+    // `GH_TOKEN` for gh, and git's helper list reset then set to `gh auth git-credential`, which
+    // reads that same variable.
+    #[test]
+    fn the_github_credential_is_supplied_through_her_environment_only() {
+        let env = github_credential_env("tok-123");
+        let get = |k: &str| env.iter().find(|(name, _)| name == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("GH_TOKEN"), Some("tok-123"));
+        assert_eq!(get("GIT_CONFIG_COUNT"), Some("2"));
+        assert_eq!(get("GIT_CONFIG_KEY_0"), get("GIT_CONFIG_KEY_1"));
+        assert_eq!(get("GIT_CONFIG_VALUE_0"), Some(""), "the host's helpers are reset first");
+        assert_eq!(get("GIT_CONFIG_VALUE_1"), Some("!gh auth git-credential"), "answered from GH_TOKEN, never a stored file");
+        assert!(env.iter().filter(|(_, v)| v.contains("tok-123")).count() == 1, "the token appears once, in GH_TOKEN, never in a path or helper argument");
     }
