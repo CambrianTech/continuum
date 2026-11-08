@@ -153,16 +153,10 @@ fn rhythm_holds(root: &ProbeNode, scale_px: &[f32], tolerance_px: f32, min_gaps:
 }
 
 fn collect_sibling_gaps(node: &ProbeNode, out: &mut Vec<f32>) {
-    let boxed: Vec<&ProbeNode> = node
-        .children
-        .iter()
-        .filter(|c| c.bounds.is_some_and(|b| b.height > 0.0))
-        .collect();
-    for pair in boxed.windows(2) {
-        let (a, b) = (
-            pair[0].bounds.expect("filtered on is_some above"), // filter guarantees bounds; windows(2) preserves it
-            pair[1].bounds.expect("filtered on is_some above"), // same guarantee, second element
-        );
+    // The bounds themselves, not the nodes that carry them: a sibling without a box is
+    // dropped here, so the pairs below hold bounds by construction.
+    let boxed: Vec<_> = node.children.iter().filter_map(|c| c.bounds).filter(|b| b.height > 0.0).collect();
+    for (a, b) in boxed.iter().zip(boxed.iter().skip(1)) {
         let gap = b.y - (a.y + a.height);
         // Overlapping or horizontally-flowing siblings have no vertical rhythm
         // to attest — skip, don't fail: rhythm is about the stacked flow.

@@ -1,5 +1,6 @@
 //! Git's working-tree residue and a deploy checkout's submodules, judged once. See
 //! [`index_lock`] and [`submodules`].
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod index_lock;
 pub mod submodules;

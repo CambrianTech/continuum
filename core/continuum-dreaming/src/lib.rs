@@ -1,6 +1,7 @@
 //! continuum-dreaming: gene training on the served weights, one domain with its commands
 //! (MODULE-ARCHITECTURE.md section 9.2), cut out of continuum-core (card 2a69e6ba). It builds on the
 //! mind and everything below it; core re-exports each module under its old path.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub use continuum_mind::*;
 

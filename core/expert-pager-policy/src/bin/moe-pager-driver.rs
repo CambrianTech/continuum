@@ -23,6 +23,7 @@
 //! (the beat-WASTE knobs): hot pins served from ladder bank
 //! `--pin-tier`, the entire unpinned cold tail fetched from
 //! `--default-tier`. Omit both for the plain v1 residency plan.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;

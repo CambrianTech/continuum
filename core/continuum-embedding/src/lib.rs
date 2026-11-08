@@ -3,6 +3,7 @@
 //! `embedding/<verb>` commands. Depends on the engine (`ai::embedding`, serving) and the
 //! kernel only; core re-exports both under their old `modules::embedding` /
 //! `commands::embedding` paths.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub use continuum_engine::*;
 

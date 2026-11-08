@@ -4,6 +4,7 @@
 //! per-act reuse, fresh prefill tokens, page-ins by kind, relaunches and wall time — in
 //! seconds, with no residents and no core. Every later serving slice proves its gain here
 //! before it reaches a live node. See the crate README for how to run it.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod acts;
 pub mod captures;

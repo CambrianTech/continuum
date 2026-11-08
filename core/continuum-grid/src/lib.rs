@@ -3,6 +3,7 @@
 //! trust policy, interceptor, placement), the grid allocator daemon and the grid commands.
 //! Depends on the engine, the kernel and the mind; core re-exports these modules under
 //! their old names.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub use continuum_engine::*;
 pub use continuum_mind::{cognition, experience, persona};

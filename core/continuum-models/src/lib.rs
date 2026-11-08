@@ -2,6 +2,7 @@
 //! `module` is the `ModelsModule` service module; `commands` are its typed `models/<verb>`
 //! commands. Depends on the engine (model registry, adapters, serving) and the kernel only;
 //! core re-exports both under their old `modules::models` / `commands::models` paths.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub use continuum_engine::*;
 

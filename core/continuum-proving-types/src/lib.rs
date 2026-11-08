@@ -7,6 +7,7 @@
 //! - [`reduction`]: one act without its words.
 //! - [`profile`]: what is measured on a node.
 //! - [`scenario`]: a world, a workload, events, a policy and what passes.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod closed;
 pub mod profile;

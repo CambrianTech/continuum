@@ -116,16 +116,16 @@ impl<K: Eq + Hash + Copy, V> BoundedRoomLedger<K, V> {
     /// Mutable access, inserting `default` first if absent. Counts as a WRITE for
     /// recency, which is what makes an actively-observed room un-evictable.
     pub fn entry_or(&mut self, key: K, default: V) -> &mut V {
-        if self.entries.contains_key(&key) {
-            self.touch(key);
-        } else {
-            self.insert(key, default);
+        // Room is made BEFORE the write, so the key being written is never the one
+        // evicted, and the entry API hands back the value with no second lookup.
+        if !self.entries.contains_key(&key) {
+            while self.order.len() >= self.cap {
+                let Some(evicted) = self.order.pop_front() else { break };
+                self.entries.remove(&evicted);
+            }
         }
-        self.entries
-            .get_mut(&key)
-            // Present by construction: either it already was, or the line above
-            // just inserted it. entries and order hold the same key set.
-            .expect("entry_or guarantees the key is present")
+        self.touch(key);
+        self.entries.entry(key).or_insert(default)
     }
 
     #[cfg(test)]

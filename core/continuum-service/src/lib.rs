@@ -16,6 +16,7 @@
 //! It decides nothing about the engine: the planner's reaction consumes a
 //! [`detect::Regression`] and proposes. Every bound is the caller's [`detect::ServicePolicy`],
 //! never a constant here.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod baseline;
 pub mod detect;

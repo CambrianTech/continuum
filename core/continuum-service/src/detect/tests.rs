@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 use crate::sample::{Builds, Demand, EngineIncarnation, Prediction, ServingConfig, Window, Workload};
 

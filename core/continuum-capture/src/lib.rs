@@ -2,6 +2,7 @@
 //! recorder, its per-path owner and its playback store. Cut out of continuum-cognition as a leaf
 //! of its crate tree (docs/architecture/COGNITION-CRATE-TREE.md, step 9); cognition re-exports
 //! each module under its old path.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 /// Where captures land: the one fixture-directory policy shared by every live capture
 /// (persona turns, prompt and workspace captures) and their readers.

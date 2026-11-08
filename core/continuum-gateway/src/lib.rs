@@ -8,6 +8,7 @@
 //!
 //! Slices G0-G1. A session becomes a driver mind seated by `MindMemory` in G2; until then a
 //! call is admitted as anonymous traffic.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod answer;
 mod listener;
