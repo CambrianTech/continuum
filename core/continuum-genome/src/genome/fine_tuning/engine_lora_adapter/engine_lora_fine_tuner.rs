@@ -334,7 +334,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // and adjusted/collapsed prompts", "must be dynamic always"). A lived call sized by the
         // window she was served at then renders at this one through the context codec: oldest
         // exchanges collapse first, her newest turn and reply stay whole. One that fits is sent
-        // exactly as served; one below its irreducible goes whole, and the measure below parks it.
+        // exactly as served; one not rendered (below its irreducible, or without the engine's count
+        // to price it) goes whole, and the measure below decides it.
         let fitted = super::lived_render::fit_to_window(&request.dataset.examples, window);
         let rendered = fitted.collapsed > 0;
         if rendered {
@@ -346,9 +347,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             window = u64::from(window),
             examples = fitted.examples.len() as u64,
             collapsed = fitted.collapsed as u64,
-            unfit = fitted.unfit.len() as u64,
-            smallest_unfit_needs = u64::from(fitted.unfit.iter().copied().min().unwrap_or(0)), // probe field: 0 = none unfit
-            "her lived examples rendered at the training window: collapsed ones fit by the capture's own token density, the engine's measure below decides what trains"
+            not_rendered = fitted.not_rendered.len() as u64,
+            why = ?fitted.not_rendered,
+            "her lived examples rendered at the training window, priced by each capture's own token density (an estimate): the engine's measure below decides what trains"
         );
         let shape_at = |chunk: u32| Shape { window, chunk, ..family.clone() };
         // The chunk is chosen against the measured graph, else the fitted model's prediction for

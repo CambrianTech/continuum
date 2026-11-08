@@ -10,11 +10,13 @@
 //! "must be dynamic always"). The oldest exchanges collapse first, to their summaries then their
 //! pointers; her newest turn and her reply, which the lesson is about, stay whole; a tool call
 //! and the results that answer it are one exchange, so no level ever separates them. A grant
-//! below what cannot collapse is [`Unfit`], with the numbers, never a smaller lie.
+//! below what cannot collapse is [`NotRendered::Unfit`], with the numbers, never a smaller lie.
 //!
-//! The price is the capture's own: the engine counted its prompt exactly
-//! (`usage.input_tokens`), so its tokens per character price every block of it. It errs a little
-//! high (the template's share rides in the density); the trainer's measure stays the authority.
+//! The price is the capture's own: the engine counted its prompt (`usage.input_tokens`), so its
+//! tokens per character price every block of it. That is an ESTIMATE for any one block (code,
+//! prose and JSON tokenize differently), so a render is a candidate, never a fit: the trainer's
+//! measure of the rendered example decides what trains. A capture without that count has no price
+//! and is [`NotRendered::Unmeasured`], never priced at a made-up one.
 
 use continuum_context::cause::{Cause, ElementId};
 use continuum_context::cost::Estimate;
@@ -35,15 +37,15 @@ pub(super) struct Exchange {
 }
 
 impl Exchange {
-    fn of(messages: Vec<ChatMessage>) -> Self {
+    fn of(messages: Vec<ChatMessage>) -> Result<Self, NotRendered> {
         // Priced as the trainer's wire carries it: `/train` receives these messages as JSON.
-        let text = serde_json::to_string(&messages).unwrap_or_default(); // /train HTTP wire form; a ChatMessage always serializes
-        Self { messages, text }
+        let text = serde_json::to_string(&messages).map_err(|e| NotRendered::Unserializable(e.to_string()))?; // /train HTTP wire form
+        Ok(Self { messages, text })
     }
 
     /// This exchange with every text and result shown through `shrink`, its tool calls and the
     /// ids that pair them kept, so a collapsed result still answers the call that made it.
-    fn shown(&self, shrink: &dyn Fn(&str) -> String) -> Self {
+    fn shown(&self, shrink: &dyn Fn(&str) -> String) -> Result<Self, NotRendered> {
         let messages = self
             .messages
             .iter()
@@ -145,18 +147,33 @@ pub(super) struct Rendered {
     pub exchanges: usize,
 }
 
-/// A grant too small even for what cannot collapse: the system prompt, her tools, the turn she
-/// answered, her reply, and every older exchange at its pointer.
+/// Why a capture was not rendered at a grant; each says what would let it render.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Unfit {
-    pub needed: u32,
-    pub grant: u32,
+pub(super) enum NotRendered {
+    /// The grant is too small even for what cannot collapse: the system prompt, her tools, the
+    /// turn she answered, her reply, and every older exchange at its pointer.
+    Unfit { needed: u32, grant: u32 },
+    /// The capture carries no engine count of its prompt (`usage.input_tokens` is 0), so there is
+    /// no price to render it by; the trainer's measure of it whole is all there is.
+    Unmeasured,
+    /// Its messages did not serialize to the trainer's wire form.
+    Unserializable(String),
+    /// The context codec refused the history at this grant.
+    Codec(String),
 }
 
-/// Where the turn she answered begins: just after her last message before the reply, so the
-/// trailing user and tool turns she was answering stay whole.
+/// Where the turn she answered begins: after her last message, so the trailing user and tool
+/// turns she was answering stay whole; and AT her last message when only the results of its tool
+/// calls follow it (or nothing does), so her newest tool exchange is never split or collapsed.
 fn newest_start(messages: &[ChatMessage]) -> usize {
-    messages.iter().rposition(|m| m.role == "assistant").map_or(0, |at| at + 1) // map_or: no turn of hers yet, the whole history is what she answers
+    let Some(last) = messages.iter().rposition(|m| m.role == "assistant") else {
+        return 0; // no turn of hers yet: the whole history is what she answers
+    };
+    if messages[last + 1..].iter().all(answers_tools) {
+        last
+    } else {
+        last + 1
+    }
 }
 
 /// Whether `message` only carries tool results (it answers the exchange before it).
@@ -166,7 +183,7 @@ fn answers_tools(message: &ChatMessage) -> bool {
 }
 
 /// `messages` as exchanges: each message with the tool results that follow and answer it.
-fn exchanges(messages: &[ChatMessage]) -> Vec<Exchange> {
+fn exchanges(messages: &[ChatMessage]) -> Result<Vec<Exchange>, NotRendered> {
     let mut grouped: Vec<Vec<ChatMessage>> = Vec::new();
     for message in messages {
         match grouped.last_mut() {
@@ -177,14 +194,14 @@ fn exchanges(messages: &[ChatMessage]) -> Vec<Exchange> {
     grouped.into_iter().map(Exchange::of).collect()
 }
 
-fn item(capture: &str, index: usize, exchange: Exchange) -> Item<Exchange> {
+fn item(capture: &str, index: usize, exchange: Exchange) -> Result<Item<Exchange>, NotRendered> {
     let id = ElementId::of(&[capture.as_bytes(), &index.to_le_bytes()]);
-    let summary = exchange.shown(&|text: &str| summarize(text, Shape::Output).unwrap_or_else(|| text.to_string())); // unwrap_or_else: a text with no smaller output level stays as it is
-    let pointer = exchange.shown(&|text: &str| format!("[{} characters, collapsed to fit this node's training grant]", count(text)));
+    let summary = exchange.shown(&|text: &str| summarize(text, Shape::Output).unwrap_or_else(|| text.to_string()))?; // unwrap_or_else: a text with no smaller output level stays as it is
+    let pointer = exchange.shown(&|text: &str| format!("[{} characters, collapsed to fit this node's training grant]", count(text)))?;
     let summary = (summary.chars() < exchange.chars()).then_some(summary);
     let pointer = (pointer.chars() < summary.as_ref().unwrap_or(&exchange).chars()).then_some(pointer); // unwrap_or: with no summary, the pointer must beat the whole exchange
     // A retained capture carries no causes: it was recorded before the view kept them.
-    Item::whole(id, Cause::Unrecorded, format!("exchange/{index}"), exchange).with_summary(summary).with_pointer(pointer)
+    Ok(Item::whole(id, Cause::Unrecorded, format!("exchange/{index}"), exchange).with_summary(summary).with_pointer(pointer))
 }
 
 /// Characters in `text` (`Block::chars` is in scope here and answers for a `str` too).
@@ -193,29 +210,38 @@ fn count(text: &str) -> usize {
 }
 
 /// Render `call` for training within `grant` tokens, through the context codec.
-pub(super) fn render_at(call: &LivedCall, grant: u32) -> Result<Rendered, Unfit> {
+pub(super) fn render_at(call: &LivedCall, grant: u32) -> Result<Rendered, NotRendered> {
     let request = &call.request;
+    let counted = call.response.usage.input_tokens;
+    if counted == 0 {
+        return Err(NotRendered::Unmeasured);
+    }
     let system = request.system_prompt.as_deref().unwrap_or_default(); // unwrap_or_default: a call served with no system prompt has none to price
-    let tools = request.tools.as_ref().map(|t| serde_json::to_string(t).unwrap_or_default()).unwrap_or_default(); // /train HTTP wire form of her tools; none offered, none to price
-    let all = Exchange::of(request.messages.clone());
-    let sent_chars = count(system) + count(&tools) + all.chars();
-    let density = CaptureDensity { tokens_per_char: f64::from(call.response.usage.input_tokens.max(1)) / sent_chars.max(1) as f64 };
+    let tools = match &request.tools {
+        Some(tools) => serde_json::to_string(tools).map_err(|e| NotRendered::Unserializable(e.to_string()))?, // /train HTTP wire form of her tools
+        None => String::new(),
+    };
+    let sent_chars = count(system) + count(&tools) + Exchange::of(request.messages.clone())?.chars();
+    // never zero: the messages' wire form is at least "[]"
+    let density = CaptureDensity { tokens_per_char: f64::from(counted) / sent_chars as f64 };
     let split = newest_start(&request.messages);
     let (older, newest) = request.messages.split_at(split);
     let reply = call.response.usage.output_tokens.max(density.tokens(count(&call.response.text)));
-    let irreducible = density.tokens(count(system) + count(&tools))
-        .saturating_add(density.tokens(Exchange::of(newest.to_vec()).chars()))
+    let irreducible = density
+        .tokens(count(system) + count(&tools))
+        .saturating_add(density.tokens(Exchange::of(newest.to_vec())?.chars()))
         .saturating_add(reply);
-    let history = History { items: exchanges(older).into_iter().enumerate().map(|(i, e)| item(&call.capture, i, e)).collect() };
+    let items = exchanges(older)?.into_iter().enumerate().map(|(i, e)| item(&call.capture, i, e)).collect::<Result<Vec<_>, _>>()?;
+    let history = History { items };
     let exchanges = history.items.len();
-    let left = grant.saturating_sub(irreducible);
     let claims = continuum_context::view::claims(&density, &[&history]);
     let floor = claims.first().map_or(0, |claim| claim.floor) as u32; // map_or: no history, nothing to floor
-    if grant < irreducible.saturating_add(floor) {
-        return Err(Unfit { needed: irreducible.saturating_add(floor), grant });
+    let needed = irreducible.saturating_add(floor);
+    if grant < needed {
+        return Err(NotRendered::Unfit { needed, grant });
     }
-    let (view, _start) = View::start(&density, Vec::new(), &[&history], |_| vec![left as usize])
-        .map_err(|_| Unfit { needed: irreducible.saturating_add(floor), grant })?;
+    let left = (grant - irreducible) as usize;
+    let (view, _start) = View::start(&density, Vec::new(), &[&history], |_| vec![left]).map_err(|e| NotRendered::Codec(format!("{e:?}")))?;
     let shown: Vec<&Exchange> = view.render().collect();
     let collapsed = history.items.iter().filter(|item| !shown.iter().any(|block| *block == item.full())).count();
     let history_cost: u32 = shown.iter().map(|block| density.tokens(block.chars())).sum();
@@ -225,28 +251,28 @@ pub(super) fn render_at(call: &LivedCall, grant: u32) -> Result<Rendered, Unfit>
 }
 
 /// The smallest window `example` trains in: a lived call's history at its pointers beside what
-/// cannot collapse. `None` for an example that is not a lived call (it trains whole or not at
-/// all, so its measured length is its floor).
+/// cannot collapse. `None` when it cannot be rendered (not a lived call, or one without a price):
+/// it trains whole or not at all, so its measured length is its floor.
 pub(super) fn smallest_window(example: &TrainingExample) -> Option<u32> {
-    let call = example.lived.as_ref()?;
-    Some(match render_at(call, 0) {
-        Err(unfit) => unfit.needed,
-        Ok(rendered) => rendered.cost,
-    })
+    match render_at(example.lived.as_ref()?, 0) {
+        Ok(rendered) => Some(rendered.cost),
+        Err(NotRendered::Unfit { needed, .. }) => Some(needed),
+        Err(_) => None,
+    }
 }
 
 /// `examples` fitted to `window`: every lived call rendered at it (one that fits stays exactly as
-/// served), one that cannot fit even at its pointers kept whole for the trainer's measure to park.
+/// served); one that cannot be rendered there goes whole, for the trainer's measure to decide.
 pub(super) struct Fitted {
     pub examples: Vec<TrainingExample>,
     /// Lived calls whose history collapsed to fit.
     pub collapsed: usize,
-    /// Lived calls below their irreducible at this window, with the smallest window each needs.
-    pub unfit: Vec<u32>,
+    /// Lived calls not rendered at this window, and why.
+    pub not_rendered: Vec<NotRendered>,
 }
 
 pub(super) fn fit_to_window(examples: &[TrainingExample], window: u32) -> Fitted {
-    let mut fitted = Fitted { examples: Vec::with_capacity(examples.len()), collapsed: 0, unfit: Vec::new() };
+    let mut fitted = Fitted { examples: Vec::with_capacity(examples.len()), collapsed: 0, not_rendered: Vec::new() };
     for example in examples {
         let Some(call) = example.lived.as_ref() else {
             fitted.examples.push(example.clone());
@@ -262,8 +288,8 @@ pub(super) fn fit_to_window(examples: &[TrainingExample], window: u32) -> Fitted
                 fitted.examples.push(shown);
             }
             Ok(_) => fitted.examples.push(example.clone()),
-            Err(unfit) => {
-                fitted.unfit.push(unfit.needed);
+            Err(why) => {
+                fitted.not_rendered.push(why);
                 fitted.examples.push(example.clone());
             }
         }
