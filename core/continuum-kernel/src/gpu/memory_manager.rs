@@ -252,9 +252,9 @@ impl std::fmt::Debug for GpuMemoryManager {
 
 impl GpuMemoryManager {
     /// Detect GPU and create manager with real VRAM budgets.
-    /// Tries Metal (macOS), then CUDA, then Vulkan; no GPU is [`NoGpuDetected`] (never a CPU fallback).
-    pub fn detect() -> Result<Self, NoGpuDetected> {
-        let (total_bytes, gpu_name) = detect_gpu()?;
+    /// Tries Metal (macOS), then CUDA, then falls back to CPU (fraction of RAM).
+    pub fn detect() -> Self {
+        let (total_bytes, gpu_name) = detect_gpu();
 
         let reserve_bytes = (total_bytes as f64 * RESERVE_PCT) as u64;
         let usable = total_bytes.saturating_sub(reserve_bytes);
@@ -281,7 +281,7 @@ impl GpuMemoryManager {
             reserve_mb
         );
 
-        Ok(Self {
+        Self {
             total_vram_bytes: total_bytes,
             gpu_name,
             // No static partition: every subsystem may draw the full shared `usable`
@@ -301,7 +301,7 @@ impl GpuMemoryManager {
                 AtomicU32::new(0),
             ],
             eviction_registry: EvictionRegistry::new(),
-        })
+        }
     }
 
     // ── Allocation ──────────────────────────────────────────────────────
@@ -770,35 +770,13 @@ pub struct GpuStats {
 // GPU DETECTION
 // =============================================================================
 
-/// No supported GPU answered the detectors. CPU fallback is forbidden (#980), so the
-/// core refuses to boot with this error; its text names what is supported and how to
-/// diagnose a detector that missed real hardware.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "No GPU detected (Metal on macOS / CUDA on Linux+Nvidia). \
-     continuum-core requires GPU acceleration — CPU fallback is forbidden \
-     per architectural rule. Supported paths: macos:metal, linux:cuda, \
-     linux:rocm, linux:vulkan, wsl:cuda, wsl:vulkan, windows:cuda, \
-     windows:vulkan. If your hardware IS one of those, the detector \
-     missed something. Diagnose: \
-     - macOS: 'system_profiler SPDisplaysDataType' should list a Metal device \
-     - Linux/WSL CUDA: 'nvidia-smi' should print GPU info \
-     - Linux ROCm: 'rocminfo' should print GPU info \
-     - Linux/WSL/Windows Vulkan: 'vulkaninfo --summary' should list a deviceName \
-     If your hardware truly isn't supported, continuum-core can't run \
-     reliably on this machine. File an issue at \
-     https://github.com/CambrianTech/continuum/issues with the output of \
-     'uname -a' + nvidia-smi/rocminfo/vulkaninfo as applicable."
-)]
-pub struct NoGpuDetected;
-
 /// Detect GPU and return (total_bytes, device_name).
-fn detect_gpu() -> Result<(u64, String), NoGpuDetected> {
+fn detect_gpu() -> (u64, String) {
     // Try Metal on macOS
     #[cfg(target_os = "macos")]
     {
         if let Some(result) = detect_metal() {
-            return Ok(result);
+            return result;
         }
     }
 
@@ -806,7 +784,7 @@ fn detect_gpu() -> Result<(u64, String), NoGpuDetected> {
     #[cfg(feature = "cuda")]
     {
         if let Some(result) = detect_cuda() {
-            return Ok(result);
+            return result;
         }
     }
 
@@ -824,7 +802,7 @@ fn detect_gpu() -> Result<(u64, String), NoGpuDetected> {
     #[cfg(feature = "vulkan")]
     {
         if let Some(result) = detect_vulkan() {
-            return Ok(result);
+            return result;
         }
     }
 
@@ -832,7 +810,22 @@ fn detect_gpu() -> Result<(u64, String), NoGpuDetected> {
     // (#964 series / #980 GPU-fallback audit). Hard-fail with the same
     // shape install.sh's `IC_GPU_PATH=unsupported` branch uses: name
     // what's supported, point at the diagnostic command, exit cleanly.
-    Err(NoGpuDetected)
+    panic!(
+        "No GPU detected (Metal on macOS / CUDA on Linux+Nvidia). \
+         continuum-core requires GPU acceleration — CPU fallback is forbidden \
+         per architectural rule. Supported paths: macos:metal, linux:cuda, \
+         linux:rocm, linux:vulkan, wsl:cuda, wsl:vulkan, windows:cuda, \
+         windows:vulkan. If your hardware IS one of those, the detector \
+         missed something. Diagnose: \
+         - macOS: 'system_profiler SPDisplaysDataType' should list a Metal device \
+         - Linux/WSL CUDA: 'nvidia-smi' should print GPU info \
+         - Linux ROCm: 'rocminfo' should print GPU info \
+         - Linux/WSL/Windows Vulkan: 'vulkaninfo --summary' should list a deviceName \
+         If your hardware truly isn't supported, continuum-core can't run \
+         reliably on this machine. File an issue at \
+         https://github.com/CambrianTech/continuum/issues with the output of \
+         'uname -a' + nvidia-smi/rocminfo/vulkaninfo as applicable."
+    );
 }
 
 /// Metal detection via metal-rs crate.

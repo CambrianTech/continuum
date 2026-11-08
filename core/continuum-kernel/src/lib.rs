@@ -17,11 +17,6 @@ pub mod identity;
 pub mod logging;
 pub mod orm;
 pub mod paging;
-// The lock's one exception: `paths::continuum_root` expects the continuum home (no resolvable
-// home, or a refused $CONTINUUM_ROOT, is boot-fatal by design) because its 30 callers in 9 crates
-// take an infallible PathBuf. Scoped to this module until the boot-resolved home is threaded to
-// those callers and the expect is deleted (follow-up named in the PR that added the lock).
-#[allow(clippy::expect_used)]
 pub mod paths;
 pub mod probe_query;
 pub mod probe_stream;

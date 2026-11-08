@@ -9,7 +9,7 @@
 use super::artifact_handle::{ArtifactKey, ArtifactSelector};
 use dashmap::DashMap;
 use std::collections::VecDeque;
-use parking_lot::Mutex;
+use std::sync::Mutex;
 use std::time::Instant;
 use tokio::sync::broadcast;
 use tracing::warn;
@@ -195,7 +195,7 @@ impl MessageBus {
     pub fn find_recent_event(&self, pattern: &str) -> Option<BusEvent> {
         let now = Instant::now();
         let ttl = std::time::Duration::from_secs(RECENT_EVENT_TTL_SECS);
-        let mut buf = self.recent_events.lock();
+        let mut buf = self.recent_events.lock().unwrap();
         // Search from newest to oldest (VecDeque: back = newest)
         let found_idx = buf
             .iter()
@@ -218,7 +218,7 @@ impl MessageBus {
     fn record_recent(&self, event: &BusEvent) {
         let now = Instant::now();
         let ttl = std::time::Duration::from_secs(RECENT_EVENT_TTL_SECS);
-        let mut buf = self.recent_events.lock();
+        let mut buf = self.recent_events.lock().unwrap();
         // Sweep expired events from the front (oldest first, O(1) each)
         while let Some(front) = buf.front() {
             if now.duration_since(front.at) >= ttl {
@@ -556,7 +556,7 @@ mod tests {
         for i in 0..RECENT_EVENT_BUFFER_SIZE + 10 {
             bus.publish_async_only(&format!("test:{i}"), serde_json::Value::Null);
         }
-        let buf = bus.recent_events.lock();
+        let buf = bus.recent_events.lock().unwrap();
         assert_eq!(buf.len(), RECENT_EVENT_BUFFER_SIZE);
         // Oldest surviving event should be #10 (first 10 evicted)
         assert_eq!(buf.front().unwrap().event.name, "test:10");

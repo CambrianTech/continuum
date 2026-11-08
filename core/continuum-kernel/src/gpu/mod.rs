@@ -18,6 +18,9 @@ pub mod backends;
 /// The `gpu/*` typed commands (one verb per file); they move with their module.
 pub mod commands;
 pub mod eviction_registry;
+// detect_gpu panics on a host with no GPU until card 461a951e (kernel buffers and GPU
+// detection get owners) lands; then delete this allow.
+#[allow(clippy::panic)]
 pub mod memory_manager;
 /// `GpuModule`: the memory authority's service module; contributes `commands`.
 pub mod module;
@@ -29,7 +32,7 @@ pub use eviction_registry::{
 };
 pub use memory_manager::{
     AllocationsByPriority, GpuAllocationGuard, GpuError, GpuMemoryManager, GpuPriority, GpuStats,
-    GpuSubsystem, NoGpuDetected, SubsystemStats, PRESSURE_CRITICAL, PRESSURE_HIGH, PRESSURE_WARNING,
+    GpuSubsystem, SubsystemStats, PRESSURE_CRITICAL, PRESSURE_HIGH, PRESSURE_WARNING,
 };
 // No `cfg` below this line, deliberately. `backends` has already answered the
 // which-platform question, so there is no second gate here to drift onto the wrong

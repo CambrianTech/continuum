@@ -54,8 +54,7 @@ use crate::governor::types::{GovernorPolicy, GovernorSnapshot, HardwareClass, Pr
 use crate::governor::PolicyFile;
 use crate::governor::SubstrateGovernor;
 use arc_swap::ArcSwap;
-use parking_lot::Mutex;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Minimum time the cascade must stay in a step before advancing
 /// further. Per spec §"Adjustment Cascade": step 1 must be active
@@ -177,28 +176,40 @@ impl LocalSubstrateGovernor {
     /// Current cascade step. Diagnostic — tests + telemetry consumers
     /// can introspect without going through snapshot().
     pub fn current_cascade_step(&self) -> u8 {
-        self.snapshot_state.lock().current_step
+        self.snapshot_state
+            .lock()
+            .unwrap()
+            .current_step
     }
 
     /// Set the pool of candidate policy files used by
     /// `on_hardware_detected`. Replaces any prior candidates atomically.
     /// PR-3d (file watcher) calls this on file-system change events.
     pub fn set_candidates(&self, candidates: Vec<PolicyFile>) {
-        let mut guard = self.candidates.lock();
+        let mut guard = self
+            .candidates
+            .lock()
+            .unwrap();
         *guard = candidates;
     }
 
     /// Snapshot-only: how many candidates are currently registered.
     /// Diagnostic for "did the file watcher actually load anything?"
     pub fn candidate_count(&self) -> usize {
-        self.candidates.lock().len()
+        self.candidates
+            .lock()
+            .unwrap()
+            .len()
     }
 
     /// Internal: publish a new policy via arc_swap + bump the cascade
     /// transition counter (every publish is a transition).
     fn publish(&self, new_policy: GovernorPolicy) {
         self.policy.store(Arc::new(new_policy));
-        let mut state = self.snapshot_state.lock();
+        let mut state = self
+            .snapshot_state
+            .lock()
+            .unwrap();
         state.cascade_transition_count = state.cascade_transition_count.saturating_add(1);
     }
 
@@ -206,7 +217,10 @@ impl LocalSubstrateGovernor {
     /// are typed and leave the current policy untouched. Successful
     /// selection publishes the new policy + returns `Ok(())`.
     pub fn try_hardware_detected(&self, hw: HardwareClass) -> Result<(), PolicySelectionError> {
-        let candidates = self.candidates.lock();
+        let candidates = self
+            .candidates
+            .lock()
+            .unwrap();
         let selected = select_policy(&candidates, &hw)?;
         let new_policy = crate::governor::into_governor_policy(selected.clone(), hw, continuum_base::time::EpochMs::now().millis());
         drop(candidates);
@@ -216,12 +230,18 @@ impl LocalSubstrateGovernor {
         // cascade to step 0 (new hardware = fresh start; if pressure
         // returns, the cascade re-evaluates from a known-good state).
         {
-            let mut base = self.base_policy.lock();
+            let mut base = self
+                .base_policy
+                .lock()
+                .unwrap();
             *base = new_policy.clone();
             base.cascade_step = 0;
         }
         {
-            let mut state = self.snapshot_state.lock();
+            let mut state = self
+                .snapshot_state
+                .lock()
+                .unwrap();
             state.current_step = 0;
             state.last_step_change_ms = continuum_base::time::EpochMs::now().millis();
             state.pending_speculation_retreat = false;
@@ -258,7 +278,10 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
         let mut new_policy_to_publish: Option<GovernorPolicy> = None;
 
         {
-            let mut state = self.snapshot_state.lock();
+            let mut state = self
+                .snapshot_state
+                .lock()
+                .unwrap();
 
             // Record the signal in the ring.
             if state.recent_signals.len() >= RECENT_SIGNALS_CAPACITY {
@@ -294,7 +317,11 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
                 // Per PR-3c3's not-reversible test: transformations
                 // applied to an already-transformed policy don't undo
                 // cleanly. Always derive from the canonical base.
-                let base_clone: GovernorPolicy = self.base_policy.lock().clone();
+                let base_clone: GovernorPolicy = self
+                    .base_policy
+                    .lock()
+                    .unwrap()
+                    .clone();
 
                 let mut next_policy = apply_cascade_step_to_policy(&base_clone, new_step);
 
@@ -332,7 +359,11 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
                 // This is the second-half of the restore-one-step-later
                 // semantics: first retreat keeps speculation high; next
                 // Hold-or-Retreat clears it.
-                let base_clone: GovernorPolicy = self.base_policy.lock().clone();
+                let base_clone: GovernorPolicy = self
+                    .base_policy
+                    .lock()
+                    .unwrap()
+                    .clone();
                 let mut next_policy = apply_cascade_step_to_policy(&base_clone, state.current_step);
                 next_policy.policy_version =
                     self.policy.load_full().policy_version.saturating_add(1);
@@ -351,7 +382,10 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
 
     fn snapshot(&self) -> GovernorSnapshot {
         let policy = self.current_policy();
-        let state = self.snapshot_state.lock();
+        let state = self
+            .snapshot_state
+            .lock()
+            .unwrap();
         GovernorSnapshot {
             current_policy: (*policy).clone(),
             cascade_transition_count: state.cascade_transition_count,
