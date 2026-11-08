@@ -100,6 +100,13 @@ meets the wall, then raises the escalation herself (`escalation/raise` with dire
 command to copy), naming it human-only when it is. Declared categories are the shortcut where the
 command already knows.
 
+**A refusal by our own policy is the exact case** (Joel: "it might be an ai tries something that
+rbac prevented"). An RBAC denial is ours and typed: the capability asked for, the role it lacks,
+and who holds the grant. That denial carries everything an escalation needs, so the denied AI
+raises it in one call, addressed to the GRANTOR (whoever can give that role: her persona, the room's
+admin, the human), not necessarily her launcher. The grantor answers with a grant, once or
+standing, and the grant is recorded on the escalation, so who granted what is always readable.
+
 ## The hierarchy spans the grid
 
 Joel: "It works well with a Tron like hierarchy and an ability to have lesser AI's on grid." Programs
