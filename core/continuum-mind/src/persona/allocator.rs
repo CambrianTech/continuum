@@ -457,7 +457,7 @@ fn resolve_model_for_persona(
     }
 
     // Check tiered model preferences (sorted highest-tier-first in catalog)
-    if let Some(last) = entry.model_preferences.last() {
+    if !entry.model_preferences.is_empty() {
         for pref in &entry.model_preferences {
             if total_vram_gb >= pref.min_vram_gb {
                 return ResolvedModel {
@@ -467,6 +467,7 @@ fn resolve_model_for_persona(
             }
         }
         // If no preference matches, use last entry (lowest tier)
+        let last = entry.model_preferences.last().unwrap();
         return ResolvedModel {
             model: last.model.clone(),
             vram_budget_gb: last.vram_budget_gb,
@@ -494,12 +495,10 @@ struct ResolvedModel {
     vram_budget_gb: f64,
 }
 
-/// Load the persona catalog from the embedded JSON. The JSON is compiled in, so a parse
-/// error is a defect in this build's catalog.json (pinned by `test_load_catalog`), and
-/// it reaches the caller as the typed serde error rather than a panic in the command.
-pub fn load_catalog() -> Result<Vec<PersonaCatalogEntry>, serde_json::Error> {
+/// Load the persona catalog from the embedded JSON.
+pub fn load_catalog() -> Vec<PersonaCatalogEntry> {
     let json = include_str!("catalog.json");
-    serde_json::from_str(json)
+    serde_json::from_str(json).expect("Failed to parse persona catalog.json")
 }
 
 #[cfg(test)]
@@ -551,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_load_catalog() {
-        let catalog = load_catalog().unwrap();
+        let catalog = load_catalog();
         assert!(!catalog.is_empty(), "Catalog should not be empty");
         // Verify some expected entries
         assert!(
@@ -567,7 +566,7 @@ mod tests {
         // local allocations). The allocator's job is "given a hardware budget, decide what
         // to spawn"; `test_gpu_manager` is the shared 16 GiB fixture.
         let manager = test_gpu_manager();
-        let catalog = load_catalog().unwrap();
+        let catalog = load_catalog();
         let result = allocate(&manager, &[], &catalog, &std::collections::HashMap::new());
 
         // Should always create at least one local persona.
@@ -593,7 +592,7 @@ mod tests {
     #[test]
     fn test_allocate_with_anthropic_key() {
         let manager = test_gpu_manager();
-        let catalog = load_catalog().unwrap();
+        let catalog = load_catalog();
         let keys = vec!["ANTHROPIC_API_KEY".to_string()];
         let result = allocate(&manager, &keys, &catalog, &std::collections::HashMap::new());
 
@@ -779,7 +778,7 @@ mod tests {
     /// Verify catalog model_preferences are correctly parsed from catalog.json
     #[test]
     fn test_catalog_has_model_preferences() {
-        let catalog = load_catalog().unwrap();
+        let catalog = load_catalog();
 
         let codereview = catalog
             .iter()
@@ -818,7 +817,7 @@ mod tests {
         use crate::gpu::GpuMemoryManager;
 
         let manager = GpuMemoryManager::simulated("NVIDIA RTX 5090", 32 * 1024 * 1024 * 1024);
-        let catalog = load_catalog().unwrap();
+        let catalog = load_catalog();
         let result = allocate(&manager, &[], &catalog, &std::collections::HashMap::new());
 
         // Find local personas
@@ -856,7 +855,7 @@ mod tests {
         use crate::gpu::GpuMemoryManager;
 
         let manager = GpuMemoryManager::simulated("Apple M1 Pro", 16 * 1024 * 1024 * 1024);
-        let catalog = load_catalog().unwrap();
+        let catalog = load_catalog();
         let result = allocate(&manager, &[], &catalog, &std::collections::HashMap::new());
 
         let local: Vec<_> = result

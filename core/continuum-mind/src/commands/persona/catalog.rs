@@ -41,9 +41,7 @@ crate::action_command! {
     params: PersonaCatalogParams,
     output: PersonaCatalogResult,
     run(_this, _ctx, _p) => {
-        let entries = load_catalog()
-            .map_err(|e| crate::sdk_codegen::CommandError::Internal(format!("the embedded persona catalog does not parse: {e}")))?;
-        Ok(PersonaCatalogResult { entries })
+        Ok(PersonaCatalogResult { entries: load_catalog() })
     }
 }
 

@@ -42,8 +42,7 @@ crate::action_command! {
     params: PersonaAllocateParams,
     output: AllocationResult,
     run(this, _ctx, p) => {
-        let catalog = load_catalog()
-            .map_err(|e| crate::sdk_codegen::CommandError::Internal(format!("the embedded persona catalog does not parse: {e}")))?;
+        let catalog = load_catalog();
         // No per-persona overrides at the planning surface: `persona/allocate` is a
         // stateless hardware-tier query with no persona homes in scope. The runtime
         // assignment path (`persona/reassign-model`) is the caller that resolves each
