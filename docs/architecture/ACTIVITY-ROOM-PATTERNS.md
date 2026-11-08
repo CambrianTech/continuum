@@ -72,37 +72,53 @@ Today: one purpose (`chat`), one hand-built widget. The foundation is the four p
 
 If both fit without forcing — **and each proves web-render *and* RAG-render parity** — the seam is proven and `scada`/`academy`/`settings`/`browser`/`universe` are **registrations, not builds**. Then mobile/terminal are additive `RenderTarget`s, never a fork.
 
-## Everything is a room, rooms nest, and work is a facet of the room's recipe
+## The room tree: every activity is a room at a path, opened by resume-or-create
 
-Joel, 2026-11-08: "Literally a new benchmark: room. A settings screen; room. A project: room,
-every damn thing is a room. It might be a sub room of another like benchmarks under academy."
+Joel, 2026-11-08: "Every benchmark would be a room, resumed when they resume the benchmark, or anew
+if we created a new one, under the same academy or even academy/benchmarks (probably better since
+training and other subcategories would also make sense)." And: "A settings screen; room. A project:
+room, every damn thing is a room."
 
-- **Every activity is a room**: a project, a card's work, a review, a vote, a benchmark run, a
-  settings screen, a class, a studio. It is created when the activity starts (by naming it, or by
-  its parent room's recipe), joined by whoever takes part, and **closed when the activity ends**
-  (no new posts, members leave, history stays readable). airc has no close today; that verb is
-  airc's to add.
-- **Rooms nest**: a benchmark run under `academy`, a card's room under its project's room, a
-  review under the card it reviews. The parent is data on the room, the same relation the recipe
-  carries as `parent_recipe_id`.
-- **Nobody lives in one room.** A resident is in the rooms of the activities she takes part in
-  and shifts attention across them as a human switches tabs (the navigational unification above).
-  Taking part in an activity means joining its room. There is no fixed landing room: the
-  `CITIZEN_COMMONS_ROOM = "academy"` constant every new resident lands in is wrong at the root.
+Everything below already exists except the two marked **new**; the design is to route every
+activity through it.
 
-What looked like separate systems are **facets the room's recipe declares**, beside `team`,
-`strategy` and `modes`:
+**1. A room's identity is its path.** `academy`, `academy/benchmarks`,
+`academy/benchmarks/hard-rs-2026-11-08`, `academy/training`, `projects/continuum`,
+`projects/continuum/cards/4d34acb9`, `settings`. The airc room name IS the path, and airc derives
+the channel from the name, so the same path is always the same room on every node.
 
-| Facet | Declared by the recipe | Instead of |
-|---|---|---|
-| **Workspace** | where its work happens and how members share it: one shared folder, one location with a git worktree each (the default for code), or separate copies; leased through airc for the room's life and released (worktree and build output removed) when the room closes | per-feature homes, checkouts and syncs (`citizen_layer`, `card_staging`); 397 unleased worktrees on the M5 |
-| **Decides** | who decides what, and by what rule: one person (`AnyOne`), `Majority`, `Unanimous`, `Quorum(n)`; a CEO-shaped room and a democratic room differ only here | a governance system |
-| **Escalation** | an ask a room cannot answer goes to its parent room, or to whoever launched the asker, and climbs to the human at the top; it carries the chain it climbed, and the answer wakes the asker | an escalation service |
-| **Human-only steps** | asks only the person at the machine can do (their password, identity, money, the physical world) go straight to them, rendered as plain directions a non-engineer can follow | sentinel's approve step and agents asking in chat |
+**2. Opening is resume-or-create (one verb, `activity/spawn` today).** Open a path with a recipe:
+- if the room exists, it is the same room; its binding must name the same recipe
+  (`validate_spawn_binding`, already there); if its standing is archived, it goes back to live.
+  That is "resume the benchmark";
+- otherwise it is created from the recipe (binding, child record, pipeline). That is "a new one".
 
-A vote is a room whose purpose is deciding. An escalation shows in the human's room list like any
-room needing attention, so the left panel (and OS notifications, as adapters) is the rooms
-`Listing` filtered by "waiting on you", not a new surface.
+Naming chooses which: resuming names the existing run; a new run names a new leaf.
+
+**3. Ancestors are rooms too (new: `base` becomes a path).** A recipe's `base` is the path its
+instances live under: a benchmark's `base` is `academy/benchmarks`, not `academy`. Opening a path
+opens each missing ancestor first, from that ancestor's own recipe (`academy`, `academy/benchmarks`,
+`projects`, …; a category's content is the `Listing` of its children). Each child announces itself
+on its parent's wall (`children.rs`, already there), so any node can walk the tree.
+
+**4. Done is archived, never deleted** (`standing.rs`, already there: the room is the activity's
+record). Archived rooms stop recruiting attention and stay readable; resuming un-archives.
+
+**5. Taking part is joining the room, by role.** A recipe's `citizens[]` roles (`role.rs`,
+`membership.rs`) seat who takes part; a resident is in the rooms of her activities and shifts
+attention across them as a human switches tabs. There is no landing room
+(`CITIZEN_COMMONS_ROOM = "academy"` goes, held by the `fixed_rooms` ratchet, #5876): she is seated
+by the activities that need her, and joins others with `room/join`.
+
+**6. Work facets are declared by the recipe**, beside `team`, `strategy` and `modes`: its workspace
+(shared folder, one location with a worktree each, or separate copies; leased while the room is
+live, released when it archives), who decides and by what rule, and where an ask it cannot answer
+goes (its parent room, ending at the human). A vote is a room whose purpose is deciding.
+
+**7. Opening never steals focus (new, in airc).** Today every airc join also sets the caller's
+current room (the known gap in `spawn_activity_room.rs`), so a daemon opening a benchmark moves a
+human's or resident's focus. airc needs subscribe-without-focus; focusing is then its own act (a tab
+switch).
 
 ## Invariants (non-negotiable)
 
@@ -111,7 +127,7 @@ room needing attention, so the left panel (and OS notifications, as adapters) is
 - **Patterns are consumer-neutral transforms; RAG is a peer `RenderTarget`.** The persona's grounding and the human's UI are one projection and cannot drift. Never render the two from separate code.
 - **`Listing` is one primitive.** Users, rooms/DMs, HF-models, cohorts — all the same `Listing`, different data + cell. Never a bespoke list per use.
 - **positron stays continuum-blind; continuum interprets purpose at the app layer** (inherits the base doc's neutrality thesis — airc neutral → positron neutral → continuum interprets).
-- **Every activity is a room; rooms nest; work is a facet of the room's recipe** (above). Never a fixed home room, never a parallel system for workspaces, decisions or escalation.
+- **Every activity is a room at a path in the room tree, opened by resume-or-create, archived never deleted** (above). Never a fixed home room, never a parallel system for workspaces, decisions or escalation.
 - **Two outliers prove the seam, then STOP.** chat + foundry; the rest register.
 
 ## Related
