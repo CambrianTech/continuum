@@ -109,7 +109,7 @@ pub fn audit_tool_conformance() -> Vec<ToolConformanceViolation> {
             });
         }
 
-        // 3. LEARNABLE input — every typed declaration publishes an object schema.
+        // 3. LEARNABLE input: every typed declaration publishes an object schema.
         if !d.params_schema.is_object() {
             violations.push(ToolConformanceViolation {
                 tool: d.name.to_string(),
