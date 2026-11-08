@@ -48,6 +48,7 @@ mod governed_training_free;
 pub use governed_training_free::*;
 mod train_status;
 mod engine_lane;
+mod lived_render;
 pub use train_status::*;
 mod move_adapter;
 use move_adapter::*;

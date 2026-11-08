@@ -3235,6 +3235,7 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "continuum-base",
+ "continuum-context",
  "continuum-engine",
  "continuum-host",
  "continuum-kernel",

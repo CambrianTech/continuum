@@ -282,12 +282,20 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // not created: its examples wait, owned by the trigger, with what would wake them. Only
         // predicted not to fit, it calibrates there, and its refusal is the measurement the next
         // plan parks on. Her examples are never cut to a smaller window.
-        // WHOLE length, never `tokens_min` (head plus last exchange: a middle-cut example; Codex on
-        // #4988, her canonical shortest is 38,012 whole against 15,966 min)
+        // A lived call's floor is its history collapsed through the context codec beside what
+        // cannot collapse (card 1c071615, [`super::lived_render::smallest_window`]): rendered, never
+        // the engine's middle cut (`tokens_min`; Codex on #4988). Any other example trains whole.
         let useful = at_served
             .as_ref()
             .ok()
-            .and_then(|rows| rows.iter().map(|r| r.tokens_full).min())
+            .and_then(|rows| {
+                rows.iter()
+                    .map(|r| {
+                        let rendered = request.dataset.examples.get(r.index).and_then(super::lived_render::smallest_window);
+                        rendered.map_or(r.tokens_full, u64::from) // map_or: not a lived call, it trains whole
+                    })
+                    .min()
+            })
             .and_then(|tokens| u32::try_from(tokens).ok())
             .map(|tokens| train_window(tokens.saturating_add(255)))
             .filter(|&useful| useful <= served_sent);
@@ -322,6 +330,26 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             None => window,
         };
         body.window = window;
+        // HER EXAMPLES AT THE WINDOW THIS NODE GRANTS (card 1c071615; Joel, 2026-11-08: "measured
+        // and adjusted/collapsed prompts", "must be dynamic always"). A lived call sized by the
+        // window she was served at then renders at this one through the context codec: oldest
+        // exchanges collapse first, her newest turn and reply stay whole. One that fits is sent
+        // exactly as served; one below its irreducible goes whole, and the measure below parks it.
+        let fitted = super::lived_render::fit_to_window(&request.dataset.examples, window);
+        let rendered = fitted.collapsed > 0;
+        if rendered {
+            body.examples = fitted.examples.iter().map(engine_example).collect();
+        }
+        continuum_base::probe!(
+            class = "training.job.examples_rendered",
+            job = %id,
+            window = u64::from(window),
+            examples = fitted.examples.len() as u64,
+            collapsed = fitted.collapsed as u64,
+            unfit = fitted.unfit.len() as u64,
+            smallest_unfit_needs = u64::from(fitted.unfit.iter().copied().min().unwrap_or(0)), // probe field: 0 = none unfit
+            "her lived examples rendered at the training window: collapsed ones fit by the capture's own token density, the engine's measure below decides what trains"
+        );
         let shape_at = |chunk: u32| Shape { window, chunk, ..family.clone() };
         // The chunk is chosen against the measured graph, else the fitted model's prediction for
         // an unmeasured (window, chunk): a calculated window with a chunk left to the default
@@ -382,11 +410,12 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // the partition at the window that will run: the served measurement already is it when
         // the window did not move
         let at_window = match at_served {
-            Ok(rows) if window == served_sent => Ok(rows),
+            Ok(rows) if !rendered && window == served_sent => Ok(rows),
             // an example's full and smallest lengths do not depend on the window, so under
             // "middle" its fit at a smaller window is arithmetic, not another ~5 s render each
             // (Cormac on #4940); the run's skipped_indices stay the authority on what trained
-            Ok(rows) if body.fit == "middle" => Ok(refit_middle(rows, window)),
+            // a rendered example is new text: measured again, never refit from its served length
+            Ok(rows) if !rendered && body.fit == "middle" => Ok(refit_middle(rows, window)),
             Ok(_) => measure_examples(&http, &lane, &body.examples, body.fit, window).await,
             Err(e) => Err(e),
         };
