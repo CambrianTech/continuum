@@ -85,8 +85,13 @@ on a room or activity, never a structure baked into the code: a hierarchy (asks 
 who decides), a democracy (the room's residents vote by `Majority`, the human one voter or the
 tie-breaker), or a mix (team votes for day-to-day calls; admin steps and credentials always reach
 the human). Every one of them is the same record, routing and vote; the policy only picks each
-ask's tier and `Decides` rule. Some asks are the human's whatever the policy: an admin password or
-a credential only the person at the machine has.
+ask's tier and `Decides` rule. Some asks are the human's whatever the policy, and that is a CATEGORY OF COMMAND (Joel: "some
+things they just can't do", "just categories of commands"): declared on the command's contract
+beside its access level, never judged by the escalation code. The categories: the human's
+password (`sudo`, admin installs), identity (2FA, logins, terms, sign-ups, CAPTCHAs), money, and
+the physical world (a cable, a key on a device, a privacy permission in System Settings). A command
+in one of them, reached by anyone below the human, escalates straight to the human; everything else
+follows the room's policy.
 
 ## The hierarchy spans the grid
 
