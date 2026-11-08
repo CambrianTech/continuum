@@ -109,7 +109,7 @@ crate::action_command! {
             this.serving.borrow().active_model.as_deref() == Some(p.model_id.as_str());
 
         // 3. Pin it OFF. Idempotent — re-unloading an already-pinned model is fine.
-        this.intent.set_suppressed(&p.model_id, true, true);
+        this.intent.set_suppressed(&p.model_id, true, true).map_err(|error| CommandError::Denied(error.to_string()))?;
 
         // 4. If it held the lane, wait for the daemon's next reconcile to actually
         //    free it before we claim success.

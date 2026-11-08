@@ -207,7 +207,10 @@ async fn publish_plan_drives_the_watch() {
     // What this catches: publication must retain the revision used to select
     // candidates, never borrow newer intent and falsely stamp the old plan.
     let selected_revision = daemon.intent.snapshot().revision;
-    daemon.intent.set_pin(Some("new-user-choice".into()), true);
+    assert!(daemon
+        .intent
+        .set_pin(Some("new-user-choice".into()), true)
+        .is_ok());
     daemon.publish_plan_for_intent(budget, &candidates, &candidates, selected_revision);
     assert_eq!(daemon.plan_tx.borrow().intent_revision, selected_revision);
     assert!(
@@ -272,9 +275,10 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     );
     // A squeezed budget: the planner's arithmetic yields a window below one coding
     // turn — the daemon refuses to publish it and the good plan stands.
-    daemon
+    assert!(daemon
         .intent
-        .set_pin(Some(good.base_model.model_id.clone()), true);
+        .set_pin(Some(good.base_model.model_id.clone()), true)
+        .is_ok());
     daemon.publish_plan(
         HostBudget {
             usable_bytes: 9 * GB + 200 * 1_000_000,
@@ -295,7 +299,10 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     );
     assert_eq!(after.lanes, good.lanes);
     let held_revision = daemon.plan_tx.borrow().intent_revision;
-    daemon.intent.set_pin(Some("different-model".into()), true);
+    assert!(daemon
+        .intent
+        .set_pin(Some("different-model".into()), true)
+        .is_ok());
     let different = vec![footprint_from_parts("different-model", GB, 8192, true, None).unwrap()];
     daemon.publish_plan_for_intent(
         HostBudget {

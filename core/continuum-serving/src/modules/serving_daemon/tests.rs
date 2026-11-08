@@ -395,7 +395,7 @@ pub(crate) async fn exercise_cancelled_exclusive_teacher(
         !daemon.serving_tx.borrow().ready,
         "non-model child cannot fabricate restore success"
     );
-    daemon.intent.set_pin(None, true);
+    assert!(daemon.intent.set_pin(None, true).is_ok());
     tokio::time::timeout(Duration::from_secs(20), async {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
         while daemon.lifecycle.is_held() {
@@ -581,8 +581,8 @@ mod health;
 mod prompt_cache;
 mod publication;
 use publication::test_pin_store;
-mod reconciliation;
-mod one_launch;
 /// The ONE-ACT dyno's launch reproductions (`continuum_engine::capacity::dyno`).
 mod dyno;
+mod one_launch;
+mod reconciliation;
 mod teacher;

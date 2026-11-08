@@ -385,7 +385,7 @@
             .suppressed
             .contains("qwen3-coder-30b"));
         let revision = consumer.intent.snapshot().revision;
-        consumer.suppress_model("qwen3-coder-30b");
+        assert!(consumer.suppress_model("qwen3-coder-30b").is_ok());
         assert_eq!(
             consumer.intent.snapshot().revision,
             revision,
@@ -477,7 +477,7 @@
             "re-home pinned"
         );
         let revision = pin_rx.borrow().revision;
-        consumer.pin_model("coder-7b");
+        assert!(consumer.pin_model("coder-7b").is_ok());
         assert_eq!(
             pin_rx.borrow().revision,
             revision,
@@ -634,4 +634,28 @@
                 "a record missing its shape must refuse to be sized, never report 0"
             );
         }
+    }
+
+#[tokio::test]
+async fn exhausted_intent_never_schedules_reclaim_or_claims_credit() {
+    for reason in [ReclaimReason::Pressure, ReclaimReason::Shutdown] {
+        let policy = Arc::new(AlwaysTierDown {
+            target: "coder-7b".into(),
+            resident_after: 6_000,
+        });
+        let (consumer, _serving_tx, mut intent_rx) = tier_down_rig("coder-30b", 18_000, policy);
+        consumer.intent.exhaust_revision_for_test();
+        intent_rx.borrow_and_update();
+        let mut request = ask();
+        request.reason = reason;
+        let outcome = consumer.reclaim(request).await;
+        assert_eq!(outcome.status, ReclaimStatus::Refused);
+        assert_eq!(outcome.freed_bytes, 0);
+        assert!(consumer.pending.lock().is_empty());
+        let state = consumer.intent.snapshot();
+        assert!(state.pinned.is_none());
+        assert!(state.suppressed.is_empty());
+        assert_eq!(state.revision, u64::MAX);
+        assert!(matches!(intent_rx.has_changed(), Ok(false)));
+    }
     }
