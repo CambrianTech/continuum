@@ -73,9 +73,6 @@ pub fn continuum_home() -> Result<std::path::PathBuf, String> {
 /// else a test build's per-process home, else `~/.continuum`). It was a second owner reading
 /// `$CONTINUUM_ROOT` and then the real home, so its 39 callers' tests could write the operator's
 /// state (line 7 of the plan: one owner per fact).
-// Follow-up: resolve the home once at boot and pass it to the 30 callers (9 crates) that take
-// this infallible PathBuf, then delete this expect and its allow.
-#[allow(clippy::expect_used)]
 pub fn continuum_root() -> std::path::PathBuf {
     continuum_home().expect("a home directory is required to resolve the continuum home") // JUSTIFIED: no home means no persistent state at all: boot-fatal by design; its callers need the infallible PathBuf
 }
