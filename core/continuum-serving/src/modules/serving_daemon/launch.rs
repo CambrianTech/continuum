@@ -744,7 +744,7 @@ pub(super) fn launch_pool(
     let fit_pool = footprint.map_or(0, |fp| {
         u64::from(fp.window_within(budget_bytes, sequences).min(trained_window)) * u64::from(sequences)
     }); // map_or: no footprint proves no fit beyond the plan's own pool
-    let held = seated.need.min(fit_pool.max(seated.proven));
+    let held = seated.need.min(seated.proven.map_or(fit_pool, |proven| fit_pool.max(proven))); // map_or: nothing proven leaves the budget's fit alone
     plan_pool.max(fit_pool).max(held)
 }
 
@@ -756,10 +756,11 @@ pub(super) struct Seated {
     /// trained window (a need above it is a measurement defect, card bf3b6d68, never a size). A mind
     /// with no held turn adds nothing: her wish is a target with headroom, not a need.
     pub(super) need: u64,
-    /// The largest pool this model ran at in this core run, counted only while the live budget is a
-    /// gap reading (no engine credited, e.g. after an exit): a steady budget's fit is the live truth,
-    /// and a pool proven earlier never overrides it. 0 when steady or before any run.
-    pub(super) proven: u64,
+    /// The largest pool this model ran at under the engine and KV plan the next launch serves on
+    /// (`proven_pool`, kept across core restarts), counted only while the live budget is a gap
+    /// reading (no engine credited, e.g. after an exit): a steady budget's fit is the live truth, and
+    /// a pool proven earlier never overrides it. `None` when steady or nothing is proven.
+    pub(super) proven: Option<u64>,
 }
 
 impl ServingDaemonModule {
@@ -780,7 +781,7 @@ impl ServingDaemonModule {
             .sum();
         let steady = matches!(*self.planned_budget.lock(), Some(PlannedBudget { credit: OwnCredit::Included { .. }, .. }));
         let proven = match steady {
-            true => 0,
+            true => None,
             false => crate::inference::proven_pool::proven(&model.id),
         };
         Seated { need, proven }

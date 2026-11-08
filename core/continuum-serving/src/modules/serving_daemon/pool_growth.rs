@@ -85,10 +85,11 @@ pub(super) fn first_try(tried: &mut std::collections::BTreeSet<String>, model: &
     tried.insert(model.to_owned())
 }
 
-/// PURE: whether the running pool is below the largest this model ran at this core run, so growing to it
-/// repairs a relaunch rather than chaining one. A pool not yet read (0) is not a recovery.
-pub(super) fn recovering(running_tokens: u32, proven_tokens: u64) -> bool {
-    running_tokens > 0 && u64::from(running_tokens) < proven_tokens
+/// PURE: whether the running pool is below the largest this model ran at (`proven_pool`), so growing to
+/// it repairs a relaunch rather than chaining one. A pool not yet read (0) or nothing proven is not a
+/// recovery.
+pub(super) fn recovering(running_tokens: u32, proven_tokens: Option<u64>) -> bool {
+    proven_tokens.is_some_and(|proven| running_tokens > 0 && u64::from(running_tokens) < proven)
 }
 
 /// PURE: whether a steady plan proves the pool should grow. Steady (the budget already held
@@ -141,10 +142,10 @@ mod tests {
     // largest pool this model ran at is a repair; at or above it, the one-try rule stands.
     #[test]
     fn a_pool_below_the_largest_this_model_ran_at_is_a_recovery() {
-        assert!(recovering(176_640, 997_390), "the 16:14Z relaunch: below the proven pool");
-        assert!(!recovering(997_390, 997_390), "at the proven pool: no recovery");
-        assert!(!recovering(1_100_000, 997_390), "above it is growth, held to one try");
-        assert!(!recovering(0, 997_390), "a pool not yet read is not a recovery");
-        assert!(!recovering(176_640, 0), "nothing proven: no recovery");
+        assert!(recovering(176_640, Some(997_390)), "the 16:14Z relaunch: below the proven pool");
+        assert!(!recovering(997_390, Some(997_390)), "at the proven pool: no recovery");
+        assert!(!recovering(1_100_000, Some(997_390)), "above it is growth, held to one try");
+        assert!(!recovering(0, Some(997_390)), "a pool not yet read is not a recovery");
+        assert!(!recovering(176_640, None), "nothing proven: no recovery");
     }
 }
