@@ -558,7 +558,7 @@ pub async fn clear_lived<S: Transport>(substrate: &Connection<S>, persona_name: 
 /// self-review rule: the immutable submission binding and its transfer reservations, never a
 /// card-wide settle (Codex root, #5017). Idempotent: a transferred binding returns Accepted.
 pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
-    let owned = match crate::persona::airc_runtime::scoped_board_owned_by(airc).await {
+    let owned = match crate::persona::work_board::board_index::scoped_board_owned_by(airc).await {
         Ok(owned) => owned,
         Err(error) => {
             continuum_base::probe!(

@@ -420,9 +420,9 @@ pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Re
     // (IntelMac on #4838; the race #4838 removes from work/state).
     let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
     req.body = Some(body);
-    airc.create_work_card_in(&room, req)
-        .await
-        .map_err(|e| e.to_string())
+    let created = airc.create_work_card_in(&room, req).await.map_err(|e| e.to_string())?;
+    super::board_index::wrote(airc, &room);
+    Ok(created)
 }
 
 /// Post the review card for a ROOM's own card (not a bench card): titled and described
@@ -452,10 +452,13 @@ pub async fn open_room_review_card(
     // on the parent's board, named: never through the shared current-room pointer (#4838)
     let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
     req.body = Some(body);
-    match submission {
+    let created = match submission {
         Some(candidate) => airc.ensure_submission_review_in(room, parent, candidate, req).await,
         None => airc.create_work_card_in(room, req).await,
-    }.map_err(|e| e.to_string())
+    }
+    .map_err(|e| e.to_string())?;
+    super::board_index::wrote(airc, room);
+    Ok(created)
 }
 
 /// The card a review card reviews, by airc's native link (`reviews`).
@@ -501,6 +504,7 @@ pub async fn raw_advance(
             .await;
     }
     attempt.map_err(|e| e.to_string())?;
+    super::board_index::wrote_card(airc, card_id);
     // A REOPEN MEANS NOBODY HOLDS IT, and airc's projection owns that: a transition to
     // Open ends the claim (airc #1598, card 12afbb2f). The round tracker's settled mark
     // is ours to clear, or the deck never offers the card again.

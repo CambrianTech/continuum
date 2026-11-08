@@ -279,6 +279,7 @@ impl ActionCommand for WorkSubmit {
             instance: candidate.instance, base_sha: candidate.base_sha, head, artifact: candidate.artifact,
         }).await.map_err(|e| CommandError::Internal(format!(
             "submission {submission_id} publication was not acknowledged; retry with submission_id={submission_id} and the same selection: {e}")))?;
+        crate::persona::work_board::board_index::wrote(airc, &room);
         let handoff = if bench {
             Ok(None)
         } else {

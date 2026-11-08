@@ -117,7 +117,7 @@ impl ServiceModule for PersonaInstanceManagerService {
                 // renewal takes the live holds from it; the handoff record takes the rest
                 // (her cards in Review, the reviews she owes) — card 49b5e806, Kimi's #4.
                 let owned =
-                    match crate::persona::airc_runtime::scoped_board_owned_by(rt.airc().as_ref())
+                    match crate::persona::work_board::board_index::scoped_board_owned_by(rt.airc().as_ref())
                         .await
                     {
                         Ok(owned) => owned,
