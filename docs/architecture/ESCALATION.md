@@ -93,6 +93,13 @@ the physical world (a cable, a key on a device, a privacy permission in System S
 in one of them, reached by anyone below the human, escalates straight to the human; everything else
 follows the room's policy.
 
+A declaration covers only the commands that can know (Joel: "Hard to know per command possibly in
+all cases ... You might explicitly call the escalation"). A shell runs anything, and whether
+`brew install x` needs the password is learned by running it. So the main path is EXPLICIT: she
+meets the wall, then raises the escalation herself (`escalation/raise` with directions and the
+command to copy), naming it human-only when it is. Declared categories are the shortcut where the
+command already knows.
+
 ## The hierarchy spans the grid
 
 Joel: "It works well with a Tron like hierarchy and an ability to have lesser AI's on grid." Programs
