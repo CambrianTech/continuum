@@ -6,6 +6,7 @@
 //! extends it through the contracts it owns, installed at boot; see
 //! `docs/architecture/MICROKERNEL-DECOMPOSITION.md`.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![deny(clippy::await_holding_lock)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 pub mod concurrency;
 pub mod docker_tier;

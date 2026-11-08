@@ -106,7 +106,7 @@ mod tests {
     fn the_unjustified_serialization_count_never_rises() {
         let violations = scan(&[&BoundarySerialization]);
         
-        crate::ratchet::hold_sites("unjustified_serialization", &violations, || {
+        crate::ratchet::hold_sites("unjustified_serialization", &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
                 "Serialize ONLY at a true system boundary (socket, disk format, wire protocol, \
                  foreign API) and say WHICH boundary on the same line. Between in-process layers, \

@@ -1,5 +1,6 @@
 //! continuum-engine: cut out of continuum-core (MICROKERNEL-DECOMPOSITION.md). Depends only on the
 //! kernel and crates below it; core re-exports these modules under their old names.
+#![deny(clippy::await_holding_lock)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 pub use continuum_kernel::{
     concurrency, docker_tier, docker_tier_pool, entity_schemas, governor, gpu, identity, logging, orm,

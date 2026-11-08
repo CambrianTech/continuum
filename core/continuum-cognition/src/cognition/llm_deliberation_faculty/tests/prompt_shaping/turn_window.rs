@@ -698,7 +698,7 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
         crate::ai::types::ContentPart::ToolUse {
             id: "call-1".into(),
             name: "write_file".into(),
-            input: serde_json::json!({"path": "migration.sql", "content": "CREATE TABLE example(id INTEGER);"}),
+            input: serde_json::json!({"path": "notes.md", "content": "# Example\nA written file's bytes."}),
         },
     ];
     let tool_bytes = crate::cognition::working_set::answer_payload_bytes("", Some(&parts));
