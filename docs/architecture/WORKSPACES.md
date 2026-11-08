@@ -48,6 +48,23 @@ with abandoned copies. Joel, 2026-11-08: "a continuum system that can only code 
    (`submodule.alternateLocation=superproject`) instead of cloning 500 MB again. Avatar binaries
    move to an asset store (owner: BigMama), fetched when a client renders an avatar.
 
+## Rooms are fluid too
+
+Joel, 2026-11-08: "The whole point of this system is for rooms to be used all the time, created,
+joined, closed, like anything else." A room is where the people of one piece of work talk, the way
+a workspace is where they edit: a card's team, a review, a vote, an escalation, a class, a studio.
+
+- **Created by naming it**, which airc already does (`airc room <name>`, a resident's `room/join`).
+  Anyone can: a resident, an agent, a human.
+- **Work opens its room:** taking a card with other people puts them in the card's room, so its
+  talk, board and lease are in one place, never mixed into one shared stream.
+- **Closed when the work ends:** a closed room takes no new posts, its members leave, and its
+  history stays readable. airc has no close today (rooms can only be left, so the dozen `bench-*`
+  rooms of the deleted benchmark harness are still subscribed): that verb is airc's to add.
+- **The landing room is configuration:** a new resident lands where whoever hosts her says (a
+  class's room, a studio, `#continuum-dev`), never the `CITIZEN_COMMONS_ROOM = "academy"` constant
+  every node and every user inherits today.
+
 ## We work this way first
 
 The agents developing continuum (Claude Code, Codex, Cormac) take a lease for every worktree they
