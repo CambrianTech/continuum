@@ -386,7 +386,16 @@ pub(super) async fn stage_for_owner_on_demand(
         .map_err(|e| CommandError::Internal(format!("continuum home: {e}")))?;
     let card_uuid = card.card_id.as_uuid();
     match crate::work::card_staging::stage_for_card(&home, runtime.persona_id(), card).await {
-        Staging::Ready { path } => {
+        // Arrival just put her checkout back on its anchor: what she had is on a stranded ref, so a
+        // patch read now would not be her work. Said, nothing submitted (card f76005e8).
+        Staging::Ready {
+            arrival: Some(crate::persona::workspace_transfer::ArrivalOutcome::Realigned { branch, anchor, stranded, own_commits }),
+            ..
+        } => Err(CommandError::Invalid(format!(
+            "{} Nothing was submitted: bring back the work you mean to submit, then submit again.",
+            crate::persona::workspace_transfer::realigned_notice(&branch, &anchor, &stranded, own_commits)
+        ))),
+        Staging::Ready { path, .. } => {
             continuum_base::probe!(
                 class = "work.submit.staged_on_demand",
                 card_id = %short8(card_uuid),

@@ -231,9 +231,53 @@ pub enum ArrivalOutcome {
     /// This checkout's `origin` is not a remote another node writes to (a `--shared`
     /// clone of a local mirror), so no fetch here can deliver another node's work.
     NotTransferable { branch: String, reason: &'static str },
+    /// `origin`'s branch does not contain this checkout's creation anchor: it predates the
+    /// allocation (a branch left by an earlier one), so adopting it would put her HEAD off the
+    /// base her work is measured from. The checkout stands untouched; `remote_sha` is what
+    /// origin holds, `anchor` the allocation's base.
+    RemotePredatesAllocation { branch: String, remote_sha: String, anchor: String },
+    /// The checkout's HEAD had left its creation anchor (an earlier arrival adopted a branch
+    /// that predates the allocation). HEAD and any edits are kept whole under `stranded`, and
+    /// the branch is back at `anchor`. `own_commits` counts the stranded commits no remote
+    /// carries: hers to bring back, never replayed for her.
+    Realigned { branch: String, anchor: String, stranded: String, own_commits: u64 },
+    /// Whether origin's branch contains the checkout's creation anchor could not be proven (a
+    /// shallow clone, or a commit missing locally), so nothing was adopted: the checkout stands.
+    AncestryUnknown { branch: String, reason: String },
+}
+
+/// What she reads when arrival put her checkout of `branch` back on its base `anchor`, keeping what
+/// it held at `stranded`.
+pub fn realigned_notice(branch: &str, anchor: &str, stranded: &str, own_commits: u64) -> String {
+    format!(
+        "Your checkout of {branch} had left its base {anchor} (an earlier arrival adopted an older branch), \
+         so it is back on that base. Everything it held is kept at {stranded}; {own_commits} commit(s) \
+         there exist only in your checkout. Bring back what you meant with `git cherry-pick` or \
+         `git merge {stranded}`."
+    )
 }
 
 impl ArrivalOutcome {
+    /// This outcome when it changed something she must be told, else `None`.
+    pub fn notable(self) -> Option<Self> {
+        self.notice().is_some().then_some(self)
+    }
+
+    /// What she reads about this arrival, in her own terms; `None` when it is routine.
+    pub fn notice(&self) -> Option<String> {
+        match self {
+            ArrivalOutcome::Realigned { branch, anchor, stranded, own_commits } => {
+                Some(realigned_notice(branch, anchor, stranded, *own_commits))
+            }
+            ArrivalOutcome::RemotePredatesAllocation { branch, remote_sha, anchor } => Some(format!(
+                "origin's {branch} is at {remote_sha}, which does not contain your checkout's base {anchor}, so it \
+                 was not adopted. Publishing your branch will replace that older one (a non-fast-forward push): \
+                 that is your explicit choice, never automatic."
+            )),
+            _ => None,
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             ArrivalOutcome::NoRemoteBranch { .. } => "no_remote_branch",
@@ -243,6 +287,9 @@ impl ArrivalOutcome {
             ArrivalOutcome::Transferred { .. } => "transferred",
             ArrivalOutcome::Failed { .. } => "failed",
             ArrivalOutcome::NotTransferable { .. } => "not_transferable",
+            ArrivalOutcome::RemotePredatesAllocation { .. } => "remote_predates_allocation",
+            ArrivalOutcome::Realigned { .. } => "realigned",
+            ArrivalOutcome::AncestryUnknown { .. } => "ancestry_unknown",
         }
     }
 }
@@ -694,6 +741,9 @@ pub async fn move_blocker_bounded(persona: Uuid) -> Option<String> {
 /// dirty edits are committed whole (no hooks) and kept under [`STRANDED_REF_PREFIX`]`<branch>-<now_ms>`; the remote wins the
 /// branch and the tree. Synchronous git; [`arrive_for`] is the bounded, probed form.
 pub async fn arrive(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
+    if let Some(realigned) = realign_to_anchor(root, branch, now_ms).await {
+        return realigned;
+    }
     // The mirror of the push guard (and the same policy/mechanism split): fetching from a
     // target no other node can push to cannot deliver another node's work, so say so
     // rather than report a transfer that only ever re-read this machine's own cache.
@@ -703,6 +753,67 @@ pub async fn arrive(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
         }
     }
     arrive_over(root, branch, now_ms).await
+}
+
+/// A checkout whose HEAD no longer descends from its creation anchor is put back on it, keeping
+/// everything it had: the recovery for a checkout an earlier arrival moved onto a branch that
+/// predates its allocation (Kimi on the Windows node, 2026-11-08, Codex 52754e2a). `None` when
+/// there is no anchor or HEAD descends from it (nothing to do).
+async fn realign_to_anchor(root: &Path, branch: &str, now_ms: u64) -> Option<ArrivalOutcome> {
+    let branch_s = branch.to_string();
+    let anchor = run_git(root, &["rev-parse", "--verify", "-q", airc_lib::work_worktree::CREATION_BASE_REF]).await.ok()?;
+    let anchor = anchor.trim().to_string();
+    // Only a proven departure is realigned: a shallow clone or a missing commit can make a valid
+    // descendant look like one, and realigning it would strand good work (Codex on #5873 review).
+    if proven_ancestry(root, &anchor, "HEAD").await != Ok(false) {
+        return None;
+    }
+    let dirty = match is_dirty(root).await {
+        Ok(d) => d,
+        Err(error) => return Some(ArrivalOutcome::Failed { branch: branch_s, stage: "status", error }),
+    };
+    let keep = if dirty {
+        commit_tree_no_hooks(root, &format!("stranded: {branch} off its creation anchor"), false, None).await
+    } else {
+        run_git(root, &["rev-parse", "HEAD"]).await.map(|s| s.trim().to_string())
+    };
+    let keep = match keep {
+        Ok(keep) => keep,
+        Err(error) => return Some(ArrivalOutcome::Failed { branch: branch_s, stage: "strand_commit", error }),
+    };
+    let stranded = format!("{STRANDED_REF_PREFIX}{branch}-{now_ms}");
+    if let Err(error) = run_git(root, &["update-ref", &stranded, &keep]).await {
+        return Some(ArrivalOutcome::Failed { branch: branch_s, stage: "strand_ref", error });
+    }
+    let own_commits = match run_git(root, &["rev-list", "--count", &keep, "--not", "--remotes"]).await
+        .and_then(|n| n.trim().parse::<u64>().map_err(|e| format!("rev-list --count printed {n:?}: {e}")))
+    {
+        Ok(n) => n,
+        Err(error) => return Some(ArrivalOutcome::Failed { branch: branch_s, stage: "rev_list", error }),
+    };
+    if let Err(error) = run_git(root, &["checkout", "-q", "-B", branch, &anchor]).await {
+        return Some(ArrivalOutcome::Failed { branch: branch_s, stage: "checkout", error });
+    }
+    if let Err(error) = run_git(root, &["reset", "-q", "--hard", &anchor]).await {
+        return Some(ArrivalOutcome::Failed { branch: branch_s, stage: "reset", error });
+    }
+    Some(ArrivalOutcome::Realigned { branch: branch_s, anchor, stranded, own_commits })
+}
+
+/// Whether `ancestor` is an ancestor of `of`, only on proof: the history is complete (not a
+/// shallow clone) and both commits are present, so git's answer is about ancestry and not about
+/// missing objects. `Err` says why it could not be proven.
+async fn proven_ancestry(root: &Path, ancestor: &str, of: &str) -> Result<bool, String> {
+    let shallow = run_git(root, &["rev-parse", "--is-shallow-repository"]).await?;
+    if shallow.trim() != "false" {
+        return Err("the checkout's history is shallow, so ancestry cannot be proven".into());
+    }
+    for commit in [ancestor, of] {
+        run_git(root, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
+            .await
+            .map_err(|e| format!("commit {commit} is not present here: {e}"))?;
+    }
+    Ok(run_git(root, &["merge-base", "--is-ancestor", ancestor, of]).await.is_ok())
 }
 
 /// [`arrive`] past the transfer-target policy — the fetch / checkout / strand mechanism.
@@ -722,6 +833,20 @@ async fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
         Ok(s) => s.trim().to_string(),
         Err(error) => return ArrivalOutcome::Failed { branch: branch_s, stage: "fetch_head", error },
     };
+    // Kimi on the Windows node, 2026-11-08: a fresh allocation at canary bcbd4aae fetched her old
+    // card branch (e5fe473d, off another line), the remote won, and her anchor was no longer an
+    // ancestor of HEAD, so work/submit refused. A remote that does not contain the anchor is never
+    // adopted. A checkout with no anchor (before airc recorded one) keeps the rule below.
+    if let Ok(anchor) = run_git(root, &["rev-parse", "--verify", "-q", airc_lib::work_worktree::CREATION_BASE_REF]).await {
+        let anchor = anchor.trim().to_string();
+        match proven_ancestry(root, &anchor, &fetched).await {
+            Ok(true) => {}
+            Ok(false) => return ArrivalOutcome::RemotePredatesAllocation { branch: branch_s, remote_sha: fetched, anchor },
+            // Unproven is never adopted (adopting on a guess is how Kimi's anchor left HEAD): the
+            // checkout stands, which loses nothing, and the reason is said.
+            Err(reason) => return ArrivalOutcome::AncestryUnknown { branch: branch_s, reason },
+        }
+    }
     let head = head_sha(root).await;
     let dirty = match is_dirty(root).await {
         Ok(d) => d,
@@ -805,11 +930,15 @@ pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid) -> ArrivalOut
             (sha.as_str(), String::new(), String::new(), String::new()),
         ArrivalOutcome::Unreachable { error, .. } | ArrivalOutcome::Failed { error, .. } => ("", String::new(), String::new(), error.clone()),
         ArrivalOutcome::NotTransferable { reason, .. } => ("", String::new(), String::new(), (*reason).to_string()),
-        ArrivalOutcome::NoRemoteBranch { .. } => ("", String::new(), String::new(), String::new()),
+        ArrivalOutcome::NoRemoteBranch { .. } | ArrivalOutcome::RemotePredatesAllocation { .. } => ("", String::new(), String::new(), String::new()),
+        ArrivalOutcome::AncestryUnknown { reason, .. } => ("", String::new(), String::new(), reason.clone()),
+        ArrivalOutcome::Realigned { anchor, stranded, .. } => (anchor.as_str(), String::new(), stranded.clone(), String::new()),
     };
     let (remote_sha, local_commits, dirty) = match &outcome {
         ArrivalOutcome::LocalWorkPreserved { remote_sha, local_commits, dirty, .. } =>
             (remote_sha.as_str(), *local_commits, *dirty),
+        ArrivalOutcome::RemotePredatesAllocation { remote_sha, .. } => (remote_sha.as_str(), 0, false),
+        ArrivalOutcome::Realigned { own_commits, .. } => ("", *own_commits, false),
         _ => ("", 0, false), // Other outcomes do not carry a local-preservation receipt.
     };
     let to_node = crate::capacity::gossip::this_process_origin().to_string();

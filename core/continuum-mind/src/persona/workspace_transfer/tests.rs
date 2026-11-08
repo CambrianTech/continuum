@@ -264,6 +264,95 @@
         assert!(matches!(arrive_over(&m.b, &m.branch, 44).await, ArrivalOutcome::Transferred { stranded: Some(_), .. }));
     }
 
+    // what this catches (Kimi on the Windows node, 2026-11-08, Codex da817b0e): a fresh
+    // allocation whose card branch already sat on origin at a commit off another line was reset
+    // to that branch, stranding the allocation and leaving her creation anchor off HEAD, so
+    // work/submit refused. A remote without the anchor is reported and never adopted; a remote
+    // that contains the anchor still transfers as before.
+    #[tokio::test]
+    async fn a_remote_branch_that_predates_the_allocation_is_never_adopted() {
+        let m = two_machines().await;
+        // origin's card branch: an old commit off another line (not an ancestor of main's tip).
+        git(&m.a, &["checkout", "-q", "--orphan", "old-line"]).await;
+        let Ok(()) = std::fs::write(m.a.join("README"), "an old line\n") else { panic!("wrote README") };
+        git(&m.a, &["commit", "-q", "-am", "old line"]).await;
+        let stale = head(&m.a).await;
+        git(&m.a, &["push", "-q", "-f", "origin", &format!("HEAD:refs/heads/{}", m.branch)]).await;
+        // B: a fresh allocation of the card at main's tip, anchored there.
+        git(&m.b, &["checkout", "-q", "-B", &m.branch, "origin/main"]).await;
+        let anchor = head(&m.b).await;
+        git(&m.b, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &anchor]).await;
+        match arrive_over(&m.b, &m.branch, 50).await {
+            ArrivalOutcome::RemotePredatesAllocation { remote_sha, anchor: said, .. } => {
+                assert_eq!((remote_sha, said), (stale.clone(), anchor.clone()));
+            }
+            other => panic!("a remote without the anchor must not be adopted, got {other:?}"),
+        }
+        assert_eq!(head(&m.b).await, anchor, "the allocation stands");
+        assert_eq!(git(&m.b, &["for-each-ref", STRANDED_REF_PREFIX]).await.trim(), "", "nothing stranded");
+        // A remote that descends from the anchor is still adopted.
+        git(&m.a, &["checkout", "-q", "-B", &m.branch, "origin/main"]).await;
+        let Ok(()) = std::fs::write(m.a.join("src.txt"), "from A\n") else { panic!("wrote src.txt") };
+        git(&m.a, &["add", "src.txt"]).await;
+        git(&m.a, &["commit", "-q", "-m", "A's work"]).await;
+        git(&m.a, &["push", "-q", "-f", "origin", &format!("HEAD:refs/heads/{}", m.branch)]).await;
+        let descendant = head(&m.a).await;
+        match arrive_over(&m.b, &m.branch, 51).await {
+            ArrivalOutcome::Transferred { sha, stranded: None, .. } => assert_eq!(sha, descendant),
+            other => panic!("a remote containing the anchor transfers, got {other:?}"),
+        }
+    }
+
+    // what this catches (Codex 52754e2a): the recovery for a checkout an earlier arrival already
+    // moved off its anchor (Kimi: HEAD = a stale branch plus her WIP commit, anchor at canary).
+    // Arrival keeps HEAD whole under a stranded ref, counts the commit only she has, and puts the
+    // branch back on the anchor; the next arrival reports the stale remote instead of adopting it.
+    #[tokio::test]
+    async fn a_checkout_already_off_its_anchor_is_put_back_on_it_keeping_her_work() {
+        let m = two_machines().await;
+        let anchor = git(&m.b, &["rev-parse", "origin/main"]).await.trim().to_string();
+        // origin's card branch on another line, and B already moved onto it with a WIP commit.
+        git(&m.a, &["checkout", "-q", "--orphan", "old-line"]).await;
+        let Ok(()) = std::fs::write(m.a.join("README"), "an old line\n") else { panic!("wrote README") };
+        git(&m.a, &["commit", "-q", "-am", "old line"]).await;
+        git(&m.a, &["push", "-q", "-f", "origin", &format!("HEAD:refs/heads/{}", m.branch)]).await;
+        git(&m.b, &["fetch", "-q", "origin", &m.branch]).await;
+        git(&m.b, &["checkout", "-q", "-B", &m.branch, "FETCH_HEAD"]).await;
+        let Ok(()) = std::fs::write(m.b.join("wip.txt"), "her wip\n") else { panic!("wrote wip") };
+        git(&m.b, &["add", "wip.txt"]).await;
+        git(&m.b, &["commit", "-q", "-m", "wip"]).await;
+        let off = head(&m.b).await;
+        git(&m.b, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &anchor]).await;
+        let Some(ArrivalOutcome::Realigned { anchor: said, stranded, own_commits, .. }) = realign_to_anchor(&m.b, &m.branch, 60).await else {
+            panic!("a checkout off its anchor is realigned");
+        };
+        assert_eq!((said, own_commits), (anchor.clone(), 1), "the WIP is the one commit no remote carries");
+        assert_eq!(git(&m.b, &["rev-parse", &stranded]).await.trim(), off, "her HEAD is kept whole");
+        assert_eq!(head(&m.b).await, anchor, "the branch is back on its anchor");
+        assert!(realign_to_anchor(&m.b, &m.branch, 61).await.is_none(), "on its anchor, nothing to do");
+        assert!(matches!(arrive_over(&m.b, &m.branch, 62).await, ArrivalOutcome::RemotePredatesAllocation { .. }), "and the stale remote is not adopted again");
+    }
+
+    // what this catches (Codex on the f76005e8 review): a shallow clone makes git's ancestry
+    // answer about missing history, not ancestry, so a valid descendant could be realigned or a
+    // stale remote adopted on a guess. Unproven ancestry changes nothing and is said.
+    #[tokio::test]
+    async fn unproven_ancestry_in_a_shallow_clone_changes_nothing() {
+        let m = two_machines().await;
+        std::fs::write(m.a.join("src.txt"), "from A\n").unwrap_or_else(|e| panic!("{e}"));
+        let PushOutcome::Ok { .. } = sync(&m.a, Uuid::new_v4(), "node-a").await else { panic!("push") };
+        let shallow = m.tmp.path().join("shallow");
+        git(m.tmp.path(), &["clone", "-q", "--depth", "1", "--branch", &m.branch, &format!("file://{}", m.origin.display()), &shallow.to_string_lossy()]).await;
+        let tip = head(&shallow).await;
+        git(&shallow, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &tip]).await;
+        assert!(realign_to_anchor(&shallow, &m.branch, 70).await.is_none(), "a shallow checkout is never realigned on a guess");
+        match arrive_over(&shallow, &m.branch, 71).await {
+            ArrivalOutcome::AncestryUnknown { reason, .. } => assert!(reason.contains("shallow"), "{reason}"),
+            other => panic!("unproven ancestry adopts nothing, got {other:?}"),
+        }
+        assert_eq!(head(&shallow).await, tip, "the checkout stands");
+    }
+
     // what this catches: the two pure readers. The push-error classifier must not call a
     // refused push "unreachable" (a move would wait on a network that is fine) nor a dead
     // network "rejected"; the WIP subject parser is the only source of the from-node.
