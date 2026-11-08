@@ -104,3 +104,42 @@ fn newest_result_price(refused: &DeliberationPromptView, requested: u32) -> Opti
 fn denser(a: PromptCalibration, b: PromptCalibration) -> bool {
     u128::from(a.measured.get()) * b.estimated.get() as u128 > u128::from(b.measured.get()) * a.estimated.get() as u128
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+    use crate::ai::types::ResultCustody;
+    use crate::cognition::working_memory::WorkingMemory;
+
+    // What this catches: Sahar's 2026-11-08 19:48 refusal attributed the excess
+    // to her newest result, then charged that result-only density to every source.
+    // Her unrelated framing and tools must retain the whole-prompt calibration.
+    #[test]
+    fn newest_result_refit_does_not_reprice_unrelated_sources() {
+        let memory = Arc::new(WorkingMemory::new(8));
+        let whole = (0..12_000).map(|i| format!("result line {i}: retained evidence\n")).collect::<String>();
+        memory.record_receipt_typed(&[], &whole, None,
+            ResultCustody::Whole { handle: "sahar-refit-evidence".into() });
+        let window = 187_136;
+        let faculty = LlmDeliberationFaculty::new(
+            Uuid::new_v4(), "Sahar", "You are Sahar.",
+            Arc::new(HeuristicInferenceAdapter::new()),
+        ).with_context_window(window).with_working_memory(memory);
+        let workspace = Workspace::new("Inspect the retained evidence.");
+        let first = faculty.prompt_view_with_visual_feedback(
+            &workspace, window, PromptCalibration::default(), None,
+        );
+        assert!(!first.newest_result_reduced, "fixture begins with a whole result");
+        assert!(first.newest_result_tokens > 0);
+        let requested = (first.estimated_prompt_tokens * 2) as u32;
+        let Some(average) = PromptCalibration::observed(
+            first.estimated_prompt_tokens, requested, Some(first.input_identity),
+        ) else { panic!("fixture has positive counts"); };
+        let Some(refit) = faculty.refit_newest_after_refusal(
+            &workspace, window, average, None, &first, requested, window,
+        ) else { panic!("denser newest result must be paged"); };
+        assert_eq!(refit.pricing.density(), average.density(),
+            "the result-only surcharge must not replace the shared prompt price");
+    }
+}
