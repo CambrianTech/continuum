@@ -127,16 +127,10 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
         if bytes.len() > 65536 { return Err("Downloaded manifest exceeds 64 KiB".into()); }
         serde_json::from_slice(&bytes).map_err(|e| format!("reading downloaded manifest: {e}"))?
     } else {
-    let resp = client.get(&url).send().await.map_err(|e| fetch_refused("fetching", &url, e))?;
-    if resp.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
+    match fetch_manifest(&client, &url).await? {
+        Some(manifest) => manifest,
+        None => return Ok(None),
     }
-    resp
-        .error_for_status()
-        .map_err(|e| fetch_refused("fetching", &url, e))?
-        .json()
-        .await
-        .map_err(|e| format!("reading {url}: {e}"))?
     };
     manifest_verdict(&manifest, tip, platform, &local_core_features(repo)?)?;
     // A CUDA build carries its runtime, and the node's driver and GPUs must be able to run it
@@ -287,6 +281,20 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
 /// What the warm build did besides the core, done for a CI core: the CLI on PATH follows the
 /// core, and the engine is rebuilt only when its stamp says the vendored fork moved
 /// (`install-llama-server.sh` is a no-op otherwise).
+/// The manifest CI published at `url`; `None` when it published none (404). Every way the host can
+/// fail to deliver it, the body cut off mid-read included, is [`fetch_refused`]'s to classify; a
+/// body that arrives whole and does not decode is the artifact's (Codex on #5868).
+async fn fetch_manifest<T: serde::de::DeserializeOwned>(client: &reqwest::Client, url: &str) -> Result<Option<T>, continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError> {
+    use continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError;
+    let resp = client.get(url).send().await.map_err(|e| fetch_refused("fetching", url, e))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let resp = resp.error_for_status().map_err(|e| fetch_refused("fetching", url, e))?;
+    let body = resp.bytes().await.map_err(|e| fetch_refused("reading", url, e))?;
+    serde_json::from_slice(&body).map(Some).map_err(|e| PublishedCoreError::Artifact(format!("reading {url}: {e}")))
+}
+
 /// A fetch from the release host that failed. The host not answering (unreachable, timed out, a
 /// body cut off mid-transfer, or a 5xx) says nothing about the build: the publication is pending,
 /// rechecked on the next pass with no attempt charged. The IntelMac, 2026-11-08 09:10Z: GitHub's
@@ -297,6 +305,9 @@ fn fetch_refused(what: &str, url: &str, error: reqwest::Error) -> continuum_cli_
     let host_unavailable = error.is_timeout()
         || error.is_connect()
         || error.is_body()
+        // reqwest reports a body cut mid-read through its content decoder as a decode error; the
+        // JSON and the archive are decoded by us, never by reqwest, so its decode kind is transport.
+        || error.is_decode()
         || error.status().is_some_and(|status| status.is_server_error());
     let reason = format!("{what} {url}: {error}");
     match host_unavailable {
@@ -470,13 +481,14 @@ mod tests {
     use continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError;
     use tokio::io::AsyncWriteExt;
 
-    /// A one-shot release host that answers every request with `status`.
-    async fn host_answering(status: &'static str) -> String {
+    /// A one-shot release host that answers with `status`, declaring `declared` body bytes and
+    /// sending `body` (fewer than declared is a body cut off mid-read).
+    async fn host_answering(status: &'static str, declared: usize, body: &'static str) -> String {
         let Ok(listener) = tokio::net::TcpListener::bind("127.0.0.1:0").await else { panic!("a local port") };
         let Ok(addr) = listener.local_addr() else { panic!("its address") };
         tokio::spawn(async move {
             if let Ok((mut socket, _)) = listener.accept().await {
-                let reply = format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+                let reply = format!("HTTP/1.1 {status}\r\ncontent-length: {declared}\r\nconnection: close\r\n\r\n{body}");
                 let _ = socket.write_all(reply.as_bytes()).await;
             }
         });
@@ -484,10 +496,9 @@ mod tests {
     }
 
     async fn refusal_for(url: &str) -> PublishedCoreError {
-        let client = reqwest::Client::new();
-        match client.get(url).send().await.and_then(|r| r.error_for_status()) {
-            Ok(_) => panic!("{url} answered success"),
-            Err(error) => fetch_refused("fetching", url, error),
+        match fetch_manifest::<serde_json::Value>(&reqwest::Client::new(), url).await {
+            Ok(answer) => panic!("{url} answered {answer:?}"),
+            Err(refusal) => refusal,
         }
     }
 
@@ -498,13 +509,18 @@ mod tests {
     #[tokio::test]
     async fn a_host_that_cannot_answer_is_pending_and_a_refused_artifact_is_charged() {
         for status in ["504 Gateway Timeout", "503 Service Unavailable"] {
-            let refusal = refusal_for(&host_answering(status).await).await;
+            let refusal = refusal_for(&host_answering(status, 0, "").await).await;
             assert!(matches!(refusal, PublishedCoreError::SourcePending(_)), "{status}: {refusal:?}");
         }
         let Ok(closed) = tokio::net::TcpListener::bind("127.0.0.1:0").await.and_then(|l| l.local_addr()) else { panic!("a port") };
         let refusal = refusal_for(&format!("http://{closed}/core.json")).await;
         assert!(matches!(refusal, PublishedCoreError::SourcePending(_)), "unreachable: {refusal:?}");
-        let refusal = refusal_for(&host_answering("403 Forbidden").await).await;
+        let refusal = refusal_for(&host_answering("403 Forbidden", 0, "").await).await;
         assert!(matches!(refusal, PublishedCoreError::Artifact(_)), "403: {refusal:?}");
+        // Codex on #5868: the manifest body cut off mid-read is the host's, not the build's.
+        let refusal = refusal_for(&host_answering("200 OK", 100, "{\"tip\":").await).await;
+        assert!(matches!(refusal, PublishedCoreError::SourcePending(_)), "a cut manifest body: {refusal:?}");
+        let refusal = refusal_for(&host_answering("200 OK", 8, "not json").await).await;
+        assert!(matches!(refusal, PublishedCoreError::Artifact(_)), "a whole manifest that does not decode: {refusal:?}");
     }
 }
