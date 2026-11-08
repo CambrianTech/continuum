@@ -7,6 +7,11 @@ notification system which all os can plug in or we keep it within interface. Sam
 they grant it or not." And on answering: "I'd just follow the directions they gave me and copy it
 into a terminal or whatever they say."
 
+**What it is: coordination, like a startup** (Joel: "Coordination really. Just like a startup").
+Minds organize the way a company does: whoever is blocked asks up to the one who can unblock
+them, work is delegated down to lesser AIs, and decisions are voted on across a team. Escalation
+is that primitive: one record for an ask up, a delegation's report back, and a team's vote.
+
 **How it serves the minds:** a citizen doing real work (installs, adb, emulators, simulators,
 websites) eventually hits something only someone above her can give: an admin password, a tool
 she lacks, a decision. Today she stalls, or an agent relays the ask in a chat the human may never
