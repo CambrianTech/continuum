@@ -20,11 +20,12 @@ An **escalation** is one typed record:
 |---|---|---|
 | `id` | `EscalationId` (Uuid) | its identity |
 | `from` | peer id | who is asking: a persona, a sentinel, a sub-agent |
-| `to` | peer id | the tier it is addressed to now (see routing) |
+| `to` | tier: one peer, or a group with its `Decides` rule | who it is addressed to now (see routing, voting) |
 | `chain` | `Vec<peer id>` | the tiers it has already climbed, oldest first |
 | `card` | `Option<CardId>` | the work it blocks, when there is one |
 | `ask` | `Ask` | what is asked (below) |
 | `state` | `EscalationState` | `Open`, `Done`, `Declined`, `Chosen(index)` |
+| `votes` | `Vec<Vote>` | each member's answer for a group ask |
 | `raised_at` | `EpochMs` | when |
 
 ```rust
@@ -55,6 +56,22 @@ A tier that can answer, answers. A tier that cannot **raises it on**: the record
 one tier and `chain` records the hop, so the human sees "Aris's sentinel lacks adb; Aris cannot
 grant it" with the whole path, not a bare ask. Forwarding is the asker's own act (a tool call),
 never a timer: no auto-approve, no auto-forward on timeout.
+
+## Groups and voting
+
+Joel: "And even voting and stuff." `to` is a tier, and a tier can be a GROUP: the residents of a
+room, a council of personas, several humans. A group ask carries its decision rule, as data on the
+record:
+
+```rust
+enum Decides { AnyOne, Majority, Unanimous, Quorum(u16) }
+```
+
+Each member's answer is a vote recorded on the record (who, which option, when). The escalation
+resolves the moment its rule is met, and the asker wakes with the outcome and the tally. A group
+that cannot decide (a tie, a quorum never met) raises it on like any tier that cannot answer. The
+panel shows the open vote, the options, the tally so far and who has not voted yet. The same
+primitive serves a one-human ask (`AnyOne` of one) and a room-wide vote.
 
 ## The hierarchy spans the grid
 
