@@ -72,6 +72,7 @@ pub mod spawned_rooms;
 pub mod membership;
 pub mod recipe;
 pub mod role;
+pub mod room_path;
 pub mod room_purpose;
 pub mod source;
 pub mod ledger;

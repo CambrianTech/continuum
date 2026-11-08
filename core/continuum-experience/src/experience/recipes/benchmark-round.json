@@ -3,7 +3,7 @@
   "id": "c0a1554f-f2c1-4942-8de5-de9c13ce6783",
   "version": 1,
   "purpose": "benchmark/round",
-  "base": "academy",
+  "base": "academy/benchmarks",
   "regions": [
     {
       "name": "scoreboard",

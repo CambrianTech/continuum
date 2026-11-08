@@ -76,6 +76,12 @@ pub struct RoomRecipeBinding {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     #[ts(type = "Record<string, unknown>")]
     pub params: std::collections::BTreeMap<String, serde_json::Value>,
+    /// Where this room sits in the room tree (`airc://room:<path>`): every room says its own
+    /// place, so a child is placed under it by its path, never by its airc channel's name.
+    /// Absent on rooms bound before the tree; such a room's place is its channel's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub path: Option<super::room_path::RoomPath>,
 }
 
 /// Why a wall could not be turned into a recipe binding.
@@ -292,7 +298,7 @@ mod tests {
             params: std::collections::BTreeMap::from([
                 ("suite".to_string(), serde_json::json!("swe-lite")),
                 ("instances".to_string(), serde_json::json!(2)),
-            ]),
+            ]), path: None,
         };
         let body = serde_json::to_string(&written).expect("encode");
         let read = project_binding(&[post(&body)]).expect("decode").expect("bound");
@@ -307,7 +313,7 @@ mod tests {
         let bound = |params: serde_json::Value| RoomRecipeBinding {
             recipe: "project".into(),
             parent: None,
-            params: serde_json::from_value(params).expect("a params map"),
+            params: serde_json::from_value(params).expect("a params map"), path: None,
         };
         assert_eq!(bound(serde_json::json!({"repo": "CambrianTech/career-wrangler"})).declared_repo(), Some("CambrianTech/career-wrangler"));
         assert_eq!(bound(serde_json::json!({"repo": "  "})).declared_repo(), None, "the blank default declares none");

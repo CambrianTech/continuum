@@ -73,6 +73,7 @@ const EMBEDDED_RECIPES: &[(&str, &str)] = &[
     ("benchmark-round.json", include_str!("recipes/benchmark-round.json")),
     ("coursework-round.json", include_str!("recipes/coursework-round.json")),
     ("chat.json", include_str!("recipes/chat.json")),
+    ("category.json", include_str!("recipes/category.json")),
     ("video-chat.json", include_str!("recipes/video-chat.json")),
     ("profile.json", include_str!("recipes/profile.json")),
     ("project.json", include_str!("recipes/project.json")),

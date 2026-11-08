@@ -1,4 +1,5 @@
 use super::*;
+use crate::experience::room_path::{RoomPath, RoomPathError};
 
 /// Birth a room from a recipe on an ALREADY-RESOLVED airc handle.
 ///
@@ -52,71 +53,62 @@ pub async fn spawn_activity_room(
         .get("suite")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    // WHERE IT ROOTS: an explicit parent wins (a sub-activity nests under the activity
-    // that spawned it); else the recipe's declared BASE (a benchmark round is learning →
-    // `academy`, by what it is); else nowhere in particular (the spawner's context). The
-    // base room is resolved by name WITHOUT moving the spawner's focus (airc's Keep join).
-    // The parent ROOM (not just its id) is kept when we resolved it ourselves: the child
-    // record below is published on the parent's wall, and that needs a `Room`.
-    let mut parent_room: Option<airc_lib::Room> = None;
-    let parent = match parent {
-        Some(p) => Some(p),
-        None => match recipe_def.base.as_deref() {
-            Some(base) => match airc.subscribe_room(base).await {
-                Ok(room) => {
-                    parent_room = Some(room.clone());
-                    Some(room.channel)
-                }
-                Err(source) => {
-                    continuum_base::probe!(
-                        class = "activity.base_unresolved",
-                        recipe = %recipe,
-                        base = %base,
-                        error = %source.to_string(),
-                        "the recipe's base room could not be resolved — the activity roots \
-                         top-level this time"
-                    );
-                    None
-                }
-            },
-            None => None,
-        },
-    };
+    // THE ROOM TREE (ACTIVITY-ROOM-PATTERNS.md): a room's identity is its PATH, and the airc
+    // name IS the path, so the same path is the same room on every node. A name with no `/`
+    // goes under its explicit parent, else under its recipe's `base` (a benchmark run under
+    // `academy/benchmarks`, by what it is), else at the top.
+    let path = activity_path(airc, name, parent, recipe_def.base.as_deref()).await?;
+    // Every ancestor is a room too: a missing one is opened (as a category) before its child.
+    let parent_room = open_ancestors(airc, &path).await?;
+    let parent = parent_room.as_ref().map(|r| r.channel);
     {
-        // `join` IS room creation in airc: it derives the channel from the name,
-        // subscribes this peer, and publishes presence. Reusing it keeps ONE room
-        // birth path instead of a parallel creator that would drift from it.
-        //
-        // KNOWN GAP — spawning also FOCUSES. Creating a room and opening it are
-        // different acts: a tab is an *opened* room, and the UI merely tends to do
-        // both at once. But every join path in airc-lib ends in `set_default`
-        // (airc.rs:1654/1850/1928) — there is no subscribe-without-focus — so
-        // spawning here moves the caller's current-room pointer as a side effect.
-        //
-        // That matters beyond tidiness: a daemon spawning a benchmark room yanks
-        // the operator's focus, which is the same shape as #298 (personas dumped
-        // into whatever room the operator's CLI last focused). The fix belongs in
-        // airc — a `subscribe` that does not set default — and then `activity/open`
-        // becomes the separate focusing verb it should be (#290, NavIntent). Until
-        // that lands, callers who must not move focus have to restore the pointer
-        // themselves, and this doc is the receipt saying why.
-        let room = airc.join(name).await.map_err(|source| {
-            CommandError::Invalid(format!("could not create room {name:?}: {source}"))
+        // OPENING NEVER MOVES FOCUS: `subscribe_room` joins without setting the caller's
+        // current room (airc `Focus::Keep`). Creating a room and looking at it are different
+        // acts; a daemon opening a benchmark must not move a human's or a resident's focus.
+        let room = airc.subscribe_room(&path.channel_key()).await.map_err(|source| {
+            CommandError::Invalid(format!("could not open room {}: {source}", path.uri()))
         })?;
         // A reused name resolves to the SAME room. Read its type before publishing
-        // anything: a benchmark spawn once rebound the live project room, after
-        // which benchmark cleanup evicted its coding peers as "finished".
+        // anything: a benchmark spawn once rebound the live project room, after which
+        // benchmark cleanup evicted its coding peers as "finished".
         let posts = airc
             .wall_posts_in(&room, Some(RECIPE_WALL_CATEGORY))
             .await
             .map_err(|e| {
-                CommandError::Internal(format!("cannot read recipe for room {name:?}: {e}"))
+                CommandError::Internal(format!("cannot read recipe for room {}: {e}", path.uri()))
             })?;
-        validate_spawn_binding(name, recipe, &posts)?;
+        validate_spawn_binding(path.as_str(), recipe, &posts)?;
+        // RESUME-OR-CREATE: a room already bound to this recipe IS the activity, resumed:
+        // brought back to live if it was archived, with no second binding, no second child
+        // record and no second run of its creation pipeline (which would import its cards
+        // again). Resuming a benchmark is opening its path again.
+        if let Some(bound) = posts.last() {
+            crate::experience::spawned_rooms::record(room.channel.as_uuid(), path.as_str());
+            let standing = standing_in(airc, &room).await?;
+            if standing.archived {
+                publish_standing_in(airc, &room, &RoomStanding { archived: false, note: Some("resumed".into()), ..standing }).await?;
+            }
+            continuum_base::probe!(
+                class = "activity.resumed",
+                room = %path.uri(),
+                recipe = %recipe,
+                was_archived = standing.archived,
+                "an existing activity was opened again: resumed, not re-created"
+            );
+            return Ok(ActivitySpawnResult {
+                room_id: room.channel,
+                name: room.name,
+                recipe: recipe.to_string(),
+                binding_post_id: bound.post_id,
+                path,
+                opened: ActivityOpened::Resumed,
+                pipeline: None,
+            });
+        }
         // Every spawned room enters the node's adoption set the moment it exists, so
         // the presence emitter bridges its transcript (chat store + rail) on the next
         // refresh — the same minute, like a bench run room, not never (card 3d4b3d9c).
-        crate::experience::spawned_rooms::record(room.channel.as_uuid(), name);
+        crate::experience::spawned_rooms::record(room.channel.as_uuid(), path.as_str());
 
         // Bind the room to its recipe ON THE WALL, where every participant sees the
         // same answer to "what is this room". Without this the room forgets which
@@ -131,8 +123,9 @@ pub async fn spawn_activity_room(
             recipe: recipe.to_string(),
             parent,
             params: resolved_params,
+            path: Some(path.clone()),
         };
-        let body = serde_json::to_string(&binding)
+        let body = serde_json::to_string(&binding) // boundary: the recipe binding wall record — airc's wire + store
             .map_err(|source| CommandError::Internal(format!("encode recipe binding: {source}")))?;
         let post_id = airc
             .publish_wall_post_in(&room, RECIPE_WALL_CATEGORY.to_string(), body, None)
@@ -146,66 +139,10 @@ pub async fn spawn_activity_room(
                 ))
             })?;
 
-        // THE CHILD ANNOUNCES ITSELF TO ITS PARENT (experience::children). A remote node's
-        // resume pass reads the parent's wall and seats its residents by NAME; without
-        // this record a round existed only on the node that spawned it. Never fails the
-        // spawn: the room and its binding stand; a missing record is said, not hidden.
-        if let Some(parent_id) = parent {
-            let parent_room = match parent_room.take() {
-                Some(r) => Some(r),
-                None => airc.subscription_set().await.ok().and_then(|set| {
-                    set.all()
-                        .map(|sub| sub.as_room())
-                        .find(|r| r.channel == parent_id)
-                }),
-            };
-            match parent_room {
-                Some(parent_room) => {
-                    let record = crate::experience::children::RoomChildRecord {
-                        room_id: room.channel.as_uuid(),
-                        name: name.to_string(),
-                        recipe: recipe.to_string(),
-                        suite: child_suite,
-                        spawned_at_ms: continuum_base::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-epoch clock stamps 0 — the record still names the room
-                    };
-                    match serde_json::to_string(&record) {
-                        Ok(body) => match airc
-                            .publish_wall_post_in(
-                                &parent_room,
-                                crate::experience::children::CHILD_WALL_CATEGORY.to_string(),
-                                body,
-                                None,
-                            )
-                            .await
-                        {
-                            Ok(_) => continuum_base::probe!(
-                                class = "activity.child_announced",
-                                room = %name,
-                                parent = %parent_room.name,
-                                recipe = %recipe,
-                                "the spawned activity is on its parent's wall — any node reading the parent can seat its residents"
-                            ),
-                            Err(source) => continuum_base::probe!(
-                                class = "activity.child_announce_failed",
-                                room = %name,
-                                parent = %parent_room.name,
-                                error = %source.to_string(),
-                                "the room exists but its parent never heard of it — remote nodes cannot seat into it until a re-spawn"
-                            ),
-                        },
-                        Err(source) => {
-                            tracing::warn!(%source, room = %name, "child record could not be encoded")
-                        }
-                    }
-                }
-                None => continuum_base::probe!(
-                    class = "activity.child_announce_failed",
-                    room = %name,
-                    parent = %parent_id.as_uuid(),
-                    error = "parent room not in this peer's subscriptions",
-                    "the parent is known by id only — no wall to announce on"
-                ),
-            }
+        // THE CHILD ANNOUNCES ITSELF TO ITS PARENT (experience::children): any node reading
+        // the parent can walk to it and seat its residents.
+        if let Some(parent_room) = parent_room.as_ref() {
+            announce_child(airc, parent_room, &room, &path, recipe, child_suite).await;
         }
         // THE ACTIVITY DOES WHAT ITS RECIPE SAYS (S3). Until now a recipe could
         // describe a room and nothing else; every activity with behaviour was Rust.
@@ -222,7 +159,7 @@ pub async fn spawn_activity_room(
                         "room".to_string(),
                         serde_json::json!({
                             "id": room.channel.as_uuid().to_string(),
-                            "name": name,
+                            "name": path.as_str(),
                             "recipe": recipe,
                         }),
                     )];
@@ -300,8 +237,138 @@ pub async fn spawn_activity_room(
             name: room.name,
             recipe: recipe.to_string(),
             binding_post_id: post_id,
+            path,
+            opened: ActivityOpened::Created,
             pipeline,
         })
+    }
+}
+
+/// The recipe a room on the path to an activity is opened as when nothing has opened it yet:
+/// a category (`academy`, `academy/benchmarks`), whose content is the rooms beneath it.
+pub const CATEGORY_RECIPE: &str = "category";
+
+/// The place an activity's room has in the room tree. A `name` holding a `/` (or an
+/// `airc://room:` URI) IS its path; otherwise it goes inside the explicit `parent` (at that room's
+/// own recorded place), else inside the recipe's `base`, else at the top.
+pub(super) async fn activity_path(
+    airc: &Airc,
+    name: &str,
+    parent: Option<RoomId>,
+    base: Option<&str>,
+) -> Result<RoomPath, CommandError> {
+    let invalid = |e: RoomPathError| CommandError::Invalid(format!("not a room path: {e}"));
+    let bare = name.trim().trim_matches('/');
+    if bare.contains('/') || bare.starts_with("airc://") {
+        return RoomPath::parse(name).map_err(invalid);
+    }
+    let under = match parent {
+        Some(id) => {
+            let set = airc.subscription_set().await.map_err(|e| {
+                CommandError::Internal(format!("cannot read this peer's rooms to place {name:?}: {e}"))
+            })?;
+            let parent = set.all().map(|sub| sub.as_room()).find(|room| room.channel == id).ok_or_else(|| {
+                CommandError::Invalid(format!(
+                    "parent room {} is not one of this peer's rooms, so {name:?} cannot be placed inside it: \
+                     join the parent first, or name the full path (`<parent>/{name}`)",
+                    id.as_uuid()
+                ))
+            })?;
+            Some(place_of(airc, &parent).await?)
+        }
+        None => base.map(RoomPath::parse).transpose().map_err(invalid)?,
+    };
+    match under {
+        Some(under) => under.child(bare).map_err(invalid),
+        None => RoomPath::parse(bare).map_err(invalid),
+    }
+}
+
+/// Where `room` sits in the tree: the path its binding records, else (a room bound before the
+/// tree, like `academy`) its channel's own name.
+async fn place_of(airc: &Airc, room: &airc_lib::Room) -> Result<RoomPath, CommandError> {
+    let posts = airc
+        .wall_posts_in(room, Some(RECIPE_WALL_CATEGORY))
+        .await
+        .map_err(|e| CommandError::Internal(format!("cannot read recipe for room #{}: {e}", room.name)))?;
+    let recorded = crate::experience::binding::project_binding(&posts)
+        .map_err(|e| CommandError::Internal(e.to_string()))?
+        .and_then(|binding| binding.path);
+    match recorded {
+        Some(path) => Ok(path),
+        None => RoomPath::parse(&room.name)
+            .map_err(|e| CommandError::Invalid(format!("room #{} has no place in the room tree: {e}", room.name))),
+    }
+}
+
+/// Open every room `path` sits inside (outermost first) and return its direct parent. One nothing
+/// has opened yet is bound as a [`CATEGORY_RECIPE`] room at its place and announced on its own
+/// parent, so the whole tree is walkable from its root. Never moves focus.
+pub(super) async fn open_ancestors(airc: &Airc, path: &RoomPath) -> Result<Option<airc_lib::Room>, CommandError> {
+    let mut parent: Option<airc_lib::Room> = None;
+    for ancestor in path.ancestors() {
+        let room = airc.subscribe_room(&ancestor.channel_key()).await.map_err(|source| {
+            CommandError::Invalid(format!("could not open {}, a room above {}: {source}", ancestor.uri(), path.uri()))
+        })?;
+        let bound = airc
+            .wall_posts_in(&room, Some(RECIPE_WALL_CATEGORY))
+            .await
+            .map_err(|e| CommandError::Internal(format!("cannot read recipe for room {}: {e}", ancestor.uri())))?;
+        if bound.is_empty() {
+            let binding = RoomRecipeBinding {
+                recipe: CATEGORY_RECIPE.to_string(),
+                parent: parent.as_ref().map(|p| p.channel),
+                params: Default::default(),
+                path: Some(ancestor.clone()),
+            };
+            let body = serde_json::to_string(&binding) // boundary: the category's recipe binding wall record — airc's wire + store
+                .map_err(|source| CommandError::Internal(format!("encode recipe binding: {source}")))?;
+            airc.publish_wall_post_in(&room, RECIPE_WALL_CATEGORY.to_string(), body, None)
+                .await
+                .map_err(|source| CommandError::Internal(format!("could not bind {} as a category: {source}", ancestor.uri())))?;
+            crate::experience::spawned_rooms::record(room.channel.as_uuid(), ancestor.as_str());
+            if let Some(above) = parent.as_ref() {
+                announce_child(airc, above, &room, &ancestor, CATEGORY_RECIPE, None).await;
+            }
+        }
+        parent = Some(room);
+    }
+    Ok(parent)
+}
+
+/// A child room announces itself on its parent's wall ([`crate::experience::children`]), so a
+/// node that never opened it can find it. Never fails the opening: a missing record is probed.
+async fn announce_child(airc: &Airc, parent: &airc_lib::Room, room: &airc_lib::Room, path: &RoomPath, recipe: &str, suite: Option<String>) {
+    let record = crate::experience::children::RoomChildRecord {
+        room_id: room.channel.as_uuid(),
+        name: path.as_str().to_string(),
+        recipe: recipe.to_string(),
+        suite,
+        spawned_at_ms: continuum_base::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-epoch clock stamps 0 — the record still names the room
+    };
+    let outcome = match serde_json::to_string(&record) { // boundary: the child record on the parent's wall — airc's wire + store
+        Ok(body) => airc
+            .publish_wall_post_in(parent, crate::experience::children::CHILD_WALL_CATEGORY.to_string(), body, None)
+            .await
+            .map(|_| ())
+            .map_err(|source| source.to_string()),
+        Err(source) => Err(source.to_string()),
+    };
+    match outcome {
+        Ok(()) => continuum_base::probe!(
+            class = "activity.child_announced",
+            room = %path.uri(),
+            parent = %parent.name,
+            recipe = %recipe,
+            "the activity is on its parent's wall: any node reading the parent can seat its residents"
+        ),
+        Err(error) => continuum_base::probe!(
+            class = "activity.child_announce_failed",
+            room = %path.uri(),
+            parent = %parent.name,
+            error = %error,
+            "the room exists but its parent never heard of it: remote nodes cannot seat into it until it is opened again"
+        ),
     }
 }
 
