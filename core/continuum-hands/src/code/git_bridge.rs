@@ -362,18 +362,14 @@ pub async fn git_sync_from_shared(
     }
 
     // 1. Preserve: commit in-flight persona work before merging.
-    let porcelain = run_git(workspace_root, &["status", "--porcelain"]).await.unwrap_or_default();
+    // A preserve that fails stops the sync: merging over work that was not committed could lose it.
+    let porcelain = run_git(workspace_root, &["status", "--porcelain"]).await
+        .map_err(|e| format!("could not read the workspace's status, so it was not synced (your work is untouched): {e}"))?;
     if !porcelain.trim().is_empty() {
-        let _ = run_git(workspace_root, &["add", "-A"]).await;
-        let _ = run_git_as(
-            workspace_root,
-            actor,
-            &[
-                "commit",
-                "-m",
-                "workspace: autosave persona work before shared sync",
-            ],
-        ).await;
+        run_git(workspace_root, &["add", "-A"]).await
+            .map_err(|e| format!("could not stage your work to preserve it, so the workspace was not synced (your work is untouched): {e}"))?;
+        run_git_as(workspace_root, actor, &["commit", "-m", "workspace: autosave persona work before shared sync"]).await
+            .map_err(|e| format!("could not commit your work to preserve it, so the workspace was not synced (your work is staged, untouched): {e}"))?;
     }
     let before = run_git(workspace_root, &["rev-parse", "HEAD"]).await
         .unwrap_or_default()
@@ -420,10 +416,10 @@ pub async fn git_sync_from_shared(
             }
             _ => {
                 // Never leave a half-merge — abort so the workspace stays usable, fail loud.
-                let _ = run_git_as(workspace_root, actor, &["merge", "--abort"]).await;
-                return Err(format!(
-                    "shared merge failed (aborted; workspace left intact): {e}"
-                ));
+                return Err(match run_git_as(workspace_root, actor, &["merge", "--abort"]).await {
+                    Ok(_) => format!("shared merge failed (aborted; workspace left intact): {e}"),
+                    Err(abort) => format!("shared merge failed AND its abort failed, so the workspace is mid-merge (run `git merge --abort` or resolve it): {e}; abort: {abort}"),
+                });
             }
         }
     }
