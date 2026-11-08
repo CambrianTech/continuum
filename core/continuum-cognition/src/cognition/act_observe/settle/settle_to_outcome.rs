@@ -465,32 +465,14 @@ pub(super) async fn settle_to_outcome<'c>(
         // No constants deciding cognition: "slow" is relative to THIS turn's
         // own pace (2x rolling mean, min 3 samples), and the row always carries
         // the raw numbers so a dashboard can re-judge.
-        // Capacity is an assembly refusal, not a lane wait or a pace sample.
-        // Return before zero-generation classification; preserve all prior work.
-        if let SettleStep::CapacityRefused { error, .. } = &step {
-            return SettleOutcome {
-                room: room_id,
-                decision: Decision::pass(),
-                spoken: None,
-                acts,
-                world_state: burst.rendered.clone(),
-                room_updates: Arc::clone(&burst.room_updates),
-                metrics,
-                deferred_before_dispatch: can_defer_input(
-                    generation_receipts.len(),
-                    acts,
-                    turn_acts.len(),
-                    delib_retries,
-                ),
-                capacity_refusal: Some(error.clone()),
-                generation_receipts,
-                inference_error: None,
-                touched_paths: touched,
-                turn_acts,
-            };
-        }
-        let act_class = classify_act(act_model_ms, act_generations);
-        {
+        // Capacity is an assembly refusal, not a lane wait or a pace sample, and a deferral
+        // dispatched nothing: neither is classified or timed. Both return in the match below
+        // with all prior work preserved.
+        let act_class = match &step {
+            SettleStep::CapacityRefused { .. } | SettleStep::DeferredBeforeDispatch => None,
+            _ => Some(classify_act(act_model_ms, act_generations)),
+        };
+        if let Some(act_class) = act_class {
             let act_secs = act_started.elapsed().as_secs_f64();
             // THE SAMPLE IS AN ACT, NEVER A WAIT. The row still fires for both — a
             // starved iteration is not deleted from the ledger, it is CLASSIFIED —
@@ -744,17 +726,40 @@ pub(super) async fn settle_to_outcome<'c>(
                     turn_acts: turn_acts.clone(),
                 };
             }
+            // A turn-level disposition: capacity refused the assembly, or nothing was
+            // dispatched and the admitted input stays pending (the projection
+            // `SettleStep::from_settled` makes of a deferred outcome, read back as one).
+            disposition @ (SettleStep::CapacityRefused { .. } | SettleStep::DeferredBeforeDispatch) => {
+                let capacity_refusal = match disposition {
+                    SettleStep::CapacityRefused { error, .. } => Some(error),
+                    _ => None,
+                };
+                return SettleOutcome {
+                    room: room_id,
+                    decision: Decision::pass(),
+                    spoken: None,
+                    acts,
+                    world_state: burst.rendered.clone(),
+                    room_updates: Arc::clone(&burst.room_updates),
+                    metrics,
+                    deferred_before_dispatch: can_defer_input(
+                        generation_receipts.len(),
+                        acts,
+                        turn_acts.len(),
+                        delib_retries,
+                    ),
+                    capacity_refusal,
+                    generation_receipts,
+                    inference_error: None,
+                    touched_paths: touched,
+                    turn_acts,
+                };
+            }
             // The model call FAILED — no verdict this task. Return LOUD: carry the
             // cause so the grader scores an infra failure, never a fabricated answer
             // and never a silent `Pass` ([[fallbacks-are-illegal-fail-loud]]). We do
             // not loop/retry here — the grader owns retry policy; the settle loop's
             // job is to report the truth of THIS attempt.
-            SettleStep::CapacityRefused { .. } => {
-                unreachable!("capacity refusal returns before act classification")
-            }
-            SettleStep::DeferredBeforeDispatch => {
-                unreachable!("deferral is a driven-turn disposition, not an individual step");
-            }
             SettleStep::InferenceFailed { error } => {
                 // A STARVED MIND KEEPS HER BUDGET. This arm's retry budget is for a
                 // TRANSIENT MODEL FAULT — a generation that reached the lane and came
@@ -768,7 +773,7 @@ pub(super) async fn settle_to_outcome<'c>(
                 // a never-dispatched turn carries a distinct deferral to its caller.
                 // Earlier dispatched work keeps the existing continuation policy;
                 // its original input must not be replayed as a new request.
-                if act_class == ActClass::LaneStarved {
+                if act_class == Some(ActClass::LaneStarved) {
                     continuum_base::probe!(
                         class = "persona.act.lane_starved",
                         room_id = %room_id,

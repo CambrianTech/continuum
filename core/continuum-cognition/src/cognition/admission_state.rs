@@ -40,7 +40,9 @@
 //! concurrently from per-persona task tasks. Same shape as `PersonaInbox`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::Arc;
+
+use parking_lot::{Mutex, RwLock};
 
 use uuid::Uuid;
 

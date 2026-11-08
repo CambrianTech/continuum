@@ -39,7 +39,8 @@ use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::{EmbeddingInput, EmbeddingRequest, EmbeddingResponse};
 use crate::ai::adapter::global_registry;
 use serde::{Deserialize, Serialize};
-use std::sync::{LazyLock, Mutex};
+use parking_lot::Mutex;
+use std::sync::LazyLock;
 use ts_rs::TS;
 
 /// Default similarity threshold for `semantic_search_tools` — results
@@ -49,9 +50,6 @@ pub const SIMILARITY_THRESHOLD: f32 = 0.3;
 /// Default embedding model — matches TS literal. Local fastembed via
 /// the existing adapter registry handles routing in PR-2.
 pub const TOOL_EMBEDDING_MODEL: &str = "nomic-embed-text";
-
-/// Default `limit` for semantic search results — matches TS default.
-pub const DEFAULT_SEARCH_LIMIT: u32 = 10;
 
 // ─── Tool description input ───────────────────────────────────────────
 
@@ -128,12 +126,11 @@ pub struct SemanticSearchToolsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub model: Option<String>,
-    /// Max results to return. PR-2 defaults to
-    /// [`DEFAULT_SEARCH_LIMIT`] when unset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    #[ts(optional, type = "number")]
-    pub limit: Option<u32>,
+    /// How many ranked hits the caller has room for: the size of its own tool claim
+    /// in the turn's one allocation, stated by the caller. Required, so no number of
+    /// ours stands in for a caller that did not say.
+    #[ts(type = "number")]
+    pub limit: u32,
     /// Minimum cosine similarity to include in results. PR-2 defaults
     /// to [`SIMILARITY_THRESHOLD`] when unset. Caller may pass `0.0`
     /// to disable filtering.
@@ -334,8 +331,7 @@ pub async fn embed_tools(
 
     {
         let mut cache = TOOL_EMBEDDING_CACHE
-            .lock()
-            .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+            .lock();
         *cache = Some(ToolEmbeddingCache {
             embeddings: embeddings.clone(),
             descriptions: request.tools.clone(),
@@ -368,8 +364,7 @@ pub async fn semantic_search_tools(
 ) -> Result<Vec<SemanticSearchResult>, ToolEmbeddingError> {
     let (cached_embeddings, cached_descriptions, cache_model) = {
         let cache = TOOL_EMBEDDING_CACHE
-            .lock()
-            .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+            .lock();
         let entry = cache.as_ref().ok_or(ToolEmbeddingError::CacheEmpty)?;
         (
             entry.embeddings.clone(),
@@ -384,7 +379,7 @@ pub async fn semantic_search_tools(
     // space; refuse silent mixing.
     let model = request.model.clone().unwrap_or(cache_model);
     let threshold = request.threshold.unwrap_or(SIMILARITY_THRESHOLD);
-    let limit = request.limit.unwrap_or(DEFAULT_SEARCH_LIMIT) as usize;
+    let limit = request.limit as usize; // u32 -> usize is lossless on every supported target
 
     let registry_arc = global_registry();
     let registry = registry_arc.read().await;
@@ -442,8 +437,7 @@ pub async fn semantic_search_tools(
 #[cfg(test)]
 pub fn _clear_cache_for_tests() {
     let mut cache = TOOL_EMBEDDING_CACHE
-        .lock()
-        .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+        .lock();
     *cache = None;
 }
 
@@ -457,8 +451,7 @@ pub fn _install_cache_for_tests(
     model: String,
 ) {
     let mut cache = TOOL_EMBEDDING_CACHE
-        .lock()
-        .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+        .lock();
     *cache = Some(ToolEmbeddingCache {
         embeddings,
         descriptions,
@@ -619,13 +612,6 @@ mod tests {
         assert_eq!(TOOL_EMBEDDING_MODEL, "nomic-embed-text");
     }
 
-    /// What this catches: DEFAULT_SEARCH_LIMIT matches the TS default
-    /// limit=10.
-    #[test]
-    fn default_limit_matches_ts_literal() {
-        assert_eq!(DEFAULT_SEARCH_LIMIT, 10);
-    }
-
     // ─── ToolEmbeddingError Display ───────────────────────────────────
 
     /// What this catches: Display impl carries the provider + model
@@ -673,7 +659,7 @@ mod tests {
         let request = SemanticSearchToolsRequest {
             query: "anything".to_string(),
             model: None,
-            limit: None,
+            limit: 1,
             threshold: None,
         };
         // Note: we expect CacheEmpty before any adapter lookup.
@@ -705,7 +691,7 @@ mod tests {
         );
         // Read it back to confirm install
         let snapshot = {
-            let guard = TOOL_EMBEDDING_CACHE.lock().unwrap();
+            let guard = TOOL_EMBEDDING_CACHE.lock();
             guard.clone()
         };
         assert!(snapshot.is_some());

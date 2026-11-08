@@ -11,6 +11,35 @@
 
 use crate::cognition::rate_proposals::types::{ProposalRating, ResponseProposal};
 use regex::Regex;
+use std::sync::LazyLock;
+
+/// The rater's four patterns, compiled once for every response this process parses.
+struct RatingPatterns {
+    /// `PROPOSAL N:` (case-insensitive), the section split.
+    split: Regex,
+    score: Regex,
+    should_post: Regex,
+    reasoning: Regex,
+}
+
+impl RatingPatterns {
+    fn compile() -> Result<Self, regex::Error> {
+        Ok(Self {
+            split: Regex::new(r"(?i)PROPOSAL\s+\d+:")?,
+            score: Regex::new(r"(?i)Score:\s*([0-9.]+)")?,
+            should_post: Regex::new(r"(?i)ShouldPost:\s*(yes|no)")?,
+            reasoning: Regex::new(r"(?i)Reasoning:\s*")?,
+        })
+    }
+}
+
+static RATING_PATTERNS: LazyLock<Result<RatingPatterns, regex::Error>> = LazyLock::new(RatingPatterns::compile);
+
+/// The parser cannot run: one of its patterns did not compile. A response is never
+/// rated by defaults in its place.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("a rating-response pattern did not compile: {0}")]
+pub struct RatingPatternError(#[source] regex::Error);
 
 /// Configuration knobs for the parser. Defaults match the TS behavior so
 /// migration consumers get byte-identical fallback semantics.
@@ -54,19 +83,19 @@ pub fn parse_ratings_from_ai_response(
     response_text: &str,
     proposals: &[ResponseProposal],
     config: &ParseConfig,
-) -> Vec<ProposalRating> {
+) -> Result<Vec<ProposalRating>, RatingPatternError> {
+    let patterns = RATING_PATTERNS.as_ref().map_err(|e| RatingPatternError(e.clone()))?;
     let mut ratings: Vec<ProposalRating> = Vec::with_capacity(proposals.len());
 
     // Split on `PROPOSAL N:` markers (case-insensitive). Drop the first
     // segment (preamble before the first PROPOSAL marker, often empty).
-    let split_re = Regex::new(r"(?i)PROPOSAL\s+\d+:").expect("static regex");
-    let sections: Vec<&str> = split_re.split(response_text).skip(1).collect();
+    let sections: Vec<&str> = patterns.split.split(response_text).skip(1).collect();
 
     let take_n = sections.len().min(proposals.len());
     for i in 0..take_n {
         let section = sections[i];
         let proposal = &proposals[i];
-        ratings.push(parse_one_section(section, proposal, config));
+        ratings.push(parse_one_section(patterns, section, proposal, config));
     }
 
     // Fill missing positions (AI returned fewer ratings than proposals).
@@ -79,17 +108,17 @@ pub fn parse_ratings_from_ai_response(
         });
     }
 
-    ratings
+    Ok(ratings)
 }
 
 fn parse_one_section(
+    patterns: &RatingPatterns,
     section: &str,
     proposal: &ResponseProposal,
     config: &ParseConfig,
 ) -> ProposalRating {
     // Score: floating-point, clamped to [0, 1] per TS.
-    let score_re = Regex::new(r"(?i)Score:\s*([0-9.]+)").expect("static regex");
-    let score = score_re
+    let score = patterns.score
         .captures(section)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse::<f64>().ok())
@@ -97,8 +126,7 @@ fn parse_one_section(
         .clamp(0.0, 1.0);
 
     // ShouldPost: yes/no, case-insensitive.
-    let should_post_re = Regex::new(r"(?i)ShouldPost:\s*(yes|no)").expect("static regex");
-    let should_post = should_post_re
+    let should_post = patterns.should_post
         .captures(section)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().eq_ignore_ascii_case("yes"))
@@ -109,8 +137,7 @@ fn parse_one_section(
     // do this in two stages: locate the Reasoning: marker, then take
     // until the first `\n\n` (or end). Mirrors TS
     // `/Reasoning:\s*(.+?)(?=\n\n|$)/is` semantics.
-    let reasoning_re = Regex::new(r"(?i)Reasoning:\s*").expect("static regex");
-    let reasoning = reasoning_re
+    let reasoning = patterns.reasoning
         .find(section)
         .map(|m| {
             let after = &section[m.end()..];
@@ -163,7 +190,7 @@ Score: 0.75
 ShouldPost: yes
 Reasoning: Different approach, valuable alternative
 ";
-        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default());
+        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default()).expect("test: the rating patterns compile");
         assert_eq!(ratings.len(), 3);
         assert_eq!(ratings[0].proposal_id, "p-1");
         assert!((ratings[0].score - 0.85).abs() < 1e-9);
@@ -193,7 +220,7 @@ ShouldPost: yes
 Reasoning: only this one
 ";
         let cfg = ParseConfig::default();
-        let ratings = parse_ratings_from_ai_response(response, &proposals, &cfg);
+        let ratings = parse_ratings_from_ai_response(response, &proposals, &cfg).expect("test: the rating patterns compile");
         assert_eq!(ratings.len(), 3);
         assert_eq!(ratings[0].proposal_id, "p-1");
         assert!((ratings[0].score - 0.9).abs() < 1e-9);
@@ -222,7 +249,7 @@ Score: 0.9
 ShouldPost: yes
 Reasoning: should not appear
 ";
-        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default());
+        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default()).expect("test: the rating patterns compile");
         assert_eq!(ratings.len(), 1);
         assert_eq!(ratings[0].proposal_id, "p-1");
         assert!((ratings[0].score - 0.5).abs() < 1e-9);
@@ -240,7 +267,7 @@ ShouldPost: yes
 Reasoning: forgot the score line
 ";
         let cfg = ParseConfig::default();
-        let ratings = parse_ratings_from_ai_response(response, &proposals, &cfg);
+        let ratings = parse_ratings_from_ai_response(response, &proposals, &cfg).expect("test: the rating patterns compile");
         assert_eq!(ratings[0].score, cfg.default_score);
         assert!(ratings[0].should_post);
     }
@@ -256,7 +283,7 @@ PROPOSAL 1:
 Score: 0.9
 Reasoning: high score, but no post directive
 ";
-        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default());
+        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default()).expect("test: the rating patterns compile");
         assert_eq!(ratings[0].should_post, false);
         assert!((ratings[0].score - 0.9).abs() < 1e-9);
     }
@@ -283,7 +310,7 @@ ShouldPost: no
 Reasoning: leading minus prevents [0-9.]+ from matching at all
 ";
         let cfg = ParseConfig::default();
-        let ratings = parse_ratings_from_ai_response(response, &proposals, &cfg);
+        let ratings = parse_ratings_from_ai_response(response, &proposals, &cfg).expect("test: the rating patterns compile");
         assert_eq!(ratings[0].score, 1.0, "1.5 clamps down to 1.0");
         assert_eq!(
             ratings[1].score, cfg.default_score,
@@ -307,7 +334,7 @@ Score: 0.5
 shouldpost: NO
 Reasoning: b
 ";
-        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default());
+        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default()).expect("test: the rating patterns compile");
         assert_eq!(ratings[0].should_post, true);
         assert_eq!(ratings[1].should_post, false);
     }
@@ -328,7 +355,7 @@ Score: 0.6
 ShouldPost: yes
 Reasoning: still parses
 ";
-        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default());
+        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default()).expect("test: the rating patterns compile");
         assert_eq!(ratings.len(), 2);
         assert!((ratings[0].score - 0.4).abs() < 1e-9);
         assert!((ratings[1].score - 0.6).abs() < 1e-9);
@@ -340,7 +367,7 @@ Reasoning: still parses
     fn empty_response_fills_all_defaults() {
         let proposals = vec![p("p-1", "alice"), p("p-2", "bob")];
         let cfg = ParseConfig::default();
-        let ratings = parse_ratings_from_ai_response("", &proposals, &cfg);
+        let ratings = parse_ratings_from_ai_response("", &proposals, &cfg).expect("test: the rating patterns compile");
         assert_eq!(ratings.len(), 2);
         for r in &ratings {
             assert_eq!(r.score, cfg.default_score);
@@ -355,7 +382,7 @@ Reasoning: still parses
     fn zero_proposals_yields_zero_ratings() {
         let proposals: Vec<ResponseProposal> = vec![];
         let response = "PROPOSAL 1:\nScore: 0.5\nShouldPost: yes\nReasoning: x";
-        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default());
+        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default()).expect("test: the rating patterns compile");
         assert!(ratings.is_empty());
     }
 
@@ -377,7 +404,7 @@ Score: 0.5
 ShouldPost: yes
 Reasoning: second reasoning
 ";
-        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default());
+        let ratings = parse_ratings_from_ai_response(response, &proposals, &ParseConfig::default()).expect("test: the rating patterns compile");
         assert_eq!(ratings[0].reasoning, "first reasoning ends here");
         assert_eq!(ratings[1].reasoning, "second reasoning");
     }

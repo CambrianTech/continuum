@@ -435,9 +435,15 @@ impl ChatQueueItem {
         // VideoFrameQueueItem / GameMoveQueueItem can choose different
         // trigger rules appropriate to their domain.
         let latest_with_media = all_messages.iter().rev().find(|m| !m.media.is_empty());
+        // The last message in timestamp order, seeded with `self` so a consolidation set always
+        // has one; `>=` keeps the later of equal timestamps, as the stable sort's last does.
+        let latest = all_messages
+            .iter()
+            .copied()
+            .fold(self, |latest, m| if m.timestamp >= latest.timestamp { m } else { latest });
         let trigger = latest_with_media
             .copied()
-            .unwrap_or(*all_messages.last().unwrap());
+            .unwrap_or(latest); // unwrap_or: no media in the set is the documented rule, the latest message triggers
         let prior: Vec<&ChatQueueItem> = all_messages
             .iter()
             .copied()

@@ -11,31 +11,36 @@
 //! matching the shape) become unit tests instead of live-fixture-only tests.
 
 use crate::cognition::generate_recipe::types::RecipeDefinitionShape;
-use once_cell::sync::Lazy;
-use regex::Regex;
 
-/// Why this catches non-empty output: matches the first `{ ... }` envelope in
-/// the response, including newlines. Mirrors TS `/\{[\s\S]*\}/` exactly. NOT
-/// anchored — the AI may emit prose before/after the JSON despite the prompt
+/// The `{ ... }` envelope in the response, including newlines: from the first `{` to the
+/// last `}` after it, which is what TS `/\{[\s\S]*\}/` matches (leftmost start, greedy end).
+/// NOT anchored — the AI may emit prose before/after the JSON despite the prompt
 /// rule "Output ONLY the JSON object", so the matcher tolerates it.
-static JSON_ENVELOPE_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)\{.*\}").expect("static regex compiles"));
+fn json_envelope(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let end = text.rfind('}').filter(|&end| end > start)?;
+    Some(&text[start..=end])
+}
 
 /// Typed parse failure. Carrier for the TS shim's `validationErrors` array
 /// when surfaced through PR-2's IPC handler. Avoids the silent
 /// `success: false, error: '...'` flat-string anti-pattern called out by #1262.
+///
+/// Each variant carries the WHOLE text it failed on, never a head of it: a syntax error
+/// usually sits at the end the head would have dropped, and how much of it a reader sees
+/// is its view's level of the result, decided where it is shown.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParseError {
     /// AI emitted no JSON envelope — the regex `\{ ... \}` matched nothing.
     /// Usually means the AI returned prose, refused, or emitted markdown
     /// fences without JSON inside.
-    NoJsonEnvelope { raw_preview: String },
+    NoJsonEnvelope { raw: String },
     /// AI emitted a JSON envelope but it didn't deserialize into the
     /// `RecipeDefinitionShape` even with serde defaults. Usually means the
     /// JSON was malformed (trailing commas, unterminated strings) or had
     /// type mismatches (string where array expected).
     MalformedJson {
-        raw_preview: String,
+        raw: String,
         serde_error: String,
     },
 }
@@ -43,16 +48,16 @@ pub enum ParseError {
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::NoJsonEnvelope { raw_preview } => write!(
+            ParseError::NoJsonEnvelope { raw } => write!(
                 f,
-                "LLM did not return valid JSON. Raw output: {raw_preview}"
+                "LLM did not return valid JSON. Raw output: {raw}"
             ),
             ParseError::MalformedJson {
-                raw_preview,
+                raw,
                 serde_error,
             } => write!(
                 f,
-                "LLM returned malformed JSON: {serde_error}. Raw JSON: {raw_preview}"
+                "LLM returned malformed JSON: {serde_error}. Raw JSON: {raw}"
             ),
         }
     }
@@ -60,47 +65,22 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// Cap on raw-output preview length stored in `ParseError` for diagnostics.
-/// Mirrors TS `slice(0, 500)` on validationErrors.
-const RAW_PREVIEW_MAX: usize = 500;
-
 /// Parse the AI's freeform response into a `RecipeDefinitionShape`. Returns
 /// the shape on success, typed `ParseError` on failure. Caller (PR-2's IPC
 /// handler) decides whether to surface as JTAG validationErrors or as Err.
 pub fn parse_recipe_from_ai_response(
     response_text: &str,
 ) -> Result<RecipeDefinitionShape, ParseError> {
-    let preview = preview(response_text);
+    let envelope = json_envelope(response_text).ok_or_else(|| ParseError::NoJsonEnvelope {
+        raw: response_text.to_owned(),
+    })?;
 
-    let envelope = JSON_ENVELOPE_RE
-        .find(response_text)
-        .ok_or(ParseError::NoJsonEnvelope {
-            raw_preview: preview.clone(),
-        })?;
-
-    serde_json::from_str::<RecipeDefinitionShape>(envelope.as_str()).map_err(|err| {
+    serde_json::from_str::<RecipeDefinitionShape>(envelope).map_err(|err| {
         ParseError::MalformedJson {
-            raw_preview: preview_str(envelope.as_str()),
+            raw: envelope.to_owned(),
             serde_error: err.to_string(),
         }
     })
-}
-
-fn preview(s: &str) -> String {
-    preview_str(s)
-}
-
-fn preview_str(s: &str) -> String {
-    if s.len() <= RAW_PREVIEW_MAX {
-        s.to_string()
-    } else {
-        // Truncate at char boundary to avoid panic on multi-byte chars.
-        let mut idx = RAW_PREVIEW_MAX;
-        while !s.is_char_boundary(idx) && idx > 0 {
-            idx -= 1;
-        }
-        s[..idx].to_string()
-    }
 }
 
 #[cfg(test)]
@@ -170,8 +150,8 @@ Hope that helps!"#;
             "I'm sorry, I cannot generate a recipe without more information about the activity.";
         let err = parse_recipe_from_ai_response(response).expect_err("no envelope");
         match err {
-            ParseError::NoJsonEnvelope { raw_preview } => {
-                assert!(raw_preview.contains("I'm sorry"));
+            ParseError::NoJsonEnvelope { raw } => {
+                assert!(raw.contains("I'm sorry"));
             }
             other => panic!("expected NoJsonEnvelope, got {other:?}"),
         }
@@ -237,23 +217,16 @@ Hope that helps!"#;
         assert!(shape.pipeline.is_empty());
     }
 
-    /// What this catches: very long raw output gets truncated at the
-    /// 500-char preview boundary. Without this, error logs balloon
-    /// when the AI emits a 50KB JSON blob with one syntax error.
-    /// Mirrors TS `slice(0, 500)`.
+    /// What this catches: the error clipping the newest end of a long output. The
+    /// end is where a truncated or malformed reply goes wrong; a head-only copy hid it
+    /// (rule 7: never clip the newest end).
     #[test]
-    fn raw_preview_caps_at_500_chars() {
+    fn a_long_output_reaches_the_error_whole() {
         let big = "x".repeat(2000);
         let response = format!("{big} no json here");
         let err = parse_recipe_from_ai_response(&response).expect_err("no envelope");
         match err {
-            ParseError::NoJsonEnvelope { raw_preview } => {
-                assert!(
-                    raw_preview.len() <= RAW_PREVIEW_MAX,
-                    "preview should cap at {RAW_PREVIEW_MAX} chars, got {}",
-                    raw_preview.len(),
-                );
-            }
+            ParseError::NoJsonEnvelope { raw } => assert_eq!(raw, response),
             other => panic!("expected NoJsonEnvelope, got {other:?}"),
         }
     }

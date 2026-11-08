@@ -491,16 +491,6 @@ impl Workspace {
         }
     }
 
-    /// The activity witness for this turn. Infallible by construction: the only
-    /// production constructor is [`from_burst`](Self::from_burst) and a `Burst`
-    /// cannot exist without a non-nil [`ActivityRoom`](crate::identity::ActivityRoom)
-    /// — so the expect below can only fire if a `#[cfg(test)]` constructor leaked
-    /// a nil room into production, which is exactly the bug it should crash on.
-    pub fn room(&self) -> crate::identity::ActivityRoom {
-        crate::identity::ActivityRoom::from_uuid(self.room_id)
-            .expect("Workspace.room_id is witnessed non-nil at construction (#425)")
-    }
-
     /// Attach a per-turn token sink for STREAMING the answer (#169). Builder form,
     /// mirroring [`directed`](Self::directed)/[`self_initiated`](Self::self_initiated).
     /// `None` stays the default everywhere; the live caller sets `Some` only for a

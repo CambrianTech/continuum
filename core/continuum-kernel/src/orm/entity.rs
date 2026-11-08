@@ -71,9 +71,15 @@ impl BaseEntity {
     /// Construct a fresh BaseEntity for a brand-new record. Generates a
     /// UUID v4, stamps `now()` for both timestamps, sets version=1.
     pub fn for_new_record() -> Self {
+        Self::for_new_record_at(uuid::Uuid::new_v4())
+    }
+
+    /// A fresh BaseEntity whose primary key the caller already holds as a typed id, so the
+    /// caller never parses its own key back out of `id`.
+    pub fn for_new_record_at(id: uuid::Uuid) -> Self {
         let now = chrono::Utc::now().to_rfc3339();
         BaseEntity {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: id.to_string(),
             created_at: now.clone(),
             updated_at: now,
             version: 1,
