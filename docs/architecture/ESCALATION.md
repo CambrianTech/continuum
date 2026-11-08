@@ -78,6 +78,16 @@ that cannot decide (a tie, a quorum never met) raises it on like any tier that c
 panel shows the open vote, the options, the tally so far and who has not voted yet. The same
 primitive serves a one-human ask (`AnyOne` of one) and a room-wide vote.
 
+## Governance is a policy, not code
+
+Joel: "I'm CEO so to speak" and "Or like you said it could be democratic." Who decides what is data
+on a room or activity, never a structure baked into the code: a hierarchy (asks climb to the human,
+who decides), a democracy (the room's residents vote by `Majority`, the human one voter or the
+tie-breaker), or a mix (team votes for day-to-day calls; admin steps and credentials always reach
+the human). Every one of them is the same record, routing and vote; the policy only picks each
+ask's tier and `Decides` rule. Some asks are the human's whatever the policy: an admin password or
+a credential only the person at the machine has.
+
 ## The hierarchy spans the grid
 
 Joel: "It works well with a Tron like hierarchy and an ability to have lesser AI's on grid." Programs
