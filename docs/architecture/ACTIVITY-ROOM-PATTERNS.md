@@ -82,12 +82,18 @@ room, every damn thing is a room."
 Everything below already exists except the two marked **new**; the design is to route every
 activity through it.
 
-**1. A room's identity is its path.** `academy`, `academy/benchmarks`,
-`academy/benchmarks/hard-rs-2026-11-08`, `academy/training`, `projects/continuum`,
-`projects/continuum/cards/4d34acb9`, `settings`. The airc room name IS the path, and airc derives
-the channel from the name, so the same path is always the same room on every node.
+**1. A room's identity is its URI** (GRID-ADDRESSING-AND-ROUTING.md: every addressable thing is
+`airc://[peer[@node]][:env]/[path]`). A room is a URI authority, and rooms inside it are path
+segments, the way `airc://maya/cognition/genome/lora:x/` addresses an adapter inside Maya:
+`airc://room:academy/benchmarks/run-1` is the run inside `benchmarks` inside `academy`;
+`airc://room:academy/benchmarks/run-1/chat/messages` is a stream inside that run. A segment that
+names a child room descends into it (the child records on each parent's wall, `children.rs`);
+anything else is a command or substructure, like directories and files. The same URI works on
+every node, and it is the RBAC policy unit (`airc://room:academy/**`), so permissions follow the
+tree. The airc channel behind a room is an internal key derived from its URI, never a name anyone
+types.
 
-**2. Opening is resume-or-create (one verb, `activity/spawn` today).** Open a path with a recipe:
+**2. Opening is resume-or-create (one verb, `activity/spawn` today).** Open a URI with a recipe:
 - if the room exists, it is the same room; its binding must name the same recipe
   (`validate_spawn_binding`, already there); if its standing is archived, it goes back to live.
   That is "resume the benchmark";
@@ -95,11 +101,10 @@ the channel from the name, so the same path is always the same room on every nod
 
 Naming chooses which: resuming names the existing run; a new run names a new leaf.
 
-**3. Ancestors are rooms too (new: `base` becomes a path).** A recipe's `base` is the path its
-instances live under: a benchmark's `base` is `academy/benchmarks`, not `academy`. Opening a path
-opens each missing ancestor first, from that ancestor's own recipe (`academy`, `academy/benchmarks`,
-`projects`, …; a category's content is the `Listing` of its children). Each child announces itself
-on its parent's wall (`children.rs`, already there), so any node can walk the tree.
+**3. Ancestors are rooms too.** A recipe's `base` is the URI its instances live under: a
+benchmark's is `room:academy/benchmarks`. Opening a URI opens each missing ancestor first, as a
+category room (whose content is the `Listing` of its children), and each child announces itself on
+its parent's wall, so any node can walk the tree.
 
 **4. Done is archived, never deleted** (`standing.rs`, already there: the room is the activity's
 record). Archived rooms stop recruiting attention and stay readable; resuming un-archives.
@@ -115,10 +120,8 @@ by the activities that need her, and joins others with `room/join`.
 live, released when it archives), who decides and by what rule, and where an ask it cannot answer
 goes (its parent room, ending at the human). A vote is a room whose purpose is deciding.
 
-**7. Opening never steals focus (new, in airc).** Today every airc join also sets the caller's
-current room (the known gap in `spawn_activity_room.rs`), so a daemon opening a benchmark moves a
-human's or resident's focus. airc needs subscribe-without-focus; focusing is then its own act (a tab
-switch).
+**7. Opening never steals focus.** airc's `subscribe_room` joins without moving the caller's current
+room (`Focus::Keep`); opening uses it, and focusing is its own act (a tab switch).
 
 ## Invariants (non-negotiable)
 
@@ -127,7 +130,7 @@ switch).
 - **Patterns are consumer-neutral transforms; RAG is a peer `RenderTarget`.** The persona's grounding and the human's UI are one projection and cannot drift. Never render the two from separate code.
 - **`Listing` is one primitive.** Users, rooms/DMs, HF-models, cohorts — all the same `Listing`, different data + cell. Never a bespoke list per use.
 - **positron stays continuum-blind; continuum interprets purpose at the app layer** (inherits the base doc's neutrality thesis — airc neutral → positron neutral → continuum interprets).
-- **Every activity is a room at a path in the room tree, opened by resume-or-create, archived never deleted** (above). Never a fixed home room, never a parallel system for workspaces, decisions or escalation.
+- **Every activity is a room addressed by its URI in the room tree, opened by resume-or-create, archived never deleted** (above). Never a fixed home room, never a parallel system for workspaces, decisions or escalation.
 - **Two outliers prove the seam, then STOP.** chat + foundry; the rest register.
 
 ## Related
