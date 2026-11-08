@@ -225,13 +225,14 @@ impl LlmDeliberationFaculty {
 }
 
 #[cfg(test)]
-mod utf8_page_tests {
+mod tests {
     use super::*;
 
+    // what this catches: the 09:37:24 Windows Sahar abort when a multiline page cut split U+FFFD.
     #[test]
     fn multiline_page_cut_inside_replacement_character_preserves_first_line() {
         let text = format!("ok tool/output(outputId=f68053e3b2bad9c9)\n{}\u{fffd}tail", "x".repeat(1456));
-        let at = text.find('\u{fffd}').unwrap();
+        let Some(at) = text.find('\u{fffd}') else { panic!("fixture must contain the replacement character") };
         let saved = Saved { label: "result", handle: "f68053e3b2bad9c9" };
         for split in [at + 1, at + 2] {
             let page = saved.page_at(&text, split, text.chars().count(), estimate_guard_tokens(&text));
@@ -239,18 +240,14 @@ mod utf8_page_tests {
             assert!(page.contains("lines 1-1 of 2"));
         }
     }
-}
-
-#[cfg(test)]
-mod utf8_page_boundary_tests {
-    use super::*;
+    // what this catches: the same Sahar abort across every UTF-8 byte split and page-search budget.
     #[test]
     fn every_byte_cut_keeps_a_prefix_and_exact_continuation() {
         let saved = Saved { label: "result", handle: "f68053e3b2bad9c9" };
         for text in ["", "ASCII", "é中😀tail", "header\né中😀tail", "é\n中\n😀tail"] {
             for upto in 0..=text.len() + 2 {
                 let page = saved.page_at(text, upto, text.chars().count(), estimate_guard_tokens(text));
-                let (_, content) = page.split_once('\n').unwrap();
+                let Some((_, content)) = page.split_once('\n') else { panic!("page must separate note and content") };
                 assert!(text.starts_with(content));
                 let boundary = text.floor_char_boundary(upto.min(text.len()));
                 let first_line = text.find('\n').map_or(text.len(), |at| at + 1);
@@ -264,7 +261,8 @@ mod utf8_page_boundary_tests {
             }
             for target in 0..=estimate_guard_tokens(text) + 5 {
                 let page = saved.first_page(text, target);
-                assert!(text.starts_with(page.split_once('\n').unwrap().1));
+                let Some((_, content)) = page.split_once('\n') else { panic!("page must separate note and content") };
+                assert!(text.starts_with(content));
             }
         }
     }
