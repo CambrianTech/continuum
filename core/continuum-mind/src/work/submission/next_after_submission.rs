@@ -189,13 +189,20 @@ impl ActionCommand for WorkSubmit {
         candidate
             .validate_for_card(card)
             .map_err(|e| CommandError::Invalid(format!("submission refused: {e}")))?;
-        if p.staged_revision_id.is_some() && p.generation_request_id.is_some() {
-            return Err(CommandError::Invalid(
-                "select staged_revision_id or generation_request_id, not both".into(),
-            ));
-        }
+        // At most one credit selection, bound once: the binding below matches this value,
+        // so there is no third "neither" case for it to meet.
+        let selection = match (p.generation_request_id.as_deref(), p.staged_revision_id) {
+            (Some(_), Some(_)) => {
+                return Err(CommandError::Invalid(
+                    "select staged_revision_id or generation_request_id, not both".into(),
+                ));
+            }
+            (Some(generation), None) => Some(CreditSelection::Generation(generation)),
+            (None, Some(revision)) => Some(CreditSelection::Revision(revision)),
+            (None, None) => None,
+        };
         let mut bound_staged_revision_id = None;
-        if p.staged_revision_id.is_some() || p.generation_request_id.is_some() {
+        if let Some(selection) = selection {
             if self.registry.get(runtime.persona_id()).is_none()
                 || runtime.persona_id() != airc.peer_id().as_uuid()
             {
@@ -204,8 +211,8 @@ impl ActionCommand for WorkSubmit {
                 ));
             }
             let conn = credit_connection(self.executor_slot.cloned(), runtime.persona_id())?;
-            let binding = if let Some(generation) = p.generation_request_id.as_deref() {
-                reviewed::bind_submission_generation(
+            let binding = match selection {
+                CreditSelection::Generation(generation) => reviewed::bind_submission_generation(
                     &conn,
                     runtime.agent_name(),
                     runtime.persona_id(),
@@ -213,9 +220,8 @@ impl ActionCommand for WorkSubmit {
                     &candidate,
                     generation,
                 )
-                .await
-            } else if let Some(revision) = p.staged_revision_id {
-                reviewed::bind_submission(
+                .await,
+                CreditSelection::Revision(revision) => reviewed::bind_submission(
                     &conn,
                     runtime.agent_name(),
                     runtime.persona_id(),
@@ -230,9 +236,7 @@ impl ActionCommand for WorkSubmit {
                         artifact: candidate.artifact.clone(),
                     },
                 )
-                .await
-            } else {
-                unreachable!("credit selection checked above")
+                .await,
             }
             .map_err(|e| match e {
                 reviewed::CreditBindingError::Storage(source) => {
@@ -619,6 +623,13 @@ impl ActionCommand for WorkReview {
 }
 
 crate::register_command!(WorkReview);
+
+/// The one credit a submission explicitly selects: the generation that produced it, or a
+/// staged revision. Parsed from the two optional params, which may not both be set.
+enum CreditSelection<'p> {
+    Generation(&'p str),
+    Revision(Uuid),
+}
 
 /// May the author PUBLISH a review of her own submission, given the ONE policy read the
 /// command took? A declared `self: false` refuses; a policy that could not be read refuses

@@ -5,112 +5,181 @@
 //!
 //! 8 checks: empty → encoding errors → inference errors → unicode garbage →
 //! repetition → truncation markers → excessive punctuation → token boundary garbage
+//!
+//! Every pattern is a hand-written matcher over [`crate::scan`] (they were regexes
+//! compiled with `.unwrap()`); the tests pin each against the regex it replaced.
 
-use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
 
+use super::scan::{capitalized_word, fold_occurrences, fold_prefix, is_digit, is_space, line_start_matches, take_one, take_while};
 use super::types::{GarbageCheckResult, GarbageReason};
 
-// Pre-compiled regex patterns (compiled once, used forever)
-static REPLACEMENT_CHAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x{FFFD}").unwrap());
-static CONTROL_CHARS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[\x00-\x08\x0B\x0C\x0E-\x1F]").unwrap());
-static PRINTABLE_ASCII: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[\x20-\x7E\n\r\t]").unwrap());
-static EMOJI_RANGE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[\x{1F300}-\x{1F9FF}]").unwrap());
-// Note: no EXACT_REPEAT regex — Rust regex doesn't support backreferences.
-// Repetition detection uses algorithmic sliding window instead (faster).
-static PUNCT_CHARS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"[.!?,;:'"()\{\}\[\]<>/\\|@#$%^&*~`]"#).unwrap());
-static LETTER_CHARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[a-zA-Z]").unwrap());
-static REPEATED_PUNCT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[.!?]{5,}").unwrap());
-static NON_ASCII_CHAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\x00-\x7F]").unwrap());
-// ASCII_LETTER removed — use LETTER_CHARS (identical regex, one source of truth)
-static ERROR_PREFIX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)^(error|failed|cannot|unable|timeout|invalid):").unwrap());
+/// `[\x00-\x08\x0B\x0C\x0E-\x1F]`: control characters other than tab, newline and CR.
+fn is_control(c: char) -> bool {
+    matches!(c, '\0'..='\x08' | '\x0B' | '\x0C' | '\x0E'..='\x1F')
+}
 
-// Fabricated conversation patterns
-// Timestamped speaker: "02/16/2026 09:51 General AI: text" or "2026-02-16 09:51 Name: text"
-static FABRICATED_TIMESTAMP_SPEAKER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^\s*\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\s+\d{1,2}:\d{2}\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s").unwrap()
-});
-// Multi-word speaker at line start: "General AI: text", "Local Assistant: text"
-// Requires 2+ capitalized words to avoid matching "Note:", "Warning:", etc.
-static FABRICATED_MULTI_WORD_SPEAKER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s+\S").unwrap()
-});
+/// `[\x20-\x7E\n\r\t]`: printable ASCII and the three whitespace controls.
+fn is_printable_ascii(c: char) -> bool {
+    matches!(c, '\x20'..='\x7E' | '\n' | '\r' | '\t')
+}
 
-// Inference error patterns
-static INFERENCE_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
-    vec![
-        // Sampling errors (Candle)
-        (
-            Regex::new(r"(?i)sampling failed:?\s+").unwrap(),
-            "Sampling failure",
-        ),
-        (
-            Regex::new(r"(?i)a weight is (negative|invalid|too large)").unwrap(),
-            "Invalid weights",
-        ),
-        (
-            Regex::new(r"(?i)invalid probability distribution").unwrap(),
-            "Invalid distribution",
-        ),
-        // Memory errors
-        (Regex::new(r"(?i)out of memory:?\s+").unwrap(), "OOM error"),
-        (
-            Regex::new(r"(?i)memory allocation failed").unwrap(),
-            "Memory allocation",
-        ),
-        // Timeout errors
-        (
-            Regex::new(r"(?i)generation timed out").unwrap(),
-            "Generation timeout",
-        ),
-        (
-            Regex::new(r"(?i)request timed out after").unwrap(),
-            "Request timeout",
-        ),
-        (
-            Regex::new(r"(?i)deadline exceeded").unwrap(),
-            "Deadline exceeded",
-        ),
-        // Connection errors
-        (
-            Regex::new(r"(?i)cannot connect to inference server").unwrap(),
-            "Connection error",
-        ),
-        (
-            Regex::new(r"(?i)grpc.*unavailable").unwrap(),
-            "gRPC unavailable",
-        ),
-        // Model errors
-        (
-            Regex::new(r"(?i)model not (found|loaded)").unwrap(),
-            "Model not found",
-        ),
-        (
-            Regex::new(r"(?i)forward pass failed").unwrap(),
-            "Forward pass error",
-        ),
-        (
-            Regex::new(r"(?i)narrow invalid args").unwrap(),
-            "Tensor shape error",
-        ),
-        (
-            Regex::new(r"(?i)rope.*position").unwrap(),
-            "RoPE position error",
-        ),
-        // Generic error patterns
-        (
-            Regex::new(r"(?i)this usually means:\s*\n").unwrap(),
-            "Error with help text",
-        ),
-        (Regex::new(r"(?i)try:\s+\n?•").unwrap(), "Error suggestions"),
-    ]
-});
+/// `[\x{1F300}-\x{1F9FF}]`: the pictograph and emoji blocks.
+fn is_emoji(c: char) -> bool {
+    matches!(c, '\u{1F300}'..='\u{1F9FF}')
+}
+
+/// `[.!?,;:'"(){}\[\]<>/\\|@#$%^&*~\`]`: the punctuation the excessive-punctuation check counts.
+fn is_counted_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '.' | '!' | '?' | ',' | ';' | ':' | '\'' | '"' | '(' | ')' | '{' | '}' | '[' | ']' | '<' | '>' | '/'
+            | '\\' | '|' | '@' | '#' | '$' | '%' | '^' | '&' | '*' | '~' | '`'
+    )
+}
+
+/// `[.!?]`: sentence-ending punctuation, whose long runs read as garbage.
+fn is_terminal_punctuation(c: char) -> bool {
+    matches!(c, '.' | '!' | '?')
+}
+
+/// What must follow an inference-error phrase for the pattern to match.
+#[derive(Clone, Copy)]
+enum Tail {
+    /// Nothing.
+    None,
+    /// `:?\s+` — whitespace, optionally after one colon.
+    SpaceAfterOptionalColon,
+    /// `\s*\n` — a whitespace run that contains a newline.
+    SpaceRunWithNewline,
+    /// `\s+\n?•` — a whitespace run, then a bullet.
+    SpaceRunThenBullet,
+}
+
+impl Tail {
+    fn accepts(self, rest: &str) -> bool {
+        match self {
+            Tail::None => true,
+            Tail::SpaceAfterOptionalColon => {
+                take_one(rest, is_space).is_some()
+                    || take_one(rest, |c| c == ':').is_some_and(|after| take_one(after, is_space).is_some())
+            }
+            Tail::SpaceRunWithNewline => {
+                let (_, after) = take_while(rest, is_space);
+                rest[..rest.len() - after.len()].contains('\n')
+            }
+            Tail::SpaceRunThenBullet => {
+                let (len, after) = take_while(rest, is_space);
+                len > 0 && after.starts_with('•')
+            }
+        }
+    }
+}
+
+/// An inference-error signature, matched case-insensitively (`(?i)`) anywhere in the text.
+enum InferenceSignature {
+    /// Any of these phrases, followed by the tail.
+    Phrase(&'static [&'static str], Tail),
+    /// `first.*second`: the first phrase, then the second later on the same line.
+    SameLine(&'static str, &'static str),
+}
+
+impl InferenceSignature {
+    fn is_in(&self, text: &str) -> bool {
+        match self {
+            InferenceSignature::Phrase(phrases, tail) => phrases.iter().any(|phrase| {
+                fold_occurrences(text, phrase).any(|(_, end)| tail.accepts(&text[end..]))
+            }),
+            InferenceSignature::SameLine(first, second) => text.split('\n').any(|line| {
+                fold_occurrences(line, first)
+                    .next()
+                    .is_some_and(|(_, end)| fold_occurrences(&line[end..], second).next().is_some())
+            }),
+        }
+    }
+}
+
+/// Inference error signatures and their labels, checked in order (the first that matches
+/// names the failure).
+const INFERENCE_PATTERNS: [(InferenceSignature, &str); 16] = [
+    // Sampling errors (Candle)
+    (InferenceSignature::Phrase(&["sampling failed"], Tail::SpaceAfterOptionalColon), "Sampling failure"),
+    (
+        InferenceSignature::Phrase(&["a weight is negative", "a weight is invalid", "a weight is too large"], Tail::None),
+        "Invalid weights",
+    ),
+    (InferenceSignature::Phrase(&["invalid probability distribution"], Tail::None), "Invalid distribution"),
+    // Memory errors
+    (InferenceSignature::Phrase(&["out of memory"], Tail::SpaceAfterOptionalColon), "OOM error"),
+    (InferenceSignature::Phrase(&["memory allocation failed"], Tail::None), "Memory allocation"),
+    // Timeout errors
+    (InferenceSignature::Phrase(&["generation timed out"], Tail::None), "Generation timeout"),
+    (InferenceSignature::Phrase(&["request timed out after"], Tail::None), "Request timeout"),
+    (InferenceSignature::Phrase(&["deadline exceeded"], Tail::None), "Deadline exceeded"),
+    // Connection errors
+    (InferenceSignature::Phrase(&["cannot connect to inference server"], Tail::None), "Connection error"),
+    (InferenceSignature::SameLine("grpc", "unavailable"), "gRPC unavailable"),
+    // Model errors
+    (InferenceSignature::Phrase(&["model not found", "model not loaded"], Tail::None), "Model not found"),
+    (InferenceSignature::Phrase(&["forward pass failed"], Tail::None), "Forward pass error"),
+    (InferenceSignature::Phrase(&["narrow invalid args"], Tail::None), "Tensor shape error"),
+    (InferenceSignature::SameLine("rope", "position"), "RoPE position error"),
+    // Generic error patterns
+    (InferenceSignature::Phrase(&["this usually means:"], Tail::SpaceRunWithNewline), "Error with help text"),
+    (InferenceSignature::Phrase(&["try:"], Tail::SpaceRunThenBullet), "Error suggestions"),
+];
+
+/// `(?i)^(error|failed|cannot|unable|timeout|invalid):` — an error-shaped first word.
+fn has_error_prefix(trimmed: &str) -> bool {
+    ["error", "failed", "cannot", "unable", "timeout", "invalid"]
+        .iter()
+        .any(|word| fold_prefix(trimmed, word).is_some_and(|len| trimmed[len..].starts_with(':')))
+}
+
+/// `\d{lo,hi}` followed by something that is not a digit: the run of digits at the start of
+/// `s` when its length is within bounds, and the rest after it.
+fn digits(s: &str, lo: usize, hi: usize) -> Option<&str> {
+    let (len, rest) = take_while(s, is_digit);
+    (lo..=hi).contains(&len).then_some(rest)
+}
+
+/// `\s+`: at least one whitespace char, all of the run consumed.
+fn spaces(s: &str) -> Option<&str> {
+    let (len, rest) = take_while(s, is_space);
+    (len > 0).then_some(rest)
+}
+
+/// `(?:\s+[A-Z][a-zA-Z]+)*`: further capitalized words, each after whitespace.
+fn more_words(mut s: &str) -> &str {
+    while let Some(rest) = spaces(s).and_then(capitalized_word) {
+        s = rest;
+    }
+    s
+}
+
+/// At a line start: `\s*\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\s+\d{1,2}:\d{2}\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s`
+/// ("02/16/2026 09:51 General AI: text"), returning the matched byte length.
+fn timestamp_speaker_at(s: &str) -> Option<usize> {
+    let date_sep = |c| c == '/' || c == '-';
+    let (_, rest) = take_while(s, is_space);
+    let rest = take_one(digits(rest, 1, 4)?, date_sep)?;
+    let rest = take_one(digits(rest, 1, 2)?, date_sep)?;
+    let rest = spaces(digits(rest, 1, 4)?)?;
+    let rest = take_one(digits(rest, 1, 2)?, |c| c == ':')?;
+    let rest = spaces(digits(rest, 2, 2)?)?;
+    let rest = more_words(capitalized_word(rest)?);
+    let rest = take_one(take_one(rest, |c| c == ':')?, is_space)?;
+    Some(s.len() - rest.len())
+}
+
+/// At a line start: `[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s+\S`
+/// ("General AI: text"), returning the matched byte length.
+fn multi_word_speaker_at(s: &str) -> Option<usize> {
+    let rest = capitalized_word(spaces(capitalized_word(s)?)?)?;
+    let rest = take_one(more_words(rest), |c| c == ':')?;
+    let rest = take_one(spaces(rest)?, |c| !is_space(c))?;
+    Some(s.len() - rest.len())
+}
 
 /// Run all garbage detection checks on text.
 /// Returns on first failure (short-circuit).
@@ -162,7 +231,7 @@ pub fn is_garbage(text: &str) -> GarbageCheckResult {
 
 fn check_encoding_errors(text: &str) -> Option<GarbageCheckResult> {
     // U+FFFD replacement characters
-    let replacement_count = REPLACEMENT_CHAR.find_iter(text).count();
+    let replacement_count = text.chars().filter(|&c| c == '\u{FFFD}').count();
     if replacement_count > 3 {
         return Some(GarbageCheckResult {
             is_garbage: true,
@@ -183,7 +252,7 @@ fn check_encoding_errors(text: &str) -> Option<GarbageCheckResult> {
     }
 
     // Control characters (except newlines, tabs, carriage returns)
-    let control_count = CONTROL_CHARS.find_iter(text).count();
+    let control_count = text.chars().filter(|&c| is_control(c)).count();
     if control_count > 5 {
         return Some(GarbageCheckResult {
             is_garbage: true,
@@ -197,8 +266,8 @@ fn check_encoding_errors(text: &str) -> Option<GarbageCheckResult> {
 }
 
 fn check_inference_error(text: &str) -> Option<GarbageCheckResult> {
-    for (pattern, label) in INFERENCE_PATTERNS.iter() {
-        if pattern.is_match(text) {
+    for (signature, label) in INFERENCE_PATTERNS.iter() {
+        if signature.is_in(text) {
             let first_line = text
                 .lines()
                 .next()
@@ -217,7 +286,7 @@ fn check_inference_error(text: &str) -> Option<GarbageCheckResult> {
 
     // Error-like structure: starts with error keyword + colon
     let trimmed = text.trim();
-    if ERROR_PREFIX.is_match(trimmed) {
+    if has_error_prefix(trimmed) {
         let first_line = trimmed
             .lines()
             .next()
@@ -242,11 +311,11 @@ fn check_unicode_garbage(text: &str) -> Option<GarbageCheckResult> {
         return None;
     }
 
-    let printable_count = PRINTABLE_ASCII.find_iter(text).count();
+    let printable_count = text.chars().filter(|&c| is_printable_ascii(c)).count();
     let non_ascii_ratio = 1.0 - (printable_count as f64 / total as f64);
 
     if non_ascii_ratio > 0.3 {
-        let emoji_count = EMOJI_RANGE.find_iter(text).count();
+        let emoji_count = text.chars().filter(|&c| is_emoji(c)).count();
         let emoji_ratio = emoji_count as f64 / total as f64;
 
         if emoji_ratio < 0.2 {
@@ -382,8 +451,8 @@ fn check_truncation_markers(text: &str) -> Option<GarbageCheckResult> {
 }
 
 fn check_excessive_punctuation(text: &str) -> Option<GarbageCheckResult> {
-    let punctuation = PUNCT_CHARS.find_iter(text).count();
-    let letters = LETTER_CHARS.find_iter(text).count();
+    let punctuation = text.chars().filter(|&c| is_counted_punctuation(c)).count();
+    let letters = text.chars().filter(char::is_ascii_alphabetic).count();
 
     if punctuation > letters && punctuation > 20 {
         return Some(GarbageCheckResult {
@@ -394,22 +463,24 @@ fn check_excessive_punctuation(text: &str) -> Option<GarbageCheckResult> {
         });
     }
 
-    // Repeated punctuation sequences (5+ in a row, any longer than 10)
-    for m in REPEATED_PUNCT.find_iter(text) {
-        if m.as_str().len() > 10 {
-            return Some(GarbageCheckResult {
-                is_garbage: true,
-                reason: GarbageReason::ExcessivePunctuation,
-                details: format!(
-                    "Repeated punctuation: \"{}...\"",
-                    &m.as_str()[..m.as_str().len().min(20)]
-                ),
-                score: 0.8,
-            });
-        }
+    // Repeated punctuation sequences: the first run of `.`, `!`, `?` longer than 10.
+    if let Some(run) = terminal_punctuation_runs(text).find(|run| run.len() > 10) {
+        return Some(GarbageCheckResult {
+            is_garbage: true,
+            reason: GarbageReason::ExcessivePunctuation,
+            details: format!("Repeated punctuation: \"{}...\"", &run[..run.len().min(20)]),
+            score: 0.8,
+        });
     }
 
     None
+}
+
+/// Every maximal run of `[.!?]` in `text`, in order. (The pattern this replaced,
+/// `[.!?]{5,}`, matched only runs of five or more; the one caller wants runs longer than
+/// ten, so the shorter ones it would have skipped cannot change the answer.)
+fn terminal_punctuation_runs(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !is_terminal_punctuation(c)).filter(|run| !run.is_empty())
 }
 
 fn check_token_boundary_garbage(text: &str) -> Option<GarbageCheckResult> {
@@ -440,8 +511,8 @@ fn check_token_boundary_garbage(text: &str) -> Option<GarbageCheckResult> {
         }
 
         // Non-ASCII mixed with ASCII in same word
-        let non_ascii = NON_ASCII_CHAR.find_iter(word).count();
-        let ascii = LETTER_CHARS.find_iter(word).count();
+        let non_ascii = word.chars().filter(|c| !c.is_ascii()).count();
+        let ascii = word.chars().filter(char::is_ascii_alphabetic).count();
         if non_ascii > 0 && ascii > 0 && (non_ascii as i32 - ascii as i32).unsigned_abs() < 3 {
             weird_count += 1;
         }
@@ -477,7 +548,7 @@ fn check_fabricated_conversation(text: &str) -> Option<GarbageCheckResult> {
     }
 
     // Check 1: Timestamped speaker lines — "MM/DD/YYYY HH:MM Name: text"
-    let timestamp_count = FABRICATED_TIMESTAMP_SPEAKER.find_iter(text).count();
+    let timestamp_count = line_start_matches(text, timestamp_speaker_at).len();
     if timestamp_count >= 3 {
         return Some(GarbageCheckResult {
             is_garbage: true,
@@ -494,8 +565,8 @@ fn check_fabricated_conversation(text: &str) -> Option<GarbageCheckResult> {
     // "General AI: text", "Local Assistant: text" — requires 2+ capitalized words before ":"
     let mut speakers: HashSet<String> = HashSet::new();
     let mut speaker_line_count = 0usize;
-    for m in FABRICATED_MULTI_WORD_SPEAKER.find_iter(text) {
-        let matched = m.as_str();
+    for range in line_start_matches(text, multi_word_speaker_at) {
+        let matched = &text[range];
         if let Some(colon_pos) = matched.find(':') {
             let name = matched[..colon_pos].trim().to_string();
             speakers.insert(name);
@@ -682,5 +753,108 @@ mod tests {
         // A list with colons should NOT be flagged
         let r = is_garbage("Here are some tips:\n- Performance: Use caching\n- Readability: Use clear names\n- Testing: Write unit tests\n- Documentation: Keep it updated");
         assert!(!r.is_garbage);
+    }
+
+    /// The hand matchers against the regexes they replaced: same answer on every string of
+    /// a corpus built from the tokens each pattern turns on (case-folded letters, Unicode
+    /// digits and spaces, newlines inside runs, near-misses).
+    mod matches_the_replaced_regex {
+        use super::*;
+        use crate::scan::tests::corpus;
+        use regex::Regex;
+
+        const INFERENCE_REGEXES: [&str; 16] = [
+            r"(?i)sampling failed:?\s+",
+            r"(?i)a weight is (negative|invalid|too large)",
+            r"(?i)invalid probability distribution",
+            r"(?i)out of memory:?\s+",
+            r"(?i)memory allocation failed",
+            r"(?i)generation timed out",
+            r"(?i)request timed out after",
+            r"(?i)deadline exceeded",
+            r"(?i)cannot connect to inference server",
+            r"(?i)grpc.*unavailable",
+            r"(?i)model not (found|loaded)",
+            r"(?i)forward pass failed",
+            r"(?i)narrow invalid args",
+            r"(?i)rope.*position",
+            r"(?i)this usually means:\s*\n",
+            r"(?i)try:\s+\n?•",
+        ];
+
+        // what this catches: an inference signature drifting from its regex (the optional
+        // colon, the newline inside a whitespace run, `.*` crossing a line, a folded
+        // KELVIN SIGN or long s standing in for a letter).
+        #[test]
+        fn inference_signatures() {
+            let tokens = [
+                "sampling failed", "SAMPLING FAILED", "ſampling failed", "out of memory", "memory",
+                "a weight is ", "negative", "too large", "invalid", "model not ", "found", "loaded",
+                "grpc", "GRPC", "unavailable", "rope", "position", "this usually means:", "try:",
+                "•", ":", " ", "\n", "\t", "\u{2003}", "x", "deadline exceeded", "narrow invalid args",
+                "forward pass failed", "generation timed out", "request timed out after",
+                "cannot connect to inference server", "invalid probability distribution",
+                "memory allocation failed", "\u{212A}",
+            ];
+            let regexes: Vec<Regex> = INFERENCE_REGEXES.iter().map(|r| Regex::new(r).unwrap()).collect();
+            for text in corpus(&tokens, 30_000, 6) {
+                for ((signature, label), re) in INFERENCE_PATTERNS.iter().zip(&regexes) {
+                    assert_eq!(signature.is_in(&text), re.is_match(&text), "{label}: {text:?}");
+                }
+            }
+        }
+
+        // what this catches: the error-prefix check drifting from its anchored regex.
+        #[test]
+        fn error_prefix() {
+            let re = Regex::new(r"(?i)^(error|failed|cannot|unable|timeout|invalid):").unwrap();
+            let tokens = ["error", "ERROR", "Failed", "cannot", "unable", "timeout", "invalid", ":", " ", "x", "\n"];
+            for text in corpus(&tokens, 5_000, 4) {
+                assert_eq!(has_error_prefix(&text), re.is_match(&text), "{text:?}");
+            }
+        }
+
+        // what this catches: the fabricated-conversation scans drifting from their
+        // multiline find_iter (digit runs past their bounds, Unicode digits, whitespace
+        // runs crossing lines, the trailing `\S` consuming the next line's first char).
+        #[test]
+        fn fabricated_speaker_lines() {
+            let timestamp = Regex::new(r"(?m)^\s*\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\s+\d{1,2}:\d{2}\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s").unwrap();
+            let multi = Regex::new(r"(?m)^[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s+\S").unwrap();
+            let tokens = [
+                "02/16/2026 ", "2026-02-16 ", "12345/1/1 ", "1/123/1 ", "٠٢/١٦/٢٠٢٦ ", "09:51 ", "9:5 ", "09:511 ",
+                "General ", "AI", "Local Assistant", ": ", ":", ":\n", "\n", " ", "x", "Note: ", "General AI: hi\n", "é",
+            ];
+            for text in corpus(&tokens, 30_000, 8) {
+                let ts: Vec<_> = timestamp.find_iter(&text).map(|m| m.range()).collect();
+                assert_eq!(line_start_matches(&text, timestamp_speaker_at), ts, "timestamp {text:?}");
+                let mw: Vec<_> = multi.find_iter(&text).map(|m| m.range()).collect();
+                assert_eq!(line_start_matches(&text, multi_word_speaker_at), mw, "multi-word {text:?}");
+            }
+        }
+
+        // what this catches: a char-class predicate disagreeing with its class on any char
+        // of the BMP and the emoji planes, or the punctuation runs disagreeing with
+        // `[.!?]{5,}` on which run is the first longer than ten.
+        #[test]
+        fn char_classes_and_punctuation_runs() {
+            let all: String = (0u32..0x2_0000).filter_map(char::from_u32).collect();
+            let class = |re: &str| -> Vec<char> {
+                Regex::new(re).unwrap().find_iter(&all).flat_map(|m| m.as_str().chars()).collect()
+            };
+            let ours = |pred: fn(char) -> bool| -> Vec<char> { all.chars().filter(|&c| pred(c)).collect() };
+            assert_eq!(ours(is_control), class(r"[\x00-\x08\x0B\x0C\x0E-\x1F]"));
+            assert_eq!(ours(is_printable_ascii), class(r"[\x20-\x7E\n\r\t]"));
+            assert_eq!(ours(is_emoji), class(r"[\x{1F300}-\x{1F9FF}]"));
+            assert_eq!(ours(is_counted_punctuation), class(r#"[.!?,;:'"()\{\}\[\]<>/\\|@#$%^&*~`]"#));
+            assert_eq!(ours(|c| c.is_ascii_alphabetic()), class(r"[a-zA-Z]"));
+            assert_eq!(ours(|c| !c.is_ascii()), class(r"[^\x00-\x7F]"));
+
+            let repeated = Regex::new(r"[.!?]{5,}").unwrap();
+            for text in corpus(&[".", "!", "?", "x", " ", "....."], 10_000, 16) {
+                let want = repeated.find_iter(&text).map(|m| m.as_str()).find(|run| run.len() > 10);
+                assert_eq!(terminal_punctuation_runs(&text).find(|run| run.len() > 10), want, "{text:?}");
+            }
+        }
     }
 }

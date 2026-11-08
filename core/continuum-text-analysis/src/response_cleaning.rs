@@ -13,8 +13,8 @@
 //! 3. `[HH:MM] ` — timestamp only
 //! 4. `**Name:** ` or `*Name:* ` — markdown role markers
 
-use regex::Regex;
-use std::sync::LazyLock;
+use crate::scan::{fold_prefix, is_digit, is_space, take_one, take_while};
+use std::ops::Range;
 
 /// Result of response cleaning with optional extracted thinking content.
 pub struct CleanResult {
@@ -24,28 +24,102 @@ pub struct CleanResult {
     pub thinking: Option<String>,
 }
 
-/// Regex to match `<thinking>...</thinking>` and `<think>...</think>` blocks.
-/// Case-insensitive, dotall (. matches newline), non-greedy.
-static PATTERN_THINKING: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?si)<think(?:ing)?>.*?</think(?:ing)?>").expect("thinking regex")
-});
+// The matchers below are hand-written over `crate::scan` (they were regexes compiled with
+// `.expect()`); each names the pattern it is, and the tests pin it against that regex.
 
-static PATTERN_TIMESTAMP_NAME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\[\d{1,2}:\d{2}\]\s+[^:]+:\s*").expect("timestamp+name regex"));
+/// One `<think>…</think>` / `<thinking>…</thinking>` block: the whole block and its inside.
+struct ThinkingBlock {
+    block: Range<usize>,
+    inside: Range<usize>,
+}
 
-static PATTERN_NAME_ONLY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Z][A-Za-z\s]+:\s*").expect("name-only regex"));
+/// `(?i)<think(?:ing)?>` or its closing form at the start of `s`: the tag's byte length.
+fn thinking_tag(s: &str, open: &str, open_long: &str) -> Option<usize> {
+    fold_prefix(s, open_long).or_else(|| fold_prefix(s, open))
+}
 
-static PATTERN_TIMESTAMP_ONLY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\[\d{1,2}:\d{2}\]\s*").expect("timestamp-only regex"));
+/// Every `(?si)<think(?:ing)?>(.*?)</think(?:ing)?>` block, leftmost first and
+/// non-overlapping, as `Regex::captures_iter` finds them: each opening tag pairs with the
+/// nearest closing tag after it.
+fn thinking_blocks(s: &str) -> Vec<ThinkingBlock> {
+    let tag_starts = |from: usize| s[from..].match_indices('<').map(move |(at, _)| from + at);
+    let mut blocks = Vec::new();
+    let mut pos = 0;
+    while let Some((start, open_len)) =
+        tag_starts(pos).find_map(|at| thinking_tag(&s[at..], "<think>", "<thinking>").map(|len| (at, len)))
+    {
+        let inside_start = start + open_len;
+        let Some((close, close_len)) = tag_starts(inside_start)
+            .find_map(|at| thinking_tag(&s[at..], "</think>", "</thinking>").map(|len| (at, len)))
+        else {
+            // No closing tag after the earliest opening one, so none after any later one.
+            break;
+        };
+        blocks.push(ThinkingBlock { block: start..close + close_len, inside: inside_start..close });
+        pos = close + close_len;
+    }
+    blocks
+}
 
-static PATTERN_MARKDOWN_ROLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\*{1,2}[A-Za-z\s]+:\*{1,2}\s*").expect("markdown role regex"));
+/// `\[\d{1,2}:\d{2}\]` at the start of `s`: the rest after the closing bracket.
+fn bracketed_time(s: &str) -> Option<&str> {
+    let rest = take_one(s, |c| c == '[')?;
+    let (hours, rest) = take_while(rest, is_digit);
+    let rest = take_one(rest, |c| c == ':').filter(|_| (1..=2).contains(&hours))?;
+    let (minutes, rest) = take_while(rest, is_digit);
+    take_one(rest, |c| c == ']').filter(|_| minutes == 2)
+}
 
-/// Regex to extract the content INSIDE thinking tags (for downstream use).
-static PATTERN_THINKING_CONTENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?si)<think(?:ing)?>(.*?)</think(?:ing)?>").expect("thinking content regex")
-});
+/// Byte length of the prefix of `s` that `rest` is the remainder of.
+fn consumed(s: &str, rest: &str) -> usize {
+    s.len() - rest.len()
+}
+
+/// `^\[\d{1,2}:\d{2}\]\s+[^:]+:\s*` — "[11:59] Name: ": the prefix's byte length.
+fn timestamp_name_prefix(s: &str) -> Option<usize> {
+    let after_time = bracketed_time(s)?;
+    // `\s+[^:]+:` — whitespace first, then at least two chars in all before the first colon.
+    take_one(after_time, is_space)?;
+    let colon = after_time.find(':')?;
+    if after_time[..colon].chars().count() < 2 {
+        return None;
+    }
+    let (_, rest) = take_while(&after_time[colon + 1..], is_space);
+    Some(consumed(s, rest))
+}
+
+/// `^[A-Z][A-Za-z\s]+:\s*` — "Name: ": the prefix's byte length.
+fn name_only_prefix(s: &str) -> Option<usize> {
+    let rest = take_one(s, |c| c.is_ascii_uppercase())?;
+    let (len, rest) = take_while(rest, |c| c.is_ascii_alphabetic() || is_space(c));
+    let rest = take_one(rest, |c| c == ':').filter(|_| len >= 1)?;
+    let (_, rest) = take_while(rest, is_space);
+    Some(consumed(s, rest))
+}
+
+/// `^\[\d{1,2}:\d{2}\]\s*` — "[11:59] ": the prefix's byte length.
+fn timestamp_only_prefix(s: &str) -> Option<usize> {
+    let (_, rest) = take_while(bracketed_time(s)?, is_space);
+    Some(consumed(s, rest))
+}
+
+/// `^\*{1,2}[A-Za-z\s]+:\*{1,2}\s*` — "**Name:** ": the prefix's byte length.
+fn markdown_role_prefix(s: &str) -> Option<usize> {
+    let (stars, rest) = take_while(s, |c| c == '*');
+    if !(1..=2).contains(&stars) {
+        return None;
+    }
+    let (len, rest) = take_while(rest, |c| c.is_ascii_alphabetic() || is_space(c));
+    let rest = take_one(rest, |c| c == ':').filter(|_| len >= 1)?;
+    let after_one = take_one(rest, |c| c == '*')?;
+    // `\*{1,2}` is greedy: a second star is taken when present, never a third.
+    let rest = match take_one(after_one, |c| c == '*') {
+        Some(after_two) => after_two,
+        None => after_one,
+    };
+    let (_, rest) = take_while(rest, is_space);
+    Some(consumed(s, rest))
+}
 
 /// Our OWN internal perception-frame section labels — the reserved block headers the
 /// substrate feeds INTO the prompt (deliberation scaffold + perception blocks). A persona
@@ -146,13 +220,12 @@ pub(crate) fn is_leaked_deliberation_scaffold(text: &str) -> bool {
 /// 4. `**Name:** ` or `*Name:* ` → strip markdown role markers
 pub fn clean_response(response: &str) -> CleanResult {
     // Phase 0: Extract and strip thinking blocks
+    let blocks = thinking_blocks(response);
     let mut thinking_parts: Vec<String> = Vec::new();
-    for cap in PATTERN_THINKING_CONTENT.captures_iter(response) {
-        if let Some(content) = cap.get(1) {
-            let trimmed = content.as_str().trim();
-            if !trimmed.is_empty() {
-                thinking_parts.push(trimmed.to_string());
-            }
+    for ThinkingBlock { inside, .. } in &blocks {
+        let trimmed = response[inside.clone()].trim();
+        if !trimmed.is_empty() {
+            thinking_parts.push(trimmed.to_string());
         }
     }
     let thinking = if thinking_parts.is_empty() {
@@ -161,7 +234,14 @@ pub fn clean_response(response: &str) -> CleanResult {
         Some(thinking_parts.join("\n\n"))
     };
 
-    let after_thinking = PATTERN_THINKING.replace_all(response, "");
+    // The response with every block removed.
+    let mut after_thinking = String::with_capacity(response.len());
+    let mut kept_from = 0;
+    for ThinkingBlock { block, .. } in &blocks {
+        after_thinking.push_str(&response[kept_from..block.start]);
+        kept_from = block.end;
+    }
+    after_thinking.push_str(&response[kept_from..]);
     let mut cleaned = after_thinking.trim();
 
     // Phase 0.4: strip a leaked native `[TOOL_CALLS]` control-token prefix. Devstral/Mistral
@@ -190,17 +270,10 @@ pub fn clean_response(response: &str) -> CleanResult {
     cleaned = strip_leading_scaffold_lines(cleaned);
 
     // Phase 1-4: Apply prefix patterns in priority order
-    if let Some(m) = PATTERN_TIMESTAMP_NAME.find(cleaned) {
-        cleaned = &cleaned[m.end()..];
-    }
-    if let Some(m) = PATTERN_NAME_ONLY.find(cleaned) {
-        cleaned = &cleaned[m.end()..];
-    }
-    if let Some(m) = PATTERN_TIMESTAMP_ONLY.find(cleaned) {
-        cleaned = &cleaned[m.end()..];
-    }
-    if let Some(m) = PATTERN_MARKDOWN_ROLE.find(cleaned) {
-        cleaned = &cleaned[m.end()..];
+    for prefix in [timestamp_name_prefix, name_only_prefix, timestamp_only_prefix, markdown_role_prefix] {
+        if let Some(len) = prefix(cleaned) {
+            cleaned = &cleaned[len..];
+        }
     }
 
     CleanResult {
@@ -216,10 +289,10 @@ mod tests {
     /// Check if a response has a prefix that would be cleaned.
     fn has_prefix(response: &str) -> bool {
         let trimmed = response.trim();
-        PATTERN_TIMESTAMP_NAME.is_match(trimmed)
-            || PATTERN_NAME_ONLY.is_match(trimmed)
-            || PATTERN_TIMESTAMP_ONLY.is_match(trimmed)
-            || PATTERN_MARKDOWN_ROLE.is_match(trimmed)
+        timestamp_name_prefix(trimmed).is_some()
+            || name_only_prefix(trimmed).is_some()
+            || timestamp_only_prefix(trimmed).is_some()
+            || markdown_role_prefix(trimmed).is_some()
     }
 
     #[test]
@@ -486,5 +559,42 @@ mod tests {
     fn clean_code_answer_untouched() {
         let msg = "```rust\nfn add(a: i32, b: i32) -> i32 { a + b }\n```";
         assert_eq!(clean_response(msg).text, msg);
+    }
+
+    // what this catches: a prefix matcher drifting from its anchored regex (digit runs
+    // past their bounds, Unicode digits, a third star, whitespace before the first colon,
+    // a colon with nothing between it and the bracket).
+    #[test]
+    fn prefixes_match_the_replaced_regexes() {
+        type PrefixMatcher = fn(&str) -> Option<usize>;
+        let cases: [(&str, PrefixMatcher); 4] = [
+            (r"^\[\d{1,2}:\d{2}\]\s+[^:]+:\s*", timestamp_name_prefix),
+            (r"^[A-Z][A-Za-z\s]+:\s*", name_only_prefix),
+            (r"^\[\d{1,2}:\d{2}\]\s*", timestamp_only_prefix),
+            (r"^\*{1,2}[A-Za-z\s]+:\*{1,2}\s*", markdown_role_prefix),
+        ];
+        let tokens = ["[", "]", "1", "12", "123", "٣", ":", " ", "\n", "*", "**", "Name", "a", "Z", "x y", "é", "[11:59]"];
+        for (pattern, ours) in cases {
+            let re = regex::Regex::new(pattern).unwrap();
+            for text in crate::scan::tests::corpus(&tokens, 30_000, 7) {
+                assert_eq!(ours(&text), re.find(&text).map(|m| m.end()), "{pattern} on {text:?}");
+            }
+        }
+    }
+
+    // what this catches: the thinking-block scan drifting from the regex's captures
+    // (case-folded tags incl. a KELVIN SIGN, an unclosed opener, nested and adjacent blocks).
+    #[test]
+    fn thinking_blocks_match_the_replaced_regex() {
+        let re = regex::Regex::new(r"(?si)<think(?:ing)?>(.*?)</think(?:ing)?>").unwrap();
+        let tokens = ["<think>", "</think>", "<thinking>", "</THINKING>", "<thin\u{212A}>", "<", ">", "/", "think", "ing", "x", "\n", "é"];
+        for text in crate::scan::tests::corpus(&tokens, 30_000, 7) {
+            let want: Vec<_> = re
+                .captures_iter(&text)
+                .filter_map(|c| Some((c.get(0)?.range(), c.get(1)?.range())))
+                .collect();
+            let ours: Vec<_> = thinking_blocks(&text).into_iter().map(|b| (b.block, b.inside)).collect();
+            assert_eq!(ours, want, "{text:?}");
+        }
     }
 }

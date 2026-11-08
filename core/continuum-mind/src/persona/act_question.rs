@@ -67,10 +67,12 @@ pub(crate) async fn ask_the_act_question(
     ctx: &HostedPersona,
     conversation: &mut dyn CitizenConversation,
     lamport: u64,
-    turn_room: uuid::Uuid,
+    // The witness that the turn has a real room: the caller refused nil before asking.
+    activity_room: crate::identity::ActivityRoom,
     directed: bool,
     initiative: crate::persona::initiative_turn::Initiative,
 ) -> WorkQuestionOutcome {
+    let turn_room = activity_room.as_uuid();
     // Her cognition cycle, fetched the same way the turn loop fetches it — passing it
     // in would thread a borrow through the whole turn for one optional branch.
     let Some(cycle) =
@@ -214,10 +216,9 @@ pub(crate) async fn ask_the_act_question(
                     // handed rather than a re-derived approximation of it.
                     let work_context = burst_text.clone();
                     // Her held-work turn happens IN the room she was asked in —
-                    // non-nil by the service loop's A.6 fallback (#425).
+                    // non-nil by the witness her caller handed in (#425).
                     let burst = crate::cognition::workspace::Burst::raw_in(
-                        crate::identity::ActivityRoom::from_uuid(turn_room)
-                            .expect("turn_room is the service loop's non-nil turn room"), // service loop guarantees a non-nil turn room; witness re-checks
+                        activity_room,
                         burst_text,
                     );
                     let work_framing = crate::cognition::workspace::TurnFraming::self_thread(false).on_workspace();

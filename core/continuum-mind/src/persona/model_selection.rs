@@ -141,23 +141,28 @@ pub fn select_model(
 ) -> Result<ModelSelectionResult, ModelSelectionError> {
     let start = Instant::now();
 
+    // Only an adapter with a trained model is a candidate, and each candidate carries
+    // its model name bound beside it, so no tier below re-reads the Option.
+    let trained = || {
+        registry
+            .adapters
+            .values()
+            .filter_map(|a| a.trained_model_name.as_ref().map(|model| (a, model)))
+    };
+    // Prefer loaded > unloaded, then higher priority.
+    let rank = |a: &AdapterInfo| (a.is_loaded as u8, (a.priority * 1000.0) as u32);
+
     // TIER 1: Trait-specific adapter
     if let Some(ref domain) = request.task_domain {
         let target_trait = domain_to_trait(domain);
         // Prefer loaded adapters, then any matching
-        let trait_match = registry
-            .adapters
-            .values()
-            .filter(|a| a.domain == target_trait && a.trained_model_name.is_some())
-            .max_by(|a, b| {
-                // Prefer loaded > unloaded, then higher priority
-                (a.is_loaded as u8, (a.priority * 1000.0) as u32)
-                    .cmp(&(b.is_loaded as u8, (b.priority * 1000.0) as u32))
-            });
+        let trait_match = trained()
+            .filter(|(a, _)| a.domain == target_trait)
+            .max_by(|(a, _), (b, _)| rank(a).cmp(&rank(b)));
 
-        if let Some(adapter) = trait_match {
+        if let Some((adapter, model)) = trait_match {
             return Ok(ModelSelectionResult {
-                model: adapter.trained_model_name.clone().unwrap(),
+                model: model.clone(),
                 source: "trait_adapter".into(),
                 adapter_name: Some(adapter.name.clone()),
                 trait_used: Some(target_trait.to_string()),
@@ -167,14 +172,11 @@ pub fn select_model(
     }
 
     // TIER 2: Current active adapter
-    let current = registry
-        .adapters
-        .values()
-        .find(|a| a.is_current && a.trained_model_name.is_some());
+    let current = trained().find(|(a, _)| a.is_current);
 
-    if let Some(adapter) = current {
+    if let Some((adapter, model)) = current {
         return Ok(ModelSelectionResult {
-            model: adapter.trained_model_name.clone().unwrap(),
+            model: model.clone(),
             source: "current_adapter".into(),
             adapter_name: Some(adapter.name.clone()),
             trait_used: None,
@@ -183,18 +185,11 @@ pub fn select_model(
     }
 
     // TIER 3: Any available adapter with a trained model name
-    let any_adapter = registry
-        .adapters
-        .values()
-        .filter(|a| a.trained_model_name.is_some())
-        .max_by(|a, b| {
-            (a.is_loaded as u8, (a.priority * 1000.0) as u32)
-                .cmp(&(b.is_loaded as u8, (b.priority * 1000.0) as u32))
-        });
+    let any_adapter = trained().max_by(|(a, _), (b, _)| rank(a).cmp(&rank(b)));
 
-    if let Some(adapter) = any_adapter {
+    if let Some((adapter, model)) = any_adapter {
         return Ok(ModelSelectionResult {
-            model: adapter.trained_model_name.clone().unwrap(),
+            model: model.clone(),
             source: "any_adapter".into(),
             adapter_name: Some(adapter.name.clone()),
             trait_used: None,

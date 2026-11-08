@@ -523,11 +523,14 @@ impl AircCitizen for StubAircCitizen {
     }
 
     async fn say_in(&self, _room_id: Uuid, _text: &str) -> Result<EventId, AircError> {
-        unreachable!(
-            "StubAircCitizen::say_in must not be called — \
-             service-loop tests should reply through StubConversation, \
-             not through the citizen handle"
-        );
+        // Same honest answer as `subscribe_all_rooms`: a stub has no transport to speak
+        // on. Service-loop tests reply through StubConversation; a caller that reaches
+        // here gets the typed transport error, never a fabricated EventId.
+        Err(AircError::Transport(
+            "StubAircCitizen has no transport — say_in has nowhere to publish; \
+             tests reply through StubConversation"
+                .to_string(),
+        ))
     }
 
     /// Record the transition instead of hitting a daemon, so a test can assert
