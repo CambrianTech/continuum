@@ -3,7 +3,7 @@
 //! surface as offered, her shell (the operator's: unconfined, the whole environment, her identity on commits), her board.
 //! Joel, 2026-11-08: "They're supposed to be as capable as you, not disabled"; "It's always you
 //! guys designing them as second class." Each case names the capability; a case that cannot be
-//! done is a [`Gap`] naming what blocks it, and the suite fails listing every gap at once.
+//! done is a gap naming what blocks it, and the suite fails listing every gap at once.
 //!
 //! The offline cases run in every `cargo test` (CI's affected-crate tests). The cases that need
 //! GitHub, the network or installs run with `--features resident-parity-live` on a node that
@@ -35,13 +35,6 @@ enum Capability {
     /// Stale branch -> typed rebase -> submit -> PR linked -> another persona passes -> what the
     /// merger requires holds (Review, PR head = reviewed head, an independent pass).
     FinishLoop,
-}
-
-/// A capability she lacks, and what blocks it.
-#[derive(Debug)]
-struct Gap {
-    capability: Capability,
-    blocked_by: String,
 }
 
 type Case = Result<(), String>;
@@ -329,7 +322,7 @@ async fn a_resident_can_do_what_an_agent_session_does() {
     let mut gaps = Vec::new();
     let mut record = |capability, case: Case| {
         if let Err(blocked_by) = case {
-            gaps.push(Gap { capability, blocked_by });
+            gaps.push((capability, blocked_by));
         }
     };
     record(Capability::ShellCommitsAsHer, shell_commits_as_her().await);

@@ -368,7 +368,7 @@ async fn compile_and_run_rust(
     // 1. Compile, owned (continuum_process::run_owned) so a runaway rustc is ended; a non-success
     //    exit is a RESULT (the persona must SEE the compiler errors), only a spawn failure is
     //    an error.
-    let mut rustc = hands.command(
+    let rustc = hands.command(
         std::path::Path::new("rustc"),
         &["--edition".into(), "2021".into(), "-o".into(), bin.clone().into(), src.clone().into()],
         None,
@@ -388,7 +388,7 @@ async fn compile_and_run_rust(
     // 2. Run the compiled binary, owned (continuum_process::run_owned): at the safety timeout,
     //    or when this command is dropped, it and everything it started are ended, never
     //    orphaned to init burning a core (observed: 6h+ runaway at 100% CPU).
-    let mut child = hands.command(&bin, &[], None);
+    let child = hands.command(&bin, &[], None);
     let out = continuum_process::run_owned(child, Some(timeout), "code-run", std::sync::Arc::default())
         .await
         .map_err(|e| CommandError::Internal(format!("code/run: failed to run the compiled binary: {e}")))?;
