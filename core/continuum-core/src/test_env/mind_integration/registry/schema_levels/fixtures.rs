@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Canonical custom-Deserialize coverage through the registered command, without effects.
 use serde_json::json;
 

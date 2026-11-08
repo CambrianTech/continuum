@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Deterministic schema witnesses, not runtime defaults or a universal schema solver.
 //! Unsupported constraints fail the conformance test explicitly, never count as coverage.
 use serde_json::{json, Map, Value};

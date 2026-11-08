@@ -188,6 +188,12 @@ impl crate::sdk_codegen::CommandSpec for InferenceLlmRequestCommand {
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Bare;
     type Params = InferenceRequest;
     type Result = InferenceResponse;
+
+    fn decode_arguments(arguments: &Value) -> Result<crate::runtime::CommandRequest<Self::Params>, crate::runtime::arguments::ArgumentsRefusal> {
+        crate::runtime::arguments::decode::<Self::Params>(arguments, |_| true)
+            .map(crate::runtime::CommandRequest::new)
+    }
+
 }
 
 crate::register_command!(InferenceLlmRequestCommand);
@@ -235,8 +241,8 @@ impl InferenceLlmModule {
     /// shape (params → request, generate, complete + first-token)
     /// stays the same.
     async fn handle_request(&self, params: Value) -> Result<CommandResult, String> {
-        let request: InferenceRequest = serde_json::from_value(params)
-            .map_err(|e| format!("inference-llm: invalid InferenceRequest payload: {e}"))?;
+        let request = <InferenceLlmRequestCommand as crate::sdk_codegen::CommandSpec>::decode_arguments(&params)
+            .map_err(|e| format!("inference-llm: invalid InferenceRequest payload: {e}"))?.params;
 
         // PR-4: route through the real adapter when wired AND the
         // request carries prompt_text (the adapter path's required

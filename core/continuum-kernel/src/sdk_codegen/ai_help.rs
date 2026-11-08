@@ -103,14 +103,6 @@ pub fn render_ai_help(command: &CommandDescriptor) -> String {
 /// [`render_ai_help`] over the declaration's parts.
 fn render_manual(name: &str, aliases: &'static [&'static str], description: &str, schema: &Value) -> String {
     let offered = offered_name_of(name, aliases);
-    // An undeclared contract (a hand-written `CommandSpec` still on the `Null` default) has no
-    // example that decodes: `x({})` was shown for each such command and every one refused it.
-    if schema.is_null() {
-        return format!(
-            "{offered} — {description}\n\n\
-             Its arguments are not published as a schema yet, so no example call is shown."
-        );
-    }
     let props = schema.get("properties").and_then(Value::as_object);
     let required: HashSet<&str> = schema
         .get("required")

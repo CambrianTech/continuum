@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! All registered callable schemas keep their contract as documentation collapses.
 //! Decoder-value coverage is separate: this gate cannot prove custom Deserialize rules.
 

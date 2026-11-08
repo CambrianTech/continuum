@@ -152,6 +152,13 @@ pub trait CommandSpec {
     fn params_schema() -> serde_json::Value {
         input_schema::<Self::Params>()
     }
+
+    /// Decode one call at the same boundary used by dispatch and preflight.
+    /// WireShape describes the SDK surface, not ownership of reserved input keys.
+    fn decode_arguments(arguments: &serde_json::Value) -> Result<crate::runtime::CommandRequest<Self::Params>, ArgumentsRefusal> {
+        crate::runtime::CommandRequest::<Self::Params>::decode(arguments)
+    }
+
 }
 
 /// Reflect a typed input contract for any command wire shape, including external
@@ -349,14 +356,7 @@ impl ArgumentsContract {
 }
 
 fn check_arguments<C: CommandSpec>(arguments: &serde_json::Value) -> Result<(), ArgumentsRefusal> {
-    match C::WIRE {
-        WireShape::Enveloped => crate::runtime::CommandRequest::<C::Params>::decode(arguments).map(drop),
-        // A bare contract owns every input field, including names such as requestId.
-        // Stripping envelope keys here would refuse a valid bare inference request.
-        WireShape::Bare | WireShape::Provided => {
-            crate::runtime::arguments::decode::<C::Params>(arguments, |_| true).map(drop)
-        }
-    }
+    C::decode_arguments(arguments).map(drop)
 }
 
 impl CommandDescriptor {
