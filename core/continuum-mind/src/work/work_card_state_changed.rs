@@ -149,10 +149,11 @@ pub(crate) async fn claim_following_card_room(
     origin: airc_work::ClaimOrigin,
 ) -> Option<Result<ClaimId, airc_lib::AircError>> {
     follow_card_room(airc, card_id, "work/claim").await?;
-    Some(
-        airc.claim_work_card_with_origin(ClaimWorkCard { card_id, ttl_ms }, origin)
-            .await,
-    )
+    let claimed = airc.claim_work_card_with_origin(ClaimWorkCard { card_id, ttl_ms }, origin).await;
+    if claimed.is_ok() {
+        crate::persona::work_board::board_index::wrote_card(airc, card_id);
+    }
+    Some(claimed)
 }
 
 /// Claim a work card for this persona (as its own airc key).

@@ -100,6 +100,8 @@ use super::*;
         )
         .await
         .expect("she claims the slice card");
+        // A raw airc claim, not her verb: mark it as her verb (and her stream's echo) would.
+        crate::persona::work_board::board_index::wrote_card(&airc, held);
         let slice = WorkCreate::create(
             &airc,
             WorkCreateParams {

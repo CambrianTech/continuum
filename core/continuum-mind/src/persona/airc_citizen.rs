@@ -221,6 +221,12 @@ pub trait AircCitizen:
     async fn subscribed_rooms(&self) -> Result<Vec<Uuid>, AircError> {
         Ok(Vec::new())
     }
+
+    /// The cards she HOLDS, each with the room whose board carries it. Production reads
+    /// her board index (`work_board::board_index`), so the self-tick learns her focus room
+    /// without walking a single board while nothing changed. No default: a citizen that
+    /// answered "none" by default would read idle while holding work.
+    async fn held_cards(&self) -> Result<Vec<(Uuid, airc_lib::WorkCard)>, AircError>;
 }
 
 /// Where a reply for `room_id` should be published — the ONE place
@@ -540,6 +546,22 @@ impl AircCitizen for StubAircCitizen {
 
     async fn subscribed_rooms(&self) -> Result<Vec<Uuid>, AircError> {
         Ok(self.rooms.clone())
+    }
+
+    /// Each seeded claim with the seeded board that carries it, whether or not the stub is
+    /// subscribed to that room (the subscription check is the caller's); a claim on no
+    /// seeded board has no room to report.
+    async fn held_cards(&self) -> Result<Vec<(Uuid, airc_lib::WorkCard)>, AircError> {
+        Ok(self
+            .held
+            .iter()
+            .filter_map(|card| {
+                self.boards
+                    .iter()
+                    .find(|(_, cards)| cards.iter().any(|c| c.card_id == card.card_id))
+                    .map(|(room, _)| (*room, card.clone()))
+            })
+            .collect())
     }
 }
 

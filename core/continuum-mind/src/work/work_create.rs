@@ -55,6 +55,7 @@ impl WorkCreate {
             .create_work_card_in(&room, req)
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))?;
+        crate::persona::work_board::board_index::wrote(&airc, &room);
         Ok(WorkCreateResult {
             card_id: card_id.as_uuid().to_string(),
         })
@@ -147,6 +148,7 @@ impl ActionCommand for WorkRelease {
                 .await;
         }
         attempt.map_err(|e| CommandError::Internal(e.to_string()))?;
+        crate::persona::work_board::board_index::wrote_card(&airc, card_id);
         crate::persona::held_claims::forget(airc.peer_id().as_uuid(), airc.home(), card_id.as_uuid());
         Ok(WorkReleaseResult { released: true })
     }
@@ -225,6 +227,7 @@ impl ActionCommand for WorkState {
                 .claim_work_card_with_provenance_in(room, ClaimWorkCard { card_id, ttl_ms: DEFAULT_CLAIM_TTL_MS }, airc_work::ClaimOrigin::Explicit, None)
                 .await
                 .map_err(|e| CommandError::Internal(e.to_string()))?;
+            crate::persona::work_board::board_index::wrote(&airc, room);
             continuum_base::probe!(
                 class = "work.state.taken_over",
                 card_id = %card_id.as_uuid(),

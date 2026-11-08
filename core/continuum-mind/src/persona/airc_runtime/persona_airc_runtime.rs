@@ -510,12 +510,12 @@ impl PersonaAircRuntime {
                     // A lapsed hold nobody else has taken is re-claimed here.
                     {
                         let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: nothing recorded / a pre-epoch clock = 0, never a guess
-                        if let Ok(board) = hb_airc
-                            .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
-                            .await
+                        if let Ok(board) =
+                            crate::persona::work_board::board_index::room_board(hb_airc.as_ref(), None)
+                                .await
                         {
                             let me = hb_airc.peer_id();
-                            let snapshot = board.snapshot();
+                            let snapshot = &*board;
                             // WIP = 1 survives the recovery: if she already holds a LIVE
                             // card, a lapsed one is left for the deck (2026-09-05: a
                             // citizen ended up on two).
@@ -583,12 +583,18 @@ impl PersonaAircRuntime {
                                     )
                                     .await
                                 {
-                                    Ok(_) => continuum_base::probe!(
-                                        class = "persona.claim.recovered",
-                                        agent_name = %hb_name,
-                                        card_id = %card.card_id.as_uuid(),
-                                        "my own lapsed hold re-claimed before anyone else took it"
-                                    ),
+                                    Ok(_) => {
+                                        crate::persona::work_board::board_index::wrote_card(
+                                            hb_airc.as_ref(),
+                                            card.card_id,
+                                        );
+                                        continuum_base::probe!(
+                                            class = "persona.claim.recovered",
+                                            agent_name = %hb_name,
+                                            card_id = %card.card_id.as_uuid(),
+                                            "my own lapsed hold re-claimed before anyone else took it"
+                                        )
+                                    }
                                     Err(error) => continuum_base::probe!(
                                         class = "persona.claim.recover_failed",
                                         agent_name = %hb_name,
@@ -603,7 +609,7 @@ impl PersonaAircRuntime {
                     // Renew what the BOARD says she holds (board_held_by) — the roster
                     // reads empty right after a boot, and a lease not renewed in that
                     // window lapses out from under her.
-                    match scoped_board_held_by(hb_airc.as_ref()).await {
+                    match crate::persona::work_board::board_index::scoped_board_held_by(hb_airc.as_ref()).await {
                         Ok(mine) => {
                             let mut renewed = 0usize;
                             let mut failed = 0usize;
@@ -669,9 +675,14 @@ impl PersonaAircRuntime {
                                 // 21 acts and 0 writes an hour. Read the card in the room
                                 // the claim landed in; settled forgets the record. An
                                 // unreadable board renews as before.
-                                if let Ok(board) = hb_airc.work_board_in(&h.room).await {
+                                if let Ok(board) = crate::persona::work_board::board_index::for_peer(hb_airc.peer_id())
+                                    .board(hb_airc.as_ref(), &h.room, EpochMs::now().millis())
+                                    .await
+                                {
                                     let settled = board
-                                        .card(airc_lib::WorkCardId::from_uuid(h.card_id))
+                                        .cards
+                                        .iter()
+                                        .find(|card| card.card_id.as_uuid() == h.card_id)
                                         .is_some_and(|card| settled_card(&card.state));
                                     if settled {
                                         let dropped = crate::persona::held_claims::forget(

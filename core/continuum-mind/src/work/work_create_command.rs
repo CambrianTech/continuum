@@ -76,7 +76,7 @@ impl ActionCommand for WorkCreate {
 /// and chosen by the same focus rule. A failed read is a read failure, never "you hold
 /// no card" (Codex on #4571).
 pub(super) async fn held_repo(airc: &Airc) -> Result<Option<RepoId>, CommandError> {
-    let held = crate::persona::airc_runtime::board_held_by(airc)
+    let held = crate::persona::work_board::board_index::board_held_by(airc)
         .await
         .map_err(|e| CommandError::Internal(format!("work/create: could not read the cards you hold: {e}")))?;
     Ok(crate::persona::work_focus::focus_actionable_card(held.iter()).map(|c| c.repo.clone()))
@@ -104,7 +104,7 @@ pub(super) async fn room_repo(airc: &Airc, room: &airc_lib::Room) -> Result<Opti
 /// The distinct repos of every card she holds, in any state, for the refusal's hint.
 /// Best-effort: an unreadable board names no repos; the refusal still stands.
 pub(super) async fn repos_she_holds(airc: &Airc) -> Vec<String> {
-    let Ok(held) = crate::persona::airc_runtime::board_held_by(airc).await else {
+    let Ok(held) = crate::persona::work_board::board_index::board_held_by(airc).await else {
         return Vec::new();
     };
     let mut repos: Vec<String> = held.iter().map(|c| c.repo.to_string()).collect();
