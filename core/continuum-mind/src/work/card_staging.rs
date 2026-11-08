@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::code::card_branch::card_branch;
-use crate::persona::card_checkout::gym_workspace;
+use crate::persona::card_checkout::{checkout_path_for, gym_workspace};
 
 /// What staging produced for this claimer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,12 +73,26 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
     }
     let repo = card.repo.to_string();
     let branch = card_branch(card);
-    // Every existing checkout goes through airc's ensure_card_clone below, never handed back
-    // as-is: it reuses a checkout with its allocation evidence, migrates a linked worktree
-    // (airc #1582; returned early here, that migration never ran: the M5, 2026-10-19, Fable),
-    // and re-allocates an unanchored clone that holds nothing unpublished, refusing one that does
-    // (airc #1668; Kimi on the Windows node sat on a weeks-old clone that could never submit,
-    // 2026-11-08). Then the workspace moves with the mind (card 73eefbbb, arrive_for below).
+    // Already staged: the same lookup a held-card turn uses, so claim time and turn time can never
+    // disagree about where her work lives. Returned as-is only when it is a card clone with its
+    // creation anchor. A linked worktree (before card d166e4f2) falls through so ensure_card_clone
+    // migrates it (airc #1582; returned here, that migration never ran: the M5, 2026-10-19, Fable),
+    // and so does a clone with no anchor, which airc re-allocates when it holds nothing unpublished
+    // and refuses naming what it holds otherwise (airc #1668; Kimi on the Windows node sat on a
+    // weeks-old clone that could never submit, 2026-11-08).
+    if let Some(existing) = checkout_path_for(&claimer, card)
+        .filter(|existing| !airc_lib::work_worktree::is_linked_worktree(existing))
+    {
+        if !crate::persona::card_checkout::lacks_creation_anchor(&existing).await {
+            // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a checkout that already exists
+            // here may be BEHIND what another node pushed on this branch (the card changed hands),
+            // or DIVERGED from it. The transfer owner fetches and preserves same-branch unpublished
+            // successors/edits when origin adds no commits; genuine divergence is saved under a ref
+            // before transferring.
+            crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid()).await;
+            return Staging::Ready { path: existing };
+        }
+    }
     let started = std::time::Instant::now();
     // A repo this node never checked out is CLONED, not refused. Before this, the claim
     // staged as Ordinary and her hands stayed on the resident checkout, so a citizen who
@@ -466,7 +480,6 @@ fn failed(claimer: Uuid, title: &str, stage: &'static str, error: String) -> Sta
 mod tests {
     use super::*;
     use crate::code::card_branch::is_card_branch;
-    use crate::persona::card_checkout::checkout_path_for;
 
     // what this catches: the dispatch→pull inversion at its seam. A card claimed by a
     // citizen who was NEVER its assignee must be staged into HER workspace (keyed by her
