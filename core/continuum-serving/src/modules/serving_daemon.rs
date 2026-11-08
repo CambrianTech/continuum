@@ -234,7 +234,7 @@ pub struct ServingDaemonModule {
     /// not wedge evidence. Cleared on every smoke success so a stale value can never
     /// exonerate a later freeze. `std::sync::Mutex` — held only for a copy, never
     /// across an await.
-    last_miss_slots_fp: Arc<std::sync::Mutex<Option<u64>>>,
+    last_miss_slots_fp: Arc<parking_lot::Mutex<Option<u64>>>,
     frozen_slots: Arc<parking_lot::Mutex<Option<FrozenSlots>>>,
     /// Where the first plan after boot learns about a PAST FORM OF OURSELF still holding VRAM.
     /// Defaults to the lane registry; tests own it ([`Self::set_inherited_lane`]). See
@@ -538,7 +538,7 @@ impl ServingDaemonModule {
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
             leased_in_sent: Arc::new(crate::inference::resource_admission::leased_in_sent_samples),
-            last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
+            last_miss_slots_fp: Arc::new(parking_lot::Mutex::new(None)),
             frozen_slots: Arc::new(parking_lot::Mutex::new(None)),
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
@@ -617,7 +617,7 @@ use moe_cache::{
 };
 mod intent;
 use intent::ServingPlanSnapshot;
-pub use intent::{PinFit, PinFitChecker, ServingIntent, ServingIntentSnapshot};
+pub use intent::{IntentRevisionExhausted, PinFit, PinFitChecker, ServingIntent, ServingIntentSnapshot};
 mod lifecycle;
 #[cfg(test)]
 use lifecycle::reconcile_wedged;

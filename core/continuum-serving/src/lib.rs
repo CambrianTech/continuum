@@ -1,3 +1,8 @@
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
+
 //! continuum-serving: the serving planner and lane lifecycle, cut out of continuum-core (plan
 //! phase 2, `docs/architecture/MODULE-ARCHITECTURE.md` §9.2: Serving is its own module).
 //! `serving_daemon` is the `ServingDaemonModule` (planner, reconciler, publication, pins) and its
