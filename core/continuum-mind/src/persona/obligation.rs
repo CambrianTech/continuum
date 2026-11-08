@@ -314,6 +314,7 @@ mod effects;
 mod recover;
 pub use effects::ObligationMark;
 pub use recover::Interrupted;
+pub use effects::restart_wait;
 
 impl Obligations {
     pub fn new(executor: &Arc<CommandExecutor>, persona_id: Uuid, persona_name: &str) -> Self {
@@ -322,6 +323,19 @@ impl Obligations {
             persona_name: persona_name.to_string(),
             conn: Arc::new(substrate_connection(executor)),
             failures: Arc::default(),
+            pinned: parking_lot::Mutex::default(),
+        }
+    }
+
+    /// The obligations for the NEXT start of her loop after this one ends: the same persona,
+    /// store and failure streak, with no notice pinned yet, so that start's recovery pins the
+    /// notice for every row the ended start left open (a panic's cut turn among them).
+    pub fn next_start(&self) -> Self {
+        Self {
+            persona_id: self.persona_id,
+            persona_name: self.persona_name.clone(),
+            conn: self.conn.clone(),
+            failures: self.failures.clone(),
             pinned: parking_lot::Mutex::default(),
         }
     }

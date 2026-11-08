@@ -19,6 +19,7 @@
 //! prompt does not change every minute.
 
 pub mod age;
+pub mod doubling;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
