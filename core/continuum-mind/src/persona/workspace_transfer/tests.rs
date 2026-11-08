@@ -345,9 +345,15 @@
             std::fs::write(m.a.join("src.txt"), edit).unwrap_or_else(|e| panic!("{e}"));
             let PushOutcome::Ok { .. } = sync(&m.a, card, "node-a").await else { panic!("push") };
         }
-        let parent = git(&m.a, &["rev-parse", "HEAD^"]).await.trim().to_string();
+        // An older commit of the branch, published under its own name and fetched at depth 1:
+        // present here, but cut off from the tip's shallow history, so git answers "no" although
+        // it is an ancestor.
+        git(&m.a, &["branch", "-f", "older", "HEAD^"]).await;
+        git(&m.a, &["push", "-q", "origin", "older"]).await;
         let shallow = m.tmp.path().join("shallow");
         git(m.tmp.path(), &["clone", "-q", "--depth", "1", "--branch", &m.branch, &format!("file://{}", m.origin.display()), &shallow.to_string_lossy()]).await;
+        git(&shallow, &["fetch", "-q", "--depth", "1", "origin", "older"]).await;
+        let parent = git(&shallow, &["rev-parse", "FETCH_HEAD"]).await.trim().to_string();
         let tip = head(&shallow).await;
         git(&shallow, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &parent]).await;
         match realign_to_anchor(&shallow, &m.branch, 70).await {
@@ -358,6 +364,46 @@
         // A yes is proof in any clone: the tip as anchor is its own ancestor, nothing to do.
         git(&shallow, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &tip]).await;
         assert!(realign_to_anchor(&shallow, &m.branch, 71).await.is_none());
+    }
+
+    // what this catches (Codex b7194c2c): the blocking history fetch ran outside the arrival's lock
+    // scope, so an arrival dropped mid-fetch released the checkout while that git still ran, and
+    // the next sync could start beside it. The lock now lives in the blocking task until it ends.
+    #[tokio::test]
+    async fn a_dropped_arrival_keeps_the_checkout_locked_until_its_history_fetch_ends() {
+        static FETCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static FETCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        fn slow_fetch(_: &Path) -> Result<(), String> {
+            FETCHING.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            FETCHED.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        let m = two_machines().await;
+        let card = Uuid::new_v4();
+        for edit in ["from A\n", "from A again\n"] {
+            std::fs::write(m.a.join("src.txt"), edit).unwrap_or_else(|e| panic!("{e}"));
+            let PushOutcome::Ok { .. } = sync(&m.a, card, "node-a").await else { panic!("push") };
+        }
+        // A shallow checkout whose anchor (present here, off another line) it does not descend from.
+        let shallow = m.tmp.path().join("shallow-locked");
+        git(m.tmp.path(), &["clone", "-q", "--depth", "1", "--branch", &m.branch, &format!("file://{}", m.origin.display()), &shallow.to_string_lossy()]).await;
+        identity(&shallow).await;
+        git(&shallow, &["checkout", "-q", "--orphan", "elsewhere"]).await;
+        git(&shallow, &["commit", "-q", "--allow-empty", "-m", "elsewhere"]).await;
+        let anchor = head(&shallow).await;
+        git(&shallow, &["checkout", "-q", &m.branch]).await;
+        git(&shallow, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &anchor]).await;
+        let arrival = arrive_locked_with(&shallow, &m.branch, 80, slow_fetch);
+        let hands = crate::identity::hands_context::HandsContext::for_claim(Uuid::new_v4(), card, Uuid::new_v4());
+        let Ok(lease) = crate::identity::hands_gate::admit(hands) else { panic!("admitted") };
+        let arrival = crate::identity::hands_gate::admitted(Some(std::sync::Arc::new(lease)), arrival);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(300), arrival).await.is_err(), "dropped mid-fetch");
+        assert!(FETCHING.load(std::sync::atomic::Ordering::SeqCst), "the fetch had started");
+        let lock = CHECKOUT_SYNC.entry(shallow.clone()).or_default().clone();
+        assert!(lock.try_lock().is_err(), "the checkout stays locked while the fetch runs");
+        let waited = tokio::time::timeout(std::time::Duration::from_secs(5), lock.lock_owned()).await;
+        assert!(waited.is_ok() && FETCHED.load(std::sync::atomic::Ordering::SeqCst), "the next holder gets it only after the fetch ended");
     }
 
     // what this catches: the two pure readers. The push-error classifier must not call a

@@ -61,6 +61,12 @@ enum Step {
     Nothing,
 }
 
+/// The hands of `claimer`'s claim on `card`, the admission an arrival runs its git under; `None`
+/// for a card with no claim.
+fn claim_hands(claimer: Uuid, card: &airc_lib::WorkCard) -> Option<crate::identity::hands_context::HandsContext> {
+    card.claim_id.map(|claim| crate::identity::hands_context::HandsContext::for_claim(claimer, card.card_id.as_uuid(), claim.as_uuid()))
+}
+
 /// Stage `title`'s work into the workspace of `claimer` under `home`.
 /// Stage for a claimed CARD: a benchmark card stages by its title recipe (below);
 /// any other card of a repo this node has a checkout of gets airc's per-card
@@ -91,7 +97,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
             // or DIVERGED from it. The transfer owner fetches and preserves same-branch unpublished
             // successors/edits when origin adds no commits; genuine divergence is saved under a ref
             // before transferring.
-            let arrived = crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid()).await;
+            let arrived = crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid(), claim_hands(claimer, card)).await;
             return Staging::Ready { path: existing, arrival: arrived.notable() };
         }
     }
@@ -165,7 +171,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
             // A branch cut here from the clone's HEAD: if another node already
             // pushed this card's branch, her work is there — fetch it and stand
             // at its tip before her first turn (card 73eefbbb).
-            let arrived = crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid()).await;
+            let arrived = crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid(), claim_hands(claimer, card)).await;
             Staging::Ready { path, arrival: arrived.notable() }
         }
         Err(error) => Staging::Failed { stage: "worktree", error },
