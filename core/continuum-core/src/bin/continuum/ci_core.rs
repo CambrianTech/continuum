@@ -80,10 +80,26 @@ pub(super) async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Res
 pub(super) struct CiArtifactPreparation {
     pub(super) directory: PathBuf,
     pub(super) complete: bool,
+    /// Held for the preparation's life: [`prune_ci_cores`] never removes a directory whose
+    /// preparation is still running, however old it is (Codex on #5868).
+    preparing: Option<continuum_host::durable::Lock>,
+}
+
+/// The lock a running preparation holds inside its own directory.
+const PREPARING_LOCK: &str = ".preparing";
+
+impl CiArtifactPreparation {
+    /// Claim the freshly created `directory` as this preparation's.
+    fn claim(directory: PathBuf) -> std::io::Result<Self> {
+        let preparing = continuum_host::durable::lock_path(&directory.join(PREPARING_LOCK), false)?;
+        Ok(Self { directory, complete: false, preparing: Some(preparing) })
+    }
 }
 
 impl Drop for CiArtifactPreparation {
     fn drop(&mut self) {
+        // Released first: Windows refuses to remove a file a handle still holds.
+        self.preparing.take();
         if !self.complete {
             // This invocation created this fresh UUID directory; failed attempts
             // cannot accumulate full archives or remove another caller's candidate.
@@ -157,7 +173,10 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
     let dir = root.join(format!("{tip}-{}", uuid::Uuid::new_v4()));
     if let Err(error) = std::fs::create_dir_all(&root) { return Err(write_failure(&root, 0, error).await); }
     if let Err(error) = std::fs::create_dir(&dir) { return Err(write_failure(&root, 0, error).await); }
-    let mut preparation = CiArtifactPreparation { directory: dir.clone(), complete: false };
+    let mut preparation = match CiArtifactPreparation::claim(dir.clone()) {
+        Ok(preparation) => preparation,
+        Err(error) => return Err(write_failure(&root, 0, error).await),
+    };
     // Stream to disk while hashing; actual response/source lengths, never a
     // historical archive-size estimate, drive capacity admission.
     let archive_url = format!("{}/{}", url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&url), manifest.archive);
@@ -369,7 +388,9 @@ pub(super) fn tip_age_secs(repo: &Path, tip: &str) -> u64 {
 }
 
 /// The writer bounds its own cache (disk_eviction: `core-artifacts`): once `keep_dir` is
-/// verified, every preparation older than it goes. Nothing else needs them: the reboot copies the
+/// verified, every finished preparation older than it goes. A preparation still running holds its
+/// [`PREPARING_LOCK`] and is skipped whatever its age: an earlier download can outlast a later one
+/// (Codex on #5868). Nothing else needs them: the reboot copies the
 /// core into the supervisor's slot, and a rollback restores the slot's previous binary
 /// (`dark_build::PreviousCore`), never a cached archive. A preparation newer than `keep_dir` may
 /// still be in flight, so it stays for its own writer to verify or remove.
@@ -378,7 +399,10 @@ pub(super) fn prune_ci_cores(root: &Path, keep_dir: &Path) {
     let Some(kept) = modified(keep_dir) else { return };
     let Ok(entries) = std::fs::read_dir(root) else { return };
     for old in entries.flatten().map(|e| e.path()) {
-        if old.is_dir() && old != keep_dir && modified(&old).is_some_and(|at| at < kept) {
+        let older = old.is_dir() && old != keep_dir && modified(&old).is_some_and(|at| at < kept);
+        // The probe lock is dropped before the removal: no preparation ever re-enters an old
+        // directory, so nothing can claim it in between.
+        if older && continuum_host::durable::lock_path(&old.join(PREPARING_LOCK), false).is_ok() {
             let _ = std::fs::remove_dir_all(&old);
         }
     }
@@ -500,6 +524,31 @@ mod tests {
             Ok(answer) => panic!("{url} answered {answer:?}"),
             Err(refusal) => refusal,
         }
+    }
+
+    // what this catches (Codex on #5868): pruning by age alone removed an earlier preparation still
+    // downloading when a later one finished first. A running preparation holds its lock and is
+    // kept whatever its age; a finished older one goes; the kept one and a newer one stay.
+    #[test]
+    fn pruning_keeps_a_running_preparation_and_removes_finished_older_ones() {
+        let Ok(root) = tempfile::tempdir() else { panic!("a temp dir") };
+        let made = |name: &str| {
+            let dir = root.path().join(name);
+            let Ok(()) = std::fs::create_dir(&dir) else { panic!("made {name}") };
+            // Distinct modification times in creation order on every filesystem's resolution.
+            std::thread::sleep(Duration::from_millis(20));
+            dir
+        };
+        let running_dir = made("running");
+        let Ok(running) = CiArtifactPreparation::claim(running_dir.clone()) else { panic!("claimed") };
+        let finished = made("finished");
+        let kept = made("kept");
+        let newer = made("newer");
+        prune_ci_cores(root.path(), &kept);
+        assert!(running_dir.exists(), "a running preparation is never pruned");
+        assert!(!finished.exists(), "a finished older one goes");
+        assert!(kept.exists() && newer.exists(), "the verified one and a newer one stay");
+        drop(running);
     }
 
     // what this catches: a release host that is down or overloaded spending a build's deploy
