@@ -15,7 +15,7 @@ use crate::sdk_codegen::CommandError;
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/code/GithubPrCreateParams.ts")]
 pub struct GithubPrCreateParams {
-    /// The PR title (required, non-blank).
+    /// The PR title.
     #[schemars(with = "String")]
     #[ts(type = "string")]
     pub title: continuum_base::non_empty_text::NonEmptyText,
@@ -46,8 +46,7 @@ pub struct GithubPrCreateResult {
 crate::action_command! {
     /// Open a GitHub pull request (`gh pr create`) from your pushed branch. Commit and
     /// `code/git/push` your branch FIRST, then open the PR. Write a real body — what
-    /// changed and why — like a teammate. Returns the PR URL. On a card, `work/submit`
-    /// opens (or finds) the PR for your branch AND links it to the card, so the merger sees it.
+    /// changed and why — like a teammate. Returns the PR URL.
     pub struct CodeGithubPrCreate { state: Arc<CodeState> }
     name: "code/github/pr-create",
     access: AiSafe,

@@ -151,6 +151,16 @@ fn render_manual(name: &str, aliases: &'static [&'static str], description: &str
         }
     }
 
+    // A whole-params tagged enum (`#[serde(tag = "action")]`: `start{onto} | continue | ...`) has
+    // no top-level `properties`, only its variants: the example is its first variant, flat with
+    // its tag, and the variants are its one argument line. It rendered `x({})` and refused.
+    if props.is_none() {
+        if let (ty, Value::Object(first)) = param_shape(schema, schema) {
+            example = first;
+            arg_lines.push(format!("- {ty}"));
+        }
+    }
+
     let call = CallForm::new(&offered, &example);
 
     let args_block = if arg_lines.is_empty() {

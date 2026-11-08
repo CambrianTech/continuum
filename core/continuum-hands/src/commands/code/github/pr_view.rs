@@ -171,7 +171,7 @@ crate::action_command! {
     pub struct CodeGithubPrView { state: Arc<CodeState> }
     name: "code/github/pr-view",
     access: AiSafe,
-    native: true,
+    native: false, // found through help when her work needs it; the always-offered surface stays within its measured bound (goal 10)
     disclosure: OnDemand,
     params: GithubPrViewParams,
     output: GithubPrViewResult,

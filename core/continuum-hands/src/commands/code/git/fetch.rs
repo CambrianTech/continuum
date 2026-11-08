@@ -40,7 +40,7 @@ crate::action_command! {
     pub struct CodeGitFetch { state: Arc<CodeState> }
     name: "code/git/fetch",
     access: AiSafe,
-    native: true,
+    native: false, // found through help when her work needs it; the always-offered surface stays within its measured bound (goal 10)
     aliases: &["git_fetch"],
     disclosure: OnDemand,
     params: GitFetchParams,

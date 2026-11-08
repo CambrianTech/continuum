@@ -32,8 +32,8 @@ pub struct GitCommitResult {
 }
 
 crate::action_command! {
-    /// Commit the staged changes (`git commit -m`), as you: author and committer. Returns
-    /// the new commit's full SHA. Stage files with `code/git/add` first.
+    /// Commit the staged changes (`git commit -m`). Returns the new commit's full
+    /// SHA. Stage files with `code/git/add` first.
     pub struct CodeGitCommit { state: Arc<CodeState> }
     name: "code/git/commit",
     access: AiSafe,

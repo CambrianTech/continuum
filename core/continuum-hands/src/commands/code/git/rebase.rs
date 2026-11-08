@@ -61,7 +61,7 @@ crate::action_command! {
     pub struct CodeGitRebase { state: Arc<CodeState> }
     name: "code/git/rebase",
     access: AiSafe,
-    native: true,
+    native: false, // found through help when her work needs it; the always-offered surface stays within its measured bound (goal 10)
     aliases: &["git_rebase"],
     disclosure: OnDemand,
     params: GitRebaseParams,
