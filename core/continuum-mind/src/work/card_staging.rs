@@ -73,23 +73,25 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
     }
     let repo = card.repo.to_string();
     let branch = card_branch(card);
-    // Already staged: the same lookup a held-card turn uses, so claim time and turn
-    // time can never disagree about where her work lives.
-    // A checkout made as a linked worktree (before card d166e4f2) is NOT returned as-is: it
-    // falls through to the clone path below, whose ensure_card_clone migrates it to a card
-    // clone when nothing can be lost (airc #1582). Returning it here made that migration
-    // unreachable for exactly the checkouts it exists for (the M5, 2026-10-19: 0 of 3
-    // eligible held checkouts migrated in an hour; Fable).
+    // Already staged: the same lookup a held-card turn uses, so claim time and turn time can never
+    // disagree about where her work lives. Returned as-is only when it is a card clone with its
+    // creation anchor. A linked worktree (before card d166e4f2) falls through so ensure_card_clone
+    // migrates it (airc #1582; returned here, that migration never ran: the M5, 2026-10-19, Fable),
+    // and so does a clone with no anchor, which airc re-allocates when it holds nothing unpublished
+    // and refuses naming what it holds otherwise (airc #1668; Kimi on the Windows node sat on a
+    // weeks-old clone that could never submit, 2026-11-08).
     if let Some(existing) = checkout_path_for(&claimer, card)
         .filter(|existing| !airc_lib::work_worktree::is_linked_worktree(existing))
     {
-        // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a checkout that already
-        // exists here may be BEHIND what another node pushed on this branch (the card
-        // changed hands), or DIVERGED from it. The transfer owner fetches and
-        // preserves same-branch unpublished successors/edits when origin adds no
-        // commits; genuine divergence is saved under a ref before transferring.
-        crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid()).await;
-        return Staging::Ready { path: existing };
+        if !crate::persona::card_checkout::lacks_creation_anchor(&existing).await {
+            // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a checkout that already exists
+            // here may be BEHIND what another node pushed on this branch (the card changed hands),
+            // or DIVERGED from it. The transfer owner fetches and preserves same-branch unpublished
+            // successors/edits when origin adds no commits; genuine divergence is saved under a ref
+            // before transferring.
+            crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid()).await;
+            return Staging::Ready { path: existing };
+        }
     }
     let started = std::time::Instant::now();
     // A repo this node never checked out is CLONED, not refused. Before this, the claim
@@ -137,8 +139,14 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
         .map(|outcome| {
             // A held linked worktree replaced by a card clone (airc #1582): said once, with
             // where the old tree went, so a resident's moved checkout is never a mystery.
-            if let airc_lib::work_worktree::WorktreeOutcome::Migrated { path, retired } = &outcome {
-                continuum_base::probe!(class = "card.checkout.migrated", card = %spec_card, path = %path.display(), retired = %retired.display(), "linked card worktree replaced by a card clone; old tree kept aside");
+            match &outcome {
+                airc_lib::work_worktree::WorktreeOutcome::Migrated { path, retired } => {
+                    continuum_base::probe!(class = "card.checkout.migrated", card = %spec_card, path = %path.display(), retired = %retired.display(), "linked card worktree replaced by a card clone; old tree kept aside");
+                }
+                airc_lib::work_worktree::WorktreeOutcome::Reallocated { path, retired } => {
+                    continuum_base::probe!(class = "card.checkout.reallocated", card = %spec_card, path = %path.display(), retired = %retired.display(), "a card clone with no allocation evidence held nothing unpublished; re-allocated, old tree kept aside");
+                }
+                airc_lib::work_worktree::WorktreeOutcome::Created(_) | airc_lib::work_worktree::WorktreeOutcome::Reused(_) => {}
             }
             outcome.path().to_path_buf()
         })
