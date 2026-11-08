@@ -93,6 +93,10 @@ every node, and it is the RBAC policy unit (`airc://room:academy/**`), so permis
 tree. The airc channel behind a room is an internal key derived from its URI, never a name anyone
 types.
 
+**The desktop's URL is the same path** (Joel: "It should match and eventually the desktops URLs
+ too"): `airc://room:academy/benchmarks/run-1` opens at `/room/academy/benchmarks/run-1`, as
+`airc://maya/…` already matches `/persona/maya/…`. One address, every surface.
+
 **2. Opening is resume-or-create (one verb, `activity/spawn` today).** Open a URI with a recipe:
 - if the room exists, it is the same room; its binding must name the same recipe
   (`validate_spawn_binding`, already there); if its standing is archived, it goes back to live.
