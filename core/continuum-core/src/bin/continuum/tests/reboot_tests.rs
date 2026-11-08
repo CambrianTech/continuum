@@ -677,3 +677,25 @@ fn only_work_bound_to_the_kept_engine_is_carried() {
     assert!(matches!(observation_of(Some(&held(&[(30681, 1794000000)])), kept), HoldObservation::LiveWork(_)), "a reused pid is another engine");
     assert!(matches!(observation_of(Some(&held(&[(30681, 1794093320)])), None), HoldObservation::LiveWork(_)), "a handoff that keeps nothing carries nothing");
 }
+
+// what this catches (Codex on #5872): the post-handoff check compared printed work strings, which
+// carry no engine start time, so a reused pid on a new engine read as a successful carry. The
+// carry holds only when every job held before is held after on the same pid AND start time.
+#[test]
+fn a_carry_holds_only_with_the_same_jobs_on_the_same_engine_incarnation() {
+    use continuum_core::inference::llama_server::serving_hold::ServingHold;
+    let held = |work: &[(&str, u32, u64)]| {
+        let work: Vec<_> = work.iter().map(|(job, pid, started)| json!({
+            "job": job, "consumer": format!("genome-train:{job}"), "baseModel": "m",
+            "enginePid": pid, "engineStartedS": started, "port": 58057})).collect();
+        serde_json::from_value::<ServingHold>(json!({"sinceMs": 1, "by": {"kind": "resident", "work": work}})).expect("test: a serving/status held_for")
+    };
+    let job = "cc9a10dc-0d43-4116-8dbf-4cc0c7e31062";
+    let other = "8b46862c-a328-4904-9444-2ae9eeab143f";
+    let before = held(&[(job, 30681, 1794093320)]);
+    assert!(carried_intact(&before, Some(&held(&[(job, 30681, 1794093320)]))));
+    assert!(carried_intact(&before, Some(&held(&[(job, 30681, 1794093320), (other, 30681, 1794093320)]))), "new work beside it is fine");
+    assert!(!carried_intact(&before, Some(&held(&[(job, 30681, 1794200000)]))), "a reused pid with another start is another engine");
+    assert!(!carried_intact(&before, Some(&held(&[(other, 30681, 1794093320)]))), "the job is gone");
+    assert!(!carried_intact(&before, None), "nothing held after");
+}

@@ -77,7 +77,12 @@ pub fn verdict(closed: AdmissionClose, observed: HoldObservation, force: bool) -
         (AdmissionClose::NotSupported, HoldVerdict::Proceed(said)) => {
             HoldVerdict::Proceed(Some(said.map_or_else(|| UNCLOSED_WINDOW.to_string(), |said| format!("{said}; {UNCLOSED_WINDOW}"))))
         }
-        (AdmissionClose::NotSupported, HoldVerdict::Carry(work)) => HoldVerdict::Carry(format!("{work}; {UNCLOSED_WINDOW}")),
+        // Carrying is safe only while no run can be admitted onto a lane the handoff does not keep:
+        // with admission open, only --force carries (Codex on #5872).
+        (AdmissionClose::NotSupported, HoldVerdict::Carry(work)) if force => HoldVerdict::Carry(format!("--force: {work}; {UNCLOSED_WINDOW}")),
+        (AdmissionClose::NotSupported, HoldVerdict::Carry(work)) => HoldVerdict::Defer(format!(
+            "the engine carries live work ({work}) that would go on through a handoff, but {UNCLOSED_WINDOW}, and such a run may land on a lane the handoff does not keep. The deploy waits and retries on its next pass; `continuum reboot --force` carries it anyway."
+        )),
         (_, held) => held,
     }
 }
@@ -126,15 +131,18 @@ mod tests {
 
     // what this catches (card 51d6b4a6, the IntelMac 2026-11-08): a run in the engine the handoff
     // keeps deferred every deploy for 10 h, though it survives the handoff. Carried work goes on
-    // (forced or not, nothing is ended), but only with admission closed: a busy or failed close
-    // still defers, since a run admitted then may be on a lane the handoff does not keep.
+    // (forced or not, nothing is ended), but only with admission closed: a busy or failed close, or
+    // a core that cannot close it, defers, since a run admitted then may be on a lane the handoff
+    // does not keep; only --force carries past an open admission.
     #[test]
     fn work_in_the_kept_engine_is_carried_through_the_handoff_with_admission_closed() {
         let work = || "genome-train:cc9a10dc on continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF (engine pid 30681, port 58057)".to_string();
         assert_eq!(verdict(AdmissionClose::Closed, HoldObservation::Carried(work()), false), HoldVerdict::Carry(work()));
         assert_eq!(verdict(AdmissionClose::Closed, HoldObservation::Carried(work()), true), HoldVerdict::Carry(work()), "--force ends nothing it can carry");
         assert!(matches!(verdict(AdmissionClose::Busy, HoldObservation::Carried(work()), false), HoldVerdict::Defer(why) if why.contains("lifecycle gate")));
-        assert!(matches!(verdict(AdmissionClose::NotSupported, HoldObservation::Carried(work()), false), HoldVerdict::Carry(said) if said.contains("cc9a10dc") && said.contains("predates")));
+        assert!(matches!(verdict(AdmissionClose::NotSupported, HoldObservation::Carried(work()), false), HoldVerdict::Defer(why) if why.contains("cc9a10dc") && why.contains("predates")),
+            "admission left open defers a carry (Codex on #5872)");
+        assert!(matches!(verdict(AdmissionClose::NotSupported, HoldObservation::Carried(work()), true), HoldVerdict::Carry(said) if said.contains("--force")));
     }
 
     // what this catches (card 91921d0f, Codex on #5551): a run admitted between the hold read and
