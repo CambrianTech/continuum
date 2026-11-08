@@ -9,7 +9,7 @@
 //! Everything cognition exports is re-exported here under its old path, so
 //! `crate::cognition::<any>` resolves inside the moved files; continuum-mind re-exports this
 //! crate's `cognition`.
-#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub use continuum_cognition::*;

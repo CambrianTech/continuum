@@ -23,6 +23,8 @@ pub(super) enum BootError {
     )]
     WsIngressWithoutBus,
     #[error(transparent)]
+    RecipeLoad(#[from] crate::experience::source::RecipeLoadError),
+    #[error(transparent)]
     CanvasFeed(#[from] CanvasFeedInstalledTwice),
 }
 
