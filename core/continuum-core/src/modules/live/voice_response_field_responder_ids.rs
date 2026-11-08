@@ -16,7 +16,7 @@ pub struct VoiceState {
     /// Track active CANONICAL call ids (= airc room ids, #193 slice A) to make
     /// register-session idempotent. Prevents duplicate agent spawns on browser
     /// refresh / re-navigate.
-    pub(super) active_sessions: std::sync::Mutex<HashSet<String>>,
+    pub(super) active_sessions: parking_lot::Mutex<HashSet<String>>,
     /// #193 slice A legacy aliases: client-minted `session_id` → canonical airc
     /// `room_id`. The server is now AUTHORITATIVE that a call IS its airc room —
     /// every call is keyed by room_id. Until the client cutover (slice B) lands,
@@ -24,7 +24,7 @@ pub struct VoiceState {
     /// [`VoiceState::canonical_call_id`] resolve those to the room. Entries are
     /// dropped when their call ends. Empty once slice B ships — that's the
     /// done-signal.
-    pub(super) legacy_call_aliases: std::sync::Mutex<HashMap<String, String>>,
+    pub(super) legacy_call_aliases: parking_lot::Mutex<HashMap<String, String>>,
     /// Late-bound command executor for the vision describer the perception-ingest
     /// drain builds. Installed post-boot by the runtime (the #224 late-bind slot),
     /// read lazily on the first live-call frame — never present at `initialize`.
@@ -45,8 +45,8 @@ impl VoiceState {
             call_manager,
             audio_pool,
             resource_lifecycle,
-            active_sessions: std::sync::Mutex::new(HashSet::new()),
-            legacy_call_aliases: std::sync::Mutex::new(HashMap::new()),
+            active_sessions: parking_lot::Mutex::new(HashSet::new()),
+            legacy_call_aliases: parking_lot::Mutex::new(HashMap::new()),
             executor: LateBound::new("live::perception_ingest::executor"),
         }
     }
@@ -61,7 +61,6 @@ impl VoiceState {
     pub fn has_active_session(&self, call_id: &str) -> bool {
         self.active_sessions
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: a poisoned set still answers membership; refusing would mute every call
             .contains(call_id)
     }
 
@@ -96,8 +95,7 @@ impl VoiceState {
     pub(super) fn canonical_call_id(&self, id: &str) -> String {
         let aliases = self
             .legacy_call_aliases
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .lock();
         aliases.get(id).cloned().unwrap_or_else(|| id.to_string())
     }
 }
@@ -177,7 +175,7 @@ pub(super) async fn perception_ingest_drain(
                 "perception_ingest",
                 "fanned {} live-call frames into perception (latest: speaker {} → {} viewers)",
                 fanned,
-                &frame.speaker_id[..8.min(frame.speaker_id.len())],
+                continuum_base::shown_text::shown_text(&frame.speaker_id),
                 viewers.len()
             );
         }

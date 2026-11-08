@@ -30,6 +30,7 @@
 //! - `vrm` — VRM extension parsing (blend shapes, humanoid bones, lookAt)
 
 mod animation;
+#[allow(clippy::unwrap_used)] // 9 std lock unwraps wait on the file's two literal channel bounds: #5860
 mod api;
 mod app;
 mod commands;

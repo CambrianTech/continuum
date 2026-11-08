@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 // jemalloc: returns memory to OS aggressively instead of hoarding pages.
 // macOS system allocator fragments badly under Bevy's 15fps readback churn
 // (14 slots × 921KB per frame) — RSS grows to 30-40GB and never shrinks.

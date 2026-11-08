@@ -18,6 +18,8 @@
 //!
 //! Memory requirement: ~20GB for a 14B model (all tensors in RAM simultaneously).
 //! One-time operation; subsequent runs are skipped if bf16/ exists.
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::collections::HashMap;
 use std::io::BufReader;

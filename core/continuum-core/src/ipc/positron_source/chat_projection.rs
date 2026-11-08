@@ -260,16 +260,37 @@ impl ChatProjection {
         // → nothing published (fail-quiet on this OPTIONAL surface; chat still ships).
         let mirror_node = self.room_id == Some(room_id);
         let exp = self.build_experience(room_id, &roster);
-        let accum = self.accums.get_mut(&room_id).expect("accum checked above");
+        // The room's activity purpose — resolved through the `RoomPurposeSource`
+        // seam (#6), NOT hardcoded. Today the default answers "chat" for every
+        // room; when the recipe-backed resolver is injected, a foundry / scada /
+        // academy room reports its own purpose and the client's Content primitive
+        // dispatches on it (ACTIVITY-ROOM-PATTERNS.md) with no change here.
+        let purpose = self.purpose_source.purpose_for(room_id);
+        // Split borrows: the accumulator is written while the builders and sinks are read,
+        // so it is looked up once instead of once per write.
+        let Self { accums, rooms, substrate, builder, experience_builder, roster_builder, .. } = self;
+        let Some(accum) = accums.get_mut(&room_id) else {
+            return;
+        };
         if let Some(exp) = exp {
             // Emit-on-change: skip re-publishing an identical manifest (messages don't
             // move membership/purpose). Only presence-driven changes reach the wire.
             if accum.last_experience.as_ref() != Some(&exp) {
-                let payload = serde_json::to_value(&exp)
-                    .expect("Experience must serialize — substrate bug, not a runtime error");
-                let env = self.experience_builder.session_raw(Experience::KIND, payload);
-                Self::sink(&self.rooms, &self.substrate, mirror_node, room_id, env);
-                self.accums.get_mut(&room_id).expect("accum").last_experience = Some(exp);
+                // Substrate-owned type: a serialize failure is a bug, reported with its
+                // cause; the manifest is not published and `last_experience` stays, so the
+                // next fold tries again. Chat and roster below still ship.
+                match serde_json::to_value(&exp) {
+                    Ok(payload) => {
+                        let env = experience_builder.session_raw(Experience::KIND, payload);
+                        Self::sink(rooms, substrate, mirror_node, room_id, env);
+                        accum.last_experience = Some(exp);
+                    }
+                    Err(err) => tracing::error!(
+                        error = %err,
+                        %room_id,
+                        "chat projection: Experience did not serialize — a bug in its Serialize; manifest not published"
+                    ),
+                }
             }
         }
 
@@ -277,25 +298,19 @@ impl ChatProjection {
         // ViewState): the Experience manifest's roster region binds to this for
         // names/kinds/vitals — the display data the manifest's minimal Member omits.
         // Emit-on-change (roster only shifts on presence, not per message).
-        if self.accums[&room_id].last_roster.as_deref() != Some(roster.as_slice()) {
-            let env = self.roster_builder.session(RosterViewState {
+        if accum.last_roster.as_deref() != Some(roster.as_slice()) {
+            let env = roster_builder.session(RosterViewState {
                 room_id,
                 roster: roster.clone(),
             });
-            Self::sink(&self.rooms, &self.substrate, mirror_node, room_id, env);
-            self.accums.get_mut(&room_id).expect("accum").last_roster = Some(roster.clone());
+            Self::sink(rooms, substrate, mirror_node, room_id, env);
+            accum.last_roster = Some(roster.clone());
         }
 
-        let accum = &self.accums[&room_id];
         let view = ChatViewState {
             room_id,
             room_name: accum.room_name.clone(),
-            // The room's activity purpose — resolved through the `RoomPurposeSource`
-            // seam (#6), NOT hardcoded. Today the default answers "chat" for every
-            // room; when the recipe-backed resolver is injected, a foundry / scada /
-            // academy room reports its own purpose and the client's Content primitive
-            // dispatches on it (ACTIVITY-ROOM-PATTERNS.md) with no change here.
-            purpose: self.purpose_source.purpose_for(room_id),
+            purpose,
             messages: accum.messages.iter().cloned().collect(),
             acts: accum.acts.iter().cloned().collect(),
             roster,
@@ -305,9 +320,9 @@ impl ChatProjection {
         if accum.last_chat.as_ref() == Some(&view) {
             return;
         }
-        let env = self.builder.session(view.clone());
-        Self::sink(&self.rooms, &self.substrate, mirror_node, room_id, env);
-        self.accums.get_mut(&room_id).expect("accum").last_chat = Some(view);
+        let env = builder.session(view.clone());
+        Self::sink(rooms, substrate, mirror_node, room_id, env);
+        accum.last_chat = Some(view);
     }
 
     /// Store one per-room envelope to BOTH sinks: the node substrate (what the

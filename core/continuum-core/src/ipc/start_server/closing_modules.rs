@@ -8,7 +8,7 @@ pub(super) fn register_closing_modules(
     runtime: &Arc<Runtime>,
     gpu_manager: &Arc<GpuMemoryManager>,
     code_state: &Arc<CodeState>,
-) -> Arc<crate::modules::grid::GridState> {
+) -> std::io::Result<Arc<crate::modules::grid::GridState>> {
     // SentinelModule: Concurrent, fault-tolerant build/task execution
     // Provides sentinel/execute, sentinel/status, sentinel/cancel, sentinel/list
     // And sentinel/logs/list, sentinel/logs/read, sentinel/logs/tail
@@ -42,8 +42,7 @@ pub(super) fn register_closing_modules(
     // GridModule: inter-node transport + routing (Tailscale, Reticulum)
     // The one continuum home, or boot stops: a fallback tree here would hide a retired-root
     // refusal (#5420) behind a second grid state (Codex on #5421).
-    let grid_dir = crate::paths::continuum_home()
-        .expect("the continuum home must resolve before the grid can keep its state") // JUSTIFIED: boot-time registration; the home's own error (no home, a retired CONTINUUM_ROOT) is the reason, never a guessed tree
+    let grid_dir = crate::paths::continuum_home().map_err(BootError::ContinuumHome)?
         .join("grid");
     let local_has_gpu = gpu_manager.total_vram_bytes() > 0;
     let local_vram_mb = gpu_manager.total_vram_bytes() / (1024 * 1024);
@@ -59,5 +58,5 @@ pub(super) fn register_closing_modules(
     ));
     let grid_state = grid_module.state();
     runtime.register(grid_module);
-    grid_state
+    Ok(grid_state)
 }

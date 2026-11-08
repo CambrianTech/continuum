@@ -32,7 +32,8 @@
 //! new activity kinds slot in as data, never as a new nav mechanism.
 
 use std::collections::{BTreeMap, HashSet};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use continuum_positron::nav::{NavBookmark, NavTab, NavTargetKind, NavViewState};
 use continuum_positron::scoping::PerUserSubstrates;
@@ -196,7 +197,6 @@ impl NavFocus {
     pub fn current(&self, user: Uuid) -> Option<(String, NavTargetKind)> {
         self.inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .get(&user)
             .and_then(|n| n.current.clone())
     }
@@ -206,7 +206,6 @@ impl NavFocus {
     pub fn open_activities(&self, user: Uuid) -> Vec<(String, NavTargetKind)> {
         self.inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .get(&user)
             .map(|n| {
                 n.open
@@ -223,7 +222,6 @@ impl NavFocus {
     pub fn is_open(&self, user: Uuid, target: &str) -> bool {
         self.inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .get(&user)
             .is_some_and(|n| n.open.iter().any(|(t, _)| t == target))
     }
@@ -238,7 +236,7 @@ impl NavFocus {
         target: String,
         kind: NavTargetKind,
     ) -> Option<(String, NavTargetKind)> {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.inner.lock();
         let nav = inner.entry(user).or_default();
         if !nav.open.iter().any(|(t, _)| *t == target) {
             nav.open.push((target.clone(), kind.clone()));
@@ -250,7 +248,7 @@ impl NavFocus {
     /// close of the CURRENT tab also clears focus — the reader's first-room
     /// stand-in takes over, exactly like the pre-select state.
     pub fn close(&self, user: Uuid, target: &str) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut inner = self.inner.lock();
         if let Some(nav) = inner.get_mut(&user) {
             nav.open.retain(|(t, _)| t != target);
             if nav.current.as_ref().is_some_and(|(t, _)| t == target) {
@@ -540,7 +538,7 @@ impl NavReader for ChannelBookmarksNavReader {
                 // A room observed before presence named it gets an honest
                 // short-id label, never an invisible empty tab.
                 let title = if title.is_empty() {
-                    room.to_string()[..8].to_string()
+                    airc_core::shown_id::shown_form(*room)
                 } else {
                     title.clone()
                 };
@@ -578,7 +576,7 @@ impl NavReader for ChannelBookmarksNavReader {
                 .ok()
                 .and_then(|id| self.members.borrow().get(&id).cloned())
                 .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| target.chars().take(8).collect());
+                .unwrap_or_else(|| continuum_base::shown_text::shown_text(&target).to_string());
             activities.push(NavActivity {
                 id: target,
                 title,
@@ -705,14 +703,12 @@ impl NavProjectorRegistry {
     }
 
     /// Ensure `citizen`'s nav projector is running. Must be called from within
-    /// a tokio runtime (the WS accept path is one). Idempotent — a poisoned
-    /// registry lock is unrecoverable state corruption, so it panics loud
-    /// rather than double-spawning.
+    /// a tokio runtime (the WS accept path is one). Idempotent: the registry lock
+    /// cannot poison (`parking_lot`), so a citizen is never double-spawned.
     pub fn ensure(&self, citizen: Uuid) {
         let mut spawned = self
             .spawned
-            .lock()
-            .expect("nav projector registry lock poisoned");
+            .lock();
         if !spawned.insert(citizen) {
             return;
         }
@@ -762,7 +758,7 @@ fn activity_lineage(room_ref: &str, title: &str) -> (String, String) {
                 .find(|(_, peer)| *peer == act.assignee)
                 .map(|(name, _)| name)
         })
-        .unwrap_or_else(|| act.assignee.to_string()[..8].to_string());
+        .unwrap_or_else(|| airc_core::shown_id::shown_form(act.assignee));
     (
         run_room.to_string(),
         format!("{short_instance} · {who}"),
