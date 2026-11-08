@@ -131,15 +131,15 @@ impl ShellSession {
     }
 
     /// [`Self::execute`] for one command run AS a resident: her name as author and committer of
-    /// every commit it makes, and her GitHub credential read from `resident`'s source for this
-    /// command ([`resident_env`]). The caller decides who is acting, each call; the session holds
+    /// every commit it makes, and her shell otherwise the one every shell on this node inherits
+    /// ([`resident_env`]). The caller decides who is acting, each call; the session holds
     /// no identity between commands.
     pub fn execute_as(
         &mut self,
         command: &str,
         timeout_ms: Option<u64>,
         rt_handle: &tokio::runtime::Handle,
-        resident: Option<(crate::code::git_actor::GitActor, super::resident_env::GithubCredentialSource)>,
+        resident: Option<crate::code::git_actor::GitActor>,
     ) -> Result<String, String> {
         // Auto-GC: move completed executions to history before starting new one
         self.gc();
@@ -219,22 +219,11 @@ impl ShellSession {
             let mut custody = ShellCargoCustody { state: state.clone(), admission, kept: cargo_grant.kept(), completed: false };
             // A resident's identity and credential, read for THIS command: the credential is
             // never held in the session between commands.
-            let brokered = match &actor {
-                Some((actor, credential)) => {
-                    let resident = resident_env(actor, credential).await;
-                    if let GithubCredential::Unavailable(why) = &resident.github {
-                        if let Ok(mut s) = state.lock() {
-                            s.stderr_lines.push(format!("continuum: no GitHub credential was supplied to this command ({why}); git and gh calls to GitHub will be refused"));
-                        }
-                    }
-                    resident.vars
-                }
-                None => Vec::new(),
-            };
+            let identity = actor.as_ref().map(resident_env).unwrap_or_default(); // unwrap_or_default: the operator's command carries no resident identity
             run_shell_command(
                 state.clone(),
                 &cmd_str, &cwd, &env, timeout_ms,
-                ChildSpec { confinement: confinement.as_ref(), who: &who, cargo_grant: cargo_grant.grant(), brokered: &brokered },
+                ChildSpec { confinement: confinement.as_ref(), who: &who, cargo_grant: cargo_grant.grant(), identity: &identity },
             )
             .await;
             custody.completed = true;
@@ -282,7 +271,7 @@ impl ShellSession {
         command: &str,
         timeout_ms: Option<u64>,
         rt_handle: &tokio::runtime::Handle,
-        resident: Option<(crate::code::git_actor::GitActor, super::resident_env::GithubCredentialSource)>,
+        resident: Option<crate::code::git_actor::GitActor>,
     ) -> Result<ShellExecuteResponse, String> {
         let execution_id = self.execute_as(command, timeout_ms, rt_handle, resident)?;
 

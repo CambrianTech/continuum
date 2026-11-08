@@ -110,14 +110,6 @@ pub async fn run_gh_within(root: &Path, args: &[String], bound: std::time::Durat
 /// Run one `gh` invocation in `root` as an owned process. Returns trimmed stdout on success; a
 /// non-zero exit or a missing/unauthenticated `gh` FAILS LOUD with the fix. `gh` reads the
 /// repo + auth from the workspace + the host's gh config — never a param.
-/// Where a resident's GitHub credential comes from: the core's own `gh` login, read fresh for each
-/// command her shell runs (`code::shell_session::resident_env`), never left where she reads it.
-pub fn credential_source() -> crate::code::shell_session::resident_env::GithubCredentialSource {
-    std::sync::Arc::new(|| {
-        Box::pin(async { run_gh(std::env::temp_dir(), vec!["auth".into(), "token".into()]).await.map_err(|error| error.to_string()) })
-    })
-}
-
 pub async fn run_gh(root: PathBuf, args: Vec<String>) -> Result<String, CommandError> {
     run_gh_owned(&root, &args, None).await.map_err(|e| match e {
         GhRunError::Spawn(e) => CommandError::Internal(format!(

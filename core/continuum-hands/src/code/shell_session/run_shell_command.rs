@@ -11,13 +11,13 @@ use super::*;
 /// 3. Handles timeouts by killing the process
 /// 4. Detects kill requests by checking the status flag
 /// Who a shell child is for and what it carries beyond the session: its confinement (a caller
-/// from outside this node), its cargo cache grant, and a resident's brokered variables
+/// from outside this node), its cargo cache grant, and a resident's identity variables
 /// ([`resident_env`]), set after every other variable.
 pub(super) struct ChildSpec<'a> {
     pub confinement: Option<&'a crate::system_resources::confinement::Confinement>,
     pub who: &'a str,
     pub cargo_grant: Option<&'a crate::system_resources::confinement::CargoTargetGrant>,
-    pub brokered: &'a [(String, String)],
+    pub identity: &'a [(String, String)],
 }
 
 pub(super) async fn run_shell_command(
@@ -28,7 +28,7 @@ pub(super) async fn run_shell_command(
     timeout_ms: Option<u64>,
     child: ChildSpec<'_>,
 ) {
-    let ChildSpec { confinement, who, cargo_grant, brokered } = child;
+    let ChildSpec { confinement, who, cargo_grant, identity } = child;
     // Resolve a REAL POSIX shell. `TokioCommand::new("bash")` finds
     // C:\Windows\System32\bash.exe on Windows — the WSL launcher, not a shell —
     // and every persona's `code/shell` died with
@@ -126,32 +126,15 @@ pub(super) async fn run_shell_command(
         // Don't inherit stdin — non-interactive
         .stdin(std::process::Stdio::null());
 
-    // STRIP SECRETS BEFORE THE CHILD EXISTS. A citizen's shell inherits this
-    // process's environment (Rust's `Command` does that by default), and the core
-    // is started with `set -a; . config.env; set +a` — which puts HF_TOKEN in the
-    // ambient environment. A citizen then runs `env` or `printenv` as an ordinary
-    // part of exploring its workspace, and quoting tool output into a room is
-    // NORMAL behaviour, so the token would reach every enrolled peer across
-    // operators. Observed 2026-09-06: a citizen put a partial environment on the
-    // wire; the variables it happened to include were harmless, which was luck and
-    // not a control.
-    //
-    // This is a DENYLIST and that choice is deliberate here, against the usual
-    // rule: the base environment is intentionally "the user's own" (see the PATH
-    // comment above), so an allowlist would refuse unknown-but-needed variables and
-    // break working citizens — the wrong failure direction for a shell that must
-    // keep running. The floor (not sourcing secrets into the core's ambient
-    // environment at all) is card f25f4141; this is the net above it.
-    strip_secret_env(&mut cmd);
     utf8_text_env(&mut cmd);
 
     // Apply session environment variables
     for (k, v) in env {
         cmd.env(k, v);
     }
-    // A resident's identity and brokered credential, after the session's: nothing she or the
-    // inherited environment set can put another name on her commits.
-    for (k, v) in brokered {
+    // A resident's identity, after the session's: nothing she or the inherited environment set
+    // can put another name on her commits.
+    for (k, v) in identity {
         cmd.env(k, v);
     }
     // The command text rides in the environment when a login shell hands it to bash
@@ -419,64 +402,15 @@ pub(super) async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
 // ============================================================================
 // Tests
 // ============================================================================
-/// Does this environment variable NAME look like it carries a credential?
-///
-/// Matched on the NAME only — a value is never inspected, so this can never log
-/// or branch on a secret. Case-insensitive substring match against the shapes
-/// credentials actually use in this tree and its dependencies.
-///
-/// VALIDATED against the real thing rather than invented: run over a live 96-variable
-/// Windows environment it strips ZERO variables (no false positives), while catching
-/// `HF_TOKEN` and passing every non-secret `config.env` entry
-/// (CONTINUUM_STORAGE_PATH, HF_HOME, CONTINUUM_PERSONA_FLOOR, CONTINUUM_PROBE_DIR,
-/// CONTINUUM_SERVING_PLACEMENT). `_KEY` / `KEY_` rather than bare `KEY` is what keeps
-/// MONKEY/KEYBOARD-shaped names out.
-/// Remove every credential-shaped variable from a child's inherited environment
-/// BEFORE it exists — the one strip for every citizen-facing spawn (the shell here,
-/// the snippet runner's python3 / rustc / built binary in `commands/code/run`). Card
-/// f25f4141: the core inherits `config.env` (HF_TOKEN) and a snippet reading
-/// `os.environ` is as ordinary as a shell running `env`; quoting the output into a
-/// room puts it on the wire. Session variables set AFTER this call stay.
-pub fn strip_secret_env(cmd: &mut TokioCommand) {
-    for (name, _) in std::env::vars() {
-        if is_secret_env_name(&name) {
-            cmd.env_remove(&name);
-        }
-    }
-}
-
 /// Text a citizen's child prints is UTF-8 whatever the host's code page. On Windows,
 /// Python picks the console code page (cp1252) for a piped stdout and raises
 /// `UnicodeEncodeError` on the first glyph outside Latin-1 — Kimi's `code/run` exited 1
 /// on a `⚙` in a source line she was printing back (2026-09-26 20:06Z, op #6929), and
 /// the operator hit the same wall twice in her own tooling on that box. `PYTHONUTF8=1`
 /// is Python's own switch (PEP 540); both are no-ops on a host that is already UTF-8.
-/// Applied BEFORE the session environment so a citizen who sets her own wins. One place
-/// for every citizen-facing spawn, beside [`strip_secret_env`].
+/// Applied BEFORE the session environment so a citizen who sets her own wins.
+/// One place for every citizen-facing spawn.
 pub fn utf8_text_env(cmd: &mut TokioCommand) {
     cmd.env("PYTHONUTF8", "1").env("PYTHONIOENCODING", "utf-8");
 }
 
-pub(crate) fn is_secret_env_name(name: &str) -> bool {
-    // SEGMENT match, not substring. A substring needle of `KEY_` matches
-    // `MONKEY_DIR` and `KEY` matches `KEYBOARD_LAYOUT` / `TURKEY` — stripping
-    // those would break working citizens, which is the wrong failure direction for
-    // a shell that must keep running. Environment names are `_`-separated, so the
-    // segment IS the word. My first draft used substrings and the test below caught
-    // it on MONKEY_DIR before it shipped.
-    name.to_ascii_uppercase().split('_').any(|seg| {
-        matches!(
-            seg,
-            "TOKEN"
-                | "SECRET"
-                | "SECRETS"
-                | "PASSWORD"
-                | "PASSWD"
-                | "CREDENTIAL"
-                | "CREDENTIALS"
-                | "KEY"
-                | "KEYS"
-                | "APIKEY"
-        )
-    })
-}

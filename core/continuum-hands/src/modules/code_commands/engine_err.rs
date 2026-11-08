@@ -369,12 +369,11 @@ pub(crate) fn acting_git_actor(state: &CodeState, ctx: &Ctx) -> Result<crate::co
     Ok(crate::code::git_actor::GitActor::citizen(peer, state.acting.acting_name(peer).as_deref()))
 }
 
-/// Who a resident's shell command runs as, and where her GitHub credential comes from: the core's
-/// own `gh` login, read fresh for each command. `None` for anyone but this node's residents.
-pub(crate) fn resident_shell(state: &CodeState, ctx: &Ctx) -> Result<Option<(crate::code::git_actor::GitActor, crate::code::shell_session::resident_env::GithubCredentialSource)>, crate::code::git_actor::NoGitActor> {
+/// Who a resident's shell command runs as: her identity on its commits. `None` for anyone but this
+/// node's residents.
+pub(crate) fn resident_shell(state: &CodeState, ctx: &Ctx) -> Result<Option<crate::code::git_actor::GitActor>, crate::code::git_actor::NoGitActor> {
     if !is_resident(ctx) {
         return Ok(None);
     }
-    let credential = crate::commands::code::github::credential_source();
-    Ok(Some((acting_git_actor(state, ctx)?, credential)))
+    Ok(Some(acting_git_actor(state, ctx)?))
 }

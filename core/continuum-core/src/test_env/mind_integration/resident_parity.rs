@@ -1,6 +1,6 @@
 #![cfg(test)]
 //! RESIDENT PARITY: what an agent session does, a resident does, through HER OWN hands: her tool
-//! surface as offered, her shell (unconfined, her identity, her brokered credential), her board.
+//! surface as offered, her shell (the operator's: unconfined, the whole environment, her identity on commits), her board.
 //! Joel, 2026-11-08: "They're supposed to be as capable as you, not disabled"; "It's always you
 //! guys designing them as second class." Each case names the capability; a case that cannot be
 //! done is a [`Gap`] naming what blocks it, and the suite fails listing every gap at once.
@@ -51,8 +51,8 @@ fn her() -> GitActor {
     GitActor::citizen(uuid::Uuid::from_u128(0xa115_0000_0000_0000_0000_0000_0000_0001), Some("Aris"))
 }
 
-/// Run `command` in HER shell exactly as `code/shell` does (her session, her identity, the
-/// credential the core brokers), in `cwd`. Ok with stdout on exit 0; Err naming the failure.
+/// Run `command` in HER shell exactly as `code/shell` does (her session, the core's whole
+/// environment, her identity), in `cwd`. Ok with stdout on exit 0; Err naming the failure.
 async fn in_her_shell(workspace: &Path, cwd: &Path, command: &str) -> Result<String, String> {
     let workspace = workspace.to_path_buf();
     let cwd = cwd.to_path_buf();
@@ -61,8 +61,7 @@ async fn in_her_shell(workspace: &Path, cwd: &Path, command: &str) -> Result<Str
     tokio::task::spawn_blocking(move || {
         let mut shell = ShellSession::new("parity", "aris", &workspace)?;
         shell.cd(&cwd.to_string_lossy())?;
-        let as_her = Some((her(), continuum_hands::commands::code::github::credential_source()));
-        let done = shell.execute_and_wait_as(&command, None, &rt, as_her)?;
+        let done = shell.execute_and_wait_as(&command, None, &rt, Some(her()))?;
         match done.exit_code {
             Some(0) => Ok(done.stdout.unwrap_or_default()), // unwrap_or_default: a command that printed nothing
             code => Err(format!("`{command}` exited {code:?}: {}", done.stderr.unwrap_or_default())), // unwrap_or_default: no stderr to quote
@@ -217,7 +216,7 @@ async fn finish_loop() -> Case {
         }
     };
     let base = crate::code::git_bridge::run_git(&repo.checkout, &["rev-parse", "origin/canary"]).await?;
-    let submitted = airc
+    airc
         .submit_work_in(&room, airc_lib::SubmitWork {
             submission_id: airc_work::SubmissionId::new(),
             card_id,
@@ -357,7 +356,7 @@ mod live {
     }
 
     // what this catches: her shell's `gh`, git over HTTPS, network and installs failing where an
-    // agent's work: a missing brokered credential, a denied network, a PATH without the agent's
+    // agent's work: a stripped credential, a denied network, a PATH without the agent's
     // toolchains. Each failure names the blocker.
     #[tokio::test]
     async fn her_shell_reaches_github_the_network_and_her_toolchains() {
