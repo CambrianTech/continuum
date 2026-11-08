@@ -85,18 +85,15 @@ impl Saved<'_> {
     /// `text`'s page holding its first `upto` bytes: whole lines when at least one fits, else
     /// the first line cut at a character boundary.
     fn page_at(&self, text: &str, upto: usize, chars: usize, tokens: usize) -> String {
+        let upto = text.floor_char_boundary(upto.min(text.len()));
         let first_line = text.find('\n').map_or(text.len(), |end| end + 1); // map_or: a one-line text is its first line
         if upto >= first_line {
-            let end = text[..upto.min(text.len())].rfind('\n').map_or(first_line, |at| at + 1); // map_or: no line end before upto keeps the first line
+            let end = text[..upto].rfind('\n').map_or(first_line, |at| at + 1); // map_or: no line end before upto keeps the first line
             let total = text.lines().count();
             let shown = text[..end].lines().count();
             return format!("{}\n{}", self.note(chars, tokens, Cut::Lines { shown, total }), &text[..end]);
         }
-        let mut end = upto;
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}\n{}", self.note(chars, tokens, Cut::Bytes { bytes: end }), &text[..end])
+        format!("{}\n{}", self.note(chars, tokens, Cut::Bytes { bytes: upto }), &text[..upto])
     }
 
     /// `text`'s first page within `target` tokens: the most content whose page fits, and never
@@ -224,5 +221,51 @@ impl LlmDeliberationFaculty {
             );
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod utf8_page_tests {
+    use super::*;
+
+    #[test]
+    fn multiline_page_cut_inside_replacement_character_preserves_first_line() {
+        let text = format!("ok tool/output(outputId=f68053e3b2bad9c9)\n{}\u{fffd}tail", "x".repeat(1456));
+        let at = text.find('\u{fffd}').unwrap();
+        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9" };
+        for split in [at + 1, at + 2] {
+            let page = saved.page_at(&text, split, text.chars().count(), estimate_guard_tokens(&text));
+            assert!(page.ends_with("ok tool/output(outputId=f68053e3b2bad9c9)\n"));
+            assert!(page.contains("lines 1-1 of 2"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod utf8_page_boundary_tests {
+    use super::*;
+    #[test]
+    fn every_byte_cut_keeps_a_prefix_and_exact_continuation() {
+        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9" };
+        for text in ["", "ASCII", "é中😀tail", "header\né中😀tail", "é\n中\n😀tail"] {
+            for upto in 0..=text.len() + 2 {
+                let page = saved.page_at(text, upto, text.chars().count(), estimate_guard_tokens(text));
+                let (_, content) = page.split_once('\n').unwrap();
+                assert!(text.starts_with(content));
+                let boundary = text.floor_char_boundary(upto.min(text.len()));
+                let first_line = text.find('\n').map_or(text.len(), |at| at + 1);
+                if boundary < first_line {
+                    assert_eq!(content, &text[..boundary]);
+                    assert!(page.contains(&format!("its first {boundary} bytes")));
+                } else if !text.is_empty() {
+                    let end = text[..boundary].rfind('\n').map_or(first_line, |at| at + 1);
+                    assert_eq!(content, &text[..end]);
+                }
+            }
+            for target in 0..=estimate_guard_tokens(text) + 5 {
+                let page = saved.first_page(text, target);
+                assert!(text.starts_with(page.split_once('\n').unwrap().1));
+            }
+        }
     }
 }
