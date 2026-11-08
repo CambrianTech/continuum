@@ -11,7 +11,19 @@ import type { SamplingParams } from "./SamplingParams";
  * Uuid; the engine echoes it in the response events for
  * correlation.
  */
-export type InferenceRequest = { requestId: InferenceRequestId, persona: string, composition: CompositionPlan, 
+export type InferenceRequest = { 
+/**
+ * Unique request UUID used to correlate inference events.
+ */
+requestId: InferenceRequestId, 
+/**
+ * UUID of the persona requesting inference.
+ */
+persona: string, 
+/**
+ * Model and adapter composition to execute.
+ */
+composition: CompositionPlan, 
 /**
  * Tokenized prompt for raw-token engines. PR-1 ships this as
  * the canonical input; PR-4 adds `prompt_text` for adapter-
