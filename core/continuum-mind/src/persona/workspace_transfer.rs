@@ -257,6 +257,16 @@ pub fn realigned_notice(branch: &str, anchor: &str, stranded: &str, own_commits:
     )
 }
 
+/// What she reads when her checkout of `branch` could not be checked against its base.
+pub fn ancestry_unknown_notice(branch: &str, reason: &str) -> String {
+    format!(
+        "Your checkout of {branch} could not be checked against the base its work is measured from \
+         ({reason}), so nothing in it was moved or adopted. Submitting from it would measure your patch \
+         from a base this checkout may not contain; report this as a substrate fault (card f76005e8) \
+         rather than resetting it yourself."
+    )
+}
+
 impl ArrivalOutcome {
     /// This outcome when it changed something she must be told, else `None`.
     pub fn notable(self) -> Option<Self> {
@@ -274,6 +284,7 @@ impl ArrivalOutcome {
                  was not adopted. Publishing your branch will replace that older one (a non-fast-forward push): \
                  that is your explicit choice, never automatic."
             )),
+            ArrivalOutcome::AncestryUnknown { branch, reason } => Some(ancestry_unknown_notice(branch, reason)),
             _ => None,
         }
     }
@@ -765,8 +776,11 @@ async fn realign_to_anchor(root: &Path, branch: &str, now_ms: u64) -> Option<Arr
     let anchor = anchor.trim().to_string();
     // Only a proven departure is realigned: a shallow clone or a missing commit can make a valid
     // descendant look like one, and realigning it would strand good work (Codex on #5873 review).
-    if proven_ancestry(root, &anchor, "HEAD").await != Ok(false) {
-        return None;
+    match proven_ancestry(root, &anchor, "HEAD").await {
+        Ok(true) => return None,
+        Ok(false) => {}
+        // Unproven is never realigned: the checkout stands and the reason is said.
+        Err(reason) => return Some(ArrivalOutcome::AncestryUnknown { branch: branch_s, reason }),
     }
     let dirty = match is_dirty(root).await {
         Ok(d) => d,
@@ -800,20 +814,51 @@ async fn realign_to_anchor(root: &Path, branch: &str, now_ms: u64) -> Option<Arr
     Some(ArrivalOutcome::Realigned { branch: branch_s, anchor, stranded, own_commits })
 }
 
-/// Whether `ancestor` is an ancestor of `of`, only on proof: the history is complete (not a
-/// shallow clone) and both commits are present, so git's answer is about ancestry and not about
-/// missing objects. `Err` says why it could not be proven.
+/// git's own answer to "is `ancestor` an ancestor of `of`": exit 0 yes, exit 1 no, anything else
+/// (a missing object, a deadline, the runner) is no answer, said.
+async fn is_ancestor(root: &Path, ancestor: &str, of: &str) -> Result<bool, String> {
+    use crate::code::git_bridge::{run_git_input, GitEnd};
+    match run_git_input(root, &["merge-base", "--is-ancestor", ancestor, of], &[], None).await {
+        Ok(_) => Ok(true),
+        Err(error) if error.end == GitEnd::Refused && error.code == Some(1) => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Whether `ancestor` is an ancestor of `of`, only on proof. A yes is proof in any clone; a no is
+/// proof only with complete history, since in a shallow clone it may mean the history is missing
+/// ([`complete_history_if_departed`] completes it first, when that matters). `Err` says why it
+/// could not be proven.
 async fn proven_ancestry(root: &Path, ancestor: &str, of: &str) -> Result<bool, String> {
-    let shallow = run_git(root, &["rev-parse", "--is-shallow-repository"]).await?;
-    if shallow.trim() != "false" {
-        return Err("the checkout's history is shallow, so ancestry cannot be proven".into());
+    if is_ancestor(root, ancestor, of).await? {
+        return Ok(true);
     }
-    for commit in [ancestor, of] {
-        run_git(root, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
-            .await
-            .map_err(|e| format!("commit {commit} is not present here: {e}"))?;
+    match run_git(root, &["rev-parse", "--is-shallow-repository"]).await?.trim() {
+        "false" => Ok(false),
+        _ => Err("the checkout's history is shallow, so its ancestry cannot be proven".into()),
     }
-    Ok(run_git(root, &["merge-base", "--is-ancestor", ancestor, of]).await.is_ok())
+}
+
+/// When a shallow checkout's HEAD answers "not a descendant" of its creation anchor, complete its
+/// history (airc's owner, under airc's measured network bound) so the answer can be proven, before
+/// any arrival acts on it (Codex e302c1d0). Nothing else in a shallow clone pays for a full
+/// history. A failure is left for the arrival to say as the unknown it is.
+async fn complete_history_if_departed(root: &Path) {
+    let Ok(anchor) = run_git(root, &["rev-parse", "--verify", "-q", airc_lib::work_worktree::CREATION_BASE_REF]).await else {
+        return;
+    };
+    let shallow = run_git(root, &["rev-parse", "--is-shallow-repository"]).await.is_ok_and(|s| s.trim() == "true");
+    if !shallow || is_ancestor(root, anchor.trim(), "HEAD").await != Ok(false) {
+        return;
+    }
+    let path = root.to_path_buf();
+    let completed = tokio::task::spawn_blocking(move || airc_lib::work_worktree::complete_card_history(&path)).await;
+    continuum_base::probe!(
+        class = "workspace.history_completed",
+        root = %root.display(),
+        outcome = ?completed,
+        "a shallow checkout suspected off its creation anchor had its history completed to prove it"
+    );
 }
 
 /// [`arrive`] past the transfer-target policy — the fetch / checkout / strand mechanism.
@@ -905,6 +950,26 @@ async fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
     ArrivalOutcome::Transferred { branch: branch_s, sha: fetched, from_node, stranded }
 }
 
+/// [`arrive`] under the checkout's lock ([`CHECKOUT_SYNC`], the one an act-end sync holds), since
+/// an arrival commits, moves refs and resets the tree (Codex on f76005e8): first any history a
+/// shallow checkout needs to prove where it stands, then the arrival within [`ARRIVE_BOUND`].
+/// Every git it starts keeps the lock until that git has ended.
+async fn arrive_locked(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
+    let lock = CHECKOUT_SYNC.entry(root.to_path_buf()).or_default().clone();
+    let Ok(one_at_a_time) = tokio::time::timeout(ARRIVE_BOUND, lock.lock_owned()).await else {
+        return ArrivalOutcome::Failed {
+            branch: branch.to_string(),
+            stage: "lock",
+            error: format!("another sync held this checkout for {} s", ARRIVE_BOUND.as_secs()),
+        };
+    };
+    continuum_process::holding(std::sync::Arc::new(one_at_a_time), async {
+        complete_history_if_departed(root).await;
+        crate::code::git_bridge::within(tokio::time::Instant::now() + ARRIVE_BOUND, arrive(root, branch, now_ms)).await
+    })
+    .await
+}
+
 /// The staging-path form of [`arrive`]: within
 /// [`ARRIVE_BOUND`], receipted as `workspace.transfer` with card, branch, sha, from and
 /// to node. The claim is authoritative and the checkout is convenience: no outcome here
@@ -912,8 +977,7 @@ async fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
 pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid) -> ArrivalOutcome {
     let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock stamps 0; the ref is still unique per branch per arrival in practice
     let started = std::time::Instant::now();
-    let deadline = tokio::time::Instant::now() + ARRIVE_BOUND;
-    let outcome = match crate::code::git_bridge::within(deadline, arrive(&root, &branch, now_ms)).await {
+    let outcome = match arrive_locked(&root, &branch, now_ms).await {
         // a step the deadline ended or never started: said as the timeout it was
         ArrivalOutcome::Unreachable { error, .. } | ArrivalOutcome::Failed { error, .. } if crate::code::git_bridge::out_of_time(&error) => ArrivalOutcome::Failed {
             branch: branch.clone(),

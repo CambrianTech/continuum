@@ -334,23 +334,30 @@
     }
 
     // what this catches (Codex on the f76005e8 review): a shallow clone makes git's ancestry
-    // answer about missing history, not ancestry, so a valid descendant could be realigned or a
-    // stale remote adopted on a guess. Unproven ancestry changes nothing and is said.
+    // answer about missing history, not ancestry, so a valid descendant could be realigned on a
+    // guess. Here the anchor is the tip's parent, which a depth-1 clone does not hold: git cannot
+    // answer, so nothing changes and the reason is said. A yes needs no full history.
     #[tokio::test]
     async fn unproven_ancestry_in_a_shallow_clone_changes_nothing() {
         let m = two_machines().await;
-        std::fs::write(m.a.join("src.txt"), "from A\n").unwrap_or_else(|e| panic!("{e}"));
-        let PushOutcome::Ok { .. } = sync(&m.a, Uuid::new_v4(), "node-a").await else { panic!("push") };
+        let card = Uuid::new_v4();
+        for edit in ["from A\n", "from A again\n"] {
+            std::fs::write(m.a.join("src.txt"), edit).unwrap_or_else(|e| panic!("{e}"));
+            let PushOutcome::Ok { .. } = sync(&m.a, card, "node-a").await else { panic!("push") };
+        }
+        let parent = git(&m.a, &["rev-parse", "HEAD^"]).await.trim().to_string();
         let shallow = m.tmp.path().join("shallow");
         git(m.tmp.path(), &["clone", "-q", "--depth", "1", "--branch", &m.branch, &format!("file://{}", m.origin.display()), &shallow.to_string_lossy()]).await;
         let tip = head(&shallow).await;
-        git(&shallow, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &tip]).await;
-        assert!(realign_to_anchor(&shallow, &m.branch, 70).await.is_none(), "a shallow checkout is never realigned on a guess");
-        match arrive_over(&shallow, &m.branch, 71).await {
-            ArrivalOutcome::AncestryUnknown { reason, .. } => assert!(reason.contains("shallow"), "{reason}"),
-            other => panic!("unproven ancestry adopts nothing, got {other:?}"),
+        git(&shallow, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &parent]).await;
+        match realign_to_anchor(&shallow, &m.branch, 70).await {
+            Some(ArrivalOutcome::AncestryUnknown { reason, .. }) => assert!(!reason.is_empty()),
+            other => panic!("an anchor the shallow history cannot reach is unknown, never realigned, got {other:?}"),
         }
         assert_eq!(head(&shallow).await, tip, "the checkout stands");
+        // A yes is proof in any clone: the tip as anchor is its own ancestor, nothing to do.
+        git(&shallow, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &tip]).await;
+        assert!(realign_to_anchor(&shallow, &m.branch, 71).await.is_none());
     }
 
     // what this catches: the two pure readers. The push-error classifier must not call a

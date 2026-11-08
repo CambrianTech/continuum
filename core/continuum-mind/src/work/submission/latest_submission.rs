@@ -395,6 +395,9 @@ pub(super) async fn stage_for_owner_on_demand(
             "{} Nothing was submitted: bring back the work you mean to submit, then submit again.",
             crate::persona::workspace_transfer::realigned_notice(&branch, &anchor, &stranded, own_commits)
         ))),
+        Staging::Ready { arrival: Some(crate::persona::workspace_transfer::ArrivalOutcome::AncestryUnknown { branch, reason }), .. } => {
+            Err(CommandError::Invalid(crate::persona::workspace_transfer::ancestry_unknown_notice(&branch, &reason)))
+        }
         Staging::Ready { path, .. } => {
             continuum_base::probe!(
                 class = "work.submit.staged_on_demand",
