@@ -290,6 +290,32 @@ async fn query_gpu() -> Option<SmiReading> {
     parse_gpu_csv_line(stdout.lines().next()?)
 }
 
+/// What this node's NVIDIA stack answers when a prebuilt artifact asks whether it can run here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompatibilityReport {
+    /// `nvidia-smi`'s banner, which names the CUDA version the driver supports.
+    pub banner: Option<String>,
+    /// Every GPU's compute capability, one CSV line each.
+    pub compute_caps: Option<String>,
+}
+
+/// Ask `nvidia-smi` what a CUDA artifact needs to know. A field is `None` when the tool is
+/// missing, fails, or outlives the probe bound; the consumer parses and refuses on `None`.
+pub async fn compatibility_report() -> CompatibilityReport {
+    CompatibilityReport {
+        banner: smi_stdout(&[]).await,
+        compute_caps: smi_stdout(&["--query-gpu=compute_cap", "--format=csv,noheader"]).await,
+    }
+}
+
+async fn smi_stdout(args: &[&str]) -> Option<String> {
+    let out = tokio::time::timeout(NVIDIA_PROBE_TIMEOUT, tokio::process::Command::new("nvidia-smi").args(args).output())
+        .await
+        .ok()?
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Async per-tick process-VRAM query. Sums compute-apps owned by our PID.
 async fn query_process_bytes() -> Option<u64> {
     // BOUNDED for the same reason as `query_gpu` above: a per-tick await with

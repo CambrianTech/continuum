@@ -48,26 +48,14 @@ pub(super) enum CiCore {
 /// Beside a CI core: the names of the runtime libraries its manifest bundles, one per line.
 pub(super) const RUNTIME_LIBS_FILE: &str = "runtime-libs.txt";
 
-/// What this node's NVIDIA driver and GPUs can run, from `nvidia-smi`. A missing tool or an
-/// unreadable answer leaves the field `None`, which refuses a CUDA artifact by name.
+/// What this node's NVIDIA driver and GPUs can run, from the GPU authority's probe. A missing
+/// tool or an unreadable answer leaves the field `None`, which refuses a CUDA artifact by name.
 pub(super) async fn node_gpu() -> continuum_cli_lifecycle::prebuilt_artifact::NodeGpu {
     use continuum_cli_lifecycle::prebuilt_artifact::{driver_cuda, lowest_compute_cap, NodeGpu};
-    let run = |args: &'static [&'static str]| async move {
-        let out = tokio::time::timeout(
-            Duration::from_secs(20),
-            tokio::process::Command::new("nvidia-smi").args(args).output(),
-        )
-        .await
-        .ok()?
-        .ok()?;
-        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
-    };
+    let report = continuum_kernel::gpu::backends::nvidia::compatibility_report().await;
     NodeGpu {
-        driver_cuda: run(&[]).await.as_deref().and_then(driver_cuda),
-        lowest_compute_cap: run(&["--query-gpu=compute_cap", "--format=csv,noheader"])
-            .await
-            .as_deref()
-            .and_then(lowest_compute_cap),
+        driver_cuda: report.banner.as_deref().and_then(driver_cuda),
+        lowest_compute_cap: report.compute_caps.as_deref().and_then(lowest_compute_cap),
     }
 }
 
@@ -139,13 +127,13 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
         if bytes.len() > 65536 { return Err("Downloaded manifest exceeds 64 KiB".into()); }
         serde_json::from_slice(&bytes).map_err(|e| format!("reading downloaded manifest: {e}"))?
     } else {
-    let resp = client.get(&url).send().await.map_err(|e| format!("fetching {url}: {e}"))?;
+    let resp = client.get(&url).send().await.map_err(|e| fetch_refused("fetching", &url, e))?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
     resp
         .error_for_status()
-        .map_err(|e| format!("fetching {url}: {e}"))?
+        .map_err(|e| fetch_refused("fetching", &url, e))?
         .json()
         .await
         .map_err(|e| format!("reading {url}: {e}"))?
@@ -172,7 +160,7 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
     }
     let root = continuum_core::paths::artifacts::root_under(&continuum_core::paths::continuum_home()?)?;
     check_capacity(&root, 0).await?;
-    let dir = root.join(format!("{}-{}", &tip[..12], uuid::Uuid::new_v4()));
+    let dir = root.join(format!("{tip}-{}", uuid::Uuid::new_v4()));
     if let Err(error) = std::fs::create_dir_all(&root) { return Err(write_failure(&root, 0, error).await); }
     if let Err(error) = std::fs::create_dir(&dir) { return Err(write_failure(&root, 0, error).await); }
     let mut preparation = CiArtifactPreparation { directory: dir.clone(), complete: false };
@@ -180,7 +168,9 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
     // historical archive-size estimate, drive capacity admission.
     let archive_url = format!("{}/{}", url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&url), manifest.archive);
     let archive = dir.join(&manifest.archive);
-    let mut file = match std::fs::File::create(&archive) { Ok(file) => file, Err(error) => return Err(write_failure(&root, 0, error).await) };
+    // Staged beside its name and placed only once its digest matches: a cut download never sits
+    // under the archive's name.
+    let mut file = match continuum_host::durable::Staging::new_in(&dir) { Ok(file) => file, Err(error) => return Err(write_failure(&root, 0, error).await) };
     let mut hasher = Sha256::new();
     let mut compressed_bytes = 0u64;
     let mut admission = WriteAdmission::observe(&root).await?;
@@ -207,10 +197,10 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
         }
     } else {
         let mut resp = client.get(&archive_url).send().await.and_then(|r| r.error_for_status())
-            .map_err(|e| format!("fetching {archive_url}: {e}"))?;
+            .map_err(|e| fetch_refused("fetching", &archive_url, e))?;
         let announced = resp.content_length();
         if let Some(bytes) = announced { admission.check(bytes)?; }
-        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("downloading {archive_url}: {e}"))? {
+        while let Some(chunk) = resp.chunk().await.map_err(|e| fetch_refused("downloading", &archive_url, e))? {
             compressed_bytes = compressed_bytes.checked_add(chunk.len() as u64).ok_or("archive size overflow")?;
             let retry_bytes = announced.unwrap_or(compressed_bytes).max(compressed_bytes);
             admission.before_write(chunk.len() as u64).await.map_err(|error| match error {
@@ -225,11 +215,11 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
             }
         }
     }
-    drop(file);
     let digest = format!("{:x}", hasher.finalize());
     if digest != manifest.sha256.to_ascii_lowercase() {
         return Err(format!("{} has sha256 {digest}, the manifest says {}", manifest.archive, manifest.sha256).into());
     }
+    if let Err(error) = file.publish_new(Path::new(&manifest.archive)) { return Err(write_failure(&root, 0, error).await); }
     // Extracted beside the archive: `tar_on` runs from its directory, so Git for Windows'
     // GNU tar never reads the drive letter as a host (Fable on #4834).
     let members = continuum_base::shell_portable::tar_on(&archive, "-tzf")?.output().map_err(|e| format!("listing archive: {e}"))?;
@@ -282,7 +272,7 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
             }
             error
         })?;
-        if let Err(error) = std::fs::write(core.with_file_name(RUNTIME_LIBS_FILE), &runtime_manifest) {
+        if let Err(error) = continuum_host::durable::write_replace(&core.with_file_name(RUNTIME_LIBS_FILE), runtime_manifest.as_bytes()) {
             let mut failure = write_failure(&root, runtime_manifest.len() as u64, error).await;
             if let PublishedCoreError::ResourceDeferred(condition) = &mut failure { condition.projected_bytes = compressed_bytes.saturating_add(expanded).saturating_add(runtime_manifest.len() as u64); }
             return Err(failure);
@@ -297,6 +287,24 @@ pub(super) async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, down
 /// What the warm build did besides the core, done for a CI core: the CLI on PATH follows the
 /// core, and the engine is rebuilt only when its stamp says the vendored fork moved
 /// (`install-llama-server.sh` is a no-op otherwise).
+/// A fetch from the release host that failed. The host not answering (unreachable, timed out, a
+/// body cut off mid-transfer, or a 5xx) says nothing about the build: the publication is pending,
+/// rechecked on the next pass with no attempt charged. The IntelMac, 2026-11-08 09:10Z: GitHub's
+/// release route answered 504 while every asset was published, and each 504 spent one of a
+/// build's three attempts. Anything else (a 4xx other than the 404 handled above) is the artifact's.
+fn fetch_refused(what: &str, url: &str, error: reqwest::Error) -> continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError {
+    use continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError;
+    let host_unavailable = error.is_timeout()
+        || error.is_connect()
+        || error.is_body()
+        || error.status().is_some_and(|status| status.is_server_error());
+    let reason = format!("{what} {url}: {error}");
+    match host_unavailable {
+        true => PublishedCoreError::SourcePending(reason),
+        false => PublishedCoreError::Artifact(reason),
+    }
+}
+
 pub(super) async fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), PublishedCoreError> {
     #[cfg(windows)]
     if !core.parent().is_some_and(|dir| dir.join("engine/engine-install.json").is_file()) {
@@ -349,19 +357,19 @@ pub(super) fn tip_age_secs(repo: &Path, tip: &str) -> u64 {
     committed.map(|c| now.saturating_sub(c)).unwrap_or(0) // unwrap_or: an unreadable commit time waits, it does not compile early
 }
 
-/// The writer bounds its own cache (disk_eviction: `core-artifacts`): the newest
-/// `KEEP` CI cores stay for rollback, older ones go.
+/// The writer bounds its own cache (disk_eviction: `core-artifacts`): once `keep_dir` is
+/// verified, every preparation older than it goes. Nothing else needs them: the reboot copies the
+/// core into the supervisor's slot, and a rollback restores the slot's previous binary
+/// (`dark_build::PreviousCore`), never a cached archive. A preparation newer than `keep_dir` may
+/// still be in flight, so it stays for its own writer to verify or remove.
 pub(super) fn prune_ci_cores(root: &Path, keep_dir: &Path) {
-    const KEEP: usize = 3;
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let Some(kept) = modified(keep_dir) else { return };
     let Ok(entries) = std::fs::read_dir(root) else { return };
-    let mut dirs: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir() && e.path() != keep_dir)
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-        .collect();
-    dirs.sort_by(|a, b| b.0.cmp(&a.0));
-    for (_, old) in dirs.into_iter().skip(KEEP - 1) {
-        let _ = std::fs::remove_dir_all(&old);
+    for old in entries.flatten().map(|e| e.path()) {
+        if old.is_dir() && old != keep_dir && modified(&old).is_some_and(|at| at < kept) {
+            let _ = std::fs::remove_dir_all(&old);
+        }
     }
 }
 
@@ -454,4 +462,49 @@ pub(super) fn has_git_checkout(cwd: &Path) -> Result<bool, String> {
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError;
+    use tokio::io::AsyncWriteExt;
+
+    /// A one-shot release host that answers every request with `status`.
+    async fn host_answering(status: &'static str) -> String {
+        let Ok(listener) = tokio::net::TcpListener::bind("127.0.0.1:0").await else { panic!("a local port") };
+        let Ok(addr) = listener.local_addr() else { panic!("its address") };
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let reply = format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+                let _ = socket.write_all(reply.as_bytes()).await;
+            }
+        });
+        format!("http://{addr}/core.json")
+    }
+
+    async fn refusal_for(url: &str) -> PublishedCoreError {
+        let client = reqwest::Client::new();
+        match client.get(url).send().await.and_then(|r| r.error_for_status()) {
+            Ok(_) => panic!("{url} answered success"),
+            Err(error) => fetch_refused("fetching", url, error),
+        }
+    }
+
+    // what this catches: a release host that is down or overloaded spending a build's deploy
+    // attempts (the IntelMac, 2026-11-08 09:10Z: two 504s charged attempts 1 and 2 of 3 while the
+    // build was fully published), and the opposite slip, a refusal by the host for the artifact
+    // itself being rechecked forever instead of charged.
+    #[tokio::test]
+    async fn a_host_that_cannot_answer_is_pending_and_a_refused_artifact_is_charged() {
+        for status in ["504 Gateway Timeout", "503 Service Unavailable"] {
+            let refusal = refusal_for(&host_answering(status).await).await;
+            assert!(matches!(refusal, PublishedCoreError::SourcePending(_)), "{status}: {refusal:?}");
+        }
+        let Ok(closed) = tokio::net::TcpListener::bind("127.0.0.1:0").await.and_then(|l| l.local_addr()) else { panic!("a port") };
+        let refusal = refusal_for(&format!("http://{closed}/core.json")).await;
+        assert!(matches!(refusal, PublishedCoreError::SourcePending(_)), "unreachable: {refusal:?}");
+        let refusal = refusal_for(&host_answering("403 Forbidden").await).await;
+        assert!(matches!(refusal, PublishedCoreError::Artifact(_)), "403: {refusal:?}");
+    }
 }
