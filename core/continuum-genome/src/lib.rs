@@ -4,6 +4,10 @@
 //! engine (which carries the kernel) and below; continuum-mind re-exports `genome` under its
 //! old path.
 
+// Production code holds no unwrap, expect or panic (0 under default features, 2026-11-08,
+// campaign 522419e5; the recording fixture is test-fixtures only): a fault is a typed error.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 pub use continuum_engine::*;
 
 pub mod genome;
