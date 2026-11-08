@@ -33,6 +33,7 @@ pub mod crate_policy;
 pub mod crate_wiring;
 pub mod dev_only_deps;
 pub mod error_text_match;
+pub mod fixed_rooms;
 pub mod grab_bag;
 pub mod file_size;
 pub mod identity_discipline;
