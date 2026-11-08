@@ -2,6 +2,7 @@
 //! directory and roster, her private mind room, presence glyphs and the bounded per-room ledger.
 //! Cut out of continuum-cognition as a leaf of its crate tree (docs/architecture/
 //! COGNITION-CRATE-TREE.md, step 2); cognition re-exports each module under its old path.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod card_holder;
 pub mod card_facts;

@@ -12,6 +12,7 @@
 //! globally-installed `uniffi-bindgen` whose version can drift from the
 //! `uniffi` lib version) is the single-source-of-truth discipline: the
 //! generator and the runtime are pinned to the same version by Cargo.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 fn main() {
     uniffi::uniffi_bindgen_main()
 }

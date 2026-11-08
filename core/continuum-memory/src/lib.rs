@@ -3,6 +3,7 @@
 //! only on the engine and below; continuum-mind re-exports it under its old path. `commands` are the typed
 //! `memory/<verb>` commands (all but `consolidate`, which submits training and stays in
 //! core) and `state` is the `MemoryState` they share.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub use continuum_engine::*;
 

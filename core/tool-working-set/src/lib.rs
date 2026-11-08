@@ -36,6 +36,7 @@
 //! [`evaluate`] replays each mind's real history in time order (no policy ever sees a call at
 //! or after the epoch it decides) and the `tool-working-set` binary prints the comparison.
 //! Slice 2 puts the chosen policy behind [`WorkingSetPolicy`] in the mind's tool surface.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod cost;
 pub mod epoch;

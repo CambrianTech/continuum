@@ -1,4 +1,5 @@
 //! Owned process execution and generation-safe termination, below the engine.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 mod owned;
 #[cfg(test)]
 use owned::read_stream;

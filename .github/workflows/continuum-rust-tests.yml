@@ -237,6 +237,26 @@ jobs:
             exit 1
           fi
 
+      # Phase 3 locks (CLAUDE.md): a crate whose root declares
+      # `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` is linted here, alone
+      # (--no-deps: its dependencies' lints are their own crate's job), so the lock it declares
+      # fails the build instead of sitting in the source as a comment. The crate declares the
+      # lock; no list of locked crates lives in this workflow. Only deny-level lints fail here
+      # (the declared lock and clippy's default-deny correctness group): several locked crates
+      # still carry style warnings (too_many_arguments, doc indentation), and `-D warnings`
+      # becomes this step's flag the day the warning count of every locked crate reads zero.
+      # Default features, not the test features: the lock is on what ships, and `test-fixtures`
+      # code is test code compiled outside cfg(test).
+      - name: clippy -p ${{ matrix.crate }} (a crate that denies unwrap, expect and panic)
+        run: |
+          roots=$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r --arg c "$CRATE" '.packages[] | select(.name == $c) | .targets[] | select(any(.kind[]; . == "lib" or . == "bin" or . == "proc-macro")) | .src_path')
+          if grep -l 'clippy::unwrap_used' $roots > /dev/null; then
+            cargo clippy --locked -p "$CRATE" --no-deps --profile dev-fast
+          else
+            echo "$CRATE declares no unwrap lock yet; burn-down: production unwraps per crate in the source-hygiene receipt"
+          fi
+
       # Every crate's tests regenerate the ts-rs bindings of the types it defines, so each
       # crate job checks the drift its own run produced.
       - name: Verify protocol/typescript/ in sync with Rust source

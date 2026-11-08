@@ -21,6 +21,7 @@
 //! Substrate-internal test code only. Never imported by any production
 //! binary; the crate is consumed via `[dev-dependencies]` in
 //! `continuum-core` and `continuum-client` integration test targets.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod two_airc_loopback;
 

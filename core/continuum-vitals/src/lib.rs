@@ -2,6 +2,7 @@
 //! the activity gate, directed pending and mind events. Cut out of continuum-cognition as a leaf of
 //! its crate tree (docs/architecture/COGNITION-CRATE-TREE.md, step 3); cognition re-exports each
 //! module under its old path.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod health_ledger;
 pub mod turn_ledger;
