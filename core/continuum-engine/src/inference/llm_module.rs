@@ -226,11 +226,14 @@ pub enum FinishReason {
     export_to = "../../../protocol/typescript/inference_llm/InferenceRequest.ts"
 )]
 pub struct InferenceRequest {
+    /// Unique request UUID used to correlate inference events.
     pub request_id: InferenceRequestId,
     #[ts(type = "string")]
+    /// UUID of the persona requesting inference.
     // airc PeerId is a serde-transparent UUID newtype.
     #[schemars(with = "Uuid")]
     pub persona: PeerId,
+    /// Model and adapter composition to execute.
     pub composition: CompositionPlan,
     /// Tokenized prompt for raw-token engines. PR-1 ships this as
     /// the canonical input; PR-4 adds `prompt_text` for adapter-

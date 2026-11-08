@@ -758,7 +758,13 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // an id, so the schema carries the value she means; its pattern was dropped and its docs cut.
     // Both verbs now declare `OnDemand`, so neither schema rides her prompt unless a held card puts
     // it in hand: this registry total grows, her act's surface shrinks. Measured locally at 17986.
-    const AGENTIC_SURFACE_CEILING: u32 = 17986;
+    // 17986 -> 18539 (#5850, 2026-11-08): the offered surface now retains the
+    // canonical Shown ID pattern/examples/definitions (including latest-or-ID),
+    // activity parent UUID and navigation enum contracts instead of arbitrary strings.
+    // Measured on this branch and in Linux CI: +553 guard tokens. These are callable
+    // constraints, not optional prose to discard. This exact test receipt adds no slack
+    // and changes no runtime grant, admission window or per-turn tool selection.
+    const AGENTIC_SURFACE_CEILING: u32 = 18539;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(
