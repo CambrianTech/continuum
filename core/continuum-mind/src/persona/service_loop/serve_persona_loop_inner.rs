@@ -197,14 +197,30 @@ pub(super) async fn serve_persona_loop_inner(
         // (scripted/test conversations) → ambient default. This is what lets
         // an operator's CLI publish wake a turn that can actually SEE the
         // room's board/kanban/roster instead of a nil-room ghost context.
-        let turn_room = if msg.room_id.is_nil() {
+        let room = match crate::identity::ActivityRoom::from_uuid(if msg.room_id.is_nil() {
             ctx.identity.default_room
         } else {
             msg.room_id
+        }) {
+            Ok(room) => room,
+            // Both the arrival room and her home are nil: there is no room to turn in.
+            // Refused here, before anything is admitted, so no step downstream can meet
+            // a roomless turn (#425).
+            Err(refused) => {
+                continuum_base::probe!(
+                    class = "persona.turn.roomless",
+                    persona = %ctx.identity.agent_name,
+                    lamport = msg.lamport,
+                    error = %refused,
+                    "trigger arrived with no room and her home room is nil; turn refused, never run roomless"
+                );
+                continue;
+            }
         };
+        let turn_room = room.as_uuid();
         let trigger = TurnTrigger {
             msg: &msg,
-            turn_room,
+            room,
             admitted_retry,
         };
 

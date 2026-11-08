@@ -186,16 +186,17 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
             )
         })?;
 
-        let Some(over) = over.filter(|o| o.is_remote()) else {
+        // Remote exactly when the override names a peer: bind the peer with the override,
+        // so the assignment and its peer cannot be read apart.
+        let Some((over, peer_str)) =
+            over.and_then(|o| o.remote_peer.clone().map(|peer| (o, peer)))
+        else {
             return self.born_home(profile, home).await;
         };
+        let peer_str = peer_str.as_str();
 
         // From here she is explicitly assigned to a peer. Every failure below is an
         // Err, never a local adapter.
-        let peer_str = over
-            .remote_peer
-            .as_deref()
-            .expect("is_remote() implies remote_peer is Some");
         let peer = uuid::Uuid::parse_str(peer_str).map_err(|_| {
             format!(
                 "persona '{}' is assigned model '{}' on peer '{peer_str}', which is not a \

@@ -8,7 +8,7 @@
 
 use super::channel_queue::{ChannelQueue, ChannelQueueConfig};
 use crate::cognition::conversation::channel_types::{ActivityDomain, ChannelRegistryStatus, CoherentUnit, QueueItemBehavior, ServiceCycleResult, DOMAIN_PRIORITY_ORDER};
-use super::channel_view::{ChatChannelView, CoherentInput, PersonaChannelView};
+use super::channel_view::{ChatBurst, ChatChannelView, CoherentInput, PersonaChannelView};
 use crate::cognition::conversation::persona_identity::PersonaIdentity;
 use crate::cognition::conversation::types::PersonaState;
 use std::collections::HashMap;
@@ -339,22 +339,18 @@ impl ChannelRegistry {
     /// routing through `ChatChannelView` (which would be a silent
     /// fallthrough that hides dispatch bugs per `[[no-fallbacks-ever]]`).
     ///
-    /// Adding a typed view for a new domain = replace its arm with the
-    /// new view's call. The single match here is the dispatch table;
-    /// `ChatChannelView::interpret` panics if called on a non-Chat unit
-    /// (programmer-error guard) so a future migration can't silently
-    /// regress.
+    /// Adding a typed view for a new domain = narrow its unit the way
+    /// [`ChatBurst::of`] does and add its arm here. `ChatChannelView` takes a
+    /// `ChatBurst`, so a non-Chat unit cannot reach it — a future migration
+    /// can't silently regress.
     fn interpret_for_domain(unit: &CoherentUnit, identity: &PersonaIdentity) -> CoherentInput {
-        match unit.domain() {
-            ActivityDomain::Chat => ChatChannelView.interpret(unit, identity),
-            domain
-            @ (ActivityDomain::Audio | ActivityDomain::Code | ActivityDomain::Background) => {
-                CoherentInput::Other {
-                    domain,
-                    item_count: unit.len(),
-                    window_span_ms: unit.window_span_ms(),
-                }
-            }
+        match ChatBurst::of(unit) {
+            Some(chat) => ChatChannelView.interpret(chat, identity),
+            None => CoherentInput::Other {
+                domain: unit.domain(),
+                item_count: unit.len(),
+                window_span_ms: unit.window_span_ms(),
+            },
         }
     }
 }
