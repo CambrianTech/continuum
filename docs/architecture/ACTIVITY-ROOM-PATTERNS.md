@@ -72,6 +72,38 @@ Today: one purpose (`chat`), one hand-built widget. The foundation is the four p
 
 If both fit without forcing — **and each proves web-render *and* RAG-render parity** — the seam is proven and `scada`/`academy`/`settings`/`browser`/`universe` are **registrations, not builds**. Then mobile/terminal are additive `RenderTarget`s, never a fork.
 
+## Everything is a room, rooms nest, and work is a facet of the room's recipe
+
+Joel, 2026-11-08: "Literally a new benchmark: room. A settings screen; room. A project: room,
+every damn thing is a room. It might be a sub room of another like benchmarks under academy."
+
+- **Every activity is a room**: a project, a card's work, a review, a vote, a benchmark run, a
+  settings screen, a class, a studio. It is created when the activity starts (by naming it, or by
+  its parent room's recipe), joined by whoever takes part, and **closed when the activity ends**
+  (no new posts, members leave, history stays readable). airc has no close today; that verb is
+  airc's to add.
+- **Rooms nest**: a benchmark run under `academy`, a card's room under its project's room, a
+  review under the card it reviews. The parent is data on the room, the same relation the recipe
+  carries as `parent_recipe_id`.
+- **Nobody lives in one room.** A resident is in the rooms of the activities she takes part in
+  and shifts attention across them as a human switches tabs (the navigational unification above).
+  Taking part in an activity means joining its room. There is no fixed landing room: the
+  `CITIZEN_COMMONS_ROOM = "academy"` constant every new resident lands in is wrong at the root.
+
+What looked like separate systems are **facets the room's recipe declares**, beside `team`,
+`strategy` and `modes`:
+
+| Facet | Declared by the recipe | Instead of |
+|---|---|---|
+| **Workspace** | where its work happens and how members share it: one shared folder, one location with a git worktree each (the default for code), or separate copies; leased through airc for the room's life and released (worktree and build output removed) when the room closes | per-feature homes, checkouts and syncs (`citizen_layer`, `card_staging`); 397 unleased worktrees on the M5 |
+| **Decides** | who decides what, and by what rule: one person (`AnyOne`), `Majority`, `Unanimous`, `Quorum(n)`; a CEO-shaped room and a democratic room differ only here | a governance system |
+| **Escalation** | an ask a room cannot answer goes to its parent room, or to whoever launched the asker, and climbs to the human at the top; it carries the chain it climbed, and the answer wakes the asker | an escalation service |
+| **Human-only steps** | asks only the person at the machine can do (their password, identity, money, the physical world) go straight to them, rendered as plain directions a non-engineer can follow | sentinel's approve step and agents asking in chat |
+
+A vote is a room whose purpose is deciding. An escalation shows in the human's room list like any
+room needing attention, so the left panel (and OS notifications, as adapters) is the rooms
+`Listing` filtered by "waiting on you", not a new surface.
+
 ## Invariants (non-negotiable)
 
 - **`activity == room == content == tab`.** No tab/activity concept exists outside "a focused room." The workspace state is keyed by room; per-room instancing is the model, not deferred.
@@ -79,6 +111,7 @@ If both fit without forcing — **and each proves web-render *and* RAG-render pa
 - **Patterns are consumer-neutral transforms; RAG is a peer `RenderTarget`.** The persona's grounding and the human's UI are one projection and cannot drift. Never render the two from separate code.
 - **`Listing` is one primitive.** Users, rooms/DMs, HF-models, cohorts — all the same `Listing`, different data + cell. Never a bespoke list per use.
 - **positron stays continuum-blind; continuum interprets purpose at the app layer** (inherits the base doc's neutrality thesis — airc neutral → positron neutral → continuum interprets).
+- **Every activity is a room; rooms nest; work is a facet of the room's recipe** (above). Never a fixed home room, never a parallel system for workspaces, decisions or escalation.
 - **Two outliers prove the seam, then STOP.** chat + foundry; the rest register.
 
 ## Related
