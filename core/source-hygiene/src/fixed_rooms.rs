@@ -10,13 +10,19 @@
 //! working elsewhere saw her work. A room is chosen by the activity that opens it, the recipe that
 //! declares it, or whoever hosts her, and reaches code as data.
 //!
-//! This rule counts production lines carrying a string literal that is a standing room's name
-//! (`"academy"`, `"general"`). The count may only fall, and a file a change touches leaves with
-//! none: take the room from the activity, the recipe or the host's configuration.
+//! The reserved rooms continuum ships (`general`, `academy`, ...) are legitimate constants, declared
+//! ONCE in `continuum_base::reserved_rooms` so moving one is one line (Joel: "General and academy as
+//! well as some others are literally reserved and shipped constants", "Ideally in one place too so
+//! we don't have to change a ton to move"). This rule counts production lines spelling a reserved
+//! room's name anywhere else; the count may only fall, and a touched file leaves with none: refer
+//! to the constant, or take the room from the activity, the recipe or the host's configuration.
 
 use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
 
-/// The standing rooms code has named: the citizen commons and airc's lobby.
+/// The one file a reserved room's name is spelled in.
+const OWNER: &str = "core/continuum-base/src/reserved_rooms.rs";
+
+/// The reserved rooms' names (declared in [`OWNER`]).
 const ROOM_LITERALS: &[&str] = &["\"academy\"", "\"general\""];
 
 pub struct FixedRooms;
@@ -33,6 +39,9 @@ impl SourceRule for FixedRooms {
     }
 
     fn check(&self, file: &SourceFile) -> Vec<Violation> {
+        if file.repo == OWNER {
+            return Vec::new();
+        }
         file.production_lines()
             .filter_map(|(line_no, line)| {
                 let (code, _) = split_code_and_comment(line);
