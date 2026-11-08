@@ -52,6 +52,7 @@ pub mod subprocess_spawn;
 pub mod unwrap_justification;
 pub mod vendor_pin;
 pub mod required_inputs;
+pub mod store_reads;
 pub mod wall_clock;
 
 use std::path::{Path, PathBuf};
