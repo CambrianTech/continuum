@@ -18,6 +18,7 @@
 //! Gated `stress-tests` per the test doctrine. Run:
 //! `cargo test -p continuum-core --features stress-tests,metal,accelerate --lib \
 //!   modules::code_load_harness -- --nocapture --test-threads=1`
+#![cfg(test)]
 
 use crate::cognition::tool_executor::types::{PersonaMediaConfigLite, ToolExecutionContext};
 use crate::cognition::tool_executor::{CommandToolExecutor, ToolExecutor};

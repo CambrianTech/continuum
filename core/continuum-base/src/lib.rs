@@ -12,6 +12,7 @@ pub mod probe;
 pub mod repo_id;
 pub mod secrets;
 pub mod shell_portable;
+pub mod shown_text;
 pub mod time;
 pub mod token_estimate;
 pub mod tool_disclosure;

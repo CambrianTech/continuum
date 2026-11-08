@@ -168,12 +168,10 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, SigningError> {
     Ok(out)
 }
 
+/// The low four bits of `n` as a lowercase hex digit: masked, so every input has a digit.
 fn nibble(n: u8) -> char {
-    match n {
-        0..=9 => (b'0' + n) as char,
-        10..=15 => (b'a' + n - 10) as char,
-        _ => unreachable!("nibble fits in 4 bits"),
-    }
+    const HEX: [u8; 16] = *b"0123456789abcdef";
+    HEX[usize::from(n & 0x0f)] as char
 }
 
 fn un_nibble(c: u8) -> Result<u8, SigningError> {

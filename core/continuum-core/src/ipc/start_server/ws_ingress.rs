@@ -54,10 +54,9 @@ pub(super) fn spawn_ws_ingress(
                 // fail loud (not a silent skip) if the executor has none,
                 // because a WS server with no state source is a boot bug,
                 // not a runtime condition ([[fallbacks-are-illegal-fail-loud]]).
-                let projection_bus = ws_executor.message_bus().expect(
-                    "CONTINUUM_CORE_WS is set but the command executor has no message bus — \
-                     the positron chat projection has no airc source to subscribe to",
-                );
+                let Some(projection_bus) = ws_executor.message_bus() else {
+                    return Err(BootError::WsIngressWithoutBus.into());
+                };
                 let room_purpose = resolve_room_purpose(
                     state,
                     &projection_bus,
@@ -146,7 +145,7 @@ pub(super) fn spawn_ws_ingress(
                 // persona's own observe/hot-edit results publish frames at the
                 // act seam; no tick, no scan. Install-only here; the act loop
                 // does the publishing when work actually happens.
-                positron_canvas_source::install(ws_substrate.clone());
+                positron_canvas_source::install(ws_substrate.clone()).map_err(BootError::from)?;
 
                 // Live-call glass box (#58): folds the TRANSPORT's calls against
                 // the ORCHESTRATOR's registered sessions. Their disagreement is

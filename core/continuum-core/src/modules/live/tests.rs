@@ -49,12 +49,11 @@
 
         assert_eq!(v["registered"], true);
         assert_eq!(v["call_id"], room);
-        assert!(m.state.active_sessions.lock().unwrap().contains(&room));
+        assert!(m.state.active_sessions.lock().contains(&room));
         assert!(
             m.state
                 .legacy_call_aliases
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
                 .is_empty(),
             "canonical registration must not record an alias"
         );
@@ -77,7 +76,7 @@
 
         // Registered under the ROOM id, never the legacy id.
         {
-            let sessions = m.state.active_sessions.lock().unwrap();
+            let sessions = m.state.active_sessions.lock();
             assert!(sessions.contains(&room));
             assert!(!sessions.contains(&legacy));
         }
@@ -120,12 +119,11 @@
         )
         .await
         .expect("end-session");
-        assert!(!m.state.active_sessions.lock().unwrap().contains(&room));
+        assert!(!m.state.active_sessions.lock().contains(&room));
         assert!(m
             .state
             .legacy_call_aliases
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .is_empty());
     }
 
@@ -150,5 +148,5 @@
         // Canonical re-register → deduped.
         let v = register(&m, &room, &room, persona).await;
         assert_eq!(v["already_active"], true);
-        assert_eq!(m.state.active_sessions.lock().unwrap().len(), 1);
+        assert_eq!(m.state.active_sessions.lock().len(), 1);
     }

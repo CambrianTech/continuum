@@ -6,6 +6,8 @@
 use super::*;
 
 mod accept_loop;
+mod boot_error;
+use boot_error::BootError;
 mod ai_genome_modules;
 mod airc_boot;
 mod closing_modules;
@@ -229,7 +231,7 @@ pub fn start_server(
             &airc_interceptor_cell,
         );
     }
-    let grid_state = closing_modules::register_closing_modules(&runtime, &gpu_manager, &code_state);
+    let grid_state = closing_modules::register_closing_modules(&runtime, &gpu_manager, &code_state)?;
 
     let runtime_start::RuntimeStarted {
         post_init_started,
