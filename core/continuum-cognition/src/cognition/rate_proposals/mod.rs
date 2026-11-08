@@ -26,6 +26,6 @@ pub mod prompt;
 pub mod types;
 
 pub use orchestrator::{rate_proposals_with_ai, RateProposalsRequest, RateProposalsResponse};
-pub use parser::{parse_ratings_from_ai_response, ParseConfig};
+pub use parser::{parse_ratings_from_ai_response, ParseConfig, RatingPatternError};
 pub use prompt::build_rating_prompt;
 pub use types::{ProposalRating, RatingContext, RatingMessage, ResponseProposal};

@@ -158,7 +158,7 @@ use super::*;
         let episode = mk(EngramKind::Episodic, "I edited main.rs and it compiled");
         let stale_id = stale_belief.id;
         for e in [stale_belief, other_belief, episode] {
-            state.engrams.lock().unwrap().push(e);
+            state.engrams.lock().push(e);
         }
         let hits = state.semantic_beliefs_matching(
             &["main.rs".to_string(), "rs".to_string()], // "rs" = noise, skipped

@@ -135,7 +135,7 @@ impl AdmissionState {
     /// The ONE gate both ingestion paths (`admit`, `admit_reflection`) ask. A bare store with
     /// no owner (tests, replay) has no mind room.
     pub(super) fn withheld_in_her_mind_room(&self, room: Uuid) -> Option<AdmissionDecision> {
-        let owner = (*self.owner_id.read().unwrap())?;
+        let owner = (*self.owner_id.read())?;
         crate::cognition::mind_room::is_private_room(owner, room).then(|| {
             crate::cognition::mind_room::note_withheld(owner, "engrams");
             AdmissionDecision::Drop {
@@ -148,14 +148,14 @@ impl AdmissionState {
     }
 
     pub fn set_owner_id(&self, id: Uuid) {
-        *self.owner_id.write().unwrap() = Some(id);
+        *self.owner_id.write() = Some(id);
     }
 
     /// The owning persona's id, if bound. `None` for bare/test states — the
     /// own-chat recall gate is then a no-op (fail-open: never gate what we can't
     /// prove is self-authored).
     pub(super) fn owner_id_snapshot(&self) -> Option<Uuid> {
-        *self.owner_id.read().unwrap()
+        *self.owner_id.read()
     }
 
     /// Construct AdmissionState for a specific persona — opens the
@@ -341,9 +341,8 @@ impl AdmissionState {
         let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
         self.persistence
             .read()
-            .unwrap()
             .observe_admission(&engram, metadata);
-        self.engrams.lock().unwrap().push(engram.clone());
+        self.engrams.lock().push(engram.clone());
 
         Ok(AdmissionDecision::Admit {
             engram,
@@ -367,7 +366,7 @@ impl AdmissionState {
         match decision {
             AdmissionDecision::Admit { engram, .. } => {
                 self.record_admitted(engram);
-                self.engrams.lock().unwrap().push(engram.clone());
+                self.engrams.lock().push(engram.clone());
                 // Observe the admission through the persistence sink.
                 // NoopSink (default) does nothing; OrmPersistenceSink
                 // fires-and-forgets the disk write through tokio::spawn.
@@ -376,7 +375,6 @@ impl AdmissionState {
                 let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
                 self.persistence
                     .read()
-                    .unwrap()
                     .observe_admission(engram, metadata);
             }
             AdmissionDecision::Quarantine { engram, .. } => {
@@ -449,14 +447,14 @@ impl AdmissionState {
 
     /// Number of admitted engrams currently in this persona's store.
     pub fn engram_count(&self) -> usize {
-        self.engrams.lock().unwrap().len()
+        self.engrams.lock().len()
     }
 
     /// Borrow an admitted engram by index (for inspection / future recall).
     /// Returns None if index out of bounds. Clone is cheap in v1; PR-5+
     /// recall will return `&Engram` borrowed from a longer-lived store.
     pub fn engram_at(&self, idx: usize) -> Option<Engram> {
-        self.engrams.lock().unwrap().get(idx).cloned()
+        self.engrams.lock().get(idx).cloned()
     }
 
     /// **Test-only**: push an engram directly into the store without
@@ -468,7 +466,7 @@ impl AdmissionState {
     /// (the cfg gate ensures it doesn't appear in non-test builds).
     #[cfg(any(test, feature = "test-fixtures"))]
     pub fn push_for_test(&self, engram: Engram) {
-        self.engrams.lock().unwrap().push(engram);
+        self.engrams.lock().push(engram);
     }
 
     /// True iff `content_hash` is recorded as seen in the dedup store.
@@ -502,7 +500,7 @@ impl AdmissionState {
     /// metadata, and both oracles — for a later [`restore`](Self::restore).
     pub fn checkpoint(&self) -> AdmissionCheckpoint {
         AdmissionCheckpoint {
-            engrams: self.engrams.lock().unwrap().clone(),
+            engrams: self.engrams.lock().clone(),
             recall_metadata: self.recall_metadata.snapshot(),
             seen_content: self.seen_content.snapshot(),
             seen_events: self.seen_events.snapshot(),
@@ -515,7 +513,7 @@ impl AdmissionState {
     /// [`swap_persistence`](Self::swap_persistence) so a restore can't race a
     /// disk write back in.
     pub fn restore(&self, cp: &AdmissionCheckpoint) {
-        *self.engrams.lock().unwrap() = cp.engrams.clone();
+        *self.engrams.lock() = cp.engrams.clone();
         self.recall_metadata.restore(cp.recall_metadata.clone());
         self.seen_content.restore(cp.seen_content.clone());
         self.seen_events.restore(cp.seen_events.clone());
@@ -570,7 +568,7 @@ impl AdmissionState {
         &self,
         sink: Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink>,
     ) -> Arc<dyn crate::cognition::admission_persistence::AdmissionPersistenceSink> {
-        let mut guard = self.persistence.write().unwrap();
+        let mut guard = self.persistence.write();
         std::mem::replace(&mut *guard, sink)
     }
 
@@ -605,7 +603,7 @@ impl AdmissionState {
         if needles.is_empty() || limit == 0 {
             return Vec::new();
         }
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         let mut hits: Vec<Engram> = engrams
             .iter()
             .rev() // newest-first (insertion order store)
@@ -639,7 +637,7 @@ impl AdmissionState {
         if limit == 0 {
             return Vec::new();
         }
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         engrams
             .iter() // insertion order == oldest first
             .filter(|e| e.kind == crate::cognition::engram::EngramKind::Semantic)
@@ -654,7 +652,7 @@ impl AdmissionState {
         if limit == 0 {
             return Vec::new();
         }
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         engrams.iter().rev().take(limit).cloned().collect()
     }
 
@@ -668,7 +666,7 @@ impl AdmissionState {
     /// a NoopSink, so nothing durable is written during an exam anyway).
     /// See [[benchmarks-are-proctored-exams-of-the-natural-living-persona]].
     pub fn forget_context(&self, context_id: Uuid) -> usize {
-        let mut engrams = self.engrams.lock().unwrap();
+        let mut engrams = self.engrams.lock();
         let before = engrams.len();
         engrams.retain(|e| e.context_id != Some(context_id));
         before - engrams.len()
@@ -704,7 +702,7 @@ impl AdmissionState {
         // persist AFTER releasing it (never hold the store lock across the sink).
         let mut changed: Vec<Engram> = Vec::new();
         {
-            let mut engrams = self.engrams.lock().unwrap();
+            let mut engrams = self.engrams.lock();
             for engram in engrams.iter_mut() {
                 let mut touched = false;
                 let (new_content, r) = policy.redact(&engram.content);
@@ -728,7 +726,7 @@ impl AdmissionState {
         }
 
         if !changed.is_empty() {
-            let sink = self.persistence.read().unwrap().clone();
+            let sink = self.persistence.read().clone();
             for engram in &changed {
                 sink.observe_content_update(engram);
             }

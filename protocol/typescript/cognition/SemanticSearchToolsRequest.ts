@@ -11,10 +11,11 @@ export type SemanticSearchToolsRequest = { query: string,
  */
 model?: string, 
 /**
- * Max results to return. PR-2 defaults to
- * [`DEFAULT_SEARCH_LIMIT`] when unset.
+ * How many ranked hits the caller has room for: the size of its own tool claim
+ * in the turn's one allocation, stated by the caller. Required, so no number of
+ * ours stands in for a caller that did not say.
  */
-limit?: number, 
+limit: number, 
 /**
  * Minimum cosine similarity to include in results. PR-2 defaults
  * to [`SIMILARITY_THRESHOLD`] when unset. Caller may pass `0.0`

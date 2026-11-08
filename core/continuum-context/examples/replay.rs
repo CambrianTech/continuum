@@ -53,6 +53,7 @@
 //!
 //! `--allocate` drives each captured act's claims through the one allocation, priced and unpriced:
 //! the allocation's dyno (`replay/allocate.rs`).
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::collections::BTreeMap;
 

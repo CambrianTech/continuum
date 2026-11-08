@@ -128,8 +128,8 @@ pub async fn rate_proposals_with_ai(
     let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
     let response = generate_text(&registry_guard, inference_request, terms).await?;
 
-    let ratings =
-        parse_ratings_from_ai_response(&response.text, &context.proposals, &ParseConfig::default());
+    let ratings = parse_ratings_from_ai_response(&response.text, &context.proposals, &ParseConfig::default())
+        .map_err(|e| e.to_string())?;
 
     Ok(RateProposalsResponse { ratings })
 }

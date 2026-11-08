@@ -182,9 +182,13 @@ fn compare_input(request: &mut TextGenerationRequest, p: &ReplayRequestParams) -
         keep
     });
     let tool_schema = if let Some((index, replacement, audit)) = schema_change {
-        // The index and both containers were validated above, before any mutation.
-        request.tools.as_mut().expect("validated tool set")[index].input_schema =
-            replacement;
+        // The index was validated above, before any mutation, and nothing since touches the tools.
+        let Some(tool) = request.tools.as_mut().and_then(|tools| tools.get_mut(index)) else {
+            return Err(CommandError::Internal(format!(
+                "validated tool {index} ({}) is no longer in the captured request", audit.tool_name
+            )));
+        };
+        tool.input_schema = replacement;
         Some(audit)
     } else { None };
     Ok(InputComparison {

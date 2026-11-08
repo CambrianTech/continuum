@@ -273,43 +273,45 @@ impl LlmDeliberationFaculty {
             // call by name, and the system prompt's menu plus `commands/help` reach it.
             // The view retains the tool level bought by the shared allocation for this epoch.
             // Send that same selection so accounting, wire bytes and prefix reuse agree.
-            if request_template.is_none() {
-                // What her view's allocation bought, at its levels; a server that refuses `tail_tools`
-                // gets the same head without the verbs that would have ridden the tail.
-                let mut selected = view.tools.clone();
-                if tail_refused {
-                    selected.tail.clear();
+            let mut request = match &request_template {
+                Some(template) => template.clone(),
+                None => {
+                    // What her view's allocation bought, at its levels; a server that refuses `tail_tools`
+                    // gets the same head without the verbs that would have ridden the tail.
+                    let mut selected = view.tools.clone();
+                    if tail_refused {
+                        selected.tail.clear();
+                    }
+                    // Verbs she loaded into the tail ride beside the head, callable natively.
+                    let tail = std::mem::take(&mut selected.tail);
+                    // Selection and budget accounting borrow the cached schemas. Only the
+                    // owned inference request needs a copy of the selected surface.
+                    let tools = selected.specs.map(std::borrow::Cow::into_owned);
+
+                    let request = self.build_request_within(
+                        &binding,
+                        allowance,
+                        view.messages.clone(),
+                        tools,
+                        view.system.clone(),
+                        {
+                            // Turn-boundary hygiene: peer-name stops (#150, don't speak AS
+                            // teammates) + reserved-marker stops (#158, don't fabricate
+                            // [action]/[recall] receipts). Combined into one stop list.
+                            let mut stops = super::super::super::deliberation_budget::peer_stop_sequences(&ws.turns);
+                            stops.extend(super::super::super::deliberation_budget::reserved_marker_stop_sequences());
+                            (!stops.is_empty()).then_some(stops)
+                        },
+                        Some(ws.room_id),
+                        kind,
+                    );
+
+                    let mut template = request;
+                    template.tail_tools = (!tail.is_empty()).then_some(tail);
+                    template.messages.clear();
+                    request_template.insert(template).clone()
                 }
-                // Verbs she loaded into the tail ride beside the head, callable natively.
-                let tail = std::mem::take(&mut selected.tail);
-                // Selection and budget accounting borrow the cached schemas. Only the
-                // owned inference request needs a copy of the selected surface.
-                let tools = selected.specs.map(std::borrow::Cow::into_owned);
-
-                let request = self.build_request_within(
-                    &binding,
-                    allowance,
-                    view.messages.clone(),
-                    tools,
-                    view.system.clone(),
-                    {
-                        // Turn-boundary hygiene: peer-name stops (#150, don't speak AS
-                        // teammates) + reserved-marker stops (#158, don't fabricate
-                        // [action]/[recall] receipts). Combined into one stop list.
-                        let mut stops = super::super::super::deliberation_budget::peer_stop_sequences(&ws.turns);
-                        stops.extend(super::super::super::deliberation_budget::reserved_marker_stop_sequences());
-                        (!stops.is_empty()).then_some(stops)
-                    },
-                    Some(ws.room_id),
-                    kind,
-                );
-
-                let mut template = request;
-                template.tail_tools = (!tail.is_empty()).then_some(tail);
-                template.messages.clear();
-                request_template = Some(template);
-            }
-            let mut request = request_template.as_ref().expect("initial request assembled").clone();
+            };
             request.messages = view.messages.clone();
             // Where her next act stops matching THIS prompt: the engine checkpoints there and her
             // page keeps it, so the next act resumes past everything she already read.

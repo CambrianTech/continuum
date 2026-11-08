@@ -195,20 +195,6 @@ where
         | LocalOrCloudPolicy::PreferCloud
         | LocalOrCloudPolicy::Any => true,
     });
-    if candidates.is_empty() {
-        if is_sensory_query {
-            return Err(no_multimodal_base_err());
-        }
-        unmet.push(format!(
-            "provider_policy={:?} (eliminated {} candidates)",
-            requirement.provider_policy, before_provider
-        ));
-        return Err(ResolutionError::NoModelMatchesRequirement {
-            registry_count,
-            candidates_after_filter: 0,
-            unmet_filters: unmet,
-        });
-    }
 
     // Rank: PreferLocal/PreferCloud reorder; other policies preserve order.
     match requirement.provider_policy {
@@ -221,7 +207,21 @@ where
         _ => {}
     }
 
-    let best = candidates.first().expect("non-empty after filters");
+    // The provider filter's verdict: no candidate survived it (ranking an empty list is a no-op).
+    let Some(best) = candidates.first() else {
+        if is_sensory_query {
+            return Err(no_multimodal_base_err());
+        }
+        unmet.push(format!(
+            "provider_policy={:?} (eliminated {} candidates)",
+            requirement.provider_policy, before_provider
+        ));
+        return Err(ResolutionError::NoModelMatchesRequirement {
+            registry_count,
+            candidates_after_filter: 0,
+            unmet_filters: unmet,
+        });
+    };
     let target_silicon = derive_target_silicon(best, &provider_kinds, &requirement.host);
 
     // Silicon-residency gate. No silent CPU fallback. No silent Cloud

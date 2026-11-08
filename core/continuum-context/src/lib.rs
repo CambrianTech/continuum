@@ -17,6 +17,8 @@
 //! - [`ladder`]: the one contract every budget consumer answers: its items' levels, its hard limit.
 //! - [`allocation`]: an act's ONE allocation over everything her prompt holds, run once; its
 //!   [`allocation::search`] chooses every leveled consumer's levels together.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod allocation;
 pub mod cause;
