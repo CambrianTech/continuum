@@ -101,7 +101,7 @@ impl SentinelModule {
         let handle_id_owned = handle_id.to_string();
 
         // Create sentinel handle for the resumed pipeline
-        let (cancel_tx, _cancel_rx) = mpsc::channel(1);
+        let (cancel_tx, _cancel_rx) = Self::cancel_channel();
         let handle = SentinelHandle {
             id: handle_id_owned.clone(),
             sentinel_type: "pipeline".to_string(),
@@ -419,12 +419,6 @@ impl SentinelModule {
 
 }
 
-impl Default for SentinelModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[async_trait]
 impl ServiceModule for SentinelModule {
     fn config(&self) -> ModuleConfig {
@@ -493,7 +487,7 @@ impl ServiceModule for SentinelModule {
                                     let step_index = cp.step_index;
 
                                     // Register as running sentinel so sentinel/status works
-                                    let (cancel_tx, _cancel_rx) = tokio::sync::mpsc::channel(1);
+                                    let (cancel_tx, _cancel_rx) = SentinelModule::cancel_channel();
                                     let (completion_tx, completion_rx) =
                                         tokio::sync::watch::channel(false);
                                     let now = continuum_base::time::EpochMs::now().millis();

@@ -27,6 +27,8 @@ async-trait = { workspace = true }
 # design call on the positron protocol — latest-wins coalescing IS the
 # spec; broadcast's ring buffer would buffer needless copies).
 tokio = { workspace = true }
+# A lock with no poison state: the maps behind it are never left half-written by a panic.
+parking_lot = { workspace = true }
 
 [features]
 # Test constructors (test_roster_slot) for the crates whose tests build roster views.

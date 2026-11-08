@@ -13,7 +13,7 @@ pub(super) fn register_closing_modules(
     // Provides sentinel/execute, sentinel/status, sentinel/cancel, sentinel/list
     // And sentinel/logs/list, sentinel/logs/read, sentinel/logs/tail
     // Process isolation via child processes - safe for Xcode, cargo, etc.
-    let sentinel_module = Arc::new(SentinelModule::new());
+    let sentinel_module = Arc::new(SentinelModule::new(&crate::paths::continuum_root()));
     runtime.register(sentinel_module.clone());
     continuum_sentinel::register_for_shutdown(sentinel_module);
     // The driver gateway: the one door external agents call (docs/architecture/DRIVER-GATEWAY.md).

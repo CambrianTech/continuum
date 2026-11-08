@@ -101,7 +101,7 @@ pub async fn handle_load_adapter(
                     match rebuild_result {
                         Ok(Ok(new_model)) => {
                             model_state.model = new_model;
-                            model_state.clear_cache();
+                            model_state.clear_cache().map_err(Status::internal)?;
                             info!("  ✓ Model rebuilt with LoRA weights");
                         }
                         Ok(Err(e)) => {

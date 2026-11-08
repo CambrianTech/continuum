@@ -24,7 +24,7 @@
     #[test]
     fn validate_recipe_refuses_unknown_and_passes_every_shipped_purpose() {
         let empty_overlay = tempfile::tempdir().expect("tempdir");
-        for purpose in crate::experience::source::RecipeExperienceSource::shipped_purposes() {
+        for purpose in crate::experience::source::RecipeExperienceSource::shipped_purposes().expect("the embedded recipes parse") {
             assert!(
                 validate_recipe(&purpose, empty_overlay.path()).is_ok(),
                 "shipped purpose {purpose:?} must validate"
@@ -79,8 +79,8 @@
             crate::experience::source::RecipeExperienceSource::shipped_purpose(
                 crate::experience::source::shipped::BENCHMARK_HARD_RS
             )
-            .as_deref(),
-            Some("benchmark/hard-rs")
+            .expect("the shipped benchmark recipe resolves"),
+            "benchmark/hard-rs"
         );
     }
 

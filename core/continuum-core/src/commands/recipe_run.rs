@@ -321,7 +321,8 @@ mod tests {
         );
         let source = crate::experience::source::RecipeExperienceSource::builtins(
             crate::experience::room_purpose::default_source(),
-        );
+        )
+        .expect("the embedded recipes parse");
         let (adapter, _db) = crate::orm::store::fresh_adapter().await;
         let runs = Arc::new(RecipeRuns::open(adapter).await.expect("open recipe_runs")); // JUSTIFIED: a fresh temp db
         let params = || RecipeRunParams {

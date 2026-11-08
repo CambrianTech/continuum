@@ -33,7 +33,7 @@ pub async fn handle_ping(
         },
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| Status::internal(format!("system clock is before the Unix epoch: {e}")))?
             .as_millis() as i64,
     }))
 }

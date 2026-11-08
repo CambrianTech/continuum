@@ -113,7 +113,7 @@ pub async fn handle_apply_genome(
             let mut state = service.state.write().await;
             if let Some(model_state) = state.as_mut() {
                 model_state.model = new_model;
-                model_state.clear_cache();
+                model_state.clear_cache().map_err(Status::internal)?;
             }
 
             info!(

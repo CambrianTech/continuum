@@ -2,6 +2,7 @@
 //! ranking, focus and its policy, the turn trace, redaction and the citizen home layout.
 //! Cut out of continuum-cognition as a leaf of its crate tree (docs/architecture/
 //! COGNITION-CRATE-TREE.md, step 7); cognition re-exports each module under its old path.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod engram;
 pub mod engram_graph;

@@ -196,12 +196,10 @@ pub fn generate_text_quantized(
     let mut nan_count = 0;
 
     // Generate tokens
+    // The first pass feeds the whole prompt; each later pass feeds only the token the
+    // previous pass sampled.
+    let mut input_tokens = all_tokens.clone();
     for i in 0..max_tokens {
-        let input_tokens = if i == 0 {
-            all_tokens.clone()
-        } else {
-            vec![*all_tokens.last().unwrap()]
-        };
 
         let input = Tensor::new(&input_tokens[..], &state.device)
             .map_err(|e| format!("Tensor creation failed: {e}"))?
@@ -270,6 +268,7 @@ pub fn generate_text_quantized(
         }
 
         all_tokens.push(next_token);
+        input_tokens = vec![next_token];
     }
 
     // Final GPU sync to ensure all work is complete before returning

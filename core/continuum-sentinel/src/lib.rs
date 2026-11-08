@@ -11,6 +11,7 @@
 //! - **Observable**: All output streamed to logs in real-time
 //! - **Event-driven**: Emits sentinel:{handle}:log events for real-time streaming
 //! - **Pipeline Support**: Multi-step pipelines with LLM, conditions, loops
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod checkpoint;
 pub mod escalation;

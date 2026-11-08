@@ -16,6 +16,7 @@
 //!   bounded and shed their oldest. A long queue gives every request everyone's latency.
 //! - Nobody holds a lock while waiting or working: a grant is a capability whose drop is the
 //!   release event.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod flow;
 mod qos;
