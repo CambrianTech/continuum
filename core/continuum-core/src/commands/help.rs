@@ -271,29 +271,20 @@ mod tests {
     // argument field). Each example must carry no wrapper, name a tool that resolves back to
     // its own command, and decode as that command's own Params through the check its dispatch
     // runs. Every command, not a sample: a new command's manual is held to it on arrival. A
-    // command with no published schema shows no example, and that set only shrinks.
+    // command must publish its typed schema and an example its decoder accepts.
     #[test]
     fn every_registered_manual_example_decodes_as_its_own_command() {
         use crate::ai::tool_dialect::resolve_wire_name;
-        // Ratchet: hand-written `CommandSpec`s still on the `Null` schema default (2026-11-07: the
-        // four `ai/inference/*` handle verbs and `inference/llm/request`, engine crate).
-        // Publish one's schema and lower this; it never rises.
-        const UNDECLARED_CEILING: usize = 5;
         let registry = command_registry_live();
         assert!(registry.len() > 50, "the live registry is linked: {}", registry.len());
         let undeclared: Vec<&str> = registry.iter().filter(|d| d.params_schema.is_null()).map(|d| d.name).collect();
-        assert!(undeclared.len() <= UNDECLARED_CEILING, "a command added without a params schema: {undeclared:?}");
+        assert!(undeclared.is_empty(), "a command added without a params schema: {undeclared:?}");
         let refused: Vec<String> = registry
             .iter()
             .filter_map(|d| {
                 let manual = render_ai_help(d);
                 let problem = if manual.contains("\"tool_call\"") {
                     "carries a tool_call wrapper".to_owned()
-                } else if d.params_schema.is_null() {
-                    match crate::sdk_codegen::read_call(&manual) {
-                        Err(_) => return None,
-                        Ok(_) => "shows an example call for a contract it never published".to_owned(),
-                    }
                 } else {
                     match crate::sdk_codegen::read_call(&manual) {
                         Err(miss) => miss.to_string(),

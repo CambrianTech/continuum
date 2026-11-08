@@ -109,14 +109,12 @@ pub fn audit_tool_conformance() -> Vec<ToolConformanceViolation> {
             });
         }
 
-        // 3. LEARNABLE input — the schema is either Null (genuinely no params) or a
-        //    JSON object `commands/help` can render into a fill-in-the-blanks call.
-        //    A non-object, non-null schema is a contract a model can't complete.
-        if !d.params_schema.is_null() && !d.params_schema.is_object() {
+        // 3. LEARNABLE input: every typed declaration publishes an object schema.
+        if !d.params_schema.is_object() {
             violations.push(ToolConformanceViolation {
                 tool: d.name.to_string(),
                 rule: "params-learnable",
-                detail: "params schema is neither null (no params) nor an object — not a \
+                detail: "params schema is not an object — not a \
                          fill-in-the-blanks contract a model can complete"
                     .to_string(),
             });

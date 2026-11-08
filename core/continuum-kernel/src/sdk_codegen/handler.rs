@@ -221,7 +221,7 @@ pub trait CommandHandler: Send + Sync {
 ///   handle is an authoring bug — there's no envelope to carry it — so it
 ///   surfaces a loud `Internal` error rather than silently dropping the handle.)
 ///
-/// Params are parsed via [`CommandRequest`] for EVERY shape (it flattens `P` and
+/// Params use the command's shared decode_arguments owner (by default [`CommandRequest`], which flattens `P` and
 /// extracts the envelope siblings), so the envelope fields reach `Ctx` even for
 /// `Bare` commands. A [`CommandError`] becomes the `ServiceModule` refusal
 /// string (→ `ClientError::Refused` → rejected promise).
@@ -253,7 +253,7 @@ where
     // against the command's declared schema, the one its offer is generated from, before it
     // refuses. Every module command is in the registry (`ModuleRegistry::register` refuses one
     // that is not); an unregistered handler (a test fixture) declares no schema to read against.
-    let decode = CommandRequest::<<H::Spec as CommandSpec>::Params>::decode;
+    let decode = <H::Spec as CommandSpec>::decode_arguments;
     let decoded = match super::command_descriptor(name) {
         Some(descriptor) => {
             accepted_shape::decode_accepting(name, &descriptor.params_schema, &params, decode).map(|(req, _)| req)
@@ -307,7 +307,7 @@ pub mod tests {
     // Minimal typed payloads for exercising the dispatch mechanism (the framework
     // under test), mirroring how command_envelope.rs unit-tests its envelope with
     // small local structs.
-    #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+    #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
     pub struct EchoParams {
         text: String,
     }
@@ -521,6 +521,57 @@ pub mod tests {
         );
         assert!(err.contains("[arguments]"), "carries the category: {err}");
         assert!(err.contains("handle"), "names what's missing: {err}");
+    }
+
+    #[tokio::test]
+    async fn bare_strict_params_preflight_and_dispatch_accept_envelope_fields() {
+        #[derive(serde::Deserialize, schemars::JsonSchema, ts_rs::TS)]
+        #[serde(deny_unknown_fields)]
+        struct StrictParams { text: String }
+        struct StrictSpec;
+        impl CommandSpec for StrictSpec {
+            const NAME: &'static str = "test/strict-bare";
+            const ACCESS_LEVEL: AccessLevel = AccessLevel::AiSafe;
+            const WIRE: WireShape = WireShape::Bare;
+            type Params = StrictParams;
+            type Result = EchoResult;
+        }
+        struct StrictHandler;
+        #[async_trait]
+        impl CommandHandler for StrictHandler {
+            type Spec = StrictSpec;
+            async fn execute(&self, _: &Ctx, p: StrictParams) -> Result<Outcome<EchoResult>, CommandError> {
+                Ok(EchoResult { echoed: p.text }.into())
+            }
+        }
+        let arguments = serde_json::json!({"text":"hi", "sessionId":"00000000-0000-4000-8000-000000000001"});
+        let descriptor = crate::sdk_codegen::CommandDescriptor::of::<StrictSpec>();
+        assert!(descriptor.arguments.check(&arguments).is_ok());
+        assert!(dispatch(&StrictHandler, arguments).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn bare_preflight_and_dispatch_agree_on_reserved_field_refusal() {
+        let descriptor = crate::sdk_codegen::CommandDescriptor::of::<BareSpec>();
+        let arguments = serde_json::json!({"text": "hi", "handle": 5});
+        assert_eq!(descriptor.arguments.check(&arguments).is_ok(),
+            dispatch(&BareHandler, arguments).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn enveloped_preflight_and_dispatch_agree_on_argument_failures() {
+        let descriptor = crate::sdk_codegen::CommandDescriptor::of::<EnvSpec>();
+        // The handler additionally requires a live-shaped handle; keep that domain
+        // prerequisite satisfied while comparing the shared argument boundary.
+        let handle = HandleRef::mint("test", "test::Cursor");
+        for arguments in [
+            serde_json::json!({"text": "hello", "handle": handle}),
+            serde_json::json!({"text": 123, "handle": handle}),
+            serde_json::json!({"text": "hello", "handle": 123}),
+        ] {
+            assert_eq!(descriptor.arguments.check(&arguments).is_ok(),
+                dispatch(&EnvHandler, arguments.clone()).await.is_ok(), "{arguments}");
+        }
     }
 
     // Regression for 6dd8befa: malformed params get argument recovery through

@@ -393,7 +393,7 @@ mod tests {
 
     /// A local command contract with named TS types: the descriptor below only has to be a
     /// real one, so the kernel's own fixture stands in for an upper module's command.
-    #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)]
+    #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
     struct StubParams {}
     #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)]
     struct StubResult {}

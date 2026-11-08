@@ -89,7 +89,7 @@ pub const COMMAND_INSPECT: &str = "ai/inference/inspect";
 /// via the AdapterRegistry. Sticky session inputs (system_prompt,
 /// model override, active LoRA adapters, persona scope) all flow
 /// through here and live on the session for the handle's lifetime.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai_inference/OpenParams.ts"
@@ -154,7 +154,7 @@ pub struct OpenResult {
 /// only the per-call generation request. The session's defaults
 /// (system_prompt, model, active_adapters) fill in any unset fields
 /// on `request` at generate time.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai_inference/GenerateParams.ts"
@@ -168,7 +168,7 @@ pub struct GenerateParams {
 pub type GenerateResult = TextGenerationResponse;
 
 /// Params for `ai/inference/close`. Handle is in the envelope.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai_inference/CloseParams.ts"
@@ -190,7 +190,7 @@ pub struct CloseResult {
 }
 
 /// Params for `ai/inference/inspect`. Handle is in the envelope.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai_inference/InspectParams.ts"

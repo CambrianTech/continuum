@@ -25,12 +25,8 @@ use crate::model_registry::discovery::{discover_all, DiscoveredModel, ProviderCo
     export_to = "../../../protocol/typescript/model_registry/ModelsDiscoverParams.ts"
 )]
 pub struct ModelsDiscoverParams {
-    /// Provider configs to query. `ProviderConfig` is an internal IPC shape, so
-    /// this command accepts it as opaque JSON on the wire and deserializes it in
-    /// the body — the typed surface is the discovered result, not the request.
+    /// Typed provider configs to query, including credentials and optional static models.
     #[serde(default)]
-    #[ts(type = "Array<unknown>")]
-    #[schemars(with = "Vec<serde_json::Value>")]
     pub providers: Vec<ProviderConfig>,
 }
 

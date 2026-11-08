@@ -419,11 +419,6 @@ impl<T: ActionCommand> CommandSpec for T {
     type Params = <T as ActionCommand>::Params;
     type Result = <T as ActionCommand>::Output;
 
-    /// Derived AUTOMATICALLY from the params type — the base trait's payoff: every
-    /// `ActionCommand` exposes a real param schema to every SDK, no hand-authoring.
-    fn params_schema() -> serde_json::Value {
-        super::input_schema::<<T as ActionCommand>::Params>()
-    }
 }
 
 /// `ActionCommand` ⟹ `CommandHandler`. The handler IS the action object (`Spec =

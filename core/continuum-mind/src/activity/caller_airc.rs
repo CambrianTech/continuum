@@ -52,7 +52,7 @@ pub struct ActivitySpawnParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     #[ts(optional, type = "string")]
-    #[schemars(with = "Option<String>")]
+    #[schemars(with = "Option<uuid::Uuid>")]
     pub parent: Option<RoomId>,
 
     /// Values for the recipe's parameters, e.g. {"repo": "owner/name"}; omit for defaults.

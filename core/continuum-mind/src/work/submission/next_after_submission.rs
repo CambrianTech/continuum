@@ -383,7 +383,6 @@ pub struct WorkReviewParams {
     /// Minted when omitted.
     #[serde(default)]
     #[ts(optional, type = "string")]
-    #[schemars(with = "Option<String>")]
     pub review_id: Option<Shown<airc_work::WorkReviewId>>,
     /// Parent card (handle or UUID); defaults to review parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -400,7 +399,6 @@ pub struct WorkReviewParams {
     /// Review claim; defaults to board.
     #[serde(default)]
     #[ts(optional, type = "string")]
-    #[schemars(with = "Option<String>")]
     pub review_claim_id: Option<Shown<ClaimId>>,
     /// Typed evidence instead of evidence_text.
     #[serde(default, skip_serializing_if = "Option::is_none")]

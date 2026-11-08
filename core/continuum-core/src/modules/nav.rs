@@ -296,10 +296,7 @@ pub struct NavSelectParams {
     /// / brain surface) WITHOUT refocusing the chat projection — the content
     /// dispatch keys off this, the same tabs==rooms==activities semantics.
     /// `serde(default)` so a kind-less older client reads as a room switch.
-    /// Schema surfaced as a string (the wire values are the lowercase
-    /// `NavTargetKind` names) — schemars has no derive on the positron enum.
     #[serde(default)]
-    #[schemars(with = "String")]
     pub kind: continuum_positron::nav::NavTargetKind,
 }
 

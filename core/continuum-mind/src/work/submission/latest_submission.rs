@@ -108,7 +108,6 @@ pub struct WorkSubmitParams {
     /// Minted when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none", serialize_with = "optional_shown_in_full")]
     #[ts(optional, type = "string")]
-    #[schemars(with = "Option<String>")]
     pub submission_id: Option<Shown<airc_work::SubmissionId>>,
     /// Your claim; defaults to the board.
     #[serde(default, skip_serializing_if = "Option::is_none")]

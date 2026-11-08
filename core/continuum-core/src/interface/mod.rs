@@ -148,9 +148,6 @@ impl crate::sdk_codegen::CommandSpec for ScreenshotCommand {
     type Params = ScreenshotParams;
     type Result = ScreenshotResult;
 
-    fn params_schema() -> serde_json::Value {
-        crate::sdk_codegen::input_schema::<ScreenshotParams>()
-    }
 }
 
 crate::register_command!(ScreenshotCommand);
