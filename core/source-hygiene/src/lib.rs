@@ -41,7 +41,9 @@ pub mod lexer;
 pub mod module_cycles;
 pub mod os_branches;
 pub mod planner_floor;
+pub mod polling_sites;
 pub mod production_reachability;
+pub mod prose_literals;
 pub mod ratchet;
 pub mod tenant_neutrality;
 pub mod time_bounds;
@@ -53,6 +55,7 @@ pub mod unwrap_justification;
 pub mod vendor_pin;
 pub mod required_inputs;
 pub mod store_reads;
+pub mod string_ids;
 pub mod wall_clock;
 
 use std::path::{Path, PathBuf};
