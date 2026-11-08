@@ -128,13 +128,11 @@ impl PullRequestHost for InMemoryPullRequestHost {
         let number = 101 + self.opened.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let url = format!("https://github.com/in-memory/pull/{number}");
         let head = pr.head.ok_or_else(|| GhRunError::Spawn("the in-memory host opens a PR only for a named head".into()))?;
-        // the in-memory host has no repository default branch to fall back on, so a PR names its base
-        let base = pr.base.ok_or_else(|| GhRunError::Spawn("the in-memory host opens a PR only for a named base".into()))?;
         self.open.lock().map_err(|e| GhRunError::Spawn(e.to_string()))?.push(OpenPullRequest {
             number,
             url: url.clone(),
             head: head.to_string(),
-            base: base.to_string(),
+            base: pr.base.unwrap_or("main").to_string(), // the in-memory repository's default branch, as gh uses the real one's
         });
         Ok(url)
     }
