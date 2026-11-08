@@ -5,6 +5,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod confine;
+pub mod core_handoff;
 pub mod durable;
 pub mod file_identity;
 pub mod local_stream;

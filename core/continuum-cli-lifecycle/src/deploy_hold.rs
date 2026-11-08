@@ -15,6 +15,10 @@ pub enum HoldObservation {
     /// The core answered and its hold names live work (its ids, as `ServingHold::live_work`
     /// says them).
     LiveWork(String),
+    /// The core answered and every piece of live work its hold names runs in the engine this
+    /// handoff keeps (the live lane, on a platform whose handoff leaves it running): the work
+    /// goes on through the handoff and the next core re-attaches to it (card 51d6b4a6).
+    Carried(String),
     /// A core process is alive and its hold could not be read (a timeout, a refusal, a snapshot
     /// that does not decode). Not "nothing held": a busy training core answers slowly.
     Unreadable(String),
@@ -44,6 +48,9 @@ pub enum HoldVerdict {
     Proceed(Option<String>),
     /// Wait: the consumer rechecks on its next pass with no attempt charged.
     Defer(String),
+    /// Go on, and the live work named here goes on with the engine: the handoff confirms the next
+    /// core holds the same work on the same engine.
+    Carry(String),
 }
 
 /// PURE: the verdict for a handoff that closed admission as `closed` and then read `observed`.
@@ -68,18 +75,21 @@ pub fn verdict(closed: AdmissionClose, observed: HoldObservation, force: bool) -
     let held = hold_verdict(observed, force);
     match (closed, held) {
         (AdmissionClose::NotSupported, HoldVerdict::Proceed(said)) => {
-            let window = "the running core predates serving/handoff-close, so a run admitted after this read is not prevented";
-            HoldVerdict::Proceed(Some(said.map_or_else(|| window.to_string(), |said| format!("{said}; {window}"))))
+            HoldVerdict::Proceed(Some(said.map_or_else(|| UNCLOSED_WINDOW.to_string(), |said| format!("{said}; {UNCLOSED_WINDOW}"))))
         }
+        (AdmissionClose::NotSupported, HoldVerdict::Carry(work)) => HoldVerdict::Carry(format!("{work}; {UNCLOSED_WINDOW}")),
         (_, held) => held,
     }
 }
+
+const UNCLOSED_WINDOW: &str = "the running core predates serving/handoff-close, so a run admitted after this read is not prevented";
 
 /// PURE: the verdict on the hold read alone.
 fn hold_verdict(observed: HoldObservation, force: bool) -> HoldVerdict {
     match (observed, force) {
         (HoldObservation::Free, _) => HoldVerdict::Proceed(None),
         (HoldObservation::NoCore, _) => HoldVerdict::Proceed(Some("no core process is running, so no live engine work is held".into())),
+        (HoldObservation::Carried(work), _) => HoldVerdict::Carry(work),
         (HoldObservation::LiveWork(work), true) => HoldVerdict::Proceed(Some(format!("--force: this handoff ends live engine work: {work}"))),
         (HoldObservation::LiveWork(work), false) => HoldVerdict::Defer(format!(
             "the engine is held for live work ({work}): a handoff now would end it. The deploy waits and retries on its next pass; `continuum reboot --force` ends the work instead."
@@ -112,6 +122,19 @@ mod tests {
         assert!(matches!(verdict(closed(), HoldObservation::LiveWork(work()), true), HoldVerdict::Proceed(Some(said)) if said.contains("genome-train:8b46862c")),
             "--force names the work it ends");
         assert!(matches!(verdict(closed(), HoldObservation::Unreadable("timed out".into()), true), HoldVerdict::Proceed(Some(said)) if said.contains("without knowing")));
+    }
+
+    // what this catches (card 51d6b4a6, the IntelMac 2026-11-08): a run in the engine the handoff
+    // keeps deferred every deploy for 10 h, though it survives the handoff. Carried work goes on
+    // (forced or not, nothing is ended), but only with admission closed: a busy or failed close
+    // still defers, since a run admitted then may be on a lane the handoff does not keep.
+    #[test]
+    fn work_in_the_kept_engine_is_carried_through_the_handoff_with_admission_closed() {
+        let work = || "genome-train:cc9a10dc on continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF (engine pid 30681, port 58057)".to_string();
+        assert_eq!(verdict(AdmissionClose::Closed, HoldObservation::Carried(work()), false), HoldVerdict::Carry(work()));
+        assert_eq!(verdict(AdmissionClose::Closed, HoldObservation::Carried(work()), true), HoldVerdict::Carry(work()), "--force ends nothing it can carry");
+        assert!(matches!(verdict(AdmissionClose::Busy, HoldObservation::Carried(work()), false), HoldVerdict::Defer(why) if why.contains("lifecycle gate")));
+        assert!(matches!(verdict(AdmissionClose::NotSupported, HoldObservation::Carried(work()), false), HoldVerdict::Carry(said) if said.contains("cc9a10dc") && said.contains("predates")));
     }
 
     // what this catches (card 91921d0f, Codex on #5551): a run admitted between the hold read and

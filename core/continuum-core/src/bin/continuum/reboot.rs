@@ -164,16 +164,28 @@ async fn observe_engine_hold() -> continuum_cli_lifecycle::deploy_hold::HoldObse
             .map_err(|e| format!("serving snapshot: {e}"))
     });
     match snapshot {
-        Ok(snapshot) => observation_of(snapshot.held_for.as_ref()),
+        Ok(snapshot) => observation_of(snapshot.held_for.as_ref(), kept_engine()),
         Err(_) if !running_core_pids().into_iter().any(pid_alive) => HoldObservation::NoCore,
         Err(why) => HoldObservation::Unreadable(why),
     }
 }
 
+/// The engine incarnation (pid, start time) this handoff keeps running: the live lane, where this
+/// platform's handoff leaves it up (`continuum_host::core_handoff`).
+fn kept_engine() -> Option<(u32, u64)> {
+    if !continuum_host::core_handoff::keeps_engine_lanes() {
+        return None;
+    }
+    continuum_core::inference::lane_registry::live_lane().map(|lane| (lane.pid, lane.started_s))
+}
+
 /// PURE: what a decoded hold says. A hold of unknown cause (its residency record unreadable) is
 /// not a confirmed absence of work: Unreadable, deferred like a failed read (Codex on #5551).
+/// Work bound, every piece, to the engine this handoff keeps (`kept`, pid and start time) is
+/// Carried: it goes on with that engine and the next core re-attaches to it (card 51d6b4a6).
 pub(super) fn observation_of(
     held: Option<&continuum_core::inference::llama_server::serving_hold::ServingHold>,
+    kept: Option<(u32, u64)>,
 ) -> continuum_cli_lifecycle::deploy_hold::HoldObservation {
     use continuum_cli_lifecycle::deploy_hold::HoldObservation;
     use continuum_core::inference::llama_server::serving_hold::HoldCause;
@@ -181,9 +193,28 @@ pub(super) fn observation_of(
         None => HoldObservation::Free,
         Some(hold) => match (&hold.by, hold.live_work()) {
             (HoldCause::Unknown { reason }, _) => HoldObservation::Unreadable(format!("the serving hold's cause is unknown: {reason}")),
+            (HoldCause::Resident { work: held }, Some(work))
+                if kept.is_some_and(|kept| held.iter().all(|w| (w.engine_pid, w.engine_started_s) == kept)) =>
+            {
+                HoldObservation::Carried(work)
+            }
             (_, Some(work)) => HoldObservation::LiveWork(work),
             (HoldCause::Resident { .. }, None) => HoldObservation::Free,
         },
+    }
+}
+
+/// After a handoff that carried live engine work: does the new core hold the same work on the
+/// same engine? Said either way; a deploy that landed is not undone for it. Lost work is the
+/// training trigger's to reconcile (its boot replay re-attaches or resumes), and this line is
+/// where the operator learns the carry failed.
+async fn report_carried(carried: &str) {
+    use continuum_cli_lifecycle::deploy_hold::HoldObservation;
+    match observe_engine_hold().await {
+        HoldObservation::Carried(now) | HoldObservation::LiveWork(now) if now == carried => {
+            println!("✓ live engine work carried through the handoff: {now}")
+        }
+        other => println!("⚠ live engine work was carried into the handoff ({carried}) but the new core does not hold it the same way: {other:?}"),
     }
 }
 
@@ -320,11 +351,18 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
     // attempt charged. Admission is closed FIRST (card 91921d0f), so this read is final: no run is
     // admitted between it and the stop.
     let closed = admission.close().await;
-    match continuum_cli_lifecycle::deploy_hold::verdict(closed, observe_engine_hold().await, force) {
+    let carried = match continuum_cli_lifecycle::deploy_hold::verdict(closed, observe_engine_hold().await, force) {
         continuum_cli_lifecycle::deploy_hold::HoldVerdict::Defer(why) => return Err(PublishedCoreError::Held(why)),
-        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Proceed(Some(said)) => println!("⚠ {said}"),
-        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Proceed(None) => {}
-    }
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Proceed(Some(said)) => {
+            println!("⚠ {said}");
+            None
+        }
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Proceed(None) => None,
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Carry(work) => {
+            println!("▶ live engine work goes on through this handoff, in the engine it keeps: {work}");
+            Some(work)
+        }
+    };
     if !evals.is_empty() {
         println!(
             "⚠ --force: rebooting over {} live eval run(s) — they die here; their worlds are \
@@ -444,13 +482,13 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         let home = continuum_core::paths::continuum_home()?;
         let root = continuum_core::inference::engine_slots::root(&home)?;
         let selection = continuum_core::inference::engine_slots::HandoffSelection::capture(&root, Path::new(&release.engine))?;
-        selected.engine_selection = Some(selection);
+        // Kept on the handoff for its unwind; the promotion reads the one it just stored.
+        let selection: &continuum_core::inference::engine_slots::HandoffSelection = selected.engine_selection.insert(selection);
         let promotion = async {
             let promoted = PreparedCoreService::prepare_engine(&repo, true).await?;
             if PreparedCoreService::query().await?.description != selected.task.description {
                 return Err("installed release changed during published engine preparation".into());
             }
-            let selection = selected.engine_selection.as_ref().ok_or("missing captured engine selection")?;
             match promoted {
                 Some((description, _)) => {
                     if description != selected.task.description { return Err("installed release changed during published engine promotion".into()); }
@@ -651,5 +689,9 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         locate_start_script().is_ok(),
         matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild),
     );
-    verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await.map_err(Into::into)
+    verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await?;
+    if let Some(carried) = &carried {
+        report_carried(carried).await;
+    }
+    Ok(())
 }
