@@ -227,7 +227,7 @@ fn a_lessons_superseded_numbers_map_onto_the_listed_beliefs() {
 // lesson to one or two sentences, and the instruction names both fields.
 #[test]
 fn the_lesson_schema_and_its_instruction_are_one_shape() {
-    let crate::ai::types::ResponseFormat::JsonSchema { json_schema } = super::lesson::DistilledLesson::format(3) else {
+    let crate::ai::types::ResponseFormat::JsonSchema { json_schema } = super::lesson::DistilledLesson::format(3).expect("the lesson schema serializes") else {
         panic!("a lesson is asked for by its schema")
     };
     let schema = &json_schema.schema;

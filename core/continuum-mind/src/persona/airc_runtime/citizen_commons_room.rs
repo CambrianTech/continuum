@@ -262,8 +262,7 @@ impl PersonaAircRuntime {
         executor: Arc<crate::runtime::command_executor::CommandExecutor>,
     ) -> Result<Self, PersonaAircRuntimeError> {
         Self::bootstrap_as(
-            crate::identity::IdentityKind::Persona,
-            None,
+            crate::identity::citizen_path::CitizenKind::Persona,
             persona_id,
             agent_name,
             continuum_root,

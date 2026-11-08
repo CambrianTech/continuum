@@ -22,7 +22,8 @@
 use crate::orm::types::CollectionSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{OnceLock, RwLock};
+use parking_lot::RwLock;
+use std::sync::OnceLock;
 use ts_rs::TS;
 
 /// **The canonical base shape every ORM record carries.** Source of
@@ -163,10 +164,7 @@ impl OrmEntityRegistry {
     pub fn register<E: OrmEntity>(&self) -> Result<(), RegistrationError> {
         let schema = E::collection_schema();
         let collection = schema.collection.clone();
-        let mut map = self
-            .schemas
-            .write()
-            .unwrap();
+        let mut map = self.schemas.write();
         match map.get(&collection) {
             Some(existing) if schemas_equivalent(existing, &schema) => Ok(()),
             Some(_) => Err(RegistrationError::SchemaConflict {
@@ -183,10 +181,7 @@ impl OrmEntityRegistry {
     /// Returns `None` when the collection isn't registered here; the
     /// caller falls back to `entity_schemas.json`.
     pub fn resolve(&self, collection: &str) -> Option<CollectionSchema> {
-        let map = self
-            .schemas
-            .read()
-            .unwrap();
+        let map = self.schemas.read();
         map.get(collection).cloned()
     }
 
@@ -203,10 +198,7 @@ impl OrmEntityRegistry {
     /// hard-coded to the singleton.
     #[cfg(test)]
     pub fn reset_for_tests(&self) {
-        self.schemas
-            .write()
-            .expect("OrmEntityRegistry lock poisoned")
-            .clear();
+        self.schemas.write().clear();
     }
 }
 

@@ -13,8 +13,7 @@
         let temp = TempDir::new().expect("tempdir");
         let expected_home = crate::identity::citizen_path::citizen_home_path(
             temp.path(),
-            crate::identity::IdentityKind::Persona,
-            None,
+            crate::identity::citizen_path::CitizenKind::Persona,
             "helper-ai-test",
         );
         // Slice 4 of #142: symmetric layout under

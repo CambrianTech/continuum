@@ -223,7 +223,7 @@
     // resident edit calls after it on the M5).
     #[test]
     fn the_advertised_edit_schema_has_no_single_entry_all_of() {
-        let schema = crate::sdk_codegen::input_schema::<CodeEditParams>();
+        let schema = crate::sdk_codegen::input_schema::<CodeEditParams>().expect("the edit params schema serializes");
         let text = schema.to_string();
         assert!(!text.contains("\"allOf\""), "no allOf anywhere in the advertised edit schema: {text}");
         let edit_mode = &schema["properties"]["edit_mode"];
@@ -237,7 +237,7 @@
     // fill-in example must decode and land through the real executor.
     #[test]
     fn code_edit_published_schema_round_trips_through_its_parser() {
-        let schema = crate::sdk_codegen::input_schema::<CodeEditParams>();
+        let schema = crate::sdk_codegen::input_schema::<CodeEditParams>().expect("the edit params schema serializes");
         assert!(schema["required"].as_array().unwrap().contains(&serde_json::json!("edit_mode")));
         assert_eq!(schema["properties"].as_object().unwrap().len(), 3, "file_path, edit_mode, description");
         let alternatives = schema["definitions"]["EditMode"]["oneOf"].as_array().expect("EditMode is a oneOf");

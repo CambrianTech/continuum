@@ -49,6 +49,9 @@ pub mod governor_bus;
 pub mod handle;
 pub mod in_process_transport;
 pub mod late_bound;
+// Poisoned std locks unwrap here until card 461a951e (kernel buffers and GPU detection get
+// owners) lands; then delete this allow.
+#[allow(clippy::unwrap_used)]
 pub mod message_bus;
 pub mod module_context;
 /// Per-module TDD harness — boots a single module in isolation. Test-only.
@@ -62,6 +65,7 @@ pub mod provided_provider;
 pub mod ready_buffer;
 pub mod region_telemetry;
 pub mod registry;
+pub mod wiring_defect;
 #[allow(clippy::module_inception)]
 pub mod runtime;
 pub mod service_module;
@@ -109,6 +113,7 @@ pub use provided_provider::{
 pub use ready_buffer::{DashMapReadyBuffer, ReadyBuffer};
 pub use region_telemetry::RegionTelemetry;
 pub use registry::ModuleRegistry;
+pub use wiring_defect::{WiringDefect, WiringDefects};
 pub use admission_gate::{AdmissionGate, Permit};
 pub use runtime::{
     await_shutdown, begin_shutdown, install_signal_shutdown, run_signal_shutdown,

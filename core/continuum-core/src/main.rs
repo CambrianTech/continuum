@@ -554,7 +554,7 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
     // Process-wide registry: the IPC thread's broker block fetches the
     // SAME TrackedDir instances to build eviction pools over (one
     // measurement per cache class, shared by reporter + pool).
-    let tracked_dirs = continuum_core::system_resources::install_tracked_dirs(tracked_dirs).await;
+    let tracked_dirs = continuum_core::system_resources::install_tracked_dirs(tracked_dirs).await?;
     let configured_root = std::env::current_dir().map_err(|error| error.to_string())
         .and_then(|cwd| continuum_core::paths::cargo::target_dir(&cwd))
         ;

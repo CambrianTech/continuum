@@ -93,8 +93,7 @@ pub(crate) fn is_remote_bound(
 ) -> Result<bool, crate::persona::model_override::PersonaModelOverrideError> {
     let airc_dir = crate::identity::citizen_path::citizen_home_path(
         continuum_root,
-        crate::identity::IdentityKind::Persona,
-        None,
+        crate::identity::citizen_path::CitizenKind::Persona,
         persona_name,
     );
     let root = airc_dir.parent().ok_or_else(|| {
@@ -130,8 +129,7 @@ impl RemoteLaneAdapterFactory {
     fn resolve_home(&self, persona_name: &str) -> Option<PersonaHome> {
         let airc_dir = crate::identity::citizen_path::citizen_home_path(
             &self.continuum_root,
-            crate::identity::IdentityKind::Persona,
-            None,
+            crate::identity::citizen_path::CitizenKind::Persona,
             persona_name,
         );
         airc_dir
@@ -400,8 +398,7 @@ mod tests {
         let root = tempfile::tempdir().expect("root");
         let home_root = crate::identity::citizen_path::citizen_home_path(
             root.path(),
-            crate::identity::IdentityKind::Persona,
-            None,
+            crate::identity::citizen_path::CitizenKind::Persona,
             "Kira",
         );
         let home = PersonaHome::from_root(home_root.parent().expect("parent").to_path_buf());
@@ -506,8 +503,7 @@ pub mod test_support {
     pub fn home_for(root: &std::path::Path, name: &str) -> PersonaHome {
         let airc_dir = crate::identity::citizen_path::citizen_home_path(
             root,
-            crate::identity::IdentityKind::Persona,
-            None,
+            crate::identity::citizen_path::CitizenKind::Persona,
             name,
         );
         let home = PersonaHome::from_root(airc_dir.parent().unwrap().to_path_buf());

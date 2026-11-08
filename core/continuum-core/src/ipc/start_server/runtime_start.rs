@@ -24,6 +24,10 @@ pub(super) fn initialize_and_start_runtime(
         ms = phase_started.elapsed().as_millis() as u64,
         "pre-bind phase"
     );
+    // A module whose command wiring the registry refused (a duplicate name, a constructor
+    // without its descriptor) refuses boot here, before any module initializes or any
+    // client is told the catalogue.
+    runtime.registry().check_wiring().map_err(std::io::Error::other)?;
     let phase_started = std::time::Instant::now();
     rt_handle.block_on(async {
         if let Err(e) = runtime.initialize().await {

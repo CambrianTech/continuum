@@ -2,6 +2,7 @@
 //! holds the contract and the logic once; its `unix.rs` and `windows.rs` hold only the calls that
 //! differ, chosen once at the module boundary. Nothing without an OS difference belongs here, and
 //! no code outside this crate branches on the OS for these capabilities.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod confine;
 pub mod durable;

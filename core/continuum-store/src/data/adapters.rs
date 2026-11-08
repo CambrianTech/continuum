@@ -69,7 +69,7 @@ impl DataState {
             );
             let mut sqlite = SqliteAdapter::new();
             sqlite.initialize(config).await?;
-            ensure_declared_indexes(&sqlite, handle).await;
+            ensure_declared_indexes(&sqlite, handle).await?;
             Arc::new(sqlite)
         };
 
@@ -89,8 +89,9 @@ impl DataState {
 /// An index is performance, never correctness: one the database refuses is a loud
 /// probe naming the entity, the index and the error, counted in the store's report,
 /// and the store opens without it (Cormac's review of #5466).
-async fn ensure_declared_indexes(sqlite: &SqliteAdapter, handle: &str) {
+async fn ensure_declared_indexes(sqlite: &SqliteAdapter, handle: &str) -> Result<(), String> {
     let schemas = crate::entity_schemas::get_entity_schemas()
+        .map_err(|e| e.to_string())?
         .values()
         .map(crate::entity_schemas::to_collection_schema)
         .collect();
@@ -123,6 +124,7 @@ async fn ensure_declared_indexes(sqlite: &SqliteAdapter, handle: &str) {
         failed = pass.failed.len() as u64,
         "declared entity indexes at store open"
     );
+    Ok(())
 }
 
 /// SQLite through the kernel ORM is the only store. A `postgres://` string
