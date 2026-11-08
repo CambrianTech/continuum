@@ -2,6 +2,10 @@
 //! (MODULE-ARCHITECTURE.md section 9.2), cut out of continuum-core (card 2a69e6ba). It builds on the
 //! mind and everything below it; core re-exports each module under its old path.
 
+// Production code holds no unwrap, expect or panic (measured 0, 2026-11-08, campaign 522419e5):
+// a fault is a typed error. Tests may use them.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 pub use continuum_mind::*;
 
 pub mod modules {
