@@ -35,9 +35,12 @@ pub(super) fn stands_up_for(
     weights_here && !live.is_some_and(|rec| crate::model_registry::artifacts::names_the_same_base(&rec.model, base))
 }
 
-/// Refuse to stand up a lane for `base` once a live lane serves it: the resident trainer takes
-/// it, so the dispatch retries (`Transient`) and selection picks the resident lane, rather than
-/// loading a second copy beside it.
+/// Refuse to stand up a lane for `base` once a live lane serves it: the resident trainer takes it,
+/// never a second copy loaded beside it. Reached before any job, process or file exists, so it is
+/// `TrainerUnavailable`: the attempt settles as not created and the trigger retries on its next
+/// fill, where selection takes the resident trainer. As `Transient` it left the attempt admitted
+/// and the bucket in RecoveryRequired, answered "unknown" every tick and never re-dispatched (Kimi's
+/// 27B on the Windows node, 2026-11-08: 16 buckets wedged, 48 examples pending).
 pub(super) fn refuse_if_resident(
     base: &str,
     live: Option<&crate::inference::lane_registry::LaneRecord>,
@@ -45,7 +48,7 @@ pub(super) fn refuse_if_resident(
     if stands_up_for(base, live, true) {
         return Ok(());
     }
-    Err(FineTuningError::Transient(format!(
+    Err(FineTuningError::TrainerUnavailable(format!(
         "a live lane now serves {base}: its resident trainer takes the run, not a second copy"
     )))
 }
@@ -167,13 +170,15 @@ mod tests {
     }
 
     // what this catches (Codex on #5269): a base that became resident between selection and the
-    // spawn (the headroom wait can be long) loaded a second time. The recheck refuses it as
-    // Transient, so the retried dispatch selects the resident trainer.
+    // spawn (the headroom wait can be long) loaded a second time. And (card 67feb736) the refusal
+    // as Transient wedged the bucket: it must be TrainerUnavailable, which settles the attempt as
+    // not created and is retried, so the next selection takes the resident trainer.
     #[test]
-    fn a_base_that_became_resident_before_the_spawn_is_refused_as_transient() {
+    fn a_base_that_became_resident_before_the_spawn_is_refused_as_not_created() {
         let small = "continuum-ai/qwen2.5-coder-0.5b-instruct-GGUF";
         assert!(refuse_if_resident(small, None).is_ok());
         assert!(refuse_if_resident(small, Some(&live("continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF"))).is_ok());
-        assert!(matches!(refuse_if_resident(small, Some(&live(small))), Err(FineTuningError::Transient(_))));
+        let refused = refuse_if_resident(small, Some(&live(small)));
+        assert!(matches!(refused, Err(FineTuningError::TrainerUnavailable(_))), "{refused:?}");
     }
 }
