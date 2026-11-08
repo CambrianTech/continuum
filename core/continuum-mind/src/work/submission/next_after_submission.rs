@@ -103,9 +103,12 @@ impl ActionCommand for WorkSubmit {
             // submit refusals, 3 claim refusals, 29 of 42 board calls failed). The
             // owner's submit stages the same way her claim does; staging is the
             // substrate's job whenever she needs her hands, never a verb she must find.
-            let checkout = match crate::persona::card_checkout::checkout_path_for(&runtime.persona_id(), card) {
-                Some(path) => path,
-                None => stage_for_owner_on_demand(&runtime, card).await?,
+            // A checkout without allocation evidence is staged too: airc re-allocates it or refuses
+            // naming what it holds (card 7f824214), never submitted from as found.
+            let found = crate::persona::card_checkout::checkout_path_for(&runtime.persona_id(), card);
+            let checkout = match found {
+                Some(path) if !crate::persona::card_checkout::lacks_allocation_evidence(&path).await => path,
+                _ => stage_for_owner_on_demand(&runtime, card).await?,
             };
             let listed = p.submodules.as_deref().unwrap_or_default(); // unwrap_or_default: none listed is an empty list
             let d = derive_submission(self.benchmark.as_ref(), &checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo), listed).await?;

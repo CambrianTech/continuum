@@ -107,7 +107,7 @@ pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard)
         {
             return;
         }
-    } else if checkout_present(&existing) {
+    } else if checkout_present(&existing) && !lacks_allocation_evidence(&existing).await {
         return;
     }
     let key = (peer, card.card_id.as_uuid());
@@ -133,6 +133,20 @@ pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard)
     }
 }
 
+/// A card checkout without readable allocation evidence: made before airc recorded one, or its
+/// record unreadable. Only airc's stager (`ensure_card_clone`) may decide what becomes of it: it
+/// re-allocates one that holds nothing unpublished and refuses one that does, naming what it holds
+/// (airc #1668). Handing it back as-is kept Kimi on a weeks-old clone that could never submit
+/// (the Windows node, 2026-11-08). A checkout with its evidence is reused as before. Local git
+/// only, off the runtime threads.
+pub async fn lacks_allocation_evidence(checkout: &Path) -> bool {
+    let checkout = checkout.to_path_buf();
+    !matches!(
+        tokio::task::spawn_blocking(move || airc_lib::work_worktree::allocation_evidence(&checkout)).await,
+        Ok(Ok(Some(_)))
+    )
+}
+
 /// The gym artifact root, shared by claim staging, hands binding and grading.
 pub fn gym_workspace(home: &Path, peer: Uuid) -> PathBuf {
     crate::identity::citizen_peer_dir(home, crate::identity::PeerId::from_uuid(peer))
@@ -141,7 +155,50 @@ pub fn gym_workspace(home: &Path, peer: Uuid) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::checkout_present;
+    use super::{checkout_present, lacks_allocation_evidence};
+
+    // what this catches (card 7f824214, Codex on #5873): a held turn and a submit handed an
+    // existing checkout back as-is, so a clone with no allocation evidence never reached airc's
+    // re-allocation. Only a checkout carrying evidence that decodes against its creation anchor is
+    // treated as evidenced; one with none, or a record whose anchor is gone, goes to the stager.
+    #[tokio::test]
+    async fn only_a_checkout_with_its_allocation_evidence_skips_the_stager() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let git = |args: &[&str], input: Option<&[u8]>| -> Result<String, Box<dyn std::error::Error>> {
+            use std::io::Write;
+            let mut child = airc_core::process::background("git")
+                .current_dir(root.path())
+                .args(args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+                stdin.write_all(bytes)?;
+            }
+            let output = child.wait_with_output()?;
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            Ok(String::from_utf8(output.stdout)?.trim().to_string())
+        };
+        git(&["init", "--quiet"], None)?;
+        git(&["-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "--quiet", "--allow-empty", "-m", "base"], None)?;
+        let base = git(&["rev-parse", "HEAD"], None)?;
+        assert!(lacks_allocation_evidence(root.path()).await, "a clone made before evidence existed");
+        let evidence = airc_lib::work_worktree::AllocationEvidence {
+            repo: airc_work::RepoId::new("o/r").map_err(|e| e.to_string())?,
+            requested_branch: "7f824214/work".into(),
+            integration_base: None,
+            start_ref: "origin/canary".into(),
+            creation_sha: base.clone(),
+        };
+        let blob = git(&["hash-object", "-w", "--stdin"], Some(&serde_json::to_vec(&evidence)?))?;
+        git(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base], None)?;
+        git(&["update-ref", airc_lib::work_worktree::ALLOCATION_REF, &blob], None)?;
+        assert!(!lacks_allocation_evidence(root.path()).await, "evidence that decodes against its anchor");
+        git(&["update-ref", "-d", airc_lib::work_worktree::CREATION_BASE_REF], None)?;
+        assert!(lacks_allocation_evidence(root.path()).await, "a record whose anchor is gone is not evidence");
+        Ok(())
+    }
 
     #[test]
     fn interrupted_clone_is_not_a_hands_workspace() -> Result<(), Box<dyn std::error::Error>> {
