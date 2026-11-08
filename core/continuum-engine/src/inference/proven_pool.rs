@@ -28,7 +28,7 @@ pub struct PoolContract {
     pub cache_type: String,
     pub flash_attn: bool,
     /// The backend the KV plan was decided against.
-    pub backend: String,
+    pub backend: crate::inference::kv_cache_plan::ServingBackend,
 }
 
 impl PoolContract {
@@ -40,7 +40,7 @@ impl PoolContract {
             engine: next_engine_build(),
             cache_type: kv.cache_type,
             flash_attn: kv.flash_attn,
-            backend: kv.backend.label().to_string(),
+            backend: kv.backend,
         }
     }
 
@@ -67,12 +67,9 @@ struct Proven {
 }
 
 impl Proven {
-    /// The largest pool `model` ran at under `contract`; 0 under any other or before any run.
-    fn of(&self, model: &str, contract: &PoolContract) -> u64 {
-        match &self.contract == contract {
-            true => self.pools.get(model).copied().unwrap_or(0), // unwrap_or: a model not yet run has proven nothing
-            false => 0,
-        }
+    /// The largest pool `model` ran at under `contract`; `None` under any other or before any run.
+    fn of(&self, model: &str, contract: &PoolContract) -> Option<u64> {
+        (&self.contract == contract).then(|| self.pools.get(model).copied()).flatten()
     }
 
     /// Record `pool` for `model` under `contract`, raising its proof; a new contract starts empty.
@@ -111,8 +108,8 @@ static PROVEN: LazyLock<parking_lot::Mutex<Proven>> = LazyLock::new(|| {
     parking_lot::Mutex::new(Proven { contract, pools })
 });
 
-/// The largest pool `model` ran at under the contract the next launch serves on; 0 when none.
-pub fn proven(model: &str) -> u64 {
+/// The largest pool `model` ran at under the contract the next launch serves on; `None` when none.
+pub fn proven(model: &str) -> Option<u64> {
     PROVEN.lock().of(model, &PoolContract::live())
 }
 
@@ -134,7 +131,7 @@ mod tests {
     use super::*;
 
     fn contract(engine: &str, cache_type: &str) -> PoolContract {
-        PoolContract { engine: Some(engine.into()), cache_type: cache_type.into(), flash_attn: false, backend: "cpu".into() }
+        PoolContract { engine: Some(engine.into()), cache_type: cache_type.into(), flash_attn: false, backend: crate::inference::kv_cache_plan::ServingBackend::Cpu }
     }
 
     // what this catches: a core restart forgetting the pool a model ran at (Fable on #5835: a
@@ -162,13 +159,14 @@ mod tests {
         let mut proven = Proven { contract: old.clone(), pools: BTreeMap::new() };
         assert!(proven.raise("m", 100_000, old.clone()));
         assert!(!proven.raise("m", 60_000, old.clone()), "a smaller healthy pool never lowers the proof");
-        assert_eq!(proven.of("m", &old), 100_000);
-        assert_eq!(proven.of("other", &old), 0);
-        for changed in [contract("def:cpu", "f16"), contract("abc:cpu", "q8_0")] {
-            assert_eq!(proven.of("m", &changed), 0, "{changed:?} inherits nothing");
+        assert_eq!(proven.of("m", &old), Some(100_000));
+        assert_eq!(proven.of("other", &old), None);
+        let other_backend = PoolContract { backend: crate::inference::kv_cache_plan::ServingBackend::Metal, ..old.clone() };
+        for changed in [contract("def:cpu", "f16"), contract("abc:cpu", "q8_0"), other_backend] {
+            assert_eq!(proven.of("m", &changed), None, "{changed:?} inherits nothing");
         }
         let new = contract("def:cpu", "f16");
         assert!(proven.raise("m", 50_000, new.clone()));
-        assert_eq!((proven.of("m", &new), proven.of("m", &old)), (50_000, 0), "a new contract starts empty");
+        assert_eq!((proven.of("m", &new), proven.of("m", &old)), (Some(50_000), None), "a new contract starts empty");
     }
 }
