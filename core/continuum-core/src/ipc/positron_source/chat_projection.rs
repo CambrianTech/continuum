@@ -1,47 +1,15 @@
 use super::*;
 
 impl ChatProjection {
-    /// Test / headless constructor: every room resolves to `"chat"`.
-    #[cfg(test)]
-    pub(super) fn new(substrate: Substrate) -> Self {
-        Self::with_purpose(substrate, crate::experience::room_purpose::default_source())
-    }
-
-    /// ONE shared purpose resolver feeds BOTH the chat view's `purpose` field and
-    /// the Experience manifest's recipe lookup — INJECTED, because the resolver
-    /// that reads a room's recipe binding needs a live airc handle the projection
-    /// has no business owning.
-    ///
-    /// It was constructed inline here as `default_source()` — "every room is a
-    /// chat room" — which meant a benchmark room spawned from a recipe still
-    /// projected as chat, with no scoreboard region, to every renderer and to the
-    /// citizen standing in it. Injection is what lets
-    /// [`crate::ipc::recipe_room_purpose`] answer instead.
-    pub(super) fn with_purpose(
-        substrate: Substrate,
-        purpose_source: crate::experience::room_purpose::SharedRoomPurpose,
-    ) -> Self {
-        Self::with_rooms(substrate, purpose_source, None)
-    }
-
-    /// As [`Self::with_purpose`], plus the per-room stores every per-room envelope
-    /// is mirrored into (#408). Experiences resolve from the EMBEDDED recipe set
-    /// only — the right floor for tests and headless fixtures. Production goes
-    /// through [`Self::with_experience`] so on-disk authored recipes resolve too
-    /// (#432).
-    pub(super) fn with_rooms(
-        substrate: Substrate,
-        purpose_source: crate::experience::room_purpose::SharedRoomPurpose,
-        rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
-    ) -> Self {
-        let experience_source = RecipeExperienceSource::builtins(purpose_source.clone());
-        Self::with_experience(substrate, purpose_source, rooms, experience_source)
-    }
-
-    /// As [`Self::with_rooms`], with the experience source INJECTED (#432).
-    /// `spawn` builds it via `builtins_with_overlay` so a recipe authored on
-    /// disk projects without recompiling — the module's own "new experience is
-    /// a new recipe entry, zero code" promise, finally true in production.
+    /// The projection over `substrate`, with the room purpose resolver, the per-room stores
+    /// every per-room envelope is mirrored into (#408), and the experience source all
+    /// INJECTED. ONE shared purpose resolver feeds BOTH the chat view's `purpose` field and
+    /// the Experience manifest's recipe lookup: the resolver that reads a room's recipe
+    /// binding needs a live airc handle the projection has no business owning, and
+    /// injection is what lets [`crate::ipc::recipe_room_purpose`] answer (an inline
+    /// `default_source()` once projected a recipe-spawned benchmark room as chat).
+    /// `spawn` builds the source via `builtins_with_overlay` so a recipe authored on
+    /// disk projects without recompiling (#432); the test constructors live in `tests.rs`.
     pub(super) fn with_experience(
         substrate: Substrate,
         purpose_source: crate::experience::room_purpose::SharedRoomPurpose,
@@ -518,7 +486,7 @@ pub fn spawn(
     seed: Option<(Arc<crate::runtime::CommandExecutor>, Uuid)>,
     purpose: crate::experience::room_purpose::SharedRoomPurpose,
     rooms: Option<Arc<continuum_positron::scoping::PerRoomSubstrates>>,
-) {
+) -> Result<(), crate::experience::source::RecipeLoadError> {
     let mut rx = bus.receiver();
     // Demand the current roster now (#118): the presence emitter dedups and
     // may have already fired for a stable roster before this projection
@@ -549,7 +517,9 @@ pub fn spawn(
                  serving EMBEDDED recipes only until the named file is fixed \
                  or removed (#432)"
             );
-            RecipeExperienceSource::builtins(purpose.clone())
+            // The embedded floor itself failing to parse is a build defect that
+            // `every_embedded_recipe_parses` fails on first; the caller gets it typed.
+            RecipeExperienceSource::builtins(purpose.clone())?
         }
     };
     rt.spawn(async move {
@@ -585,4 +555,5 @@ pub fn spawn(
             }
         }
     });
+    Ok(())
 }

@@ -3608,6 +3608,7 @@ name = "continuum-positron"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "parking_lot",
  "positron-core",
  "serde",
  "serde_json",
@@ -3701,6 +3702,7 @@ dependencies = [
  "chrono",
  "continuum-base",
  "continuum-engine",
+ "continuum-host",
  "continuum-kernel",
  "continuum-process",
  "dashmap",
@@ -3709,7 +3711,6 @@ dependencies = [
  "libc",
  "once_cell",
  "parking_lot",
- "regex",
  "serde",
  "serde_json",
  "sysinfo",
@@ -7143,6 +7144,7 @@ dependencies = [
  "image",
  "livekit",
  "livekit-api",
+ "parking_lot",
  "serde",
  "serde_json",
  "tokio",

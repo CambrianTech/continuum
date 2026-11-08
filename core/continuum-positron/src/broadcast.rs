@@ -69,7 +69,8 @@
 //! watch fan-out) is testable on its own.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use positron_core::wire::StateEnvelope;
 use tokio::sync::watch;
@@ -117,7 +118,7 @@ impl Broadcast {
     /// bus does not block on consumer presence.
     pub fn send(&self, envelope: Arc<StateEnvelope>) {
         let kind = envelope.kind.clone();
-        let mut by_kind = self.by_kind.lock().expect("Broadcast mutex poisoned");
+        let mut by_kind = self.by_kind.lock();
         match by_kind.get(&kind) {
             Some(sender) => {
                 let _ = sender.send_replace(Some(envelope));
@@ -152,7 +153,7 @@ impl Broadcast {
     /// cached state — correct silence per `[[no-fallbacks-ever]]`);
     /// this method handles the live edge.
     pub fn subscribe(&self, kind: &str) -> watch::Receiver<Option<Arc<StateEnvelope>>> {
-        let mut by_kind = self.by_kind.lock().expect("Broadcast mutex poisoned");
+        let mut by_kind = self.by_kind.lock();
         match by_kind.get(kind) {
             Some(sender) => sender.subscribe(),
             None => {
@@ -168,7 +169,7 @@ impl Broadcast {
     /// has lazy-init'd a cold-start placeholder). Used by tests; not
     /// part of the hot path.
     pub fn kinds_active(&self) -> usize {
-        self.by_kind.lock().expect("Broadcast mutex poisoned").len()
+        self.by_kind.lock().len()
     }
 }
 

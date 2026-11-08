@@ -1,4 +1,5 @@
 //! Pure tool exchange syntax and shared wire types. No runtime, model, or executor dependency.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;

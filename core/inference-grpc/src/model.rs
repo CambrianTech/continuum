@@ -34,9 +34,10 @@ pub struct ModelState {
 }
 
 impl ModelState {
-    pub fn clear_cache(&mut self) {
+    pub fn clear_cache(&mut self) -> Result<(), String> {
         self.cache = Cache::new(true, self.dtype, &self.config, &self.device)
-            .expect("Failed to recreate cache");
+            .map_err(|e| format!("Failed to recreate cache: {e}"))?;
+        Ok(())
     }
 }
 
@@ -104,19 +105,17 @@ pub fn generate_text(
         return Err("Empty prompt".to_string());
     }
 
-    state.clear_cache();
+    state.clear_cache()?;
 
     let seed = rand::thread_rng().gen::<u64>();
     let mut logits_processor = LogitsProcessor::new(seed, Some(temperature), None);
 
     let mut all_tokens = prompt_tokens.clone();
 
+    // The first pass feeds the whole prompt; each later pass feeds only the token the
+    // previous pass sampled.
+    let mut input_tokens = all_tokens.clone();
     for i in 0..max_tokens {
-        let input_tokens = if i == 0 {
-            all_tokens.clone()
-        } else {
-            vec![*all_tokens.last().unwrap()]
-        };
 
         let input = Tensor::new(&input_tokens[..], &state.device)
             .map_err(|e| format!("Tensor creation failed: {e}"))?
@@ -182,6 +181,7 @@ pub fn generate_text(
         }
 
         all_tokens.push(next_token);
+        input_tokens = vec![next_token];
     }
 
     // Final GPU sync to ensure all work is complete before returning

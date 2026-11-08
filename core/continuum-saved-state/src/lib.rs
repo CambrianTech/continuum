@@ -57,7 +57,7 @@ mod memory;
 mod provenance;
 mod store;
 
-#[cfg(any(test, feature = "test-fixtures"))]
+// Gated `cfg(any(test, feature = "test-fixtures"))` by its own inner attribute.
 pub mod round_trip;
 
 pub use kind::{adopt_bare, Key, Medium, OwnedFile, Rebuildable, Retention, SavedState, Singleton};

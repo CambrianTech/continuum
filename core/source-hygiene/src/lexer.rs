@@ -33,6 +33,10 @@ pub mod tokens;
 /// build). Code under either is test code to these scans; the kernel cut moved its fixtures
 /// from the first spelling to the second so core's tests can reach them across the crate.
 const TEST_GATES: &[&str] = &["#[cfg(test)]", "#[cfg(any(test, feature = \"test-fixtures\"))]"];
+/// The same two gates as inner attributes: a file that opens with one is test code throughout,
+/// whether it is a test module moved out of its owner or a fixture module exported to
+/// dependents' tests (`saved-state`'s `round_trip.rs`, gated before at its `mod` line only).
+const WHOLE_FILE_GATES: &[&str] = &["#![cfg(test)]", "#![cfg(any(test, feature = \"test-fixtures\"))]"];
 
 pub fn production_half(src: &str) -> String {
     let lines: Vec<&str> = src.lines().collect();
@@ -41,9 +45,9 @@ pub fn production_half(src: &str) -> String {
     let mut i = 0;
     while i < lines.len() {
         let code = split_code_and_comment(lines[i]).0;
-        if code.trim_start().starts_with("#![cfg(test)]") {
+        if WHOLE_FILE_GATES.iter().any(|gate| code.trim_start().starts_with(gate)) {
             gated = true;
-            break; // the whole file from here is a test module moved out of its owner
+            break; // the whole file from here is a test module or a test fixture
         }
         let Some(gate) = TEST_GATES.iter().find(|gate| code.starts_with(**gate)) else {
             out.push(lines[i]);
@@ -639,7 +643,9 @@ mod tests {
             assert_eq!(projected.lines().count(), raw.lines().count());
         }
 
-
-
+        // A fixture file gated as a whole by the test-fixtures inner attribute is test code,
+        // like one gated by `#![cfg(test)]`.
+        let fixture = "//! fixtures\n#![cfg(any(test, feature = \"test-fixtures\"))]\nfn helper() { x.unwrap(); }\n";
+        assert_eq!(production_half(fixture), "//! fixtures");
     }
 }

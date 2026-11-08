@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 use log::info;
 /**
  * Inference gRPC Server with Candle LLM Backend

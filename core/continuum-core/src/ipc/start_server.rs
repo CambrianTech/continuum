@@ -196,7 +196,8 @@ pub fn start_server(
             &airc_interceptor_cell,
             &rt_handle,
             &mut stretch_mark,
-        ));
+        )
+        .map_err(std::io::Error::other)?);
     } else {
         // A.2: by this point the mode-driven gate above has already
         // returned `Err` if persona hosting was required and discovery
@@ -284,7 +285,8 @@ pub fn start_server(
         &call_plane.voice_service_for_view,
         &node_presence_deps,
         &persona_bootstrap_room_name,
-    );
+    )
+    .map_err(std::io::Error::other)?;
     memory_guard::spawn_memory_guard(&state);
 
     #[cfg(unix)]

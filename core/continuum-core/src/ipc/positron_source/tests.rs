@@ -2,6 +2,25 @@
     use super::*;
     use serde_json::json;
 
+    /// Test / headless constructors. Experiences resolve from the EMBEDDED recipe set only,
+    /// the right floor for tests; production goes through `spawn` (#432).
+    impl ChatProjection {
+        /// Every room resolves to `"chat"`.
+        fn new(substrate: Substrate) -> Self {
+            Self::with_rooms(substrate, crate::experience::room_purpose::default_source(), None)
+        }
+
+        fn with_rooms(
+            substrate: Substrate,
+            purpose_source: crate::experience::room_purpose::SharedRoomPurpose,
+            rooms: Option<std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>>,
+        ) -> Self {
+            let experience_source = RecipeExperienceSource::builtins(purpose_source.clone())
+                .expect("the embedded recipes parse");
+            Self::with_experience(substrate, purpose_source, rooms, experience_source)
+        }
+    }
+
     /// A `persona:act` payload — one executed tool receipt (#243).
     fn act_payload(
         room: Uuid,

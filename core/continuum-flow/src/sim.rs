@@ -137,8 +137,10 @@ pub fn run(engine: Engine, aging: Aging, jobs: &[Job], seconds: f64, dt: f64, pr
         let decoding = active.iter().filter(|t| live[t].prefill_left <= 0.0).count().max(1) as f64;
         let per_stream_decode = engine.decode_alone * decoding.powf(engine.decode_exponent) / decoding;
         let mut finished = Vec::new();
-        for t in active.iter() {
-            let l = live.get_mut(t).expect("active tickets are live"); // expect: `active` was filtered from `live`
+        // The same filter that built `active`, applied while borrowing each job mutably, so no
+        // ticket in this loop can be missing from `live`.
+        for t in running.iter() {
+            let Some(l) = live.get_mut(t).filter(|l| l.yielding_until.is_none()) else { continue };
             if l.prefill_left > 0.0 {
                 if prefilling.iter().position(|p| p == t).is_some_and(|k| k < allowed_prefill) {
                     l.prefill_left -= engine.prefill_alone / n.sqrt() * dt;

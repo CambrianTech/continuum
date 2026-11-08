@@ -66,6 +66,19 @@ pub fn install_node_experience_source(source: SharedExperienceSource) {
 
 static NODE_EXPERIENCE: std::sync::OnceLock<SharedExperienceSource> = std::sync::OnceLock::new();
 
+/// The recipe documents shipped IN the binary, by file name: the one table the embedded
+/// set is parsed from.
+const EMBEDDED_RECIPES: &[(&str, &str)] = &[
+    ("benchmark.json", include_str!("recipes/benchmark.json")),
+    ("benchmark-round.json", include_str!("recipes/benchmark-round.json")),
+    ("coursework-round.json", include_str!("recipes/coursework-round.json")),
+    ("chat.json", include_str!("recipes/chat.json")),
+    ("video-chat.json", include_str!("recipes/video-chat.json")),
+    ("profile.json", include_str!("recipes/profile.json")),
+    ("project.json", include_str!("recipes/project.json")),
+    ("board-triage.json", include_str!("recipes/board-triage.json")),
+];
+
 /// What can go wrong loading authored recipes off disk. Every variant names the
 /// FILE, because the person debugging is the person who just wrote that file and
 /// the only useful answer is which one and why.
@@ -88,6 +101,16 @@ pub enum RecipeLoadError {
         path: std::path::PathBuf,
         source: serde_json::Error,
     },
+    /// A recipe shipped IN the binary is not a valid [`ExperienceRecipe`]: a build defect.
+    /// `every_embedded_recipe_parses` fails first, so a build that reaches a node never
+    /// returns this; the runtime path still says it typed instead of panicking.
+    Embedded {
+        file: &'static str,
+        source: serde_json::Error,
+    },
+    /// A [`shipped`] handle names no embedded recipe: a build defect, pinned by
+    /// `every_shipped_constant_resolves`.
+    ShippedMissing { id: RecipeId },
 }
 
 impl std::fmt::Display for RecipeLoadError {
@@ -108,6 +131,10 @@ impl std::fmt::Display for RecipeLoadError {
                 "recipe {} is not a valid experience recipe: {source}",
                 path.display()
             ),
+            Self::Embedded { file, source } => {
+                write!(f, "embedded recipe {file} is not a valid experience recipe: {source}")
+            }
+            Self::ShippedMissing { id } => write!(f, "no embedded recipe has the shipped id {id}"),
         }
     }
 }
@@ -116,7 +143,8 @@ impl std::error::Error for RecipeLoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ReadDir { source, .. } | Self::Read { source, .. } => Some(source),
-            Self::Parse { source, .. } => Some(source),
+            Self::Parse { source, .. } | Self::Embedded { source, .. } => Some(source),
+            Self::ShippedMissing { .. } => None,
         }
     }
 }
@@ -222,10 +250,10 @@ impl RecipeExperienceSource {
     }
 
     /// The built-in experiences shipped with the core, authored as embedded recipe
-    /// JSON (`recipes/*.json`). Fails loud if an embedded recipe is malformed — that
-    /// is a build-time authoring bug, pinned by the tests.
-    pub fn builtins(purpose: SharedRoomPurpose) -> Self {
-        Self::new(purpose, Self::embedded())
+    /// JSON (`recipes/*.json`). A malformed embedded recipe is a build-time authoring
+    /// bug, pinned by the tests, and returned typed here.
+    pub fn builtins(purpose: SharedRoomPurpose) -> Result<Self, RecipeLoadError> {
+        Ok(Self::new(purpose, Self::embedded()?))
     }
 
     /// Every purpose the SHIPPED recipe set declares. Derived from the SAME
@@ -233,8 +261,8 @@ impl RecipeExperienceSource {
     /// and the embedded resolution set cannot drift. Production validation
     /// goes through [`Self::known_purposes`], which is this PLUS the disk
     /// overlay — the same union [`Self::builtins_with_overlay`] resolves.
-    pub fn shipped_purposes() -> Vec<String> {
-        Self::embedded().map(|r| r.purpose).collect()
+    pub fn shipped_purposes() -> Result<Vec<String>, RecipeLoadError> {
+        Ok(Self::embedded()?.into_iter().map(|r| r.purpose).collect())
     }
 
     /// The ONE directory production overlays recipes from:
@@ -258,7 +286,7 @@ impl RecipeExperienceSource {
         dir: &std::path::Path,
     ) -> Result<Vec<ExperienceRecipe>, RecipeLoadError> {
         let overlay = Self::load_dir(dir)?;
-        Ok(Self::embedded().chain(overlay).collect())
+        Ok(Self::embedded()?.into_iter().chain(overlay).collect())
     }
 
     /// The node's RESIDENT roles — the roster as recipe data (#430). Read from
@@ -282,7 +310,7 @@ impl RecipeExperienceSource {
         dir: &std::path::Path,
     ) -> Result<Vec<crate::experience::recipe::CitizenRecipe>, RecipeLoadError> {
         let overlay = Self::load_dir(dir)?;
-        Ok(Self::resident_citizens_from(Self::embedded().chain(overlay)))
+        Self::resident_citizens_from(Self::embedded()?.into_iter().chain(overlay))
     }
 
     /// [`Self::resident_citizens`] over the EMBEDDED set alone — the same infallible
@@ -296,66 +324,67 @@ impl RecipeExperienceSource {
         dir: &std::path::Path,
     ) -> Result<Vec<crate::experience::recipe::CitizenRecipe>, RecipeLoadError> {
         let overlay = Self::load_dir(dir)?;
-        Ok(Self::embedded().chain(overlay).flat_map(|r| r.citizens).collect())
+        Ok(Self::embedded()?.into_iter().chain(overlay).flat_map(|r| r.citizens).collect())
     }
 
-    pub fn grid_citizens_embedded() -> Vec<crate::experience::recipe::CitizenRecipe> {
-        Self::embedded().flat_map(|r| r.citizens).collect()
+    pub fn grid_citizens_embedded() -> Result<Vec<crate::experience::recipe::CitizenRecipe>, RecipeLoadError> {
+        Ok(Self::embedded()?.into_iter().flat_map(|r| r.citizens).collect())
     }
 
-    pub fn resident_citizens_embedded() -> Vec<crate::experience::recipe::CitizenRecipe> {
-        Self::resident_citizens_from(Self::embedded())
+    pub fn resident_citizens_embedded() -> Result<Vec<crate::experience::recipe::CitizenRecipe>, RecipeLoadError> {
+        Self::resident_citizens_from(Self::embedded()?.into_iter())
     }
 
-    /// [`Self::resident_roles`] over the EMBEDDED set alone — infallible, for
-    /// tests/fixtures and as the documented loud-refusal arm when the overlay
-    /// directory fails to load (same shape as the positron projection's #432
-    /// refusal: serve the shipped floor, never go dark over one bad file).
-    pub fn resident_roles_embedded() -> Vec<crate::experience::role::RoleId> {
-        Self::resident_citizens_embedded().into_iter().map(|c| c.role).collect()
+    /// [`Self::resident_roles`] over the EMBEDDED set alone, for tests/fixtures and as
+    /// the documented loud-refusal arm when the overlay directory fails to load (same
+    /// shape as the positron projection's #432 refusal: serve the shipped floor, never
+    /// go dark over one bad file).
+    pub fn resident_roles_embedded() -> Result<Vec<crate::experience::role::RoleId>, RecipeLoadError> {
+        Ok(Self::resident_citizens_embedded()?.into_iter().map(|c| c.role).collect())
     }
 
     fn resident_citizens_from(
         recipes: impl Iterator<Item = ExperienceRecipe>,
-    ) -> Vec<crate::experience::recipe::CitizenRecipe> {
-        let default_purpose = Self::shipped_purpose(shipped::CHAT)
-            .expect("embedded chat recipe must exist — build-time authoring bug"); // JUSTIFIED: embedded constant, build-time authoring property
-        recipes
+    ) -> Result<Vec<crate::experience::recipe::CitizenRecipe>, RecipeLoadError> {
+        let default_purpose = Self::shipped_purpose(shipped::CHAT)?;
+        Ok(recipes
             .filter(|r| r.purpose == default_purpose)
             .last()
             .map(|r| r.citizens)
-            .unwrap_or_default()
+            .unwrap_or_default())
+    }
+
+    /// The shipped recipe a [`shipped`] handle names. [`RecipeLoadError::ShippedMissing`]
+    /// only if the handle names no embedded recipe, a build-time authoring bug the
+    /// shipped-constants test pins.
+    pub fn shipped(id: RecipeId) -> Result<ExperienceRecipe, RecipeLoadError> {
+        Self::embedded()?
+            .into_iter()
+            .find(|r| r.id == id)
+            .ok_or(RecipeLoadError::ShippedMissing { id })
     }
 
     /// The declared purpose of a shipped recipe, by its [`shipped`] handle.
     /// Lets core call sites bind rooms by CONSTANT (`shipped::BENCHMARK_HARD_RS`)
     /// while the purpose string stays authored in exactly one place — the
-    /// recipe JSON. `None` only if the handle names no embedded recipe, which
-    /// is a build-time authoring bug the shipped-constants test pins.
-    pub fn shipped_purpose(id: RecipeId) -> Option<String> {
-        Self::embedded().find(|r| r.id == id).map(|r| r.purpose)
+    /// recipe JSON.
+    pub fn shipped_purpose(id: RecipeId) -> Result<String, RecipeLoadError> {
+        Ok(Self::shipped(id)?.purpose)
     }
 
     /// The embedded seed set. These ship IN the binary so a fresh clone has working
     /// experiences with zero files on disk — the same self-provisioning contract the
     /// rest of the substrate holds. They are a FLOOR, not the catalogue: anything on
-    /// disk overlays them via [`Self::builtins_with_overlay`].
-    fn embedded() -> impl Iterator<Item = ExperienceRecipe> {
-        [
-            include_str!("recipes/benchmark.json"),
-            include_str!("recipes/benchmark-round.json"),
-            include_str!("recipes/coursework-round.json"),
-            include_str!("recipes/chat.json"),
-            include_str!("recipes/video-chat.json"),
-            include_str!("recipes/profile.json"),
-            include_str!("recipes/project.json"),
-            include_str!("recipes/board-triage.json"),
-        ]
-        .into_iter()
-        .map(|json| {
-            ExperienceRecipe::from_json(json)
-                .expect("embedded experience recipe must be valid JSON") // JUSTIFIED: embedded constant; validity is a build-time authoring property covered by recipe tests
-        })
+    /// disk overlays them via [`Self::builtins_with_overlay`]. Every document is
+    /// parsed by `every_embedded_recipe_parses` at test time, so a malformed one never
+    /// ships; this path returns the same failure typed.
+    fn embedded() -> Result<Vec<ExperienceRecipe>, RecipeLoadError> {
+        EMBEDDED_RECIPES
+            .iter()
+            .map(|(file, json)| {
+                ExperienceRecipe::from_json(json).map_err(|source| RecipeLoadError::Embedded { file, source })
+            })
+            .collect()
     }
 
     /// The embedded seed set OVERLAID with every recipe authored on disk under
@@ -387,10 +416,7 @@ impl RecipeExperienceSource {
         dir: &std::path::Path,
     ) -> Result<Self, RecipeLoadError> {
         let overlay = Self::load_dir(dir)?;
-        Ok(Self::new(
-            purpose,
-            Self::embedded().chain(overlay.into_iter()),
-        ))
+        Ok(Self::new(purpose, Self::embedded()?.into_iter().chain(overlay)))
     }
 
     /// Read every `*.json` recipe in `dir`, in a stable (sorted) order so two nodes
@@ -450,6 +476,27 @@ impl ExperienceSource for RecipeExperienceSource {
 mod tests {
     use super::test_support::FixedPurpose;
 
+    fn embedded() -> Vec<ExperienceRecipe> {
+        RecipeExperienceSource::embedded().expect("the embedded recipes parse")
+    }
+
+    fn builtins(purpose: SharedRoomPurpose) -> RecipeExperienceSource {
+        RecipeExperienceSource::builtins(purpose).expect("the embedded recipes parse")
+    }
+
+    // what this catches: a recipe document shipped in the binary that does not parse. The
+    // runtime returns `RecipeLoadError::Embedded` for it; this test is where that failure is
+    // meant to surface, naming the file, before any build reaches a node.
+    #[test]
+    fn every_embedded_recipe_parses() {
+        for (file, json) in EMBEDDED_RECIPES {
+            if let Err(e) = ExperienceRecipe::from_json(json) {
+                panic!("embedded recipe {file} does not parse: {e}");
+            }
+        }
+        assert_eq!(embedded().len(), EMBEDDED_RECIPES.len());
+    }
+
     #[test]
     fn recipe_run_resolves_a_purpose_through_the_same_registry_rooms_do() {
         // what this catches: S2 — `recipe/run` used to read a SECOND store (rows in the
@@ -457,7 +504,7 @@ mod tests {
         // resolved from the recipe files. One registry, two readers: a purpose that
         // spawns a room is the same purpose that runs a pipeline, and an unknown
         // purpose is `None`, never a fabricated recipe.
-        let source = RecipeExperienceSource::builtins(crate::experience::room_purpose::default_source());
+        let source = builtins(crate::experience::room_purpose::default_source());
         let chat = source.recipe_for_purpose("chat").expect("chat ships");
         assert_eq!(chat.purpose, "chat");
         assert!(source.recipe_for_purpose("campaign/never-authored").is_none());
@@ -476,7 +523,7 @@ mod tests {
         const ROUND_VERBS: &[&str] = &[
             "benchmark/import", "coursework/import", "work/create", "activity/invite", "chat/send",
         ];
-        for recipe in RecipeExperienceSource::embedded() {
+        for recipe in embedded() {
             if recipe.purpose == "benchmark/round" || recipe.purpose == "coursework/round" {
                 assert!(!recipe.pipeline.is_empty(), "the authored round declares its steps");
                 for step in &recipe.pipeline {
@@ -505,7 +552,7 @@ mod tests {
     /// `benchmark` (a purpose that never existed) look plausible for months.
     #[test]
     fn every_shipped_constant_resolves() {
-        let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("chat")));
+        let source = builtins(Arc::new(FixedPurpose("chat")));
         for id in shipped::ALL {
             assert!(
                 source.by_recipe_id(*id).is_some(),
@@ -520,11 +567,11 @@ mod tests {
     /// which is how 24 activity types were lost once already.
     #[test]
     fn shipped_ids_are_unique_and_match_their_purposes() {
-        let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("chat")));
+        let source = builtins(Arc::new(FixedPurpose("chat")));
         let ids: std::collections::HashSet<_> = source.ids().collect();
         assert_eq!(
             ids.len(),
-            RecipeExperienceSource::embedded().count(),
+            embedded().len(),
             "every shipped id is distinct — one per embedded recipe, none colliding"
         );
 
@@ -555,7 +602,7 @@ mod tests {
     /// existing room lost its experience.
     #[test]
     fn adding_identity_did_not_move_purpose_resolution() {
-        let source = RecipeExperienceSource::builtins(Arc::new(FixedPurpose("benchmark/hard-rs")));
+        let source = builtins(Arc::new(FixedPurpose("benchmark/hard-rs")));
         let exp = source
             .experience_for(Uuid::nil())
             .expect("purpose still resolves after identity was added");
@@ -572,7 +619,7 @@ mod tests {
     #[test]
     fn unknown_purpose_yields_none() {
         let purpose: SharedRoomPurpose = Arc::new(FixedPurpose("no-such-experience"));
-        let source = RecipeExperienceSource::builtins(purpose);
+        let source = builtins(purpose);
         assert!(source.experience_for(Uuid::nil()).is_none());
     }
 
@@ -583,7 +630,7 @@ mod tests {
     // being generic (e.g. someone special-cased a purpose in code), the spread
     // would break here.
     fn built(purpose: &'static str) -> Experience {
-        RecipeExperienceSource::builtins(Arc::new(FixedPurpose(purpose)))
+        builtins(Arc::new(FixedPurpose(purpose)))
             .experience_for(Uuid::nil())
             .expect("purpose resolves to a recipe")
     }
@@ -649,7 +696,7 @@ mod tests {
     fn resident_roster_is_recipe_data_and_the_overlay_replaces_it() {
         use crate::experience::role::RoleId;
         assert_eq!(
-            RecipeExperienceSource::resident_roles_embedded(),
+            RecipeExperienceSource::resident_roles_embedded().expect("the embedded recipes parse"),
             vec![RoleId::Helper],
             "the embedded chat recipe declares the shipped single-Helper floor"
         );

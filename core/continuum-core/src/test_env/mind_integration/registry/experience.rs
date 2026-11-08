@@ -20,7 +20,7 @@ use crate::routing::trust_level::TrustLevel;
 #[test]
 fn purpose_projects_to_the_recipe_manifest_with_computed_authz() {
     let purpose: SharedRoomPurpose = Arc::new(FixedPurpose("benchmark/hard-rs"));
-    let source = RecipeExperienceSource::builtins(purpose);
+    let source = RecipeExperienceSource::builtins(purpose).expect("the embedded recipes parse");
 
     let exp = source
         .experience_for(Uuid::nil())
@@ -53,7 +53,8 @@ fn observe_affordance_authz_tracks_the_real_acl() {
     let bench = benchmark_experience(
         crate::identity::PeerId::new(),
         crate::identity::PeerId::new(),
-    );
+    )
+    .expect("the embedded benchmark recipe parses");
     let observe = bench
         .affordances
         .iter()
