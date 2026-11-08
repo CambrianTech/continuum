@@ -291,7 +291,7 @@ pub async fn has_unpushed_work(root: &Path) -> bool {
 /// commits she made is the receipt that she made them. Kimi's §12 pass committed as a bare
 /// `wip(...)` and the merger had to add her trailer by hand (card e5e72485).
 pub fn wip_message(card: Uuid, node: &str, actor: Option<(Uuid, &str)>) -> String {
-    let subject = format!("wip({}): continuum act on node {node}", &card.to_string()[..8]);
+    let subject = format!("wip({card}): continuum act on node {node}");
     match actor {
         Some((peer, name)) => format!("{subject}
 
@@ -349,23 +349,13 @@ async fn commit_tree_no_hooks(
     Ok(commit)
 }
 
-/// PURE: was a failed push refused by the remote, or never delivered to it? The remote
-/// answering "no" (a non-fast-forward, a declined hook, a protected branch, a denied
-/// key) is `Rejected`; everything that reads as "could not get there" — and anything
-/// unrecognised — is `Unreachable`: the conservative reading, and both are receipted
-/// verbatim.
-pub fn classify_push_error(err: &str) -> PushFailure {
-    let e = err.to_ascii_lowercase();
-    const REJECTED: [&str; 7] = [
-        "[rejected]",
-        "[remote rejected]",
-        "non-fast-forward",
-        "pre-receive hook declined",
-        "protected branch",
-        "permission denied",
-        "authentication failed",
-    ];
-    if REJECTED.iter().any(|m| e.contains(m)) {
+/// PURE: did the remote refuse a push, read from `git push --porcelain`'s ref lines (git's machine
+/// format, one per ref, flag first): a `!` ref was rejected by the remote that answered (a
+/// non-fast-forward, a declined hook, a protected branch). A push with no rejected ref line never
+/// had the remote's verdict, so it was not delivered: the conservative reading, and both are
+/// receipted verbatim.
+pub fn classify_push_porcelain(porcelain: &str) -> PushFailure {
+    if porcelain.lines().any(|line| line.starts_with('!')) {
         PushFailure::Rejected
     } else {
         PushFailure::Unreachable
@@ -378,9 +368,19 @@ pub enum PushFailure {
     Unreachable,
 }
 
-fn is_missing_remote_ref(err: &str) -> bool {
-    let e = err.to_ascii_lowercase();
-    e.contains("couldn't find remote ref") || e.contains("could not find remote ref")
+/// `git ls-remote --exit-code` answers "no such ref" with exit 2.
+const LS_REMOTE_NO_MATCH: i32 = 2;
+
+/// Is `branch` absent from `origin`? Asked after a fetch of it failed, so the fetch's failure is
+/// told apart by git's exit code, never by its stderr: `Ok(true)` only when the remote answered
+/// and holds no such branch.
+async fn remote_branch_absent(root: &Path, branch: &str) -> Result<bool, crate::code::git_bridge::GitError> {
+    let reference = format!("refs/heads/{branch}");
+    match crate::code::git_bridge::run_git_input(root, &["ls-remote", "--exit-code", "origin", &reference], &[], None).await {
+        Ok(_) => Ok(false),
+        Err(error) if error.code == Some(LS_REMOTE_NO_MATCH) => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 // ── seam 1: the act-end sync ────────────────────────────────────────────────────────
@@ -433,10 +433,12 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
         // remote's branch first, so publication is decided against what it holds, and a
         // push that landed isn't repeated as if it hadn't
         let spec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
-        match run_git(root, &["fetch", "--no-tags", "origin", &spec]).await {
-            Ok(_) => {}
-            Err(error) if is_missing_remote_ref(&error) => {} // it never landed: the branch isn't there
-            Err(error) => return push_failure(branch, error),
+        if let Err(error) = crate::code::git_bridge::run_git_input(root, &["fetch", "--no-tags", "origin", &spec], &[], None).await {
+            match remote_branch_absent(root, &branch).await {
+                Ok(true) => {} // it never landed: the branch isn't there
+                Ok(false) => return push_failure(branch, error),
+                Err(asked) => return push_failure(branch, asked),
+            }
         }
         REMOTE_UNKNOWN.remove(root);
     }
@@ -451,7 +453,7 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
     // returns nothing here) leaves the remote unknown, and only a push that completed says what
     // the remote holds (Codex reviewer on #5037)
     REMOTE_UNKNOWN.insert(root.to_path_buf());
-    let pushed = crate::code::git_bridge::run_git_input(root, &["push", "-u", "origin", &branch], &[], None).await;
+    let pushed = crate::code::git_bridge::run_git_input(root, &["push", "--porcelain", "-u", "origin", &branch], &[], None).await;
     // only a push that answered, or one that never ran, settles what the remote holds. One git
     // refused may still have landed (the remote can take the ref and the connection fail before
     // git hears so), and one cut off or unreadable may too: the remote stays unknown, and the
@@ -462,22 +464,24 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
             PushOutcome::Ok { branch, sha, committed, pushed: true }
         }
         Err(error) => match error.end {
-            crate::code::git_bridge::GitEnd::Unknown => PushOutcome::PushInterrupted { branch, error: error.into() },
+            crate::code::git_bridge::GitEnd::Unknown | crate::code::git_bridge::GitEnd::Interrupted => PushOutcome::PushInterrupted { branch, error: error.into() },
             crate::code::git_bridge::GitEnd::NeverRan => {
                 REMOTE_UNKNOWN.remove(root);
-                push_failure(branch, error.into())
+                push_failure(branch, error)
             }
-            crate::code::git_bridge::GitEnd::Refused => push_failure(branch, error.into()),
+            crate::code::git_bridge::GitEnd::Refused => push_failure(branch, error),
         },
     }
 }
 
 /// A push-step failure, named: out of time, refused by the remote, or never delivered.
-fn push_failure(branch: String, error: String) -> PushOutcome {
-    if crate::code::git_bridge::out_of_time(&error) {
+fn push_failure(branch: String, error: crate::code::git_bridge::GitError) -> PushOutcome {
+    if error.out_of_time() {
         return PushOutcome::TimedOut;
     }
-    match classify_push_error(&error) {
+    let failure = classify_push_porcelain(&error.stdout);
+    let error = error.to_string();
+    match failure {
         PushFailure::Rejected => PushOutcome::Rejected { branch, error },
         PushFailure::Unreachable => PushOutcome::Unreachable { branch, error },
     }

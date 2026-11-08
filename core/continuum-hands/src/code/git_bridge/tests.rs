@@ -529,8 +529,8 @@
 
         // the deadline only has to land while the hook sleeps (600 s); 2 s is that margin, not a tuning
         let started = tokio::time::Instant::now();
-        let err = within(started + std::time::Duration::from_secs(2), run_git(dir.path(), &commit)).await.unwrap_err();
-        assert!(interrupted(&err) && out_of_time(&err), "a git the deadline ended is interrupted: {err}");
+        let err = within(started + std::time::Duration::from_secs(2), run_git_input(dir.path(), &commit, &[], None)).await.unwrap_err();
+        assert!(err.end == GitEnd::Interrupted && err.out_of_time(), "a git the deadline ended is interrupted: {err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(60), "the deadline ended it, not the hook");
         // regression for card 0d18171d (canary a3546a125, run 38689841317): SIGKILL to another
         // process is not synchronous, so the first check after it may still see the hook running
@@ -552,8 +552,8 @@
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
-        let err = within(tokio::time::Instant::now(), run_git(dir.path(), &["status"])).await.unwrap_err();
-        assert!(out_of_time(&err) && !interrupted(&err), "with no time left a git never starts: {err}");
+        let err = within(tokio::time::Instant::now(), run_git_input(dir.path(), &["status"], &[], None)).await.unwrap_err();
+        assert!(err.out_of_time() && err.end == GitEnd::NeverRan, "with no time left a git never starts: {err}");
 
         let _ = fs::remove_file(&hook_pid);
         let context = crate::identity::hands_context::HandsContext::fresh();

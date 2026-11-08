@@ -411,14 +411,14 @@
     // network "rejected"; the WIP subject parser is the only source of the from-node.
     #[tokio::test]
     async fn push_errors_classify_and_the_wip_subject_names_its_node() {
-        assert_eq!(classify_push_error("! [rejected] x -> x (fetch first)"), PushFailure::Rejected);
-        assert_eq!(classify_push_error("remote: error: GH006: Protected branch update failed"), PushFailure::Rejected);
-        assert_eq!(classify_push_error("fatal: Could not read from remote repository."), PushFailure::Unreachable);
-        assert_eq!(classify_push_error("ssh: Could not resolve hostname github.com"), PushFailure::Unreachable);
-        assert_eq!(classify_push_error("something new"), PushFailure::Unreachable, "unknown reads as not delivered");
+        assert_eq!(classify_push_porcelain("!\trefs/heads/x:refs/heads/x\t[rejected] (fetch first)"), PushFailure::Rejected);
+        assert_eq!(classify_push_porcelain("remote: error: GH006: Protected branch update failed"), PushFailure::Unreachable);
+        assert_eq!(classify_push_porcelain("fatal: Could not read from remote repository."), PushFailure::Unreachable);
+        assert_eq!(classify_push_porcelain("ssh: Could not resolve hostname github.com"), PushFailure::Unreachable);
+        assert_eq!(classify_push_porcelain("something new"), PushFailure::Unreachable, "unknown reads as not delivered");
         let card = Uuid::new_v4();
         assert_eq!(node_of_wip_subject(&wip_message(card, "node-a", None)).as_deref(), Some("node-a"));
-        assert!(wip_message(card, "n", None).starts_with(&format!("wip({})", &card.to_string()[..8])));
+        assert!(wip_message(card, "n", None).starts_with(&format!("wip({card})")));
         // what this catches (card e5e72485): her act commits carried no trailer, so her
         // authorship of her own work had to be added by hand. Credited, and the node still
         // reads back from the subject line.
@@ -704,4 +704,95 @@
         assert!(crate::identity::hands_gate::close(context).await.is_empty());
         drop(lock);
         forget_checkout(&root);
+    }
+
+    // What this catches: Kimi's 2026-11-08 allocation recorded a fresh canary anchor,
+    // then arrival fetched an ancient card branch and reset behind that anchor.
+    // A shallow boundary must not turn missing ancestry into permission to invalidate submission.
+    #[tokio::test]
+    async fn arrival_keeps_a_fresh_shallow_creation_anchor_reachable() {
+        let m = two_machines().await;
+        git(&m.a, &["push", "-q", "origin", &m.branch]).await;
+        git(&m.a, &["checkout", "-q", "main"]).await;
+        assert!(std::fs::write(m.a.join("new-canary.txt"), "new integration base\n").is_ok());
+        git(&m.a, &["add", "new-canary.txt"]).await;
+        git(&m.a, &["commit", "-q", "-m", "advance canary beyond old card"]).await;
+        git(&m.a, &["push", "-q", "origin", "main"]).await;
+        let fresh = m.tmp.path().join("fresh-shallow-allocation");
+        git(m.tmp.path(), &["clone", "-q", "--no-local", "--depth=1", "--branch", "main",
+            &m.origin.to_string_lossy(), &fresh.to_string_lossy()]).await;
+        identity(&fresh).await;
+        let anchor = head(&fresh).await;
+        git(&fresh, &["checkout", "-q", "-b", &m.branch]).await;
+        git(&fresh, &["update-ref", "refs/worktree/airc-creation-base", &anchor]).await;
+        assert_eq!(git(&fresh, &["rev-parse", "--is-shallow-repository"]).await.trim(), "true");
+        let outcome = arrive_over(&fresh, &m.branch, 100).await;
+        assert!(run_git(&fresh, &["merge-base", "--is-ancestor", &anchor, "HEAD"]).await.is_ok(),
+            "arrival invalidated the recorded submission anchor: {outcome:?}");
+    }
+    // What this catches: Kimi's 2026-11-08 allocation recorded a fresh canary anchor,
+    // then arrival fetched an ancient card branch and reset behind that anchor.
+    // A shallow boundary must not turn missing ancestry into permission to invalidate submission.
+    #[tokio::test]
+    async fn arrival_recovers_an_already_invalidated_shallow_creation_anchor() {
+        let m = two_machines().await;
+        git(&m.a, &["push", "-q", "origin", &m.branch]).await;
+        git(&m.a, &["checkout", "-q", "main"]).await;
+        assert!(std::fs::write(m.a.join("new-canary.txt"), "new integration base\n").is_ok());
+        git(&m.a, &["add", "new-canary.txt"]).await;
+        git(&m.a, &["commit", "-q", "-m", "advance canary beyond old card"]).await;
+        git(&m.a, &["push", "-q", "origin", "main"]).await;
+        let fresh = m.tmp.path().join("fresh-shallow-allocation");
+        git(m.tmp.path(), &["clone", "-q", "--no-local", "--depth=1", "--branch", "main",
+            &m.origin.to_string_lossy(), &fresh.to_string_lossy()]).await;
+        identity(&fresh).await;
+        let anchor = head(&fresh).await;
+        git(&fresh, &["checkout", "-q", "-b", &m.branch]).await;
+        git(&fresh, &["update-ref", "refs/worktree/airc-creation-base", &anchor]).await;
+        assert_eq!(git(&fresh, &["rev-parse", "--is-shallow-repository"]).await.trim(), "true");
+        // Reproduce the reset already observed in Kimi's reflog, then retain a local WIP.
+        git(&fresh, &["fetch", "-q", "origin", &m.branch]).await;
+        git(&fresh, &["reset", "-q", "--hard", "FETCH_HEAD"]).await;
+        assert!(std::fs::write(fresh.join("resident-work.txt"), "retain this work\n").is_ok());
+        git(&fresh, &["add", "resident-work.txt"]).await;
+        git(&fresh, &["commit", "-q", "-m", "resident WIP"]).await;
+        let work = head(&fresh).await;
+        let context = crate::identity::hands_context::HandsContext::fresh();
+        let Ok(lease) = crate::identity::hands_gate::admit(context) else { panic!("fixture hands admission") };
+        let outcome = crate::identity::hands_gate::admitted(
+            Some(std::sync::Arc::new(lease)), super::arrival::arrive_locked(&fresh, &m.branch, 101)
+        ).await;
+        let ArrivalOutcome::Realigned { stranded, .. } = &outcome else {
+            panic!("actual shallow invalidated checkout remains blocked: {outcome:?}");
+        };
+        assert_eq!(git(&fresh, &["rev-parse", stranded]).await.trim(), work);
+        assert!(run_git(&fresh, &["merge-base", "--is-ancestor", &anchor, "HEAD"]).await.is_ok(),
+            "arrival invalidated the recorded submission anchor: {outcome:?}");
+    }
+    // What this catches: stderr wording must not decide whether a branch is absent or a
+    // push was rejected. Exercise real Git's exit-2 and porcelain rejection contracts.
+    #[tokio::test]
+    async fn remote_answers_are_typed_before_their_messages_are_rendered() {
+        let m = two_machines().await;
+        assert!(matches!(remote_branch_absent(&m.a, &m.branch).await, Ok(true)));
+        git(&m.a, &["push", "-q", "origin", &m.branch]).await;
+        assert!(matches!(remote_branch_absent(&m.a, &m.branch).await, Ok(false)));
+        git(&m.b, &["fetch", "-q", "origin", &m.branch]).await;
+        git(&m.b, &["checkout", "-q", "-b", &m.branch, "FETCH_HEAD"]).await;
+        git(&m.b, &["commit", "-q", "--allow-empty", "-m", "remote work"]).await;
+        git(&m.b, &["push", "-q", "origin", &m.branch]).await;
+        git(&m.a, &["commit", "-q", "--allow-empty", "-m", "local work"]).await;
+        let Err(error) = crate::code::git_bridge::run_git_input(
+            &m.a, &["push", "--porcelain", "origin", &m.branch], &[], None,
+        ).await else { panic!("divergent push must be refused") };
+        assert_eq!(error.end, crate::code::git_bridge::GitEnd::Refused);
+        assert_eq!(classify_push_porcelain(&error.stdout), PushFailure::Rejected);
+        let Err(error) = crate::code::git_bridge::within(
+            tokio::time::Instant::now(),
+            crate::code::git_bridge::run_git_input(&m.a, &["status"], &[], None),
+        ).await else { panic!("expired admission must not run git") };
+        assert_eq!(error.end, crate::code::git_bridge::GitEnd::NeverRan);
+        assert!(error.out_of_time());
+        git(&m.a, &["remote", "set-url", "origin", &m.tmp.path().join("absent.git").to_string_lossy()]).await;
+        assert!(remote_branch_absent(&m.a, &m.branch).await.is_err(), "unreachable is not an absent branch");
     }

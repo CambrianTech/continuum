@@ -522,21 +522,10 @@ pub async fn within<F: std::future::Future>(deadline: tokio::time::Instant, work
 }
 
 /// What a git error says when its deadline ended the git mid-run: its effect is UNKNOWN (a
-/// push may have reached the remote). One phrase, defined here and read by [`interrupted`].
+/// push may have reached the remote). Rendered from [`GitEnd::Interrupted`].
 const INTERRUPTED: &str = "interrupted at its deadline: its effect is unknown";
 /// What a git error says when its deadline had already passed: it never started.
 const NOT_STARTED: &str = "not started: its deadline had passed";
-
-/// Did the deadline end this git mid-run (its effect unknown)?
-#[cfg(test)]
-pub(crate) fn interrupted(err: &str) -> bool {
-    err.contains(INTERRUPTED)
-}
-
-/// Did the deadline stop this git before it started, or end it mid-run?
-pub fn out_of_time(err: &str) -> bool {
-    err.contains(INTERRUPTED) || err.contains(NOT_STARTED)
-}
 
 /// The deadline in force on this task, if its caller set one.
 pub(crate) fn deadline() -> Option<tokio::time::Instant> {
@@ -566,9 +555,11 @@ pub enum GitEnd {
     /// It exited non-zero: git's own verdict that it failed. For a push that doesn't prove the
     /// remote is unchanged (it can take the ref and the connection fail before git hears so).
     Refused,
-    /// Its effect is unknown: its deadline ended it mid-run, it exited 0 but its input or
+    /// Its effect is unknown: it exited 0 but its input or
     /// output wasn't whole or readable, or the runner failed around it (Codex reviewer on #5037).
     Unknown,
+    /// Its deadline ended it mid-run; the remote effect is unknown.
+    Interrupted,
 }
 
 /// A git that gave no answer: how it ended, and the one rendering of why.
@@ -578,7 +569,16 @@ pub struct GitError {
     /// The exit code of a git that exited non-zero (`GitEnd::Refused`): git's own answer, which
     /// some questions are (`merge-base --is-ancestor` exits 1 for "no", above 1 for a failure).
     pub code: Option<i32>,
+    /// Machine-readable output retained for porcelain push outcomes.
+    pub stdout: String,
     message: String,
+}
+
+impl GitError {
+    /// Whether the deadline prevented or interrupted this git.
+    pub fn out_of_time(&self) -> bool {
+        matches!(self.end, GitEnd::NeverRan | GitEnd::Interrupted)
+    }
 }
 
 impl std::fmt::Display for GitError {
@@ -604,7 +604,7 @@ pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &
         Some(at) => {
             let left = at.saturating_duration_since(tokio::time::Instant::now());
             if left.is_zero() {
-                return Err(GitError { end: GitEnd::NeverRan, code: None, message: format!("git {} {NOT_STARTED}", args.join(" ")) });
+                return Err(GitError { end: GitEnd::NeverRan, code: None, stdout: String::new(), message: format!("git {} {NOT_STARTED}", args.join(" ")) });
             }
             Some(left)
         }
@@ -655,7 +655,7 @@ pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &
         .await
         // the runner's errors aren't all before the spawn (a failed wait, an end that couldn't
         // run): what the git did is unknown, never "it never ran" (Codex reviewer on #5037)
-        .map_err(|e| GitError { end: GitEnd::Unknown, code: None, message: format!("Failed to run git: {e}") })?;
+        .map_err(|e| GitError { end: GitEnd::Unknown, code: None, stdout: String::new(), message: format!("Failed to run git: {e}") })?;
     // the shared projection (continuum_process::OwnedOutput::answer): a non-zero exit is git's own
     // failure, with its stderr, and any delivery note beside it; a deadline that ended it says
     // its effect is unknown
@@ -667,13 +667,14 @@ pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &
                 // this process just ended that git: its lock is that git's, unless another git
                 // now works in the tree, so it goes now rather than in ten minutes
                 settle_index_lock(workspace_root, std::time::Duration::ZERO).await;
-                (GitEnd::Unknown, None, format!(" {INTERRUPTED}"))
+                (GitEnd::Interrupted, None, format!(" {INTERRUPTED}"))
             }
         };
-        return Err(GitError { end, code, message: format!("git {}{at_deadline}: {unanswered}", args.join(" ")) });
+        let stdout = String::from_utf8_lossy(&unanswered.stdout.bytes).into_owned();
+        return Err(GitError { end, code, stdout, message: format!("git {}{at_deadline}: {unanswered}", args.join(" ")) });
     }
     // it exited 0 with everything read whole, but what it said isn't text: what it did is unknown
-    String::from_utf8(out.stdout.bytes).map_err(|e| GitError { end: GitEnd::Unknown, code: None, message: format!("git {}: invalid UTF-8 in its output: {e}", args.join(" ")) })
+    String::from_utf8(out.stdout.bytes).map_err(|e| GitError { end: GitEnd::Unknown, code: None, stdout: String::new(), message: format!("git {}: invalid UTF-8 in its output: {e}", args.join(" ")) })
 }
 
 /// [`continuum_git::index_lock::settle`] for a citizen's workspace, off the async threads (its

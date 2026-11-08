@@ -233,11 +233,11 @@ pub(super) async fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> Arriv
     if !root.join(".git").exists() {
         return ArrivalOutcome::Failed { branch: branch_s, stage: "checkout", error: NOT_A_REPO_REASON.into() };
     }
-    if let Err(error) = run_git(root, &["fetch", "--no-tags", "origin", branch]).await {
-        return if is_missing_remote_ref(&error) {
-            ArrivalOutcome::NoRemoteBranch { branch: branch_s }
-        } else {
-            ArrivalOutcome::Unreachable { branch: branch_s, error }
+    if let Err(error) = crate::code::git_bridge::run_git_input(root, &["fetch", "--no-tags", "origin", branch], &[], None).await {
+        return match remote_branch_absent(root, branch).await {
+            Ok(true) => ArrivalOutcome::NoRemoteBranch { branch: branch_s },
+            Ok(false) => ArrivalOutcome::Unreachable { branch: branch_s, error: error.to_string() },
+            Err(asked) => ArrivalOutcome::Unreachable { branch: branch_s, error: asked.to_string() },
         };
     }
     let fetched = match run_git(root, &["rev-parse", "FETCH_HEAD"]).await {
@@ -363,15 +363,8 @@ async fn admitted_arrival(hands: Option<crate::identity::hands_context::HandsCon
 pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid, hands: Option<crate::identity::hands_context::HandsContext>) -> ArrivalOutcome {
     let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock stamps 0; the ref is still unique per branch per arrival in practice
     let started = std::time::Instant::now();
-    let outcome = match admitted_arrival(hands, &root, &branch, now_ms).await {
-        // a step the deadline ended or never started: said as the timeout it was
-        ArrivalOutcome::Unreachable { error, .. } | ArrivalOutcome::Failed { error, .. } if crate::code::git_bridge::out_of_time(&error) => ArrivalOutcome::Failed {
-            branch: branch.clone(),
-            stage: "timeout",
-            error: format!("fetch + checkout did not finish within {} s: {error}", ARRIVE_BOUND.as_secs()),
-        },
-        other => other,
-    };
+    // Preserve the failing step and its owner-rendered reason; never classify Git errors from text.
+    let outcome = admitted_arrival(hands, &root, &branch, now_ms).await;
     let (sha, from_node, stranded, error) = match &outcome {
         ArrivalOutcome::Transferred { sha, from_node, stranded, .. } => {
             (sha.as_str(), from_node.clone().unwrap_or_default(), stranded.clone().unwrap_or_default(), String::new()) // unwrap_or_default: probe labels only
