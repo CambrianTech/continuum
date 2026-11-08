@@ -2,6 +2,8 @@
 //! code ends and its comment begins, and how a line moves brace depth. One owner, so two
 //! rules never disagree about the same file.
 
+pub mod tokens;
+
 /// The PRODUCTION half of a source file (see [`crate::SourceFile::production`]): every line
 /// not gated by a `#[cfg(test)]` that is CODE, not prose. Matching the raw string
 /// would truncate at the first doc comment that merely MENTIONS test-gating, and module
