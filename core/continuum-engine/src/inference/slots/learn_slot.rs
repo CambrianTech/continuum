@@ -18,8 +18,10 @@ use crate::inference::engine_residency::EngineIncarnation;
 pub struct LearnSlot {
     slot: u32,
     warm: bool,
-    _permit: SlotPermit,
+    // drop order is declaration order: the pin goes before the permit, whose drop wakes waiting
+    // citizens, so a woken waiter can evict this page (TurnAdmission's order; Codex on 199214535)
     _pin: Option<SlotPin>,
+    _permit: SlotPermit,
     _turn: MindTurn,
     _endpoint: EndpointAdmission,
 }
@@ -79,7 +81,7 @@ pub async fn learn_slot(engine: EngineIncarnation, persona: uuid::Uuid) -> Resul
     if warm.is_some() && pool.holders.lock().get(&slot) != Some(&key) {
         return Err(LearnSlotRefusal::Busy); // her page moved before custody: try again next pass
     }
-    Ok(LearnSlot { slot, warm: warm.is_some(), _permit: permit, _pin: pin, _turn: turn, _endpoint: admission })
+    Ok(LearnSlot { slot, warm: warm.is_some(), _pin: pin, _permit: permit, _turn: turn, _endpoint: admission })
 }
 
 #[cfg(test)]

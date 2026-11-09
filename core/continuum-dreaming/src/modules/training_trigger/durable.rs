@@ -27,6 +27,8 @@ use crate::orm::{
 
 mod acceptance_receipt;
 pub use acceptance_receipt::*;
+mod arrivals;
+pub(crate) use arrivals::Arrival;
 mod training_trigger_state;
 pub(crate) use training_trigger_state::JobInputError;
 mod training_trigger_state_2;
