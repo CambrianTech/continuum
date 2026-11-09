@@ -22,7 +22,11 @@ async fn main() -> Result<(), String> {
         vec![],
         continuum_genome::resources::DaemonConfig::default(),
     );
-    let authority = Authority { resources, serving: continuum_genome::inference::serving_lifecycle::LifecycleGate::unowned(true) };
+    let authority = Authority {
+        resources,
+        serving: continuum_genome::inference::serving_lifecycle::LifecycleGate::unowned(true),
+        custody: continuum_genome::genome::learner::custody::Custody::new(),
+    };
     let shadow = FreshShadow {
         name: format!("e2e-{}.gguf", uuid::Uuid::new_v4().simple()),
         rank: 8,
@@ -57,9 +61,10 @@ async fn main() -> Result<(), String> {
     mind.stop().await.map_err(|(_, why)| format!("stop: {why}"))?;
     // her optimizer was the engine's last: its workspace residency goes too
     if let Some(held) = workspace.take() {
-        held.release(&engine).await.map_err(|(_, why)| format!("workspace release: {why}"))?;
+        held.release().await.map_err(|(_, why)| format!("workspace release: {why}"))?;
     }
     if let Ok(LedgerAnswer::Ledger(ledger)) = engine.learn_ledger().await {
+        println!("custody after stop: {:?} held (all, orphaned), {} orphans left after settling", authority.custody.held(), authority.custody.settle_orphans().await);
         println!("after stop: {} residencies, optimizer buffers {:?}", ledger.residencies.len(), ledger.memory.optimizer.iter().map(|b| b.bytes).collect::<Vec<_>>());
     }
     Ok(())

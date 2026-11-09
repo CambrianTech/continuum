@@ -18,7 +18,7 @@ fn authority() -> Authority {
         vec![],
         crate::resources::DaemonConfig::default(),
     );
-    Authority { resources, serving: crate::inference::serving_lifecycle::LifecycleGate::unowned(true) }
+    Authority { resources, serving: crate::inference::serving_lifecycle::LifecycleGate::unowned(true), custody: crate::genome::learner::custody::Custody::new() }
 }
 
 fn shadow() -> FreshShadow {
@@ -119,27 +119,98 @@ async fn engine_losing_the_load(release: &'static str) -> (LearningEngine, tokio
 }
 
 // what this catches: a lost load reply read as proof that nothing loaded (Codex's audit of fed5f3f64).
-// Unless the engine confirms the residency's release, the lease stays held inside the refusal.
+// Unless the engine confirms the residency's release, its lease stays in custody as an orphan, and a
+// settle pass that still cannot confirm keeps it.
 #[tokio::test]
 async fn a_lost_load_keeps_its_lease_until_the_engine_confirms_the_release() {
     let authority = authority();
     let (engine, server) = engine_losing_the_load("busy").await;
     let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
-    let SeatRefusal::Unfenced { retained, .. } = refused else { panic!("test: an unconfirmed load is unfenced, got {refused}") };
-    assert_eq!(leased(&authority), WEIGHTS, "the lease is held while the engine may hold the shadow");
-    drop(retained);
+    assert!(matches!(refused, SeatRefusal::Unloaded(_)), "{refused}");
+    assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "held in custody, orphaned");
+    assert_eq!(authority.custody.settle_orphans().await, 1, "still unconfirmed, still held");
+    assert_eq!(leased(&authority), WEIGHTS);
     server.abort();
 }
 
 // what this catches: the other side of the fence. A release the engine confirms proves nothing is
-// live in the residency, so the lease drops and the refusal is a plain unloaded.
+// live in the residency, so the lease leaves custody.
 #[tokio::test]
 async fn a_lost_load_the_engine_confirms_empty_releases_its_lease() {
     let authority = authority();
     let (engine, server) = engine_losing_the_load("none").await;
     let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
     assert!(matches!(refused, SeatRefusal::Unloaded(_)), "{refused}");
-    assert_eq!(leased(&authority), 0, "a confirmed-empty residency holds nothing");
+    assert_eq!((leased(&authority), authority.custody.held()), (0, (0, 0)), "a confirmed-empty residency holds nothing");
+    server.abort();
+}
+
+// what this catches: a seat future dropped after its residency registered (a cancelled caller, a
+// timeout) taking its leases with it while the engine may be loading the shadow (Codex's audit of
+// d6242e612). The lease stays in custody until settle unloads the bound shadow and the engine
+// confirms the release.
+#[tokio::test]
+async fn a_cancelled_seat_leaves_its_lease_in_custody_until_settled() {
+    let authority = authority();
+    let registered = Arc::new(Mutex::new(None::<String>));
+    let (on_register, on_ledger) = (Arc::clone(&registered), Arc::clone(&registered));
+    let unloaded = Arc::new(Mutex::new(false));
+    let on_unload = Arc::clone(&unloaded);
+    let app = axum::Router::new()
+        .route(
+            "/lora-adapters/fresh",
+            axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                if body["dry_run"] == true {
+                    return axum::Json(serde_json::json!({"engine": ENGINE, "reserved": false,
+                        "weights": [{"device": "CUDA0", "buffer_type": "CUDA0", "bytes": WEIGHTS, "host": false}]}));
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await; // the load the caller stops waiting for
+                axum::Json(serde_json::json!({"success": true, "id": 3, "path": "/train/her-shadow.gguf"}))
+            }),
+        )
+        .route(
+            "/learn/residency",
+            axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let registered = Arc::clone(&on_register);
+                async move {
+                    *registered.lock().unwrap_or_else(|p| p.into_inner()) = body["id"].as_str().map(str::to_owned); // test-owned lock
+                    axum::Json(ledger("none"))
+                }
+            }),
+        )
+        .route(
+            "/learn/grants",
+            axum::routing::get(move || {
+                let registered = Arc::clone(&on_ledger);
+                async move {
+                    let id = registered.lock().unwrap_or_else(|p| p.into_inner()).clone(); // test-owned lock
+                    let mut answer = ledger("none");
+                    answer["residencies"] = serde_json::json!([{"id": id, "engine": ENGINE, "owner": "core", "subject": {"fresh": {}},
+                        "rows": [], "leases": [], "pending": false, "live": true, "revoked": false, "lora_id": 3}]);
+                    axum::Json(answer)
+                }
+            }),
+        )
+        .route(
+            "/lora-adapters/unload",
+            axum::routing::post(move || {
+                let unloaded = Arc::clone(&on_unload);
+                async move {
+                    *unloaded.lock().unwrap_or_else(|p| p.into_inner()) = true; // test-owned lock
+                    axum::Json(serde_json::json!({"success": true, "id": 3, "path": "/train/her-shadow.gguf"}))
+                }
+            }),
+        )
+        .route("/learn/residency/release", axum::routing::post(|| async { axum::Json(ledger("none")) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+    let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let cancelled = tokio::time::timeout(std::time::Duration::from_millis(500), seat(&authority, LearningEngine::at(root), "learning:her", shadow())).await;
+    assert!(cancelled.is_err(), "test: the caller stopped waiting mid-load");
+    assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "the lease outlives the dropped future");
+    assert_eq!(authority.custody.settle_orphans().await, 0, "settled");
+    assert!(*unloaded.lock().unwrap_or_else(|p| p.into_inner()), "the bound shadow was unloaded before the release"); // test-owned lock
+    assert_eq!((leased(&authority), authority.custody.held()), (0, (0, 0)));
     server.abort();
 }
 
@@ -174,5 +245,6 @@ async fn a_refused_stop_hands_the_mind_back_with_its_lease() {
     let (mind, _why) = mind.stop().await.err().expect("test: the release is refused");
     assert_eq!(leased(&authority), WEIGHTS, "her weights stay leased while the engine holds them");
     drop(mind);
+    assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "dropped, she is an orphan in custody, still leased");
     server.abort();
 }

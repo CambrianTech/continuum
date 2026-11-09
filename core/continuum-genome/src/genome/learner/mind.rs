@@ -116,7 +116,7 @@ impl MindLearner {
         let outcome = self.seat.engine.learn(&example).await.map_err(LearnFailure::Engine);
         // the step claimed the covering workspace, so the ones it replaced may be released now
         if let Some(held) = workspace.as_mut() {
-            held.settle(&self.seat.engine).await;
+            held.settle().await;
         }
         outcome
     }
@@ -144,7 +144,7 @@ impl MindLearner {
             self.loaded = false;
         }
         if let Some(memory) = self.memory.take() {
-            if let Err((memory, why)) = memory.release(&self.seat).await {
+            if let Err((memory, why)) = memory.release().await {
                 self.memory = Some(memory);
                 return Err((self, why));
             }
