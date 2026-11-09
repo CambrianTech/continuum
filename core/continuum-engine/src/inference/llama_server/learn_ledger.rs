@@ -73,6 +73,8 @@ pub struct GrantTerms {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GrantRefusal {
+    /// A contended step under an uncontended-only grant: measure first, then a measured grant.
+    UncontendedOnly,
     Invalid,
     StaleEngine,
     GrantMismatch,
@@ -165,6 +167,10 @@ pub struct LedgerSnapshot {
     pub grants: Vec<RegisteredGrant>,
     pub memory: LedgerMemory,
     pub residencies: Vec<super::learn_residency::RegisteredResidency>,
+    /// The longest period and expiry this engine's ledger accepts, as it reports them: the core
+    /// sizes a grant within these, never against a copy of the engine's constant.
+    pub max_period_ms: u64,
+    pub max_expiry_ms: u64,
 }
 
 #[derive(serde::Deserialize)]

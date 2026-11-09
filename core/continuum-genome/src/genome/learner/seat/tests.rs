@@ -7,7 +7,7 @@ const WEIGHTS: u64 = 90_112;
 
 fn ledger(refusal: &str) -> serde_json::Value {
     serde_json::json!({
-        "engine": ENGINE, "clock_us": 1, "refusal": refusal, "grants": [], "residencies": [],
+        "engine": ENGINE, "clock_us": 1, "max_period_ms": 86_400_000, "max_expiry_ms": 86_400_000, "refusal": refusal, "grants": [], "residencies": [],
         "memory": {"optimizer_owned_buffers": [], "shared_compute_buffers": [], "optimizer_unallocated_lora_ids": []}
     })
 }
