@@ -525,10 +525,6 @@ pub(crate) fn deadline() -> Option<tokio::time::Instant> {
     DEADLINE.try_with(|at| *at).ok()
 }
 
-/// Run a git command in the workspace directory. `pub(crate)` so the one context-clean
-/// runner (env stripped, ceiling set, no terminal prompt) is shared by every crate seam
-/// that shells to git — `persona::workspace_transfer` carries a card's branch between
-/// nodes through it — rather than each seam re-deriving the hygiene below.
 /// A submodule's recorded commit is never an autosave's to move. A checkout's submodule can lag its
 /// branch (a rebase moves the pin, the checkout stays), and `add -A` records the lag as a pin
 /// change: Benchy's #5883 was an autosave whose whole diff moved the engine pin back (card
@@ -567,6 +563,10 @@ pub async fn keep_submodule_pins(root: &Path) -> Result<Vec<String>, String> {
 /// git's mode for a submodule entry (a gitlink) in a tree or the index.
 const GITLINK_MODE: &str = "160000";
 
+/// Run a git command in the workspace directory. `pub(crate)` so the one context-clean
+/// runner (env stripped, ceiling set, no terminal prompt) is shared by every crate seam
+/// that shells to git — `persona::workspace_transfer` carries a card's branch between
+/// nodes through it — rather than each seam re-deriving the hygiene below.
 pub async fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(run_git_input(workspace_root, None, args, &[], None).await?)
 }
