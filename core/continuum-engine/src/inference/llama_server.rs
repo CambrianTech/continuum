@@ -83,6 +83,8 @@ use pages::{
 mod genome;
 mod learn_ledger;
 pub use learn_ledger::{GrantId, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
+mod learn_residency;
+pub use learn_residency::{CoveringLease, FreshShadow, LeaseKind, LearningPlan, MeasuredRow, PlannedRow, Preflight, PreflightRefusal, RegisteredResidency, ResidencyId, ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind, WeightsPlan};
 mod gene_pages;
 pub use gene_pages::{gene_seats, page_gene, GeneMove, GenePageError, GeneSeat};
 pub(crate) use genome::gene_stage_name;

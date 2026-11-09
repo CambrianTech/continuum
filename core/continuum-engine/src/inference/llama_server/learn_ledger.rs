@@ -62,18 +62,27 @@ pub enum GrantRefusal {
     UnknownReservation,
 }
 
-/// The wire's refusal field: `none`, or a refusal.
+/// The wire's refusal field: `none`, or a refusal by the route family's own names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(untagged)]
-enum WireRefusal {
+enum WireRefusal<R> {
     None(NoRefusal),
-    Refused(GrantRefusal),
+    Refused(R),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum NoRefusal {
     None,
+}
+
+impl<R> WireRefusal<R> {
+    fn refused(self) -> Option<R> {
+        match self {
+            WireRefusal::None(NoRefusal::None) => None,
+            WireRefusal::Refused(why) => Some(why),
+        }
+    }
 }
 
 /// One grant live in the engine's ledger, by whatever issued it (an id this core never issued is
@@ -126,19 +135,27 @@ pub struct LedgerMemory {
 }
 
 /// The whole ledger, as every ledger route answers it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct LedgerSnapshot {
     pub engine: LedgerEngine,
     pub clock_us: i64,
     pub grants: Vec<RegisteredGrant>,
     pub memory: LedgerMemory,
+    pub residencies: Vec<super::learn_residency::RegisteredResidency>,
 }
 
 #[derive(serde::Deserialize)]
-struct LedgerReply {
+#[serde(bound = "R: serde::de::DeserializeOwned")]
+pub(super) struct LedgerReply<R> {
     #[serde(flatten)]
-    snapshot: LedgerSnapshot,
-    refusal: WireRefusal,
+    pub(super) snapshot: LedgerSnapshot,
+    refusal: WireRefusal<R>,
+}
+
+impl<R> LedgerReply<R> {
+    pub(super) fn registered(self) -> Registered<R> {
+        Registered { refused: self.refusal.refused(), ledger: self.snapshot }
+    }
 }
 
 /// An engine with the ledger, or one without the routes (older than fork #87's wiring).
@@ -148,26 +165,32 @@ pub enum LedgerAnswer<T> {
     NoLedger,
 }
 
-/// A registration's answer: accepted or refused by name, and the ledger as it stands after it
+impl<T> LedgerAnswer<T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> LedgerAnswer<U> {
+        match self {
+            LedgerAnswer::Ledger(t) => LedgerAnswer::Ledger(f(t)),
+            LedgerAnswer::NoLedger => LedgerAnswer::NoLedger,
+        }
+    }
+}
+
+/// A ledger request's answer: accepted or refused by name, and the ledger as it stands after it
 /// (the core reconciles from this snapshot, never from what it asked for).
 #[derive(Debug, Clone, PartialEq)]
-pub struct Registered {
-    pub refused: Option<GrantRefusal>,
+pub struct Registered<R> {
+    pub refused: Option<R>,
     pub ledger: LedgerSnapshot,
 }
 
 impl LlamaServerProcess {
     /// `GET /learn/grants`: the ledger as it stands.
     pub(super) async fn learn_ledger(&self) -> Result<LedgerAnswer<LedgerSnapshot>, LlamaServerError> {
-        let reply = self.ledger_request(self.client.get(format!("{}/learn/grants", self.root))).await?;
-        Ok(match reply {
-            LedgerAnswer::Ledger(reply) => LedgerAnswer::Ledger(reply.snapshot),
-            LedgerAnswer::NoLedger => LedgerAnswer::NoLedger,
-        })
+        let reply = self.ledger_request::<GrantRefusal>(self.client.get(format!("{}/learn/grants", self.root))).await?;
+        Ok(reply.map(|reply| reply.snapshot))
     }
 
     /// `POST /learn/grants`: register `terms` with the engine.
-    pub(super) async fn register_learn_grant(&self, terms: &GrantTerms) -> Result<LedgerAnswer<Registered>, LlamaServerError> {
+    pub(super) async fn register_learn_grant(&self, terms: &GrantTerms) -> Result<LedgerAnswer<Registered<GrantRefusal>>, LlamaServerError> {
         let body = serde_json::json!({
             "id": terms.id.to_string(),
             "engine": terms.engine,
@@ -175,31 +198,24 @@ impl LlamaServerProcess {
             "share_ppm": terms.share_ppm.get(),
             "expires_in_ms": duration_ms(terms.expires_in)?,
         });
-        let reply = self.ledger_request(self.client.post(format!("{}/learn/grants", self.root)).json(&body)).await?;
-        Ok(match reply {
-            LedgerAnswer::Ledger(reply) => LedgerAnswer::Ledger(Registered {
-                refused: match reply.refusal {
-                    WireRefusal::None(NoRefusal::None) => None,
-                    WireRefusal::Refused(why) => Some(why),
-                },
-                ledger: reply.snapshot,
-            }),
-            LedgerAnswer::NoLedger => LedgerAnswer::NoLedger,
-        })
+        let reply = self.ledger_request::<GrantRefusal>(self.client.post(format!("{}/learn/grants", self.root)).json(&body)).await?;
+        Ok(reply.map(LedgerReply::registered))
     }
 
     /// `POST /learn/grants/revoke`: no new work under `id` (idempotent); its account goes once its
     /// last reservation settles.
     pub(super) async fn revoke_learn_grant(&self, id: &str) -> Result<LedgerAnswer<LedgerSnapshot>, LlamaServerError> {
         let body = serde_json::json!({ "id": id });
-        let reply = self.ledger_request(self.client.post(format!("{}/learn/grants/revoke", self.root)).json(&body)).await?;
-        Ok(match reply {
-            LedgerAnswer::Ledger(reply) => LedgerAnswer::Ledger(reply.snapshot),
-            LedgerAnswer::NoLedger => LedgerAnswer::NoLedger,
-        })
+        let reply = self.ledger_request::<GrantRefusal>(self.client.post(format!("{}/learn/grants/revoke", self.root)).json(&body)).await?;
+        Ok(reply.map(|reply| reply.snapshot))
     }
 
-    async fn ledger_request(&self, request: reqwest::RequestBuilder) -> Result<LedgerAnswer<LedgerReply>, LlamaServerError> {
+    /// One ledger route: the engine's answer parsed whole (identity, clock, grants, residencies,
+    /// measured memory) with the route family's refusal names, NoLedger for an engine without it.
+    pub(super) async fn ledger_request<R: serde::de::DeserializeOwned>(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<LedgerAnswer<LedgerReply<R>>, LlamaServerError> {
         let resp = request
             .timeout(PROBE_TIMEOUT)
             .send()
@@ -210,13 +226,13 @@ impl LlamaServerProcess {
             404 | 405 => return Ok(LedgerAnswer::NoLedger),
             status => {
                 let text = resp.text().await.unwrap_or_default(); // unwrap_or_default: the status alone still names the failure
-                return Err(LlamaServerError::Unreachable(format!("/learn/grants status {status}: {text}")));
+                return Err(LlamaServerError::Unreachable(format!("learning ledger status {status}: {text}")));
             }
         }
         let bytes = resp.bytes().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
         serde_json::from_slice(&bytes) // engine HTTP wire: the ledger reply
             .map(LedgerAnswer::Ledger)
-            .map_err(|e| LlamaServerError::Unreachable(format!("/learn/grants answered no ledger: {e}")))
+            .map_err(|e| LlamaServerError::Unreachable(format!("the learning ledger answered no ledger: {e}")))
     }
 }
 
