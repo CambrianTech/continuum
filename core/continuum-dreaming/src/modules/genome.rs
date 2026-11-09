@@ -1,18 +1,8 @@
-//! GenomeModule — owns the [`FineTuningRegistry`] + [`FineTuningCoordinator`] and
-//! exposes the `genome/job-*` lifecycle through the typed command registry.
+//! GenomeModule — the `genome/teach` and `genome/recall` verbs.
 //!
-//! The three verbs (`genome/job-create`, `genome/job-status`, `genome/job-cancel`)
-//! live as [`ActionCommand`](crate::sdk_codegen::ActionCommand)s under
-//! `commands/genome/`; this module's only job is to construct the registry +
-//! coordinator and hand the command objects out via [`ServiceModule::commands`].
-//!
-//! ## Boot
-//!
-//! `start_server` builds a `GenomeModule` AFTER reading credentials, seeds the
-//! registry with whichever cloud adapters have keys (OpenAIFineTuningAdapter when
-//! `OPENAI_API_KEY` is set, etc.) and always registers [`LocalCandleFineTuner`] so
-//! the architectural slot is visible to the coordinator even before #231-#233 land
-//! the optimizer loop. See `ipc::mod::start_server`.
+//! A persona learns in place inside the serving engine (the training trigger's
+//! `learn_in_place`); this module owns only what a caller asks of her genome by name:
+//! teaching a lesson and recalling which gene a turn should carry.
 
 use std::any::Any;
 use std::sync::Arc;
@@ -20,7 +10,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::genome::fine_tuning::{coordinator::FineTuningCoordinator, FineTuningRegistry};
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::DynCommand;
 
@@ -30,54 +19,14 @@ pub struct GenomeModule {
     decisions: Arc<
         crate::runtime::LateBound<crate::orm::OrmStore<crate::genome::recall_impl::RecallDecision>>,
     >,
-    registry: Arc<FineTuningRegistry>,
-    coordinator: Arc<FineTuningCoordinator>,
-    /// Every training attempt's evidence, written before its trainer runs (card 55d4b9e3).
-    attempts: Arc<crate::commands::genome::attempt_ledger::AttemptLedger>,
-    #[cfg(test)]
-    test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
-    #[cfg(test)]
-    test_artifacts: Arc<tempfile::TempDir>,
 }
 
 impl GenomeModule {
-    /// Construct with a pre-populated registry. The boot path
-    /// (`start_server`) registers all adapters BEFORE building the
-    /// module, so the coordinator's view of registered providers is
-    /// stable across the module's lifetime.
-    pub fn new(registry: Arc<FineTuningRegistry>) -> Self {
-        let coordinator = Arc::new(FineTuningCoordinator::new(Arc::clone(&registry)));
+    pub fn new() -> Self {
         Self {
             serving: Arc::new(crate::runtime::LateBound::new("teacher serving owner")),
             executor: Arc::new(crate::runtime::LateBound::new("genome command executor")),
             decisions: Arc::new(crate::runtime::LateBound::new("genome recall decisions")),
-            registry,
-            coordinator,
-            attempts: Arc::new(crate::commands::genome::attempt_ledger::AttemptLedger::new()),
-            #[cfg(test)]
-            test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
-            #[cfg(test)]
-            test_artifacts: Arc::new(tempfile::tempdir().expect("genome test artifact directory")),
-        }
-    }
-
-    /// The ordinary command family and real adapters, with fixture-owned storage.
-    #[cfg(test)]
-    pub(crate) fn with_test_storage(
-        registry: Arc<FineTuningRegistry>,
-        test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
-        test_artifacts: Arc<tempfile::TempDir>,
-    ) -> Self {
-        let coordinator = Arc::new(FineTuningCoordinator::new(Arc::clone(&registry)));
-        Self {
-            serving: Arc::new(crate::runtime::LateBound::new("teacher serving owner")),
-            executor: Arc::new(crate::runtime::LateBound::new("genome command executor")),
-            decisions: Arc::new(crate::runtime::LateBound::new("genome recall decisions")),
-            registry,
-            coordinator,
-            attempts: Arc::new(crate::commands::genome::attempt_ledger::AttemptLedger::new()),
-            test_job_board,
-            test_artifacts,
         }
     }
 
@@ -89,36 +38,11 @@ impl GenomeModule {
         self.serving.install(serving);
         self
     }
+}
 
-    /// Install the training attempt ledger's store (card 55d4b9e3): boot's `initialize`, and a
-    /// test runtime that owns its database. Until installed, a create naming an attempt is
-    /// refused as unrecorded rather than run unwitnessed.
-    pub(crate) async fn install_attempt_store(
-        &self,
-        adapter: Arc<dyn crate::orm::StorageAdapter>,
-    ) -> Result<(), String> {
-        let store = crate::orm::OrmStore::new(adapter).await.map_err(|e| e.to_string())?;
-        self.attempts.install(Arc::new(store));
-        Ok(())
-    }
-
-    /// Whether a trainer on this host takes LoRA jobs for `base`: what the capacity beacon
-    /// advertises as trainable here (card 6f05b89d).
-    pub fn trains_base_here(&self, base: &str) -> bool {
-        self.coordinator.trains_base_here(base)
-    }
-
-    /// The executor slot boot fills for this module: the grid-peer trainer leases over it.
-    pub fn lease_executor(&self) -> Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>> {
-        Arc::clone(&self.executor)
-    }
-
-    /// Visible to tests + boot. Returns the inner registry so a
-    /// caller can introspect or register adapters after
-    /// construction (substrate hot-reload future work; not used in
-    /// the boot path today).
-    pub fn registry(&self) -> Arc<FineTuningRegistry> {
-        Arc::clone(&self.registry)
+impl Default for GenomeModule {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -128,7 +52,7 @@ impl ServiceModule for GenomeModule {
         ModuleConfig {
             name: "genome",
             priority: ModulePriority::Normal,
-            command_prefixes: &["genome/job-", "genome/recall", "genome/teach"],
+            command_prefixes: &["genome/recall", "genome/teach"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -138,7 +62,6 @@ impl ServiceModule for GenomeModule {
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
         let adapter = ctx.storage("genome")?.adapter("main").await?;
-        self.install_attempt_store(adapter.clone()).await?;
         let store = crate::orm::OrmStore::new(adapter)
             .await
             .map_err(|e| e.to_string())?;
@@ -146,34 +69,18 @@ impl ServiceModule for GenomeModule {
         Ok(())
     }
 
-    /// The `genome/job-*` verbs over the module's registry + coordinator. The
-    /// typed registry dispatches them; this module owns no legacy `match` arm.
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        let mut commands = crate::commands::genome::command_objects(
-            Arc::clone(&self.registry),
-            Arc::clone(&self.coordinator),
-            Arc::clone(&self.attempts),
-            // A leased attempt is reconciled with its peer over this module's own executor.
-            Arc::new(crate::commands::genome::grid_peer_adapter::ExecutorLeaseTransport(Arc::clone(&self.executor))),
-            #[cfg(test)]
-            Arc::clone(&self.test_job_board),
-            #[cfg(test)]
-            Arc::clone(&self.test_artifacts),
-        );
-        commands.push(Arc::new(crate::commands::genome_recall::GenomeRecall {
-            decisions: Arc::clone(&self.decisions),
-        }));
-        commands.push(Arc::new(
-            crate::commands::genome_recall::GenomeRecallReplay {
+        vec![
+            Arc::new(crate::commands::genome_recall::GenomeRecall { decisions: Arc::clone(&self.decisions) }),
+            Arc::new(crate::commands::genome_recall::GenomeRecallReplay {
                 decisions: Arc::clone(&self.decisions),
                 executor: Arc::clone(&self.executor),
-            },
-        ));
-        commands.push(Arc::new(crate::commands::genome::teach::GenomeTeach {
-            serving: Arc::clone(&self.serving),
-            executor: Arc::clone(&self.executor),
-        }));
-        commands
+            }),
+            Arc::new(crate::commands::genome::teach::GenomeTeach {
+                serving: Arc::clone(&self.serving),
+                executor: Arc::clone(&self.executor),
+            }),
+        ]
     }
 
     fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
@@ -197,30 +104,17 @@ mod tests {
     use super::*;
 
     fn module() -> GenomeModule {
-        GenomeModule::new(Arc::new(FineTuningRegistry::new()))
+        GenomeModule::new()
     }
 
-    // what this catches: the module exposes all three genome verbs to the typed
-    // registry. A dropped family wiring would silently remove genome/job-* from the
-    // persona tool surface, cu, and the grid — invisible without this assert.
+    // what this catches: the module exposes exactly the teach and recall verbs; a dropped one
+    // silently leaves the persona tool surface, and a returned batch-training verb would
+    // resurrect a second learning path beside learning in place.
     #[test]
-    fn exposes_training_and_recall_commands() {
-        let names: Vec<&str> = module().commands().iter().map(|c| c.name()).collect();
-        assert_eq!(names.len(), 14);
-        assert!(names.contains(&"genome/job-attempt-reconcile"));
-        assert!(names.contains(&"genome/lease/artifact"));
-        assert!(names.contains(&"genome/lease/train"));
-        assert!(names.contains(&"genome/lease/status"));
-        assert!(names.contains(&"genome/lease/poll"));
-        assert!(names.contains(&"genome/lease/cancel"));
-        assert!(names.contains(&"genome/teach"));
-        assert!(names.contains(&"genome/recall"));
-        assert!(names.contains(&"genome/recall/replay"));
-        assert!(names.contains(&"genome/job-create"));
-        assert!(names.contains(&"genome/job-status"));
-        assert!(names.contains(&"genome/job-cancel"));
-        assert!(names.contains(&"genome/job-pause"));
-        assert!(names.contains(&"genome/job-reattach"));
+    fn exposes_teach_and_recall_only() {
+        let mut names: Vec<&str> = module().commands().iter().map(|c| c.name()).collect();
+        names.sort();
+        assert_eq!(names, ["genome/recall", "genome/recall/replay", "genome/teach"]);
     }
 
     // what this catches: the legacy string-dispatch path is dead — any call into it
@@ -229,10 +123,10 @@ mod tests {
     #[tokio::test]
     async fn legacy_handle_command_fails_loud() {
         let err = module()
-            .handle_command("genome/job-create", Value::Null)
+            .handle_command("genome/teach", Value::Null)
             .await
             .unwrap_err();
-        assert!(err.contains("genome/job-create"));
+        assert!(err.contains("genome/teach"));
         assert!(err.contains("migrated to the typed registry"));
     }
 }

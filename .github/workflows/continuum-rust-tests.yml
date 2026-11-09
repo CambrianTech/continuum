@@ -200,11 +200,6 @@ jobs:
           printf '%s\n' "$interop_output"
           [[ "$interop_output" == *"1 passed;"* ]]
 
-      # ---- continuum-genome: the training script test, then lib tests ----
-      - name: cuda_train_test.py (genome fine-tuning script)
-        if: matrix.crate == 'continuum-genome'
-        run: python3 -m unittest discover -s core/continuum-genome/src/genome/fine_tuning -p cuda_train_test.py -v
-
       # ---- every other tested crate: lib tests. The selector decides (lib_tests in the root Cargo.toml's
       # [workspace.metadata.ci] own_lib_test_step names the crates with their own steps above and below) ----
       - name: cargo test -p ${{ matrix.crate }} --lib

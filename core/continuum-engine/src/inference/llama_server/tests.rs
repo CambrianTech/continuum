@@ -247,6 +247,7 @@ fn target_with_adapters(id: &str, paths: &[&str]) -> ServingTarget {
 mod progress;
 mod engine_install;
 mod genome;
+mod learn_ledger;
 mod retirement;
 mod liveness;
 mod snapshot;

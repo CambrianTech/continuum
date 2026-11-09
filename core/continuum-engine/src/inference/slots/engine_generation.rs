@@ -800,6 +800,14 @@ pub(crate) fn stamp_engine_incarnation(root: &str, pid: u32, started_s: u64) {
     }
 }
 
+/// A fixture driving a live engine outside serving: register its slots at its address and stamp its
+/// incarnation, the two halves serving's launch performs (`ensure_pool`, then the stamp above).
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn register_engine_for_fixture(root: &str, slots: u32, pid: u32, started_s: u64) {
+    directory().ensure_pool(root, slots);
+    stamp_engine_incarnation(root, pid, started_s);
+}
+
 /// The adopting core's half: `pool` was installed by props discovery for a running engine
 /// this core did not spawn. If that engine is the live lane `(pid, started_s)` and left a
 /// ledger in `page_dir` stamped with that same process, its confirmed saves become

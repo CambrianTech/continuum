@@ -14,7 +14,7 @@ Quality gates (a commit must earn its way in):
   - diff touches source (.rs/.ts/.py), is 5..400 changed lines, no lockfiles
   - body >= 200 chars (the narration is the value)
 
-Emitted shape (mlx chat {messages}, the genome/job-create contract):
+Emitted shape (mlx chat {messages}, the examples genome/training-trigger/submit takes):
   user      = the commit's PROBLEM half (subject + body up to the fix narration)
               + the pre-image excerpts of the touched hunks
   assistant = the unified diff of the fix

@@ -235,13 +235,15 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
             "#155: broker-reachable pool keyed on slot-pool residency; the \
              spawn-time generation sweep already owns the stale-geometry path",
         ),
-        // Every lane's --train-dir (2026-09-26). A finished adapter is MOVED into its
-        // job dir by the engine trainer, so what stays is a run in flight (never
-        // touched) or a crashed run's partial file (dead the moment its job is).
+        // Every lane's --train-dir. Since learning moved in place (card 4114a2c6) it holds
+        // staged genes and each learning bucket's shadows and checkpoint generations. The
+        // training trigger's candidate sweep deletes every bucket's generations older than its
+        // committed one (`in_place::evict`); candidate genes are copies in the genome store.
         (
             "engine-train",
-            "charter S3/S6 engine trainer: delete every `<uuid>.gguf` whose job is not \
-             live on the TrainingJobBoard; a live job's file is never touched",
+            "card 4114a2c6 (Cormac): no pressure-driven pool yet; the trigger's sweep keeps one \
+             generation per bucket. Owed, behind custody's fence: shadows and their .pending dirs \
+             no custody entry holds; staged genes no adapter catalog names; the batch trainer's files",
         ),
         // Saved state: small measured or recorded facts, one file per key, never a cache. Losing
         // one costs a re-measure, so byte pressure is never a reason; what can go is a key with no

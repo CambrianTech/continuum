@@ -1,7 +1,7 @@
 //! THE TRAINING PLANNER: the window and chunk an in-engine LoRA run trains at, from what was
 //! measured. Pure arithmetic over measurements (footprint rows, `/train/measure`'s per-example
-//! lengths), no IO and no engine calls; the adapter (`engine_lora_adapter.rs`) gathers the
-//! measurements, asks here, and runs. Moved out of the adapter verbatim (it had grown to 3,734
+//! lengths), no IO and no engine calls. Its batch caller (`engine_lora_adapter.rs`) was deleted
+//! with the batch path (card 4114a2c6); what remains is read by the training-demand reserve. Moved out of the adapter verbatim (it had grown to 3,734
 //! lines mixing the run's IO, the lane, the footprint store and this planner), so the plan can
 //! be read, tested and reasoned about as one thing. It lives in inference/planning (card
 //! c8165aa6, from genome/fine_tuning/engine_plan.rs) because serving plans against it too: a

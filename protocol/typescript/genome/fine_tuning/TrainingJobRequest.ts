@@ -5,10 +5,8 @@ import type { ScheduleParams } from "./ScheduleParams";
 import type { TrainingDataset } from "./TrainingDataset";
 
 /**
- * One fine-tuning job's full input. Constructed by the caller (the
- * `genome/job-create` ServiceModule once it lands as Rust, the
- * `teacher` synthesizer once arc-3 wires up), handed to an
- * [`super::FineTuningAdapter`].
+ * What a gene was learned from: written once as its provenance (`request.json` in its job
+ * directory, `in_place::snapshot`), and read back by the examiner.
  *
  * The `persona_id` is load-bearing — the resulting LoRA artifact is
  * genome-paged into THAT persona's working set, and the
@@ -40,16 +38,13 @@ baseModel: string,
  */
 traitKind: string, 
 /**
- * The curated dataset. Rust callers construct it directly; the
- * `genome/job-create` wire path may instead name an on-disk dataset
- * (`datasetName`), which the command loads into this field before the
- * request reaches any adapter — adapters always see a populated dataset.
+ * The curated dataset, always populated.
  */
 dataset: TrainingDataset, 
 /**
  * A JSONL eval-set path (the `cognition/eval` `eval_set`) for a MANUAL
  * spot-check of this trait. It decides nothing: the automatic adoption
- * path (`modules::training_completion_sentinel`) no longer runs
+ * path no longer runs
  * an eval copy of her mind (Joel, 2026-09-27: integrated, not parallel).
  * It registers the gene dormant and opens an in-room
  * [`GeneTrial`](crate::genome::gene_trial::GeneTrial), whose card

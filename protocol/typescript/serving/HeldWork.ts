@@ -5,7 +5,7 @@
  */
 export type HeldWork = { 
 /**
- * The job (`JobHandle::local_id`).
+ * The job the work belongs to.
  */
 job: string, 
 /**
