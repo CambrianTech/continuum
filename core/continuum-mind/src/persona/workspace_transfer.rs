@@ -329,42 +329,6 @@ pub(super) enum TreeScope {
     Everything,
 }
 
-/// A submodule's recorded commit is never her work. Her checkout's submodule can lag her branch
-/// (a rebase moves the pin, the checkout stays where it was), and `add -A` records that lag as a
-/// pin change: Benchy's #5883 was a wip whose whole diff moved the engine pin back, so merged it
-/// would have built every node an engine without the routes canary needs (card a7a37ce7). Every
-/// staged gitlink change goes back to HEAD's pin before the tree is written; a pin is moved
-/// deliberately, by her own commit, never by an autosave.
-async fn keep_submodule_pins(root: &Path) -> Result<(), String> {
-    let staged = run_git(root, &["diff", "--cached", "--raw", "--no-renames", "HEAD"]).await?;
-    // `--raw` lines: `:<old mode> <new mode> <old sha> <new sha> <status>\t<path>`; 160000 is a gitlink.
-    let pins: Vec<&str> = staged
-        .lines()
-        .filter_map(|line| {
-            let (meta, path) = line.split_once('\t')?;
-            let mut modes = meta.trim_start_matches(':').split_whitespace();
-            let (old_mode, new_mode) = (modes.next()?, modes.next()?);
-            (old_mode == GITLINK_MODE || new_mode == GITLINK_MODE).then_some(path)
-        })
-        .collect();
-    if pins.is_empty() {
-        return Ok(());
-    }
-    let mut reset = vec!["reset", "-q", "HEAD", "--"];
-    reset.extend(pins.iter().copied());
-    run_git(root, &reset).await?;
-    continuum_base::probe!(
-        class = "workspace.autosave.pin_kept",
-        root = %root.display(),
-        pins = %pins.join(","),
-        "a submodule checkout differed from the branch's pin: the autosave kept the pin, not the checkout"
-    );
-    Ok(())
-}
-
-/// git's mode for a submodule entry (a gitlink) in a tree or the index.
-const GITLINK_MODE: &str = "160000";
-
 /// Commit the whole working tree (tracked edits and untracked files, minus what the
 /// repo's excludes hide) as one commit on `HEAD`'s parent chain, WITHOUT running any
 /// hook: `add -A`, `write-tree`, `commit-tree`, and — when `advance_branch` — an
@@ -384,7 +348,7 @@ async fn commit_tree_no_hooks(
     run_git(root, &add).await?;
     let parent = head_sha(root).await;
     if scope == TreeScope::Work && parent.is_some() {
-        keep_submodule_pins(root).await?;
+        crate::code::git_bridge::keep_submodule_pins(root).await?; // card a7a37ce7: a lagging checkout is never her work
     }
     let tree = run_git(root, &["write-tree"]).await?.trim().to_string();
     // The acting citizen is author AND committer: the runner applies `actor` (e5e72485).
