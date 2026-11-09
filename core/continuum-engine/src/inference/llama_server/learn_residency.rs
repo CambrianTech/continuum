@@ -9,7 +9,7 @@
 //! a registered residency's rows (fork, Codex at 7885c2932 / 08bc3ccb3). The engine holds no second
 //! ledger, only this reference to the core's.
 
-use super::learn_ledger::{LedgerAnswer, LedgerEngine, LedgerReply, Registered};
+use super::learn_ledger::{LearningEngine, LedgerAnswer, LedgerEngine, LedgerReply, Registered};
 use super::*;
 
 /// A residency the core mints, never reused (a released id is retired by the engine).
@@ -215,23 +215,23 @@ pub enum Preflight {
     Refused { refusal: PreflightRefusal, detail: Option<String> },
 }
 
-impl LlamaServerProcess {
+impl LearningEngine {
     /// `dry_run` of a fresh shadow: the weights it would take, nothing written or allocated.
-    pub(super) async fn plan_fresh_shadow(&self, shadow: &FreshShadow) -> Result<LedgerAnswer<WeightsPlan>, LlamaServerError> {
+    pub async fn plan_fresh_shadow(&self, shadow: &FreshShadow) -> Result<LedgerAnswer<WeightsPlan>, LlamaServerError> {
         let mut body = shadow.json();
         body["dry_run"] = serde_json::Value::Bool(true);
         self.plan_request(self.client.post(format!("{}/lora-adapters/fresh", self.root)).json(&body)).await
     }
 
     /// `dry_run` of loading an adapter file: the weights it would take, nothing allocated.
-    pub(super) async fn plan_load(&self, name: &str) -> Result<LedgerAnswer<WeightsPlan>, LlamaServerError> {
+    pub async fn plan_load(&self, name: &str) -> Result<LedgerAnswer<WeightsPlan>, LlamaServerError> {
         let body = serde_json::json!({ "name": name, "dry_run": true });
         self.plan_request(self.client.post(format!("{}/lora-adapters/load", self.root)).json(&body)).await
     }
 
     /// `POST /learn/preflight`: what learning on loaded shadow `lora_id` would allocate, measured on a
     /// disposable scheduler (serving untouched).
-    pub(super) async fn learning_preflight(&self, engine: &LedgerEngine, lora_id: i64) -> Result<LedgerAnswer<Preflight>, LlamaServerError> {
+    pub async fn learning_preflight(&self, engine: &LedgerEngine, lora_id: i64) -> Result<LedgerAnswer<Preflight>, LlamaServerError> {
         let body = serde_json::json!({ "engine": engine, "lora_id": lora_id });
         let reply: LedgerAnswer<PreflightReply> =
             self.plan_request(self.client.post(format!("{}/learn/preflight", self.root)).json(&body)).await?;
@@ -242,7 +242,7 @@ impl LlamaServerProcess {
     }
 
     /// `POST /learn/residency`: mirror the core's leases for `terms` in the engine.
-    pub(super) async fn register_residency(&self, terms: &ResidencyTerms) -> Result<LedgerAnswer<Registered<ResidencyRefusal>>, LlamaServerError> {
+    pub async fn register_residency(&self, terms: &ResidencyTerms) -> Result<LedgerAnswer<Registered<ResidencyRefusal>>, LlamaServerError> {
         let body = serde_json::json!({
             "id": terms.id.to_string(),
             "engine": terms.engine,
@@ -257,7 +257,7 @@ impl LlamaServerProcess {
 
     /// `POST /learn/residency/release`: the engine forgets a residency whose allocations have left;
     /// refused (busy) while any is pending or live.
-    pub(super) async fn release_residency(&self, id: &str) -> Result<LedgerAnswer<Registered<ResidencyRefusal>>, LlamaServerError> {
+    pub async fn release_residency(&self, id: &str) -> Result<LedgerAnswer<Registered<ResidencyRefusal>>, LlamaServerError> {
         let body = serde_json::json!({ "id": id });
         let reply = self.ledger_request::<ResidencyRefusal>(self.client.post(format!("{}/learn/residency/release", self.root)).json(&body)).await?;
         Ok(reply.map(LedgerReply::registered))

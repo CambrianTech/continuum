@@ -27,10 +27,10 @@ fn ledger_json(refusal: &str) -> serde_json::Value {
     })
 }
 
-async fn engine(app: axum::Router) -> (LlamaServerProcess, tokio::task::JoinHandle<std::io::Result<()>>) {
+async fn engine(app: axum::Router) -> (LearningEngine, tokio::task::JoinHandle<std::io::Result<()>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let root = format!("http://{}", listener.local_addr().expect("test: addr"));
-    (LlamaServerProcess::with_root(root), tokio::spawn(async move { axum::serve(listener, app).await }))
+    (LearningEngine::at(root), tokio::spawn(async move { axum::serve(listener, app).await }))
 }
 
 // what this catches: the ledger read back as the engine reported it, every field typed: a grant
