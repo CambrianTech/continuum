@@ -81,3 +81,4 @@ impl LearningEngine {
             .map_err(|e| LlamaServerError::Unreachable(format!("/learn answered no outcome: {e}")))
     }
 }
+

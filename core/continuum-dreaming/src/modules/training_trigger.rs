@@ -79,6 +79,7 @@ mod durable;
 mod remainders;
 mod serving_wake;
 pub use durable::DispatchPhase;
+mod in_place;
 pub(crate) use durable::{DispatchFailure, DispatchResolution, DispatchResult, JobInputError, ResolveReport, RetireReport, RetireSelection};
 
 /// Default per-bucket fire threshold. 16 examples is a healthy
@@ -225,6 +226,8 @@ pub struct TrainingTriggerState {
     /// entry is cleared when its bucket is revisited and no longer refuses; one whose bucket is
     /// retired without a revisit stays until restart, one short string per such bucket.
     reported_recovery: DashMap<BucketKey, String>,
+    /// The learners seated in place and the engines' workspaces (card 4114a2c6).
+    in_place: in_place::InPlace,
     initial_scan: std::sync::atomic::AtomicU8,
     /// Finite admitted operations outlive a cancelled caller. Shutdown drains
     /// this set; dropping a caller never aborts a writer or releases its lease.
@@ -307,6 +310,7 @@ impl TrainingTriggerState {
             active_scan_after: std::sync::Mutex::new(None),
             cached_scan_after: std::sync::Mutex::new(None),
             reported_recovery: DashMap::new(),
+            in_place: Default::default(),
             initial_scan: std::sync::atomic::AtomicU8::new(0),
             operations: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
             #[cfg(test)]

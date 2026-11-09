@@ -11,7 +11,7 @@
 use super::grant::{self, Grant};
 use super::memory::{self, EngineWorkspace, MindLearning};
 use super::seat::{self, Authority, Seat, SeatRefusal};
-use crate::inference::llama_server::{FreshShadow, GrantShare, LearnExample, LearnOutcome, LearningEngine, LlamaServerError};
+use crate::inference::llama_server::{CheckpointAnswer, FreshShadow, GrantShare, LearnExample, LearnOutcome, LearningEngine, LlamaServerError};
 
 /// A mind learning in place.
 pub struct MindLearner {
@@ -119,6 +119,12 @@ impl MindLearner {
             held.settle().await;
         }
         outcome
+    }
+
+    /// Publish her shadow's weights and optimizer state as checkpoint generation `<name>.checkpoint`,
+    /// bound to `binding`, `provenance` in its manifest. Refused by the engine while she is learning.
+    pub async fn checkpoint(&self, name: &str, binding: &str, provenance: serde_json::Value) -> Result<CheckpointAnswer, LlamaServerError> {
+        self.seat.engine.save_checkpoint(&self.seat.ledger, self.seat.shadow.id, name, binding, provenance).await
     }
 
     /// Her shadow's adapter id in the engine.

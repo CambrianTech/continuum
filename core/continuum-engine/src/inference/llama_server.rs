@@ -86,7 +86,7 @@ pub use learn_ledger::{GrantId, GrantShare, LearningEngine, GrantRefusal, GrantT
 mod learn_residency;
 mod learn_step;
 pub use learn_step::{LearnExample, LearnOutcome};
-pub use learn_residency::{CoveringLease, FreshShadow, LeaseKind, LearningPlan, LoadedAdapter, MeasuredRow, PlannedRow, Preflight, PreflightRefusal, RegisteredResidency, ResidencyId, ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind, WeightsPlan};
+pub use learn_residency::{Checkpoint, CheckpointAnswer, CoveringLease, FreshShadow, LeaseKind, LearningPlan, LoadedAdapter, MeasuredRow, PlannedRow, Preflight, PreflightRefusal, RegisteredResidency, ResidencyId, ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind, WeightsPlan};
 mod gene_pages;
 pub use gene_pages::{gene_seats, page_gene, GeneMove, GenePageError, GeneSeat};
 pub(crate) use genome::gene_stage_name;
