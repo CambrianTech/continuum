@@ -126,13 +126,19 @@ impl DurableStore {
         Ok(self.learn_checkpoints.find_all().await.map_err(|e| e.to_string())?.into_iter().map(|(_, row)| row).collect())
     }
 
-    /// Record that `checkpoint`'s generation was adopted as candidate `trial`.
+    /// Record that `checkpoint`'s generation was adopted as candidate `trial`: only the candidate's
+    /// two fields, on the row as it is now, so a newer generation committed meanwhile keeps its own
+    /// name, path, steps and positions (Codex on bdebe70f5).
     pub(in crate::modules::training_trigger) async fn record_candidate(&self, checkpoint: &LearnCheckpoint, trial: Uuid) -> Result<(), String> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Candidate {
+            candidate_trial: Uuid,
+            candidate_at: u32,
+        }
         let id = entity_id(&checkpoint.base)?;
-        let mut row = checkpoint.clone();
-        row.candidate_trial = Some(trial);
-        row.candidate_at = checkpoint.learned();
-        self.learn_checkpoints.update(id, &row).await.map_err(|e| e.to_string())
+        let fields = Candidate { candidate_trial: trial, candidate_at: checkpoint.learned() };
+        self.learn_checkpoints.update_fields(id, &fields).await.map_err(|e| e.to_string())
     }
 
     /// Apply `checkpoint`'s positions to its submissions (monotonic, so applying again is harmless).
@@ -180,5 +186,23 @@ mod tests {
         let rows = reopened.checkpoints().await.expect("test: rows");
         assert_eq!((rows[0].candidate_at, rows[0].learned()), (competence, 2 * competence), "the candidate's place carries to the next generation");
         assert!(super::super::super::in_place::snapshot_due(&rows[0]));
+    }
+
+    // what this catches: a candidate's receipt, written after its adoption awaited, putting a stale
+    // generation back over a newer one committed meanwhile (Codex on bdebe70f5). Only the candidate's
+    // fields change; the newer generation's name and positions stay.
+    #[tokio::test]
+    async fn a_late_candidate_receipt_keeps_the_newer_generation() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let store = DurableStore::new(adapter).await.expect("test: store");
+        let key = BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() };
+        let competence = crate::genome::competence::MIN_EXAMPLES as u32;
+        store.commit_checkpoint(&key, generation("g1"), &[Position { submission: Uuid::new_v4(), learned: competence }]).await.expect("test: g1");
+        let g1 = store.checkpoint_of(&key).await.expect("test: read").expect("test: g1 row"); // the sweep read g1
+        store.commit_checkpoint(&key, generation("g2"), &[Position { submission: Uuid::new_v4(), learned: 2 }]).await.expect("test: g2"); // learning committed g2 meanwhile
+        let trial = Uuid::new_v4();
+        store.record_candidate(&g1, trial).await.expect("test: g1's receipt");
+        let now = store.checkpoint_of(&key).await.expect("test: read").expect("test: row");
+        assert_eq!((now.name.as_str(), now.learned(), now.candidate_trial, now.candidate_at), ("g2", competence + 2, Some(trial), competence));
     }
 }
