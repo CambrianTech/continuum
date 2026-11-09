@@ -40,7 +40,13 @@ pub struct LearnOutcome {
     pub n_labels: i64,
     pub t_ms: f64,
     pub max_chunk_ms: f64,
+    /// The restoration custody's aggregate debit (setup, drained graph nodes and the tail restore).
     pub restoration_ms: f64,
+    /// The blocking phases, each its longest: what a neighbour can wait behind (fork 249c97bc2).
+    pub entry_ms: f64,
+    pub max_graph_ms: f64,
+    pub max_restore_ms: f64,
+    pub cleanup_ms: f64,
     #[serde(default)]
     pub deferred: bool,
     #[serde(default)]
