@@ -8,7 +8,7 @@ fn ledger_json(refusal: &str) -> serde_json::Value {
         "clock_us": 1_234_567, "max_period_ms": 86_400_000, "max_expiry_ms": 86_400_000,
         "refusal": refusal,
         "grants": [{
-            "id": "a previous core's grant", "period_ms": 2000, "share_ppm": 250000,
+            "id": "a previous core's grant", "period_ms": 2000, "share_ppm": 250000, "max_chunk_us": 40000,
             "expires_at_us": 9_000_000, "revoked": false, "outstanding": 1,
             "committed_steps": 3, "used_us": 4200
         }],
@@ -59,6 +59,7 @@ async fn a_refused_registration_names_its_refusal() {
         "/learn/grants",
         axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
             assert_eq!(body["share_ppm"], 250_000, "the terms go on the wire as issued");
+            assert_eq!(body["max_chunk_us"], 40_000, "with the chunk bound they were measured under");
             assert_eq!(body["expires_in_ms"], 4000, "expiry goes relative; the engine owns its clock");
             axum::Json(ledger_json("stale_engine"))
         }),
@@ -67,7 +68,7 @@ async fn a_refused_registration_names_its_refusal() {
     let terms = GrantTerms {
         id: GrantId::issue(),
         engine: serde_json::from_value(serde_json::json!("another incarnation")).expect("test: an engine id is a string"),
-        share: GrantShare::Measured { share_ppm: std::num::NonZeroU32::new(250_000).expect("test: nonzero"), period: std::time::Duration::from_millis(2000) },
+        share: GrantShare::Measured { share_ppm: std::num::NonZeroU32::new(250_000).expect("test: nonzero"), period: std::time::Duration::from_millis(2000), max_chunk: std::time::Duration::from_micros(40_000) },
         expires_in: std::time::Duration::from_millis(4000),
     };
     let LedgerAnswer::Ledger(registered) = process.register_learn_grant(&terms).await.expect("test: the engine answered") else {

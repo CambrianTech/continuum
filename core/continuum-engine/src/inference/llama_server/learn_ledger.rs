@@ -55,8 +55,10 @@ pub enum GrantShare {
     /// Learning only while no other slot serves; every contended step is refused. The bootstrap
     /// before anything has been measured (Codex, 2026-11-09: share 0, never an invented number).
     UncontendedOnly,
-    /// Of every `period`, at most `share_ppm` millionths, from measurement.
-    Measured { share_ppm: std::num::NonZeroU32, period: std::time::Duration },
+    /// Of every `period`, at most `share_ppm` millionths, each learning chunk at most `max_chunk`
+    /// (the latency a neighbour may wait behind one chunk), all from measurement. A share without
+    /// its chunk bound is not a measured grant, so it cannot be written.
+    Measured { share_ppm: std::num::NonZeroU32, period: std::time::Duration, max_chunk: std::time::Duration },
 }
 
 /// What a grant allows, until `expires_in` (the engine turns it into its own clock, so no
@@ -75,6 +77,10 @@ pub struct GrantTerms {
 pub enum GrantRefusal {
     /// A contended step under an uncontended-only grant: measure first, then a measured grant.
     UncontendedOnly,
+    /// A step under a grant with no measured chunk bound, or with no measured chunk cost yet.
+    PendingCalibration,
+    /// The measured chunk is longer than the grant's bound, even while idle.
+    ChunkExceedsLatency,
     Invalid,
     StaleEngine,
     GrantMismatch,
@@ -117,6 +123,8 @@ pub struct RegisteredGrant {
     pub id: String,
     pub period_ms: i64,
     pub share_ppm: i64,
+    /// Zero for a grant without a measured chunk bound (uncontended-only).
+    pub max_chunk_us: i64,
     pub expires_at_us: i64,
     pub revoked: bool,
     pub outstanding: i64,
@@ -220,15 +228,16 @@ impl LearningEngine {
 
     /// `POST /learn/grants`: register `terms` with the engine.
     pub async fn register_learn_grant(&self, terms: &GrantTerms) -> Result<LedgerAnswer<Registered<GrantRefusal>>, LlamaServerError> {
-        let (share_ppm, period_ms) = match terms.share {
-            GrantShare::UncontendedOnly => (0, 0),
-            GrantShare::Measured { share_ppm, period } => (share_ppm.get(), duration_ms(period)?),
+        let (share_ppm, period_ms, max_chunk_us) = match terms.share {
+            GrantShare::UncontendedOnly => (0, 0, 0),
+            GrantShare::Measured { share_ppm, period, max_chunk } => (share_ppm.get(), duration_ms(period)?, duration_us(max_chunk)?),
         };
         let body = serde_json::json!({
             "id": terms.id.to_string(),
             "engine": terms.engine,
             "period_ms": period_ms,
             "share_ppm": share_ppm,
+            "max_chunk_us": max_chunk_us,
             "expires_in_ms": duration_ms(terms.expires_in)?,
         });
         let reply = self.ledger_request::<GrantRefusal>(self.client.post(format!("{}/learn/grants", self.root)).json(&body)).await?;
@@ -274,3 +283,7 @@ fn duration_ms(d: std::time::Duration) -> Result<u64, LlamaServerError> {
     u64::try_from(d.as_millis()).map_err(|_| LlamaServerError::Unreachable(format!("{d:?} does not fit the ledger's milliseconds")))
 }
 
+
+fn duration_us(d: std::time::Duration) -> Result<u64, LlamaServerError> {
+    u64::try_from(d.as_micros()).map_err(|_| LlamaServerError::Unreachable(format!("{d:?} does not fit the ledger's microseconds")))
+}
