@@ -16,7 +16,14 @@ fn ledger_json(refusal: &str) -> serde_json::Value {
             "optimizer_owned_buffers": [{"lora_id": 1, "device": "CUDA0", "buffer_type": "CUDA0", "kind": "static", "bytes": 6_488_192, "host": false}],
             "shared_compute_buffers": [{"device": "CUDA0", "buffer_type": "CUDA0", "bytes": 27_257_984, "host": false}],
             "optimizer_unallocated_lora_ids": [0]
-        }
+        },
+        "residencies": [{
+            "id": "r-1", "engine": "9f2c1e0a7b3d4c5e6f708192a3b4c5d6", "owner": "core-a",
+            "subject": {"load": {"name": "shadow.gguf"}},
+            "rows": [{"device": "CUDA0", "buffer_type": "CUDA0", "kind": "weights", "bytes": 90112, "host": false}],
+            "leases": [{"kind": "vram", "lease_id": "lease-7", "bytes": 90112}],
+            "pending": false, "live": true, "revoked": false, "lora_id": 1
+        }]
     })
 }
 
@@ -83,4 +90,79 @@ async fn an_engine_without_the_routes_has_no_ledger_and_a_malformed_answer_is_an
     let (broken, broken_server) = engine(app).await;
     assert!(broken.learn_ledger().await.is_err(), "a reply without the ledger's identity is no ledger");
     broken_server.abort();
+}
+
+// what this catches: a residency registered with numbers the engine never measured. The core
+// leases exactly the dry run's rows (named for what they hold), sends every field of a fresh shadow
+// (the engine fills none in), and reads a refusal by the engine's residency names.
+#[tokio::test]
+async fn a_residency_mirrors_the_measured_rows_and_the_leases_that_cover_them() {
+    let app = axum::Router::new()
+        .route(
+            "/lora-adapters/fresh",
+            axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                assert_eq!(body["dry_run"], true, "the plan allocates nothing");
+                assert_eq!((body["rank"].clone(), body["top_layers"].clone(), body["targets"].clone()), (serde_json::json!(8), serde_json::json!(1), serde_json::json!("attn_q,attn_v")));
+                axum::Json(serde_json::json!({"engine": "9f2c1e0a7b3d4c5e6f708192a3b4c5d6", "reserved": false,
+                    "weights": [{"device": "CUDA0", "buffer_type": "CUDA0", "bytes": 90112, "host": false}]}))
+            }),
+        )
+        .route(
+            "/learn/residency",
+            axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                assert_eq!(body["rows"][0]["kind"], "weights");
+                assert_eq!(body["leases"][0], serde_json::json!({"kind": "vram", "lease_id": "lease-7", "bytes": 90112}));
+                assert_eq!(body["subject"]["fresh"]["seed"], 7, "every fresh field is sent");
+                axum::Json(ledger_json("uncovered"))
+            }),
+        );
+    let (process, server) = engine(app).await;
+    let shadow = FreshShadow { name: "her-shadow.gguf".into(), rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 1, seed: 7 };
+    let LedgerAnswer::Ledger(plan) = process.plan_fresh_shadow(&shadow).await.expect("test: the engine answered") else {
+        panic!("test: an engine with the routes plans")
+    };
+    let terms = ResidencyTerms {
+        id: ResidencyId::issue(),
+        engine: plan.engine.clone(),
+        owner: uuid::Uuid::new_v4(),
+        subject: ResidencySubject::Fresh(shadow),
+        rows: plan.weights.into_iter().map(|row| ResidencyRow::of(row, RowKind::Weights)).collect(),
+        leases: vec![CoveringLease { kind: LeaseKind::Vram, lease_id: "lease-7".into(), bytes: 90112 }],
+    };
+    let LedgerAnswer::Ledger(registered) = process.register_residency(&terms).await.expect("test: the engine answered") else {
+        panic!("test: an engine with the routes has a ledger")
+    };
+    assert_eq!(registered.refused, Some(ResidencyRefusal::Uncovered));
+    assert_eq!(registered.ledger.residencies[0].leases[0].lease_id, "lease-7");
+    server.abort();
+}
+
+// what this catches: a learning preflight's refusal read as a plan (zero bytes would lease nothing
+// and then allocate unleased), and serving's held workspace read as a requirement. A refusal is typed;
+// held rows are evidence beside the required ones.
+#[tokio::test]
+async fn a_preflight_refusal_is_typed_and_held_rows_are_evidence() {
+    let app = axum::Router::new().route(
+        "/learn/preflight",
+        axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+            if body["lora_id"] == 9 {
+                return axum::Json(serde_json::json!({"engine": "e", "refusal": "busy", "detail": "learning retains the context", "reserved": false, "requirements": []}));
+            }
+            axum::Json(serde_json::json!({"engine": "e", "refusal": "none", "reserved": false, "lora_id": 1, "requirements": [
+                {"device": "CUDA0", "buffer_type": "CUDA0", "kind": "optimizer_static_required", "bytes": 6488192, "host": false},
+                {"device": "CUDA0", "buffer_type": "CUDA0", "kind": "shared_compute_held", "bytes": 9374336, "host": false}
+            ]}))
+        }),
+    );
+    let (process, server) = engine(app).await;
+    let engine_id: LedgerEngine = serde_json::from_value(serde_json::json!("e")).expect("test: an engine id is a string");
+    let LedgerAnswer::Ledger(refused) = process.learning_preflight(&engine_id, 9).await.expect("test: the engine answered") else {
+        panic!("test: an engine with the routes plans")
+    };
+    assert_eq!(refused, Preflight::Refused { refusal: PreflightRefusal::Busy, detail: Some("learning retains the context".into()) });
+    let LedgerAnswer::Ledger(Preflight::Planned(plan)) = process.learning_preflight(&engine_id, 1).await.expect("test: the engine answered") else {
+        panic!("test: a planned preflight")
+    };
+    assert_eq!(plan.requirements.iter().filter(|row| row.kind.ends_with("_required")).map(|row| row.bytes).sum::<u64>(), 6_488_192);
+    server.abort();
 }
