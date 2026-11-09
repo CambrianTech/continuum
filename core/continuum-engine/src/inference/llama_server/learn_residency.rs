@@ -185,6 +185,10 @@ pub struct WeightsPlan {
 pub struct LearningPlan {
     pub engine: LedgerEngine,
     pub requirements: Vec<PlannedRow>,
+    /// The example's labelled reply rows, as the engine rendered and counted them.
+    pub reply_rows: u32,
+    /// The served context window the example was priced within (never shrunk to fit).
+    pub served_window: u32,
 }
 
 /// A preflight row: `*_required` is what learning would allocate, `shared_compute_held` is what
@@ -216,6 +220,10 @@ struct PreflightReply {
     #[serde(default)]
     detail: Option<String>,
     requirements: Vec<PlannedRow>,
+    #[serde(default)]
+    reply_rows: Option<u32>,
+    #[serde(default)]
+    served_window: Option<u32>,
 }
 
 /// A learning preflight's answer.
@@ -239,16 +247,34 @@ impl LearningEngine {
         self.plan_request(self.client.post(format!("{}/lora-adapters/load", self.root)).json(&body)).await
     }
 
-    /// `POST /learn/preflight`: what learning on loaded shadow `lora_id` would allocate, measured on a
-    /// disposable scheduler (serving untouched).
-    pub async fn learning_preflight(&self, engine: &LedgerEngine, lora_id: i64) -> Result<LedgerAnswer<Preflight>, LlamaServerError> {
-        let body = serde_json::json!({ "engine": engine, "lora_id": lora_id });
+    /// `POST /learn/preflight`: what learning `messages` (with `tools`, as `/learn` would receive
+    /// them) on loaded shadow `lora_id` would allocate, measured on a disposable scheduler (serving
+    /// untouched). The engine renders and counts the reply itself, with the renderer `/learn` uses.
+    pub async fn learning_preflight(
+        &self,
+        engine: &LedgerEngine,
+        lora_id: i64,
+        messages: &[serde_json::Value],
+        tools: Option<&serde_json::Value>,
+    ) -> Result<LedgerAnswer<Preflight>, LlamaServerError> {
+        let mut body = serde_json::json!({ "engine": engine, "lora_id": lora_id, "messages": messages });
+        if let Some(tools) = tools {
+            body["tools"] = tools.clone();
+        }
         let reply: LedgerAnswer<PreflightReply> =
             self.plan_request(self.client.post(format!("{}/learn/preflight", self.root)).json(&body)).await?;
-        Ok(reply.map(|reply| match reply.refusal {
-            PreflightRefusal::None => Preflight::Planned(LearningPlan { engine: reply.engine, requirements: reply.requirements }),
-            refusal => Preflight::Refused { refusal, detail: reply.detail },
-        }))
+        match reply {
+            LedgerAnswer::NoLedger => Ok(LedgerAnswer::NoLedger),
+            LedgerAnswer::Ledger(reply) => Ok(LedgerAnswer::Ledger(match (reply.refusal, reply.reply_rows, reply.served_window) {
+                (PreflightRefusal::None, Some(reply_rows), Some(served_window)) => {
+                    Preflight::Planned(LearningPlan { engine: reply.engine, requirements: reply.requirements, reply_rows, served_window })
+                }
+                (PreflightRefusal::None, _, _) => {
+                    return Err(LlamaServerError::Unreachable("/learn/preflight planned without the example's geometry".into()))
+                }
+                (refusal, _, _) => Preflight::Refused { refusal, detail: reply.detail },
+            })),
+        }
     }
 
     /// `POST /learn/residency`: mirror the core's leases for `terms` in the engine.

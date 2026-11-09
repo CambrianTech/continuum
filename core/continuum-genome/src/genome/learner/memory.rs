@@ -5,12 +5,15 @@
 //! from the one resource authority:
 //! - per mind, her optimizer state (gradient accumulators and AdamW moments), a residency on her
 //!   loaded shadow;
-//! - per engine, ONE training workspace shared by every mind's chunks (never N copies), leased
-//!   once and reused while it covers what a preflight requires.
+//! - per engine, ONE training workspace shared by every mind's chunks (never N copies), reused while
+//!   it covers what a preflight requires and replaced (the new one registered before the old is
+//!   released) when a longer example needs more.
+//! Each claim is priced for the example about to be learned, which the engine renders and counts
+//! itself: never a guessed geometry, never the whole served window by default.
 //! The first learn on an engine replaces the serving scheduler, so the workspace is leased in full,
 //! with no credit for what serving held (`shared_compute_held` is evidence, never a lease row).
 
-use super::seat::{lease_rows, Authority, Seat, SeatRefusal};
+use super::seat::{confirm_release, lease_rows, Authority, Seat, SeatRefusal};
 use crate::inference::llama_server::{
     CoveringLease, LearningEngine, LedgerAnswer, PlannedRow, Preflight, ResidencyId, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind,
 };
@@ -19,6 +22,7 @@ use crate::resources::LeaseGuard;
 /// One mind's learning memory: her optimizer residency and the leases that pay for it.
 pub struct MindLearning {
     pub optimizer: ResidencyId,
+    rows: Vec<ResidencyRow>,
     _leases: Vec<LeaseGuard>,
 }
 
@@ -26,7 +30,7 @@ impl MindLearning {
     /// Release her optimizer residency once its shadow is unloaded (the engine frees the optimizer
     /// with it); the leases drop with this value. A busy release keeps it, leases and all.
     pub async fn release(self, seat: &Seat) -> Result<(), (Self, String)> {
-        match release(&seat.engine, &self.optimizer, "optimizer").await {
+        match confirm_release(&seat.engine, &self.optimizer).await {
             Ok(()) => Ok(()),
             Err(why) => Err((self, why)),
         }
@@ -38,43 +42,77 @@ pub struct EngineWorkspace {
     pub residency: ResidencyId,
     rows: Vec<ResidencyRow>,
     _leases: Vec<LeaseGuard>,
+    /// Workspaces this one replaced whose release the engine has not confirmed yet: the engine moves
+    /// its binding on the next learn that claims the new residency, not on registration, so each
+    /// keeps its leases until its release is accepted.
+    superseded: Vec<EngineWorkspace>,
 }
 
 impl EngineWorkspace {
     /// Whether this workspace covers every row a preflight requires (same device, buffer type and
     /// host class, at least the bytes).
     fn covers(&self, required: &[ResidencyRow]) -> bool {
-        required.iter().all(|need| {
-            self.rows.iter().any(|row| {
-                row.device == need.device && row.buffer_type == need.buffer_type && row.host == need.host && row.bytes >= need.bytes
-            })
-        })
+        covered(&self.rows, required)
+    }
+
+    /// Release the superseded workspaces the engine no longer binds; each one it still binds (busy)
+    /// or does not answer for stays, leases and all, for the next settle.
+    pub async fn settle(&mut self, engine: &LearningEngine) {
+        let mut kept = Vec::new();
+        // flat by construction: a replacement takes over its predecessor's superseded list
+        for old in std::mem::take(&mut self.superseded) {
+            if confirm_release(engine, &old.residency).await.is_err() {
+                kept.push(old);
+            }
+        }
+        self.superseded = kept;
     }
 
     /// Release the workspace residency once no mind learns on its engine (the engine reclaims the
-    /// buffer after its last optimizer); the leases drop with this value. A refused release keeps it.
-    pub async fn release(self, engine: &LearningEngine) -> Result<(), (Self, String)> {
-        match release(engine, &self.residency, "workspace").await {
+    /// buffer after its last optimizer), superseded ones first; the leases drop with this value. A
+    /// release the engine does not confirm hands it back, leases and all.
+    pub async fn release(mut self, engine: &LearningEngine) -> Result<(), (Self, String)> {
+        self.settle(engine).await;
+        if !self.superseded.is_empty() {
+            let why = format!("{} superseded workspace residencies are not released yet", self.superseded.len());
+            return Err((self, why));
+        }
+        match confirm_release(engine, &self.residency).await {
             Ok(()) => Ok(()),
             Err(why) => Err((self, why)),
         }
     }
 }
 
-/// Release one residency, naming `what` it held in a refusal.
-async fn release(engine: &LearningEngine, residency: &ResidencyId, what: &str) -> Result<(), String> {
-    match engine.release_residency(&residency.to_string()).await {
-        Ok(LedgerAnswer::Ledger(released)) if released.refused.is_none() => Ok(()),
-        Ok(LedgerAnswer::Ledger(released)) => Err(format!("{what} residency release refused: {:?}", released.refused)),
-        Ok(LedgerAnswer::NoLedger) => Err("the engine lost its learning ledger".into()),
-        Err(error) => Err(format!("{what} residency release failed: {error}")),
-    }
+/// Whether `held` rows cover every row `required` (same device, buffer type and host class, at
+/// least the bytes).
+fn covered(held: &[ResidencyRow], required: &[ResidencyRow]) -> bool {
+    required.iter().all(|need| {
+        held.iter().any(|row| row.device == need.device && row.buffer_type == need.buffer_type && row.host == need.host && row.bytes >= need.bytes)
+    })
 }
 
-/// Lease and register what learning on `seat` needs: her optimizer residency, and the engine's
-/// workspace when it does not hold one that covers this preflight yet.
-pub async fn prepare(authority: &Authority, seat: &Seat, consumer: &str, workspace: &mut Option<EngineWorkspace>) -> Result<MindLearning, SeatRefusal> {
-    let plan = match seat.engine.learning_preflight(&seat.ledger, seat.shadow.id).await {
+/// The residencies a covered example learns inside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Covered {
+    pub optimizer: ResidencyId,
+    pub workspace: ResidencyId,
+}
+
+/// Make sure what learning `messages` (with `tools`) on `seat` needs is leased and mirrored: her
+/// optimizer residency, and the engine's workspace, replaced when the one held does not cover this
+/// example. Her optimizer is sized by her shadow's parameters, not by the example, so an optimizer
+/// that stops covering is refused as unmeasured rather than replaced.
+pub async fn cover(
+    authority: &Authority,
+    seat: &Seat,
+    consumer: &str,
+    messages: &[serde_json::Value],
+    tools: Option<&serde_json::Value>,
+    mind: &mut Option<MindLearning>,
+    workspace: &mut Option<EngineWorkspace>,
+) -> Result<Covered, SeatRefusal> {
+    let plan = match seat.engine.learning_preflight(&seat.ledger, seat.shadow.id, messages, tools).await {
         Ok(LedgerAnswer::Ledger(Preflight::Planned(plan))) => plan,
         Ok(LedgerAnswer::Ledger(Preflight::Refused { refusal, detail })) => {
             return Err(SeatRefusal::Unmeasured(format!("learning preflight refused ({refusal:?}): {}", detail.unwrap_or_default()))) // unwrap_or_default: a refusal without detail still names its kind
@@ -83,17 +121,48 @@ pub async fn prepare(authority: &Authority, seat: &Seat, consumer: &str, workspa
         Err(error) => return Err(SeatRefusal::Unmeasured(error.to_string())),
     };
     let (optimizer_rows, workspace_rows) = split(&plan.requirements);
-    if !workspace.as_ref().is_some_and(|held| held.covers(&workspace_rows)) {
-        // A held workspace that no longer covers stays held until its replacement registers
-        // (the engine moves its binding, then the old residency is released).
-        let leases = lease_rows(authority, &format!("{consumer}:workspace"), &workspace_rows).await?;
-        let residency = register(seat, ResidencySubject::Workspace, workspace_rows.clone(), &leases).await?;
-        *workspace = Some(EngineWorkspace { residency, rows: workspace_rows, _leases: leases.into_iter().map(|(_, _, guard)| guard).collect() });
+    let workspace_residency = match workspace.as_ref() {
+        Some(held) if held.covers(&workspace_rows) => held.residency,
+        _ => replace_workspace(authority, seat, consumer, workspace_rows, workspace).await?,
+    };
+    let optimizer = match mind {
+        Some(held) if covered(&held.rows, &optimizer_rows) => held.optimizer,
+        Some(_) => {
+            return Err(SeatRefusal::Unmeasured(format!(
+                "her optimizer needs more than its measured residency for a {}-row reply in a {}-token window",
+                plan.reply_rows, plan.served_window
+            )))
+        }
+        None => {
+            let leases = lease_rows(authority, consumer, &optimizer_rows).await?;
+            let subject = ResidencySubject::Loaded { lora_id: seat.shadow.id, path: seat.shadow.path.clone() };
+            let optimizer = register(seat, subject, optimizer_rows.clone(), &leases).await?;
+            *mind = Some(MindLearning { optimizer, rows: optimizer_rows, _leases: leases.into_iter().map(|(_, _, guard)| guard).collect() });
+            optimizer
+        }
+    };
+    Ok(Covered { optimizer, workspace: workspace_residency })
+}
+
+/// Lease and register a workspace covering `rows`; the engine binds its next allocation to it, then
+/// the one it replaces (if any) is released.
+async fn replace_workspace(
+    authority: &Authority,
+    seat: &Seat,
+    consumer: &str,
+    rows: Vec<ResidencyRow>,
+    workspace: &mut Option<EngineWorkspace>,
+) -> Result<ResidencyId, SeatRefusal> {
+    let leases = lease_rows(authority, &format!("{consumer}:workspace"), &rows).await?;
+    let residency = register(seat, ResidencySubject::Workspace, rows.clone(), &leases).await?;
+    let mut replacement = EngineWorkspace { residency, rows, _leases: leases.into_iter().map(|(_, _, guard)| guard).collect(), superseded: Vec::new() };
+    // the engine still binds the old one until a learn claims the new: it is kept, never released here
+    if let Some(mut old) = workspace.take() {
+        replacement.superseded.append(&mut old.superseded);
+        replacement.superseded.push(old);
     }
-    let leases = lease_rows(authority, consumer, &optimizer_rows).await?;
-    let subject = ResidencySubject::Loaded { lora_id: seat.shadow.id, path: seat.shadow.path.clone() };
-    let optimizer = register(seat, subject, optimizer_rows, &leases).await?;
-    Ok(MindLearning { optimizer, _leases: leases.into_iter().map(|(_, _, guard)| guard).collect() })
+    *workspace = Some(replacement);
+    Ok(residency)
 }
 
 /// A preflight's required rows, split into her optimizer's and the engine's workspace; the rows
