@@ -75,7 +75,6 @@ async fn provenance(store: &DurableStore, generation: &LearnCheckpoint) -> Resul
     let id = Uuid::new_v5(&generation.persona_id, generation.name.as_bytes());
     let dir = crate::genome::fine_tuning::job_dir::default_job_dir(&generation.persona_name, &generation.trait_kind, id)
         .ok_or("no continuum home: the candidate's provenance has no place")?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let request = TrainingJobRequest {
         persona_id: generation.persona_id,
         persona_name: generation.persona_name.clone(),
@@ -90,6 +89,8 @@ async fn provenance(store: &DurableStore, generation: &LearnCheckpoint) -> Resul
         parent: generation.signature.as_ref().and_then(|sig| sig.parent.clone()),
     };
     let text = serde_json::to_string_pretty(&request).map_err(|e| format!("the candidate's provenance did not serialize: {e}"))?; // disk boundary: the request the examiner reads
-    std::fs::write(dir.join("request.json"), text).map_err(|e| format!("write {}: {e}", dir.join("request.json").display()))?;
+    // the job directory's one writer: published once and immutable, so a retry finds the record a
+    // first attempt already wrote (named by the generation, it holds the same examples)
+    crate::genome::fine_tuning::job_dir::publish_job_file(&dir, "request.json", text.as_bytes())?;
     Ok(dir)
 }

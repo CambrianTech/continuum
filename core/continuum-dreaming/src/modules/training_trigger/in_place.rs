@@ -75,9 +75,9 @@ pub(crate) fn start(journal: u32, checkpointed: Option<u32>, progress: Option<u3
 }
 
 /// The learners seated in place, per engine, held for as long as the trigger lives.
-#[derive(Default)]
 pub(crate) struct InPlace {
-    authority: std::sync::OnceLock<Authority>,
+    /// The authorities learning answers to, handed in by the core that built the trigger.
+    authority: Authority,
     engines: dashmap::DashMap<EngineIncarnation, Arc<tokio::sync::Mutex<EngineLearning>>>,
 }
 
@@ -122,18 +122,8 @@ pub(crate) struct BucketPass {
 }
 
 impl InPlace {
-    /// Install the authorities learning answers to; the first pass installs this core's own.
-    #[cfg(test)]
-    pub(crate) fn install(&self, authority: Authority) {
-        let _ = self.authority.set(authority); // first install wins, like the core's
-    }
-
-    fn authority(&self) -> Result<&Authority, String> {
-        if let Some(authority) = self.authority.get() {
-            return Ok(authority);
-        }
-        let installed = Authority::installed().map_err(|why| why.to_string())?;
-        Ok(self.authority.get_or_init(|| installed))
+    pub(crate) fn new(authority: Authority) -> Self {
+        Self { authority, engines: Default::default() }
     }
 
     fn engine(&self, engine: EngineIncarnation) -> Arc<tokio::sync::Mutex<EngineLearning>> {
@@ -143,7 +133,7 @@ impl InPlace {
     /// Learn bucket `key`'s pending `rows` (oldest first) on `engine` until one defers, then publish a
     /// checkpoint of what was learned and move the journal's cursor with it.
     pub(crate) async fn learn_bucket(&self, state: &Arc<TrainingTriggerState>, key: &BucketKey, rows: Vec<Arrival>, engine: EngineIncarnation) -> Result<BucketPass, String> {
-        let authority = self.authority()?;
+        let authority = &self.authority;
         let Ok(mut held) = self.engine(engine).try_lock_owned() else {
             return Ok(BucketPass { deferred: true, ..Default::default() }); // a step or a fence holds this engine: later
         };
@@ -485,9 +475,7 @@ impl TrainingTriggerState {
     /// for other bases never hide eligible ones behind them.
     pub(crate) async fn learn_in_place(self: &Arc<Self>, engine: EngineIncarnation, served_model: &str) -> Result<(), String> {
         let store = self.durable.require()?;
-        if let Ok(authority) = self.in_place.authority() {
-            authority.custody.settle_orphans().await;
-        }
+        self.in_place.authority.custody.settle_orphans().await;
         let buckets = eligible_buckets(&store, served_model).await?;
         for (key, rows) in buckets {
             let pass = self.run_owned(key, move |state, key| async move { state.in_place.learn_bucket(&state, &key, rows, engine).await }).await??;
@@ -498,7 +486,23 @@ impl TrainingTriggerState {
         }
         // every bucket's newest generation is candidate work of its own, retried until taken: a
         // candidate interrupted after its generation, or a bucket with nothing pending, is not lost
-        for generation in store.checkpoints().await? {
+        const PAGE: usize = 64;
+        let mut after: Option<String> = None;
+        loop {
+            let page = store.checkpoints(after.as_deref(), PAGE).await?;
+            let full = page.len() == PAGE;
+            after = page.last().map(|row| row.cursor().to_owned());
+            self.sweep_candidates(page, served_model).await?;
+            if !full {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Take each due candidate in `page` whose base `served_model` serves, under its bucket's gate.
+    async fn sweep_candidates(self: &Arc<Self>, page: Vec<super::durable::LearnCheckpoint>, served_model: &str) -> Result<(), String> {
+        for generation in page {
             if !crate::model_registry::artifacts::names_the_same_base(served_model, &generation.base_model) {
                 continue;
             }

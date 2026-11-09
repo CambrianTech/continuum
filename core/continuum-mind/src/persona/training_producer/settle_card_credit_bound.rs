@@ -234,11 +234,10 @@ pub(super) fn staged_submission_params(
     params["submissionId"] = json!(row.id);
     crate::cognition::held_out::stamp_examples(&mut params, row.task.as_ref());
     if verdict == CardVerdict::Corrected {
-        // The reviewed correction (#4900) is the one labelled source: its own bucket, and one
-        // correction trains, through the same /train path at the one default schedule
+        // The reviewed correction (#4900) is the one labelled source: its own bucket, learned
+        // in place like every accepted example, at the one default schedule
         // (`native_jobs::DEFAULT_LEARNING_RATE`, 1e-4, measured on the 5090 2026-10-10).
         params["traitKind"] = json!(format!("{}/{CORRECTED_BUCKET}", plan.bucket_key()));
-        params["minExamples"] = json!(1);
     }
     Ok(params)
 }

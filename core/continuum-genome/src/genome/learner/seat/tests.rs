@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Seating against a fake engine and the real resource authority (a mock capacity source).
 use super::*;
 use std::sync::{Arc, Mutex};

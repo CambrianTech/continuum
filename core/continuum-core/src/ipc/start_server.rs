@@ -228,6 +228,7 @@ pub fn start_server(
             &runtime,
             &gpu_manager,
             &serving_daemon,
+            &resource_daemon,
             &airc_interceptor_cell,
         );
     }

@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 
 fn outcome(committed_steps: i64, effects_uncertain: bool) -> LearnOutcome {
@@ -50,8 +51,7 @@ fn engine(port: u16) -> EngineIncarnation {
 // is not waited on.
 #[tokio::test]
 async fn a_busy_engine_defers_its_bucket_and_never_holds_another() {
-    let state = Arc::new(TrainingTriggerState::new());
-    state.in_place.install(authority());
+    let state = Arc::new(TrainingTriggerState::new(authority()));
     let key = BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() };
     let (wedged, free) = (engine(1), engine(2));
     let _held = state.in_place.engine(wedged).lock_owned().await;

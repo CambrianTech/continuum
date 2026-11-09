@@ -11,13 +11,9 @@ use super::{BucketKey, PendingBatch, TrainingTriggerState};
 use std::sync::{atomic::Ordering, Arc};
 
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::genome::training_outcome::{AcceptanceReceipt, Took};
-#[cfg(not(test))]
-use crate::genome::fine_tuning::TrainingJobBoard;
-use crate::genome::fine_tuning::{job_board::DispatchLookup, JobHandle};
 use crate::orm::{
     adapter::StorageAdapter,
     entity::{BaseEntity, OrmEntity},
@@ -26,13 +22,13 @@ use crate::orm::{
 };
 
 mod acceptance_receipt;
-pub use acceptance_receipt::*;
+pub(crate) use acceptance_receipt::*;
 mod arrivals;
 pub(crate) use arrivals::Arrival;
 mod learn_checkpoint;
+mod reclaim;
 pub(crate) use learn_checkpoint::{Generation, LearnCheckpoint, Position};
 mod training_trigger_state;
-pub(crate) use training_trigger_state::JobInputError;
 mod training_trigger_state_2;
 mod training_trigger_state_3;
 pub(crate) use training_trigger_state_3::*;

@@ -174,7 +174,7 @@ pub(crate) async fn retire(
 mod tests {
     use super::*;
     use crate::commands::training_trigger::test_support::{
-        build_runtime_trigger_only, build_runtime_with_trigger_and_genome, ex, submit_params,
+        build_runtime_trigger_only, ex, submit_params,
     };
     use serde_json::json;
 
@@ -192,7 +192,7 @@ mod tests {
         let json = executor
             .execute_json(
                 "genome/training-trigger/submit",
-                submit_params(persona, "code/owner", examples, Some(100)),
+                submit_params(persona, "code/owner", examples),
             )
             .await
             .expect("test: submit");
@@ -229,7 +229,7 @@ mod tests {
             Err(e) => (true, e.clone()),
         };
         assert!(failed && text.contains("operator self-peer"), "an unnameable decider is refused by name: {refused:?}");
-        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(1), "and nothing is withdrawn");
+        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic").await, Some(1), "and nothing is withdrawn");
     }
 
     // what this catches (card 04a5e867, the 5090 on 2026-10-10): a card's turns settled
@@ -246,7 +246,7 @@ mod tests {
         let pre_1 = submit(&executor, persona, vec![on_card(overturned, "pre-1a"), on_card(overturned, "pre-1b")]).await;
         let pre_2 = submit(&executor, persona, vec![on_card(overturned, "pre-2")]).await;
         let kept = submit(&executor, persona, vec![on_card(other, "other-1")]).await;
-        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(4));
+        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic").await, Some(4));
         // card 4545eafd: a withdrawn example's demand clears; another card's stays
         use crate::genome::fine_tuning::training_demand::TrainingDemand;
         let demand = TrainingDemand::for_persona(persona);
@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(retired, expected);
         assert_eq!(json["refused"].as_array().map(Vec::len), Some(0), "got: {json}");
         assert_eq!(
-            trigger.state.bucket_example_count(persona, "code/owner", "synthetic"),
+            trigger.state.bucket_example_count(persona, "code/owner", "synthetic").await,
             Some(1),
             "the other card's row stays pending"
         );
@@ -295,7 +295,7 @@ mod tests {
 
         // The producer retries a staged row with the SAME submission id: the retired id
         // replays as accepted (her staged credit settles as transferred) and appends nothing.
-        let mut replay = submit_params(persona, "code/owner", vec![on_card(overturned, "pre-2")], Some(100));
+        let mut replay = submit_params(persona, "code/owner", vec![on_card(overturned, "pre-2")]);
         replay["submissionId"] = json!(pre_2);
         let replayed = executor
             .execute_json("genome/training-trigger/submit", replay)
@@ -303,7 +303,7 @@ mod tests {
             .expect("test: replay");
         assert_eq!(replayed["success"], true, "got: {replayed}");
         assert_eq!(replayed["acceptance"]["replayed"], true, "got: {replayed}");
-        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(1));
+        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic").await, Some(1));
         let _ = kept;
     }
 
@@ -318,7 +318,7 @@ mod tests {
         let persona = Uuid::new_v4();
         let card = Uuid::new_v4();
         submit(&executor, persona, vec![on_card(card, "w-1"), on_card(card, "w-2")]).await;
-        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(2));
+        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic").await, Some(2));
         use crate::genome::fine_tuning::training_demand::TrainingDemand;
         let root = crate::genome::fine_tuning::job_dir::genome_root().expect("test: a home");
         let file = TrainingDemand::store_dir(&root).join(format!("{persona}.json"));
@@ -331,7 +331,7 @@ mod tests {
             Err(_) => true,
         };
         assert!(refused, "a store that cannot answer fails the retirement");
-        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(2), "the rows stay pending");
+        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic").await, Some(2), "the rows stay pending");
         assert_eq!(std::fs::read(&file).expect("test: read"), b"{ torn", "the store keeps its bytes");
 
         std::fs::remove_file(&file).expect("test: repair the store");
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(finished["success"], true, "the same retirement finishes once the store answers: {finished}");
         // every row retired: the bucket is gone, not an empty one (Codex read CI: None)
         assert!(
-            matches!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), None | Some(0)),
+            matches!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic").await, None | Some(0)),
             "nothing of hers stays pending"
         );
     }
@@ -348,33 +348,26 @@ mod tests {
     // retire must refuse it BY NAME with its dispatch, never flip it, so the operator
     // reaches for `return` on the job instead of believing the examples were withdrawn.
     #[tokio::test]
-    async fn a_dispatched_submission_is_refused_with_its_dispatch_and_an_unknown_one_by_name() {
-        let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
+    async fn a_learned_submission_is_refused_and_an_unknown_one_by_name() {
+        let (trigger, executor, _dir) = build_runtime_trigger_only().await;
         let persona = Uuid::new_v4();
         let card = Uuid::new_v4();
         let examples = (0..5).map(|i| on_card(card, &format!("p-{i}"))).collect();
         let json = executor
             .execute_json(
                 "genome/training-trigger/submit",
-                submit_params(persona, "test-trait", examples, Some(100)),
+                submit_params(persona, "test-trait", examples),
             )
             .await
             .expect("test: submit");
-        let dispatched: Uuid = json["acceptance"]["submissionId"].as_str().and_then(|s| s.parse().ok()).expect("test: id");
-        let flushed = executor
-            .execute_json(
-                "genome/training-trigger/flush",
-                json!({ "personaId": persona, "traitKind": "test-trait", "baseModel": "synthetic" }),
-            )
-            .await
-            .expect("test: flush");
-        assert_eq!(flushed["outcome"], "JobDispatched", "got: {flushed}");
-        assert_eq!(trigger.state.bucket_example_count(persona, "test-trait", "synthetic"), None);
+        let learned: Uuid = json["acceptance"]["submissionId"].as_str().and_then(|s| s.parse().ok()).expect("test: id");
+        trigger.state.mark_learned(learned, 5).await.expect("test: learned in place");
+        assert_eq!(trigger.state.bucket_example_count(persona, "test-trait", "synthetic").await, None);
 
         let unknown = Uuid::new_v4();
         let json = retire_as_operator(
             &executor,
-            json!({ "submissionIds": [dispatched, unknown], "reason": "too late" }),
+            json!({ "submissionIds": [learned, unknown], "reason": "too late" }),
         )
         .await
         .expect("test: retire");
@@ -383,7 +376,7 @@ mod tests {
         let refused = json["refused"].as_array().expect("test: refused");
         assert_eq!(refused.len(), 2, "got: {json}");
         let by_id = |id: Uuid| refused.iter().find(|r| r["submissionId"] == json!(id)).expect("test: named");
-        assert!(by_id(dispatched)["dispatchId"].is_string(), "the dispatch is named: {json}");
+        assert!(by_id(learned)["why"].as_str().is_some_and(|r| r.contains("learned")), "a learned row says so: {json}");
         assert!(by_id(unknown)["dispatchId"].is_null(), "an unknown id has no dispatch: {json}");
         assert_eq!(json["retirementIds"].as_array().map(Vec::len), Some(0), "nothing withdrawn, no receipt: {json}");
     }

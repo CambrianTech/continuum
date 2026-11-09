@@ -38,25 +38,6 @@
             assert!(wire.get("kind").and_then(|k| k.as_str()).is_some(), "still tagged on the wire: {wire}");
             assert_eq!(serde_json::from_value::<Took>(wire).expect("round trip"), took);
         }
-        // The persisted row, in whatever tag layout DispatchPhase serializes with, with its
-        // `took` as the bare id the pre-#4794 writer stored.
-        use crate::modules::training_trigger::DispatchPhase;
-        let mut row = serde_json::to_value(DispatchPhase::Held { took: Took::Joined { job } }).expect("serialize");
-        fn put_legacy_took(v: &mut serde_json::Value, job: uuid::Uuid) -> bool {
-            match v {
-                serde_json::Value::Object(map) => {
-                    if map.contains_key("took") {
-                        map.insert("took".into(), serde_json::Value::String(job.to_string()));
-                        return true;
-                    }
-                    map.values_mut().any(|child| put_legacy_took(child, job))
-                }
-                _ => false,
-            }
-        }
-        assert!(put_legacy_took(&mut row, job), "the row carries a took: {row}");
-        let phase: DispatchPhase = serde_json::from_value(row).expect("the persisted Held row from before #4794");
-        assert!(matches!(phase, DispatchPhase::Held { took: Took::Joined { job: j } } if j == job));
     }
     use crate::commands::genome::test_support::{registry_with, request_for};
     use crate::sdk_codegen::{ActionCommand, Ctx};

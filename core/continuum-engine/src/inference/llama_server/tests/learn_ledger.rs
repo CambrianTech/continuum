@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! The learning ledger's wire (card 4114a2c6), against a fake engine answering the routes fork
 //! #87's wiring serves (Codex at 7051ffd95, memory receipt at 427415a7c).
 use super::*;

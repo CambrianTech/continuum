@@ -5,8 +5,8 @@
 //! `(context, completion)` example the genome loop can learn from. This module is
 //! the SEAM that turns one completed live turn into one buffered training example
 //! — scored for quality, classified into the right domain bucket, and submitted to
-//! the standing `genome/training-trigger`, which auto-fires a `genome/job-create`
-//! once a bucket fills ([`DEFAULT_MIN_EXAMPLES`] examples). It is the L2 layer of
+//! the standing `genome/training-trigger`, whose journal the serving engine learns
+//! from in place, one accepted example at a time. It is the L2 layer of
 //! the dev-task continuous-learning loop (`docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md`):
 //! the orchestration BREAK 1 — `submit` had zero non-test callers; this is the
 //! call.

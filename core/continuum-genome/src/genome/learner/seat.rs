@@ -67,14 +67,16 @@ pub struct Authority {
 }
 
 impl Authority {
-    /// This core's authorities, as installed at start, with the process's one custody.
-    pub fn installed() -> Result<Self, SeatRefusal> {
-        Ok(Self {
-            resources: crate::resources::ResourceDaemon::global().ok_or_else(|| SeatRefusal::Unleased("the resource authority is not running".into()))?,
-            serving: crate::inference::serving_lifecycle::LifecycleGate::global()
-                .ok_or_else(|| SeatRefusal::Unleased("the serving lifecycle gate is not installed".into()))?,
-            custody: Custody::global(),
-        })
+    /// An authority of its own for a test: a mock resource daemon, an owner-less serving gate and an
+    /// isolated custody.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn isolated(vram: u64) -> Self {
+        let resources = crate::resources::ResourceDaemon::start(
+            vec![std::sync::Arc::new(crate::resources::MockCapacitySource::new(crate::resources::ResourceKind::Vram, vram))],
+            vec![],
+            crate::resources::DaemonConfig::default(),
+        );
+        Self { resources, serving: crate::inference::serving_lifecycle::LifecycleGate::unowned(true), custody: Custody::isolated() }
     }
 }
 

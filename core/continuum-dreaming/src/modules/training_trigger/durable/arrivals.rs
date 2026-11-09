@@ -57,6 +57,28 @@ impl DurableStore {
             .collect()
     }
 
+    /// How many examples bucket `key` holds pending and not yet learned, read from its pending rows.
+    pub(in crate::modules::training_trigger) async fn unlearned_in(&self, key: &BucketKey) -> Result<u32, String> {
+        let mut unlearned = 0u32;
+        let mut after = 0u64;
+        loop {
+            let page = self.pending_page(key, after, 256).await?;
+            let full = page.len() == 256;
+            for row in &page {
+                unlearned = unlearned.saturating_add((row.batch.examples.len() as u32).saturating_sub(row.learned));
+                after = after.max(row.sequence);
+            }
+            if !full {
+                return Ok(unlearned);
+            }
+        }
+    }
+
+    /// Whether submission `id` was accepted, pending or not.
+    pub(in crate::modules::training_trigger) async fn accepted(&self, id: Uuid) -> Result<bool, String> {
+        Ok(self.submissions.find_by_id(id).await.map_err(|e| e.to_string())?.is_some())
+    }
+
     /// The examples submission `id` carries, pending or not: what a generation consumed from it.
     pub(in crate::modules::training_trigger) async fn submission_examples(&self, id: Uuid) -> Result<Vec<TrainingExample>, String> {
         let row = self.submissions.find_by_id(id).await.map_err(|e| e.to_string())?.ok_or_else(|| format!("submission {id} is not in the journal"))?;
@@ -93,9 +115,6 @@ mod tests {
         let id = entity_id(&base).expect("test: a fresh entity id");
         let example = |n: usize| TrainingExample { prompt: format!("p{n}"), completion: "c".into(), metadata: None, lived: None };
         let batch = PendingBatch {
-            submission_ids: vec![id],
-            submission_examples: vec![examples as u32],
-            submission_returned: vec![false],
             returned: false,
             persona_name: "Kimi".into(),
             source: crate::genome::fine_tuning::TrainingSource::OperatorCurated,
@@ -104,7 +123,6 @@ mod tests {
             schedule: None,
             local_artifact_dir: None,
             preferred_provider: None,
-            min_examples: 1,
             validation_split: 0.0,
             eval_set: None,
         };
