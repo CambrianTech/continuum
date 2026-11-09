@@ -140,7 +140,7 @@ pub(super) async fn realign_to_anchor(root: &Path, branch: &str, now_ms: u64, ac
         Err(error) => return Some(ArrivalOutcome::Failed { branch: branch_s, stage: "status", error }),
     };
     let keep = if dirty {
-        commit_tree_no_hooks(root, &format!("stranded: {branch} off its creation anchor"), false, actor).await
+        commit_tree_no_hooks(root, &format!("stranded: {branch} off its creation anchor"), false, actor, TreeScope::Everything).await
     } else {
         run_git(root, &["rev-parse", "HEAD"]).await.map(|s| s.trim().to_string())
     };
@@ -289,7 +289,7 @@ pub(super) async fn arrive_over(root: &Path, branch: &str, now_ms: u64, actor: &
     if dirty || local_only > 0 {
         let reference = format!("{STRANDED_REF_PREFIX}{branch}-{now_ms}");
         let keep = if dirty {
-            match commit_tree_no_hooks(root, &format!("stranded: local state of {branch} before transfer"), false, actor).await {
+            match commit_tree_no_hooks(root, &format!("stranded: local state of {branch} before transfer"), false, actor, TreeScope::Everything).await {
                 Ok(sha) => sha,
                 Err(error) => return ArrivalOutcome::Failed { branch: branch_s, stage: "strand_commit", error },
             }

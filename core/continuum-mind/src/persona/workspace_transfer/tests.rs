@@ -405,7 +405,8 @@
         let anchor = head(&shallow).await;
         git(&shallow, &["checkout", "-q", &m.branch]).await;
         git(&shallow, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &anchor]).await;
-        let arrival = arrive_locked_with(&shallow, &m.branch, 80, slow_fetch, &actor());
+        let her = actor();
+        let arrival = arrive_locked_with(&shallow, &m.branch, 80, slow_fetch, &her);
         let hands = crate::identity::hands_context::HandsContext::for_claim(Uuid::new_v4(), card, Uuid::new_v4());
         let Ok(lease) = crate::identity::hands_gate::admit(hands) else { panic!("admitted") };
         let arrival = crate::identity::hands_gate::admitted(Some(std::sync::Arc::new(lease)), arrival);
@@ -763,8 +764,9 @@
         let work = head(&fresh).await;
         let context = crate::identity::hands_context::HandsContext::fresh();
         let Ok(lease) = crate::identity::hands_gate::admit(context) else { panic!("fixture hands admission") };
+        let her = actor();
         let outcome = crate::identity::hands_gate::admitted(
-            Some(std::sync::Arc::new(lease)), super::arrival::arrive_locked(&fresh, &m.branch, 101)
+            Some(std::sync::Arc::new(lease)), super::arrival::arrive_locked(&fresh, &m.branch, 101, &her)
         ).await;
         let ArrivalOutcome::Realigned { stranded, .. } = &outcome else {
             panic!("actual shallow invalidated checkout remains blocked: {outcome:?}");

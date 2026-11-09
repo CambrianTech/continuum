@@ -232,6 +232,16 @@ pub(crate) async fn is_dirty(root: &Path) -> Result<bool, String> {
     run_git(root, &["status", "--porcelain", "--untracked-files=all"]).await.map(|s| !s.trim().is_empty())
 }
 
+/// Does she hold work the branch does not carry? The same question `work/submit` asks before it
+/// publishes a commit: substrate and build byproducts (`SOLUTION_PATH_EXCLUDES`) are not her work.
+/// The autosave asks THIS, so a tree a submission called clean gets no `wip` commit after it, and
+/// the branch head stays the submitted head the merge gate compares with the PR's (HeadMoved).
+pub(crate) async fn has_uncommitted_work(root: &Path) -> Result<bool, String> {
+    let mut status = vec!["status", "--porcelain", "--untracked-files=all", "--", "."];
+    status.extend_from_slice(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES);
+    run_git(root, &status).await.map(|s| !s.trim().is_empty())
+}
+
 /// Count each side of two immutable tips. Arrival and branch publication use the
 /// same ancestry question; reachability from an unrelated branch is not delivery.
 async fn history_counts(root: &Path, remote: &str, local: &str) -> Result<(u64, u64), String> {
@@ -275,8 +285,8 @@ pub async fn has_unpushed_work(root: &Path) -> bool {
         Carry::Nothing(_) => false,
         // No origin refs exist to count commits against, so the dirty tree IS the work:
         // nothing ever commits into a checkout that cannot carry (see `sync_after_act`).
-        Carry::NoOrigin => is_dirty(root).await.unwrap_or(true), // unwrap_or: unreadable = assume work, never move on a guess
-        Carry::Via(_) | Carry::LocalOrigin => match (is_dirty(root).await, needs_branch_publication(root).await) {
+        Carry::NoOrigin => has_uncommitted_work(root).await.unwrap_or(true), // unwrap_or: unreadable = assume work, never move on a guess
+        Carry::Via(_) | Carry::LocalOrigin => match (has_uncommitted_work(root).await, needs_branch_publication(root).await) {
             (Ok(dirty), Ok(unpublished)) => dirty || unpublished,
             _ => true,
         },
@@ -306,6 +316,17 @@ pub fn node_of_wip_subject(subject: &str) -> Option<String> {
         .filter(|n| !n.is_empty())
 }
 
+/// What a commit of the working tree takes in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TreeScope {
+    /// Her work only: substrate and build byproducts stay out, as they stay out of a submission
+    /// (a `wip` commit carrying them would be refused by her next submit, and `.airc` holds
+    /// credentials that must never reach a remote).
+    Work,
+    /// Everything, for a stranded save that must lose nothing.
+    Everything,
+}
+
 /// Commit the whole working tree (tracked edits and untracked files, minus what the
 /// repo's excludes hide) as one commit on `HEAD`'s parent chain, WITHOUT running any
 /// hook: `add -A`, `write-tree`, `commit-tree`, and — when `advance_branch` — an
@@ -316,8 +337,13 @@ async fn commit_tree_no_hooks(
     message: &str,
     advance_branch: bool,
     actor: &GitActor,
+    scope: TreeScope,
 ) -> Result<String, String> {
-    run_git(root, &["add", "-A"]).await?;
+    let mut add = vec!["add", "-A", "--", "."];
+    if scope == TreeScope::Work {
+        add.extend_from_slice(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES);
+    }
+    run_git(root, &add).await?;
     let tree = run_git(root, &["write-tree"]).await?.trim().to_string();
     let parent = head_sha(root).await;
     // The acting citizen is author AND committer: the runner applies `actor` (e5e72485).
@@ -404,12 +430,12 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
         return PushOutcome::NotPushable { reason: DETACHED_REASON };
     };
     let mut committed = false;
-    match is_dirty(root).await {
+    match has_uncommitted_work(root).await {
         Ok(true) if commit == CommitPolicy::Never => {
             return PushOutcome::NotPushable { reason: DIRTY_CARRY_REASON };
         }
         Ok(true) => {
-            if let Err(error) = commit_tree_no_hooks(root, &wip_message(card, node), true, actor).await {
+            if let Err(error) = commit_tree_no_hooks(root, &wip_message(card, node), true, actor, TreeScope::Work).await {
                 return PushOutcome::CommitFailed { branch, error };
             }
             committed = true;
@@ -455,7 +481,7 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
         }
         Err(error) => match error.end {
             crate::code::git_bridge::GitEnd::Unknown | crate::code::git_bridge::GitEnd::Interrupted => PushOutcome::PushInterrupted { branch, error: error.into() },
-            crate::code::git_bridge::GitEnd::NeverRan => {
+            crate::code::git_bridge::GitEnd::NeverRan | crate::code::git_bridge::GitEnd::NoActor => {
                 REMOTE_UNKNOWN.remove(root);
                 push_failure(branch, error)
             }
@@ -621,7 +647,7 @@ async fn sync_by(deadline: tokio::time::Instant, root: &Path, sync: impl std::fu
 /// enforced inside the locked sync, so becoming dirty while waiting returns a typed
 /// NotPushable outcome and cannot commit.
 pub async fn carry_committed(lease: std::sync::Arc<crate::identity::hands_gate::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> Option<PushOutcome> {
-    match is_dirty(&root).await {
+    match has_uncommitted_work(&root).await {
         Ok(false) => {}
         _ => return None,
     }
