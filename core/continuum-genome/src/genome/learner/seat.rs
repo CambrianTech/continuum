@@ -1,0 +1,132 @@
+//! Seating a mind's shadow in the engine that serves her: measured, leased, then loaded
+//! (card 4114a2c6).
+//!
+//! A shadow is the adapter she learns into, on the same resident weights serving uses. Its memory is
+//! a claim on the one budget, so the order is fixed and every step is the existing owner's:
+//! 1. the engine measures the shadow's weights without writing or allocating anything (dry run);
+//! 2. the core leases exactly those bytes from its resource authority, under the serving lifecycle
+//!    gate (`training_admission`), so a relaunch cannot race the read;
+//! 3. the engine mirrors those leases as a residency, checked against its own incarnation (a
+//!    relaunch between 2 and 3 is refused as `stale_engine`, and the leases drop);
+//! 4. the engine writes and loads the shadow inside that residency, refusing any byte past it.
+//!
+//! The leases live in the [`Seat`]; dropping it releases them. Unseating is the reverse order:
+//! unload, release the residency, then drop the leases, never the other way.
+
+use crate::inference::llama_server::{
+    CoveringLease, FreshShadow, LeaseKind, LearningEngine, LedgerAnswer, LedgerEngine, ResidencyId,
+    ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind,
+};
+use crate::resources::{LeaseGuard, ResourceKind};
+
+/// A shadow seated in an engine, with the leases that pay for its weights.
+pub struct Seat {
+    pub engine: LearningEngine,
+    pub ledger: LedgerEngine,
+    pub residency: ResidencyId,
+    pub lora_id: i64,
+    leases: Vec<LeaseGuard>,
+}
+
+/// Why a shadow was not seated. Nothing is left allocated or leased after any of them.
+#[derive(Debug)]
+pub enum SeatRefusal {
+    /// The engine has no learning ledger (older than the in-place routes).
+    NoLedger,
+    /// The engine could not measure the shadow (it does not fit this model, or the engine failed).
+    Unmeasured(String),
+    /// The resource authority did not grant the bytes.
+    Unleased(String),
+    /// The engine refused to mirror the leases.
+    Unmirrored(ResidencyRefusal),
+    /// The engine refused to write or load the shadow inside its residency.
+    Unloaded(String),
+}
+
+impl std::fmt::Display for SeatRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SeatRefusal::NoLedger => write!(f, "the engine has no learning ledger"),
+            SeatRefusal::Unmeasured(why) => write!(f, "the shadow could not be measured: {why}"),
+            SeatRefusal::Unleased(why) => write!(f, "the shadow's memory was not leased: {why}"),
+            SeatRefusal::Unmirrored(why) => write!(f, "the engine refused the residency: {why:?}"),
+            SeatRefusal::Unloaded(why) => write!(f, "the shadow was not loaded: {why}"),
+        }
+    }
+}
+
+/// Seat `shadow` for `consumer` (her learning's name on the resource board) in `engine`.
+pub async fn seat(engine: LearningEngine, consumer: &str, shadow: FreshShadow) -> Result<Seat, SeatRefusal> {
+    let plan = match engine.plan_fresh_shadow(&shadow).await {
+        Ok(LedgerAnswer::Ledger(plan)) => plan,
+        Ok(LedgerAnswer::NoLedger) => return Err(SeatRefusal::NoLedger),
+        Err(error) => return Err(SeatRefusal::Unmeasured(error.to_string())),
+    };
+    let rows: Vec<ResidencyRow> = plan.weights.into_iter().map(|row| ResidencyRow::of(row, RowKind::Weights)).collect();
+    let leases = lease_rows(consumer, &rows).await?;
+    let terms = ResidencyTerms {
+        id: ResidencyId::issue(),
+        engine: plan.engine.clone(),
+        owner: crate::capacity::window_grant::GrantOwner::this_process().id(),
+        subject: ResidencySubject::Fresh(shadow.clone()),
+        rows,
+        leases: leases.iter().map(|(kind, bytes, guard)| CoveringLease { kind: *kind, lease_id: guard.lease_id().to_owned(), bytes: *bytes }).collect(),
+    };
+    match engine.register_residency(&terms).await {
+        Ok(LedgerAnswer::Ledger(registered)) => {
+            if let Some(why) = registered.refused {
+                return Err(SeatRefusal::Unmirrored(why));
+            }
+        }
+        Ok(LedgerAnswer::NoLedger) => return Err(SeatRefusal::NoLedger),
+        Err(error) => return Err(SeatRefusal::Unleased(format!("the residency was not registered: {error}"))),
+    }
+    let lora_id = match engine.seat_fresh(&shadow, terms.id).await {
+        Ok(lora_id) => lora_id,
+        Err(error) => {
+            // nothing was allocated inside the residency: release it before the leases drop
+            let _released = engine.release_residency(&terms.id.to_string()).await; // the leases drop below either way; an unreleased residency is reconciled by its owner id
+            return Err(SeatRefusal::Unloaded(error.to_string()));
+        }
+    };
+    Ok(Seat { engine, ledger: plan.engine, residency: terms.id, lora_id, leases: leases.into_iter().map(|(_, _, guard)| guard).collect() })
+}
+
+/// Lease each class of the rows (device memory as VRAM, host memory as RAM) from the resource
+/// authority, under the serving lifecycle gate.
+async fn lease_rows(consumer: &str, rows: &[ResidencyRow]) -> Result<Vec<(LeaseKind, u64, LeaseGuard)>, SeatRefusal> {
+    let daemon = crate::resources::ResourceDaemon::global().ok_or_else(|| SeatRefusal::Unleased("the resource authority is not running".into()))?;
+    let gate = crate::inference::serving_lifecycle::LifecycleGate::global()
+        .ok_or_else(|| SeatRefusal::Unleased("the serving lifecycle gate is not installed".into()))?;
+    let mut leases = Vec::new();
+    for (kind, resource, host) in [(LeaseKind::Vram, ResourceKind::Vram, false), (LeaseKind::Ram, ResourceKind::Ram, true)] {
+        let bytes: u64 = rows.iter().filter(|row| row.host == host).map(|row| row.bytes).sum();
+        if bytes == 0 {
+            continue;
+        }
+        let guard = crate::inference::training_admission::wait_for_training_memory(daemon.clone(), &gate, consumer, resource, bytes, |_| {})
+            .await
+            .map_err(SeatRefusal::Unleased)?;
+        leases.push((kind, bytes, guard));
+    }
+    Ok(leases)
+}
+
+impl Seat {
+    /// Unseat in the reverse order: unload the shadow, release its residency, then the leases go
+    /// with the seat. A release the engine refuses (busy) keeps the seat, so its leases stay.
+    pub async fn unseat(self) -> Result<(), (Self, String)> {
+        if let Err(error) = self.engine.unseat(self.lora_id).await {
+            return Err((self, format!("unload refused: {error}")));
+        }
+        match self.engine.release_residency(&self.residency.to_string()).await {
+            Ok(LedgerAnswer::Ledger(released)) if released.refused.is_none() => Ok(()),
+            Ok(LedgerAnswer::Ledger(released)) => {
+                let why = format!("residency release refused: {:?}", released.refused);
+                Err((self, why))
+            }
+            Ok(LedgerAnswer::NoLedger) => Err((self, "the engine lost its learning ledger".into())),
+            Err(error) => Err((self, format!("residency release failed: {error}"))),
+        }
+    }
+}

@@ -263,6 +263,36 @@ impl LearningEngine {
         Ok(reply.map(LedgerReply::registered))
     }
 
+    /// `POST /lora-adapters/fresh` inside `residency`: the engine claims the residency, checks its
+    /// rows cover the shadow, writes the zero-B shadow and loads it dormant. The loaded adapter's id.
+    pub async fn seat_fresh(&self, shadow: &FreshShadow, residency: ResidencyId) -> Result<i64, LlamaServerError> {
+        let mut body = shadow.json();
+        body["residency"] = serde_json::Value::String(residency.to_string());
+        self.adapter_change(self.client.post(format!("{}/lora-adapters/fresh", self.root)).json(&body)).await
+    }
+
+    /// `POST /lora-adapters/unload`: the shadow leaves the engine (its optimizer released first).
+    pub async fn unseat(&self, lora_id: i64) -> Result<i64, LlamaServerError> {
+        let body = serde_json::json!({ "id": lora_id });
+        self.adapter_change(self.client.post(format!("{}/lora-adapters/unload", self.root)).json(&body)).await
+    }
+
+    async fn adapter_change(&self, request: reqwest::RequestBuilder) -> Result<i64, LlamaServerError> {
+        let resp = request.timeout(super::genome::LORA_LOAD_TIMEOUT).send().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        let status = resp.status();
+        let bytes = resp.bytes().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !status.is_success() {
+            return Err(LlamaServerError::Unreachable(format!("adapter change refused ({status}): {}", String::from_utf8_lossy(&bytes))));
+        }
+        #[derive(serde::Deserialize)]
+        struct Changed {
+            id: i64,
+        }
+        serde_json::from_slice::<Changed>(&bytes) // engine HTTP wire: the adapter change reply
+            .map(|changed| changed.id)
+            .map_err(|e| LlamaServerError::Unreachable(format!("adapter change answered no id: {e}")))
+    }
+
     async fn plan_request<T: serde::de::DeserializeOwned>(&self, request: reqwest::RequestBuilder) -> Result<LedgerAnswer<T>, LlamaServerError> {
         let resp = request
             .timeout(PROBE_TIMEOUT)

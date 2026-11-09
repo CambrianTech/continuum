@@ -49,6 +49,11 @@ impl GrantRevision {
 pub struct GrantOwner(uuid::Uuid);
 
 impl GrantOwner {
+    /// The owner's id on a wire (a residency or grant registered with an engine names it).
+    pub fn id(&self) -> uuid::Uuid {
+        self.0
+    }
+
     /// This process's grant owner.
     pub fn this_process() -> Self {
         static OWNER: std::sync::OnceLock<GrantOwner> = std::sync::OnceLock::new();
