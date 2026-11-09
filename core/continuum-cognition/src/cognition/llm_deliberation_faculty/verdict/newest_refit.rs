@@ -140,5 +140,18 @@ mod tests {
         ) else { panic!("denser newest result must be paged"); };
         assert_eq!(refit.pricing.density(), average.density(),
             "the result-only surcharge must not replace the shared prompt price");
+        // The behaviour, not just the field: against a control at the same shared price with no
+        // result-only price, every unrelated claim is charged the same and only her newest
+        // result's claim grows (Codex on #5889: a price that never reaches the charge is inert).
+        let control = faculty.prompt_view_priced(&workspace, window, average, None, None);
+        let want = |view: &DeliberationPromptView, source: &str| {
+            view.allocation.as_ref().and_then(|receipt| receipt.claims.iter().find(|c| c.source == source)).map(|c| c.want)
+        };
+        use continuum_context::allocation::id as claim_id;
+        for unrelated in [claim_id::FRAMING, claim_id::TOOLS] {
+            assert_eq!(want(&refit, unrelated), want(&control, unrelated), "{unrelated} keeps the shared price");
+        }
+        assert!(want(&refit, claim_id::NEWEST) > want(&control, claim_id::NEWEST),
+            "her newest result alone is charged the refusal's surcharge");
     }
 }

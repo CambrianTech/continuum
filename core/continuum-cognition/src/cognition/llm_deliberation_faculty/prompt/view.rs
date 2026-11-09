@@ -259,6 +259,9 @@ impl LlmDeliberationFaculty {
         // was one of them disagreeing with another: her result priced against the window less
         // framing and tools, her view's floor then taking its room.)
         let claim = |tokens: usize| calibration.charge(tokens).min(u32::MAX as usize) as u32;
+        // Her newest result's claim alone is charged at its own price (`prompt_view_priced`); its
+        // page grant is converted back at the same one below.
+        let newest_claim = |tokens: usize| newest_pricing.charge(tokens).min(u32::MAX as usize) as u32;
         let required = all_messages.required_parts();
         let newest_result_tokens = required.latest_result;
         // The required input other than her newest result (which claims for itself) and other
@@ -267,7 +270,7 @@ impl LlmDeliberationFaculty {
         let required_tokens = required.stimulus.saturating_add(required.action_statement);
         use continuum_context::ladder::{Leveled, Rungs};
         // Her newest result whole and at its least page, in the allocation's unit (`newest_result.rs`).
-        let newest = self.newest_result_claim(&all_messages, newest_pricing);
+        let newest = self.newest_result_claim(&all_messages);
         // Her hands and her framing (the head of her prompt), and her grounding: each a consumer
         // whose levels come from its items' shapes and whose hard limit is derived from them.
         let tools_offer = self.tools_offer(ws, &claim);
@@ -315,7 +318,7 @@ impl LlmDeliberationFaculty {
                 framing: continuum_context::allocation::Head { held: framing_offer.held.clone(), ..continuum_context::allocation::Head::free(framing_offer.leveled.clone()) },
                 // Input she must read: its whole is its hard limit.
                 required: Leveled::one(Rungs::whole(claim(required_tokens))),
-                newest: newest.charged(&claim),
+                newest: newest.charged(&newest_claim),
                 tools: tools_offer.head(),
                 grounding: grounding_offer.leveled.clone(),
                 // The newest complete interaction is whole (goal 7): its whole is its hard limit.
@@ -355,7 +358,7 @@ impl LlmDeliberationFaculty {
         // reading on named, never a summary or a bare handle, goal 7), cut below once her view is
         // fitted, to the room its grant gives and the fit actually has beside it.
         let newest_page = match act.newest_shown() {
-            continuum_context::allocation::NewestShown::Page { tokens } => Some(calibration.prompt_budget(tokens as usize)),
+            continuum_context::allocation::NewestShown::Page { tokens } => Some(newest_pricing.prompt_budget(tokens as usize)),
             continuum_context::allocation::NewestShown::Whole | continuum_context::allocation::NewestShown::Absent => None,
         };
         // The grounding at the levels the allocation chose: less of each under pressure, then
@@ -564,7 +567,7 @@ impl LlmDeliberationFaculty {
                     .required_tokens()
                     .saturating_sub(newest_now)
                     .saturating_add(calibration.prompt_budget(act.granted(claim_id::LAST_MOVE) as usize));
-                self.fit_newest_result(&mut all_messages, newest_pricing, granted.min(tail_budget.saturating_sub(beside)))
+                self.fit_newest_result(&mut all_messages, granted.min(tail_budget.saturating_sub(beside)))
             }
             None => false,
         };
