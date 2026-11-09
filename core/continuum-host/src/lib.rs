@@ -7,6 +7,7 @@
 
 pub mod confine;
 pub mod core_handoff;
+pub mod core_ipc;
 pub mod durable;
 pub mod file_identity;
 pub mod local_stream;
@@ -15,4 +16,5 @@ pub mod positioned;
 pub mod process_exit;
 pub mod process_usage;
 pub mod read_pin;
+pub mod shutdown_signal;
 pub mod stack_sample;

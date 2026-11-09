@@ -9,4 +9,4 @@
  * because they fail differently and a caller that only learns "shutdown finished" cannot
  * tell a clean stop from one that abandoned a half-written turn.
  */
-export type ModuleStopOutcome = "Clean" | "SaveTimedOut" | { "SaveFailed": { error: string, } } | "JoinTimedOut" | { "JoinFailed": { error: string, } };
+export type ModuleStopOutcome = "Clean" | "SaveTimedOut" | { "SaveFailed": { error: string, } } | "JoinTimedOut" | { "JoinFailed": { error: string, } } | "NeverInitialized";

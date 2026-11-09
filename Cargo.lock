@@ -3380,6 +3380,7 @@ dependencies = [
  "continuum-client",
  "continuum-host",
  "continuum-orm-derive",
+ "continuum-saved-state",
  "continuum-tool-protocol",
  "dashmap",
  "dirs 5.0.1",
