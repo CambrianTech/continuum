@@ -221,8 +221,7 @@ pub fn start_server(
     stretch_mark("end_of_persona_host_block", "ai_provider_register");
 
     {
-        // Trainers probe their own interpreter's imports when built (card 6f05b89d): the probe
-        // is an owned task on this runtime, so registration runs inside it.
+        // The batch trainer's wind-down is a task on this runtime, so registration runs inside it.
         let _rt_guard = rt_handle.enter();
         ai_genome_modules::register_ai_provider_and_genome_modules(
             &runtime,

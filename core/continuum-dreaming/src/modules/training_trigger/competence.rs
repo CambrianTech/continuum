@@ -162,22 +162,14 @@ pub(crate) async fn decide(
     Ok(decision)
 }
 
-/// Why a reuse adopted nothing: the hub gene did not pull, or the adoption refused it. The examples
-/// stay pending either way.
-#[derive(Debug)]
-pub(crate) enum ReuseRefused {
-    Pull(String),
-    Adopt(String),
-}
-
 /// Reuse `gene` for `asking`'s competence: pull it when it is on the hub, then adopt it for trial
-/// on her cards, with no training. The trial's id.
+/// on her cards, with no training. Every outcome is probed; a refusal leaves the examples pending.
 pub(crate) async fn reuse(
     asking: &Asking<'_>,
     gene: &crate::genome::competence::GeneRef,
     similarity: f32,
     adoption: &Result<Adoption, crate::genome::gene_trial::AdoptRefusal>,
-) -> Result<uuid::Uuid, ReuseRefused> {
+) {
     use crate::genome::competence::GeneRef;
     let path = match gene {
         GeneRef::Local { path } => path.clone(),
@@ -199,7 +191,7 @@ pub(crate) async fn reuse(
                         error = %e,
                         "the hub gene this competence would reuse did not pull: no trial, no learning; the examples stay pending"
                     );
-                    return Err(ReuseRefused::Pull(format!("reuse of {gene}: pull failed: {e}")));
+                    return;
                 }
             }
         }
@@ -221,7 +213,6 @@ pub(crate) async fn reuse(
                 trial = %trial.id,
                 "an existing gene carries this competence: adopted, no training; with no learning here the examiner receipts it unexaminable"
             );
-            Ok(trial.id)
         }
         Err(refusal) => {
             continuum_base::probe!(
@@ -232,7 +223,6 @@ pub(crate) async fn reuse(
                 refusal = %refusal,
                 "the gene this competence would reuse was not adopted: no trial, no learning; the examples stay pending"
             );
-            Err(ReuseRefused::Adopt(format!("reuse of {gene}: {refusal}")))
         }
     }
 }

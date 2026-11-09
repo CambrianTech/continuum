@@ -325,7 +325,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
             Ok(crate::genome::competence::Decision::Mint) => {}
             Ok(crate::genome::competence::Decision::Fork { parent, .. }) => sig.parent = Some(parent), // learned from the base with its lineage, as the trainer it replaces did
             Ok(crate::genome::competence::Decision::Reuse { gene, similarity }) => {
-                let _reused_or_refused = super::competence::reuse(&asking, &gene, similarity, &adoption).await; // probed either way; the examples wait for its trial
+                super::competence::reuse(&asking, &gene, similarity, &adoption).await; // probed either way; the examples wait for its trial
                 return Ok(false);
             }
             Ok(other) => {

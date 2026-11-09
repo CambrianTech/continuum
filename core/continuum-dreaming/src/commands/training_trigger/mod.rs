@@ -1,32 +1,28 @@
-//! `genome/training-trigger/<verb>` — the curriculum-batching surface as typed
+//! `genome/training-trigger/<verb>` — the curriculum journal's surface as typed
 //! [`ActionCommand`](crate::sdk_codegen::ActionCommand)s.
 //!
 //! ## The concern this owns
 //!
-//! Sitting between curriculum producers (the teacher persona's synthesis, the
-//! hippocampus's noteworthy drain, operator submits) and the
-//! [`GenomeModule`](crate::modules::genome::GenomeModule)'s `genome/job-create`
-//! command: accumulating curated [`TrainingExample`](crate::genome::fine_tuning::types::TrainingExample)s
-//! into per-`(persona_id, trait_kind, base_model)` buckets and firing a training
-//! job once a bucket crosses its threshold.
+//! Accepting curated [`TrainingExample`](crate::genome::fine_tuning::types::TrainingExample)s
+//! from curriculum producers (the teacher persona's synthesis, the hippocampus's noteworthy
+//! drain, settled cards, operator submits) into the durable journal, per
+//! `(persona_id, trait_kind, base_model)` bucket, where the training trigger learns them in
+//! place; retiring submissions not yet learned; and reporting each bucket's journal.
 //!
 //! ## Dep-holding family
 //!
-//! All three verbs ([`submit`], [`flush`], [`status`]) share the owning module's
-//! one [`TrainingTriggerState`](crate::modules::training_trigger::TrainingTriggerState)
-//! — the buckets, the per-key submit [`PerKeyGate`](crate::runtime::PerKeyGate),
-//! and the late-bound executor — so submit and flush serialize on the SAME gate and
-//! mutate the SAME buckets. They are assembled by [`command_objects`] and contributed
-//! by [`TrainingTriggerModule`](crate::modules::training_trigger::TrainingTriggerModule)'s
+//! The three verbs ([`submit`], [`retire`], [`status`]) share the owning module's one
+//! [`TrainingTriggerState`](crate::modules::training_trigger::TrainingTriggerState), so a
+//! submit, a retirement and a learning pass on one bucket serialize on the same
+//! [`PerKeyGate`](crate::runtime::PerKeyGate). They are assembled by [`command_objects`] and
+//! contributed by [`TrainingTriggerModule`](crate::modules::training_trigger::TrainingTriggerModule)'s
 //! `commands()`.
 //!
 //! ## Outcome-as-data
 //!
-//! Per the genome family doctrine (mirrored from `genome/job-create`'s
-//! `JobCreateOutcome`): expected domain results — batch appended, job dispatched,
-//! inconsistent bucket, dispatch failed, nothing to flush — come back as a typed
-//! `success` + discriminator outcome, NOT a transport `Err`. `Err` is reserved for
-//! genuine caller mistakes (malformed params), per `[[no-fallbacks-ever]]`.
+//! Expected domain results come back as a typed `success` + discriminator outcome, NOT a
+//! transport `Err`. `Err` is reserved for genuine caller mistakes (malformed params), per
+//! `[[no-fallbacks-ever]]`.
 
 use std::sync::Arc;
 
@@ -43,8 +39,8 @@ use submit::TrainingTriggerSubmit;
 
 /// Build the dep-holding `genome/training-trigger/*` command objects over the
 /// shared [`TrainingTriggerState`]. Called from `TrainingTriggerModule::commands`.
-/// All of them bind the SAME state so submit / flush / retire / resolve serialize on the one
-/// [`PerKeyGate`](crate::runtime::PerKeyGate) and touch the same buckets.
+/// All of them bind the SAME state, so they serialize on the one
+/// [`PerKeyGate`](crate::runtime::PerKeyGate) per bucket.
 pub fn command_objects(state: Arc<TrainingTriggerState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(TrainingTriggerSubmit {

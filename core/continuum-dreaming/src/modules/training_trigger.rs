@@ -1,33 +1,26 @@
-//! `TrainingTriggerModule` — substrate-native batching coordinator
-//! that sits between curriculum producers (the teacher persona's
-//! synthesis, the hippocampus's noteworthy drain, operator submits)
-//! and the [`super::genome::GenomeModule`]'s `genome/job-create`
-//! command.
+//! `TrainingTriggerModule` — the journal curriculum producers submit to (the teacher persona's
+//! synthesis, the hippocampus's noteworthy drain, settled cards, operator submits), learned in
+//! place inside the serving engine.
 //!
 //! ## Why this module exists
 //!
 //! Per `[[teacher-synthesizes-in-academy-like-dreaming]]` +
-//! `[[noteworthy-flag-feeds-memory-AND-curriculum]]`, examples
-//! arrive in dribs — one engram at a time, one synthesis call at a
-//! time. Firing `genome/job-create` per example would be wasteful;
-//! waiting for the producer to accumulate a "right-sized" batch
-//! pushes batching policy out of the substrate and into N callers
-//! that would each implement it slightly differently. The substrate
-//! should own that policy ONCE, here.
+//! `[[noteworthy-flag-feeds-memory-AND-curriculum]]`, examples arrive one at a time. Each is
+//! journaled durably per `(persona_id, trait_kind, base_model)` bucket the moment it is
+//! accepted, and every pass (the tick and serving's wake) learns the pending examples of each
+//! bucket in place on the live engine that serves her base (`in_place`): one optimizer step at
+//! a time on her own shadow adapter, checkpointed to a durable generation, which becomes a
+//! candidate gene once a competence's worth is learned (`in_place::snapshot`). There is no
+//! batch, no threshold and no separate trainer.
 //!
 //! ## What it does
 //!
-//! Owns a per-`(persona_id, trait_kind, base_model)` bucket of
-//! accumulating [`TrainingExample`]s. The three verbs —
-//! `genome/training-trigger/submit`, `/flush`, `/status` — are
-//! migrated to the typed [`DynCommand`](crate::sdk_codegen::DynCommand)
-//! registry under `commands/training_trigger/` (task #62). This module
-//! retains the shared [`TrainingTriggerState`] (durable submissions/intents,
-//! bucket caches, the per-key submit gate, and the late-bound executor);
-//! the verbs are dep-holding commands
-//! built over that one `Arc<TrainingTriggerState>` so submit and flush
-//! serialize on the SAME `PerKeyGate` and mutate the SAME buckets.
-//! Its legacy `handle_command` arms now fail loud.
+//! The verbs (`genome/training-trigger/submit`, `/retire`, `/status`) are typed
+//! [`DynCommand`](crate::sdk_codegen::DynCommand)s under `commands/training_trigger/`, built
+//! over the one shared [`TrainingTriggerState`] (the durable journal and checkpoints, the
+//! per-key gate, the in-place learners), so a submit and a learning pass on the same bucket
+//! serialize on the same [`PerKeyGate`](crate::runtime::PerKeyGate). Its legacy
+//! `handle_command` arms fail loud.
 //!
 //! ## Replaces what was deleted in #1572
 //!
@@ -39,26 +32,19 @@
 //! - Sent minimal params; the validator silently rejected.
 //! - Fire-and-forget call site swallowed the rejection.
 //!
-//! This module is the opposite: substrate-native command surface,
-//! typed inputs validated synchronously, typed outcome on the
-//! return path, batch state is NEVER lost on dispatch failure (per
-//! `[[no-fallbacks-ever]]`).
+//! This module is the opposite: substrate-native command surface, typed inputs validated
+//! synchronously, a typed outcome on the return path, and an accepted example journaled before
+//! the receipt, so it is never lost (per `[[no-fallbacks-ever]]`).
 //!
 //! ## Doctrinal alignment
 //!
-//! - `[[commands-are-dumb-daemons-are-smart]]` — the submit command
-//!   is the dumb door; the smart bits (batching, threshold logic,
-//!   dispatch) live in [`TrainingTriggerState`].
-//! - `[[no-fallbacks-ever]]` — every code path returns a typed
-//!   outcome or a typed error. Explicit refusals can retry; uncertain
-//!   provider creation requires exact JobBoard evidence before it resolves.
-//! - Receipts follow the configured ORM commit, with that adapter's durability
-//!   policy. Keys deduplicate at this destination owner; they do not supply
-//!   cross-node consensus or exactly-once provider dispatch.
-//! - `[[rust-is-the-core-node-is-the-shell]]` — entire path is
-//!   substrate-side. The teacher persona (Rust) submits; the trigger
-//!   (Rust) batches; the genome module (Rust) dispatches; the local
-//!   trainer (Rust) produces the safetensors.
+//! - `[[commands-are-dumb-daemons-are-smart]]` — the submit command is the dumb door; learning
+//!   lives in [`TrainingTriggerState`]'s in-place pass.
+//! - `[[no-fallbacks-ever]]` — every code path returns a typed outcome or a typed error.
+//! - Receipts follow the configured ORM commit, with that adapter's durability policy. Keys
+//!   deduplicate at this destination owner; they do not supply cross-node consensus.
+//! - `[[rust-is-the-core-node-is-the-shell]]` — the entire path is substrate-side: producers
+//!   submit, the trigger journals, the serving engine learns.
 
 use std::any::Any;
 use std::path::PathBuf;
@@ -179,8 +165,6 @@ pub struct TrainingTriggerState {
     operations: tokio::sync::Mutex<tokio::task::JoinSet<()>>,
     #[cfg(test)]
     operation_pause: std::sync::Mutex<Option<Arc<durable::OperationPause>>>,
-    #[cfg(test)]
-    pub(crate) test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
     /// Test-only: the trial file `ready_to_dispatch` reads, so a test can open a trial
     /// and watch the bucket hold.
     #[cfg(test)]
@@ -219,8 +203,6 @@ impl TrainingTriggerState {
             operations: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
             #[cfg(test)]
             operation_pause: std::sync::Mutex::new(None),
-            #[cfg(test)]
-            test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
             #[cfg(test)]
             test_trials: std::sync::Arc::new(crate::genome::gene_trial::GeneTrials::at(
                 std::env::temp_dir().join(format!("training-trigger-trials-{}.json", Uuid::new_v4())),

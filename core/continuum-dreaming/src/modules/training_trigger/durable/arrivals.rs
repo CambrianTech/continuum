@@ -74,11 +74,6 @@ impl DurableStore {
         }
     }
 
-    /// Whether submission `id` was accepted, pending or not.
-    pub(in crate::modules::training_trigger) async fn accepted(&self, id: Uuid) -> Result<bool, String> {
-        Ok(self.submissions.find_by_id(id).await.map_err(|e| e.to_string())?.is_some())
-    }
-
     /// The examples submission `id` carries, pending or not: what a generation consumed from it.
     pub(in crate::modules::training_trigger) async fn submission_examples(&self, id: Uuid) -> Result<Vec<TrainingExample>, String> {
         let row = self.submissions.find_by_id(id).await.map_err(|e| e.to_string())?.ok_or_else(|| format!("submission {id} is not in the journal"))?;

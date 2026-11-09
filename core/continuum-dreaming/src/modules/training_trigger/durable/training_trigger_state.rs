@@ -223,14 +223,6 @@ impl TrainingTriggerState {
         })
     }
 
-
-
-
-    /// Whether submission `id` was accepted, pending or not.
-    pub(crate) async fn accepted(&self, id: Uuid) -> Result<bool, String> {
-        self.durable.require()?.accepted(id).await
-    }
-
     /// How many examples bucket `key` holds pending and not yet learned.
     pub(crate) async fn unlearned_in(&self, key: &BucketKey) -> Result<u32, String> {
         self.durable.require()?.unlearned_in(key).await
