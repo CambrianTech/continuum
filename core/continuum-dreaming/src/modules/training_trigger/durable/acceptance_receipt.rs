@@ -169,6 +169,7 @@ pub(in crate::modules::training_trigger) struct DurableStore {
     pub(super) retirements: OrmStore<Retirement>,
     pub(super) retry_decisions: OrmStore<RetryDecision>,
     pub(super) policy_corrections: OrmStore<policy::PolicyCorrection>,
+    pub(super) learn_checkpoints: OrmStore<super::learn_checkpoint::LearnCheckpoint>,
     pub(super) adapter: Arc<dyn StorageAdapter>,
 }
 
@@ -188,6 +189,7 @@ impl DurableStore {
                 .await
                 .map_err(|e| e.to_string())?,
             policy_corrections: OrmStore::new(adapter.clone()).await.map_err(|e| e.to_string())?,
+            learn_checkpoints: OrmStore::new(adapter.clone()).await.map_err(|e| e.to_string())?,
             adapter,
         })
     }

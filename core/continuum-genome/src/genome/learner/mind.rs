@@ -11,7 +11,7 @@
 use super::grant::{self, Grant};
 use super::memory::{self, EngineWorkspace, MindLearning};
 use super::seat::{self, Authority, Seat, SeatRefusal};
-use crate::inference::llama_server::{CheckpointAnswer, FreshShadow, GrantShare, LearnExample, LearnOutcome, LearningEngine, LlamaServerError};
+use crate::inference::llama_server::{CheckpointAnswer, RestoreCheckpoint, RestoreOutcome, FreshShadow, GrantShare, LearnExample, LearnOutcome, LearningEngine, LlamaServerError};
 
 /// A mind learning in place.
 pub struct MindLearner {
@@ -97,13 +97,47 @@ impl MindLearner {
         slot: u32,
         learning_rate: f32,
     ) -> Result<LearnOutcome, LearnFailure> {
+        let example = self.example(authority, workspace, messages, tools, slot, learning_rate).await?;
+        let outcome = self.seat.engine.learn(&example).await.map_err(LearnFailure::Engine);
+        settle(workspace).await;
+        outcome
+    }
+
+    /// Restore her dormant fresh shadow from `checkpoint` (its weights and optimizer state), the
+    /// allocation priced and covered by `messages` as a learn would be; nothing is learned.
+    pub async fn restore(
+        &mut self,
+        authority: &Authority,
+        workspace: &mut Option<EngineWorkspace>,
+        messages: Vec<serde_json::Value>,
+        tools: Option<serde_json::Value>,
+        slot: u32,
+        learning_rate: f32,
+        checkpoint: &RestoreCheckpoint,
+    ) -> Result<RestoreOutcome, LearnFailure> {
+        let example = self.example(authority, workspace, messages, tools, slot, learning_rate).await?;
+        let outcome = self.seat.engine.restore(&self.seat.ledger, &example, checkpoint).await.map_err(LearnFailure::Engine);
+        settle(workspace).await;
+        outcome
+    }
+
+    /// The step's example, once its memory is covered.
+    async fn example(
+        &mut self,
+        authority: &Authority,
+        workspace: &mut Option<EngineWorkspace>,
+        messages: Vec<serde_json::Value>,
+        tools: Option<serde_json::Value>,
+        slot: u32,
+        learning_rate: f32,
+    ) -> Result<LearnExample, LearnFailure> {
         let Some(grant) = self.grant.as_ref().map(|grant| grant.id) else {
             return Err(LearnFailure::Stopping);
         };
         let covered = memory::cover(authority, &self.seat, &self.consumer, &messages, tools.as_ref(), &mut self.memory, workspace)
             .await
             .map_err(LearnFailure::Uncovered)?;
-        let example = LearnExample {
+        Ok(LearnExample {
             messages,
             tools,
             slot,
@@ -112,19 +146,32 @@ impl MindLearner {
             optimizer_residency: covered.optimizer,
             workspace_residency: covered.workspace,
             learning_rate,
-        };
-        let outcome = self.seat.engine.learn(&example).await.map_err(LearnFailure::Engine);
-        // the step claimed the covering workspace, so the ones it replaced may be released now
-        if let Some(held) = workspace.as_mut() {
-            held.settle().await;
-        }
-        outcome
+        })
     }
 
     /// Publish her shadow's weights and optimizer state as checkpoint generation `<name>.checkpoint`,
     /// bound to `binding`, `provenance` in its manifest. Refused by the engine while she is learning.
     pub async fn checkpoint(&self, name: &str, binding: &str, provenance: serde_json::Value) -> Result<CheckpointAnswer, LlamaServerError> {
         self.seat.engine.save_checkpoint(&self.seat.ledger, self.seat.shadow.id, name, binding, provenance).await
+    }
+
+    /// Replace her grant with one of the same share expiring after `expiry` (the new one registered
+    /// before the old is revoked), keeping her shadow and its progress: the renewal at a quiescent
+    /// boundary that an expired grant asks for (the engine refuses it `unknown_grant`).
+    pub async fn renew_grant(&mut self, expiry: std::time::Duration) -> Result<(), SeatRefusal> {
+        let Some(old) = self.grant.take() else {
+            return Err(SeatRefusal::Unleased("she is stopping: her grant is revoked".into()));
+        };
+        match grant::replace(&self.seat, &old, old.share, expiry).await {
+            Ok(new) => {
+                self.grant = Some(new);
+                Ok(())
+            }
+            Err(why) => {
+                self.grant = Some(old);
+                Err(why)
+            }
+        }
     }
 
     /// Her shadow's adapter id in the engine.
@@ -157,5 +204,12 @@ impl MindLearner {
         }
         let Self { seat, consumer, loaded, memory, grant } = self;
         seat.release().await.map_err(|(seat, why)| (Self { seat, consumer, loaded, memory, grant }, why))
+    }
+}
+
+/// The step claimed the covering workspace, so the ones it replaced may be released now.
+async fn settle(workspace: &mut Option<EngineWorkspace>) {
+    if let Some(held) = workspace.as_mut() {
+        held.settle().await;
     }
 }
