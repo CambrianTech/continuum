@@ -5,7 +5,7 @@ use super::*;
 fn ledger_json(refusal: &str) -> serde_json::Value {
     serde_json::json!({
         "engine": "9f2c1e0a7b3d4c5e6f708192a3b4c5d6",
-        "clock_us": 1_234_567,
+        "clock_us": 1_234_567, "max_period_ms": 86_400_000, "max_expiry_ms": 86_400_000,
         "refusal": refusal,
         "grants": [{
             "id": "a previous core's grant", "period_ms": 2000, "share_ppm": 250000,
