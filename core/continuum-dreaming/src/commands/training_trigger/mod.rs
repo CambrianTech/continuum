@@ -104,8 +104,16 @@ pub(crate) mod test_support {
     /// The actual owner and command route, with a caller-owned durable fixture so tests can
     /// recreate the owner against the same database after a restart.
     pub(crate) async fn build_runtime(adapter: Arc<dyn crate::orm::StorageAdapter>) -> (Arc<TrainingTriggerModule>, Arc<CommandExecutor>) {
+        build_runtime_under(adapter, crate::genome::learner::seat::Authority::isolated(1 << 30)).await
+    }
+
+    /// [`build_runtime`] answering to `authority`: a live engine's fixture leases what it really holds.
+    pub(crate) async fn build_runtime_under(
+        adapter: Arc<dyn crate::orm::StorageAdapter>,
+        authority: crate::genome::learner::seat::Authority,
+    ) -> (Arc<TrainingTriggerModule>, Arc<CommandExecutor>) {
         let registry = Arc::new(ModuleRegistry::new());
-        let trigger = Arc::new(TrainingTriggerModule::new(crate::genome::learner::seat::Authority::isolated(1 << 30)));
+        let trigger = Arc::new(TrainingTriggerModule::new(authority));
         trigger.state.initialize_storage(adapter).await.unwrap();
         registry.register(trigger.clone());
         let executor = Arc::new(CommandExecutor::new(registry.clone()));

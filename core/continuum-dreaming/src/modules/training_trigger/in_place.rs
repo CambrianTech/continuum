@@ -192,7 +192,10 @@ async fn steps(
             }
             let slot = match crate::inference::slots::learn_slot(engine, key.persona_id).await {
                 Ok(slot) => slot,
-                Err(_deferred) => {
+                Err(refusal) => {
+                    // every deferral says why: a step that never runs is a miss, never a quiet slower path
+                    continuum_base::probe!(class = "training.in_place.step_deferred", persona = %key.persona_id, reason = %refusal,
+                        "her learning step was not given a slot this pass; the examples stay pending");
                     pass.deferred = true;
                     return Ok(Lost::No);
                 }
@@ -401,6 +404,58 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
     }
 }
 
+/// What a shutdown left: each learner checkpointed and stopped, each engine's workspace released.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Quiesced {
+    pub(crate) stopped: u32,
+    /// Learners whose last progress could not be published: it is learned again from the journal.
+    pub(crate) unpublished: u32,
+    /// Stops and workspace releases the engine did not confirm: custody holds what they held.
+    pub(crate) unconfirmed: u32,
+}
+
+impl InPlace {
+    /// Shutdown, after every owned operation has drained: publish what each seated learner learned
+    /// since its newest generation, stop it, and release each engine's workspace. Nothing is left
+    /// seated in the trigger; what an engine did not confirm stays in custody.
+    pub(crate) async fn quiesce(&self, state: &TrainingTriggerState) -> Quiesced {
+        let mut quiesced = Quiesced::default();
+        let engines: Vec<_> = self.engines.iter().map(|entry| Arc::clone(entry.value())).collect();
+        self.engines.clear();
+        for engine in engines {
+            let mut held = engine.lock().await;
+            let keys: Vec<BucketKey> = held.minds.keys().cloned().collect();
+            for key in keys {
+                if let Some(seated) = held.minds.get_mut(&key) {
+                    if let Err(why) = checkpoint(state, &key, seated).await {
+                        quiesced.unpublished += 1;
+                        continuum_base::probe!(class = "training.in_place.shutdown_unpublished", persona = %key.persona_id, reason = %why,
+                            "a learner's progress since its newest generation was not published at shutdown; the journal still holds it");
+                    }
+                }
+                if let Some(seated) = held.minds.remove(&key) {
+                    match seated.mind.stop().await {
+                        Ok(()) => quiesced.stopped += 1,
+                        Err((_orphaned, why)) => {
+                            quiesced.unconfirmed += 1;
+                            continuum_base::probe!(class = "training.in_place.stop_unconfirmed", persona = %key.persona_id, reason = %why,
+                                "a learner's stop at shutdown is unconfirmed; custody holds what it held");
+                        }
+                    }
+                }
+            }
+            if let Some(workspace) = held.workspace.take() {
+                if let Err((_kept, why)) = workspace.release().await {
+                    quiesced.unconfirmed += 1;
+                    continuum_base::probe!(class = "training.in_place.workspace_unconfirmed", reason = %why,
+                        "an engine's learning workspace release at shutdown is unconfirmed; custody holds it");
+                }
+            }
+        }
+        quiesced
+    }
+}
+
 /// Stop `key`'s learner; whatever it still holds stays in custody until the engine confirms it.
 async fn stop(held: &mut EngineLearning, key: &BucketKey) {
     if let Some(seated) = held.minds.remove(key) {
@@ -477,13 +532,7 @@ impl TrainingTriggerState {
         let store = self.durable.require()?;
         self.in_place.authority.custody.settle_orphans().await;
         let buckets = eligible_buckets(&store, served_model).await?;
-        for (key, rows) in buckets {
-            let pass = self.run_owned(key, move |state, key| async move { state.in_place.learn_bucket(&state, &key, rows, engine).await }).await??;
-            if pass.learned > 0 || pass.quarantined || pass.checkpointed {
-                continuum_base::probe!(class = "training.in_place.pass", learned = u64::from(pass.learned), quarantined = pass.quarantined,
-                    checkpointed = pass.checkpointed, deferred = pass.deferred, "accepted examples learned in place");
-            }
-        }
+        self.learn_each(buckets, move |state, key, rows| async move { state.in_place.learn_bucket(&state, &key, rows, engine).await }).await?;
         // every bucket's newest generation is candidate work of its own, retried until taken: a
         // candidate interrupted after its generation, or a bucket with nothing pending, is not lost
         const PAGE: usize = 64;
@@ -500,6 +549,30 @@ impl TrainingTriggerState {
         Ok(())
     }
 
+    /// Run `step` on each bucket under its owned gate, in order. The owner refusing (shutdown) ends
+    /// the pass; one bucket's own failure never does: it is probed, its durable work stays, and the
+    /// next bucket runs (Codex on 086d60123: a persistent bucket error starved every later bucket).
+    pub(crate) async fn learn_each<F, Fut>(self: &Arc<Self>, buckets: Vec<(BucketKey, Vec<Arrival>)>, step: F) -> Result<(), String>
+    where
+        F: Fn(Arc<Self>, BucketKey, Vec<Arrival>) -> Fut + Clone + Send + 'static,
+        Fut: std::future::Future<Output = Result<BucketPass, String>> + Send + 'static,
+    {
+        for (key, rows) in buckets {
+            let persona = key.persona_id;
+            let step = step.clone();
+            match self.run_owned(key, move |state, key| step(state, key, rows)).await? {
+                Ok(pass) if pass.learned > 0 || pass.quarantined || pass.checkpointed => {
+                    continuum_base::probe!(class = "training.in_place.pass", learned = u64::from(pass.learned), quarantined = pass.quarantined,
+                        checkpointed = pass.checkpointed, deferred = pass.deferred, "accepted examples learned in place");
+                }
+                Ok(_) => {}
+                Err(why) => continuum_base::probe!(class = "training.in_place.bucket_failed", persona = %persona, reason = %why,
+                    "one bucket's pass failed; its durable work stays, the pass goes on to the next bucket and the next pass tries it again"),
+            }
+        }
+        Ok(())
+    }
+
     /// Take each due candidate in `page` whose base `served_model` serves, under its bucket's gate.
     async fn sweep_candidates(self: &Arc<Self>, page: Vec<super::durable::LearnCheckpoint>, served_model: &str) -> Result<(), String> {
         for generation in page {
@@ -508,14 +581,20 @@ impl TrainingTriggerState {
             }
             // under the bucket's owned gate, so it is ordered with that bucket's learning
             let key = BucketKey { persona_id: generation.persona_id, trait_kind: generation.trait_kind.clone(), base_model: generation.base_model.clone() };
-            self.run_owned(key, move |state, key| async move {
-                let store = state.durable.require()?;
-                if let Some(current) = store.checkpoint_of(&key).await? {
-                    snapshot::maybe(&store, &current).await;
-                }
-                Ok::<(), String>(())
-            })
-            .await??;
+            let persona = key.persona_id;
+            let swept = self
+                .run_owned(key, move |state, key| async move {
+                    let store = state.durable.require()?;
+                    if let Some(current) = store.checkpoint_of(&key).await? {
+                        snapshot::maybe(&store, &current).await;
+                    }
+                    Ok::<(), String>(())
+                })
+                .await?;
+            if let Err(why) = swept {
+                continuum_base::probe!(class = "training.in_place.candidate_sweep_failed", persona = %persona, reason = %why,
+                    "one bucket's candidate could not be read; the sweep goes on and the next pass takes it again");
+            }
         }
         Ok(())
     }

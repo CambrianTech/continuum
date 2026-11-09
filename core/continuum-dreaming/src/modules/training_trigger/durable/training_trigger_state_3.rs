@@ -229,9 +229,7 @@ impl RetireReport {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum OperationPoint {
     BeforeSchemaSetup,
-    AfterMetadataScan,
     AcceptanceCommitted,
-    BeforeRetryableCommit,
 }
 
 /// Pause the actual owner at a persistence boundary; no replacement storage or

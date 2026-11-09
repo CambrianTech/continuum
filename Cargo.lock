@@ -3090,6 +3090,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "ts-rs 12.0.1",
  "uuid",
 ]

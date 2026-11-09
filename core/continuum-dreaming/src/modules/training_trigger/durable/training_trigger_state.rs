@@ -46,6 +46,10 @@ impl TrainingTriggerState {
                 failure = Some(error.to_string());
             }
         }
+        // nothing learns now: leave no learner seated
+        let quiesced = self.in_place.quiesce(self).await;
+        continuum_base::probe!(class = "training.in_place.quiesced", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
+            unconfirmed = quiesced.unconfirmed, "the trigger stopped: every learner checkpointed and stopped, every workspace released");
         failure.map_or(Ok(()), Err)
     }
 
