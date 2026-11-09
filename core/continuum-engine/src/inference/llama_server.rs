@@ -82,7 +82,7 @@ use pages::{
 };
 mod genome;
 mod learn_ledger;
-pub use learn_ledger::{GrantId, LearningEngine, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
+pub use learn_ledger::{GrantId, GrantShare, LearningEngine, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
 mod learn_residency;
 mod learn_step;
 pub use learn_step::{LearnExample, LearnOutcome};
