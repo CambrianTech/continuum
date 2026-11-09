@@ -73,7 +73,7 @@ async fn a_shadow_is_seated_on_exactly_the_measured_lease() {
     let authority = authority();
     let (engine, seen, server) = engine("none").await;
     let seat = seat(&authority, engine, "learning:her", shadow()).await.expect("test: seated");
-    assert_eq!((seat.lora_id, leased(&authority)), (3, WEIGHTS), "the shadow's measured bytes are leased, no more");
+    assert_eq!((seat.shadow.id, leased(&authority)), (3, WEIGHTS), "the shadow's measured bytes are leased, no more");
     let calls = seen.lock().unwrap_or_else(|p| p.into_inner()).clone(); // test-owned lock
     assert_eq!(calls[0]["dry_run"], true, "measured first");
     assert_eq!(calls[1]["leases"][0]["bytes"], WEIGHTS, "the residency names the lease");
