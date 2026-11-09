@@ -148,14 +148,17 @@ mod tests {
         // result-only price, every unrelated claim is charged the same and only her newest
         // result's claim grows (Codex on #5889: a price that never reaches the charge is inert).
         let control = faculty.prompt_view_priced(&workspace, window, average, None, None);
-        let want = |view: &DeliberationPromptView, source: &str| {
-            view.allocation.as_ref().and_then(|receipt| receipt.claims.iter().find(|c| c.source == source)).map(|c| c.want)
+        let claim = |view: &DeliberationPromptView, source: &str| {
+            view.allocation.as_ref().and_then(|receipt| receipt.claims.iter().find(|c| c.source == source)).map(|c| (c.floor, c.want))
         };
         use continuum_context::allocation::id as claim_id;
         for unrelated in [claim_id::FRAMING, claim_id::TOOLS] {
-            assert_eq!(want(&refit, unrelated), want(&control, unrelated), "{unrelated} keeps the shared price");
+            assert_eq!(claim(&refit, unrelated), claim(&control, unrelated), "{unrelated} keeps the shared price");
         }
-        assert!(want(&refit, claim_id::NEWEST) > want(&control, claim_id::NEWEST),
-            "her newest result alone is charged the refusal's surcharge");
+        // Its least page (the floor): its whole is past the window in both views, so its want is
+        // capped at the window alike, but the floor is the page charged at each price.
+        let floor = |view: &DeliberationPromptView| claim(view, claim_id::NEWEST).map(|(floor, _)| floor);
+        assert!(floor(&refit) > floor(&control),
+            "her newest result alone is charged the refusal's surcharge: {:?} vs {:?}", floor(&refit), floor(&control));
     }
 }
