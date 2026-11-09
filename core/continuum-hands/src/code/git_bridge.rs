@@ -208,7 +208,7 @@ pub fn repo_slug_from_remote_url(url: &str) -> Option<String> {
         path
     };
     let path = path.trim_matches('/');
-    let path = path.strip_suffix(".git").unwrap_or(path);
+    let path = path.strip_suffix(".git").unwrap_or(path); // unwrap_or: a remote without the suffix is its own name
 
     let mut segments = path.rsplit('/').filter(|s| !s.is_empty());
     let name = segments.next()?;
@@ -343,7 +343,7 @@ pub async fn git_sync_from_shared(
     // the branch and both its PRs were closed). A card branch reconciles with canary through
     // card staging, never here, so the sync leaves it untouched and says why.
     let branch = run_git(workspace_root, &["symbolic-ref", "--short", "-q", "HEAD"]).await
-        .unwrap_or_default()
+        .unwrap_or_default() // unwrap_or_default: a detached HEAD (symbolic-ref exits 1) is on no card branch
         .trim()
         .to_string();
     if crate::code::card_branch::is_card_branch(&branch) {
@@ -375,7 +375,7 @@ pub async fn git_sync_from_shared(
             .map_err(|e| format!("could not commit your work to preserve it, so the workspace was not synced (your work is staged, untouched): {e}"))?;
     }
     let before = run_git(workspace_root, &["rev-parse", "HEAD"]).await
-        .unwrap_or_default()
+        .unwrap_or_default() // unwrap_or_default: an unborn HEAD has no commit, so nothing reads as synced
         .trim()
         .to_string();
 
@@ -428,18 +428,16 @@ pub async fn git_sync_from_shared(
     }
 
     let after = run_git(workspace_root, &["rev-parse", "HEAD"]).await
-        .unwrap_or_default()
+        .map_err(|e| format!("merged shared in, but could not read the workspace's HEAD after it: {e}"))?
         .trim()
         .to_string();
     let synced = !before.is_empty() && before != after;
     let summary = if synced {
-        let count = run_git(
-            workspace_root,
-            &["rev-list", "--count", &format!("{before}..{after}")],
-        ).await
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+        // The sync is done; a count that cannot be read says so in its summary.
+        let count = match run_git(workspace_root, &["rev-list", "--count", &format!("{before}..{after}")]).await {
+            Ok(count) => count.trim().to_string(),
+            Err(e) => format!("an uncounted number of (could not count them: {e})"),
+        };
         format!("synced {count} shared commit(s) in; your work was preserved")
     } else {
         "already current with the shared checkout".to_string()
@@ -480,7 +478,9 @@ async fn resolve_conflicts_shared_wins(workspace_root: &Path, actor: &GitActor) 
         let Some((meta, path)) = line.split_once('\t') else {
             return Ok(false);
         };
-        let stage = meta.split_whitespace().nth(2).unwrap_or("");
+        let Some(stage) = meta.split_whitespace().nth(2) else {
+            return Ok(false);
+        };
         let entry = theirs_present.entry(path.to_string()).or_insert(false);
         if stage == "3" {
             *entry = true;
@@ -703,7 +703,7 @@ pub async fn run_git_input(workspace_root: &Path, actor: Option<&GitActor>, args
         .env_remove("GIT_AUTHOR_EMAIL")
         .env_remove("GIT_COMMITTER_NAME")
         .env_remove("GIT_COMMITTER_EMAIL")
-        .env("GIT_CEILING_DIRECTORIES", workspace_root.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(workspace_root))
+        .env("GIT_CEILING_DIRECTORIES", workspace_root.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(workspace_root)) // unwrap_or: a root with no parent is its own ceiling
         // A headless core has no terminal: a fetch or push that would ask for
         // credentials must FAIL (a named outcome) rather than hang the turn on a prompt
         // nobody will answer.

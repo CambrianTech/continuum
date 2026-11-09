@@ -244,7 +244,7 @@
         // Upstream submodule repo with two commits: P0 (the pointer both clones
         // start at) and S2 (what shared advances to).
         let sub = setup_git_repo().await;
-        let _p0 = run_git(sub.path(), &["rev-parse", "HEAD"]).await
+        let p0 = run_git(sub.path(), &["rev-parse", "HEAD"]).await
             .unwrap()
             .trim()
             .to_string();
@@ -277,6 +277,10 @@
         // Pin the submodule at P0 (submodule add checks out its current HEAD = S2 tip;
         // rewind the gitlink so both sides start from a common base pointer).
         run_git_as(shared.path(), &tester(), &["commit", "-m", "shared: add submodule"]).await.unwrap();
+        // The rewind itself: without it the base already held S2, shared never moved the pointer,
+        // and the sync passed only because its autosave recorded the checkout (card 432809f4).
+        run_git(shared.path(), &["update-index", "--cacheinfo", &format!("160000,{p0},vendor/sub")]).await.unwrap();
+        run_git_as(shared.path(), &tester(), &["commit", "-m", "shared: pin sub at P0"]).await.unwrap();
 
         // Citizen: cp-clone of shared (related history), like the CoW layer.
         let citizen = tempfile::tempdir().unwrap();
