@@ -12,7 +12,7 @@
 
 use super::seat::{lease_rows, Authority, Seat, SeatRefusal};
 use crate::inference::llama_server::{
-    CoveringLease, LedgerAnswer, PlannedRow, Preflight, ResidencyId, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind,
+    CoveringLease, LearningEngine, LedgerAnswer, PlannedRow, Preflight, ResidencyId, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind,
 };
 use crate::resources::LeaseGuard;
 
@@ -26,14 +26,9 @@ impl MindLearning {
     /// Release her optimizer residency once its shadow is unloaded (the engine frees the optimizer
     /// with it); the leases drop with this value. A busy release keeps it, leases and all.
     pub async fn release(self, seat: &Seat) -> Result<(), (Self, String)> {
-        match seat.engine.release_residency(&self.optimizer.to_string()).await {
-            Ok(LedgerAnswer::Ledger(released)) if released.refused.is_none() => Ok(()),
-            Ok(LedgerAnswer::Ledger(released)) => {
-                let why = format!("optimizer residency release refused: {:?}", released.refused);
-                Err((self, why))
-            }
-            Ok(LedgerAnswer::NoLedger) => Err((self, "the engine lost its learning ledger".into())),
-            Err(error) => Err((self, format!("optimizer residency release failed: {error}"))),
+        match release(&seat.engine, &self.optimizer, "optimizer").await {
+            Ok(()) => Ok(()),
+            Err(why) => Err((self, why)),
         }
     }
 }
@@ -54,6 +49,25 @@ impl EngineWorkspace {
                 row.device == need.device && row.buffer_type == need.buffer_type && row.host == need.host && row.bytes >= need.bytes
             })
         })
+    }
+
+    /// Release the workspace residency once no mind learns on its engine (the engine reclaims the
+    /// buffer after its last optimizer); the leases drop with this value. A refused release keeps it.
+    pub async fn release(self, engine: &LearningEngine) -> Result<(), (Self, String)> {
+        match release(engine, &self.residency, "workspace").await {
+            Ok(()) => Ok(()),
+            Err(why) => Err((self, why)),
+        }
+    }
+}
+
+/// Release one residency, naming `what` it held in a refusal.
+async fn release(engine: &LearningEngine, residency: &ResidencyId, what: &str) -> Result<(), String> {
+    match engine.release_residency(&residency.to_string()).await {
+        Ok(LedgerAnswer::Ledger(released)) if released.refused.is_none() => Ok(()),
+        Ok(LedgerAnswer::Ledger(released)) => Err(format!("{what} residency release refused: {:?}", released.refused)),
+        Ok(LedgerAnswer::NoLedger) => Err("the engine lost its learning ledger".into()),
+        Err(error) => Err(format!("{what} residency release failed: {error}")),
     }
 }
 
