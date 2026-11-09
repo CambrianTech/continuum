@@ -73,6 +73,13 @@ impl RoomPath {
         format!("airc://room:{}", self.0)
     }
 
+    /// The airc channel a nested room had before the room tree: its last segment alone. `None`
+    /// for a top-level room, whose channel never changed. Read only to adopt a run opened before
+    /// the tree, so opening it again resumes it instead of making a second, empty room.
+    pub fn pre_tree_channel(&self) -> Option<&str> {
+        self.0.rsplit_once('/').map(|(_, leaf)| leaf)
+    }
+
     /// The airc channel name behind this room. A top-level room is its own name (`academy` is
     /// the room it always was); a nested room is its last segment and a key derived from the
     /// whole path, so two rooms with the same last segment in different places never meet.

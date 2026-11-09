@@ -65,9 +65,7 @@ pub async fn spawn_activity_room(
         // OPENING NEVER MOVES FOCUS: `subscribe_room` joins without setting the caller's
         // current room (airc `Focus::Keep`). Creating a room and looking at it are different
         // acts; a daemon opening a benchmark must not move a human's or a resident's focus.
-        let room = airc.subscribe_room(&path.channel_key()).await.map_err(|source| {
-            CommandError::Invalid(format!("could not open room {}: {source}", path.uri()))
-        })?;
+        let room = open_path_room(airc, &path, recipe, parent_room.as_ref(), child_suite.clone()).await?;
         // A reused name resolves to the SAME room. Read its type before publishing
         // anything: a benchmark spawn once rebound the live project room, after which
         // benchmark cleanup evicted its coding peers as "finished".
@@ -338,6 +336,70 @@ pub(super) async fn open_ancestors(airc: &Airc, path: &RoomPath) -> Result<Optio
 
 /// A child room announces itself on its parent's wall ([`crate::experience::children`]), so a
 /// node that never opened it can find it. Never fails the opening: a missing record is probed.
+/// The room at `path`: its tree channel when this scope holds it, else a run opened before the
+/// room tree, adopted, else a new tree channel. Before the tree a nested activity's channel was its
+/// last segment alone, so opening such a run by its tree key would make a second, empty room and
+/// orphan the first's cards, board and records. A pre-tree room is adopted only when this scope
+/// holds it and it is bound to the same recipe; adopting writes its path into its binding and
+/// announces it to its parent, once, and every later open resumes it by that binding.
+async fn open_path_room(
+    airc: &Airc,
+    path: &RoomPath,
+    recipe: &str,
+    parent: Option<&airc_lib::Room>,
+    suite: Option<String>,
+) -> Result<airc_lib::Room, CommandError> {
+    let key = path.channel_key();
+    if let Some(room) = held_room(airc, &key).await? {
+        return Ok(room);
+    }
+    if let Some(pre_tree) = path.pre_tree_channel() {
+        if let Some(room) = held_room(airc, pre_tree).await? {
+            let posts = airc.wall_posts_in(&room, Some(RECIPE_WALL_CATEGORY)).await.map_err(|e| {
+                CommandError::Internal(format!("cannot read recipe for room {pre_tree:?}: {e}"))
+            })?;
+            let binding = crate::experience::binding::project_binding(&posts)
+                .map_err(|e| CommandError::Internal(format!("cannot read recipe for room {pre_tree:?}: {e}")))?;
+            match binding {
+                Some(binding) if binding.recipe == recipe && binding.path.as_ref() == Some(path) => return Ok(room),
+                Some(binding) if binding.recipe == recipe && binding.path.is_none() => {
+                    let adopted = RoomRecipeBinding { path: Some(path.clone()), ..binding };
+                    let body = serde_json::to_string(&adopted) // boundary: the recipe binding wall record — airc's wire + store
+                        .map_err(|source| CommandError::Internal(format!("encode recipe binding: {source}")))?;
+                    airc.publish_wall_post_in(&room, RECIPE_WALL_CATEGORY.to_string(), body, None).await.map_err(|source| {
+                        CommandError::Internal(format!("room {pre_tree:?} could not take its path {}: {source}", path.uri()))
+                    })?;
+                    if let Some(parent) = parent {
+                        announce_child(airc, parent, &room, path, recipe, suite).await;
+                    }
+                    continuum_base::probe!(
+                        class = "activity.pre_tree_adopted",
+                        room = %path.uri(),
+                        channel = %pre_tree,
+                        recipe = %recipe,
+                        "a room opened before the room tree now stands at its path: adopted, never duplicated"
+                    );
+                    return Ok(room);
+                }
+                _ => {}
+            }
+        }
+    }
+    airc.subscribe_room(&key)
+        .await
+        .map_err(|source| CommandError::Invalid(format!("could not open room {}: {source}", path.uri())))
+}
+
+/// The room this scope already holds under `channel`, without joining it: `None` when it holds
+/// none (airc refuses an unheld channel as a route error), any other failure surfaced.
+async fn held_room(airc: &Airc, channel: &str) -> Result<Option<airc_lib::Room>, CommandError> {
+    match airc.room_by_name_or_channel(channel, "open the activity room").await {
+        Ok(room) => Ok(Some(room)),
+        Err(airc_lib::AircError::Route(_)) => Ok(None),
+        Err(source) => Err(CommandError::Internal(format!("cannot read this scope's rooms for {channel:?}: {source}"))),
+    }
+}
+
 async fn announce_child(airc: &Airc, parent: &airc_lib::Room, room: &airc_lib::Room, path: &RoomPath, recipe: &str, suite: Option<String>) {
     let record = crate::experience::children::RoomChildRecord {
         room_id: room.channel.as_uuid(),

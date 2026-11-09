@@ -429,5 +429,49 @@
             let refused = spawn_activity_room(&airc, "projects/demo/notes", "project", None, &Default::default(), None, None).await;
             assert!(refused.is_err(), "a path already bound to one recipe is never re-bound to another");
         }
+
+        // A room opened before the room tree: channel = the last segment, bound with no path.
+        async fn pre_tree_room(airc: &Airc, leaf: &str, recipe: &str) -> airc_lib::Room {
+            let room = airc.subscribe_room(leaf).await.expect("the pre-tree room opens");
+            let binding = crate::experience::binding::RoomRecipeBinding { recipe: recipe.to_string(), parent: None, params: Default::default(), path: None };
+            let body = serde_json::to_string(&binding).expect("a binding encodes");
+            airc.publish_wall_post_in(&room, RECIPE_WALL_CATEGORY.to_string(), body, None).await.expect("bound");
+            room
+        }
+
+        // what this catches: a run opened before the room tree being orphaned. Its channel was its
+        // last segment; the tree keys a nested room by its whole path, so re-opening it by name
+        // would make a second, empty room beside the first and leave its cards and board behind
+        // (Cormac on #5878). It is adopted once (its path written, announced to its parent) and
+        // resumed every time after; no tree-keyed room is ever made for it.
+        #[tokio::test]
+        async fn a_room_opened_before_the_tree_is_resumed_never_duplicated() {
+            let (_home, airc) = scope().await;
+            let old = pre_tree_room(&airc, "run-1", "chat").await;
+
+            let first = spawn_activity_room(&airc, "projects/demo/run-1", "chat", None, &Default::default(), None, None).await.expect("opened");
+            assert_eq!((first.room_id, first.opened), (old.channel, ActivityOpened::Resumed), "the pre-tree room is the activity, resumed");
+            let posts = airc.wall_posts_in(&old, Some(RECIPE_WALL_CATEGORY)).await.expect("its wall reads");
+            let binding = crate::experience::binding::project_binding(&posts).expect("its binding reads").expect("bound");
+            assert_eq!(binding.path.as_ref().map(|p| p.as_str()), Some("projects/demo/run-1"), "adopting writes its path");
+            assert_eq!(children_of(&airc, "projects/demo").await, vec!["projects/demo/run-1".to_string()], "and puts it on its parent's wall");
+
+            let again = spawn_activity_room(&airc, "projects/demo/run-1", "chat", None, &Default::default(), None, None).await.expect("reopened");
+            assert_eq!((again.room_id, again.binding_post_id), (old.channel, first.binding_post_id), "the same room and binding again");
+            assert_eq!(children_of(&airc, "projects/demo").await.len(), 1, "adopted once, announced once");
+            let key = crate::experience::room_path::RoomPath::parse("projects/demo/run-1").expect("a room path").channel_key();
+            assert!(airc.room_by_name_or_channel(&key, "check").await.is_err(), "no second, tree-keyed room was made");
+        }
+
+        // what this catches: adoption taking over an unrelated room that shares the last segment.
+        // A pre-tree room bound to another recipe stays as it is, and the path gets its own room.
+        #[tokio::test]
+        async fn a_pre_tree_room_of_another_recipe_is_never_adopted() {
+            let (_home, airc) = scope().await;
+            let other = pre_tree_room(&airc, "run-2", "project").await;
+            let made = spawn_activity_room(&airc, "projects/demo/run-2", "chat", None, &Default::default(), None, None).await.expect("opened");
+            assert_eq!(made.opened, ActivityOpened::Created);
+            assert_ne!(made.room_id, other.channel, "the other recipe's room is left alone");
+        }
     }
 }
