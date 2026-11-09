@@ -170,6 +170,18 @@ async fn another_incarnation_at_the_address_proves_nothing_about_the_old_memory(
     server.abort();
 }
 
+// what this catches: a release that reached a relaunched engine (it refuses stale_engine and changes
+// nothing) read as anything but unproven.
+#[tokio::test]
+async fn a_release_refused_as_stale_keeps_its_lease() {
+    let authority = authority();
+    let (engine, server) = engine_losing_the_load("stale_engine").await;
+    let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
+    assert!(matches!(refused, SeatRefusal::Unloaded(_)), "{refused}");
+    assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "held: nothing was released");
+    server.abort();
+}
+
 // what this catches: a seat future dropped after its residency registered (a cancelled caller, a
 // timeout) taking its leases with it while the engine may be loading the shadow (Codex's audit of
 // d6242e612). The lease stays in custody until settle unloads the bound shadow and the engine
@@ -218,9 +230,10 @@ async fn a_cancelled_seat_leaves_its_lease_in_custody_until_settled() {
         )
         .route(
             "/lora-adapters/unload",
-            axum::routing::post(move || {
+            axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
                 let unloaded = Arc::clone(&on_unload);
                 async move {
+                    assert_eq!(body["engine"], ENGINE, "the unload names the incarnation that loaded it");
                     *unloaded.lock().unwrap_or_else(|p| p.into_inner()) = true; // test-owned lock
                     axum::Json(serde_json::json!({"success": true, "id": 3, "path": "/train/her-shadow.gguf"}))
                 }

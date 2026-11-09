@@ -158,7 +158,7 @@ impl Seat {
     /// Unload the shadow (the engine releases its optimizer first). Its residency stays until
     /// released.
     pub async fn unload(&self) -> Result<(), String> {
-        self.engine.unseat(self.shadow.id).await.map(|_| ()).map_err(|error| format!("unload refused: {error}"))
+        self.engine.unseat(&self.ledger, self.shadow.id).await.map(|_| ()).map_err(|error| format!("unload refused: {error}"))
     }
 
     /// Release the weight residency of an unloaded shadow; its leases leave custody when the engine
