@@ -18,18 +18,33 @@ use super::*;
 #[serde(transparent)]
 pub struct LedgerEngine(String);
 
-/// One serving engine's learning routes, by its address: separate from the process that owns the
-/// engine's lifecycle, so the learner in the genome reaches the ledger without the lifecycle owner.
+/// One serving engine PROCESS's learning routes: separate from the owner of the engine's lifecycle,
+/// so the learner in the genome reaches the ledger without it. Bound to the physical incarnation
+/// (pid and OS start time), never to an endpoint alone: a relaunch on the same port is another
+/// engine, and only that process's verified death proves its memory freed.
 #[derive(Debug, Clone)]
 pub struct LearningEngine {
     pub(super) root: String,
     pub(super) client: reqwest::Client,
+    process: crate::inference::engine_residency::EngineIncarnation,
 }
 
 impl LearningEngine {
-    /// The engine serving at `root` (a lane's `root_url`).
-    pub fn at(root: impl Into<String>) -> Self {
-        Self { root: root.into(), client: reqwest::Client::new() }
+    /// The engine process `process` (its `root_url` is where it serves).
+    pub fn of(process: crate::inference::engine_residency::EngineIncarnation) -> Self {
+        Self { root: process.root_url(), client: reqwest::Client::new(), process }
+    }
+
+    /// A fake engine serving on `port` inside this (test) process, which is its incarnation. `None`
+    /// when this process's start time cannot be read.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn serving_here(port: u16) -> Option<Self> {
+        crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), port).map(Self::of)
+    }
+
+    /// The physical process this engine is.
+    pub fn process(&self) -> crate::inference::engine_residency::EngineIncarnation {
+        self.process
     }
 }
 
