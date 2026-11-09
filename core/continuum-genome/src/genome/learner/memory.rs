@@ -22,6 +22,22 @@ pub struct MindLearning {
     _leases: Vec<LeaseGuard>,
 }
 
+impl MindLearning {
+    /// Release her optimizer residency once its shadow is unloaded (the engine frees the optimizer
+    /// with it); the leases drop with this value. A busy release keeps it, leases and all.
+    pub async fn release(self, seat: &Seat) -> Result<(), (Self, String)> {
+        match seat.engine.release_residency(&self.optimizer.to_string()).await {
+            Ok(LedgerAnswer::Ledger(released)) if released.refused.is_none() => Ok(()),
+            Ok(LedgerAnswer::Ledger(released)) => {
+                let why = format!("optimizer residency release refused: {:?}", released.refused);
+                Err((self, why))
+            }
+            Ok(LedgerAnswer::NoLedger) => Err((self, "the engine lost its learning ledger".into())),
+            Err(error) => Err((self, format!("optimizer residency release failed: {error}"))),
+        }
+    }
+}
+
 /// The engine's one training workspace: its residency, the rows it covers, and its leases.
 pub struct EngineWorkspace {
     pub residency: ResidencyId,

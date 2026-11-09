@@ -10,8 +10,8 @@
 //!    relaunch between 2 and 3 is refused as `stale_engine`, and the leases drop);
 //! 4. the engine writes and loads the shadow inside that residency, refusing any byte past it.
 //!
-//! The leases live in the [`Seat`]; dropping it releases them. Unseating is the reverse order:
-//! unload, release the residency, then drop the leases, never the other way.
+//! The leases live in the [`Seat`]; dropping it releases them. Leaving is the reverse order:
+//! [`Seat::unload`], then [`Seat::release`] the residency, then the leases drop, never the other way.
 
 use crate::inference::llama_server::{
     CoveringLease, FreshShadow, LeaseKind, LearningEngine, LedgerAnswer, LedgerEngine, LoadedAdapter, ResidencyId,
@@ -128,12 +128,15 @@ pub(super) async fn lease_rows(authority: &Authority, consumer: &str, rows: &[Re
 }
 
 impl Seat {
-    /// Unseat in the reverse order: unload the shadow, release its residency, then the leases go
-    /// with the seat. A release the engine refuses (busy) keeps the seat, so its leases stay.
-    pub async fn unseat(self) -> Result<(), (Self, String)> {
-        if let Err(error) = self.engine.unseat(self.shadow.id).await {
-            return Err((self, format!("unload refused: {error}")));
-        }
+    /// Unload the shadow (the engine releases its optimizer first). Its residencies and leases stay
+    /// until released, in that order.
+    pub async fn unload(&self) -> Result<(), String> {
+        self.engine.unseat(self.shadow.id).await.map(|_| ()).map_err(|error| format!("unload refused: {error}"))
+    }
+
+    /// Release the weight residency of an unloaded shadow; the leases go with the seat. A release
+    /// the engine refuses (busy) keeps the seat, so its leases stay.
+    pub async fn release(self) -> Result<(), (Self, String)> {
         match self.engine.release_residency(&self.residency.to_string()).await {
             Ok(LedgerAnswer::Ledger(released)) if released.refused.is_none() => Ok(()),
             Ok(LedgerAnswer::Ledger(released)) => {
