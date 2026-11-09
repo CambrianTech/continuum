@@ -133,8 +133,9 @@ fn two_acts_and_a_turnover(conversation_first: bool) -> (usize, usize, usize) {
 // an epoch costs, her conversation led and its oldest turn left, so the prompt broke at its
 // first message and everything behind identity and tools re-prefilled (Benchy on the M5,
 // 2026-10-24 00:32Z: `delib.prompt.common_prefix` index 2 after a turnover, 20% shared; Delia on
-// the IntelMac, 10-24 00:14Z: index 2 at `[actions]`, 41%). The settled blocks lead now,
-// then her actions, whose collapsed items keep their pointers.
+// the IntelMac, 10-24 00:14Z: index 2 at `[actions]`, 41%). A first start lays her blocks first;
+// the turnover orders by measured motion, so a block that never changed (the map) leads it and
+// recall, which changed, moves behind what held still.
 #[test]
 fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front() {
     let memory = WorkingMemory::new(8);
@@ -144,8 +145,8 @@ fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front(
         LlmDeliberationFaculty::view_sources(&now, Some(&memory_streams)).iter().map(|s| s.name()).collect();
     assert_eq!(
         names,
-        ["workspace-map", "held-work", "actions", "conversation", "room-kanban", "recall", "thoughts", "tasks", "open-views", "notices", "facts"],
-        "settled blocks and her held work (it changes only on a card's transition), then her actions and conversation, then what counts or changes within an epoch, then what her situation shows now, right before the act's tail"
+        ["workspace-map", "room-kanban", "recall", "held-work", "actions", "conversation", "thoughts", "tasks", "open-views", "notices", "facts"],
+        "a first start's tie: her grounding blocks, her held work, her actions and conversation, then what changes within an epoch, then what her situation shows now, right before the act's tail"
     );
 
     let (kept, length, survived) = two_acts_and_a_turnover(true);
@@ -156,7 +157,7 @@ fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front(
     assert_eq!(kept, length, "the next act's prompt holds the whole previous view, then its tail");
     // The map and the `[actions]` banner at least: the first change is inside her actions (an
     // act the turnover collapsed, or the act the epoch had appended at its end).
-    assert!(survived >= 2, "a turnover keeps the settled blocks and her actions' front: {survived}");
+    assert!(survived >= 2, "a turnover, ordered by measured motion, keeps what never changed at its front: {survived}");
 }
 
 // what this catches: a view that fits turning over, cold, to raise a collapsed item a level

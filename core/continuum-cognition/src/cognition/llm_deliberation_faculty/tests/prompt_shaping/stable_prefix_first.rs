@@ -138,10 +138,10 @@ fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() 
     assert!(
         a.messages[..history_first].iter().all(|m| {
             let text = m.content_text();
-            ["[room-kanban]", "[room-wall]", "[workspace-map]", "[my work]"].iter().any(|tag| text.starts_with(tag))
+            !["[now ", "[context]", "[occurred"].iter().any(|tag| text.starts_with(tag))
         }),
-        "every message ahead of the history is grounding or her held work — no clock, no \
-                     fact, nothing that grows:\n{:#?}",
+        "every message ahead of the history is a block of her view — no clock, no fact, no \
+                     turn:\n{:#?}",
         bodies(&a)
     );
 }
@@ -187,7 +187,7 @@ fn the_next_act_holds_the_whole_previous_view_as_its_head() {
 
     let head = first.refit.grounding_at;
     assert!(head > 0, "precondition: her view leads the messages:\n{:#?}", bodies(&first));
-    assert!(bodies(&first)[0].starts_with("[room-kanban]"), "her grounding leads a first start, by name:\n{:#?}", bodies(&first));
+    assert!(bodies(&first)[0].starts_with("[recall]"), "her grounding leads a first start, by name:\n{:#?}", bodies(&first));
     assert_eq!(first.system, second.system, "the system message is the same bytes");
     assert_eq!(
         bodies(&first)[..head],

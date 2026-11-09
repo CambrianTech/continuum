@@ -396,11 +396,9 @@ fn stable_tier_bytes_are_identical_however_salience_ranks_them() {
         turn0.find("[room-roster]").expect("roster present"),
     );
     assert!(
-        roster < map && map < kanban,
-        "stable tier orders canonically by CHURN CLASS then name \
-                 (`deliberation_prompt::stable_prefix_order`): room-roster and \
-                 workspace-map are STANDING ground, room-kanban is the BOARD and comes \
-                 after both\n{turn0}"
+        kanban < roster && roster < map,
+        "stable tier orders canonically by name (`deliberation_prompt::stable_prefix_order`; \
+                 her view's motion orders a start)\n{turn0}"
     );
 
     // The volatile tier keeps salience order ON PURPOSE (#205: most salient
@@ -757,32 +755,6 @@ fn a_budget_too_small_for_even_one_unit_emits_no_header_at_all() {
 // after it (~4000 tokens / ~30s of pure re-prefill — the eval-lane crawl). Since
 // 2026-10-23 the room's standing framing leaves the system message too: the system
 // message is hers in every room. regression for #205
-// what this catches: churning grounding ahead of the append-only results ring. On the
-// M5 (2026-10-18) recall (Turn churn) and the kanban (Claims churn) led the messages,
-// every turn's reuse broke there, and the ~30k-token ring behind them re-prefilled at
-// ~100 tokens/s. The ring leads; the grounding follows it.
-#[test]
-fn the_results_ring_renders_before_churning_grounding() {
-    let wm = Arc::new(crate::cognition::working_memory::WorkingMemory::new(3));
-    let custody = |h: &str| crate::ai::types::ResultCustody::Whole { handle: h.into() };
-    wm.record_receipt_typed(&[], "RING-ENTRY older result", None, custody("1111111111111111"));
-    wm.record_receipt_typed(&[], "the newest result", None, custody("2222222222222222"));
-    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
-        .with_context_window(32_768)
-        .with_working_memory(Arc::clone(&wm));
-    let mut ws = Workspace::new("continue the card");
-    ws.broadcast.push(
-        Contribution::context(FacultyId::Recall, "RECALL-BLOCK something I remembered", 0.6, "recall")
-            .trailing(),
-    );
-    let view = faculty.prompt_view(&ws);
-    let at = |needle: &str| view.messages.iter().position(|m| m.content_text().contains(needle));
-    let (ring, recall) = (at("RING-ENTRY"), at("RECALL-BLOCK"));
-    assert!(ring.is_some() && recall.is_some(), "both render: ring {ring:?}, recall {recall:?}");
-    assert!(ring < recall, "the append-only ring leads, churning grounding follows: ring {ring:?}, recall {recall:?}");
-}
-
 #[test]
 fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
     use crate::ai::types::MessageContent;
