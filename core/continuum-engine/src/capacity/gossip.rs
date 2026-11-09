@@ -888,7 +888,7 @@ mod tests {
         let wire = serde_json::to_string(&this_build_capabilities())?;
         assert_eq!(
             wire,
-            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"training_lease\",\"training_lease_return\",\"remote_think_budget\"]"
+            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"remote_think_budget\"]"
         );
         assert!(!this_build_capabilities().contains(&CapabilityId::Unknown), "emission never advertises Unknown");
 
