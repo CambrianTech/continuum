@@ -87,6 +87,8 @@ struct EngineLearning {
 }
 
 struct Seated {
+    /// This seat's identity, as her other competences see it in flight.
+    id: Uuid,
     policy: LearnPolicy,
     /// The signature of the competence she learns here, minted from the examples that seated her
     /// (a fork's parent on it): stamped on the gene her generation becomes.
@@ -302,7 +304,15 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
     if let Some(sig) = signature.as_mut() {
         let asking = super::competence::Asking { persona_id: key.persona_id, persona_name: &row.persona_name, trait_kind: &key.trait_kind, base_model: &key.base_model, examples: examples.len() };
         let adoption = crate::genome::gene_trial::Adoption::default_paths();
-        match super::competence::decide(&asking, sig, &adoption, &[]).await {
+        // her other learners seated on this base are her competences in flight: a near one joins it
+        // rather than minting a second gene beside it (Codex on e473f72b1)
+        let in_flight: Vec<(Uuid, crate::genome::signature::GeneSignature)> = held
+            .minds
+            .iter()
+            .filter(|(other, _)| other.persona_id == key.persona_id && other.base_model == key.base_model)
+            .filter_map(|(_, seated)| seated.signature.clone().map(|sig| (seated.id, sig)))
+            .collect();
+        match super::competence::decide(&asking, sig, &adoption, &in_flight).await {
             Ok(crate::genome::competence::Decision::Mint) => {}
             Ok(crate::genome::competence::Decision::Fork { parent, .. }) => sig.parent = Some(parent), // learned from the base with its lineage, as the trainer it replaces did
             Ok(crate::genome::competence::Decision::Reuse { gene, similarity }) => {
@@ -311,7 +321,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
             }
             Ok(other) => {
                 continuum_base::probe!(class = "training.in_place.not_learning", persona = %key.persona_id, decision = ?other,
-                    "the competence decision does not learn now (awaiting a trial, or memories suffice); the examples stay pending");
+                    "the competence decision does not learn now (another of her learners has it, a trial awaits, or memories suffice); the examples stay pending");
                 return Ok(false);
             }
             Err(why) => {
@@ -353,7 +363,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
         Ok(mind) => {
             let binding = format!("{}:{}:{}", key.persona_id, key.trait_kind, key.base_model);
             let checkpointed = generation.iter().flat_map(|g| g.positions.iter()).map(|p| (p.submission, p.learned)).collect();
-            held.minds.insert(key.clone(), Seated { policy, signature, expiry, mind, binding, restore: generation, progress: HashMap::new(), checkpointed });
+            held.minds.insert(key.clone(), Seated { id: Uuid::new_v4(), policy, signature, expiry, mind, binding, restore: generation, progress: HashMap::new(), checkpointed });
             Ok(true)
         }
         Err(StartFailure::NotSeated(why)) => {
