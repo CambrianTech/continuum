@@ -637,7 +637,7 @@ impl ServiceModule for DeployTrackerModule {
                 // request is exactly what a retry must be judged against.
                 let req = persisted
                     .or(standing)
-                    .unwrap_or_else(|| continuum_cli_lifecycle::deploy_tracker::DeployRequest::new(tip_sha, now));
+                    .unwrap_or_else(|| continuum_cli_lifecycle::deploy_tracker::DeployRequest::new(tip_sha, now)); // unwrap_or_else: no request stands for this tip, so this tick's new one is the request
                 self.actuate(req, tip_sha, stranded, now).await?;
             }
             DeployVerdict::UpToDate => {}
