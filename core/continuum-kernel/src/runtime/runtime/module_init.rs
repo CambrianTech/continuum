@@ -312,10 +312,6 @@ impl InitWatch {
         let ready = result.is_ok();
         self.finish(result, ms, true);
         if ready {
-            let boot_slowest = self.slowest.lock().clone();
-            if let (Some(record), Some(slowest)) = (self.record.clone(), boot_slowest) {
-                save_record(record, slowest);
-            }
             if self.readiness.ticks_open() && self.readiness.claim_tick(name) {
                 spawn_tick_loop(Arc::clone(&self.module));
             }
@@ -335,11 +331,15 @@ impl InitWatch {
         match result {
             Ok(()) => {
                 info!("  {name} initialized in {ms} ms{}", if late { " (late: degraded until now)" } else { "" });
-                let mut slowest = self.slowest.lock();
-                if slowest.as_ref().is_none_or(|s| ms > s.ms) {
-                    *slowest = Some(SlowestHealthyInit { module: name.to_string(), ms });
+                // Only an init that returned within its deadline is a sample. A late one is the
+                // wedge class the deadline bounds: folded in, its length would become the record's
+                // floor for good and the next boots would never be protected (Cormac on #5842).
+                if !late {
+                    let mut slowest = self.slowest.lock();
+                    if slowest.as_ref().is_none_or(|s| ms > s.ms) {
+                        *slowest = Some(SlowestHealthyInit { module: name.to_string(), ms });
+                    }
                 }
-                drop(slowest);
                 self.readiness.set(name, ModuleState::Ready { init_ms: ms });
             }
             Err(error) => {
@@ -368,7 +368,17 @@ pub mod fixtures {
     pub struct WedgeableInitModule {
         pub name: &'static str,
         pub prefix: &'static [&'static str],
-        pub wedge: bool,
+        pub init: InitBehavior,
+    }
+
+    /// What the fixture's initialize does.
+    #[derive(Clone, Copy)]
+    pub enum InitBehavior {
+        Returns,
+        /// A synchronous relock: blocks its thread forever (the M5 11-07 wedge).
+        Wedges,
+        /// Blocks its thread this long, then returns Ok: a slow init, late when past the deadline.
+        ReturnsAfter(std::time::Duration),
     }
 
     #[async_trait]
@@ -385,10 +395,14 @@ pub mod fixtures {
             }
         }
         async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
-            if self.wedge {
-                let lock = parking_lot::Mutex::new(());
-                let _held = lock.lock();
-                let _relock = lock.lock(); // not reentrant: blocks this thread forever
+            match self.init {
+                InitBehavior::Returns => {}
+                InitBehavior::Wedges => {
+                    let lock = parking_lot::Mutex::new(());
+                    let _held = lock.lock();
+                    let _relock = lock.lock(); // not reentrant: blocks this thread forever
+                }
+                InitBehavior::ReturnsAfter(d) => std::thread::sleep(d),
             }
             Ok(())
         }
@@ -403,11 +417,44 @@ pub mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::fixtures::WedgeableInitModule as InitModule;
+    use super::fixtures::{InitBehavior, WedgeableInitModule as InitModule};
     use super::*;
     use crate::runtime::command_executor::DispatchOutcome;
     use crate::runtime::CommandExecutor;
     use crate::runtime::ModuleUnavailable;
+
+    // what this catches (Cormac on #5842): a late init folded into the record. The record's floor
+    // only rises, so one init that returned 20 minutes late would set every later deadline to 20
+    // minutes and the deadline would never protect boot again. A late init is the wedge class: it
+    // becomes Ready, but the record keeps only this boot's in-deadline sample.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_init_that_returns_past_its_deadline_never_enters_the_record() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let record = InitRecordStore::under_home(home.path());
+        record.save(&SlowestHealthyInit { module: "seed".into(), ms: 20 }); // deadline 3R = 60 ms
+        let record = InitRecordStore::under_home(home.path());
+        let before = record.deadline();
+        let late_by = Duration::from_millis(400);
+
+        let runtime = Runtime::new();
+        runtime.register(Arc::new(InitModule { name: "healthy", prefix: &["healthy/"], init: InitBehavior::Returns }));
+        runtime.register(Arc::new(InitModule { name: "slow", prefix: &["slow/"], init: InitBehavior::ReturnsAfter(late_by) }));
+        let settled = tokio::time::timeout(Duration::from_secs(10), runtime.begin_initialize(InitPlan::from_record(record)))
+            .await
+            .expect("the boot settles");
+        assert_eq!(settled.degraded, vec!["slow"], "{before} is far under {late_by:?}");
+
+        let readiness = runtime.registry().readiness();
+        let until = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !matches!(readiness.state("slow"), Some(ModuleState::Ready { .. })) {
+            assert!(tokio::time::Instant::now() < until, "the late init returns and becomes Ready");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await; // any save the late finish made has landed
+
+        let next = InitRecordStore::under_home(home.path()).deadline();
+        assert!(next.duration() < late_by, "the next boot's deadline stays a boot's, not the late init's: {next}");
+    }
 
     // what this catches (M5 2026-11-07 19:11Z, card 1a566cd9): one module's initialize that never
     // returns wedging the whole boot. With it registered, initialize must still SETTLE within the
@@ -418,8 +465,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_module_whose_initialize_never_returns_degrades_and_the_rest_serve() {
         let runtime = Runtime::new();
-        runtime.register(Arc::new(InitModule { name: "healthy", prefix: &["healthy/"], wedge: false }));
-        runtime.register(Arc::new(InitModule { name: "wedged", prefix: &["wedged/"], wedge: true }));
+        runtime.register(Arc::new(InitModule { name: "healthy", prefix: &["healthy/"], init: InitBehavior::Returns }));
+        runtime.register(Arc::new(InitModule { name: "wedged", prefix: &["wedged/"], init: InitBehavior::Wedges }));
 
         let deadline = InitDeadline::fixture(100, "healthy");
         let settled = tokio::time::timeout(

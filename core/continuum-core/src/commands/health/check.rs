@@ -126,13 +126,13 @@ mod tests {
     // `health-check` must name the wedged module degraded with its typed reason.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ping_and_health_answer_while_a_module_is_wedged_and_health_names_it() {
-        use crate::runtime::runtime::fixtures::WedgeableInitModule;
+        use crate::runtime::runtime::fixtures::{InitBehavior, WedgeableInitModule};
         use crate::runtime::{InitDeadline, InitPlan, Runtime};
         let runtime = Runtime::new();
         runtime.register(Arc::new(crate::modules::health::HealthModule::new(
             runtime.registry().readiness(),
         )));
-        runtime.register(Arc::new(WedgeableInitModule { name: "wedged", prefix: &["wedged/"], wedge: true }));
+        runtime.register(Arc::new(WedgeableInitModule { name: "wedged", prefix: &["wedged/"], init: InitBehavior::Wedges }));
         let settle = runtime.begin_initialize(InitPlan::unrecorded(InitDeadline::fixture(100, "health")));
 
         let ping = runtime.route_command("ping", serde_json::json!({}), None).await;
