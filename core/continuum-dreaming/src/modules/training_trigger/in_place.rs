@@ -90,7 +90,7 @@ struct EngineLearning {
 
 struct Seated {
     /// This seat's identity, as her other competences see it in flight, and the id her shadow's
-    /// file is named for (eviction keeps the shadows of seats held now).
+    /// file is named for.
     id: Uuid,
     policy: LearnPolicy,
     /// The signature of the competence she learns here, minted from the examples that seated her
@@ -267,7 +267,7 @@ async fn checkpoint(state: &TrainingTriggerState, key: &BucketKey, seated: &mut 
         return Ok(None);
     }
     let positions: Vec<Position> = seated.progress.iter().map(|(submission, learned)| Position { submission: *submission, learned: *learned }).collect();
-    let name = format!("{}-{}-{}.gguf", key.persona_id.simple(), file_safe(&key.trait_kind), Uuid::new_v4().simple());
+    let name = format!("{}-{}.gguf", bucket_stem(key), Uuid::new_v4().simple());
     // the manifest records what the generation consumed (ONE-RESIDENT 9.2): each submission and how
     // many of its examples, merged over the generations before it
     let mut consumed: HashMap<Uuid, u32> = seated.checkpointed.clone();
@@ -364,7 +364,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
     };
     let id = Uuid::new_v4();
     let shadow = FreshShadow {
-        name: format!("{}-{}-{}.gguf", key.persona_id.simple(), file_safe(&key.trait_kind), id.simple()),
+        name: format!("{}-{}.gguf", bucket_stem(key), id.simple()),
         rank: policy.rank,
         alpha: policy.alpha,
         targets: policy.targets.clone(),
@@ -458,21 +458,11 @@ impl InPlace {
 }
 
 impl InPlace {
-    /// The seats any engine holds for `key` now; None when an engine is busy, so its seats cannot be read.
-    fn seats_of(&self, key: &BucketKey) -> Option<std::collections::HashSet<Uuid>> {
-        let mut seats = std::collections::HashSet::new();
-        for engine in self.engines.iter() {
-            let held = engine.value().try_lock().ok()?;
-            seats.extend(held.minds.get(key).map(|seated| seated.id));
-        }
-        Some(seats)
-    }
-
-    /// Delete `key`'s files in its train dir that nothing reads again: generations older than
-    /// `current`, and shadows no engine holds. Run under the bucket's gate; every outcome is probed.
+    /// Delete `key`'s generations older than `current` from its train dir: nothing reads them again.
+    /// Run under the bucket's gate; every outcome is probed.
     async fn evict(&self, key: &BucketKey, current: &LearnCheckpoint) {
-        let prefix = format!("{}-{}", key.persona_id.simple(), file_safe(&key.trait_kind));
-        let Some(evict::Entry::Shadow(newest)) = evict::entry(&prefix, &current.name) else {
+        let stem = bucket_stem(key);
+        let Some(newest) = evict::named_id(&stem, &current.name) else {
             continuum_base::probe!(class = "training.in_place.evict_unparsed", persona = %key.persona_id, name = %current.name,
                 "the bucket's generation name is not its own pattern; nothing of it is evicted");
             return;
@@ -480,12 +470,11 @@ impl InPlace {
         let Some(dir) = std::path::Path::new(&current.path).parent().map(std::path::Path::to_path_buf) else {
             return; // a generation path with no directory names no train dir
         };
-        let seats = self.seats_of(key);
-        let swept = tokio::task::spawn_blocking(move || evict::sweep(&dir, &prefix, newest, seats.as_ref())).await;
+        let swept = tokio::task::spawn_blocking(move || evict::sweep(&dir, &stem, newest)).await;
         match swept {
             Ok(Ok(0)) => {}
             Ok(Ok(deleted)) => continuum_base::probe!(class = "training.in_place.evicted", persona = %key.persona_id, deleted = deleted as u64,
-                "a bucket's old generations and unheld shadows left the train dir"),
+                "a bucket's superseded generations left the train dir"),
             Ok(Err(why)) => continuum_base::probe!(class = "training.in_place.evict_failed", persona = %key.persona_id, reason = %why,
                 "a bucket's old files could not all be deleted; the next sweep tries again"),
             Err(join) => continuum_base::probe!(class = "training.in_place.evict_failed", persona = %key.persona_id, reason = %join,
@@ -557,9 +546,20 @@ pub(crate) fn in_flight<'a, S: Clone + 'a>(key: &BucketKey, seats: impl Iterator
         .collect()
 }
 
-/// `trait_kind` as a file-name part (`code/owner` -> `code-owner`).
-fn file_safe(text: &str) -> String {
-    text.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+/// PURE: the stem every file of bucket `key` in the train dir is named with: her id (legible) and a
+/// digest of the WHOLE key (persona, trait, base), so two buckets never share one, whatever their
+/// traits sanitize to or whichever base they learn on (Codex on f13a6abea).
+pub(crate) fn bucket_stem(key: &BucketKey) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::new()
+        .chain_update(key.persona_id.as_bytes())
+        .chain_update([0])
+        .chain_update(key.trait_kind.as_bytes())
+        .chain_update([0])
+        .chain_update(key.base_model.as_bytes())
+        .finalize();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect(); // 146-byte generation names, inside the engine's 200-byte confinement
+    format!("{}-{hex}", key.persona_id.simple())
 }
 
 impl TrainingTriggerState {

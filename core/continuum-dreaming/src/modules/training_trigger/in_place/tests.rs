@@ -28,9 +28,14 @@ fn only_a_committed_certain_update_moves_the_cursor() {
     assert_eq!(verdict(&outcome_with_loss(1, false, f64::INFINITY)), Verdict::Quarantined);
 }
 
+// what this catches: two buckets whose files share a name in one train dir, so one bucket's sweep
+// deletes the other's (Codex on f13a6abea): traits that sanitize alike, one trait on two bases.
 #[test]
-fn a_trait_kind_becomes_a_file_name_part() {
-    assert_eq!(file_safe("code/owner"), "code-owner");
+fn a_buckets_files_are_named_for_its_whole_key() {
+    let key = |trait_kind: &str, base: &str| BucketKey { persona_id: Uuid::from_u128(1), trait_kind: trait_kind.into(), base_model: base.into() };
+    assert_ne!(bucket_stem(&key("code/owner", "qwen")), bucket_stem(&key("code-owner", "qwen")), "traits that sanitize alike stay apart");
+    assert_ne!(bucket_stem(&key("code", "qwen")), bucket_stem(&key("code", "llama")), "one trait on two bases stays apart");
+    assert_eq!(bucket_stem(&key("code", "qwen")), bucket_stem(&key("code", "qwen")), "the stem is the same on every call");
 }
 
 fn authority() -> Authority {
@@ -133,43 +138,35 @@ async fn a_failing_bucket_never_starves_the_next() {
     assert_eq!(*ran.lock().expect("test: lock"), vec![failing, healthy], "the healthy bucket after the failing one still ran");
 }
 
-// what this catches: an eviction that deletes a file it does not own: another bucket whose trait
-// shares a prefix ("code" vs "code-owner"), a staged gene, or a name with a malformed id.
+// what this catches: an eviction that deletes a file it does not own (Codex on f13a6abea): the same
+// persona and trait learning on two bases in one train dir, a shadow, or a staged gene; and one that
+// keeps the bucket's superseded generations forever.
 #[test]
-fn eviction_reads_only_the_buckets_own_names() {
-    let id = Uuid::new_v4();
-    let prefix = "aa-code";
-    assert_eq!(evict::entry(prefix, &format!("aa-code-{}.gguf.checkpoint", id.simple())), Some(evict::Entry::Generation(id)));
-    assert_eq!(evict::entry(prefix, &format!("aa-code-{}.gguf", id.simple())), Some(evict::Entry::Shadow(id)));
-    assert_eq!(evict::entry(prefix, &format!("aa-code-{}.gguf.pending", id.simple())), Some(evict::Entry::Pending(id)));
-    assert_eq!(evict::entry(prefix, &format!("aa-code-owner-{}.gguf", id.simple())), None, "another bucket's trait sharing the prefix");
-    assert_eq!(evict::entry(prefix, &format!("gene-{}.gguf", "ab".repeat(32))), None, "a staged gene");
-    assert_eq!(evict::entry(prefix, "aa-code-notauuid.gguf"), None);
-}
-
-// what this catches: a sweep that deletes the generation a reseat restores, a shadow a seat holds,
-// or any shadow when the seats could not be read; and one that leaves the old ones forever.
-#[test]
-fn eviction_keeps_the_newest_generation_and_held_shadows() {
+fn eviction_deletes_only_this_buckets_superseded_generations() {
     let dir = tempfile::tempdir().expect("test: dir");
-    let (old, newest, held, dropped) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-    let name = |id: Uuid, suffix: &str| format!("aa-code-{}{suffix}", id.simple());
-    for (id, suffix) in [(old, ".gguf.checkpoint"), (newest, ".gguf.checkpoint"), (held, ".gguf.pending"), (dropped, ".gguf.pending")] {
-        std::fs::create_dir(dir.path().join(name(id, suffix))).expect("test: dir");
+    let key = |base: &str| BucketKey { persona_id: Uuid::from_u128(1), trait_kind: "code".into(), base_model: base.into() };
+    let (mine, other) = (bucket_stem(&key("qwen")), bucket_stem(&key("llama")));
+    let (old, newest, others_newest, seat) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let generation = |stem: &str, id: Uuid| format!("{stem}-{}.gguf.checkpoint", id.simple());
+    for name in [generation(&mine, old), generation(&mine, newest), generation(&other, others_newest), format!("{mine}-{}.gguf.pending", seat.simple())] {
+        std::fs::create_dir(dir.path().join(name)).expect("test: dir");
     }
-    for id in [held, dropped] {
-        std::fs::write(dir.path().join(name(id, ".gguf")), b"shadow").expect("test: file");
+    for name in [format!("{mine}-{}.gguf", seat.simple()), format!("gene-{}.gguf", "ab".repeat(32))] {
+        std::fs::write(dir.path().join(name), b"kept").expect("test: file");
     }
-    std::fs::write(dir.path().join("aa-code-owner-x.gguf"), b"another's").expect("test: file");
-    let unread = evict::sweep(dir.path(), "aa-code", newest, None).expect("test: swept");
-    assert_eq!(unread, 1, "with the seats unread, only the old generation goes");
-    let seats: std::collections::HashSet<Uuid> = [held].into();
-    assert_eq!(evict::sweep(dir.path(), "aa-code", newest, Some(&seats)).expect("test: swept"), 2, "the unheld shadow and its pending dir");
+    assert_eq!(evict::named_id(&mine, &format!("{mine}-{}.gguf", newest.simple())), Some(newest), "a checkpoint row's bare name");
+    assert_eq!(evict::sweep(dir.path(), &mine, newest).expect("test: swept"), 1, "only this bucket's superseded generation");
     let mut left: Vec<String> = std::fs::read_dir(dir.path()).expect("test: list").map(|e| e.expect("test: entry").file_name().into_string().expect("test: utf8")).collect();
     left.sort();
-    let mut want = vec![name(newest, ".gguf.checkpoint"), name(held, ".gguf"), name(held, ".gguf.pending"), "aa-code-owner-x.gguf".to_string()];
+    let mut want = vec![
+        generation(&mine, newest),
+        generation(&other, others_newest),
+        format!("{mine}-{}.gguf", seat.simple()),
+        format!("{mine}-{}.gguf.pending", seat.simple()),
+        format!("gene-{}.gguf", "ab".repeat(32)),
+    ];
     want.sort();
-    assert_eq!(left, want);
+    assert_eq!(left, want, "the other base's newest generation, the shadow, its pending dir and the staged gene all stay");
 }
 
 /// The trigger learning in place on a LIVE engine, through its real route (card 4114a2c6; Codex on
@@ -295,7 +292,7 @@ mod live_engine {
         assert!(std::path::Path::new(&first.path).join("adapter.gguf").exists(), "the generation is on disk at {}", first.path);
         // the pass's sweep ran with her seated: her shadow and its save dir must survive it
         let train_dir = std::path::Path::new(&first.path).parent().expect("test: train dir").to_path_buf();
-        let prefix = format!("{}-geography-", persona.simple());
+        let prefix = format!("{}-", bucket_stem(&key));
         let shadows: Vec<String> = std::fs::read_dir(&train_dir)
             .expect("test: list")
             .filter_map(|e| e.ok()?.file_name().into_string().ok())

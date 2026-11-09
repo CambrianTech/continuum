@@ -238,13 +238,12 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
         // Every lane's --train-dir. Since learning moved in place (card 4114a2c6) it holds
         // staged genes and each learning bucket's shadows and checkpoint generations. The
         // training trigger's candidate sweep deletes every bucket's generations older than its
-        // committed one and every shadow no engine holds (`in_place::evict`); candidate genes
-        // are copies in the genome store. What it leaves is bounded by buckets, not time.
+        // committed one (`in_place::evict`); candidate genes are copies in the genome store.
         (
             "engine-train",
             "card 4114a2c6 (Cormac): no pressure-driven pool yet; the trigger's sweep keeps one \
-             generation and the held shadows per bucket. Owed: staged genes no adapter catalog \
-             names, and files the deleted batch trainer left",
+             generation per bucket. Owed, behind custody's fence: shadows and their .pending dirs \
+             no custody entry holds; staged genes no adapter catalog names; the batch trainer's files",
         ),
         // Saved state: small measured or recorded facts, one file per key, never a cache. Losing
         // one costs a re-measure, so byte pressure is never a reason; what can go is a key with no
