@@ -49,6 +49,8 @@ mod mind_gate;
 pub(crate) use mind_gate::MindTurn;
 pub(crate) mod grant_handoff;
 pub use grant_handoff::reclaim_grant;
+mod learn_slot;
+pub use learn_slot::{learn_slot, LearnSlot, LearnSlotRefusal};
 mod kv_slot_pool;
 pub use kv_slot_pool::*;
 mod live_sequences;
