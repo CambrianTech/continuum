@@ -255,6 +255,15 @@ pub(super) fn send_provide_call_frame<S: Write>(
     stream.flush()
 }
 
+/// Hand one response to the client's writer thread. A send fails only when the writer has gone
+/// (the client disconnected or its socket failed), so the response has no one to reach: said in
+/// the log, never silently dropped.
+fn hand_to_writer(tx: &std::sync::mpsc::Sender<Outbound>, outbound: Outbound) {
+    if tx.send(outbound).is_err() {
+        log_debug!("ipc", "server", "a response was ready after its client's writer had gone (the client disconnected)");
+    }
+}
+
 /// Handle a single IPC client connection with concurrent request processing.
 ///
 /// Architecture:
@@ -271,15 +280,6 @@ pub(super) fn send_provide_call_frame<S: Write>(
 /// are ACL-gated at the remote (non-owner) ceiling at the dispatch boundary, so a
 /// TCP peer can never run Owner-gated commands (`data/delete`, `grid/trust`, …) —
 /// closing the "TCP == local owner" hole (security review 2026-06-21).
-/// Hand one response to the client's writer thread. A send fails only when the writer has gone
-/// (the client disconnected or its socket failed), so the response has no one to reach: said in
-/// the log, never silently dropped.
-fn hand_to_writer(tx: &std::sync::mpsc::Sender<Outbound>, outbound: Outbound) {
-    if tx.send(outbound).is_err() {
-        log_debug!("ipc", "server", "a response was ready after its client's writer had gone (the client disconnected)");
-    }
-}
-
 pub(super) fn handle_client<S: IpcStream>(
     stream: S,
     state: Arc<ServerState>,
