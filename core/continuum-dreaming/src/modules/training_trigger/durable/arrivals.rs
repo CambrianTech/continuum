@@ -57,6 +57,12 @@ impl DurableStore {
             .collect()
     }
 
+    /// The examples submission `id` carries, pending or not: what a generation consumed from it.
+    pub(in crate::modules::training_trigger) async fn submission_examples(&self, id: Uuid) -> Result<Vec<TrainingExample>, String> {
+        let row = self.submissions.find_by_id(id).await.map_err(|e| e.to_string())?.ok_or_else(|| format!("submission {id} is not in the journal"))?;
+        Ok(row.batch.examples)
+    }
+
     /// Record that submission `id` has its first `learned` examples learned; when that is all of
     /// them it leaves pending. Never moves backwards, and never past the examples it holds.
     pub(in crate::modules::training_trigger) async fn record_learned(&self, id: Uuid, learned: u32) -> Result<(), String> {

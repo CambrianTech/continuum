@@ -81,3 +81,14 @@ fn her_other_learners_on_this_base_are_in_flight() {
     let seats = vec![(&this, ids[0], Some(&1u8)), (&sibling, ids[1], Some(&2u8)), (&unsigned, ids[2], None), (&other_base, ids[3], Some(&4u8)), (&other_persona, ids[4], Some(&5u8))];
     assert_eq!(in_flight(&this, seats.into_iter()), vec![(ids[1], 2u8)]);
 }
+
+// what this catches: a candidate gene per checkpoint (a trial per example, her cards split across
+// them), or none ever. One is due once a competence's worth is learned since the last.
+#[test]
+fn a_candidate_is_due_once_a_competence_is_learned_since_the_last() {
+    let competence = crate::genome::competence::MIN_EXAMPLES as u32;
+    assert!(!snapshot::due(competence - 1, 0), "memories, not yet a competence");
+    assert!(snapshot::due(competence, 0));
+    assert!(!snapshot::due(competence + 3, competence), "three since the last candidate");
+    assert!(snapshot::due(2 * competence, competence));
+}

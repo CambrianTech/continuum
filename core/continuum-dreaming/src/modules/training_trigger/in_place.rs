@@ -106,6 +106,13 @@ struct Seated {
     /// row read before its projection (a crash between a commit and its projection) is never
     /// learned again (Codex on 76f829e2b).
     checkpointed: HashMap<Uuid, u32>,
+    /// Her name, for the provenance her candidates carry.
+    persona_name: String,
+    /// The losses learned since her last candidate gene: every one must be finite for the next.
+    losses: Vec<f64>,
+    /// Her newest candidate's trial, and how many examples her generations held when it was taken.
+    candidate: Option<Uuid>,
+    candidate_at: u32,
 }
 
 /// What one bucket's pass did.
@@ -158,7 +165,14 @@ impl InPlace {
             }
         }
         if let Some(seated) = held.minds.get_mut(key) {
-            pass.checkpointed = checkpoint(state, key, seated).await?;
+            if let Some(generation) = checkpoint(state, key, seated).await? {
+                pass.checkpointed = true;
+                let store = state.durable.require()?;
+                let name = seated.persona_name.clone();
+                if let snapshot::Snapshot::Refused(why) = snapshot::maybe(&store, key, &name, seated, &generation).await? {
+                    continuum_base::probe!(class = "training.in_place.candidate_refused", persona = %key.persona_id, reason = %why, "no candidate gene from this generation");
+                }
+            }
         }
         Ok(pass)
     }
@@ -208,17 +222,18 @@ async fn steps(
             let step = match seated.restore.as_ref() {
                 Some(generation) => {
                     let from = RestoreCheckpoint { name: generation.name.clone(), binding: generation.binding.clone(), steps: generation.steps };
-                    seated.mind.restore(authority, workspace, framed.messages, framed.tools, slot.slot(), rate, &from).await.map(|outcome| (restored(&outcome), true, outcome.refusal))
+                    seated.mind.restore(authority, workspace, framed.messages, framed.tools, slot.slot(), rate, &from).await.map(|outcome| (restored(&outcome), true, outcome.refusal, 0.0))
                 }
-                None => seated.mind.learn(authority, workspace, framed.messages, framed.tools, slot.slot(), rate).await.map(|outcome| (verdict(&outcome), false, outcome.refusal)),
+                None => seated.mind.learn(authority, workspace, framed.messages, framed.tools, slot.slot(), rate).await.map(|outcome| (verdict(&outcome), false, outcome.refusal, outcome.loss)),
             };
             match step {
-                Ok((Verdict::Learned, true, _)) => seated.restore = None, // restored: the same example is learned next
-                Ok((Verdict::Learned, false, _)) => {
+                Ok((Verdict::Learned, true, _, _)) => seated.restore = None, // restored: the same example is learned next
+                Ok((Verdict::Learned, false, _, loss)) => {
                     seated.progress.insert(row.id, learned + 1);
+                    seated.losses.push(loss);
                     pass.learned += 1;
                 }
-                Ok((Verdict::Again, _, refusal)) if refusal == "unknown_grant" && !renewed => {
+                Ok((Verdict::Again, _, refusal, _)) if refusal == "unknown_grant" && !renewed => {
                     // her grant expired: renew it at this quiescent boundary and try the step again
                     drop(slot);
                     renewed = true;
@@ -228,11 +243,11 @@ async fn steps(
                         return Ok(Lost::No);
                     }
                 }
-                Ok((Verdict::Again, _, _)) => {
+                Ok((Verdict::Again, _, _, _)) => {
                     pass.deferred = true;
                     return Ok(Lost::No);
                 }
-                Ok((Verdict::Quarantined, _, _)) => {
+                Ok((Verdict::Quarantined, _, _, _)) => {
                     drop(slot);
                     stop(held, key).await;
                     pass.quarantined = true;
@@ -264,9 +279,9 @@ async fn steps(
 
 /// Publish a checkpoint of what `seated` learned since its newest generation and move the journal's
 /// cursor with it. Unconfirmed, the progress stays volatile and the next pass publishes again.
-async fn checkpoint(state: &TrainingTriggerState, key: &BucketKey, seated: &mut Seated) -> Result<bool, String> {
+async fn checkpoint(state: &TrainingTriggerState, key: &BucketKey, seated: &mut Seated) -> Result<Option<String>, String> {
     if seated.progress.is_empty() || seated.restore.is_some() {
-        return Ok(false);
+        return Ok(None);
     }
     let positions: Vec<Position> = seated.progress.iter().map(|(submission, learned)| Position { submission: *submission, learned: *learned }).collect();
     let name = format!("{}-{}-{}.gguf", key.persona_id.simple(), file_safe(&key.trait_kind), Uuid::new_v4().simple());
@@ -291,13 +306,13 @@ async fn checkpoint(state: &TrainingTriggerState, key: &BucketKey, seated: &mut 
                 *floor = (*floor).max(position.learned);
             }
             seated.progress.clear();
-            Ok(true)
+            Ok(Some(generation.path))
         }
         Ok(CheckpointAnswer::NoOptimizerState) => Err(format!("{} learned {} examples but the engine holds no optimizer state for her shadow", key.persona_id, positions.len())),
         Err(error) => {
             continuum_base::probe!(class = "training.in_place.checkpoint_unconfirmed", persona = %key.persona_id, error = %error,
                 "a checkpoint was not confirmed; its progress stays volatile and is published on a later pass");
-            Ok(false)
+            Ok(None)
         }
     }
 }
@@ -369,7 +384,24 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
         Ok(mind) => {
             let binding = format!("{}:{}:{}", key.persona_id, key.trait_kind, key.base_model);
             let checkpointed = generation.iter().flat_map(|g| g.positions.iter()).map(|p| (p.submission, p.learned)).collect();
-            held.minds.insert(key.clone(), Seated { id: Uuid::new_v4(), policy, signature, expiry, mind, binding, restore: generation, progress: HashMap::new(), checkpointed });
+            held.minds.insert(
+                key.clone(),
+                Seated {
+                    id: Uuid::new_v4(),
+                    policy,
+                    signature,
+                    expiry,
+                    mind,
+                    binding,
+                    restore: generation,
+                    progress: HashMap::new(),
+                    checkpointed,
+                    persona_name: row.persona_name.clone(),
+                    losses: Vec::new(),
+                    candidate: None,
+                    candidate_at: 0,
+                },
+            );
             Ok(true)
         }
         Err(StartFailure::NotSeated(why)) => {
@@ -478,6 +510,8 @@ impl TrainingTriggerState {
         self.operations.lock().await.spawn(operation);
     }
 }
+
+mod snapshot;
 
 #[cfg(test)]
 mod tests;
