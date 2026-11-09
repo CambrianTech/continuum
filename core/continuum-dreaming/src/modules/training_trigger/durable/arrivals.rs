@@ -77,6 +77,10 @@ mod tests {
     use super::*;
 
     fn submission(sequence: u64, examples: usize) -> (Uuid, Submission) {
+        submission_for(sequence, examples, "qwen")
+    }
+
+    fn submission_for(sequence: u64, examples: usize, base_model: &str) -> (Uuid, Submission) {
         let base = BaseEntity::for_new_record();
         let id = entity_id(&base).expect("test: a fresh entity id");
         let example = |n: usize| TrainingExample { prompt: format!("p{n}"), completion: "c".into(), metadata: None, lived: None };
@@ -101,7 +105,7 @@ mod tests {
             sequence,
             persona_id: Uuid::nil(),
             trait_kind: "code".into(),
-            base_model: "qwen".into(),
+            base_model: base_model.into(),
             batch,
             is_pending: true,
             dispatch_id: None,
@@ -126,5 +130,22 @@ mod tests {
         assert!(store.record_learned(id, 3).await.is_err(), "never past its examples");
         store.record_learned(id, 2).await.expect("test: all learned");
         assert!(store.arrivals(0, 8).await.expect("test: arrivals").is_empty(), "retired once every example is learned");
+    }
+
+    // what this catches: a pass that reads one page of the pending journal, where 256 rows for
+    // another base hide every eligible row behind them forever (Codex on d177df17f).
+    #[tokio::test]
+    async fn an_eligible_row_behind_a_full_page_of_other_bases_is_found() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let store = DurableStore::new(adapter).await.expect("test: store");
+        for sequence in 1..=257 {
+            let (id, row) = submission_for(sequence, 1, "some-other-base-model");
+            store.submissions.save(id, &row).await.expect("test: saved");
+        }
+        let (eligible, row) = submission_for(258, 1, "qwen");
+        store.submissions.save(eligible, &row).await.expect("test: saved");
+        let buckets = super::super::super::in_place::eligible_buckets(&store, "qwen").await.expect("test: gathered");
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0].1.iter().map(|row| row.id).collect::<Vec<_>>(), vec![eligible], "found past the first page");
     }
 }
