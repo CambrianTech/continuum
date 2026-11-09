@@ -57,3 +57,12 @@ async fn a_busy_engine_defers_its_bucket_and_never_holds_another() {
         .expect("test: nothing to learn");
     assert_eq!(other, BucketPass::default());
 }
+
+// what this catches: a restored learner re-teaching examples its generation already holds, when the
+// journal row was read before the generation's positions were projected onto it (Codex on 76f829e2b).
+#[test]
+fn a_step_starts_past_the_generation_even_on_a_stale_journal_row() {
+    assert_eq!(start(0, Some(3), None), 3, "stale journal row, generation holds three");
+    assert_eq!(start(3, Some(3), Some(5)), 5, "volatile progress past the generation");
+    assert_eq!(start(4, None, None), 4, "no generation names it: the journal");
+}

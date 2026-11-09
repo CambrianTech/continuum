@@ -66,6 +66,12 @@ pub(crate) fn restored(outcome: &RestoreOutcome) -> Verdict {
     }
 }
 
+/// PURE: the example a row's next step starts at: past everything its journal row, its learner's
+/// newest generation and its volatile progress hold (a row neither names holds none there).
+pub(crate) fn start(journal: u32, checkpointed: Option<u32>, progress: Option<u32>) -> u32 {
+    journal.max(checkpointed.unwrap_or(0)).max(progress.unwrap_or(0)) // unwrap_or: a row the generation or progress does not name holds none there
+}
+
 /// The learners seated in place, per engine, held for as long as the trigger lives.
 #[derive(Default)]
 pub(crate) struct InPlace {
@@ -91,6 +97,10 @@ struct Seated {
     restore: Option<LearnCheckpoint>,
     /// Examples learned since the newest confirmed generation, per submission: volatile.
     progress: HashMap<Uuid, u32>,
+    /// The positions her newest confirmed generation holds: the floor every step starts from, so a
+    /// row read before its projection (a crash between a commit and its projection) is never
+    /// learned again (Codex on 76f829e2b).
+    checkpointed: HashMap<Uuid, u32>,
 }
 
 /// What one bucket's pass did.
@@ -177,7 +187,7 @@ async fn steps(
             let Some(seated) = minds.get_mut(key) else {
                 return Err(format!("the learner seated for {} left before its step", key.persona_id));
             };
-            let learned = row.learned.max(seated.progress.get(&row.id).copied().unwrap_or(0)); // volatile progress, else the durable cursor
+            let learned = start(row.learned, seated.checkpointed.get(&row.id).copied(), seated.progress.get(&row.id).copied());
             if learned >= total {
                 break;
             }
@@ -260,6 +270,10 @@ async fn checkpoint(state: &TrainingTriggerState, key: &BucketKey, seated: &mut 
         Ok(CheckpointAnswer::Saved(generation)) => {
             let store = state.durable.require()?;
             store.commit_checkpoint(key, name, seated.binding.clone(), generation.steps, provenance, &positions).await?;
+            for position in &positions {
+                let floor = seated.checkpointed.entry(position.submission).or_default();
+                *floor = (*floor).max(position.learned);
+            }
             seated.progress.clear();
             Ok(true)
         }
@@ -310,7 +324,8 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
     match MindLearner::start(authority, learning, &consumer, shadow, expiry).await {
         Ok(mind) => {
             let binding = format!("{}:{}:{}", key.persona_id, key.trait_kind, key.base_model);
-            held.minds.insert(key.clone(), Seated { policy, expiry, mind, binding, restore: generation, progress: HashMap::new() });
+            let checkpointed = generation.iter().flat_map(|g| g.positions.iter()).map(|p| (p.submission, p.learned)).collect();
+            held.minds.insert(key.clone(), Seated { policy, expiry, mind, binding, restore: generation, progress: HashMap::new(), checkpointed });
             Ok(true)
         }
         Err(StartFailure::NotSeated(why)) => {
