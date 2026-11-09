@@ -47,7 +47,7 @@ impl LlmDeliberationFaculty {
         // The higher of the two prices for her newest result alone: the averaged ratio may already
         // charge it more. Every other part keeps the averaged price: the excess was charged to the
         // result, so it never reprices her framing, tools or view (Codex, Sahar 2026-11-08 19:48).
-        let newest = newest_result_price(refused, requested, calibration).filter(|price| denser(*price, calibration));
+        let newest = newest_result_price(refused, requested).filter(|price| denser(*price, calibration));
         let refit = self.prompt_view_priced(ws, fit_window, calibration, newest, visual);
         if !refit.newest_result_reduced {
             return None;
@@ -91,15 +91,11 @@ impl LlmDeliberationFaculty {
 }
 
 /// Her newest result priced by the refusal: the engine's count less every other part of the
-/// refused request AS THE REFIT CHARGES IT (the shared `calibration`), over the result's own
-/// estimate. Subtracting the others at their raw estimate would fold their density excess into
-/// the result's price and charge it twice, once there and again on the others in the refit
-/// (sweep on #5889: estimate 20k with 5k newest, density 1.2, count 26k priced the result 2.2,
-/// not 1.6). `None` without a result, or when the count leaves it nothing.
-fn newest_result_price(refused: &DeliberationPromptView, requested: u32, calibration: PromptCalibration) -> Option<PromptCalibration> {
+/// refused request at its estimate, over the result's own estimate. `None` without a result, or
+/// when the count leaves it nothing (the estimate already covered it).
+fn newest_result_price(refused: &DeliberationPromptView, requested: u32) -> Option<PromptCalibration> {
     let others = refused.estimated_prompt_tokens.saturating_sub(refused.newest_result_tokens);
-    let others_charged = calibration.for_input(refused.input_identity).charge(others);
-    let measured = u32::try_from((requested as usize).saturating_sub(others_charged)).ok()?;
+    let measured = u32::try_from((requested as usize).saturating_sub(others)).ok()?;
     PromptCalibration::observed(refused.newest_result_tokens, measured, Some(refused.input_identity))
 }
 
