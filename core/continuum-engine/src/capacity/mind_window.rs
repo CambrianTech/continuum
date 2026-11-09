@@ -98,6 +98,10 @@ pub enum WindowRefused {
     Unavailable(GrantsUnavailable),
     /// A deferral: her next tick measures and asks again; nothing was dispatched.
     Ungranted(super::window_grant::Ungranted),
+    /// The publisher missed a beat of its own cadence (a stalled serving tick): named, never waited
+    /// out to the act floor (Fable on #5890). `silent_for` is since its last evaluation began; `None`
+    /// when it has never evaluated.
+    PublisherSilent { silent_for: Option<std::time::Duration> },
 }
 
 impl std::fmt::Display for WindowRefused {
@@ -105,6 +109,10 @@ impl std::fmt::Display for WindowRefused {
         match self {
             Self::Unavailable(why) => why.fmt(f),
             Self::Ungranted(why) => write!(f, "no window granted after her measure: {why}"),
+            Self::PublisherSilent { silent_for: Some(silent) } => {
+                write!(f, "the grants publisher missed its cadence: no evaluation began in the last {silent:?}")
+            }
+            Self::PublisherSilent { silent_for: None } => f.write_str("the grants publisher has not evaluated yet"),
         }
     }
 }
@@ -115,24 +123,35 @@ impl From<GrantsUnavailable> for WindowRefused {
     }
 }
 
-/// The first grants evaluation that BEGAN after `measured`, so it read her measure. `wait_for` checks
-/// the current value first, so an evaluation published before this call is never lost.
+/// The first grants evaluation that BEGAN after `measured`, so it read her measure. The current value
+/// is read first, so an evaluation published before this call is never lost. The wait is bounded by
+/// the publisher's own cadence, carried on its evaluation: one missed beat (no evaluation began within
+/// two cadences of the last) is `PublisherSilent`, so a stalled serving tick is named, not waited out.
 pub fn evaluation_after(
     measured: std::time::Instant,
-) -> Result<impl std::future::Future<Output = Result<super::window_grant::GrantEvaluation, GrantsUnavailable>>, GrantsUnavailable> {
+) -> Result<impl std::future::Future<Output = Result<super::window_grant::GrantEvaluation, WindowRefused>>, GrantsUnavailable> {
     super::window_grant::evaluations_receiver().map(|rx| next_evaluation(rx, measured)).ok_or(GrantsUnavailable)
 }
 
 fn next_evaluation(
     mut rx: tokio::sync::watch::Receiver<Option<super::window_grant::GrantEvaluation>>,
     measured: std::time::Instant,
-) -> impl std::future::Future<Output = Result<super::window_grant::GrantEvaluation, GrantsUnavailable>> {
+) -> impl std::future::Future<Output = Result<super::window_grant::GrantEvaluation, WindowRefused>> {
     async move {
-        rx.wait_for(|evaluation| evaluation.as_ref().is_some_and(|e| e.started > measured))
-            .await
-            .map_err(|_| GrantsUnavailable)?
-            .clone()
-            .ok_or(GrantsUnavailable)
+        loop {
+            // Cloned out, so no watch borrow is held across the match or the wait.
+            let latest = rx.borrow_and_update().clone();
+            let (due, last) = match latest {
+                Some(evaluation) if evaluation.started > measured => return Ok(evaluation),
+                Some(evaluation) => (evaluation.started + evaluation.cadence * 2, evaluation.started),
+                None => return Err(WindowRefused::PublisherSilent { silent_for: None }),
+            };
+            match tokio::time::timeout_at(tokio::time::Instant::from_std(due), rx.changed()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => return Err(WindowRefused::Unavailable(GrantsUnavailable)),
+                Err(_) => return Err(WindowRefused::PublisherSilent { silent_for: Some(last.elapsed()) }),
+            }
+        }
     }
 }
 
@@ -147,7 +166,7 @@ where
     D: Fn() -> MindWindow,
     M: FnMut(),
     E: Fn(std::time::Instant) -> Result<F, GrantsUnavailable>,
-    F: std::future::Future<Output = Result<super::window_grant::GrantEvaluation, GrantsUnavailable>>,
+    F: std::future::Future<Output = Result<super::window_grant::GrantEvaluation, WindowRefused>>,
 {
     loop {
         match decide() {
@@ -193,7 +212,15 @@ mod tests {
     }
 
     fn evaluation(started: std::time::Instant, grants: Option<super::super::window_grant::PoolGrants>, nobody: Option<super::super::window_grant::NoGrants>) -> Option<super::super::window_grant::GrantEvaluation> {
-        Some(super::super::window_grant::GrantEvaluation { seq: 1, started, engine: None, grants, nobody, excluded: Default::default() })
+        Some(super::super::window_grant::GrantEvaluation {
+            seq: 1,
+            started,
+            cadence: std::time::Duration::from_secs(5),
+            engine: None,
+            grants,
+            nobody,
+            excluded: Default::default(),
+        })
     }
 
     // what this catches (Cormac on #5752): a new mind that waits for a grant before anything measures
@@ -252,11 +279,34 @@ mod tests {
         assert_eq!(refused, Err(WindowRefused::Ungranted(Ungranted::Nobody(NoGrants::PoolKindUnknown))), "the newer evaluation's reason, not the stale one's");
     }
 
+    // what this catches (Fable on #5890): a stalled publisher (its tick blocked, its sender alive)
+    // parking her to the act floor again. The last evaluation began before her measure and none
+    // follows: one missed beat of its own cadence refuses, named; a publisher that never evaluated
+    // refuses at once.
+    #[tokio::test]
+    async fn a_publisher_that_misses_its_cadence_is_named_not_waited_out() {
+        let her = uuid::Uuid::from_u128(4);
+        let mut stale = evaluation(std::time::Instant::now(), None, None).expect("evaluation");
+        stale.cadence = std::time::Duration::from_millis(20);
+        let (_sender, installed) = tokio::sync::watch::channel(Some(stale));
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            decide_window(her, || MindWindow::Ungranted, || {}, |at| Ok(next_evaluation(installed.clone(), at))),
+        )
+        .await
+        .expect("bounded by the publisher's cadence");
+        assert!(matches!(refused, Err(WindowRefused::PublisherSilent { silent_for: Some(_) })), "{refused:?}");
+
+        let (_sender, never) = tokio::sync::watch::channel(None);
+        let refused = decide_window(her, || MindWindow::Ungranted, || {}, |at| Ok(next_evaluation(never.clone(), at))).await;
+        assert_eq!(refused, Err(WindowRefused::PublisherSilent { silent_for: None }));
+    }
+
     // what this catches: a turn hanging on a watch that can never fire, and a decided window refused
     // only because no watch exists.
     #[tokio::test]
     async fn no_evaluations_refuse_only_an_ungranted_mind() {
-        type Never = std::future::Ready<Result<super::super::window_grant::GrantEvaluation, GrantsUnavailable>>;
+        type Never = std::future::Ready<Result<super::super::window_grant::GrantEvaluation, WindowRefused>>;
         let her = uuid::Uuid::from_u128(4);
         let refused = decide_window(her, || MindWindow::Ungranted, || {}, |_| Err::<Never, _>(GrantsUnavailable)).await;
         assert_eq!(refused, Err(WindowRefused::Unavailable(GrantsUnavailable)));

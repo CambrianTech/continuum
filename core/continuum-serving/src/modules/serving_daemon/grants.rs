@@ -55,7 +55,7 @@ impl ServingDaemonModule {
         // her grant from one evaluation and its reason from another (Codex on the C2 design).
         self.evaluations_tx.send_modify(|evaluation| {
             let seq = evaluation.as_ref().map_or(1, |previous| previous.seq + 1);
-            *evaluation = Some(GrantEvaluation { seq, started, engine, grants: next.clone(), nobody, excluded });
+            *evaluation = Some(GrantEvaluation { seq, started, cadence: TICK, engine, grants: next.clone(), nobody, excluded });
         });
         for ticket in tickets {
             // The endpoint owns preparation and IO; dropping this observer cannot cancel them.

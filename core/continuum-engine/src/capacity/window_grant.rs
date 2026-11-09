@@ -192,6 +192,9 @@ pub struct GrantEvaluation {
     pub seq: u64,
     /// When this evaluation began reading its inputs: a mind measured before it is in them.
     pub started: std::time::Instant,
+    /// The publisher's own interval between evaluations: a waiter that sees none begin within two
+    /// of them knows the publisher stalled (`mind_window::WindowRefused::PublisherSilent`).
+    pub cadence: std::time::Duration,
     pub engine: Option<crate::inference::engine_residency::EngineIncarnation>,
     /// The grants current after this evaluation (`None` when none are published).
     pub grants: Option<PoolGrants>,
