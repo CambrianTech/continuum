@@ -55,8 +55,8 @@ pub fn produce_speech_discipline(
 /// Build the wire params for `genome/training-trigger/submit` from a plan — the ONE
 /// payload contract, pure + `pub` so a synchronous caller (`memory/consolidate`
 /// dispatching received lessons on demand) produces byte-identical params to the
-/// fire-and-forget producers. `source: raw` = unfiltered capture; minExamples omitted →
-/// DEFAULT_MIN_EXAMPLES (the trigger auto-fires job-create at the threshold). `evalSet`
+/// fire-and-forget producers. `source: raw` = unfiltered capture; the serving engine learns
+/// each accepted example in place. `evalSet`
 /// rides the {trait → gym} edge: the committed gym for `plan.trait_kind` when there is one
 /// (omitted when there is none), kept for a manual spot-check. Adoption does not read it:
 /// the sentinel opens an in-room gene trial either way. `provenance` is metadata only

@@ -54,6 +54,11 @@ pub(crate) struct LearnCheckpoint {
 }
 
 impl LearnCheckpoint {
+    /// This row's id, the cursor a page of generations continues after.
+    pub(crate) fn cursor(&self) -> &str {
+        &self.base.id
+    }
+
     /// How many examples the generation holds, over every submission it consumed.
     pub(crate) fn learned(&self) -> u32 {
         self.positions.iter().map(|position| position.learned).sum()
@@ -121,9 +126,23 @@ impl DurableStore {
         self.project(&row).await
     }
 
-    /// Every bucket's newest generation: the candidates the snapshot sweep may take.
-    pub(in crate::modules::training_trigger) async fn checkpoints(&self) -> Result<Vec<LearnCheckpoint>, String> {
-        Ok(self.learn_checkpoints.find_all().await.map_err(|e| e.to_string())?.into_iter().map(|(_, row)| row).collect())
+    /// Up to `limit` buckets' newest generations with an id after `after`, in id order: the
+    /// candidates the snapshot sweep pages through (one row per bucket).
+    pub(in crate::modules::training_trigger) async fn checkpoints(&self, after: Option<&str>, limit: usize) -> Result<Vec<LearnCheckpoint>, String> {
+        let mut query = QueryBuilder::new(LearnCheckpoint::COLLECTION).sort_asc("id").limit(limit);
+        if let Some(after) = after {
+            query = query.filter("id", QueryOperator::Gt(after.into()));
+        }
+        let result = self.adapter.query(query.build()).await;
+        if !result.success {
+            return Err(result.error.unwrap_or_else(|| "learn checkpoint query refused".into())); // the query failed; this supplies its missing diagnostic, never rows
+        }
+        result
+            .data
+            .ok_or("learn checkpoint query omitted rows")?
+            .into_iter()
+            .map(|row| serde_json::from_value(row.data).map_err(|e| e.to_string())) // decode the persisted ORM row into its typed owner
+            .collect()
     }
 
     /// Record that `checkpoint`'s generation was adopted as candidate `trial`: only the candidate's
@@ -175,15 +194,15 @@ mod tests {
         let positions = [Position { submission: Uuid::new_v4(), learned: competence }];
         DurableStore::new(adapter.clone()).await.expect("test: store").commit_checkpoint(&key, generation("g1"), &positions).await.expect("test: committed");
         let reopened = DurableStore::new(adapter.clone()).await.expect("test: reopened"); // the process stopped before the candidate
-        let rows = reopened.checkpoints().await.expect("test: rows");
+        let rows = reopened.checkpoints(None, 8).await.expect("test: rows");
         assert_eq!(rows.len(), 1);
         assert!(super::super::super::in_place::snapshot_due(&rows[0]), "still due after the reopen");
         reopened.record_candidate(&rows[0], Uuid::new_v4()).await.expect("test: recorded");
-        let rows = reopened.checkpoints().await.expect("test: rows");
+        let rows = reopened.checkpoints(None, 8).await.expect("test: rows");
         assert!(!super::super::super::in_place::snapshot_due(&rows[0]), "taken: not due again until more is learned");
         let more = [Position { submission: Uuid::new_v4(), learned: competence }];
         reopened.commit_checkpoint(&key, generation("g2"), &more).await.expect("test: committed");
-        let rows = reopened.checkpoints().await.expect("test: rows");
+        let rows = reopened.checkpoints(None, 8).await.expect("test: rows");
         assert_eq!((rows[0].candidate_at, rows[0].learned()), (competence, 2 * competence), "the candidate's place carries to the next generation");
         assert!(super::super::super::in_place::snapshot_due(&rows[0]));
     }

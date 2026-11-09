@@ -6,6 +6,7 @@ pub(super) fn register_ai_provider_and_genome_modules(
     runtime: &Arc<Runtime>,
     gpu_manager: &Arc<GpuMemoryManager>,
     serving_daemon: &Arc<crate::modules::serving_daemon::ServingDaemonModule>,
+    resource_daemon: &Arc<crate::resources::ResourceDaemon>,
     airc_interceptor_cell: &Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>>,
 ) {
     // AIProviderModule: Unified AI provider for cloud and local inference
@@ -158,15 +159,17 @@ pub(super) fn register_ai_provider_and_genome_modules(
             "GenomeFitnessSentinel: registered (observe-only value-density fitness landscape, 5-min tick)"
         );
 
-        // TrainingTriggerModule: substrate-native batching coordinator
-        // sitting between curriculum producers (teacher persona's
-        // synthesis, hippocampus's noteworthy drain, operator submits)
-        // and `genome/job-create`. Accumulates per-(persona, trait)
-        // and auto-dispatches when the threshold is reached. Per
-        // `[[no-fallbacks-ever]]`, dispatch failure preserves bucket
-        // contents — curated examples never silently disappear.
+        // TrainingTriggerModule: the journal curriculum producers submit to (teacher synthesis,
+        // the hippocampus's noteworthy drain, settled cards, operator submits), learned in place
+        // by the engine that serves each base, under this core's resource authority, its serving
+        // lifecycle gate and the process's lease custody.
+        let authority = crate::genome::learner::seat::Authority {
+            resources: resource_daemon.clone(),
+            serving: serving_daemon.lifecycle_gate(),
+            custody: crate::genome::learner::custody::Custody::global(),
+        };
         runtime.register(Arc::new(
-            crate::modules::training_trigger::TrainingTriggerModule::new()
+            crate::modules::training_trigger::TrainingTriggerModule::new(authority)
                 .with_serving_changes(serving_daemon.subscribe_serving()),
         ));
         log_info!(

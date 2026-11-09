@@ -33,18 +33,11 @@ use std::sync::Arc;
 use crate::modules::training_trigger::TrainingTriggerState;
 use crate::sdk_codegen::DynCommand;
 
-pub mod flush;
-pub mod resolve;
-pub mod policy_recover;
 pub mod retire;
-pub mod return_;
 pub mod status;
 pub mod submit;
 
-use flush::TrainingTriggerFlush;
-use resolve::TrainingTriggerResolve;
 use retire::TrainingTriggerRetire;
-use return_::TrainingTriggerReturn;
 use status::TrainingTriggerStatus;
 use submit::TrainingTriggerSubmit;
 
@@ -57,19 +50,9 @@ pub fn command_objects(state: Arc<TrainingTriggerState>) -> Vec<Arc<dyn DynComma
         Arc::new(TrainingTriggerSubmit {
             state: state.clone(),
         }),
-        Arc::new(TrainingTriggerFlush {
-            state: state.clone(),
-        }),
-        Arc::new(TrainingTriggerReturn {
-            state: state.clone(),
-        }),
         Arc::new(TrainingTriggerRetire {
             state: state.clone(),
         }),
-        Arc::new(TrainingTriggerResolve {
-            state: state.clone(),
-        }),
-        Arc::new(policy_recover::TrainingTriggerPolicyRecover { state: state.clone() }),
         Arc::new(TrainingTriggerStatus { state }),
     ]
 }
@@ -101,36 +84,15 @@ pub(crate) mod test_support {
         persona_id: Uuid,
         trait_kind: &str,
         examples: Vec<TrainingExample>,
-        min_examples: Option<u32>,
     ) -> Value {
-        let mut v = json!({
+        json!({
             "personaId": persona_id,
             "personaName": "test-p",
             "baseModel": "synthetic",
             "traitKind": trait_kind,
             "examples": examples,
             "source": "operator_curated",
-        });
-        if let Some(min) = min_examples {
-            v.as_object_mut()
-                .unwrap()
-                .insert("minExamples".into(), json!(min));
-        }
-        v
-    }
-
-    /// Install an executor that has BOTH the trigger module AND the genome module
-    /// wired, so dispatch end-to-end (submit → genome/job-create →
-    /// LocalCandleFineTuner) actually runs. Returns the trigger (for `state`
-    /// accessors) + the executor (the dispatch entrypoint the tests call).
-    pub(crate) async fn build_runtime_with_trigger_and_genome() -> (
-        Arc<TrainingTriggerModule>,
-        Arc<CommandExecutor>,
-        tempfile::TempDir,
-    ) {
-        let (adapter, dir) = crate::orm::store::fresh_adapter().await;
-        let (trigger, executor) = build_runtime(adapter, true).await;
-        (trigger, executor, dir)
+        })
     }
 
     pub(crate) async fn build_runtime_trigger_only() -> (
@@ -139,50 +101,17 @@ pub(crate) mod test_support {
         tempfile::TempDir,
     ) {
         let (adapter, dir) = crate::orm::store::fresh_adapter().await;
-        let (trigger, executor) = build_runtime(adapter, false).await;
+        let (trigger, executor) = build_runtime(adapter).await;
         (trigger, executor, dir)
     }
 
-    /// Same actual owner and command route, with a caller-owned durable fixture
-    /// so tests can recreate the owner against the same database after a restart.
-    pub(crate) async fn build_runtime(
-        adapter: Arc<dyn crate::orm::StorageAdapter>,
-        with_genome: bool,
-    ) -> (Arc<TrainingTriggerModule>, Arc<CommandExecutor>) {
-        use crate::genome::fine_tuning::{FineTuningRegistry, LocalCandleFineTuner};
-        let genome = with_genome.then(|| {
-            let registry = Arc::new(FineTuningRegistry::new());
-            registry.register(Arc::new(LocalCandleFineTuner::new()));
-            registry
-        });
-        build_runtime_with_registry(adapter, genome).await
-    }
-
-    /// Provider fixtures share the same initialized durable owner and isolated
-    /// journal/artifact bindings as the ordinary end-to-end fixture.
-    pub(crate) async fn build_runtime_with_registry(
-        adapter: Arc<dyn crate::orm::StorageAdapter>,
-        genome: Option<Arc<crate::genome::fine_tuning::FineTuningRegistry>>,
-    ) -> (Arc<TrainingTriggerModule>, Arc<CommandExecutor>) {
-        use crate::modules::genome::GenomeModule;
+    /// The actual owner and command route, with a caller-owned durable fixture so tests can
+    /// recreate the owner against the same database after a restart.
+    pub(crate) async fn build_runtime(adapter: Arc<dyn crate::orm::StorageAdapter>) -> (Arc<TrainingTriggerModule>, Arc<CommandExecutor>) {
         let registry = Arc::new(ModuleRegistry::new());
-        let artifacts = Arc::new(tempfile::tempdir().unwrap());
-        let job_board = Arc::new(
-            crate::genome::fine_tuning::TrainingJobBoard::with_test_storage(artifacts.clone()),
-        );
-        let trigger = Arc::new(TrainingTriggerModule::with_test_board(job_board.clone()));
-        trigger.state.initialize_storage(adapter.clone()).await.unwrap();
+        let trigger = Arc::new(TrainingTriggerModule::new(crate::genome::learner::seat::Authority::isolated(1 << 30)));
+        trigger.state.initialize_storage(adapter).await.unwrap();
         registry.register(trigger.clone());
-        if let Some(ft_registry) = genome {
-            let genome = Arc::new(GenomeModule::with_test_storage(
-                ft_registry,
-                job_board,
-                artifacts,
-            ));
-            // The attempt ledger shares the fixture's database, so a restart reads it back.
-            genome.install_attempt_store(adapter).await.unwrap();
-            registry.register(genome);
-        }
         let executor = Arc::new(CommandExecutor::new(registry.clone()));
         registry.install_executor_on_all(executor.clone());
         (trigger, executor)
@@ -193,16 +122,17 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
 
-    // what this catches: the dep-holding family wires all three trigger-backed verbs
-    // (submit/flush/status) over the one shared state. A regression that drops any of
+    // what this catches: the dep-holding family wires its trigger-backed verbs
+    // (submit/retire/status) over the one shared state. A regression that drops any of
     // them — or fails to share the state — is caught.
-    #[test]
-    fn family_exposes_the_three_trigger_verbs() {
-        let state = Arc::new(TrainingTriggerState::new());
+    #[tokio::test]
+    async fn family_exposes_the_trigger_verbs() {
+        let state = Arc::new(TrainingTriggerState::new(crate::genome::learner::seat::Authority::isolated(1 << 30)));
         let objs = command_objects(state);
         let names: Vec<&str> = objs.iter().map(|o| o.name()).collect();
+        assert_eq!(names.len(), 3);
         assert!(names.contains(&"genome/training-trigger/submit"));
-        assert!(names.contains(&"genome/training-trigger/flush"));
+        assert!(names.contains(&"genome/training-trigger/retire"));
         assert!(names.contains(&"genome/training-trigger/status"));
     }
 }
