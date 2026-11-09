@@ -14,7 +14,7 @@ use crate::genome::fine_tuning::{
 use super::fine_tuning_error_kind;
 use crate::genome::training_outcome::Took;
 use crate::genome::competence::{Decision, GeneRef};
-use crate::genome::gene_trial::{Adoption, TrialState};
+use crate::genome::gene_trial::Adoption;
 
 /// Wire shape for `genome/job-create` params. Mirrors [`TrainingJobRequest`]
 /// verbatim (flattened), plus the optional `preferredProvider` hint the coordinator
