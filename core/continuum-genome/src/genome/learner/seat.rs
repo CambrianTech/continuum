@@ -67,13 +67,13 @@ pub struct Authority {
 }
 
 impl Authority {
-    /// This core's authorities, as installed at start, with a fresh custody for the owning task.
+    /// This core's authorities, as installed at start, with the process's one custody.
     pub fn installed() -> Result<Self, SeatRefusal> {
         Ok(Self {
             resources: crate::resources::ResourceDaemon::global().ok_or_else(|| SeatRefusal::Unleased("the resource authority is not running".into()))?,
             serving: crate::inference::serving_lifecycle::LifecycleGate::global()
                 .ok_or_else(|| SeatRefusal::Unleased("the serving lifecycle gate is not installed".into()))?,
-            custody: Custody::new(),
+            custody: Custody::global(),
         })
     }
 }
@@ -91,7 +91,7 @@ pub async fn seat(authority: &Authority, engine: LearningEngine, consumer: &str,
     match engine.seat_fresh(&shadow, claim.residency()).await {
         Ok(loaded) => Ok(Seat { engine, ledger: plan.engine, claim, shadow: loaded }),
         // a lost reply is not proof that nothing loaded: settle unloads whatever the ledger shows bound
-        Err(error) => match claim.settle().await {
+        Err(error) => match claim.release().await {
             Ok(()) => Err(SeatRefusal::Unloaded(error.to_string())),
             Err((_orphaned, why)) => Err(SeatRefusal::Unloaded(format!("{error}; unconfirmed ({why}), left in custody"))),
         },
@@ -112,7 +112,7 @@ pub(super) async fn register(
     let covering: Vec<CoveringLease> =
         leases.iter().map(|(kind, bytes, guard)| CoveringLease { kind: *kind, lease_id: guard.lease_id().to_owned(), bytes: *bytes }).collect();
     let id = ResidencyId::issue();
-    let claim = authority.custody.hold(engine, id, leases.into_iter().map(|(_, _, guard)| guard).collect());
+    let claim = authority.custody.hold(engine, ledger, id, leases.into_iter().map(|(_, _, guard)| guard).collect());
     let terms = ResidencyTerms {
         id,
         engine: ledger.clone(),
@@ -166,19 +166,6 @@ impl Seat {
     pub async fn release(self) -> Result<(), (Self, String)> {
         let Self { engine, ledger, claim, shadow } = self;
         claim.release().await.map_err(|(claim, why)| (Self { engine, ledger, claim, shadow }, why))
-    }
-}
-
-/// Release `residency`; `Ok` only when the engine confirms it holds nothing there: released, or a
-/// residency it does not know (never registered, or a relaunched engine that lost it with its memory).
-pub(super) async fn confirm_release(engine: &LearningEngine, residency: &ResidencyId) -> Result<(), String> {
-    match engine.release_residency(&residency.to_string()).await {
-        Ok(LedgerAnswer::Ledger(released)) => match released.refused {
-            None | Some(ResidencyRefusal::UnknownResidency) => Ok(()),
-            Some(why) => Err(format!("residency {residency} release refused: {why:?}")),
-        },
-        Ok(LedgerAnswer::NoLedger) => Err("the engine lost its learning ledger".into()),
-        Err(error) => Err(format!("residency {residency} release failed: {error}")),
     }
 }
 

@@ -2,7 +2,7 @@
 //! grant, two learning steps on one lived example, stop. The resource authority here is a single
 //! large mock capacity, so this proves the wiring and the engine's custody, not the node's budget.
 //!
-//!   cargo run -p continuum-genome --features test-fixtures --example learn_in_place -- http://127.0.0.1:58199
+//!   cargo run -p continuum-genome --features test-fixtures --example learn_in_place -- <engine pid> <port>
 
 use continuum_genome::genome::learner::mind::MindLearner;
 use continuum_genome::genome::learner::seat::Authority;
@@ -11,8 +11,12 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    let root = std::env::args().nth(1).ok_or("usage: learn_in_place URL")?;
-    let engine = LearningEngine::at(root);
+    let usage = "usage: learn_in_place <engine pid> <port>";
+    let mut args = std::env::args().skip(1);
+    let pid: u32 = args.next().ok_or(usage)?.parse().map_err(|_| usage)?;
+    let port: u16 = args.next().ok_or(usage)?.parse().map_err(|_| usage)?;
+    let process = continuum_genome::inference::engine_residency::EngineIncarnation::of(pid, port).ok_or("that engine process's start time is not readable")?;
+    let engine = LearningEngine::of(process);
     let resources = continuum_genome::resources::ResourceDaemon::start(
         vec![
             Arc::new(continuum_genome::resources::MockCapacitySource::new(continuum_genome::resources::ResourceKind::Vram, 64 << 30)),
@@ -25,7 +29,7 @@ async fn main() -> Result<(), String> {
     let authority = Authority {
         resources,
         serving: continuum_genome::inference::serving_lifecycle::LifecycleGate::unowned(true),
-        custody: continuum_genome::genome::learner::custody::Custody::new(),
+        custody: continuum_genome::genome::learner::custody::Custody::global(),
     };
     let shadow = FreshShadow {
         name: format!("e2e-{}.gguf", uuid::Uuid::new_v4().simple()),

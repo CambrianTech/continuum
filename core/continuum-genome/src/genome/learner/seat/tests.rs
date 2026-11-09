@@ -6,8 +6,13 @@ const ENGINE: &str = "9f2c1e0a7b3d4c5e6f708192a3b4c5d6";
 const WEIGHTS: u64 = 90_112;
 
 fn ledger(refusal: &str) -> serde_json::Value {
+    ledger_of(ENGINE, refusal)
+}
+
+/// The ledger as engine incarnation `engine` reports it.
+fn ledger_of(engine: &str, refusal: &str) -> serde_json::Value {
     serde_json::json!({
-        "engine": ENGINE, "clock_us": 1, "max_period_ms": 86_400_000, "max_expiry_ms": 86_400_000, "refusal": refusal, "grants": [], "residencies": [],
+        "engine": engine, "clock_us": 1, "max_period_ms": 86_400_000, "max_expiry_ms": 86_400_000, "refusal": refusal, "grants": [], "residencies": [],
         "memory": {"optimizer_owned_buffers": [], "shared_compute_buffers": [], "optimizer_unallocated_lora_ids": []}
     })
 }
@@ -18,7 +23,7 @@ fn authority() -> Authority {
         vec![],
         crate::resources::DaemonConfig::default(),
     );
-    Authority { resources, serving: crate::inference::serving_lifecycle::LifecycleGate::unowned(true), custody: crate::genome::learner::custody::Custody::new() }
+    Authority { resources, serving: crate::inference::serving_lifecycle::LifecycleGate::unowned(true), custody: crate::genome::learner::custody::Custody::isolated() }
 }
 
 fn shadow() -> FreshShadow {
@@ -57,8 +62,8 @@ async fn engine(residency: &'static str) -> (LearningEngine, Arc<Mutex<Vec<serde
         )
         .route("/learn/residency/release", axum::routing::post(|| async { axum::Json(ledger("none")) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
-    let root = format!("http://{}", listener.local_addr().expect("test: addr"));
-    (LearningEngine::at(root), seen, tokio::spawn(async move { axum::serve(listener, app).await }))
+    let port = listener.local_addr().expect("test: addr").port();
+    (LearningEngine::serving_here(port).expect("test: this process's start time is readable"), seen, tokio::spawn(async move { axum::serve(listener, app).await }))
 }
 
 fn leased(authority: &Authority) -> u64 {
@@ -99,6 +104,12 @@ async fn a_refused_residency_releases_its_lease() {
 /// after the write may or may not have happened), shows no adapter bound in its ledger, and answers
 /// a residency release with `release`.
 async fn engine_losing_the_load(release: &'static str) -> (LearningEngine, tokio::task::JoinHandle<std::io::Result<()>>) {
+    engine_relaunched_after_the_load(ENGINE, release).await
+}
+
+/// The same, except that after the lost load the address answers as incarnation `after` (a
+/// relaunch on the same port when `after` is not `ENGINE`).
+async fn engine_relaunched_after_the_load(after: &'static str, release: &'static str) -> (LearningEngine, tokio::task::JoinHandle<std::io::Result<()>>) {
     let app = axum::Router::new()
         .route(
             "/lora-adapters/fresh",
@@ -111,11 +122,11 @@ async fn engine_losing_the_load(release: &'static str) -> (LearningEngine, tokio
             }),
         )
         .route("/learn/residency", axum::routing::post(|| async { axum::Json(ledger("none")) }))
-        .route("/learn/grants", axum::routing::get(|| async { axum::Json(ledger("none")) }))
-        .route("/learn/residency/release", axum::routing::post(move || async move { axum::Json(ledger(release)) }));
+        .route("/learn/grants", axum::routing::get(move || async move { axum::Json(ledger_of(after, "none")) }))
+        .route("/learn/residency/release", axum::routing::post(move || async move { axum::Json(ledger_of(after, release)) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
-    let root = format!("http://{}", listener.local_addr().expect("test: addr"));
-    (LearningEngine::at(root), tokio::spawn(async move { axum::serve(listener, app).await }))
+    let port = listener.local_addr().expect("test: addr").port();
+    (LearningEngine::serving_here(port).expect("test: this process's start time is readable"), tokio::spawn(async move { axum::serve(listener, app).await }))
 }
 
 // what this catches: a lost load reply read as proof that nothing loaded (Codex's audit of fed5f3f64).
@@ -142,6 +153,20 @@ async fn a_lost_load_the_engine_confirms_empty_releases_its_lease() {
     let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
     assert!(matches!(refused, SeatRefusal::Unloaded(_)), "{refused}");
     assert_eq!((leased(&authority), authority.custody.held()), (0, (0, 0)), "a confirmed-empty residency holds nothing");
+    server.abort();
+}
+
+// what this catches: a relaunch at the same address read as the old engine's release (Codex's audit of
+// 7912e8f1c, STAGE-CONTRACT 2). The new incarnation does not know the residency, which proves nothing
+// about the old process's memory; while that process is not verifiably dead the lease stays.
+#[tokio::test]
+async fn another_incarnation_at_the_address_proves_nothing_about_the_old_memory() {
+    let authority = authority();
+    let (engine, server) = engine_relaunched_after_the_load("0b5e55ed0b5e55ed0b5e55ed0b5e55ed", "unknown_residency").await;
+    let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
+    assert!(matches!(refused, SeatRefusal::Unloaded(_)), "{refused}");
+    assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "held: the admitted process is alive");
+    assert_eq!(authority.custody.settle_orphans().await, 1, "still unproven");
     server.abort();
 }
 
@@ -203,9 +228,9 @@ async fn a_cancelled_seat_leaves_its_lease_in_custody_until_settled() {
         )
         .route("/learn/residency/release", axum::routing::post(|| async { axum::Json(ledger("none")) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
-    let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+    let port = listener.local_addr().expect("test: addr").port();
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
-    let cancelled = tokio::time::timeout(std::time::Duration::from_millis(500), seat(&authority, LearningEngine::at(root), "learning:her", shadow())).await;
+    let cancelled = tokio::time::timeout(std::time::Duration::from_millis(500), seat(&authority, LearningEngine::serving_here(port).expect("test: this process's start time is readable"), "learning:her", shadow())).await;
     assert!(cancelled.is_err(), "test: the caller stopped waiting mid-load");
     assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "the lease outlives the dropped future");
     assert_eq!(authority.custody.settle_orphans().await, 0, "settled");
@@ -236,9 +261,9 @@ async fn a_refused_stop_hands_the_mind_back_with_its_lease() {
         .route("/learn/grants/revoke", axum::routing::post(|| async { axum::Json(ledger("none")) }))
         .route("/learn/residency/release", axum::routing::post(|| async { axum::Json(ledger("busy")) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
-    let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+    let port = listener.local_addr().expect("test: addr").port();
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
-    let mind = crate::genome::learner::mind::MindLearner::start(&authority, LearningEngine::at(root), "learning:her", shadow(), std::time::Duration::from_secs(60))
+    let mind = crate::genome::learner::mind::MindLearner::start(&authority, LearningEngine::serving_here(port).expect("test: this process's start time is readable"), "learning:her", shadow(), std::time::Duration::from_secs(60))
         .await
         .map_err(|why| why.to_string())
         .expect("test: started");
