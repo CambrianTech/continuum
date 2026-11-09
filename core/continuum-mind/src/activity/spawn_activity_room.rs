@@ -402,7 +402,7 @@ async fn open_path_room(
 /// The channel the parent's wall announces for `path`, when another node opened it first: any
 /// node walks the tree to the room that already stands there (a pre-tree run another node
 /// adopted keeps its old channel), never makes a second one beside it. A record names the room
-/// by id, so the channel is the candidate name whose derived id matches; `None` when the wall
+/// by id, so the channel is the candidate name whose derived id (airc's own derivation) matches; `None` when the wall
 /// names no room at this path. A record naming a room by neither name is refused, never guessed.
 async fn announced_channel(airc: &Airc, parent: &airc_lib::Room, path: &RoomPath) -> Result<Option<String>, CommandError> {
     let posts = airc
@@ -416,10 +416,16 @@ async fn announced_channel(airc: &Airc, parent: &airc_lib::Room, path: &RoomPath
     else {
         return Ok(None);
     };
+    // A subscribed room's id is airc's derive_room_id(mesh identity, channel), the id the record
+    // carries; Room::from_name is a different (unscoped) derivation and never matches it.
+    let mesh = airc
+        .mesh_identity()
+        .await
+        .map_err(|e| CommandError::Internal(format!("cannot read this scope's mesh identity: {e}")))?;
     for candidate in std::iter::once(path.channel_key()).chain(path.pre_tree_channel().map(str::to_string)) {
-        let derived = airc_lib::Room::from_name(airc.home(), &candidate)
-            .map_err(|e| CommandError::Internal(format!("cannot derive channel {candidate:?}: {e}")))?;
-        if derived.channel.as_uuid() == announced.room_id {
+        let channel = airc_lib::ChannelName::new(&candidate)
+            .map_err(|e| CommandError::Internal(format!("channel name {candidate:?}: {e}")))?;
+        if airc_lib::derive_room_id(&mesh, &channel).as_uuid() == announced.room_id {
             return Ok(Some(candidate));
         }
     }

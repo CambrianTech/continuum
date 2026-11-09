@@ -472,7 +472,8 @@
             let (_home, airc) = scope().await;
             let path = crate::experience::room_path::RoomPath::parse("projects/demo/run-3").expect("a room path");
             let parent = open_ancestors(&airc, &path).await.expect("ancestors open").expect("a nested path has a parent");
-            let elsewhere = airc_lib::Room::from_name(airc.home(), "run-3").expect("a channel derives").channel;
+            let mesh = airc.mesh_identity().await.expect("a mesh identity");
+            let elsewhere = airc_lib::derive_room_id(&mesh, &airc_lib::ChannelName::new("run-3").expect("a channel name"));
             let record = crate::experience::children::RoomChildRecord {
                 room_id: elsewhere.as_uuid(), name: path.as_str().to_string(), recipe: "chat".into(), suite: None, spawned_at_ms: 1,
             };
