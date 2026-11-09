@@ -79,6 +79,7 @@ mod durable;
 mod remainders;
 mod serving_wake;
 pub use durable::DispatchPhase;
+pub(crate) mod competence;
 mod in_place;
 pub(crate) use durable::{DispatchFailure, DispatchResolution, DispatchResult, JobInputError, ResolveReport, RetireReport, RetireSelection};
 
