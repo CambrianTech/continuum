@@ -28,7 +28,6 @@ mod resource_authority;
 mod runtime_start;
 mod service_modules;
 mod serving_modules;
-#[cfg(unix)]
 mod tcp_ingress;
 mod ws_ingress;
 
@@ -255,8 +254,7 @@ pub fn start_server(
             phase_started,
         )?;
 
-    #[cfg(unix)]
-    let listener = listeners::bind_unix_listener(socket_path, init_started)?;
+    let listener = listeners::bind_ipc_listener(socket_path, init_started)?;
     listeners::announce_ipc_ready(socket_path);
 
     runtime_start::settle_then_release(
@@ -284,8 +282,10 @@ pub fn start_server(
 
     log_info!("ipc", "server", "IPC server ready");
 
-    #[cfg(unix)]
-    tcp_ingress::spawn_optional_tcp_listener(&state);
+    // A second, TCP ingress only where the primary endpoint is not already TCP.
+    if !continuum_host::core_ipc::PRIMARY_IS_TCP {
+        tcp_ingress::spawn_optional_tcp_listener(&state);
+    }
     ws_ingress::spawn_ws_ingress(
         &state,
         &executor,
@@ -298,9 +298,5 @@ pub fn start_server(
     .map_err(std::io::Error::other)?;
     memory_guard::spawn_memory_guard(&state);
 
-    #[cfg(unix)]
-    let served = accept_loop::serve_unix_connections(state, listener);
-    #[cfg(windows)]
-    let served = accept_loop::serve_windows_tcp_connections(state, init_started);
-    served
+    accept_loop::serve_connections(state, listener)
 }

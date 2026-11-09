@@ -33,16 +33,11 @@
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-// The TS CommandRouterServer is reached over a Unix-domain socket. On Windows
-// there is no Unix socket; alias to TcpStream so the TS-bridge path compiles
-// unchanged. `connect()` to the filesystem-path socket then fails gracefully at
-// runtime. BEHAVIORAL GAP: the explicit TS-bridge (`execute_ts*`) is
-// unavailable on Windows until a TCP endpoint is wired; the Rust dispatch chain
-// (the primary path) is unaffected.
-#[cfg(windows)]
-use tokio::net::TcpStream as UnixStream;
-#[cfg(unix)]
-use tokio::net::UnixStream;
+// The TS CommandRouterServer is reached through `continuum_host::core_ipc::connect`: a
+// Unix-domain socket, or on Windows a TCP connect to the same address, which fails at runtime
+// because the address is a path. BEHAVIORAL GAP (unchanged): the explicit TS bridge
+// (`execute_ts*`) is unavailable on Windows until a TCP endpoint is wired; the Rust dispatch
+// chain (the primary path) is unaffected.
 use tracing::Instrument;
 
 use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
@@ -725,7 +720,8 @@ impl CommandExecutor {
             "Connecting to TypeScript socket: {}",
             TS_COMMAND_SOCKET
         ));
-        let stream = UnixStream::connect(TS_COMMAND_SOCKET).await.map_err(|e| {
+        // A Unix socket, or TCP on Windows: the OS difference lives in continuum_host::core_ipc.
+        let stream = continuum_host::core_ipc::connect(TS_COMMAND_SOCKET).await.map_err(|e| {
             format!(
                 "Failed to connect to CommandRouterServer at {}: {}",
                 TS_COMMAND_SOCKET, e

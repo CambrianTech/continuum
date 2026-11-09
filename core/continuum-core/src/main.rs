@@ -63,102 +63,24 @@ use tracing::info;
 /// The `Drop` impls remain correct for normal lifetime — model unload,
 /// context swap, etc. We're only short-circuiting the process-exit path.
 fn install_shutdown_handlers() {
-    // Unix: SIGTERM (npm stop / kill / system-stop.sh) + SIGINT (Ctrl+C).
-    // Windows has neither as a POSIX signal — its shutdown edges are Ctrl+C,
-    // console-window close (the WM_CLOSE that `taskkill` and the npm-stop path
-    // deliver), and system shutdown/logoff, exposed via tokio::signal::windows.
-    // Both platforms get identical treatment: tear down sentinel process groups,
-    // then fast-`_exit` to skip llama.cpp's C++ static destructors (see the
-    // double-free note above). `libc::_exit` exists on windows-msvc too.
-    #[cfg(unix)]
-    {
-        // SIGTERM (from npm stop / kill / system-stop.sh)
-        tokio::spawn(async {
-            if let Ok(mut sig) =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            {
-                sig.recv().await;
-                eprintln!("[continuum-core] SIGTERM — save-and-join broadcast, then exit");
-                // The CBAR stop (2026-09-02): every module saves and joins in
-                // parallel under a bound — replacing a flat 2s sleep during
-                // which NOTHING saved. Sentinels last (they are children, not
-                // modules), then the fast _exit that skips llama.cpp's
-                // double-free-prone static destructors (note above).
+    // `libc::_exit` exists on windows-msvc too.
+    // One stop for every OS edge (continuum_host::shutdown_signal names them): the CBAR stop
+    // (2026-09-02), every module saving and joining in parallel under a bound, replacing a flat 2 s
+    // sleep during which nothing saved. The Windows arm ran that flat sleep long after Unix was
+    // fixed, so no module ever saved on a Windows signal stop; one path keeps the two the same.
+    // Modules drain and save FIRST, sentinels after (they are children, not modules), then the
+    // fast `_exit` that skips llama.cpp's double-free-prone static destructors (note above).
+    tokio::spawn(async {
+        match continuum_host::shutdown_signal::first_edge().await {
+            Ok(edge) => {
+                eprintln!("[continuum-core] {} — save-and-join broadcast, then exit", edge.name());
                 continuum_core::runtime::run_signal_shutdown().await;
                 continuum_sentinel::shutdown_all_sentinels();
                 unsafe { libc::_exit(0) };
             }
-        });
-
-        // SIGINT (Ctrl+C)
-        tokio::spawn(async {
-            if let Ok(mut sig) =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-            {
-                sig.recv().await;
-                eprintln!("[continuum-core] SIGINT — save-and-join broadcast, then exit");
-                continuum_core::runtime::run_signal_shutdown().await;
-                continuum_sentinel::shutdown_all_sentinels();
-                unsafe { libc::_exit(0) };
-            }
-        });
-    }
-
-    #[cfg(windows)]
-    {
-        tokio::spawn(async {
-            // Ctrl+C is the required edge; console-close + system-shutdown are
-            // best-effort (a failed install parks that arm forever so select!
-            // still waits on the others).
-            let mut ctrl_c = match tokio::signal::windows::ctrl_c() {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("[continuum-core] could not install Ctrl+C handler: {e}");
-                    return;
-                }
-            };
-            let mut ctrl_close = tokio::signal::windows::ctrl_close().ok();
-            let mut ctrl_shutdown = tokio::signal::windows::ctrl_shutdown().ok();
-
-            let close_fut = async {
-                match ctrl_close.as_mut() {
-                    Some(s) => {
-                        s.recv().await;
-                    }
-                    None => std::future::pending::<()>().await,
-                }
-            };
-            let shutdown_fut = async {
-                match ctrl_shutdown.as_mut() {
-                    Some(s) => {
-                        s.recv().await;
-                    }
-                    None => std::future::pending::<()>().await,
-                }
-            };
-
-            tokio::select! {
-                _ = ctrl_c.recv() => {}
-                _ = close_fut => {}
-                _ = shutdown_fut => {}
-            }
-            eprintln!("[continuum-core] shutdown signal — save-and-join broadcast, then exit");
-            // THE SAME BROADCAST THE UNIX ARMS RUN. This arm killed sentinels, slept a
-            // flat 2 seconds, and `_exit`ed — which is precisely the behaviour the SIGTERM
-            // arm's own comment says was replaced on 2026-09-02 ("a flat 2s sleep during
-            // which NOTHING saved"). The unix half was fixed and this half was not, so on
-            // Windows no module has ever saved on a signal stop: not the citizens'
-            // workspaces, not the log queue, nothing. The node that runs the citizens is a
-            // Windows node.
-            //
-            // Ordering matches unix deliberately: modules drain and save FIRST, sentinels
-            // are killed after (they are children, not modules), then the fast `_exit`
-            // that skips llama.cpp's double-free-prone static destructors.
-            continuum_core::runtime::run_signal_shutdown().await;
-            continuum_sentinel::shutdown_all_sentinels();
-            unsafe { libc::_exit(0) };
-        });
-    }
+            Err(e) => eprintln!("[continuum-core] no shutdown edge could be installed, so only a kill stops this process: {e}"),
+        }
+    });
 }
 
 /// Register a BevyMemoryReporter with the pressure monitor once the
