@@ -140,7 +140,7 @@ mod tests {
     fn underived_durations_never_increase() {
         let violations = scan(&[&TimeBounds]);
                 let count = violations.len();
-                crate::ratchet::hold_sites("underived_durations", &violations, || {
+                crate::ratchet::hold_sites("underived_durations", &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
                 "underived, unjustified durations rose to {count}. Derive it from what the substrate \
                  measures (`inference::prefill_rate`, `inference::decode_knee`), or say on the line or \

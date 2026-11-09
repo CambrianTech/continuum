@@ -23,9 +23,9 @@ use super::{sites, SourceFile, SourceRule, Violation};
 /// The prompt assembly, where every message must come from the view or the tail's renderer.
 const PROMPT_ASSEMBLY: &str = "cognition/llm_deliberation_faculty/prompt/";
 
-struct PromptMessagesOutsideTheView;
-struct CollapseOutsideTheView;
-struct HandChurnLabels;
+pub struct PromptMessagesOutsideTheView;
+pub struct CollapseOutsideTheView;
+pub struct HandChurnLabels;
 
 impl SourceRule for PromptMessagesOutsideTheView {
     fn name(&self) -> &'static str {
@@ -69,13 +69,14 @@ mod tests {
     use super::*;
     use crate::scan;
 
+    const RECIPE: &str = "The recipe: docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md, \"How to add a layer\".";
+
     fn hold(rule: &dyn SourceRule, instead: &str) {
         let violations = scan(&[rule]);
-                let count = violations.len();
-                crate::ratchet::hold_sites(rule.name(), &violations, || {
+        let count = violations.len();
+        crate::ratchet::hold_sites(rule.name(), &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
-                "{} rose to {count}. {instead} The recipe: docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md, \
-                 \"How to add a layer\".\nFirst {} of {count} (not necessarily new):\n{}",
+                "{} rose to {count}. {instead} {RECIPE}\nFirst {} of {count} (not necessarily new):\n{}",
                 rule.name(),
                 count.min(20),
                 violations.iter().take(20).map(|v| format!("  {}:{}  {}", v.file, v.line, v.source)).collect::<Vec<_>>().join("\n")
@@ -93,8 +94,11 @@ mod tests {
     // what this catches: a second allocator deciding what she sees (working memory collapsed her
     // newest file read the act after she read it, so she read it again).
     #[test]
-    fn collapse_outside_the_view_never_increases() {
-        hold(&CollapseOutsideTheView, "Give the item a summary level (continuum_context::levels) and let the view's start choose it.");
+    fn collapse_outside_the_view_is_zero() {
+        let violations = scan(&[&CollapseOutsideTheView]);
+        crate::ratchet::zero(CollapseOutsideTheView.name(), &violations, || {
+            format!("Give the item a summary level (continuum_context::levels) and let the view's start choose it. {RECIPE}")
+        });
     }
 
     // what this catches: a restart order by label; the roster was labelled stable and changed with

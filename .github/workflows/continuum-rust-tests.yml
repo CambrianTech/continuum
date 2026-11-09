@@ -232,25 +232,40 @@ jobs:
             exit 1
           fi
 
-      # Phase 3 locks (CLAUDE.md): a crate whose root declares
-      # `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)` is linted here, alone
-      # (--no-deps: its dependencies' lints are their own crate's job), so the lock it declares
-      # fails the build instead of sitting in the source as a comment. The crate declares the
-      # lock; no list of locked crates lives in this workflow. Only deny-level lints fail here
-      # (the declared lock and clippy's default-deny correctness group): several locked crates
-      # still carry style warnings (too_many_arguments, doc indentation), and `-D warnings`
-      # becomes this step's flag the day the warning count of every locked crate reads zero.
-      # Default features, not the test features: the lock is on what ships, and `test-fixtures`
-      # code is test code compiled outside cfg(test).
-      - name: clippy -p ${{ matrix.crate }} (a crate that denies unwrap, expect and panic)
+      # Phase 3 locks (CLAUDE.md), on every crate, alone (--no-deps: its dependencies' lints are
+      # their own crate's job). Two kinds of lint run here:
+      # - the concurrency and discard lints Joel keeps repeating (await_holding_lock: a lock held
+      #   across an await; significant_drop_in_scrutinee: a guard alive for a whole match;
+      #   let_underscore_must_use: a must-use result bound to `_`) are WARNED on every crate and
+      #   counted per crate in the job summary. A crate clean of one declares it `deny` in its root
+      #   (`#![deny(clippy::await_holding_lock, ...)]`), and the declaration fails the build from then
+      #   on; a source attribute outranks these command-line warns.
+      # - a crate whose root declares `deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)`
+      #   also keeps clippy's default groups, so its lock and the default-deny correctness group
+      #   fail here. A crate without that lock gets only the three lints above (`-A clippy::all`
+      #   first): its style debt is not this step's to judge yet.
+      # The crate declares its locks; no list of locked crates lives in this workflow. Default
+      # features, not the test features: the lock is on what ships.
+      - name: clippy -p ${{ matrix.crate }} (declared locks; lock and discard lint counts)
         run: |
           roots=$(cargo metadata --locked --no-deps --format-version 1 \
             | jq -r --arg c "$CRATE" '.packages[] | select(.name == $c) | .targets[] | select(any(.kind[]; . == "lib" or . == "bin" or . == "proc-macro")) | .src_path')
-          if grep -l 'clippy::unwrap_used' $roots > /dev/null; then
-            cargo clippy --locked -p "$CRATE" --no-deps --profile dev-fast
-          else
-            echo "$CRATE declares no unwrap lock yet; burn-down: production unwraps per crate in the source-hygiene receipt"
-          fi
+          lints=(await_holding_lock significant_drop_in_scrutinee let_underscore_must_use)
+          groups=(-A clippy::all)
+          if grep -l 'clippy::unwrap_used' $roots > /dev/null; then groups=(); fi
+          warns=()
+          for lint in "${lints[@]}"; do warns+=(-W "clippy::$lint"); done
+          status=0
+          cargo clippy --locked -p "$CRATE" --no-deps --profile dev-fast --message-format=json -- \
+            "${groups[@]}" "${warns[@]}" > clippy.jsonl || status=$?
+          jq -r 'select(.reason == "compiler-message") | .message.rendered' clippy.jsonl
+          for lint in "${lints[@]}"; do
+            n=$(jq -r --arg l "clippy::$lint" 'select(.reason == "compiler-message" and .message.code.code == $l)
+              | .message.spans[0] | "\(.file_name):\(.line_start)"' clippy.jsonl | sort -u | wc -l)
+            echo "clippy-count $CRATE $lint $n"
+            echo "| $CRATE | $lint | $n |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          exit $status
 
       # Every crate's tests regenerate the ts-rs bindings of the types it defines, so each
       # crate job checks the drift its own run produced.

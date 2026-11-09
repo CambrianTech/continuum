@@ -248,7 +248,7 @@ mod tests {
     fn unwired_public_machinery_never_increases() {
         let violations = scan_crate(&[&ProductionReachability]);
                 let count = violations.len();
-                crate::ratchet::hold_sites("unwired_machinery", &violations, || {
+                crate::ratchet::hold_sites("unwired_machinery", &violations, crate::ratchet::Touched::HeldOnly(crate::ratchet::HeldOnly::CrossFile), || {
             format!(
             "unwired public machinery rose to {count}.\n\
              A pub type with a constructor and no caller anywhere in the workspace is \

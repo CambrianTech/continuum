@@ -70,20 +70,17 @@ mod tests {
     }
 
     // what this catches: cognition coupling back up into persona after the split started.
-    // The cognition crate cut needs this at 0; it may only fall.
+    // It reached 0; it stays 0.
     #[test]
-    fn cognition_names_persona_never_rises() {
+    fn cognition_names_persona_is_zero() {
         let violations = scan(&[&CognitionNamesPersona]);
         let mut files: Vec<&str> = violations.iter().map(|v| v.file.as_str()).collect();
         files.dedup();
         eprintln!("cognition names persona: {} lines in {} files", violations.len(), files.len());
-        crate::ratchet::hold_sites("cognition_names_persona", &violations, || {
-            let newest: Vec<String> = violations.iter().take(8).map(|v| format!("  {}:{}: {}", v.file, v.line, v.source)).collect();
-            format!(
-                "cognition now names persona on more lines. Move the fact down into cognition, or \
-                 invert the verb through cognition::extensions (persona installs it at boot):\n{}",
-                newest.join("\n")
-            )
+        crate::ratchet::zero("cognition_names_persona", &violations, || {
+            "cognition names persona. Move the fact down into cognition, or invert the verb \
+             through cognition::extensions (persona installs it at boot)."
+                .to_string()
         });
     }
 }

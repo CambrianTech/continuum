@@ -139,7 +139,9 @@ impl InPlace {
             return Ok(BucketPass { deferred: true, ..Default::default() }); // a step or a fence holds this engine: later
         };
         let mut pass = BucketPass::default();
-        match steps(authority, state, &mut held, key, &rows, engine, &mut pass).await? {
+        // Bound first: the step's borrow of `held` ends here, before the arm below moves `held` into the fence.
+        let lost = steps(authority, state, &mut held, key, &rows, engine, &mut pass).await?;
+        match lost {
             Lost::No => {}
             Lost::Yes { mind, slot } => {
                 // the fence runs on its own, holding this engine and the slot; the tick moves on

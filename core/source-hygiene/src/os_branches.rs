@@ -56,7 +56,7 @@ mod tests {
     fn os_branches_in_logic_never_increase() {
         let violations = scan(&[&OsBranches]);
                 let count = violations.len();
-                crate::ratchet::hold_sites("os_branches_in_logic", &violations, || {
+                crate::ratchet::hold_sites("os_branches_in_logic", &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
                 "OS branches in logic rose to {count}. An OS difference belongs in its capability's \
                  adapter in continuum-host (mod.rs holds the logic once, unix.rs/windows.rs only \
