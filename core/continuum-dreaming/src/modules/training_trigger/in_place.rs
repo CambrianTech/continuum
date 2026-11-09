@@ -89,7 +89,8 @@ struct EngineLearning {
 }
 
 struct Seated {
-    /// This seat's identity, as her other competences see it in flight.
+    /// This seat's identity, as her other competences see it in flight, and the id her shadow's
+    /// file is named for (eviction keeps the shadows of seats held now).
     id: Uuid,
     policy: LearnPolicy,
     /// The signature of the competence she learns here, minted from the examples that seated her
@@ -378,7 +379,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
             held.minds.insert(
                 key.clone(),
                 Seated {
-                    id: Uuid::new_v4(),
+                    id, // the shadow's own: her file in the train dir is named for this seat
                     policy,
                     signature,
                     expiry,
@@ -453,6 +454,43 @@ impl InPlace {
             }
         }
         quiesced
+    }
+}
+
+impl InPlace {
+    /// The seats any engine holds for `key` now; None when an engine is busy, so its seats cannot be read.
+    fn seats_of(&self, key: &BucketKey) -> Option<std::collections::HashSet<Uuid>> {
+        let mut seats = std::collections::HashSet::new();
+        for engine in self.engines.iter() {
+            let held = engine.value().try_lock().ok()?;
+            seats.extend(held.minds.get(key).map(|seated| seated.id));
+        }
+        Some(seats)
+    }
+
+    /// Delete `key`'s files in its train dir that nothing reads again: generations older than
+    /// `current`, and shadows no engine holds. Run under the bucket's gate; every outcome is probed.
+    async fn evict(&self, key: &BucketKey, current: &LearnCheckpoint) {
+        let prefix = format!("{}-{}", key.persona_id.simple(), file_safe(&key.trait_kind));
+        let Some(evict::Entry::Shadow(newest)) = evict::entry(&prefix, &current.name) else {
+            continuum_base::probe!(class = "training.in_place.evict_unparsed", persona = %key.persona_id, name = %current.name,
+                "the bucket's generation name is not its own pattern; nothing of it is evicted");
+            return;
+        };
+        let Some(dir) = std::path::Path::new(&current.path).parent().map(std::path::Path::to_path_buf) else {
+            return; // a generation path with no directory names no train dir
+        };
+        let seats = self.seats_of(key);
+        let swept = tokio::task::spawn_blocking(move || evict::sweep(&dir, &prefix, newest, seats.as_ref())).await;
+        match swept {
+            Ok(Ok(0)) => {}
+            Ok(Ok(deleted)) => continuum_base::probe!(class = "training.in_place.evicted", persona = %key.persona_id, deleted = deleted as u64,
+                "a bucket's old generations and unheld shadows left the train dir"),
+            Ok(Err(why)) => continuum_base::probe!(class = "training.in_place.evict_failed", persona = %key.persona_id, reason = %why,
+                "a bucket's old files could not all be deleted; the next sweep tries again"),
+            Err(join) => continuum_base::probe!(class = "training.in_place.evict_failed", persona = %key.persona_id, reason = %join,
+                "a bucket's eviction task ended without an answer; the next sweep tries again"),
+        }
     }
 }
 
@@ -587,6 +625,7 @@ impl TrainingTriggerState {
                     let store = state.durable.require()?;
                     if let Some(current) = store.checkpoint_of(&key).await? {
                         snapshot::maybe(&store, &current).await;
+                        state.in_place.evict(&key, &current).await;
                     }
                     Ok::<(), String>(())
                 })
@@ -606,6 +645,7 @@ impl TrainingTriggerState {
     }
 }
 
+mod evict;
 mod snapshot;
 
 /// Whether `generation` is a due candidate (its state on the durable row).

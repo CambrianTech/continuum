@@ -2,7 +2,9 @@
 //! the completion sentinel's chain, for learning in place.
 //!
 //! A generation's `adapter.gguf` is an immutable gguf-lora of the shadow at an optimizer boundary,
-//! published once, so it is the gene as it is (the live shadow keeps learning). It becomes a
+//! published once, so it is the gene as it is (the live shadow keeps learning). The candidate is a
+//! copy of it placed in the genome store beside its provenance, so evicting the engine's old
+//! generations never touches a gene on trial. It becomes a
 //! candidate when its bucket has learned a competence's worth since its last candidate
 //! (`competence::MIN_EXAMPLES`) and that candidate's trial is no longer settling, so her cards are
 //! never split across two trials of one competence. Every step a generation holds had a finite loss:
@@ -44,23 +46,36 @@ async fn take(store: &DurableStore, generation: &LearnCheckpoint) -> Result<(), 
             return Ok(()); // her cards are judging the last candidate of this competence
         }
     }
-    let gene = format!("{}/adapter.gguf", generation.path);
+    let trained_from = provenance(store, generation).await?;
+    let gene = place_gene(generation, &trained_from)?;
     // stamped before the gene is live, so a fill finds it by distance and awaits its trial
     if let Some(signature) = generation.signature.clone() {
-        let stamped = crate::genome::signature::signature_store_path().and_then(|path| crate::genome::signature::SignatureStore::stamp_at(&path, &gene, signature));
+        let stamped = crate::genome::signature::signature_store_path().and_then(|path| crate::genome::signature::SignatureStore::stamp_at(&path, &gene.to_string_lossy(), signature));
         if let Err(e) = stamped {
-            tracing::warn!(gene = %gene, error = %e, "the candidate's signature failed to stamp: it routes by fallback");
+            tracing::warn!(gene = %gene.display(), error = %e, "the candidate's signature failed to stamp: it routes by fallback");
         }
     }
-    let trained_from = provenance(store, generation).await?;
     let trial = adoption
-        .adopt(generation.persona_id, &generation.trait_kind, std::path::Path::new(&gene), &generation.base_model, Some(&trained_from), continuum_base::time::EpochMs::now().millis())
+        .adopt(generation.persona_id, &generation.trait_kind, &gene, &generation.base_model, Some(&trained_from), continuum_base::time::EpochMs::now().millis())
         .map_err(|refusal| format!("the candidate was not adopted: {refusal}"))?;
     store.record_candidate(generation, trial.id).await?;
     continuum_base::probe!(class = "genome.trial.opened", persona = %generation.persona_id, gene = generation.trait_kind.as_str(), trial = %trial.id,
         base = generation.base_model.as_str(), learned = u64::from(generation.learned()), provenance = %trained_from.display(),
         "a gene learned in place opened a trial: it is in her head now, and the examiner's acceptance test decides it");
     Ok(())
+}
+
+/// Place the generation's adapter in the candidate's job directory, beside its provenance: the gene
+/// on trial lives in the genome store, never in the engine's train dir, whose old generations are
+/// evicted. Published once; a retry finds the same bytes there and takes it.
+fn place_gene(generation: &LearnCheckpoint, job: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let source = std::path::Path::new(&generation.path).join("adapter.gguf");
+    let bytes = std::fs::read(&source).map_err(|e| format!("the generation's adapter {}: {e}", source.display()))?;
+    match crate::genome::fine_tuning::job_dir::publish_job_file(job, "adapter.gguf", &bytes)? {
+        None => Ok(job.join("adapter.gguf")),
+        Some(existing) if existing == bytes => Ok(job.join("adapter.gguf")),
+        Some(_) => Err(format!("{} already holds another adapter than generation {}", job.display(), generation.name)),
+    }
 }
 
 /// Write the candidate's provenance where the examiner reads it: a job directory, named by the
