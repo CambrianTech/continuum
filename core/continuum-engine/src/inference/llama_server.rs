@@ -81,6 +81,8 @@ use pages::{
     PAGE_DIR_GUARD,
 };
 mod genome;
+mod learn_ledger;
+pub use learn_ledger::{GrantId, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
 mod gene_pages;
 pub use gene_pages::{gene_seats, page_gene, GeneMove, GenePageError, GeneSeat};
 pub(crate) use genome::gene_stage_name;
