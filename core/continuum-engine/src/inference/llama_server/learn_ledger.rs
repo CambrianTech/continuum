@@ -18,6 +18,21 @@ use super::*;
 #[serde(transparent)]
 pub struct LedgerEngine(String);
 
+/// One serving engine's learning routes, by its address: separate from the process that owns the
+/// engine's lifecycle, so the learner in the genome reaches the ledger without the lifecycle owner.
+#[derive(Debug, Clone)]
+pub struct LearningEngine {
+    pub(super) root: String,
+    pub(super) client: reqwest::Client,
+}
+
+impl LearningEngine {
+    /// The engine serving at `root` (a lane's `root_url`).
+    pub fn at(root: impl Into<String>) -> Self {
+        Self { root: root.into(), client: reqwest::Client::new() }
+    }
+}
+
 /// A grant the core issues: never reused, so a new share is a new id (and the old is revoked).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GrantId(uuid::Uuid);
@@ -182,15 +197,15 @@ pub struct Registered<R> {
     pub ledger: LedgerSnapshot,
 }
 
-impl LlamaServerProcess {
+impl LearningEngine {
     /// `GET /learn/grants`: the ledger as it stands.
-    pub(super) async fn learn_ledger(&self) -> Result<LedgerAnswer<LedgerSnapshot>, LlamaServerError> {
+    pub async fn learn_ledger(&self) -> Result<LedgerAnswer<LedgerSnapshot>, LlamaServerError> {
         let reply = self.ledger_request::<GrantRefusal>(self.client.get(format!("{}/learn/grants", self.root))).await?;
         Ok(reply.map(|reply| reply.snapshot))
     }
 
     /// `POST /learn/grants`: register `terms` with the engine.
-    pub(super) async fn register_learn_grant(&self, terms: &GrantTerms) -> Result<LedgerAnswer<Registered<GrantRefusal>>, LlamaServerError> {
+    pub async fn register_learn_grant(&self, terms: &GrantTerms) -> Result<LedgerAnswer<Registered<GrantRefusal>>, LlamaServerError> {
         let body = serde_json::json!({
             "id": terms.id.to_string(),
             "engine": terms.engine,
@@ -204,7 +219,7 @@ impl LlamaServerProcess {
 
     /// `POST /learn/grants/revoke`: no new work under `id` (idempotent); its account goes once its
     /// last reservation settles.
-    pub(super) async fn revoke_learn_grant(&self, id: &str) -> Result<LedgerAnswer<LedgerSnapshot>, LlamaServerError> {
+    pub async fn revoke_learn_grant(&self, id: &str) -> Result<LedgerAnswer<LedgerSnapshot>, LlamaServerError> {
         let body = serde_json::json!({ "id": id });
         let reply = self.ledger_request::<GrantRefusal>(self.client.post(format!("{}/learn/grants/revoke", self.root)).json(&body)).await?;
         Ok(reply.map(|reply| reply.snapshot))

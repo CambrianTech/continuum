@@ -82,7 +82,7 @@ use pages::{
 };
 mod genome;
 mod learn_ledger;
-pub use learn_ledger::{GrantId, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
+pub use learn_ledger::{GrantId, LearningEngine, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
 mod learn_residency;
 pub use learn_residency::{CoveringLease, FreshShadow, LeaseKind, LearningPlan, MeasuredRow, PlannedRow, Preflight, PreflightRefusal, RegisteredResidency, ResidencyId, ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind, WeightsPlan};
 mod gene_pages;
