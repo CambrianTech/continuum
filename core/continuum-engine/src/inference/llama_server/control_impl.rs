@@ -94,6 +94,19 @@ impl LlamaServerControl for LlamaServerProcess {
             })
     }
 
+    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
+        let body = self.props_json().await?;
+        crate::inference::weight_residency::ContextGeometry::from_props(&body)
+            .and_then(|geometry| u32::try_from(geometry.allocated_tokens).ok())
+            .ok_or_else(|| {
+                LlamaServerError::Unreachable(
+                    "/props has no valid context_geometry: the engine is not our fork's (refusing \
+                     to guess the pool)"
+                        .to_string(),
+                )
+            })
+    }
+
     async fn served_engine_build(&self) -> Result<Option<String>, LlamaServerError> {
         let body = self.props_json().await?;
         Ok(body
@@ -173,29 +186,33 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     async fn decode_smoke_ok(&self) -> bool {
-        // A REAL multi-token generation, not just HTTP 200. A wedged lane (the
-        // "~2 tokens then stop for EVERY request" failure mode, observed intermittently
-        // on fresh ephemeral eval lanes) still answers a `max_tokens: 1` request with
-        // 200 — so a status-only probe passes it, and every downstream task then decodes
-        // ~2 tokens and silently scores 0. The probe forces a prompt a healthy model
-        // MUST answer with many tokens and verifies BOTH volume (token floor) and
-        // CONTENT (the digits actually count upward — the embedding-model-on-the-port
-        // incident sailed past a count-only gate with "uiuiui…" garbage).
+        // A REAL generation, not just HTTP 200. A wedged lane (the "~2 tokens then stop
+        // for EVERY request" failure mode, observed intermittently on fresh ephemeral eval
+        // lanes) still answers a `max_tokens: 1` request with 200 — so a status-only probe
+        // passes it, and every downstream task then decodes ~2 tokens and silently scores
+        // 0. The probe asks a question whose answer is a monotonic run of integers and
+        // verifies the CONTENT: a ~2-token wedge cannot produce three ascending integers,
+        // and the embedding-model-on-the-port lane's "uiuiui…" garbage has none.
+        //
+        // Every size here comes from the answer itself: the quick attempt's cap is the
+        // engine's own token count of the expected answer ([`smoke_answer_tokens`]), and
+        // the request asks the engine for no reasoning phase, so a healthy lane's whole
+        // decode IS the answer.
         //
         // Judged by [`smoke_verdict`] over BOTH response channels, because a THINKING
-        // model can spend the whole quick budget inside its reasoning channel with a
-        // perfectly healthy decode path (2026-08-15: this exact shape marked serving
-        // degraded forever and killed a full bench round while the server generated
-        // at 30 t/s). That outcome is ThinkStarved, not Dead — retry once with a
-        // budget that lets the model finish thinking and ANSWER. A wedged lane
-        // (~2 tokens) and the garbage-content lane both still read Dead on EITHER
-        // budget. A 500 "Compute error" (the wedged-orphan signature) still fails
-        // fast on status inside `smoke_attempt`.
-        // A lane that has PROVEN its model thinks starts at the thinking budget —
-        // the quick attempt is structurally incapable of succeeding there, and paying
-        // it anyway cost two generations per readiness check, ~30 identical
-        // `think_retry` rows/hour on a lane citizens were starving for. First check
-        // per lane still takes the cheap path; the latch below learns from it.
+        // template the engine cannot switch off spends the whole cap inside its reasoning
+        // channel with a perfectly healthy decode path (2026-08-15: this exact shape marked
+        // serving degraded forever and killed a full bench round while the server
+        // generated at 30 t/s). That outcome is ThinkStarved, not Dead — retry once at the
+        // engine's own per-request bound so the model can finish thinking and ANSWER. A
+        // wedged lane (~2 tokens, short of the cap) and the garbage-content lane both read
+        // Dead. A 500 "Compute error" (the wedged-orphan signature) still fails fast on
+        // status inside `smoke_attempt`.
+        // A lane that has PROVEN its model thinks starts at the engine bound — the capped
+        // attempt is structurally incapable of succeeding there, and paying it anyway cost
+        // two generations per readiness check, ~30 identical `think_retry` rows/hour on a
+        // lane citizens were starving for. First check per lane still takes the capped
+        // path; the latch below learns from it.
         //
         // NEVER OVER A MIND'S KV. The seat is decided here, once, for every caller (the
         // heartbeat, the reconciler's adoption probe, readiness): the guard used to live in
@@ -223,19 +240,18 @@ impl LlamaServerControl for LlamaServerProcess {
             .smoke_proven_thinking
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            return match smoke_attempt(&self.client, &self.v1_url, THINKING_SMOKE_BUDGET).await {
-                Some((tok, visible, rlen)) => {
-                    matches!(smoke_verdict(tok, &visible, rlen), SmokeVerdict::Alive)
-                }
-                None => false,
-            };
+            return smoke_attempt_verdict(&self.client, &self.v1_url, SmokeCap::EngineBound).await
+                == Some(SmokeVerdict::Alive);
         }
-        let Some((tok, visible, rlen)) =
-            smoke_attempt(&self.client, &self.v1_url, QUICK_SMOKE_BUDGET).await
+        let Some(answer_tokens) = smoke_answer_tokens(&self.client, &self.root).await else {
+            return false;
+        };
+        let quick = SmokeCap::Answer(answer_tokens);
+        let Some((tok, visible, rlen)) = smoke_attempt(&self.client, &self.v1_url, quick).await
         else {
             return false;
         };
-        match smoke_verdict(tok, &visible, rlen) {
+        match smoke_verdict(quick, tok, &visible, rlen) {
             SmokeVerdict::Alive => true,
             SmokeVerdict::Dead => false,
             SmokeVerdict::ThinkStarved => {
@@ -243,19 +259,16 @@ impl LlamaServerControl for LlamaServerProcess {
                     .store(true, std::sync::atomic::Ordering::Relaxed);
                 continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.smoke.think_retry",
                     quick_tokens = tok,
+                    answer_tokens = answer_tokens,
                     reasoning_len = rlen as u64,
-                    retry_budget = THINKING_SMOKE_BUDGET,
-                    "smoke decode proven but the whole quick budget went to private \
-                     reasoning — thinking model, not a wedge; retrying with room to \
-                     answer, and LATCHING: this lane's checks start at the thinking \
-                     budget from now on (one discovery per lane, not one per tick)"
+                    "smoke decode ran to the answer's cap inside private reasoning although \
+                     the request asked for none — a template that thinks regardless, not a \
+                     wedge; retrying at the engine's own bound so it can answer, and \
+                     LATCHING: this lane's checks start there from now on (one discovery \
+                     per lane, not one per tick)"
                 );
-                match smoke_attempt(&self.client, &self.v1_url, THINKING_SMOKE_BUDGET).await {
-                    Some((tok, visible, rlen)) => {
-                        matches!(smoke_verdict(tok, &visible, rlen), SmokeVerdict::Alive)
-                    }
-                    None => false,
-                }
+                smoke_attempt_verdict(&self.client, &self.v1_url, SmokeCap::EngineBound).await
+                    == Some(SmokeVerdict::Alive)
             }
         }
     }
@@ -331,6 +344,13 @@ impl LlamaServerControl for LlamaServerProcess {
         let record = crate::inference::lane_registry::live_lane().filter(|r| r.port == port)?;
         let argv = crate::inference::lane_process::command_args(record.pid)?;
         Some(crate::inference::lane_process::launch_kv_in(&argv))
+    }
+
+    fn pool_launch(&self) -> Option<super::PoolLaunch> {
+        let (_host, port) = split_host_port(&self.root);
+        let record = crate::inference::lane_registry::live_lane().filter(|r| r.port == port)?;
+        let argv = crate::inference::lane_process::command_args(record.pid)?;
+        Some(super::shared_pool::pool_launch(&argv))
     }
 
     fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {

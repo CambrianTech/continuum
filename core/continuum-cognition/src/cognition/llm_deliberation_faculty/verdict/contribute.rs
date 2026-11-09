@@ -42,9 +42,39 @@ impl LlmDeliberationFaculty {
         // triple. [[fallbacks-are-illegal-fail-loud]] [[never-thrash-sticky-hysteresis-on-every-lane]]
         // Retain the capacity observation that precedes assembly. Sampling again
         // after an await could mistake newly grown capacity for the refused one.
+        // Her window, from the one determiner (card de7bb6e8). On the shared pool it is her grant. An
+        // ungranted mind is measured first (her view records her wish, never submitted), then parks on
+        // the grants watch, then decides again (Cormac on #5752).
+        let decided = match crate::capacity::mind_window::decide_window(
+            || crate::capacity::mind_window::mind_window(self.persona_id, loaded.adapter.as_ref(), loaded.context_window),
+            || {
+                continuum_base::probe!(
+                    class = "delib.window.ungranted",
+                    persona = %self.persona_name,
+                    "no grant on the shared pool yet: measuring her view, then waiting for one"
+                );
+                let _measured = self.prompt_view_with_visual_feedback(ws, loaded.context_window, PromptCalibration::default(), None);
+            },
+            crate::capacity::mind_window::grants_waiter,
+        )
+        .await
+        {
+            Ok(decided) => decided,
+            Err(refused) => return Some(Contribution::deliberation_fault(refused.to_string())),
+        };
+        let decided_window = decided.tokens();
+        // The grant LEASE this turn is rendered against (size and revision), when she is on the
+        // shared pool: the grant owner reserves that revision at dispatch, after any lane wait.
+        let lease_now = || crate::capacity::window_grant::current_lease(self.persona_id);
+        let mut rendered_lease = match decided {
+            crate::capacity::mind_window::Decided::Granted(_) => lease_now(),
+            _ => None,
+        };
         let capacity_readiness = Arc::new(crate::cognition::workspace::CapacityReadiness::new(
+            self.persona_id,
             self.binding.clone(),
             loaded.clone(),
+            decided_window,
         ));
         let binding = {
             // ONE live source, no clamp. The window this turn budgets to is the live
@@ -62,7 +92,11 @@ impl LlmDeliberationFaculty {
             // reduction is authoritative immediately: reply reserve is requested
             // output, not spare capacity that can absorb a smaller served window.
             // The existing quantized history eviction still controls prefix churn.
-            let deadband = loaded.context_window / 8;
+            // A grant is exact (one owner decided it); only a lane's own report keeps a growth deadband.
+            let deadband = match decided {
+                crate::capacity::mind_window::Decided::Granted(_) => 0,
+                _ => loaded.context_window / 8,
+            };
             let adopt = effective < loaded.context_window
                 || effective.saturating_sub(loaded.context_window) > deadband;
             if !adopt {
@@ -104,9 +138,14 @@ impl LlmDeliberationFaculty {
                     model: loaded.model.clone(),
                     context_window: effective,
                 });
-                let _ = self
-                    .binding
-                    .compare_and_swap(&loaded, Arc::clone(&reconciled));
+                // ONE WRITER PER BINDING (Cormac on #5752): a mind on the shared pool is bound by the
+                // re-home reconciler from her grant, so the turn uses the decided window and writes
+                // nothing; a remote lane's report has no other writer, so the turn persists it.
+                if let crate::capacity::mind_window::Decided::Lane(_) = decided {
+                    let _ = self
+                        .binding
+                        .compare_and_swap(&loaded, Arc::clone(&reconciled));
+                }
                 reconciled
             }
         };
@@ -132,6 +171,14 @@ impl LlmDeliberationFaculty {
         let mut gen_await_ms = 0u64;
         // The allowance the request actually carried (set where it is built, read at the seam).
         let mut sent_allowance: Option<u32> = None;
+        // The think's bound the act request carried (`act_room.rs`): the classifier reads the same one.
+        let mut sent_reasoning_budget: Option<u32>;
+        let kind = self.turn_kind(ws);
+        // An act's cap follows its prompt's room, so a refusal its reserve would have passed is
+        // re-sent once at the engine's measured prompt, with the same view (never a refit of her view).
+        let mut room_resized = false;
+        // Re-rendered once against a grant that moved between render and dispatch.
+        let mut grant_rerendered = false;
         // Correct only frozen admitted input, consuming a finite optional unit on
         // every retry. Exact measured progress is required too. No accepted cognition
         // is replayed, and no working-memory or RAG source is re-read or refilled.
@@ -143,24 +190,11 @@ impl LlmDeliberationFaculty {
             if let Some(fault) = &view.budget_fault {
                 return Some(Contribution::deliberation_fault(fault.clone()));
             }
+            // Her measured output need does not fit: never sent, parked on her window's readiness.
+            if let Some(short) = view.output_shortfall {
+                return Some(self.output_room_refused(short, Arc::new(capacity_readiness.as_ref().clone().with_fit_window(fit_window))));
+            }
             if let Some(error) = view.capacity_error {
-                // Required input past the WORKING window is served from the whole slot, once,
-                // never refused while the slot has room (`ContextBudget::working_window`).
-                let (served_fit, served_calibration) = self.prompt_fit_served(&binding);
-                if served_fit > fit_window {
-                    continuum_base::probe!(
-                        class = "delib.prompt.working_window_exceeded",
-                        persona = %self.persona_name,
-                        required_tokens = error.required_tokens,
-                        working_window = fit_window,
-                        served_window = served_fit,
-                        "required input exceeds the working window: this act is fitted to the served window instead"
-                    );
-                    fit_window = served_fit;
-                    calibration = served_calibration;
-                    view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
-                    continue;
-                }
                 continuum_base::probe!(
                     class = "delib.prompt.capacity",
                     persona = %self.persona_name,
@@ -208,6 +242,20 @@ impl LlmDeliberationFaculty {
                 burst = %view.user_text(),
                 "deliberation prompt — what the model sees this turn"
             );
+            // This view's cap ([`request_allowance`]): a pass's grant, an act's window room after
+            // the prompt as the calibration prices it (the engine's own count after a refusal).
+            let allowance = match request_allowance(
+                kind,
+                view.completion_reserve,
+                fit_window,
+                calibration.charge(view.estimated_prompt_tokens),
+            ) {
+                Ok(allowance) => allowance,
+                // The room is below the reply's grant: never sent past a bound (`act_room.rs`).
+                Err(short) => {
+                    return Some(self.room_short_refused(short, capacity_readiness.as_ref().clone().with_fit_window(fit_window)))
+                }
+            };
             // SINGLE SHOT: one accepted generation → one verdict. A strictly
             // shrinking corrective admission replay follows a typed refusal; no
             // provider text or tool action has been accepted at that point.
@@ -229,7 +277,7 @@ impl LlmDeliberationFaculty {
                 // What her view's allocation bought; a server that refuses `tail_tools` gets the
                 // activity surface at the same grant, without her learned head.
                 let mut selected = if tail_refused {
-                    match self.surface.select_granted(&ws.room_affordances, view.tools_grant) {
+                    match self.surface.select_granted(&ws.room_affordances, &ws.held.move_commands(), view.tools_grant) {
                         Ok(activity) => activity.into_owned(),
                         Err(_) => view.tools.clone(), // unreachable in practice: the view ran this same activity selection at this grant and it succeeded
                     }
@@ -238,31 +286,13 @@ impl LlmDeliberationFaculty {
                 };
                 // Verbs she loaded into the tail ride beside the head, callable natively.
                 let tail = std::mem::take(&mut selected.tail);
-                if selected.reason == SurfaceReason::CoreHandsForWindow {
-                    // The one truncating arm: the served window cannot hold her extended
-                    // hands. Whoever later asks "why did she never call X" needs this row.
-                    // Fixed per lane, so it repeats each turn until the window changes.
-                    let served = binding.context_window;
-                    continuum_base::probe!(
-                        class = "delib.tool_surface.withheld",
-                        persona = %self.persona_name,
-                        offered = selected.specs.as_deref().map_or(0, <[_]>::len) as u64,
-                        hands = self.surface.hands().len() as u64,
-                        surface_tokens = selected.tokens as u64,
-                        withheld_tokens = selected.demand_tokens().saturating_sub(selected.tokens) as u64,
-                        budget_tokens = view.tools_grant as u64,
-                        context_window = served,
-                        "her one allocation granted her core hands, not her extended ones: \
-                         the discovery pair still reaches the rest"
-                    );
-                }
                 // Selection and budget accounting borrow the cached schemas. Only the
                 // owned inference request needs a copy of the selected surface.
                 let tools = selected.specs.map(std::borrow::Cow::into_owned);
 
                 let request = self.build_request_within(
                     &binding,
-                    view.completion_reserve,
+                    allowance,
                     view.messages.clone(),
                     tools,
                     view.system.clone(),
@@ -275,7 +305,7 @@ impl LlmDeliberationFaculty {
                         (!stops.is_empty()).then_some(stops)
                     },
                     Some(ws.room_id),
-                    self.turn_kind(ws),
+                    kind,
                 );
 
                 let mut template = request;
@@ -291,7 +321,10 @@ impl LlmDeliberationFaculty {
             // The allowance belongs to THIS view, refreshed on every refit: the template
             // is built once, and a template's `max_tokens` from an earlier plan would
             // bound the reply to a window the prompt no longer leaves.
-            request.max_tokens = Some(view.completion_reserve.max(1));
+            request.max_tokens = Some(allowance);
+            let (terms, output_room) = self.dispatch_terms(kind, &view, calibration, (fit_window, rendered_lease), &request);
+            sent_reasoning_budget = terms.think.map(|think| think.0);
+            let allocation = view.allocation.clone().map(|allocation| crate::ai::provenance::AllocationReceipt { output_room, ..allocation });
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
             if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {
                 return Some(Contribution::deliberation_fault(
@@ -307,7 +340,7 @@ impl LlmDeliberationFaculty {
             // previous value is also what keeps the initializer honest).
             sent_allowance = request.max_tokens.or(sent_allowance);
             let result = self
-                .generate_for_workspace(ws, &binding, fit_window, request, view.allocation.clone(), receipts)
+                .generate_for_workspace(ws, &binding, fit_window, request, terms, allocation, receipts)
                 .await?;
             gen_await_ms = gen_await_ms.saturating_add(started.elapsed().as_millis() as u64);
             match result {
@@ -315,11 +348,18 @@ impl LlmDeliberationFaculty {
                     requested,
                     available,
                 }) => {
-                    let Some(observed) = PromptCalibration::observed(
-                        estimated_prompt_tokens,
-                        requested,
-                        Some(view.input_identity),
-                    ) else {
+                    // Behind the engine's exact count the refusal's count IS this prompt's price
+                    // (a dense input after prose samples is priced at it, once); without it a
+                    // refusal only ever raises the price.
+                    let observed = match calibration.admission {
+                        crate::ai::provenance::PromptAdmission::EngineCounted => {
+                            PromptCalibration::counted(estimated_prompt_tokens, requested, view.input_identity)
+                        }
+                        crate::ai::provenance::PromptAdmission::Estimated => {
+                            PromptCalibration::observed(estimated_prompt_tokens, requested, Some(view.input_identity))
+                        }
+                    };
+                    let Some(observed) = observed else {
                         return Some(Contribution::deliberation_fault(
                             "provider capacity refusal lacked a positive request/token measurement",
                         ));
@@ -333,6 +373,8 @@ impl LlmDeliberationFaculty {
                         binding: Arc::clone(&binding),
                         calibration,
                         available: fit_window,
+                        // Her replies' density survives the refusal; the next reply prices at its bound again.
+                        density: self.density_on(&binding),
                     })));
                     continuum_base::probe!(
                         class = "delib.prompt.refit",
@@ -344,6 +386,17 @@ impl LlmDeliberationFaculty {
                         corrective_replay_used = rejected_prompt_tokens.is_some(),
                         "provider capacity refusal: retained measured token density for prompt fitting"
                     );
+                    // The act's cap was the room past an estimated prompt; the engine counted more.
+                    // When her reserve still fits beside the measured prompt, the cap shrinks to
+                    // the measured room (the calibration above now prices this prompt at the
+                    // engine's count) and her view is sent unchanged.
+                    if kind == TurnKind::Act
+                        && !room_resized
+                        && requested.saturating_add(view.completion_reserve) < available
+                    {
+                        room_resized = true;
+                        continue;
+                    }
                     if newest_refit_sent {
                         let error = self.newest_refit_refused(requested, available, view.completion_reserve);
                         return Some(
@@ -368,9 +421,10 @@ impl LlmDeliberationFaculty {
                     }
                     rejected_prompt_tokens = Some(estimated_prompt_tokens);
                     rejected_measured_tokens = Some(requested);
-                    view = match self.refit_rejected_prompt(
-                        view, requested, available, sent_allowance.unwrap_or(0),
-                    ) {
+                    // Refit against the reply her view reserves: an act's cap is its room, which
+                    // follows the refit prompt, so charging the sent room would drop her view for it.
+                    let reserve = view.completion_reserve;
+                    view = match self.refit_rejected_prompt(view, requested, available, reserve) {
                         Ok(view) => view,
                         Err(error) => {
                             return Some(
@@ -381,6 +435,40 @@ impl LlmDeliberationFaculty {
                             )
                         }
                     };
+                }
+                // Priced below its estimate for an engine that cannot count it now: re-priced once
+                // at the estimate, at the same window, never sent unguarded.
+                // Her grant moved while she waited for a lane: re-rendered ONCE against the grant
+                // she now has, never sent at the old one; withdrawn, or moved again, she parks.
+                Err(crate::ai::inference_error::InferenceError::GrantChanged { rendered, current: Some(current) })
+                    if !grant_rerendered =>
+                {
+                    continuum_base::probe!(
+                        class = "delib.turn.grant_changed",
+                        persona = %self.persona_name,
+                        rendered,
+                        current,
+                        "her grant changed between render and dispatch: re-rendered against it, never sent"
+                    );
+                    grant_rerendered = true;
+                    rendered_lease = lease_now();
+                    fit_window = rendered_lease.map_or(current, |lease| lease.tokens); // map_or: the refusal's own count when no lease is published
+                    view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
+                }
+                Err(crate::ai::inference_error::InferenceError::GrantChanged { rendered, current }) => {
+                    return Some(self.grant_moved_refused(rendered, current, capacity_readiness.as_ref().clone().with_fit_window(fit_window)))
+                }
+                Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model })
+                    if calibration.admission == crate::ai::provenance::PromptAdmission::EngineCounted =>
+                {
+                    continuum_base::probe!(
+                        class = "delib.act.admission_uncounted",
+                        persona = %self.persona_name,
+                        model = %model,
+                        "the engine her request reaches cannot count it: re-priced at its estimate"
+                    );
+                    calibration = calibration.behind(crate::ai::provenance::PromptAdmission::Estimated);
+                    view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
                 }
                 Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model }) if !tail_refused => {
                     continuum_base::probe!(
@@ -407,6 +495,7 @@ impl LlmDeliberationFaculty {
                         // No timing on the reply = nothing measured as reused = nothing rides free.
                         response.timing.as_ref().map_or(0, |t| t.cached_tokens),
                         fit_window,
+                        &response.model,
                     );
                     break (view, response);
                 }
@@ -431,13 +520,8 @@ impl LlmDeliberationFaculty {
         // (Cormac on #4409): the classifier records it at the allowance so the need ring
         // never learns the budget and contracts the next allowance geometrically.
         let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
-        let reasoning_budget = match self.turn_kind(ws) {
-            TurnKind::Pass => crate::inference::request_body::deliberation_reasoning_budget(
-                u64::from(allowance),
-            )
-            .map(|b| b as u32),
-            TurnKind::Act => None,
-        };
+        // The think's bound the request carried (`act_room.rs`), for an act and a pass alike.
+        let reasoning_budget = sent_reasoning_budget;
         // The one classification, from what the response carries (an answer is text or a call;
         // a stream may not report usage), counted here before any await after the generation: a
         // cancellation at the read receipt below must not lose the stop of a generation that
@@ -528,45 +612,8 @@ impl LlmDeliberationFaculty {
             }
         }
 
-        // SEGMENT ATTRIBUTION (the rent ledger, compression-ladder rung 2):
-        // the server's reused-prefix length lands somewhere in the prompt's
-        // segment map — the run containing that frontier NAMES what broke
-        // reuse this turn, and the stream of these rows IS each segment's
-        // rent. Only when the lane measured timings (same honesty rule as
-        // delib.generate.cache: a fabricated attribution is a lying receipt).
-        if let Some(t) = resp.timing.as_ref() {
-            let cached = t.cached_tokens as u32;
-            // Her last turn's shape — what the next work call's occupancy bound is read from.
-            LAST_TURN_SHAPE.insert(
-                self.persona_id,
-                TurnShape {
-                    input: resp.usage.input_tokens,
-                    cached,
-                    output: resp.usage.output_tokens,
-                },
-            );
-            let frontier = view
-                .segments
-                .iter()
-                .find(|(_, end)| *end > cached)
-                .map(|(label, _)| *label)
-                .unwrap_or("fully-warm"); // reuse extends past every mapped segment — nothing broke
-            let mut map = String::with_capacity(64);
-            for (label, end) in &view.segments {
-                use std::fmt::Write as _;
-                let _ = write!(map, "{label}:{end},");
-            }
-            continuum_base::probe!(
-                class = "delib.segment.attribution",
-                persona = %self.persona_name,
-                cached_tokens = cached as u64,
-                broke_in = %frontier,
-                cold = cached == 0,
-                segments = %map,
-                "which prompt segment the KV reuse frontier died in — every miss becomes \
-                 an attribution, and the stream is the rent ledger the dream curriculum reads",
-            );
-        }
+        // Which segment broke reuse this turn (the rent ledger, `segment_attribution.rs`).
+        self.attribute_segments(&view, &resp);
 
         // Verbatim glass box: the EXACT request thread + the raw response. Iteration
         // is always 0 now (single shot); the act→observe driver re-enters this
@@ -702,6 +749,37 @@ impl LlmDeliberationFaculty {
                  read as chosen silence"
             );
             return Some(Contribution::deliberation_fault(why));
+        }
+        // A TOOL CALL CUT AT THE OUTPUT LIMIT is a cut of the ANSWER channel (the M5,
+        // 2026-11-04: write-shaped calls arrived as `__malformed_tool_arguments` with finish
+        // `length`, 22 since 11:00Z). Nothing in it was committed, so nothing runs: the
+        // measurement above already recorded it as `CutMidAnswer` (a call is an answer), so
+        // her next claim holds the cut's peak; here she is told what was cut, as the cut-act
+        // record below tells it, never that her thought was cut (it was not).
+        // The fate of each call is the engine boundary's one classifier (`ToolCall::ending`): complete
+        // JSON at the limit is still a cut, since nothing proves its framing closed.
+        if !self.tools.is_empty() {
+            let end = resp.finish_reason.generation_end();
+            let cut = |calls: &&[crate::ai::types::ToolCall]| calls.iter().any(|call| call.ending(end) == crate::ai::types::CallEnding::Cut);
+            if let Some(calls) = resp.tool_calls.as_deref().filter(cut) {
+                let composing: String = calls.iter().map(|call| format!("{}({})", call.name, call.input)).collect();
+                continuum_base::probe!(
+                    class = "delib.emission.cut_tool_call",
+                    persona = %self.persona_name,
+                    calls = calls.len(),
+                    allowance,
+                    "a tool call reached the output limit before it was committed: nothing ran, the answer channel grows"
+                );
+                if let Some(wm) = &self.working_memory {
+                    wm.record_fact(&cut_act_fact(&composing));
+                }
+                let call = crate::ai::types::ToolCall {
+                    id: "tool-attempt-cut-at-limit".to_string(),
+                    name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL.to_string(),
+                    input: serde_json::json!({}),
+                };
+                return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
+            }
         }
         // TRUNCATED-WITH-TEXT is NOT an utterance (2026-08-24, Joel: "why is
         // this amazing LLM not finishing things or quitting — something in

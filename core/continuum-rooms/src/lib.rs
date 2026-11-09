@@ -5,6 +5,9 @@
 
 pub mod card_holder;
 pub mod card_facts;
+/// Each work verb's precondition over (card, actor): what may execute, and what she is shown she
+/// can do (STATE-DRIVEN-SURFACE.md).
+pub mod work_preconditions;
 /// The handoff record: her state at the seam, written before a stop, read first on wake
 /// (card 49b5e806).
 pub mod handoff;

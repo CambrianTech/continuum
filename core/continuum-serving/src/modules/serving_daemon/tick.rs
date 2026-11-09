@@ -24,6 +24,7 @@ impl ServiceModule for ServingDaemonModule {
         // free functions + adapters read "what's live" as a pointer instead of
         // each probing /v1/models. Set-once (singleton daemon).
         let _ = crate::inference::llama_server::install_serving_state(self.subscribe_serving());
+        let _ = crate::capacity::window_grant::install_grants(self.subscribe_grants());
         // THE DEVICE-BUDGET AUTHORITY, wired here rather than promised in a doc comment.
         // Without it `EphemeralServingLane::spawn` admits every engine with only a
         // free-port check — which is how three sidecars once shared one GPU. Set-once
@@ -74,6 +75,7 @@ impl ServiceModule for ServingDaemonModule {
         self.take_reported_wedge();
         self.seed_reconcile_pages().await;
         let _ = self.reconcile_to_plan();
+        self.publish_grants();
         // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane
         // we believe is `ready` can ACTUALLY decode — the reconcile trusts the published
         // `ready` forever and would never notice an OOM-poisoned backend otherwise. Off the

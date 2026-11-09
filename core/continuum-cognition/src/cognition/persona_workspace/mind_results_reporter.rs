@@ -19,8 +19,8 @@
 //! proven bodies are planned and moved; an unproven one counts as pinned.
 //!
 //! NOT FULL GOVERNOR COVERAGE: the shed target is the host's RAM overrun past this priority's
-//! gate (`over_gate`). Pressure raised by swap activity alone, with RAM use under the gate,
-//! makes `over_gate` return 0 and sheds nothing here.
+//! gate (`PressureSnapshot::over_gate`). Pressure raised by swap activity alone, with RAM use
+//! under the gate, makes that overrun 0 and sheds nothing here.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 use super::PersonaWorkspaceRegistry;
 use crate::cognition::tool_executor::spill;
-use crate::cognition::working_memory::{ResidentResults, ShedCandidate, WorkingMemory};
+use crate::cognition::working_memory::{RecordId, ResidentResults, ShedCandidate, WorkingMemory};
 
 const NAME: &str = "mind_results";
 
@@ -86,7 +86,7 @@ pub(crate) fn prove(
     memory: &WorkingMemory,
     candidate: &ShedCandidate,
 ) -> Option<Result<(), LastCopy>> {
-    let body = memory.resident_body(candidate.seq, &candidate.handle)?;
+    let body = memory.resident_body(candidate.id, &candidate.handle)?;
     Some(match spill::reproduces(persona, &candidate.handle, &body) {
         Ok(true) => Ok(()),
         Ok(false) => Err(LastCopy::Mismatch),
@@ -136,17 +136,6 @@ pub(crate) fn resident_bytes(minds: &Minds) -> u64 {
         .iter()
         .map(|(_, memory)| memory.resident_result_bytes())
         .sum()
-}
-
-/// What this consumer gives up: how far the host's used RAM stands past the line the monitor
-/// declares this priority sheds at (`MemoryPriority::pressure_gate`). Both numbers are the
-/// monitor's own; nothing here is a ratio of ours. `0` before the first poll (no total yet).
-pub(crate) fn over_gate(snapshot: &PressureSnapshot) -> u64 {
-    let used = snapshot
-        .total_bytes
-        .saturating_sub(snapshot.available_bytes);
-    let gate = (snapshot.total_bytes as f64 * PRIORITY.pressure_gate()) as u64;
-    used.saturating_sub(gate)
 }
 
 /// One mind's resident result bodies: what a shed may move (saved, not the newest, and its
@@ -200,26 +189,26 @@ pub(crate) fn budget_of(minds: &Minds, proven: &Mutex<ProvenCopies>) -> MemoryBu
 
 /// Per mind, the candidates to move so the total comes down to `allocation`, the oldest
 /// received across every mind first.
-pub(crate) fn plan_shed(minds: &[Residency], allocation: u64) -> Vec<HashSet<u64>> {
+pub(crate) fn plan_shed(minds: &[Residency], allocation: u64) -> Vec<HashSet<RecordId>> {
     let total: u64 = minds.iter().map(|mind| mind.resident_bytes).sum();
     let mut chosen = vec![HashSet::new(); minds.len()];
     if total > allocation {
-        let mut candidates: Vec<(Option<u64>, u64, usize, u64)> = minds
+        let mut candidates: Vec<(Option<u64>, RecordId, usize, u64)> = minds
             .iter()
             .enumerate()
             .flat_map(|(index, mind)| {
                 mind.evictable
                     .iter()
-                    .map(move |c| (c.received_ms, c.seq, index, c.bytes))
+                    .map(move |c| (c.received_ms, c.id, index, c.bytes))
             })
             .collect();
         candidates.sort_unstable();
         let mut need = total - allocation;
-        for (_, seq, index, bytes) in candidates {
+        for (_, id, index, bytes) in candidates {
             if need == 0 {
                 break;
             }
-            chosen[index].insert(seq);
+            chosen[index].insert(id);
             need = need.saturating_sub(bytes);
         }
     }
@@ -232,6 +221,8 @@ pub(crate) fn plan_shed(minds: &[Residency], allocation: u64) -> Vec<HashSet<u64
 fn prove_candidates(minds: &Minds, proven: &Mutex<ProvenCopies>) {
     let mut resident: HashSet<(Uuid, String)> = HashSet::new();
     for (persona, memory) in minds {
+        // A thought is saved only when a shed may need its copy, never by the act that thought it.
+        memory.save_unsaved_thoughts(*persona);
         for candidate in memory.resident_results().candidates {
             let key = (*persona, candidate.handle.clone());
             if !proven.lock().0.contains(&key) {
@@ -265,24 +256,24 @@ pub(crate) fn shed_to(minds: &Minds, allocation: u64, proven: &Mutex<ProvenCopie
         if chosen.is_empty() {
             continue;
         }
-        let handles: HashMap<u64, &str> = mind
+        let handles: HashMap<RecordId, &str> = mind
             .evictable
             .iter()
-            .filter(|candidate| chosen.contains(&candidate.seq))
-            .map(|candidate| (candidate.seq, candidate.handle.as_str()))
+            .filter(|candidate| chosen.contains(&candidate.id))
+            .map(|candidate| (candidate.id, candidate.handle.as_str()))
             .collect();
         let movable: u64 = mind
             .evictable
             .iter()
-            .filter(|c| handles.contains_key(&c.seq))
+            .filter(|c| handles.contains_key(&c.id))
             .map(|c| c.bytes)
             .sum();
         // Under her lock: only a planned record still naming its proven handle.
         memory.evict_resident_results_over(
             mind.resident_bytes.saturating_sub(movable),
-            &|seq, handle| {
+            &|id, handle| {
                 handles
-                    .get(&seq)
+                    .get(&id)
                     .is_some_and(|proven_handle| *proven_handle == handle)
             },
         );
@@ -340,17 +331,22 @@ impl MemoryReporter for MindResultsReporter {
         }
     }
 
+    fn priority(&self) -> MemoryPriority {
+        PRIORITY
+    }
+
     fn can_shed(&self) -> bool {
         true
     }
 
     fn shed_load(&self, level: PressureLevel) {
-        let over = over_gate(&self.pressure.borrow());
+        let minds = self.registry.resident_working_memories();
+        let before = resident_bytes(&minds);
+        // Its share of its priority's overrun, as every shedder computes it (Cormac on #5697).
+        let over = self.pressure.borrow().share_of_overrun(PRIORITY, before);
         if over == 0 {
             return;
         }
-        let minds = self.registry.resident_working_memories();
-        let before = resident_bytes(&minds);
         shed_to(&minds, before.saturating_sub(over), &self.proven);
         continuum_base::probe!(
             class = "wm.results.shed",

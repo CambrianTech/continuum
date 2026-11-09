@@ -1,9 +1,8 @@
 //! `cognition/enqueue-message` — push a message onto a persona's priority inbox
 //! (typed, dep-holding).
 //!
-//! Takes the JSON-transport [`InboxMessageRequest`](super::inbox_message_request::InboxMessageRequest),
-//! converts it to the domain [`InboxMessage`](crate::cognition::conversation::types::InboxMessage) via the one
-//! canonical `to_inbox_message()` seam, and enqueues it on the persona's priority heap.
+//! Takes the domain [`InboxMessage`](crate::cognition::conversation::types::InboxMessage) itself, decoded by
+//! serde at the boundary, and enqueues it on the persona's priority heap.
 //! Captures the owning module's [`CognitionState`](crate::modules::cognition::CognitionState).
 //!
 //! `access: Internal` — host-driven cognition IPC, not a persona toolbelt verb.
@@ -12,9 +11,8 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use super::inbox_message_request::InboxMessageRequest;
+use crate::cognition::conversation::types::InboxMessage;
 use crate::modules::cognition::CognitionState;
-use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[ts(
@@ -26,8 +24,8 @@ pub struct EnqueueMessageParams {
     /// Persona whose inbox receives the message.
     #[ts(type = "string")]
     pub persona_id: Uuid,
-    /// The message to enqueue (JSON-transport shape, string UUIDs + string enums).
-    pub message: InboxMessageRequest,
+    /// The message to enqueue (decoded by serde at the boundary: typed ids and enums).
+    pub message: InboxMessage,
 }
 
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
@@ -50,7 +48,7 @@ crate::action_command! {
     params: EnqueueMessageParams,
     output: EnqueueMessageResult,
     run(this, _ctx, p) => {
-        let inbox_msg = p.message.to_inbox_message().map_err(CommandError::Invalid)?;
+        let inbox_msg = p.message;
 
         let persona = this.state.get_or_create_persona(p.persona_id);
         persona.inbox.enqueue(inbox_msg);

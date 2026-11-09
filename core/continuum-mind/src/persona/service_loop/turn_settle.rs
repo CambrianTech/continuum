@@ -19,6 +19,7 @@ pub(super) async fn finish_spoken_turn(
         response_text,
         turn_credit,
         turn_generation_receipts,
+        card_sync,
     } = spoken;
     // Invariant: a raw tool-call envelope must NEVER reach the room — from ANY
     // path. The cycle's verdict text is sometimes just `{"tool_call":…}` (an
@@ -33,6 +34,7 @@ pub(super) async fn finish_spoken_turn(
             "verdict was a raw tool-call envelope — not broadcasting"
         );
         outcome.turns_skipped += 1;
+        card_sync.run().await;
         return SpeechMark::Done;
     }
 
@@ -53,6 +55,7 @@ pub(super) async fn finish_spoken_turn(
             "her reply could not be recorded before posting, so it was not posted (fail closed)"
         );
         outcome.turns_errored += 1;
+        card_sync.run().await;
         return SpeechMark::Refused;
     }
     // Per #195 slice 1: time the airc publish + downstream ack.
@@ -68,6 +71,9 @@ pub(super) async fn finish_spoken_turn(
     )
     .await;
     phase_timings.say_ms = say_started.elapsed().as_millis() as u64;
+    // Her reply is out; the card's commit and push follow it, before the act question below
+    // touches the same checkout.
+    card_sync.run().await;
     if let Err(e) = say_result {
         tracing::warn!(
             lamport = msg.lamport,

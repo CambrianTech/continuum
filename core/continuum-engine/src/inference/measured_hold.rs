@@ -213,7 +213,7 @@ pub fn should_defer(class: SlotClass, hold: Option<&HoldInfo>, caller: Option<Uu
         // deadlock-freedom; idle citizens' turns are already quiesced upstream).
         SlotClass::Turn | SlotClass::Fork | SlotClass::Sidecar => false,
         // Background/Probe defer unless they belong to the measured run itself.
-        SlotClass::Background | SlotClass::Probe => caller != Some(hold.holder),
+        SlotClass::Background | SlotClass::Dream | SlotClass::Probe => caller != Some(hold.holder),
     }
 }
 

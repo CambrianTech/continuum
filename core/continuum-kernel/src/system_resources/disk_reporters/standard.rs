@@ -182,6 +182,9 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // class (genome::teach::progress::write_teach_ledger for teach runs).
         kept(continuum, "progress"),
         kept(continuum, "probes"),
+        // Every tool result, saved whole under its content address, one directory per persona
+        // (`cognition::tool_executor::spill`), written through this class.
+        kept(continuum, "tool-output"),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
         // (~31 GB logical each). RAII drop removes them on every in-process return
         // path, and the provision-time orphan sweep (`cognition/eval.rs::
@@ -190,8 +193,7 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // orphaned a full clone that no reporter could see, the silent-class shape
         // the 2026-07-13 incident was about.
         TrackedDir::new("eval-roots", std::env::temp_dir().join("continuum-eval")),
-        // Diagnostic captures: cognition kv-diag snapshots + the wire-request
-        // capture (SERVING_WIRE_CAPTURE_DIR default location). Opt-in writers,
+        // Diagnostic captures: cognition kv-diag snapshots. Opt-in writers,
         // bounded by operator attention in practice — tracked so "in practice"
         // never becomes the 2026-07-13 silent-class shape.
         kept(continuum, "eval-captures"),

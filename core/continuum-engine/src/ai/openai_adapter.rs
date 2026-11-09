@@ -194,18 +194,6 @@ pub struct OpenAICompatibleAdapter {
     permit_reconciler_started: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Served PER-SLOT context window by server root, captured from the same
-/// `/props` probe that discovers slots (`default_generation_settings.n_ctx` —
-/// llama-server reports the per-slot share there, already divided by
-/// `--parallel`). This is the ground truth the registry row can only claim:
-/// a consumer budgeting against the model's trained window while the server
-/// slices `-c` across N slots silently overshoots (#139). Keyed per SERVER
-/// like the slot directory (`inference::slots`), shared across adapter instances.
-fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
-    static CTX: std::sync::OnceLock<dashmap::DashMap<String, u32>> = std::sync::OnceLock::new();
-    CTX.get_or_init(dashmap::DashMap::new)
-}
-
 // Serving-guard predicates live in `crate::inference::serving_guard` (S3b decompose).
 
 /// Apply the llama.cpp-native sampling knobs to a request body. Pure (no `self`,
@@ -243,16 +231,6 @@ fn apply_llamacpp_sampling_knobs(
     if let Some(fp) = request.frequency_penalty {
         obj.insert("frequency_penalty".to_string(), json!(fp));
     }
-}
-
-/// Does this `/props` status PROVE the endpoint does not exist — the only verdict
-/// allowed to latch the slot directory Unsupported for the process's life? 404/501
-/// are the server saying "no such surface"; everything else (above all the 503 of a
-/// model still loading) is a statement about NOW, and a permanent conclusion drawn
-/// from a transient state is the [[unknown-is-not-a-quantity]] error with a cache
-/// bolted on.
-fn props_status_proves_endpoint_absent(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::NOT_IMPLEMENTED
 }
 
 mod embedding;

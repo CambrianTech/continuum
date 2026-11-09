@@ -374,9 +374,55 @@
         let dir = setup_git_repo().await;
         fs::write(dir.path().join("initial.txt"), "modified\n").unwrap();
 
-        let diff = git_diff(dir.path(), false).await.unwrap();
+        let diff = git_diff(dir.path(), DiffScope::Unstaged).await.unwrap().text;
         assert!(diff.contains("-hello"));
         assert!(diff.contains("+modified"));
+    }
+
+    /// Record allocation evidence the way airc's checkout owner does: the JSON blob and its
+    /// creation anchor as worktree-private refs.
+    async fn record_allocation(root: &std::path::Path, start_ref: &str) {
+        let creation = run_git(root, &["rev-parse", "HEAD"]).await.unwrap().trim().to_owned();
+        let evidence = format!(
+            r#"{{"repo":"o/r","requested_branch":"b","integration_base":"canary","start_ref":"{start_ref}","creation_sha":"{creation}"}}"#
+        );
+        let blob = run_git_input(root, &["hash-object", "-w", "--stdin"], &[], Some(evidence.into_bytes())).await.unwrap();
+        run_git(root, &["update-ref", airc_lib::work_worktree::ALLOCATION_REF, blob.trim()]).await.unwrap();
+        run_git(root, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &creation]).await.unwrap();
+    }
+
+    // what this catches: a resident's work checkpointed into commits every act reading as
+    // nothing done. The working-tree diff is empty after a checkpoint; her work is not
+    // (Aiko re-read the same files for 80 minutes on 2026-11-02 believing her edits phantom).
+    // A newer ref pointing AT her checkpoint must not become the base (a date-ranked guess
+    // picked it and read empty again; Codex's review of cd36f0c8).
+    #[tokio::test]
+    async fn your_work_is_taken_from_the_recorded_base_checkpoints_included() {
+        let dir = setup_git_repo().await;
+        let root = dir.path();
+        run_git(root, &["update-ref", "refs/remotes/origin/canary", "HEAD"]).await.unwrap();
+        record_allocation(root, "refs/remotes/origin/canary").await;
+        fs::write(root.join("initial.txt"), "her edit\n").unwrap();
+        run_git(root, &["commit", "-qam", "wip(card): continuum act on node n"]).await.unwrap();
+        run_git(root, &["update-ref", "refs/remotes/origin/main", "HEAD"]).await.unwrap();
+
+        assert!(git_diff(root, DiffScope::Unstaged).await.unwrap().text.is_empty(), "the checkpoint left the tree clean");
+        let work = git_diff(root, DiffScope::YourWork).await.unwrap();
+        assert!(work.text.contains("+her edit"), "her committed work is her work: {}", work.text);
+        assert!(work.against.contains("refs/remotes/origin/canary"), "the recorded ref, not the newer one: {}", work.against);
+    }
+
+    // what this catches: a checkout with committed work but no allocation record reading as an
+    // empty diff (the old fallback to `git diff HEAD`). Without a recorded base, YourWork refuses.
+    #[tokio::test]
+    async fn your_work_without_a_recorded_base_refuses_instead_of_reading_empty() {
+        let dir = setup_git_repo().await;
+        let root = dir.path();
+        fs::write(root.join("initial.txt"), "committed\n").unwrap();
+        run_git(root, &["commit", "-qam", "work"]).await.unwrap();
+        let refused = git_diff(root, DiffScope::YourWork).await.err().expect("no recorded base refuses");
+        assert!(refused.contains("allocation record"), "{refused}");
+        assert!(git_diff(root, DiffScope::Unstaged).await.is_ok(), "explicit scopes stay usable");
     }
 
     #[tokio::test]

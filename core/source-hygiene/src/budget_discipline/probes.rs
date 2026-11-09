@@ -12,6 +12,9 @@ const OWNERS: &[&str] = &[
     "core/continuum-kernel/src/system_resources/disk_pressure",
     "core/continuum-kernel/src/gpu/monitor.rs",
     "core/continuum-kernel/src/gpu/backends/",
+    // The process table's one reader: which processes run, by identity and image (card
+    // b958bed4). Its `sysinfo` reads name processes, never a resource's size.
+    "core/continuum-kernel/src/system_resources/process_tree.rs",
 ];
 
 /// Calls and paths that read memory, VRAM or disk capacity or usage.

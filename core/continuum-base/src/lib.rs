@@ -4,6 +4,7 @@
 
 pub mod audio_constants;
 pub mod config_env;
+pub mod population;
 pub mod home;
 pub mod id_resolve;
 pub mod probe;
@@ -12,4 +13,5 @@ pub mod secrets;
 pub mod shell_portable;
 pub mod time;
 pub mod token_estimate;
+pub mod tool_disclosure;
 pub mod tool_effect;

@@ -93,9 +93,11 @@ pub(super) fn derived_prompt_cache_mib(
     // 15-31k cold (cached 0-1,554). Counting minds seen within the rotation window keeps
     // the M5's 23 dormant seeds out (the 7b01ed65 want stays demand-sized), and the bytes
     // remain capped by `affordable_bytes` below, which pressure still shrinks.
+    let population_floor = continuum_base::population::persona_floor();
     let warm_floor = crate::persona::spawner_module::bounded_by_warm_slots(
         resident.len(),
         (lanes > 0).then_some(lanes),
+        population_floor,
     );
     let seen: Vec<(u64, u64)> = crate::cognition::working_set::global()
         .all()
@@ -109,7 +111,7 @@ pub(super) fn derived_prompt_cache_mib(
     let measured_state = crate::inference::slots::measured_state_bytes(
         &crate::inference::llama_server::kv_page_dir(model_id),
     );
-    let estimated = active_cache_states(&population, served_ctx, active);
+    let estimated = active_cache_states(&population, served_ctx, active, population_floor);
     let demands = with_measured_state(estimated.clone(), fp.map(|f| f.kv_per_token), measured_state);
     let serve_host_bytes = serve_host_bytes(fp, served_ctx, lanes, memory_mode);
     let mut decision = prompt_cache_decision(
@@ -240,7 +242,7 @@ pub(super) struct PromptCacheDecision {
 /// served window — a cached state cannot exceed the slot it was prefilled in. The largest
 /// states are kept (the worst case must fit); the rest are dormant minds whose states the
 /// cache does not carry. `active == 0` (no bound known) keeps the FLOOR — the smallest
-/// roster that can serve (`MINDLESS_RESIDENT_FLOOR` states) — never the whole population:
+/// roster that can serve (the declared population `floor`) — never the whole population:
 /// an absence is not a number in either direction, and "everything" is exactly the
 /// astronomical want this law exists to delete (Cormac's condition on #4253).
 /// PURE: the roster's rotation window, measured: the p90 of residents' return intervals
@@ -302,7 +304,7 @@ pub fn admitted_lanes(live_ready: bool, live_lanes: u32, plan_lanes: u32) -> u32
     }
 }
 
-pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: usize) -> Vec<u32> {
+pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: usize, floor: usize) -> Vec<u32> {
     let mut states: Vec<u32> = population
         .iter()
         .map(|&(sent_peak, peak_tokens)| {
@@ -320,11 +322,7 @@ pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: u
         .filter(|t| *t > 0)
         .collect();
     states.sort_unstable_by(|a, b| b.cmp(a));
-    let keep = if active > 0 {
-        active
-    } else {
-        crate::cognition::health_ledger::MINDLESS_RESIDENT_FLOOR as usize
-    };
+    let keep = if active > 0 { active } else { floor };
     states.truncate(keep);
     states
 }

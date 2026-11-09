@@ -48,10 +48,10 @@ impl ServingDaemonModule {
     }
 
     pub(super) fn note_reconcile_busy(&self, skipped: &'static str) {
-        let started = self.reconcile_started_ms.load(Ordering::Acquire);
-        if started == 0 {
+        let Some(in_flight) = self.lifecycle.in_flight() else {
             return;
-        }
+        };
+        let started = in_flight.started_ms;
         let now = EpochMs::now().millis();
         let age = Duration::from_millis(now.saturating_sub(started));
         let said = self.reconcile_busy_said_ms.load(Ordering::Acquire);
@@ -59,7 +59,7 @@ impl ServingDaemonModule {
             return;
         }
         self.reconcile_busy_said_ms.store(now, Ordering::Release);
-        let step_kind = ReconcileStep::from_u8(self.reconcile_step.load(Ordering::Acquire));
+        let step_kind = in_flight.step;
         let step = step_kind.name();
         if reconcile_wedged_at(step_kind, age) {
             continuum_base::probe!(
@@ -87,18 +87,38 @@ impl ServingDaemonModule {
 
     /// against together, so a stale high can never make a later climb read as flat.
 
-    pub(super) fn reset_rehome_streak(&self) {
-        self.rehome_streak.store(0, Ordering::Relaxed);
-
-        self.rehome_plan_high.store(0, Ordering::Relaxed);
+    /// An ADOPTED engine on fixed slots moves to the shared pool once its pool can be
+    /// checkpointed: a core that adopts the engine its predecessor left learns the slot pool
+    /// only after serving it, so the move asked for at boot is refused and handed back ("adopted
+    /// checkpoint requires a known pool", the M5 2026-11-03 04:22Z), and a ready lane never
+    /// re-enters the launch path on its own. One try per engine process; the check is one lock
+    /// per tick until the pool is known, and the argv is read once.
+    fn shared_pool_move_due(&self, base_url: &str) -> bool {
+        let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(base_url);
+        if !crate::inference::slots::directory().adopted_replacement_ready(endpoint.root()) {
+            return false;
+        }
+        let Some(engine) = self.server.served_incarnation() else {
+            return false;
+        };
+        let pid = u64::from(engine.pid);
+        if self.shared_pool_move_tried.swap(pid, Ordering::Relaxed) == pid {
+            return false;
+        }
+        let due = self.server.pool_launch().is_some_and(|launch| !launch.current());
+        if due {
+            continuum_base::probe!(
+                target: "continuum_core::modules::serving_daemon", class = "serving.pool.move",
+                pid,
+                launch = ?self.server.pool_launch(),
+                "an adopted engine not launched as the pool launch is now (fixed slots, or a pool that clears idle slots) can be checkpointed: moving it, once"
+            );
+        }
+        due
     }
 
     pub(super) fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
-        let operation = match ServingOperation::acquire(
-            self.reconciling.clone(),
-            self.reconcile_started_ms.clone(),
-            self.reconcile_step.clone(),
-        ) {
+        let operation = match self.lifecycle.try_operation() {
             Some(operation) => operation,
             None => {
                 self.note_reconcile_busy("reconcile");
@@ -197,7 +217,6 @@ impl ServingDaemonModule {
                 );
             } else {
                 self.model_change_streak.store(0, Ordering::Relaxed);
-                self.reset_rehome_streak();
                 self.downshift_streak.store(0, Ordering::Relaxed);
                 *self
                     .pending_model_change
@@ -320,410 +339,53 @@ impl ServingDaemonModule {
 
         {
             let live = self.serving_tx.borrow();
-            // Already serving the right model AND the right genome set → no
-            // relaunch. The genome comparison is what makes a freshly-trained gene
-            // take effect: same model id + new gene = set change = relaunch.
+            // Already serving the right model AND the right genome set: nothing relaunches.
+            // ONE LAUNCH (2026-11-03, Joel: "Slot counts should never require shutdown"): the
+            // engine holds one shared pool sized once, so a plan that wants a wider window or
+            // more lanes is not a relaunch. The re-home ladder that lived here (sustained
+            // streaks, cooldowns, plan highs, holds, the cache-size re-home) relaunched the
+            // M5's engine 40 times. Who holds how much of the pool is decided at runtime.
             if live.ready
                 && live.active_model.as_deref() == Some(desired.as_str())
                 && live.adapters == desired_adapter_paths
+                && !self.shared_pool_move_due(&live.base_url)
+                && !self.pool_growth_due(&desired, served_ctx, lanes)
             {
-                // …UNLESS the running server's per-slot window froze at HALF or
-                // less of what the current plan affords. A lane spawned under
-                // transient memory pressure (a benchmark server, a build) keeps
-                // its starved window forever otherwise — glass-boxed 2026-07-10:
-                // 14,700 recomputes wandering 3.6k↔22k while the living lane
-                // stayed frozen at 3.8k and the room degenerated into a greeting
-                // loop. 2× is deliberate hysteresis (doubling rule): the plan
-                // breathes with every consumer, and a relaunch kills in-flight
-                // turns, so only a step-change worth of headroom justifies one.
-                // One-directional by design — over-served vs a dipped plan is
-                // the pressure broker's reclaim problem (#79), not a relaunch.
-                // SUSTAINED-DELTA re-home (replaces the single-sample `live * 2 <=
-                // plan` ratio; BigMama's call 2026-08-06, she owns the guard).
-                //
-                // The old ratio was the cheapest thing that could not thrash against a
-                // plan derived from FREE MEMORY, which wandered 3.6k<->22k — its own
-                // comment says "the plan breathes with every consumer", and that was
-                // true. Demand-derived planning made the plan a peak-tracking
-                // MEASUREMENT instead, and against a stable signal a 2x bar strands
-                // everything in the 50-99% band forever: measured live, plan 26,323 vs
-                // lane 16,384 (62%) held indefinitely while every persona's binding
-                // read the stale window.
-                //
-                // TWO independent guards, deliberately not collapsed into one
-                // predicate:
-                //
-                //   1. SUSTAINED DELTA — is the gain REAL? The plan must exceed the
-                //      lane by [`REHOME_MIN_GAIN_PCT`] for [`REHOME_SUSTAINED_TICKS`]
-                //      consecutive ticks. A dip RESETS the streak, so jitter can never
-                //      accumulate into a relaunch.
-                //   2. COOLDOWN — may we PAY for it yet? At most one re-home per
-                //      [`REHOME_COOLDOWN_TICKS`], checked separately and answered
-                //      first. A relaunch kills every in-flight turn on the lane, so
-                //      the rate limit must hold even when the evidence is perfect.
-                //
-                // Conflating them is how a guard ends up firing on a burst of good
-                // evidence. (BigMama's spec 2026-08-06 — she owns this guard; the
-                // outage it came from is hers.)
-                // A LAUNCH SETTLES AFTER IT IS READY, NOT AFTER IT WAS SPAWNED (2026-09-19
-                // 23:13–23:15Z, the M5): the spawn arm charged the cooldown at launch, the
-                // OLD lane kept serving through the 27B's ~90 s cold load, so every tick of
-                // the cooldown was spent before the new lane answered — it came ready with
-                // zero settle left. Its predecessor's freed pages read as a 32 GB budget for
-                // one minute, the plan said 3 lanes, and a second relaunch fired 15 s after
-                // the first came ready: 12 settles in the hour, acts 5. The ready stamp is
-                // the edge that matters: a stamp this reconcile has not settled on re-arms
-                // the full cooldown (and the streak), so the memory picture the next
-                // evidence is read from is the one this lane made, not the one it inherited.
-                if ready_edge(
-                    self.settled_ready_at_ms.load(Ordering::Relaxed),
-                    live.ready_verified_at_ms,
-                ) {
-                    self.settled_ready_at_ms
-                        .store(live.ready_verified_at_ms.unwrap_or(0), Ordering::Relaxed); // JUSTIFIED unwrap_or: `ready_edge` is true only for Some
-                    self.rehome_cooldown
-                        .store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
-                    self.reset_rehome_streak();
-                    continuum_base::probe!(
-                        target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
-                        decision = "ready-settling",
-                        live_window = live.served_context_window,
-                        live_lanes = live.lanes,
-                        cooling = REHOME_COOLDOWN_TICKS as u64,
-                        "the lane just came ready — it settles for the full cooldown from HERE before any re-home evidence counts"
-                    );
-                }
-                let cooling = self.rehome_cooldown.load(Ordering::Relaxed);
-                if cooling > 0 {
-                    self.rehome_cooldown.store(cooling - 1, Ordering::Relaxed);
-                    // Lose the streak while cooling rather than banking it: otherwise
-                    // the instant the cooldown lapses we relaunch on evidence gathered
-                    // a minute and a half ago. Re-proving costs 3 ticks and keeps
-                    // "sustained" meaning sustained-NOW.
-                    self.reset_rehome_streak();
-                }
-                // Settlement records an owned candidate. Only terminal usage from this
-                // exact generation promotes its cache preference; neither transition
-                // constrains the next plan's lanes or current workload requirement.
-                let settled_now = settles_this_tick(cooling, live.ready, live.lanes);
+                // The lanes this hour served: the health window's maximum (the lane-bound rest
+                // stands on it).
+                crate::cognition::health_ledger::note_lanes(live.lanes as u64);
+                // Remember the shape each mind is served for the next boot's plan: the engine's
+                // own generation and sequences, at the share published from its pool (its
+                // `/props` window is the whole pool on the shared engine). Settlement is
+                // idempotent per generation, so a ready tick may record it.
                 if let Some(model) = live.active_model.as_deref() {
                     let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&live.base_url);
                     if let Some(geometry) = crate::inference::slots::directory()
                         .endpoint(endpoint.root())
                         .served_geometry()
-                        .filter(|g| {
-                            g.model_id == model
-                                && g.per_slot_window == live.served_context_window
-                                && g.lanes == live.lanes
-                        })
+                        .filter(|g| g.model_id == model && g.lanes == live.lanes)
                     {
+                        // Samples carry the engine's own shape: match them on it, record the share.
                         let observed = crate::inference::resource_admission::PromptSample::geometry_median(
                             &(self.leased_in_sent)(),
                             endpoint.root(),
                             &geometry,
                         );
-                        crate::inference::served_window_store::record_reconciled(
-                            geometry,
-                            settled_now,
-                            observed,
-                        );
-                    }
-                    if settled_now {
-                        // A settled geometry is lanes the hour served: fold it into the
-                        // health window's maximum (the lane-bound rest stands on that).
-                        crate::cognition::health_ledger::note_lanes(live.lanes as u64);
-                        continuum_base::probe!(
-                            target: "continuum_core::modules::serving_daemon", class = "serving.geometry.settled",
-                            model,
-                            per_slot_window = live.served_context_window as u64,
-                            lanes = live.lanes as u64,
-                            "the launch settled — same-generation successful usage may record its cache preference"
-                        );
+                        let served = crate::inference::served_window_store::ServedGeometry {
+                            per_slot_window: live.served_context_window,
+                            ..geometry
+                        };
+                        crate::inference::served_window_store::record_reconciled(served, true, observed);
                     }
                 }
-                let (live_space, plan_space, gain, worth_it) =
-                    rehome_gain_evidence(live.served_context_window, live.lanes, served_ctx, lanes);
-                let short_of_slots = roster_short_of_slots(live.lanes, lanes);
-                // THE CACHE HOLDS NO STATE (Fable and BigMama, 2026-10-11): `--cache-ram` is fixed
-                // at launch, so a lane launched under a cache smaller than ONE measured state can
-                // keep nothing, and every switch between minds is a full re-prefill until it
-                // relaunches (the 5090: 4,288 MiB against ~5.5 GB states, 114 skips, 76% of
-                // restores cold). That, and only that, is evidence for a re-home on cache size;
-                // a cache that holds at least one state waits for the next relaunch. It earns the
-                // same sustained streak and cooldown as the window evidence, and every hold above
-                // (resident training, an eval) still defers it.
-                let measured_state = crate::inference::slots::measured_state_bytes(
-                    &crate::inference::llama_server::kv_page_dir(desired.as_str()),
-                );
-                let cache_holds_no_state =
-                    crate::inference::lane_args::launched_cache_holds_no_state(
-                        live.host_prompt_cache_mib,
-                        measured_state,
-                    ) && {
-                        // what a relaunch would launch with: computed only in this rare case
-                        let would_launch_mib = (self.model_resolver)(&desired)
-                            .map(|m| {
-                                derived_prompt_cache_mib(
-                                    &desired,
-                                    footprint_for(&m).as_ref(),
-                                    served_ctx,
-                                    lanes,
-                                    self.system.memory().total_bytes,
-                                    self.system.memory().available_bytes,
-                                    self.system.gpu_memory_mode(),
-                                )
-                                .mib
-                            })
-                            .unwrap_or(0); // unwrap_or: an unresolvable model would launch nothing better, so no relaunch for size
-                        crate::inference::lane_args::cache_relaunch_needed(
-                            live.host_prompt_cache_mib,
-                            would_launch_mib,
-                            measured_state,
-                        )
-                    };
-                let worth_it = worth_it || short_of_slots || cache_holds_no_state;
-                // A plan may shrink while the host pages out; it never GROWS into it
-                // (card 628dc958: six relaunches in 75 min at HIGH with swap climbing,
-                // each grow feeding on the memory its own relaunch had just freed). The
-                // gate is a measured DELTA, not a level: swap rising since the last
-                // decision means the box is short of memory right now, whatever
-                // `available` reads mid-relaunch. Flat swap lets the grow through — the
-                // swapped pages are already subtracted from the budget it was planned in.
-                let swap_now = self.system.snapshot().memory.swap_used_bytes;
-                let swap_prev = self.last_swap_used.swap(swap_now, Ordering::Relaxed);
-                if grow_refused_while_paging(live_space, plan_space, swap_prev, swap_now) {
-                    self.reset_rehome_streak();
-                    continuum_base::probe!(
-                        target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
-                        decision = "refused_while_paging",
-                        swap_prev_mb = swap_prev >> 20,
-                        swap_now_mb = swap_now >> 20,
-                        live_window = live.served_context_window,
-                        plan_window = served_ctx,
-                        live_lanes = live.lanes,
-                        plan_lanes = lanes,
-                        shortfall = gain,
-                        "the plan wants more memory than the lane holds while the host is \
-                         paging out — a grow here feeds on its own relaunch; shrinks flow, \
-                         and the grow fires the tick swap stops climbing",
-                    );
-                    self.acknowledge_verified_target(&live, planned.intent_revision);
-                    return None;
-                }
-                // A STILL-CLIMBING plan is not settled (2026-09-02, the boot
-                // staircase): personas register footprints serially at boot,
-                // demand climbs in 15%+ stairs, and each stair "sustained" for
-                // 3 ticks — SIXTEEN model loads in one lane's log, each paying
-                // the full readiness ladder (the real ~15-minute boot, which
-                // was never model load: the engine loads in 1.7–6s). Sustained
-                // now ALSO requires the plan target itself to have stopped
-                // moving: growth resets the streak, so a monotone climb
-                // coalesces into ONE relaunch at its top. Steady state is
-                // unchanged — a stable plan is flat by definition.
-                // Flat = not a NEW HIGH for this streak: the first observation sets the
-                // high, a climb past it resets the streak (the boot staircase), and a
-                // plan moving below it (alternating, settling) keeps counting.
-                let high = self.rehome_plan_high.load(Ordering::Relaxed);
-                let plan_flat = high == 0 || plan_space <= high;
-                if plan_space > high {
-                    self.rehome_plan_high.store(plan_space, Ordering::Relaxed);
-                }
-                let streak = if worth_it && cooling == 0 && plan_flat {
-                    self.rehome_streak
-                        .fetch_add(1, Ordering::Relaxed)
-                        .saturating_add(1)
-                } else {
-                    // Not merely "don't count" — RESET. One tick that does not want
-                    // the bigger window is enough to prove the demand was not
-                    // sustained, and a streak that survives dips is a streak that
-                    // eventually fires on noise. A new high starts the next streak from
-                    // itself; any other reason starts it from nothing.
-                    self.rehome_streak.store(0, Ordering::Relaxed);
-                    if plan_flat {
-                        self.rehome_plan_high.store(0, Ordering::Relaxed);
-                    }
-                    0
-                };
-                // Fire only on a tick whose plan IS the high of the streak's evidence (BigMama on
-                // #4851): the relaunch takes this tick's plan, so firing on a low tick of an
-                // alternating plan would land the lane at the low value (33k under Kimi's 52k) and
-                // re-home again; launching the remembered high instead would use a budget this
-                // tick did not plan. The high is taken over the last REHOME_SUSTAINED_TICKS plans,
-                // the evidence the streak itself needs, NOT over the whole streak: a high recorded
-                // once, while a relaunch was still freeing memory (Kimi's node 2026-10-15,
-                // 109,768, then a plan settled at 33k-87k), made this unreachable, and the lane
-                // served a 6,144 window until an operator relaunched it (card 5bac4968).
-                let at_high = at_recent_plan_high(&mut self.rehome_recent_plans.lock(), plan_space);
-                let starved = streak >= REHOME_SUSTAINED_TICKS && cooling == 0 && at_high;
-                // NOTE: the guards are re-armed at the FIRE point below, not here —
-                // `starved` only means the evidence qualifies. A later suppression
-                // (an eval holding the lane steady) still returns without relaunching,
-                // and charging a cooldown for a relaunch that never happened would
-                // rate-limit us out of the one we actually owe.
-                if !starved {
-                    // A lane running BELOW the plan but above the 2x bar declines to
-                    // grow — silently, until this probe. That silence is the defect:
-                    // measured 2026-08-06 the plan sat stable at 26,323 while the
-                    // live lane served 16,384 (62% — comfortably above half), every
-                    // persona's binding read the stale 16,384, and nothing anywhere
-                    // said so. It looked like the demand-derived window had "grown
-                    // then reverted"; it had never taken hold, and the only thing
-                    // that ever applied a grown plan was a reboot.
-                    //
-                    // The 2x rule itself is NOT being changed here — it came from a
-                    // real outage (a lane frozen at 3.8k while plans wandered
-                    // 3.6k<->22k) and a relaunch kills in-flight turns
-                    // ([[never-thrash-sticky-hysteresis-on-every-lane]]). But its
-                    // stated premise is that "the plan breathes with every consumer",
-                    // and demand-derived planning made the plan STABLE, so against it
-                    // the bar now strands a third of the window indefinitely. That is
-                    // a design call on a guard written from an incident, so it is
-                    // surfaced for the humans who own that history rather than
-                    // quietly re-tuned by me (#332/#333).
-                    // CADENCE, not content. This probe exists because the SILENCE was
-                    // the defect, so it must keep speaking — but at one line per 5 s
-                    // tick it becomes the defect at the other end: measured on BigMama
-                    // 2026-09-05, 192 consecutive identical copies, and a persona's
-                    // `first_token` had to be dug out from underneath them. A chatty
-                    // floor evicts the signal from every bounded view exactly when the
-                    // lane is interesting — the same class that buried a wedge
-                    // declaration and produced a false retraction the same night.
-                    //
-                    // So: every ENTRY into the declined state is logged (streak == 1),
-                    // and it keeps saying so once a minute after that. Nothing is
-                    // suppressed that a reader needs — `decline_ticks` carries the
-                    // duration, so the 47th copy adds no information the 1st lacked.
-                    // (The first version of this comment claimed `streak` carried it.
-                    // It does not: `streak` is pinned at 0 throughout the declined
-                    // state, which is also why that version did not throttle.)
-                    // The 2x rule and this decision are untouched; only how often the
-                    // same unchanged verdict repeats itself.
-                    let over_knee = lane_over_its_knee(
-                        live.served_context_window,
-                        live.lanes,
-                        served_ctx,
-                        lanes,
-                    );
-                    let declined = live_space < plan_space || over_knee || short_of_slots;
-                    let decline_ticks = if declined {
-                        self.decline_log_ticks
-                            .fetch_add(1, Ordering::Relaxed)
-                            .saturating_add(1)
-                    } else {
-                        self.decline_log_ticks.store(0, Ordering::Relaxed);
-                        0
-                    };
-                    if declined && decline_should_log(decline_ticks) {
-                        continuum_base::probe!(
-                            target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
-                            decision = "declined",
-                            live_window = live.served_context_window,
-                            plan_window = served_ctx,
-                            live_lanes = live.lanes,
-                            plan_lanes = lanes,
-                            shortfall = gain,
-                            over_knee,
-                            streak,
-                            decline_ticks,
-                            needs_streak = REHOME_SUSTAINED_TICKS,
-                            min_gain_pct = REHOME_MIN_GAIN_PCT,
-                            cooling,
-                            "lane is serving BELOW plan (or OVER its decode knee) and has not yet earned a re-home: the evidence must persist, not just appear",
-                        );
-                    }
-                    self.acknowledge_verified_target(&live, planned.intent_revision);
-                    return None;
-                }
-                // A living-persona eval is a co-tenant decode slot on THIS lane
-                // (`ShareLane`). Growing its window means a relaunch, and a relaunch
-                // connection-refuses the exam's in-flight generations (hard-rs 0/8,
-                // 2026-07-20). The grow-back is OPTIONAL headroom; the exam is not.
-                // Hold the lane steady until the eval drops its guard — a model/genome
-                // change or a pressure shrink above still runs (this only gates the
-                // starved GROW re-home). [[benchmark-is-a-governor-preemption-lease]]
-                let held_ticks = if serving_held_steady() {
-                    self.rehome_held_ticks
-                        .fetch_add(1, Ordering::Relaxed)
-                        .saturating_add(1)
-                } else {
-                    self.rehome_held_ticks.store(0, Ordering::Relaxed);
-                    0
-                };
-                if serving_held_steady()
-                    && !hold_overridden_by_shortfall(live_space, gain)
-                    && held_ticks < REHOME_HOLD_DEFER_TICKS
-                {
-                    continuum_base::probe!(
-                        target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
-                        decision = "declined",
-                        live_window = live.served_context_window,
-                        plan_window = served_ctx,
-                        live_lanes = live.lanes,
-                        plan_lanes = lanes,
-                        shortfall = gain,
-                        streak,
-                        needs_streak = REHOME_SUSTAINED_TICKS,
-                        min_gain_pct = REHOME_MIN_GAIN_PCT,
-                        cooling,
-                        "grow-back re-home suppressed: an eval holds the lane steady (co-tenant slot, no relaunch)",
-                    );
-                    // Streak deliberately NOT reset: the demand is genuinely sustained,
-                    // the exam is simply first in line. When it drops its lease the
-                    // re-home fires on the next tick instead of re-proving from zero.
-                    self.acknowledge_verified_target(&live, planned.intent_revision);
-                    return None;
-                }
-                // SYMMETRIC RECEIPT (BigMama's requirement, 2026-08-06): the defect was
-                // that DECLINING was silent. A fix that makes RELAUNCHING silent has
-                // moved the silence, not removed it. Same probe class, same fields, both
-                // outcomes — so one query over `serving.reconcile.window` reads the
-                // lane's whole decision history, not half of it.
-                if serving_held_steady() {
-                    self.rehome_held_ticks.store(0, Ordering::Relaxed);
-                    continuum_base::probe!(
-                        target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
-                        decision = "re-homing_over_hold",
-                        live_window = live.served_context_window,
-                        plan_window = served_ctx,
-                        live_lanes = live.lanes,
-                        plan_lanes = lanes,
-                        shortfall = gain,
-                        held_ticks,
-                        hold_override_pct = REHOME_HOLD_OVERRIDE_PCT,
-                        hold_defer_ticks = REHOME_HOLD_DEFER_TICKS,
-                        "a steady hold delays a re-home, never denies it — re-homing over the hold; the held work retries its flickered act",
-                    );
-                }
-                continuum_base::probe!(
-                    target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.window",
-                    decision = "re-homing",
-                    live_window = live.served_context_window,
-                    plan_window = served_ctx,
-                    live_lanes = live.lanes,
-                    plan_lanes = lanes,
-                    shortfall = gain,
-                    streak,
-                    needs_streak = REHOME_SUSTAINED_TICKS,
-                    min_gain_pct = REHOME_MIN_GAIN_PCT,
-                    // Always 0 here (a re-home cannot fire while cooling) — carried
-                    // anyway so BOTH decisions emit the IDENTICAL field set and one
-                    // query over the class gets a uniform schema instead of a shape
-                    // that changes with the outcome. Symmetry is the point.
-                    cooling,
-                    cache_holds_no_state,
-                    "re-homing lane: the plan exceeded it by a real margin, or its launched cache holds no measured state, for a sustained run of ticks",
-                );
-                // Both guards re-armed at the moment we actually commit: the next
-                // re-home must earn a fresh streak AND outlast a fresh cooldown.
-                self.reset_rehome_streak();
-                self.rehome_cooldown
-                    .store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
+                self.acknowledge_verified_target(&live, planned.intent_revision);
+                return None;
             }
         }
 
         // L10 (#438, live 2026-08-15 14:13): a MODEL CHANGE on a READY lane must earn
         // the same sustained streak the window re-home above already requires. The
-        // asymmetry was the bug: growing a window (mild) needed REHOME_SUSTAINED_TICKS
+        // asymmetry was the bug: growing a window (mild) needed MODEL_CHANGE_SUSTAINED_TICKS
         // of consistent evidence, while swapping the base model (a full teardown that
         // also re-homes every persona to different WEIGHTS) actuated on a single plan
         // tick. One bogus usable_bytes sample during the incumbent's own load made the
@@ -747,7 +409,7 @@ impl ServingDaemonModule {
                 desired.as_str(),
                 &mut pending,
                 &self.model_change_streak,
-                REHOME_SUSTAINED_TICKS,
+                MODEL_CHANGE_SUSTAINED_TICKS,
             );
             match verdict {
                 ModelChangeGate::Defer { streak } => {
@@ -757,7 +419,7 @@ impl ServingDaemonModule {
                         live_model = live.active_model.as_deref().unwrap_or("<none>"),
                         plan_model = desired.as_str(),
                         streak = streak as u64,
-                        needs_streak = REHOME_SUSTAINED_TICKS as u64,
+                        needs_streak = MODEL_CHANGE_SUSTAINED_TICKS as u64,
                         "plan wants a DIFFERENT model on a ready lane — the swap must \
                          persist across ticks before it re-homes minds (#438: a one-tick \
                          bogus-sample fallback once served citizens a 0.5B)",

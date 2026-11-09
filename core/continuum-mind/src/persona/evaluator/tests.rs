@@ -2,16 +2,13 @@
     use super::*;
     use continuum_base::time::EpochMs;
     use crate::persona::message_cache::{CachedMessage, SenderCategory};
-    use crate::rag::RagEngine;
-    use std::sync::Arc;
     use tokio::sync::watch;
 
     fn test_engine(name: &str) -> (PersonaCognitionEngine, Uuid) {
-        let rag_engine = Arc::new(RagEngine::new());
         let (_tx, rx) = watch::channel(false);
         let id = Uuid::new_v4();
         (
-            PersonaCognitionEngine::new(id, name.into(), rag_engine, rx),
+            PersonaCognitionEngine::new(id, name.into(), rx),
             id,
         )
     }

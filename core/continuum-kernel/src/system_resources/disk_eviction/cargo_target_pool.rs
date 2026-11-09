@@ -27,35 +27,130 @@ impl ResourcePool for CargoTargetPool {
         self.pressure_for_volume((self.volume_sample)(self.tracked.path()).as_ref())
     }
 
+    /// ONE FULL PASS PER MEASUREMENT (card b958bed4). A pass that declines, or runs its whole
+    /// ladder without meeting its want, has done all it can with this observation of the root, and
+    /// asking again before the scanner observes the root again repeats it unchanged: on the IntelMac
+    /// (2026-11-04, a hot volume, 1.5 GiB of cargo caches) every 5 s broker tick ran two full
+    /// process-table reads and freed nothing, ~1.5 cores of the core. A pass that stops because it
+    /// met its want leaves the pool open: `record_freed` already made the size current. An image it
+    /// found running under a profile is watched by identity: its exit reopens a settled pool at
+    /// once, with the measurement unchanged.
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
+        use std::sync::atomic::Ordering::Relaxed;
+        let observation = self.tracked.observation();
+        if self.settled_at.load(Relaxed) == observation && !self.a_watched_image_exited() {
+            return self.declined(DeclinedEviction::AwaitingMeasurement);
+        }
+        let pass = self.evict_pass(want_bytes);
+        if pass.settles {
+            self.settled_at.store(observation, Relaxed);
+        }
+        pass.freed
+    }
+
+    fn snapshot(&self) -> Vec<ResourcePoolEntry> {
+        Vec::new()
+    }
+}
+
+/// What one eviction pass did: the bytes it freed, and whether it settles the pool at this
+/// observation. Only an outcome that depends on the measured tree settles (a missing root, an
+/// unsafe path, a ladder run to the bottom with nothing reclaimable left). A decline whose cause
+/// ends on its own (a turn, a build lock, a pinned artifact, a running image or compiler) never
+/// latches to the observation: it is re-asked next pass, and a running process is re-asked by its
+/// exact identity, not by a new read of the whole table (Codex on card b958bed4).
+pub(super) struct PassEnd {
+    pub(super) freed: u64,
+    pub(super) settles: bool,
+}
+
+impl PassEnd {
+    fn settled(freed: u64) -> Self {
+        Self { freed, settles: true }
+    }
+
+    fn open(freed: u64) -> Self {
+        Self { freed, settles: false }
+    }
+}
+
+impl CargoTargetPool {
+    /// Record a node that is not quiescent. A running compiler is remembered by its identity, so
+    /// the next pass waits on that process ending, not on another read of the table.
+    fn not_quiescent(&self, refusal: crate::system_resources::citizen_workspace_pool::NotQuiescent) -> u64 {
+        use crate::system_resources::citizen_workspace_pool::NotQuiescent;
+        let reason = DeclinedEviction::CitizenBusy(refusal.to_string());
+        if let NotQuiescent::CompilerRunning(compiler) = refusal {
+            *self.compiler_standing.lock() = Some((compiler, reason.clone()));
+        }
+        self.declined(reason)
+    }
+
+    /// The node-wide gate for a citizen's tree. A compiler this pool already found keeps it shut,
+    /// asked by its identity without the gate's table read; once it exits the gate is asked again.
+    fn citizen_quiet(
+        &self,
+        home: &Path,
+        table: &mut crate::system_resources::process_tree::PassTable,
+    ) -> Result<(), u64> {
+        let compiler = self.compiler_standing.lock().clone();
+        if let Some((process, reason)) = compiler {
+            if (self.process_alive)(process.identity) {
+                return Err(self.declined(reason));
+            }
+            *self.compiler_standing.lock() = None;
+        }
+        (self.citizen_quiescence)(home, table).map_err(|refusal| self.not_quiescent(refusal))
+    }
+
+    /// Whether an image this pool watches has exited: a one-process read each, never the table.
+    /// A settled pool reopens on it, since the exit freed its profile with the tree unchanged.
+    fn a_watched_image_exited(&self) -> bool {
+        self.profile_images.lock().iter().any(|(_, process, _)| !(self.process_alive)(process.identity))
+    }
+
+    /// A process this pool found executing an image under `rung` (a profile), still running: that
+    /// profile alone stands down, on a one-process read; every other rung still cuts (Fable and
+    /// Codex on #5765: a long-lived release image must not block a regrown debug tree).
+    fn image_running_under(&self, rung: &Path) -> Option<DeclinedEviction> {
+        let mut images = self.profile_images.lock();
+        let at = images.iter().position(|(pinned, _, _)| pinned == rung)?;
+        if (self.process_alive)(images[at].1.identity) {
+            return Some(images[at].2.clone());
+        }
+        images.remove(at);
+        None
+    }
+
+    fn evict_pass(&self, want_bytes: u64) -> PassEnd {
+        let mut table = crate::system_resources::process_tree::PassTable::new(self.process_table);
         let root = self.tracked.path().to_path_buf();
+        // The cheap declines first: no root, an unsafe path or a held lock never pays for the
+        // node's quiescence (a table read).
+        if !root.exists() {
+            return PassEnd::settled(self.declined(DeclinedEviction::NoSuchDirectory));
+        }
         let citizen_custody = self.tracked.eviction_custody();
         let _hands = if let Some(peer) = *citizen_custody {
             let Some(hands) = PersonaHandsLease::try_take(peer) else {
-                return self.declined(DeclinedEviction::CitizenBusy("hands are in use".into()));
+                return PassEnd::open(self.declined(DeclinedEviction::CitizenBusy("hands are in use".into())));
             };
             let home = match crate::paths::continuum_home() {
                 Ok(home) => home,
-                Err(error) => return self.declined(DeclinedEviction::CitizenBusy(error.to_string())),
+                Err(error) => return PassEnd::open(self.declined(DeclinedEviction::CitizenBusy(error.to_string()))),
             };
-            if let Err(error) = (self.citizen_quiescence)(&home) {
-                return self.declined(DeclinedEviction::CitizenBusy(error));
-            }
             Some((hands, home))
         } else { None };
-        if !root.exists() {
-            return self.declined(DeclinedEviction::NoSuchDirectory);
-        }
         // Validate lock locations before opening them: a profile or lock symlink
         // must not redirect custody to an unrelated file outside this cache.
         for path in [&root, &root.join(".cargo-lock"), &root.join("debug"),
             &root.join("debug/.cargo-lock"), &root.join("release"), &root.join("release/.cargo-lock")] {
             match std::fs::symlink_metadata(path) {
                 Ok(_) => if let Err(error) = Self::owned_metadata(path, &root) {
-                    return self.declined(DeclinedEviction::UnsafePath(error));
+                    return PassEnd::settled(self.declined(DeclinedEviction::UnsafePath(error)));
                 },
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
-                Err(error) => return self.declined(DeclinedEviction::UnsafePath(error.to_string())),
+                Err(error) => return PassEnd::settled(self.declined(DeclinedEviction::UnsafePath(error.to_string()))),
             }
         }
         // Safety invariant 1: hold cargo's lock files exclusively for the
@@ -63,10 +158,10 @@ impl ResourcePool for CargoTargetPool {
         let _root_lock = match try_exclusive_flock_detailed(&root.join(".cargo-lock")) {
             LockAttempt::Acquired(lock) => lock,
             LockAttempt::HeldByAnother => {
-                return self.declined(DeclinedEviction::BuildHoldsRootLock)
+                return PassEnd::open(self.declined(DeclinedEviction::BuildHoldsRootLock))
             }
             LockAttempt::Unavailable(why) => {
-                return self.declined(DeclinedEviction::LockUnavailable(why))
+                return PassEnd::open(self.declined(DeclinedEviction::LockUnavailable(why)))
             }
         };
         let mut profile_locks = Vec::new();
@@ -78,31 +173,41 @@ impl ResourcePool for CargoTargetPool {
             if lock_path.parent().is_some_and(Path::exists) {
                 match try_exclusive_flock_detailed(&lock_path) {
                     LockAttempt::Acquired(lock) => profile_locks.push(lock),
-                    LockAttempt::HeldByAnother => return self.declined(held_reason),
-                    LockAttempt::Unavailable(why) => return self.declined(DeclinedEviction::LockUnavailable(why)),
+                    LockAttempt::HeldByAnother => return PassEnd::open(self.declined(held_reason)),
+                    LockAttempt::Unavailable(why) => return PassEnd::open(self.declined(DeclinedEviction::LockUnavailable(why))),
                 }
             }
         }
 
+        if let Some((_, home)) = &_hands {
+            if let Err(declined) = self.citizen_quiet(home, &mut table) {
+                return PassEnd::open(declined);
+            }
+        }
         let mut freed = 0u64;
+        let mut met = false;
+        // A decline in the ladder whose cause ends on its own: the pass does not settle.
+        let mut transient = false;
         let debug = root.join("debug");
         let release = root.join("release");
         for rung in Self::ladder(&root) {
             if let Some((_, home)) = &_hands {
-                if let Err(error) = (self.citizen_quiescence)(home) {
-                    self.declined(DeclinedEviction::CitizenBusy(error));
+                if self.citizen_quiet(home, &mut table).is_err() {
+                    transient = true;
                     break;
                 }
             }
             if freed >= want_bytes.max(1) {
+                met = true;
                 break;
             }
             if !rung.exists() {
                 continue;
             }
-            let observation = self.tracked.observation();
-            if rung == release && self.release_observation.load(std::sync::atomic::Ordering::Relaxed) == observation {
-                self.declined(DeclinedEviction::AwaitingReleaseMeasurement);
+            // An in-memory pin, asked before the tree walk and the process table.
+            if self.active_artifacts.protects(&rung) {
+                self.declined(DeclinedEviction::ActiveArtifact { path: rung });
+                transient = true;
                 continue;
             }
             if let Err(error) = Self::validate_tree(&rung, &root) {
@@ -112,18 +217,21 @@ impl ResourcePool for CargoTargetPool {
             // Cargo releases its locks before running the produced image. Protect
             // the whole profile, including native build outputs/dependencies, while
             // any image from it executes; the same rule applies to both profiles.
+            // An image already found here is asked by its identity; else both profiles ask
+            // the pass's one table.
             if rung == debug || rung == release {
-                if let Some((pid, exe)) = process_executing_under(&rung) {
-                    self.declined(DeclinedEviction::ProfileInUse { pid, exe });
+                // Watched by identity, so not transient: the gate reopens the pool when it exits.
+                if let Some(reason) = self.image_running_under(&rung) {
+                    self.declined(reason);
                     continue;
                 }
-            }
-            if self.active_artifacts.protects(&rung) {
-                self.declined(DeclinedEviction::ActiveArtifact { path: rung });
-                continue;
-            }
-            if rung == release {
-                self.release_observation.store(observation, std::sync::atomic::Ordering::Relaxed);
+                if let Some((process, exe)) = table.get().executing_under(&rung) {
+                    let (process, exe) = (process.clone(), exe.display().to_string());
+                    let reason = DeclinedEviction::ProfileInUse { pid: process.identity.pid, exe };
+                    self.profile_images.lock().push((rung.clone(), process, reason.clone()));
+                    self.declined(reason);
+                    continue;
+                }
             }
             freed = freed.saturating_add(Self::free_rung(&rung, &root));
             if rung == release && freed < want_bytes.max(1) {
@@ -140,11 +248,7 @@ impl ResourcePool for CargoTargetPool {
             );
             self.note_eviction();
         }
-        freed
-    }
-
-    fn snapshot(&self) -> Vec<ResourcePoolEntry> {
-        Vec::new()
+        PassEnd { freed, settles: !met && !transient }
     }
 }
 
@@ -415,22 +519,10 @@ pub(super) fn copy_entry_durable(src: &Path, dst: &Path) -> std::io::Result<()> 
             std::fs::create_dir_all(parent)?;
         }
         std::fs::copy(src, dst)?;
-        // Reopen for WRITE to fsync. `File::open` yields a read-only
-        // handle, and on Windows `FlushFileBuffers` against one fails
-        // with ERROR_ACCESS_DENIED — so every real migration errored
-        // here, the caller deleted the partial cold copy, kept the hot
-        // copy, and logged "failed verification". Net effect on Windows:
-        // the serving tier could only ever evict an artifact that ALREADY
-        // had a verified twin on cold (the pure-drop path, which never
-        // calls this function). Under genuine disk pressure the pool
-        // freed nothing while reporting that it tried. POSIX permits
-        // fsync on a read-only fd, which is why this survived on
-        // macOS/Linux — [[dir-opened-as-file-windows-only]] is the same
-        // family: a file-API assumption that only one platform enforces.
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(dst)?
-            .sync_all()?;
+        // Fenced writable (`durable::fence_path`): on Windows `FlushFileBuffers` refuses a
+        // read-only handle, so every real migration once errored here and the serving tier could
+        // only evict an artifact that already had a verified twin on cold.
+        continuum_host::durable::fence_path(dst)?;
     }
     Ok(())
 }

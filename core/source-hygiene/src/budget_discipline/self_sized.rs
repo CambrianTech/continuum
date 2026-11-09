@@ -18,10 +18,10 @@ use crate::lexer::{constant_product, is_bare_literal, numeric_const};
 use crate::{sites, SourceFile, SourceRule, Violation};
 
 /// The allocator: the one place sizes are computed.
-const ALLOCATOR: &[&str] = &["core/continuum-grounding/src/rag_budget/flex_allocate.rs"];
+const ALLOCATOR: &[&str] = &["core/continuum-context/src/flex.rs", "core/continuum-context/src/flex/"];
 
 /// The turn's one allocation: the only caller of the allocator for a mind's prompt.
-const TURN_ALLOCATION: &[&str] = &["core/continuum-cognition/src/cognition/llm_deliberation_faculty/prompt/"];
+const TURN_ALLOCATION: &[&str] = &["core/continuum-context/src/allocation.rs", "core/continuum-context/src/allocation/"];
 
 /// Where text is rendered for a mind to read; a head cut there loses her newest end.
 const MIND_TEXT: &[&str] = &[

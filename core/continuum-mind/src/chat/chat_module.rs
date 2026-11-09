@@ -11,15 +11,9 @@ impl ServiceModule for ChatModule {
             // legacy path that TS commands still use today and will
             // keep working through this module while consumers migrate.
             command_prefixes: &["chat/", "collaboration/chat/"],
-            // Chat doesn't use module event_subscriptions. The durable-
-            // transcript writer (#140) rides `spawn_persist_listener` (a bus
-            // receiver task, same shape as cognition::dispatch_listener)
-            // because `chat:posted` is published via `publish_async_only`,
-            // which feeds ONLY the broadcast channel — module subscriptions
-            // are dispatched exclusively by the synchronous `publish(...,
-            // registry)` path, so a subscription here would be dead wiring
-            // (verified against message_bus.rs before wiring; the
-            // "deferred tier" its docs mention is not built).
+            // Chat doesn't use module event_subscriptions: the durable-transcript writer
+            // (#140) is the inbound seam's awaited import (`line_store::import`), never a
+            // bus subscription that could lag and drop a line.
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -28,15 +22,10 @@ impl ServiceModule for ChatModule {
     }
 
     async fn initialize(&self, ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
-        // #140: the durable-transcript writer — persists every `chat:posted`
-        // projection (persona say + human chat/send, the one seam both cross).
-        // Spawned here (inside the runtime) rather than at registration, which
-        // runs on a non-tokio thread. `from_slot` shares this module's
-        // late-bound executor, filled by install_executor_on_all before any
-        // event can arrive from a live room.
-        spawn_persist_listener(
+        // #140: the durable-transcript writer is the inbound seam's awaited import through this
+        // module (`line_store::import`); `from_slot` shares this module's late-bound executor.
+        install_line_importer(
             &ctx.runtime,
-            ctx.bus.clone(),
             Arc::new(ChatModule::from_slot(self.executor_slot.clone())),
         );
         Ok(())
@@ -94,10 +83,11 @@ impl ServiceModule for ChatModule {
     }
 
     fn install_executor(&self, executor: Arc<CommandExecutor>) {
-        // `LateBound::install` silently no-ops when the slot is already
-        // filled, so a `with_executor()`-injected test executor is never
-        // clobbered — the original install wins, same contract as before.
-        self.executor_slot.install(executor);
+        // The first install wins (a `with_executor()`-injected executor is never clobbered); a
+        // different second executor is refused loudly, never swapped in under a ready store.
+        if let Err(conflict) = self.executor_slot.install(executor) {
+            continuum_base::probe!(class = "chat.executor.install_refused", conflict = %conflict, "a second, different executor was offered to the chat slot");
+        }
     }
 
     /// The migrated `chat/poll` + `chat/send` commands as typed
@@ -119,34 +109,3 @@ impl ServiceModule for ChatModule {
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
-/// Extract a single field from the first record in a data-module
-/// `data/query` response. The data module returns
-/// `{ success, data: [{ id, data: {...} }] }`, where each entry's
-/// `data` is the entity payload. Returns the field as a JSON string
-/// (which is the shape the TS impl threads downstream) or `None` if
-/// the response shape doesn't have it.
-pub(super) fn extract_first_record_field(query_result: &Value, field: &str) -> Option<String> {
-    let records = query_result.get("data")?.as_array()?;
-    let first = records.first()?;
-    let data = first.get("data")?;
-    let value = data.get(field)?;
-    match value {
-        Value::String(s) => Some(s.clone()),
-        other => Some(other.to_string()),
-    }
-}
-
-/// Extract message payloads from a data-module `data/query` response.
-/// The response shape is `{ success, data: [{ id, data: <entity> }] }`;
-/// we lift each `entity` out of its `DataRecord` envelope.
-pub(super) fn extract_records_as_data(query_result: &Value) -> Vec<Value> {
-    query_result
-        .get("data")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|record| record.get("data").cloned())
-                .collect()
-        })
-        .unwrap_or_default()
-}

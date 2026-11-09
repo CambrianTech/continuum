@@ -30,7 +30,7 @@ use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
 use crate::inference::planning::serving_plan::footprint::{footprint_for, footprint_from_parts};
 use crate::inference::planning::serving_plan::{
-    host_budget_from, plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget,
+    host_budget_from, plan_serving, plan_serving_at_rest_traced, plan_serving_stable_traced, HostBudget,
     HostBudgetInputs, ModelFootprint, ServingDemand, ServingPlan,
 };
 use crate::gpu::GpuMemoryManager;
@@ -168,14 +168,11 @@ pub struct ServingDaemonModule {
     /// allocator reads it to contract `(model, genome)` leases. Node down →
     /// empties; node up → republished. The grid seam.
     serving_tx: watch::Sender<ServingSnapshot>,
-    /// Gate so at most one reconcile (which may spawn + wait for model load) is
-    /// in flight. A tick that finds a reconcile already running skips — no
-    /// stacked relaunches thrashing the GPU.
-    reconciling: Arc<AtomicBool>,
-    /// When the in-flight reconcile began (ms; 0 = none) and which await it is in
-    /// (`ReconcileStep`), written by the operation, read by whoever skips on the gate.
-    reconcile_started_ms: Arc<AtomicU64>,
-    reconcile_step: Arc<AtomicU8>,
+    /// The serving lifecycle gate: at most one operation (a reconcile, which may spawn and wait
+    /// for a model load; a teacher batch; a training admission) in flight. A tick that finds
+    /// one running skips, so relaunches never stack. The operation stamps its start and step;
+    /// whoever skips on the gate reads them, and a release wakes whoever waits for it.
+    lifecycle: LifecycleGate,
     /// When the gate skip last spoke (ms), so a busy reconcile is said once per
     /// [`RECONCILE_BUSY_SAY_EVERY`], never per tick.
     reconcile_busy_said_ms: Arc<AtomicU64>,
@@ -348,46 +345,30 @@ pub struct ServingDaemonModule {
     /// asked for divides every mind's window for nothing (the 4-slots-for-2-
     /// personas starvation, 2026-07-10). Default 1 — window-first.
     lane_demand: Arc<std::sync::atomic::AtomicU32>,
-    /// Consecutive ticks the PLAN has exceeded the live lane by at least
-    /// [`REHOME_MIN_GAIN_PCT`]. Reset the moment it does not. Sustained-ness is
-    /// what separates a real capacity change from memory jitter — see
-    /// [`REHOME_SUSTAINED_TICKS`].
-    rehome_streak: Arc<std::sync::atomic::AtomicU32>,
-    /// Consecutive ticks a sustained re-home has been deferred by a steady hold.
-    rehome_held_ticks: Arc<std::sync::atomic::AtomicU32>,
-    /// The host's swap-in-use at the last grow decision (card 628dc958): a grow-back
-    /// re-home is refused while this is rising. `u64::MAX` = no reading yet.
-    last_swap_used: Arc<std::sync::atomic::AtomicU64>,
+    /// The usable bytes the last plan sized against: the budget the one launch lays its pool
+    /// out on, so the engine holds the memory the planner just proved it may.
+    plan_budget_bytes: Arc<std::sync::atomic::AtomicU64>,
+    /// The engine process this core last asked to move onto the shared pool: one try per
+    /// engine, so a refused move is never retried every tick.
+    shared_pool_move_tried: Arc<std::sync::atomic::AtomicU64>,
+    /// The models whose one upward pool relaunch this core run has asked for (`pool_growth`): once
+    /// per model, never once per engine process, since the relaunch itself makes a new one (S2 debt).
+    pool_growth_models: Arc<parking_lot::Mutex<std::collections::BTreeSet<String>>>,
+    /// Each local mind's grant on the engine's pool (`grants.rs`): what her binding follows.
+    /// `None` until a ready engine has been granted from.
+    grants_tx: watch::Sender<Option<crate::capacity::window_grant::PoolGrants>>,
+    fair_grants: Arc<parking_lot::Mutex<crate::capacity::window_grant::FairGrantState>>,
+    /// Whether the engine process `pid` runs on the shared pool: read off its argv once per
+    /// process, never every tick.
+    shared_pool_of: Arc<parking_lot::Mutex<Option<(u32, bool)>>>,
+    /// The pool the running engine reports (`served_pool_tokens`, its `context_geometry`), as
+    /// the launch's ready path last read it; `0` = not read. The grants' one source for the pool.
+    served_pool: Arc<std::sync::atomic::AtomicU32>,
 
-    /// How many CONSECUTIVE ticks the lane has been below plan while declining to
-    /// re-home — a clock for the decline probe's cadence and nothing else.
-    ///
-    /// It exists because #3751 tried to throttle that probe off `rehome_streak`
-    /// and silently did not throttle at all. `rehome_streak` counts consecutive
-    /// ticks of a QUALIFYING GAIN; the declined state is precisely the state where
-    /// no gain qualifies, so it is pinned at 0 for the whole episode and
-    /// `streak <= 1` stayed true forever. Measured after that "fix" merged: 411
-    /// identical lines, one per 5 s tick. A domain counter is not a logging clock —
-    /// its reset rule belongs to the domain, and here the domain resets it exactly
-    /// when we wanted it to count.
-    decline_log_ticks: Arc<std::sync::atomic::AtomicU32>,
-    /// The highest plan window seen in the current re-home streak (0 = none yet).
-    /// "Sustained" requires the plan to have stopped CLIMBING: a new high resets
-    /// the streak, so the boot staircase coalesces into one relaunch at its top.
-    /// A plan that only alternates below a high it already reached is settled
-    /// enough: both values want the bigger lane (2026-10-07: a lane at 2,304 under
-    /// a plan alternating 33k/70k never re-homed for an hour, because every rise
-    /// reset the streak).
-    rehome_plan_high: Arc<std::sync::atomic::AtomicU64>,
-    /// The last [`REHOME_SUSTAINED_TICKS`] plan windows the re-home decision saw: the span of
-    /// evidence a streak needs. A re-home fires at the best of THESE, not at the streak's
-    /// all-time high, so one transient high cannot make the fire tick unreachable (see
-    /// [`at_recent_plan_high`]).
-    rehome_recent_plans: Arc<parking_lot::Mutex<std::collections::VecDeque<u64>>>,
     /// L10 (#438): consecutive plan ticks wanting a DIFFERENT base model than the
     /// ready incumbent, and which model that was. A model swap re-homes every
-    /// persona to different weights, so it earns the same sustained-streak bar as
-    /// the window re-home above — a one-tick nothing-fits fallback (bogus
+    /// persona to different weights, so it must persist for
+    /// [`MODEL_CHANGE_SUSTAINED_TICKS`] — a one-tick nothing-fits fallback (bogus
     /// usable_bytes sample) must never actuate a swap.
     model_change_streak: Arc<std::sync::atomic::AtomicU32>,
     pending_model_change: Arc<std::sync::Mutex<Option<String>>>,
@@ -407,16 +388,6 @@ pub struct ServingDaemonModule {
     /// minutes and made every incident archeological (#399). Steady state is
     /// now silence; the live value stays queryable on demand via `serving/plan`.
     last_plan_probe: Arc<std::sync::Mutex<Option<(String, u32)>>>,
-    /// Ticks remaining before another window re-home may fire. Charged to
-    /// [`REHOME_COOLDOWN_TICKS`] when one fires, decremented every reconcile.
-    /// Counted in ticks rather than wall-clock deliberately: the rate limit is on
-    /// the daemon's own decision cadence, so it stays exact under a stopped clock,
-    /// a suspended host, or a test that drives ticks by hand.
-    rehome_cooldown: Arc<std::sync::atomic::AtomicU32>,
-    /// The `ready_verified_at_ms` stamp of the launch the reconcile last settled on. A
-    /// stamp it has not seen is a lane that just came READY, and a launch settles AFTER
-    /// it is ready — see [`ready_edge`]. 0 = none yet.
-    settled_ready_at_ms: Arc<std::sync::atomic::AtomicU64>,
     /// The hold live work puts on the engine, as last published ([`hold`]): kept here, not read
     /// back from the snapshot, because other publishers replace the snapshot whole, and the
     /// hold's start must survive them.
@@ -532,6 +503,7 @@ impl ServingDaemonModule {
             }
         };
         let intent = ServingIntent::new(honoured);
+        let plan_published = Arc::new(AtomicBool::new(false));
         Self {
             verified_target,
             gpu,
@@ -546,11 +518,9 @@ impl ServingDaemonModule {
             plan_view_tx,
             server,
             serving_tx,
-            reconciling: Arc::new(AtomicBool::new(false)),
-            reconcile_started_ms: Arc::new(AtomicU64::new(0)),
-            reconcile_step: Arc::new(AtomicU8::new(0)),
+            lifecycle: LifecycleGate::new(plan_published.clone()),
             reconcile_busy_said_ms: Arc::new(AtomicU64::new(0)),
-            plan_published: Arc::new(AtomicBool::new(false)),
+            plan_published,
             academy_batch: parking_lot::Mutex::new(None),
             health_ticks: Arc::new(AtomicU64::new(0)),
             plan_none_live_lane_ticks: Arc::new(AtomicU64::new(0)),
@@ -582,18 +552,15 @@ impl ServingDaemonModule {
             pin_store,
             intent,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
-            rehome_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            rehome_held_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            last_swap_used: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)), // MAX = no reading yet: unknown is never "rising"
-            decline_log_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            rehome_plan_high: Arc::new(std::sync::atomic::AtomicU64::new(0)), // 0 = no plan seen in this streak yet
-            rehome_recent_plans: Arc::new(parking_lot::Mutex::new(
-                std::collections::VecDeque::new(),
-            )),
+            plan_budget_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pool_growth_models: Arc::new(parking_lot::Mutex::new(std::collections::BTreeSet::new())),
+            grants_tx: watch::channel(None).0,
+            fair_grants: Arc::new(parking_lot::Mutex::new(crate::capacity::window_grant::FairGrantState::default())),
+            shared_pool_of: Arc::new(parking_lot::Mutex::new(None)),
+            served_pool: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
-            rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            settled_ready_at_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             serving_hold: Arc::new(parking_lot::Mutex::new(None)),
             downshift_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             last_plan_probe: Arc::new(std::sync::Mutex::new(None)),
@@ -621,15 +588,12 @@ impl ServingDaemonModule {
 
 mod policy;
 use policy::{
-    at_recent_plan_high, below_floor_refuses, decline_should_log, downshift_gate, floor_gate,
-    grow_refused_while_paging, hold_overridden_by_shortfall, host_floor_of,
-    incumbent_adoption_plan, incumbent_for_plan, lane_over_its_knee, model_change_gate,
-    rehome_gain_evidence, roster_short_of_slots, DownshiftVerdict, ModelChangeGate,
-    DOWNSHIFT_SUSTAINED_TICKS, REHOME_COOLDOWN_TICKS, REHOME_HOLD_DEFER_TICKS,
-    REHOME_HOLD_OVERRIDE_PCT, REHOME_MIN_GAIN_PCT, REHOME_SUSTAINED_TICKS,
+    below_floor_refuses, downshift_gate, floor_gate, host_floor_of, incumbent_adoption_plan,
+    incumbent_for_plan, model_change_gate, DownshiftVerdict, ModelChangeGate,
+    DOWNSHIFT_SUSTAINED_TICKS, MODEL_CHANGE_SUSTAINED_TICKS,
 };
 pub use policy::{
-    knee_model, ready_edge, settles_this_tick, FloorVerdict, COLD_BOOT_BELOW_FLOOR_GRACE,
+    knee_model, FloorVerdict, COLD_BOOT_BELOW_FLOOR_GRACE,
 };
 mod health;
 use health::FrozenSlots;
@@ -639,7 +603,7 @@ mod publication;
 #[cfg(test)]
 use publication::SERVING_SNAPSHOT_EVENT;
 pub use publication::{published_lanes, VerifiedServingCapture};
-use publication::{snapshot_from_outcome, verified_capture};
+use publication::{sequence_share, snapshot_from_outcome, verified_capture};
 mod placement;
 pub use placement::sidecar_window_for_headroom;
 use placement::{
@@ -672,9 +636,9 @@ pub use budget::{governed_host_budget, live_host_budget, perf_cores, physical_us
 #[cfg(test)]
 use budget::{lane_admission_decision, pin_fit_decision};
 pub use crate::inference::llama_server::serving_pool_kind;
-use crate::inference::serving_holds::{serving_held_steady, serving_ludicrous_active};
+use crate::inference::serving_holds::serving_ludicrous_active;
 #[cfg(test)]
-use crate::inference::serving_holds::{ServingLudicrousHold, ServingSteadyHold};
+use crate::inference::serving_holds::ServingLudicrousHold;
 
 mod device_budget;
 #[cfg(test)]
@@ -718,7 +682,9 @@ use launch_window::adopted_prompt_cache_mib;
 use launch_window::{sticky_served_window, wedge_heal_floor};
 mod launch;
 mod planning;
+mod grants;
 mod hold;
+mod pool_growth;
 mod reconcile;
 mod tick;
 

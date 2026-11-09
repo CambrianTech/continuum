@@ -53,6 +53,7 @@ impl Faculty for Investigator {
                 Decision::Act {
                     calls: vec![probe("find where the program starts")],
                     intent: "find where the program starts".into(),
+                    origin: crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
                 },
                 0.9,
                 "I don't know the entry point yet — reach for it",
@@ -61,6 +62,7 @@ impl Faculty for Investigator {
                 Decision::Act {
                     calls: vec![probe("see what the entry calls")],
                     intent: "find what the entry calls".into(),
+                    origin: crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
                 },
                 0.9,
                 "I know the entry; now I need what it calls",
@@ -113,7 +115,7 @@ async fn the_hands_change_the_mind_across_a_multi_act_investigation() {
     let outcome = drive_to_settle(
         &cycle,
         "[eval]\npeer: where does the program start and what does it call?",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::ambient(),
     )
     .await;
@@ -199,7 +201,7 @@ async fn repeated_reads_and_scoped_discovery_reach_the_executor() {
         ("code/tree", serde_json::json!({"path":"b"}), "tree two"),
     ].into_iter().enumerate() {
         let call = ToolCall { id: format!("call-{i}"), name: name.into(), input };
-        let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &chain, None, None).await);
+        let acts = acts_of(apply_act(&cycle, &[call], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished), "inspect", room, &chain, None, None).await);
         assert!(matches!(acts[0].status, ActStatus::Executed));
         assert!(acts[0].output.result.content.contains(expected));
         assert_eq!(acts[0].output.result.is_error, (i == 3).then_some(true));
@@ -223,7 +225,7 @@ async fn repeated_request_keeps_current_room_and_returns_fresh_evidence() {
             name: "code/read".into(),
             input: serde_json::json!({"file_path": "README.md"}),
         };
-        let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &ActChain::new(), None, None).await);
+        let acts = acts_of(apply_act(&cycle, &[call], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished), "inspect", room, &ActChain::new(), None, None).await);
         assert!(matches!(acts[0].status, ActStatus::Executed));
         assert_eq!(acts[0].output.result.tool_use_id, id);
         assert!(acts[0].output.result.content.contains(if i == 0 {
@@ -274,7 +276,7 @@ async fn it_settles_then_re_awakens_without_cranking_to_a_halt() {
     let a = drive_to_settle(
         &cycle,
         "[eval]\npeer: concern A?",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::ambient(),
     )
     .await;
@@ -286,7 +288,7 @@ async fn it_settles_then_re_awakens_without_cranking_to_a_halt() {
     let b = drive_to_settle(
         &cycle,
         "[eval]\npeer: a totally different concern B?",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::ambient(),
     )
     .await;

@@ -20,6 +20,26 @@ pub fn plan_serving(
     candidates: &[ModelFootprint],
     demand: &ServingDemand,
 ) -> Option<ServingPlan> {
+    plan_serving_into(host, candidates, demand, &mut None)
+}
+
+/// A plan and the training growth decision the requirements allocator made for it (`None`
+/// when no requirements chose it). The decision rides out to the plan's publisher, the one
+/// owner of "the plan changed", which reports it once per change: the planner itself runs
+/// several times a second (22,184 per-call rows in 100 min on IntelMac 2026-11-02).
+#[derive(Debug, Clone)]
+pub struct TracedPlan {
+    pub plan: ServingPlan,
+    pub training_growth: Option<crate::inference::planning::window_allocator::TrainingGrowth>,
+}
+
+/// [`plan_serving`]'s one body; `training_growth` receives the allocator's growth decision.
+fn plan_serving_into(
+    host: &HostBudget,
+    candidates: &[ModelFootprint],
+    demand: &ServingDemand,
+    training_growth: &mut Option<crate::inference::planning::window_allocator::TrainingGrowth>,
+) -> Option<ServingPlan> {
     // The slot count is sized to every mind this seat SERVES: its residents plus the
     // minds leased in from other nodes. Counting only residents is how one seat carried
     // three nodes' coders on one slot (c84d885a). Saturating: a wild peak never wraps.
@@ -228,16 +248,7 @@ pub fn plan_serving(
     } else {
         match crate::inference::planning::window_allocator::allocate(&demand.requirements, candidates, host, demand_lanes.max(1)) {
             Ok(a) => {
-                continuum_base::probe!(
-                    class = "serving.training_growth",
-                    model = %a.model_id,
-                    window = a.window as u64,
-                    lanes = a.lanes as u64,
-                    budget_bytes = host.usable_bytes,
-                    device_bytes = a.device_bytes,
-                    decision = ?a.training_growth,
-                    "shared-window growth reports unresolved training demand separately from conversational admission"
-                );
+                *training_growth = Some(a.training_growth.clone());
                 let chosen = candidates
                     .iter()
                     .find(|c| c.model_id == a.model_id)
@@ -429,6 +440,28 @@ pub fn plan_serving_stable(
     incumbent: Option<&str>,
     demand: &ServingDemand,
 ) -> Option<ServingPlan> {
+    plan_serving_stable_into(host, candidates, incumbent, demand, &mut None)
+}
+
+/// [`plan_serving_stable`] with the chosen plan's training growth decision.
+pub fn plan_serving_stable_traced(
+    host: &HostBudget,
+    candidates: &[ModelFootprint],
+    incumbent: Option<&str>,
+    demand: &ServingDemand,
+) -> Option<TracedPlan> {
+    let mut training_growth = None;
+    plan_serving_stable_into(host, candidates, incumbent, demand, &mut training_growth)
+        .map(|plan| TracedPlan { plan, training_growth })
+}
+
+fn plan_serving_stable_into(
+    host: &HostBudget,
+    candidates: &[ModelFootprint],
+    incumbent: Option<&str>,
+    demand: &ServingDemand,
+    training_growth: &mut Option<crate::inference::planning::window_allocator::TrainingGrowth>,
+) -> Option<ServingPlan> {
     // The credit is applied HERE, for a caller holding the LIVE budget (the
     // incumbent's weights read as "used"). A caller whose budget is already at rest
     // — the daemon, whose `host_budget()` is the ledger's `budget_for_replacing`
@@ -444,7 +477,7 @@ pub fn plan_serving_stable(
         },
         None => *host,
     };
-    plan_serving_at_rest(&at_rest, candidates, incumbent, demand)
+    plan_serving_at_rest_into(&at_rest, candidates, incumbent, demand, training_growth)
 }
 
 /// [`plan_serving_stable`] for a budget that is ALREADY at rest — the incumbent's own
@@ -456,6 +489,29 @@ pub fn plan_serving_at_rest(
     incumbent: Option<&str>,
     demand: &ServingDemand,
 ) -> Option<ServingPlan> {
+    plan_serving_at_rest_into(at_rest, candidates, incumbent, demand, &mut None)
+}
+
+/// [`plan_serving_at_rest`] with the chosen plan's training growth decision.
+pub fn plan_serving_at_rest_traced(
+    at_rest: &HostBudget,
+    candidates: &[ModelFootprint],
+    incumbent: Option<&str>,
+    demand: &ServingDemand,
+) -> Option<TracedPlan> {
+    let mut training_growth = None;
+    plan_serving_at_rest_into(at_rest, candidates, incumbent, demand, &mut training_growth)
+        .map(|plan| TracedPlan { plan, training_growth })
+}
+
+/// The at-rest body. `training_growth` receives the decision of whichever plan it returns.
+fn plan_serving_at_rest_into(
+    at_rest: &HostBudget,
+    candidates: &[ModelFootprint],
+    incumbent: Option<&str>,
+    demand: &ServingDemand,
+    training_growth: &mut Option<crate::inference::planning::window_allocator::TrainingGrowth>,
+) -> Option<ServingPlan> {
     let host = at_rest;
     // NB: do NOT `?`-bail here. A deep transient dip can leave `plan_serving`
     // with nothing fitting the depressed budget (`fresh` = None) while a model
@@ -463,7 +519,7 @@ pub fn plan_serving_at_rest(
     // down to "nothing" is the exact harm we're guarding against, so `fresh` is
     // an Option we fall back to only when the incumbent genuinely can't hold.
     let Some(inc_id) = incumbent else {
-        return plan_serving(&host, candidates, &demand);
+        return plan_serving_into(&host, candidates, &demand, training_growth);
     };
     // NOTE (2026-08-04): there used to be an early return here — "fresh already chose the
     // incumbent → nothing to stabilize" — and it was the lane-flap bug. `fresh` is computed
@@ -485,7 +541,7 @@ pub fn plan_serving_at_rest(
     // Incumbent dropped off disk entirely → honour whatever `fresh` chose
     // (possibly None = nothing servable).
     let Some(inc) = candidates.iter().find(|m| m.model_id == inc_id) else {
-        return plan_serving(&host, candidates, &demand);
+        return plan_serving_into(&host, candidates, &demand, training_growth);
     };
     // The incumbent is ALREADY resident: its own weights read as "used" in live
     // free memory, which is exactly what depresses `usable_bytes` while it loads.
@@ -523,10 +579,12 @@ pub fn plan_serving_at_rest(
     // budget bump cannot flap it. An EXTERNAL squeeze is still not credited back — only the
     // incumbent's own committed weights are — so a real over-commit still forces the
     // down-switch. [[never-thrash-sticky-hysteresis-on-every-lane]]
-    let fresh = plan_serving(&at_rest, candidates, &demand);
+    let mut fresh_growth = None;
+    let fresh = plan_serving_into(&at_rest, candidates, &demand, &mut fresh_growth);
     // Even crediting its own residency, can the incumbent still hold a lane? If
     // not, a real squeeze has genuinely evicted it → take `fresh`.
     if inc.weights_bytes.saturating_add(inc.kv_at(MIN_SERVE_CTX)) > at_rest.usable_bytes {
+        *training_growth = fresh_growth;
         return fresh;
     }
     // Switch UP to `fresh` ONLY if it is strictly more capable AND fits the POST-EVICTION
@@ -550,7 +608,7 @@ pub fn plan_serving_at_rest(
     // than the roster needs leaves minds cold that were warm — not an upgrade,
     // whatever it scores. (BigMama, card a374c014: this compares FOOTPRINTS, so a
     // stale weights_bytes on a long-running core lies to it — fix the input there.)
-    let inc_lanes = plan_serving(&at_rest, std::slice::from_ref(inc), &demand)
+    let inc_lanes = plan_serving_into(&at_rest, std::slice::from_ref(inc), &demand, &mut None)
         .map(|p| p.lanes as u32)
         .unwrap_or(0); // unwrap_or: an incumbent that cannot plan at all has no lanes to protect
     let upgrade_worth_it = fresh.as_ref().is_some_and(|fresh_plan| {
@@ -562,6 +620,7 @@ pub fn plan_serving_at_rest(
             && !starves_the_roster
     });
     if upgrade_worth_it {
+        *training_growth = fresh_growth;
         return fresh;
     }
     // Keep the incumbent: re-rank it to the top so `plan_serving` selects it and
@@ -572,7 +631,7 @@ pub fn plan_serving_at_rest(
     if let Some(m) = promoted.iter_mut().find(|m| m.model_id == inc_id) {
         m.capability_rank = u8::MAX;
     }
-    plan_serving(&at_rest, &promoted, &demand)
+    plan_serving_into(&at_rest, &promoted, &demand, training_growth)
 }
 
 pub(super) fn bytes_gb(bytes: u64) -> f64 {

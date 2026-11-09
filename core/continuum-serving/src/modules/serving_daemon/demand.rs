@@ -68,6 +68,17 @@ impl ServingDaemonModule {
         self.lane_demand.load(Ordering::Relaxed).max(1)
     }
 
+    /// The minds seated on this node's shared pool: the population floor, or the live roster
+    /// when it has grown past it. The floor holds while the live count flickers below it
+    /// (it read 2, 3 and 4 of four residents on the M5 2026-11-03), so a mind's share moves
+    /// when the population does and not when a registry read races a respawn.
+    pub(super) fn seated(&self) -> u32 {
+        let live = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+            .map(|r| r.live_personas().len())
+            .unwrap_or(0); // JUSTIFIED unwrap_or: no registry yet (boot) = no live roster; the floor stands
+        self.lane_demand().max(u32::try_from(live).unwrap_or(u32::MAX)) // unwrap_or: a roster past u32 is seated at the most a u32 counts
+    }
+
     /// Both axes of what this host's minds are asking for — lanes AND the window
     /// they have actually demanded. The window term is MEASURED
     /// ([`crate::cognition::working_set`]); `None` there means no turn has been

@@ -1,9 +1,10 @@
 //! RoomBoardSource — grounds a persona in the CURRENT ROOM's whole work board
-//! (the kanban): every card, every owner, every column — read live from airc.
+//! (the kanban): every live card, every owner, every column — read live from airc; merged and
+//! closed cards are one counted history line (`work/list` shows each).
 //!
 //! ### Why this source exists (the Observer perceiving the board)
 //!
-//! [`ActiveWorkSource`](super::active_work_source) grounds a persona in ITS OWN
+//! Her held work ([`held_work`](super::held_work)) grounds a persona in ITS OWN
 //! claimed cards, across ALL rooms — "what am I holding." This source is the
 //! complementary perception: the WHOLE board of the room this turn is in — "what
 //! is on the board here, who holds what, what column is it in." A persona that
@@ -19,7 +20,7 @@
 //! (`ipc::positron_kanban_source`). This source does NOT read that
 //! projection — persona cognition grounds on the airc substrate ITSELF, exactly
 //! as [`WallSource`](super::wall_source) reads airc `wall_posts` directly and
-//! [`ActiveWorkSource`] reads airc `active_claims` directly. Two faces of one
+//! [`held_work`](super::held_work) reads airc `active_claims` directly. Two faces of one
 //! airc board (a renderer's ViewState and a persona's grounding), never reading
 //! through each other — cognition stays decoupled from the rendering layer. The
 //! authoritative board fold lives ONCE in airc (`work_board_complete`); this is
@@ -27,7 +28,7 @@
 //!
 //! The airc access lives behind [`RoomBoardReader`] (a one-method seam, same
 //! shape as [`WallReader`](super::wall_source::WallReader) /
-//! [`AircWorkReader`](super::active_work_source::AircWorkReader)): production
+//! [`AircWorkReader`](super::held_work::AircWorkReader)): production
 //! rides `airc_lib::Airc::work_board_complete`; tests stub it without a daemon.
 //! A distinct trait name (not the projector's `WorkBoardReader`) keeps this
 //! decoupled from `ipc/` and avoids any trait-coherence clash — each consumer
@@ -39,7 +40,7 @@
 //!   returns an empty delivery — cognition stays up; an empty board renders no
 //!   block.
 //! - Persona-scoped at construction (defense in depth, same as the roster +
-//!   wall + active-work sources).
+//!   wall sources).
 //! - Enriching framing, NOT a participation gate: the board shapes WHAT a
 //!   persona knows about the room's work, it does not decide WHETHER it speaks
 //!   (that is doctrine). Whole board = all owners, so the source imposes no
@@ -424,6 +425,18 @@ impl RoomBoardSource {
                 );
                 return RagDelivery::empty(ROOM_BOARD);
             }
+            // Her mind room is private: no airc channel, so no shared board. Her own cards reach
+            // her there through the active-work source; asking airc for this room's board is a
+            // refusal by design, never a failure to warn about.
+            Some(t) if crate::cognition::mind_room::is_private_room(ctx.persona_id, t) => {
+                continuum_base::probe!(
+                    class = "rag.private_room.no_shared_board",
+                    source = ROOM_BOARD,
+                    persona_id = %ctx.persona_id,
+                    "a turn in her mind room: no shared board there; her own cards come through active work"
+                );
+                return RagDelivery::empty(ROOM_BOARD);
+            }
             Some(t) => Some(t),
             None => self.room_id,
         };
@@ -533,17 +546,21 @@ impl RoomBoardSource {
                 held = mine.len(),
                 avail = open.len(),
             );
-            // No pointer: the headline is itself the shortest statement of the board.
-            items.push(RagItem::whole(
-                "headline",
-                headline,
-                json!({
-                    "kind": "board-headline",
-                    "held_count": mine.len(),
-                    "open_count": open.len(),
-                    "open_lead_suppressed": working,
-                }),
-            ));
+            // Its own pointer: the headline is itself the shortest statement of the board, so a
+            // collapsed board still says what she holds and what is claimable in this room.
+            items.push(
+                RagItem::whole(
+                    "headline",
+                    headline.clone(),
+                    json!({
+                        "kind": "board-headline",
+                        "held_count": mine.len(),
+                        "open_count": open.len(),
+                        "open_lead_suppressed": working,
+                    }),
+                )
+                .with_pointer(headline),
+            );
         }
 
         // The focused candidate's next action/evidence handle rides ahead of incidental
@@ -565,9 +582,10 @@ impl RoomBoardSource {
         }
 
         if !mine.is_empty() {
+            // Every card she holds, each with its checkout: her holds are few, and this lead is where
+            // their checkouts are named; the view collapses the item whole when it must.
             let titles = mine
                 .iter()
-                .take(5)
                 .map(|c| {
                     let checkout = crate::persona::card_checkout::checkout_path_for(&self.persona_id, c);
                     held_card_line(c, checkout.as_deref())
@@ -590,50 +608,19 @@ impl RoomBoardSource {
         // someone to pick up. Glass-boxed live 2026-07-10: with hands proven and an
         // open card sitting on the board, both personas drifted to identity-monologue
         // chatter instead of noticing the available work — an unclaimed card, flat in
-        // the list, out-salienced by nothing. Names their count + titles + how to pick
+        // the list, out-salienced by nothing. Names their count and how to pick
         // one up. A true structural fact she WEIGHS — it never says she must
         // ([[no-hardcoded-heuristics-to-steer-cognition]]). Whole board still follows
         // verbatim in airc's own order — this adds salience, it does not re-rank or
         // filter the board itself.
         if !working && !open.is_empty() {
-            // NEWEST FIRST, not board order (measured 2026-08-07).
-            //
-            // Only five titles are ever shown. Taken in board order, a card dispatched
-            // MINUTES AGO lands at the end and is structurally unshowable: the citizen reads
-            // an honest "N card(s) are claimable" above five titles that are all weeks old,
-            // and the work someone just handed her is not among them. Measured live — three
-            // freshly dispatched bench cards were in every citizen's board cache and in none
-            // of their prompt windows, while the count was correct the whole time. The count
-            // was never the lie; the sample was.
-            //
-            // Recency is the right key because a just-created card is the one most likely to
-            // be waiting on THIS citizen right now, and because it is the only ordering under
-            // which "someone dispatched you work" is reliably visible within one turn. Ties
-            // keep board order, so a static board renders exactly as before.
-            //
-            // Bounded-window eviction: a chatty writer pushes the signal out of a fixed-size
-            // view, and the diagnostic goes blind precisely when the board is busiest. The
-            // five-title cap is fine; taking the OLDEST five was not.
-            let mut newest: Vec<&&airc_work::WorkCard> = open.iter().collect();
-            newest.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
-            let titles = newest
-                .iter()
-                .take(5)
-                .map(|c| {
-                    let id8 = airc_core::shown_id::shown_form(c.card_id.as_uuid());
-                    format!("  {id8}: \"{}\" ({:?})", c.title, c.priority)
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let more = open.len().saturating_sub(5);
-            let tail = if more > 0 {
-                format!("\n  …and {more} more unclaimed")
-            } else {
-                String::new()
-            };
+            // The count, not a sample of titles: every live card follows this lead whole, her holds
+            // first and then the newest claimable (the order below), so a card dispatched minutes
+            // ago is the first claimable card she reads. Five titles here repeated what follows and
+            // were the literal ceiling a touched file may not keep (self_sized).
             let lead = format!(
                 "[available work] {n} card(s) on this board are claimable — unclaimed, \
-                 or their holder's claim lease lapsed:\n{titles}{tail}\nA card is \
+                 or their holder's claim lease lapsed; they follow, newest first. A card is \
                  picked up with `work/claim` (its id); once claimed it is yours to \
                  work with your tools. Claimable work waits until someone chooses it.",
                 n = open.len(),
@@ -665,11 +652,29 @@ impl RoomBoardSource {
         let names = self.reader.peer_names(&owner_peers).await;
 
         // RELEVANCE ORDER, delivered whole. Her own holds first, then newest claimable
-        // (the same recency argument the available-work lead makes). Every card is
+        // (the same recency argument the available-work lead makes). Every LIVE card is
         // delivered: when the prompt view must shrink it collapses the oldest cards to
         // their pointers (measured 2026-08-17: 38 cards were 49.7% of a system prompt;
         // that is the allocation's problem to solve by level, not a count cap here).
-        let mut ordered: Vec<&airc_work::WorkCard> = board.cards.iter().collect();
+        // A merged or closed card carries no decision for her: it is history, one counted
+        // line, and `work/list` still shows each. On the M5 (2026-10-31) Benchy's board block
+        // was 31,185 chars of 840 closed cards, the room her own results then lacked (they
+        // collapsed to handles and she read them again: 133 exact re-reads in 885 acts).
+        let (history, live): (Vec<&airc_work::WorkCard>, Vec<&airc_work::WorkCard>) = board
+            .cards
+            .iter()
+            .partition(|card| matches!(card.state, airc_work::CardState::Merged | airc_work::CardState::Closed));
+        if !history.is_empty() {
+            items.push(
+                RagItem::whole(
+                    "history",
+                    format!("[board history] {} card(s) merged or closed in this room — work/list shows them", history.len()),
+                    json!({ "kind": "board-history", "settled_count": history.len() }),
+                )
+                .with_pointer(format!("[board history] {} merged/closed — work/list", history.len())),
+            );
+        }
+        let mut ordered: Vec<&airc_work::WorkCard> = live;
         ordered.sort_by_key(|c| {
             let mine_first = !(c.owner.map(|o| o.as_uuid()) == Some(self.persona_id));
             // Negate for newest-first without needing a reversed comparator.
@@ -680,14 +685,18 @@ impl RoomBoardSource {
             let content = Self::render(card, &board, self.persona_id, now_ms, &names, focused_submission != Some(card.card_id));
             let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
             // The pointer keeps what a teammate decides on (the card and its takeable /
-            // held tag) once the line collapses; the title returns with `work/list`.
+            // held tag) once the line collapses; the title returns with `work/list`. Only a card she
+            // owns keeps one: every other card leaves a collapsed board, where the headline and the
+            // available-work lead count it and `work/list` lists it (Benchy, the M5, 2026-11-01: 592
+            // one-line card pointers, 21k chars, were her collapsed board).
             let tag = crate::cognition::card_holder::holder(card, self.persona_id, now_ms, &names).state_tag();
+            let hers = card.owner.map(|o| o.as_uuid()) == Some(self.persona_id);
             items.push(RagItem {
                 key: format!("card:{}", card.card_id.as_uuid()),
                 tokens: continuum_base::token_estimate::estimate_prompt_tokens(&content),
                 content,
                 summary: None,
-                pointer: Some(format!("[card {id8}] [{tag}] — work/list")),
+                pointer: hers.then(|| format!("[card {id8}] [{tag}] — work/list")),
                 metadata: json!({
                     "card_id": card.card_id.as_uuid().to_string(),
                     // Serde, NOT `format!("{:?}")`. Debug output is a developer convenience

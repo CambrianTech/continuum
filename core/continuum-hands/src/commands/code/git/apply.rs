@@ -52,6 +52,7 @@ crate::action_command! {
     access: AiSafe,
     native: true,
     aliases: &["git_apply"],
+    disclosure: Withheld, // it takes a PEER's diff: offered among her hands, four citizens called it with an empty patch inside twenty minutes (2026-09-04)
     params: GitApplyParams,
     output: GitApplyResult,
     run(this, ctx, p) => {
@@ -100,7 +101,7 @@ mod tests {
         }
         // Author edits + stages; diff of the staged change is the shared patch.
         std::fs::write(a.join("life.rs"), "fn main() { println!(\"glider\"); }\n").unwrap();
-        let patch = git_bridge::git_diff(&a, false).await.expect("diff");
+        let patch = git_bridge::git_diff(&a, git_bridge::DiffScope::Unstaged).await.expect("diff").text;
         assert!(
             patch.contains("glider"),
             "patch carries the change: {patch}"

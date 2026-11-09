@@ -55,7 +55,7 @@ impl SourceRule for WallClockReadOnlyByEpochMs {
             if epoch_read || chrono_read || private_clock {
                 out.push(Violation {
                     rule: self.name(),
-                    file: file.rel.clone(),
+                    file: file.repo.clone(),
                     line: i + 1,
                     source: l.trim().to_string(),
                 });

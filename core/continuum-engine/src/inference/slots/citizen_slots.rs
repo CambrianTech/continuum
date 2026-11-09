@@ -38,9 +38,14 @@ pub enum SlotClass {
     /// Short same-context helper calls riding a live turn (gates, validators,
     /// recipe/proposal raters): scratch — never the page slot they'd clobber.
     Sidecar,
-    /// Background cognition with no live turn (dream lenses, module inference,
-    /// anything unrecognized): scratch.
+    /// Background cognition with no live turn (module inference, anything
+    /// unrecognized): scratch.
     Background,
+    /// A dream lens (consolidation, belief review, the historian): background work on
+    /// scratch that yields to residents. With a scratch slot its admission is that slot;
+    /// without one it borrows a citizen slot and takes an ambient serving lane first
+    /// (`turn_admission::admit`), so a waiting turn still wins the lane.
+    Dream,
     /// Infrastructure traffic (smoke probe, warmup, operator try-outs): scratch.
     Probe,
 }
@@ -52,10 +57,15 @@ impl SlotClass {
             SlotClass::Fork => "fork",
             SlotClass::Sidecar => "sidecar",
             SlotClass::Background => "background",
+            SlotClass::Dream => "dream",
             SlotClass::Probe => "probe",
         }
     }
 }
+
+/// An external agent's call through the driver gateway: a Turn of its session's mind, so the
+/// session keeps a warm, paged page exactly as a resident does (DRIVER-GATEWAY.md G2).
+pub const DRIVER_PURPOSE: &str = "driver";
 
 /// The ONE purpose→class map. Unknown purposes default to `Background` —
 /// scratch placement — so a new producer can never clobber a citizen slot by
@@ -65,7 +75,8 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         Some("cognition/deliberation")
         | Some("cognition/act")
         | Some("persona-respond")
-        | Some("persona_decide_and_respond") => SlotClass::Turn,
+        | Some("persona_decide_and_respond")
+        | Some(DRIVER_PURPOSE) => SlotClass::Turn,
         Some("cognition/should-respond")
         | Some("cognition/generate-response")
         | Some("cognition/validate-response-decision")
@@ -80,6 +91,7 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         | Some("local-coding-agent")
         | Some("serving-smoke-probe")
         | Some("cognition/replay-request") => SlotClass::Probe,
+        Some("dream-consolidation") | Some("dream-belief-review") | Some("wanderer-historian") => SlotClass::Dream,
         Some(crate::inference::request_body::FORK_ACT_PURPOSE)
         | Some(crate::inference::request_body::FORK_DELIBERATION_PURPOSE) => SlotClass::Fork,
         _ => SlotClass::Background,
@@ -99,7 +111,7 @@ impl SlotClass {
         match self {
             SlotClass::Turn => PageKey::mind(persona?),
             SlotClass::Fork => ForkKey::new(persona?, room?).map(PageKey::Fork),
-            SlotClass::Sidecar | SlotClass::Background | SlotClass::Probe => None,
+            SlotClass::Sidecar | SlotClass::Background | SlotClass::Dream | SlotClass::Probe => None,
         }
     }
 }
@@ -165,29 +177,37 @@ pub struct KvSlotPool {
     pub(super) saved: Mutex<std::collections::HashSet<PageKey>>,
     /// Physical-slot admission also excludes concurrent requests for the same key.
     pub(super) operations: Vec<Arc<tokio::sync::Semaphore>>,
-    /// Signalled whenever a slot's operation permit is released: what a turn that found every
+    /// Signalled whenever a citizen slot's operation permit is released: what a turn that found every
     /// slot pinned waits on before it leases again (card ff9ecfd8), so it never runs unpinned
     /// over a resident's KV. A wake signal, not a queue: the order stays the server's own.
     pub(super) released: Arc<tokio::sync::Notify>,
     /// Where [`Self::saved`] persists, set once when the engine is ready under a contract
     /// that has a page dir and a fingerprint ([`SavedLedger`]). Unset = in-memory only.
     pub(super) ledger: std::sync::OnceLock<SavedLedger>,
+    /// The engine process this pool belongs to (pid, OS start time), stamped when the owned
+    /// engine is verified ready (`stamp_engine_incarnation`) or when discovery adopts a running
+    /// one it verified (`slots/discover.rs`), with or without a page ledger: the identity every
+    /// endpoint admission on this pool is bound to (`EndpointAdmission::incarnation`).
+    pub(super) incarnation: std::sync::OnceLock<(u32, u64)>,
     /// Numbers each change of [`Self::saved`] for the ledger, so a write taken outside the
     /// lock never replaces a newer one ([`Self::ledger_snapshot`]).
     pub(super) ledger_generation: AtomicU64,
 }
 
-/// A slot's operation permit. Dropping it wakes turns waiting for a slot
+/// A slot's operation permit. Dropping a citizen permit wakes turns waiting for a slot
 /// ([`KvSlotPool::released`]); the holder's pin was already dropped (field order in
 /// `TurnAdmission`), so a woken turn finds that lease evictable.
 pub struct SlotPermit {
     pub(super) _permit: tokio::sync::OwnedSemaphorePermit,
-    pub(super) released: Arc<tokio::sync::Notify>,
+    /// Scratch has its own semaphore waiters, but cannot satisfy citizen admission.
+    pub(super) released: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl Drop for SlotPermit {
     fn drop(&mut self) {
-        self.released.notify_waiters();
+        if let Some(released) = &self.released {
+            released.notify_waiters();
+        }
     }
 }
 
@@ -289,7 +309,7 @@ pub(super) fn pages_in(dir: &std::path::Path) -> Result<std::collections::HashMa
         };
         let sidecar = PAGE_SIDECARS.iter().find_map(|s| name.strip_suffix(s));
         let page = sidecar.unwrap_or(&name).to_string(); // unwrap_or: a name with no sidecar suffix IS the page name
-        if !md.is_file() || !(page.starts_with("a-") && page.ends_with(".bin")) {
+        if !(md.is_file() && page.starts_with("a-") && page.ends_with(".bin")) {
             continue;
         }
         let entry = pages.entry(page).or_insert((std::time::SystemTime::UNIX_EPOCH, 0));

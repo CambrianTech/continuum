@@ -60,7 +60,7 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
             &client, &root, wrong_process, &|| true,
         ).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0, "wrong ledger identity sends no save");
-        let result = if behavior == 3 {
+        let saved = if behavior == 3 {
             {
                 let save = transition.checkpoint_adopted_before_replacement(
                     &client, &root, process, &|| true,
@@ -73,11 +73,11 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
                 }
                 // Drop the pending HTTP save while its physical completion is unknown.
             }
-            Err(String::from("cancelled by fixture"))
+            false
         } else { transition.checkpoint_adopted_before_replacement(
             &client, &root, process, &|| true,
-        ).await };
-        assert_eq!(result.is_ok(), behavior == 0);
+        ).await.is_ok() };
+        assert_eq!(saved, behavior == 0);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(endpoint.is_ready(), behavior == 1, "only terminal refusal resumes");
         assert_eq!(endpoint.paging_recovery_required(), behavior >= 2);
@@ -108,7 +108,11 @@ async fn a_refused_adopted_replacement_hands_the_endpoint_back_as_found() -> Res
     let refused = transition
         .checkpoint_adopted_before_replacement(&reqwest::Client::new(), &root, process, &|| true)
         .await;
-    assert_eq!(refused.err().as_deref(), Some("adopted checkpoint requires a known pool"));
+    // Unprobed, it discovers first; nothing answers this root, so the miss is the refusal's source.
+    assert!(
+        matches!(refused, Err(AdoptedCheckpointRefusal::UnknownPool(PoolDiscoveryMiss::Transport { .. }))),
+        "an adopted endpoint whose discovery finds no pool refuses as UnknownPool: {refused:?}"
+    );
     assert!(transition.hand_back_unchanged(), "nothing changed: handed back open");
     drop(transition);
     assert!(endpoint.is_ready());
@@ -124,5 +128,96 @@ async fn a_refused_adopted_replacement_hands_the_endpoint_back_as_found() -> Res
     assert!(!found_closed.hand_back_unchanged(), "closed when found stays closed");
     drop(found_closed);
     assert!(!endpoint.is_ready());
+    Ok(())
+}
+
+// what this catches: the serving owner asking to replace an adopted engine before its pool can
+// be checkpointed (refused and handed back, and never asked again: the M5 2026-11-03 04:22Z
+// stayed on fixed slots), or treating a pool with no verified ledger as ready.
+#[test]
+fn an_adopted_replacement_is_ready_only_once_its_pool_and_ledger_are_known() -> Result<(), Box<dyn std::error::Error>> {
+    let root = format!("test://adopted-ready-{}", Uuid::new_v4());
+    assert!(!directory().adopted_replacement_ready(&root), "no pool known yet");
+    let pool = directory().ensure_pool(&root, 3);
+    assert!(!directory().adopted_replacement_ready(&root), "a pool without a verified ledger");
+    let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), 1)
+        .ok_or("fixture process identity unavailable")?;
+    let pages = tempfile::tempdir()?;
+    // A fresh adoption has no prior pages, and installs an empty ledger stamped with the engine.
+    let _ = adopt_engine_ledger(&pool, pages.path(), process.pid, process.started_s);
+    assert!(directory().adopted_replacement_ready(&root), "pool and ledger known: a checkpoint can run");
+    Ok(())
+}
+
+// what this catches: the M5 2026-11-04 14:56Z regression. After a core-only restart the core
+// adopted the running engine; pool growth asked to replace it 5 s later, before any request had
+// probed /props, and the checkpoint refused "adopted checkpoint requires a known pool", spending
+// the run's one growth relaunch (every window stayed ~24k). An Unprobed adopted endpoint now
+// discovers its pool before the checkpoint; only a real miss refuses, carrying its typed cause.
+#[tokio::test]
+async fn an_unprobed_adopted_endpoint_discovers_its_pool_before_the_checkpoint() -> Result<(), Box<dyn std::error::Error>> {
+    let props_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let props_calls = Arc::new(AtomicUsize::new(0));
+    let saves = Arc::new(AtomicUsize::new(0));
+    let app = Router::new().route("/props", axum::routing::get({
+        let props_ready = props_ready.clone();
+        let props_calls = props_calls.clone();
+        move || {
+            props_calls.fetch_add(1, Ordering::SeqCst);
+            let ready = props_ready.load(Ordering::SeqCst);
+            async move {
+                if ready {
+                    (StatusCode::OK, Json(serde_json::json!({"total_slots": 3})))
+                } else {
+                    (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "loading"})))
+                }
+            }
+        }
+    })).route("/slots/{slot}", post({
+        let saves = saves.clone();
+        move |Path(slot): Path<u32>, Json(body): Json<serde_json::Value>| {
+            saves.fetch_add(1, Ordering::SeqCst);
+            async move {
+                Json(serde_json::json!({"id_slot": slot, "filename": body["filename"], "n_saved": 10}))
+            }
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let root = format!("http://{address}");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let client = reqwest::Client::new();
+    let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), address.port())
+        .ok_or("fixture process identity unavailable")?;
+    assert!(directory().get(&root).is_none(), "adopted and never probed");
+
+    // A loading engine is a real unknown: the refusal names it, and nothing latches.
+    let loading = directory().adopted_checkpoint_pool(&client, &root, process).await;
+    assert!(
+        matches!(loading, Err(AdoptedCheckpointRefusal::UnknownPool(PoolDiscoveryMiss::NotReady { status: 503 }))),
+        "{:?}", loading.as_ref().err()
+    );
+    assert!(directory().get(&root).is_none(), "a transient props status never latches");
+
+    // Answering props, the pre-flight discovers the pool instead of refusing UnknownPool. The live
+    // lane record is not this fixture, so no ledger is adopted: the next refusal is the ledger's.
+    props_ready.store(true, Ordering::SeqCst);
+    let discovered = directory().adopted_checkpoint_pool(&client, &root, process).await;
+    assert!(matches!(discovered, Err(AdoptedCheckpointRefusal::UnverifiedLedger)), "{:?}", discovered.as_ref().err());
+    let pool = directory().get(&root).flatten().ok_or("discovery installed no pool")?;
+    assert_eq!(pool.n_slots(), 3, "the pool props reports");
+    assert_eq!(props_calls.load(Ordering::SeqCst), 2);
+
+    // With the engine's ledger, the checkpoint under the replacement's writer saves its resident.
+    let pages = tempfile::tempdir()?;
+    let _ = adopt_engine_ledger(&pool, pages.path(), process.pid, process.started_s);
+    let key = PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?;
+    pool.plan_paging(0, key);
+    let mut transition = directory().endpoint(&root).transition().await;
+    transition.checkpoint_adopted_before_replacement(&client, &root, process, &|| true).await?;
+    assert_eq!(saves.load(Ordering::SeqCst), 1, "the resident was saved before the replacement");
+    assert_eq!(props_calls.load(Ordering::SeqCst), 2, "a discovered pool is not probed again");
+    drop(transition);
+    server.abort();
     Ok(())
 }

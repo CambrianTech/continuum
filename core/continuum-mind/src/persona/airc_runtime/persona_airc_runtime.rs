@@ -422,7 +422,7 @@ impl PersonaAircRuntime {
                     // Renewal is per-card WARN-and-continue: a failed renewal degrades
                     // to exactly the old lapse, and never takes down presence.
                     let renewal_due =
-                        last_clean_renewal.map_or(true, |t| t.elapsed() >= renewal_period);
+                        last_clean_renewal.is_none_or(|t| t.elapsed() >= renewal_period);
                     if !renewal_due {
                         continue;
                     }
@@ -781,36 +781,6 @@ impl PersonaAircRuntime {
             Some(AbortOnDrop(handle))
         };
 
-        // Re-publish the identity card on the heartbeat cadence so it SURVIVES. The
-        // card emit at attach is one-shot: a peer that joins the room AFTER this
-        // persona attached (M5's desktop reconnecting, a fresh grid peer) missed it
-        // and would render her by peer-id forever. `publish_identity()` re-emits the
-        // already-set full card to every subscribed room; on the 60s cadence, any
-        // late arrival is grounded within a heartbeat window. Handle held for the
-        // persona's lifetime; dropped on teardown (mirrors the heartbeat pump).
-        let identity_republish = {
-            let airc = airc_arc.clone();
-            let persona_id = persona_id;
-            let agent_name = agent_name.clone();
-            Some(tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(DEFAULT_HEARTBEAT_INTERVAL);
-                // Skip the immediate tick — bootstrap already emitted the card.
-                ticker.tick().await;
-                loop {
-                    ticker.tick().await;
-                    if let Err(source) = airc.publish_identity().await {
-                        warn!(
-                            persona_id = %persona_id,
-                            agent_name = %agent_name,
-                            error = %source,
-                            "PersonaAircRuntime: periodic identity re-publish failed \
-                             (transient) — will retry next cadence"
-                        );
-                    }
-                }
-            }))
-        };
-
         // Resume-visibility contract (Joel 2026-07-13: post-reboot the team
         // resumed correctly — woke, restored, yielded per cadence — but from
         // the outside that was indistinguishable from a stall, because a
@@ -896,7 +866,6 @@ impl PersonaAircRuntime {
             command_pump: Some(command_pump),
             executor: Some(executor_for_acts),
             _heartbeat: heartbeat,
-            identity_republish,
             owned_tasks: std::sync::Mutex::new(Vec::new()),
             source,
         })

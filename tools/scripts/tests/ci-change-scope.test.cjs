@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { selectChecks, readWorkspace, readPolicy, deriveCrates, TESTED_CRATES, TEST_FEATURES, LIB_TESTS } = require('../ci-change-scope.cjs');
+const { selectChecks, readWorkspace, readPolicy, deriveCrates, publishedBinaries, TESTED_CRATES, TEST_FEATURES, LIB_TESTS } = require('../ci-change-scope.cjs');
 const ALL = { crates: TESTED_CRATES, cli: true };
 const NONE = { crates: [], cli: false };
 const select = (...paths) => {
@@ -9,13 +9,10 @@ const select = (...paths) => {
   return { rust, installer, publication };
 };
 
-// The tested crates that do not build on the kernel: the floor (base, host, git) and pure leaves
-// with no workspace dependency at all (continuum-service). A kernel or lifecycle change cannot
-// reach them. Kept explicit, so a crate moving in the graph fails here instead of silently
-// changing what CI runs.
-// Tested crates a kernel change does not reach: the floor (base, host, git, service) and the leaf
-// codec continuum-context, which depends on nothing in the workspace.
-const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-git', 'continuum-service', 'continuum-context'];
+// Tested crates a kernel change does not reach: the floor (base, host, git, service) and the leaves
+// that depend on nothing in the workspace (the codec continuum-context, the flow continuum-flow, the
+// proving ground's types continuum-proving-types).
+const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-git', 'continuum-service', 'continuum-context', 'continuum-flow', 'continuum-proving-types'];
 
 test('installer repairs run installer checks without unrelated Rust builds', () => {
   for (const file of ['install.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/win-engine.ps1', 'tools/scripts/lib/windows-engine-receipt.ps1', 'tools/scripts/lib/windows-service.ps1', 'tools/scripts/lib/windows-media-reconciliation.ps1', 'tools/scripts/lib/windows-elevation.ps1', 'tools/scripts/tests/windows-process.test.ps1', 'tools/scripts/tests/windows-airc-download.test.ps1', 'tools/scripts/tests/windows-xz.test.ps1', 'tools/scripts/sync-windows-bootstrap.ps1'])
@@ -85,6 +82,42 @@ test('missing or malformed publication source cannot prove a skip', () => {
   assert.equal(selectChecks([{ filename: publisher, previous_filename: 12 }], evidence()).publication, true);
 });
 
+// A PR adding a crate no published binary compiles skips the three platforms of binaries
+// (#5727, #5729: each new leaf crate edited this test, so the publisher ran, and its other paths
+// forced the build). Only a provable addition skips: the closure is read from the publisher's own
+// --bin list and the workspace graph; a patch that changes anything else builds.
+const bins = { bins: ['server'], manifests: [] };
+const graph = { crates: [
+  { name: 'core', dir: 'core/core', deps: ['core/kernel'], bins: [{ name: 'server', path: 'src/main.rs' }] },
+  { name: 'kernel', dir: 'core/kernel', deps: [], bins: [] },
+  { name: 'leaf', dir: 'core/leaf', deps: ['core/kernel'], bins: [] },
+] };
+const addsMember = { filename: 'Cargo.toml', patch: '@@ -10,6 +10,7 @@\n     "core/kernel",\n+    "core/leaf",\n     "core/core",' };
+const addsLock = { filename: 'Cargo.lock', patch: '@@ -1,3 +1,10 @@\n+[[package]]\n+name = "leaf"\n+version = "0.1.0"\n+dependencies = [\n+ "kernel",\n+]\n+\n [[package]]' };
+const leafPR = [{ filename: 'core/leaf/src/lib.rs' }, { filename: 'core/leaf/Cargo.toml' }, addsMember, addsLock,
+  { filename: 'tools/scripts/tests/ci-change-scope.test.cjs' }];
+const proof = { eventName: 'pull_request', complete: true, workspace: graph, binaries: bins };
+
+test('a new crate no published binary compiles skips the binaries, and only a provable one', () => {
+  assert.equal(selectChecks(leafPR, proof).publication, false, 'a leaf crate, its member line and its lock block');
+  const builds = (files, why) => assert.equal(selectChecks(files, proof).publication, true, why);
+  builds([...leafPR, { filename: 'core/kernel/src/lib.rs' }], 'a crate the binary compiles');
+  builds([{ filename: 'core/leaf/src/lib.rs' }, { ...addsLock, patch: addsLock.patch + '\n+source = "registry+https://github.com/rust-lang/crates.io-index"' }], 'a new external crate in the lock');
+  builds([{ filename: 'core/leaf/src/lib.rs' }, { ...addsLock, patch: addsLock.patch + '\n-version = "1.0.0"' }], 'a lock line changed');
+  builds([{ filename: 'core/leaf/src/lib.rs' }, { ...addsMember, patch: addsMember.patch + '\n+[profile.release]' }], 'a manifest change beyond member lines');
+  builds([{ filename: 'core/leaf/src/lib.rs' }, { filename: 'Cargo.lock' }], 'a lock diff too large to carry its patch');
+  assert.equal(selectChecks(leafPR, { ...proof, binaries: { bins: ['missing'], manifests: [] } }).publication, true, 'a binary whose owner is unknown');
+  assert.equal(selectChecks(leafPR, { ...proof, eventName: 'workflow_dispatch' }).publication, true, 'outside a pull request');
+});
+
+test('the real publisher names binaries every one of which has an owner in the workspace', () => {
+  const real = publishedBinaries(repo);
+  assert.ok(real.bins.includes('continuum-core-server') && real.manifests.includes('core/livekit-bridge'), JSON.stringify(real));
+  const files = [{ filename: 'core/continuum-core/src/lib.rs' }];
+  const realProof = { eventName: 'pull_request', complete: true, workspace: readWorkspace(repo), binaries: real, root: repo };
+  assert.equal(selectChecks(files, realProof).publication, true, 'the core itself is in the closure');
+});
+
 // The crate scope reads the real workspace, so a new member or dependency edge is covered
 // the moment it lands in a Cargo.toml: nothing here lists who depends on whom.
 const repo = path.resolve(__dirname, '../../..');
@@ -110,15 +143,15 @@ test('a crate-local change runs that crate and every crate that depends on it', 
   assert.deepEqual(scope(['core/continuum-perception/src/lib.rs']), crates('continuum-perception', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));
   assert.deepEqual(scope(['core/continuum-genome/src/lib.rs']), crates('continuum-genome', 'continuum-store', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));
   assert.deepEqual(scope(['core/continuum-memory/src/lib.rs']), crates('continuum-memory', 'continuum-embedding', 'continuum-store', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));
-  assert.deepEqual(scope(['core/continuum-experience/src/lib.rs']), crates('continuum-experience', 'continuum-rooms', 'continuum-vitals', 'continuum-capture', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));
+  assert.deepEqual(scope(['core/continuum-experience/src/lib.rs']), crates('continuum-experience', 'continuum-rooms', 'continuum-vitals', 'continuum-capture', 'continuum-cognition', 'continuum-academy', 'continuum-gateway', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));
   assert.deepEqual(scope(['core/continuum-cognition/src/lib.rs']), crates('continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));
-  const belowMind = crates('continuum-engine', 'continuum-vitals', 'continuum-prompt', 'continuum-engram', 'continuum-capture', 'continuum-embedding', 'continuum-store', 'continuum-models', 'continuum-hands', 'continuum-live', 'continuum-perception', 'continuum-genome', 'continuum-memory', 'continuum-cognition', 'continuum-academy', 'continuum-sentinel', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core');
+  const belowMind = crates('continuum-engine', 'continuum-vitals', 'continuum-prompt', 'continuum-engram', 'continuum-capture', 'continuum-embedding', 'continuum-store', 'continuum-models', 'continuum-hands', 'continuum-live', 'continuum-perception', 'continuum-genome', 'continuum-memory', 'continuum-cognition', 'continuum-academy', 'continuum-sentinel', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core', 'continuum-gateway');
   assert.deepEqual(scope(['core/continuum-engine/src/lib.rs']), belowMind);
   // The floor crates (base, host, git) sit below the kernel: a kernel change runs everything above them.
   const aboveFloor = TESTED_CRATES.filter(n => !BELOW_KERNEL.includes(n));
   assert.deepEqual(scope(['core/continuum-kernel/src/lib.rs']), { crates: aboveFloor, cli: false });
   // A floor change runs the floor crate and every crate built on it.
-  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => !['continuum-base', 'continuum-service', 'continuum-context'].includes(n)), cli: true });
+  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => !['continuum-base', 'continuum-service', 'continuum-context', 'continuum-flow', 'continuum-proving-types'].includes(n)), cli: true });
   // continuum-git is used by hands (a citizen's git) and core (the deploy tree): both run, and every crate above hands.
   assert.deepEqual(scope(['core/continuum-git/src/index_lock.rs']), crates('continuum-git', 'continuum-hands', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));
   // Untested crates reach the tested ones through the graph: llama -> engine -> ...

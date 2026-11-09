@@ -36,6 +36,7 @@ mod ensure_indexes;
 pub use ensure_indexes::{IndexFailure, IndexPass};
 mod sqlite_adapter;
 mod conditional;
+mod sequenced;
 mod file;
 
 #[cfg(test)]

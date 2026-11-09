@@ -97,9 +97,6 @@ impl PersonaAircRuntime {
             // live `bootstrap` path always starts the pump; test/demo callers
             // that want roster presence start it themselves after construction.
             _heartbeat: None,
-            // from_attached is sync; the periodic card re-publisher (async spawn)
-            // is a bootstrap-path concern. Test/demo callers don't need it.
-            identity_republish: None,
             owned_tasks: std::sync::Mutex::new(Vec::new()),
             source,
         }
@@ -277,7 +274,7 @@ impl crate::persona::wall_source::WallReader for PersonaAircRuntime {
 }
 
 #[async_trait::async_trait]
-impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
+impl crate::persona::held_work::AircWorkReader for PersonaAircRuntime {
     /// This persona's claimed cards, read from airc's work roster and filtered to
     /// its own peer — grounding reflects what IT owns, board-wide (all rooms).
     /// Her live claims, BOARD-TRUE. The roster projection lists every claim whose
@@ -410,37 +407,6 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
-    }
-
-    async fn claim_card(&self, card_id: airc_lib::WorkCardId) -> Result<bool, String> {
-        // ONE claim path. The pull rides `work/claim` as this citizen — the same
-        // verb her tool call would use — so the on-claim staging and the room's
-        // driver gate apply to a pulled card exactly as to a claimed one. Before
-        // this, the pull called airc's claim directly and a pulled card was never
-        // staged for the puller (2026-09-03).
-        let Some(executor) = self.executor.as_ref() else {
-            return Err(
-                "no command executor installed on this runtime yet — the pull must ride \
-                 `work/claim` (boot ordering: install_command_pump precedes hosting)"
-                    .to_string(),
-            );
-        };
-        let caller = crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(
-            self.persona_id,
-        ));
-        let params =
-            serde_json::json!({ "card_id": card_id.as_uuid().to_string(), "origin": "automatic" });
-        match executor
-            .execute_with_caller("work/claim", params, Some(caller))
-            .await
-        {
-            Ok(_) => Ok(true),
-            // A teammate pulled it first — `work/claim` refuses contention as
-            // `Denied`, which the typed dispatch renders as `<name>: [denied] …`. A
-            // lost race on a shared deck is normal, not an error; she tries the next.
-            Err(e) if e.contains("[denied]") => Ok(false),
-            Err(e) => Err(e),
-        }
     }
 
     async fn subscribed_rooms(&self) -> Result<Vec<Uuid>, AircError> {
@@ -579,10 +545,6 @@ impl Drop for PersonaAircRuntime {
             // explicit-shutdown callers use. Tokio reaps the
             // aborted task.
             pump.abort();
-        }
-        if let Some(handle) = self.identity_republish.take() {
-            // Stop re-emitting the identity card once the persona leaves the grid.
-            handle.abort();
         }
         if let Ok(mut owned) = self.owned_tasks.lock() {
             for handle in owned.drain(..) {

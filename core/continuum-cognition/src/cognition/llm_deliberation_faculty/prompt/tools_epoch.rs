@@ -3,8 +3,8 @@
 //!
 //! The tool schemas sit ahead of every message, so a surface that changes mid-epoch rewrites
 //! the whole prompt after the system text. The claim therefore prices like her view: at an
-//! epoch's start its floor is her core hands and its want her whole surface (hands plus her
-//! learned head, `ToolSurface::claim_with_head`); once the epoch has chosen a level, that level
+//! epoch's start its floor is her core hands and its want her core hands plus her learned head
+//! (`ToolSurface::claim_with_head`; the rest of her hands are one `commands/help` away); once the epoch has chosen a level, that level
 //! is the claim's target (`min_tokens`), which the allocator gives up only when the window
 //! cannot hold it (a relaunch onto a smaller window), and then loudly. The floor stays her
 //! core hands: a window that cannot hold those refuses the turn, never sends her handless.
@@ -24,8 +24,9 @@
 //! So the set is held across her view's turnovers ([`ToolsEpoch`]) and changes only:
 //! - down, when the window cannot hold it (`delib.tools.epoch_level_lost`), then re-selected and
 //!   held;
-//! - up, once, from her core hands (`SurfaceReason::CoreHandsForWindow`, the window's fallback)
-//!   to a fuller selection that now fits (`delib.tools.head_restored`), never back and forth;
+//! - when the moves her held cards give her change (`delib.tools.epoch_moves_changed`): a card's
+//!   transition is a new epoch of her hands, one cached prefix, never churn every act
+//!   (STATE-DRIVEN-SURFACE.md);
 //! - when her surface is rebuilt (`rebuild_tool_surface` clears it).
 //!
 //! The trade, stated: a verb whose affordance appears later, or that her learned head would add,
@@ -45,6 +46,8 @@ pub(in super::super) struct ToolsEpoch {
     names: Vec<String>,
     reason: SurfaceReason,
     tokens: usize,
+    /// The held-card moves it was selected for (`HeldWork::move_commands`).
+    moves: Vec<String>,
 }
 
 /// This act's tools claim, in raw tokens.
@@ -55,7 +58,7 @@ pub(in super::super) struct ToolsClaim {
     /// The level her held set costs (her core hands before any set is held): held unless the
     /// window cannot.
     pub(in super::super) level: usize,
-    /// Her whole surface: what demand records, whatever the grant.
+    /// Her core hands plus her learned head: what demand records, whatever the grant.
     pub(in super::super) want: usize,
 }
 
@@ -67,6 +70,8 @@ pub(in super::super) struct ToolsChoice<'a> {
     pub(in super::super) sent: SelectedSurface<'a>,
     /// Whether `sent` is her held set.
     kept: bool,
+    /// The held-card moves this act selected for, kept with the set it holds.
+    moves: Vec<String>,
 }
 
 impl LlmDeliberationFaculty {
@@ -77,31 +82,26 @@ impl LlmDeliberationFaculty {
         ToolsClaim { floor: core, level, want: want.max(level) }
     }
 
-    /// The surface the allocation's grant buys: her held set while the grant holds it (or the
-    /// fuller set that replaces her core-hands fallback once it fits), else a selection from
-    /// this act's affordances, or the loud refusal when the window could not grant even the
+    /// The surface the allocation's grant buys: her held set while the grant holds it, else a
+    /// selection from this act's affordances, or the loud refusal when the window could not grant even the
     /// floor (never a silent shrink below her hands).
     pub(in super::super) fn granted_tools(&self, ws: &Workspace, claim: ToolsClaim, grant: usize) -> (ToolsChoice<'_>, Option<PromptCapacityError>) {
         let held = self.tools_epoch.lock().clone();
+        let moves = ws.held.move_commands();
         // Selected every act, so her learned head computes and reserves the head a later set
         // would hold (`with_learned_head`) and its loaded verbs ride the tail.
         let fresh = self.select_tool_surface_granted(ws, grant);
-        // Up, once: her core-hands fallback gives way to the fuller set the window now holds.
-        let fallback_held = held.as_ref().filter(|held| held.tokens <= grant && held.reason == SurfaceReason::CoreHandsForWindow).map(|held| held.tokens);
-        let fuller = fresh.as_ref().ok().filter(|fresh| fresh.reason != SurfaceReason::CoreHandsForWindow).map(|fresh| fresh.tokens);
-        if let (Some(from), Some(to)) = (fallback_held, fuller) {
-            continuum_base::probe!(
-                class = "delib.tools.head_restored",
-                persona = %self.persona_name,
-                from = from as u64,
-                to = to as u64,
-                "her core-hands fallback is replaced by the fuller set the window now holds: one head change, up"
-            );
-            if let Ok(fuller) = fresh {
-                return (ToolsChoice { sent: fuller, kept: false }, None);
-            }
-        }
         let kept = match held {
+            Some(held) if held.moves != moves => {
+                continuum_base::probe!(
+                    class = "delib.tools.epoch_moves_changed",
+                    persona = %self.persona_name,
+                    held_moves = %held.moves.join(","),
+                    moves = %moves.join(","),
+                    "a held card's transition changed the moves in her hands: her tool set is selected afresh, once"
+                );
+                None
+            }
             Some(held) if held.tokens <= grant => Some(self.surface.retained(&held.names, held.reason, held.tokens)),
             Some(held) => {
                 continuum_base::probe!(
@@ -122,21 +122,21 @@ impl LlmDeliberationFaculty {
                 if let Ok(fresh) = fresh.as_ref() {
                     sent.tail = fresh.tail.clone(); // the verbs she loaded ride the tail, outside the prefix
                 }
-                (ToolsChoice { sent: sent.with_demand(want), kept: true }, None)
+                (ToolsChoice { sent: sent.with_demand(want), kept: true, moves }, None)
             }
-            (None, Ok(selected)) => (ToolsChoice { sent: selected, kept: false }, None),
+            (None, Ok(selected)) => (ToolsChoice { sent: selected, kept: false, moves }, None),
             (None, Err(needed)) => (
-                ToolsChoice { sent: SelectedSurface::none(), kept: false },
+                ToolsChoice { sent: SelectedSurface::none(), kept: false, moves },
                 Some(PromptCapacityError { required_tokens: needed, budget_tokens: grant }),
             ),
         }
     }
 
     /// After her view is fitted: the surface this act sends. Her held set goes out unchanged,
-    /// whether or not her view turned over in this act; an act with no held set (the first, a
-    /// lost level, or the one upward restore) holds what it sends.
+    /// whether or not her view turned over in this act; an act with no held set (the first or a
+    /// lost level) holds what it sends.
     pub(in super::super) fn retain_tools<'a>(&'a self, choice: ToolsChoice<'a>, refused: bool) -> SelectedSurface<'a> {
-        let ToolsChoice { sent, kept } = choice;
+        let ToolsChoice { sent, kept, moves } = choice;
         if refused || kept {
             return sent; // a refused turn sent no surface; a held set stays held
         }
@@ -144,6 +144,7 @@ impl LlmDeliberationFaculty {
             names: self.surface.names_of(&sent),
             reason: sent.reason,
             tokens: sent.tokens,
+            moves,
         });
         sent
     }

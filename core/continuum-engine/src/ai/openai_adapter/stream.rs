@@ -3,11 +3,14 @@
 use super::*;
 // The SSE wire types + stream consumer live in `crate::inference::sse_stream` (S3b decompose).
 use crate::inference::sse_stream::warn_if_decode_collapsed;
+use continuum_tool_protocol::UnparsedArguments;
 
 impl OpenAICompatibleAdapter {
+    /// Generate `request` under `terms` (`DispatchTerms::default()` = none beyond the lane's own).
     pub(super) async fn stream_checked(
         &self,
         request: TextGenerationRequest,
+        terms: crate::ai::types::DispatchTerms,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         // Only require API key for providers that need auth
@@ -200,7 +203,7 @@ impl OpenAICompatibleAdapter {
             // Discovery: install this server's slot pool on first use (probes /props).
             // Non-Turn traffic also needs the pool on a single-slot server: it
             // must save the activity resident before borrowing the only slot.
-            let pool = self.ensure_slot_pool(&endpoints).await.map_err(|miss| {
+            let pool = crate::inference::slots::directory().discover_pool(&self.client, root).await.map_err(|miss| {
                 miss.probe(root);
                 crate::ai::inference_error::InferenceError::Unavailable(format!(
                     "slot discovery refused generation at {root}: {} ({miss:?})",
@@ -209,6 +212,7 @@ impl OpenAICompatibleAdapter {
             })?;
             let adm = crate::inference::turn_admission::admit_turn(
                 &self.concurrency,
+                class,
                 turn_key,
                 Some(pool),
                 &self.client,
@@ -243,6 +247,14 @@ impl OpenAICompatibleAdapter {
             }
             let placement = decided.slot;
             _admission = Some(adm);
+            // The draft only while this turn decodes alone (`inference::speculation`).
+            let others = self
+                .permit_target
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .saturating_sub(self.concurrency.available_permits() + 1);
+            if let (Some(limit), Some(obj)) = (crate::inference::speculation::draft_limit(others), body.as_object_mut()) {
+                obj.insert("speculative.n_max".to_string(), json!(limit));
+            }
             // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win
             // rides on placement. Report class + room so a cached:0 streak names
             // WHICH activity thrashed — or which class strayed off scratch.
@@ -278,7 +290,7 @@ impl OpenAICompatibleAdapter {
                 // into a diagnosis. Chars/4 is a deliberately conservative
                 // token estimate — an alarm that only fires when the overshoot
                 // is unambiguous.
-                if let Some(served) = served_ctx_by_root().get(endpoints.root()) {
+                if let Some(served) = crate::inference::slots::served_ctx_by_root().get(endpoints.root()) {
                     let approx_tokens = prompt_tokens;
                     if approx_tokens > *served as usize {
                         // #3847: the total was measured but never ATTRIBUTED, so
@@ -366,7 +378,7 @@ impl OpenAICompatibleAdapter {
         // ONE snapshot decides both where this request goes and whether it may carry its tail;
         // a tail the destination cannot take is refused, never dropped (Codex on #5491).
         let route = self.route_now(model, &endpoints);
-        crate::inference::request_body::finish_body(&self.config, &request, model, route.tail_tools, &mut body)?;
+        crate::inference::request_body::finish_body(&self.config, &request, model, route.tail_tools, terms.think, &mut body)?;
 
         // Make request — the endpoint base for THIS request's model. Normally the
         // runtime/config base; for the local serving gateway, a request for the
@@ -445,6 +457,7 @@ impl OpenAICompatibleAdapter {
             _admission = Some(
                 crate::inference::turn_admission::admit_turn(
                     &self.concurrency,
+                    crate::inference::slots::class_for(request.purpose.as_deref()),
                     None,
                     None,
                     &self.client,
@@ -457,7 +470,26 @@ impl OpenAICompatibleAdapter {
             );
         }
 
-        let exact_prompt_quote = self.config.single_resident_model && self.targets_local_serving_lane();
+        let exact_prompt_quote = self.exact_prompt_admission();
+        // A request priced behind the engine's exact count is never sent without that count.
+        let priced_below_estimate = terms.admission.is_some_and(|a| a.priced == crate::ai::types::PromptAdmission::EngineCounted);
+        if priced_below_estimate && !exact_prompt_quote {
+            return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model: model.to_owned() });
+        }
+        // Whose grant the request was rendered against: re-checked at dispatch, after the lane wait.
+        let dispatch_admission = match (terms.admission, request.persona_id.as_deref().map(uuid::Uuid::parse_str)) {
+            (Some(admission), Some(Ok(persona))) => Some(crate::inference::lane_send::DispatchAdmission {
+                persona,
+                admission,
+                engine: _admission.as_ref().and_then(|admitted| admitted.engine_incarnation()),
+            }),
+            (Some(_), _) => {
+                return Err(crate::ai::inference_error::InferenceError::Protocol(
+                    "a request carrying a grant admission must name its persona by id".into(),
+                ))
+            }
+            (None, _) => None,
+        };
         // Pre-flight the single-resident gateway (the serving guard, now its own module:
         // `inference::serving_guard`). Refuses when the lane cannot guarantee `model` or
         // the prompt alone overflows the served slot (#175).
@@ -473,6 +505,9 @@ impl OpenAICompatibleAdapter {
         // The managed engine quotes the finalized body before generation; the heuristic
         // preflight above checks residency only so an overestimate cannot refuse a fit.
         // POST through the lane with the mid-relaunch retry (`inference::lane_send`).
+        // Her grant's reservation: released by the engine's terminal receipt (the stream's final
+        // frame, below); dropped without it (a cancelled caller, a broken stream) it stays held.
+        let mut grant_reservation = None;
         let response = crate::inference::lane_send::send_with_lane_retry(
             &self.config,
             request_builder,
@@ -489,7 +524,9 @@ impl OpenAICompatibleAdapter {
                         reply: request.max_tokens.unwrap_or(0), // absent max_tokens reserves no explicit output allowance
                         request_id: &request_id,
                     }),
+                admission: dispatch_admission,
             },
+            &mut grant_reservation,
         )
         .await?;
 
@@ -505,6 +542,7 @@ impl OpenAICompatibleAdapter {
             stream_timings,
             resp_model,
             probe_persona,
+            terminal,
         } = crate::inference::sse_stream::consume_sse_stream(
             &self.config,
             &request,
@@ -513,6 +551,11 @@ impl OpenAICompatibleAdapter {
             &sink,
         )
         .await?;
+        // Her reservation ends only on the engine's terminal receipt (its final frame's finish);
+        // a stream that ended without one leaves it held, unresolved.
+        if let Some(reservation) = grant_reservation.take() {
+            crate::capacity::window_grant::settle(reservation, terminal.as_ref());
+        }
         let response_time_ms = start.elapsed().as_millis() as u64;
 
         // Separate reasoning from the answer AT THE BOUNDARY: a reasoning model's
@@ -623,28 +666,24 @@ impl OpenAICompatibleAdapter {
                     // the JSON. The turn showed a confusing downstream error instead of
                     // "your tool arguments were not valid JSON."
                     // [[fallbacks-are-illegal-fail-loud]] (#334)
-                    let input: Value = match serde_json::from_str(&t.arguments) {
+                    // The fate of a call whose arguments do not parse is decided HERE, the
+                    // one seam that knows why the generation stopped: the output limit cut
+                    // it (never a retry: the same call re-cuts), or she wrote bad JSON (a
+                    // retry). Typed in the call, so no reader infers it from a JSON EOF
+                    // (`continuum_tool_protocol::call_ending`, ONE-ACT 6b).
+                    let arg_len = t.arguments.len();
+                    let input: Value = match UnparsedArguments::parse(t.arguments, finish_reason.generation_end()) {
                         Ok(v) => v,
-                        Err(e) => {
+                        Err(unparsed) => {
                             continuum_base::probe!(
                                 class = "ai.tool_call.unparseable_args",
                                 tool = t.name.as_str(),
-                                error = e.to_string().as_str(),
-                                arg_len = t.arguments.len(),
-                                // The whole blob rides in the call's result below
-                                // (`__malformed_tool_arguments.raw`); the probe names its size.
+                                cut = matches!(unparsed, UnparsedArguments::Cut { .. }),
+                                arg_len,
+                                // The whole blob rides in the call's input below; the probe names its size.
                                 "model emitted tool arguments that are not valid JSON — the call cannot be honored as written",
                             );
-                            // Carry the parse error itself, under a SELF-DESCRIBING key,
-                            // so whatever rejects this call downstream can say what
-                            // actually went wrong instead of inventing a missing-field
-                            // story about params that were never parsed.
-                            json!({
-                                "__malformed_tool_arguments": {
-                                    "error": e.to_string(),
-                                    "raw": t.arguments,
-                                }
-                            })
+                            unparsed.into_input()
                         }
                     };
                     ToolCall {

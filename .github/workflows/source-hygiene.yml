@@ -34,8 +34,44 @@ jobs:
           # The scans read `core/continuum-core/src`; vendor_pin additionally asks git
           # for the recorded submodule pointer, so the checkout must be able to answer.
           submodules: recursive
-          # The oversized-edit gate diffs against the PR's base.
-          fetch-depth: 0
+          # Two commits, not the whole history: a PR's checkout is GitHub's merge commit, whose
+          # first parent is the exact base it merges onto, and that is all the gates judge against.
+          # `fetch-depth: 0` cloned every commit and sometimes took 9.5 minutes, so the 10-minute
+          # timeout cancelled the job before a ratchet ran (#5728, #5723, canary; 2026-11-03).
+          fetch-depth: 2
+
+      # The commit every gate below judges against. A PR: the merge commit's first parent. A push:
+      # the commit before it (fetched alone if the shallow clone lacks it), else canary's tip.
+      - name: the base the gates judge against
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base=$(git rev-parse HEAD^1)
+          else
+            base="${{ github.event.before }}"
+            if [ -n "$base" ] && [ "$base" != "0000000000000000000000000000000000000000" ] \
+               && ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=1 origin "$base" || true
+            fi
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              echo "::notice::push base '${base}' is absent or unreachable (new branch or force push); judging ratchets against canary"
+              git fetch --no-tags --depth=1 origin canary
+              base=$(git rev-parse FETCH_HEAD)
+            fi
+          fi
+          # The ratchets take the merge base of this and HEAD (ratchets.rs), so the history between
+          # them must be here. A PR's base is HEAD's parent already; a push's base can be many
+          # commits back (a main promotion) or fetched alone (canary's tip), so the head's history is
+          # fetched back to the base commit's own date, and in full only if that still cannot join them
+          # (Cormac on #5738).
+          if ! git merge-base "$base" HEAD >/dev/null 2>&1; then
+            git fetch --no-tags --shallow-since="$(git show -s --format=%cI "$base")" origin "$GITHUB_SHA" || true
+          fi
+          if ! git merge-base "$base" HEAD >/dev/null 2>&1; then
+            git fetch --no-tags --unshallow origin
+          fi
+          git merge-base "$base" HEAD >/dev/null
+          echo "RATCHET_BASE=$base" >> "$GITHUB_ENV"
 
       # crate_wiring runs tools/scripts/ci-change-scope.cjs through node to check that the selector
       # and this crate derive the same crate sets; the guard fails when node is missing.
@@ -51,7 +87,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           tools/scripts/tests/oversized-edits.test.sh
-          tools/scripts/oversized-edits.sh "origin/${{ github.base_ref }}"
+          tools/scripts/oversized-edits.sh "$RATCHET_BASE"
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup show
@@ -73,17 +109,4 @@ jobs:
       # records counts. Replaces the single `cargo test -p source-hygiene` (same tests, plus one
       # scan of the base tree).
       - name: ratchets, judged against the base
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            base="origin/${{ github.base_ref }}"
-          else
-            base="${{ github.event.before }}"
-            # A new branch pushes with an all-zero 'before', and a force push can leave it
-            # unreachable: judge against canary then, and say so, rather than erroring.
-            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
-               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-              echo "::notice::push base '${base}' is absent or unreachable (new branch or force push); judging ratchets against origin/canary"
-              base="origin/canary"
-            fi
-          fi
-          cargo run --locked -q -p source-hygiene --bin ratchets -- "$base"
+        run: cargo run --locked -q -p source-hygiene --bin ratchets -- "$RATCHET_BASE"

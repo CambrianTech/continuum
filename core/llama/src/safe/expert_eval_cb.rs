@@ -178,7 +178,7 @@ impl<'m> Context<'m> {
     ///  -1 — invalid batch
     /// <-1 — fatal
     pub fn decode(&mut self, batch: &Batch) -> Result<(), String> {
-        let rc = unsafe { sys::llama_decode(self.ptr.as_ptr(), batch.inner) };
+        let rc = unsafe { crate::decode_boundary::decode(self.ptr.as_ptr(), batch.inner) }?;
         if rc == 0 {
             Ok(())
         } else {

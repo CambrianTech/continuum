@@ -256,7 +256,7 @@ pub struct PersonaContext {
     /// See `docs/architecture/PERSONA-COGNITION-PIPELINE.md` for the
     /// cycle service_loop drives through this brain. DO NOT bypass
     /// it with a chatbot-shaped surface.
-    pub cognition: Arc<tokio::sync::Mutex<crate::persona::unified::PersonaCognition>>,
+    pub cognition: Arc<crate::persona::unified::PersonaCognition>,
     /// Pre-baked persona system prompt — the "You are {persona},
     /// an autonomous AI persona on the grid." line currently
     /// `format!()`'d per turn by the service loop. Constructed

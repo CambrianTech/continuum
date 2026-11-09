@@ -92,17 +92,35 @@ impl ActionRecord {
             .sum()
     }
 
-    /// The bytes a shed releases: its resident body. The line and the summary stay with the
-    /// record for as long as her mind lives.
-    pub fn body_bytes(&self) -> u64 {
-        self.result.as_ref().map_or(0, |result| result.len() as u64)
-    }
 }
 
-/// What a collapse left behind.
-pub(super) struct Collapsed {
-    /// Bytes still resident.
-    pub total: u64,
+/// A shed moves its result body to its handle (`residency`); the line and the summary stay with
+/// the record for as long as her mind lives.
+impl super::residency::Resident for ActionRecord {
+    fn id(&self) -> super::residency::RecordId {
+        super::residency::RecordId::Act(self.seq)
+    }
+
+    fn body(&self) -> Option<&str> {
+        self.result.as_deref()
+    }
+
+    fn handle(&self) -> Option<&str> {
+        self.handle.as_deref()
+    }
+
+    fn received_ms(&self) -> Option<u64> {
+        self.received_ms
+    }
+
+    fn resident_bytes(&self) -> u64 {
+        ActionRecord::resident_bytes(self)
+    }
+
+    fn shed_body(&mut self) {
+        self.stored_chars = self.result.as_ref().map(|result| result.chars().count());
+        self.result = None;
+    }
 }
 
 #[derive(Debug, Default)]
@@ -129,9 +147,29 @@ impl ActionLog {
         self.records.binary_search_by_key(&seq, |record| record.seq).ok().map(|index| &self.records[index])
     }
 
+    pub fn get_mut(&mut self, seq: u64) -> Option<&mut ActionRecord> {
+        let index = self.records.binary_search_by_key(&seq, |record| record.seq).ok()?;
+        self.records.get_mut(index)
+    }
+
     /// Every record, oldest first.
-    pub fn records(&self) -> impl Iterator<Item = &ActionRecord> {
+    pub fn records(&self) -> impl DoubleEndedIterator<Item = &ActionRecord> + Clone {
         self.records.iter()
+    }
+
+    /// Her acts for `room` since `since_ms`, after her latest one there that changed the world by
+    /// its commands' declared effect (`ToolEffect::Changes`: an edit, a write, a note, a claim;
+    /// never inferred from a name): the write-less stretch an advisory checkpoint reads. An act from
+    /// a build before receipt times were kept counts as before any hold, and one with no declared
+    /// effect is an act that changed nothing it declared.
+    pub fn acts_since_change(&self, room: Uuid, since_ms: u64) -> usize {
+        self.records
+            .iter()
+            .filter(|record| record.room == Some(room) && record.received_ms.is_some_and(|at| at >= since_ms))
+            .fold(0, |acts, record| {
+                let changed = record.act.as_ref().is_some_and(|act| act.effect == continuum_base::tool_effect::ToolEffect::Changes);
+                if changed { 0 } else { acts + 1 }
+            })
     }
 
     /// Results retained whole, oldest first.
@@ -167,48 +205,4 @@ impl ActionLog {
     pub fn resident_bytes(&self) -> u64 {
         self.records.iter().map(ActionRecord::resident_bytes).sum()
     }
-
-    /// The records a shed may move to their handles, oldest first: resident, saved, not the
-    /// newest result, and vouched for by `saved(seq, handle)` (its saved copy was proven to load
-    /// back to this body). Everything else is the last copy of what she read, so it stays.
-    pub fn evictable<'a>(
-        &'a self,
-        saved: &'a dyn Fn(u64, &str) -> bool,
-    ) -> impl Iterator<Item = &'a ActionRecord> + 'a {
-        let newest = self.retained().last().map(|record| record.seq);
-        self.records.iter().filter(move |record| {
-            record.result.is_some()
-                && Some(record.seq) != newest
-                && record.handle.as_deref().is_some_and(|handle| saved(record.seq, handle))
-        })
-    }
-
-    /// Move the oldest evictable bodies to their handles until at most `budget` bytes stay
-    /// resident, counting every record's line and summary (which no shed releases). Each keeps its measured length (`stored_chars`) and its handle, so her view
-    /// still prices and reloads its whole. Exactly to the budget: the memory owner decides
-    /// when, so there is no hysteresis here.
-    pub fn collapse_over(&mut self, budget: u64, saved: &dyn Fn(u64, &str) -> bool) -> Collapsed {
-        let mut total = self.resident_bytes();
-        if total <= budget {
-            return Collapsed { total };
-        }
-        let chosen: HashSet<u64> = {
-            let mut over = total - budget;
-            self.evictable(saved)
-                .take_while(|record| {
-                    let take = over > 0;
-                    over = over.saturating_sub(record.body_bytes());
-                    take
-                })
-                .map(|record| record.seq)
-                .collect()
-        };
-        for record in self.records.iter_mut().filter(|record| chosen.contains(&record.seq)) {
-            total -= record.body_bytes();
-            record.stored_chars = record.result.as_ref().map(|result| result.chars().count());
-            record.result = None;
-        }
-        Collapsed { total }
-    }
-
 }

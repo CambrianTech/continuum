@@ -68,11 +68,6 @@ pub(super) async fn serve_persona_loop_inner(
     // over an unchanged world is free. Shared by both paths: a message turn updates
     // it, so the very next tick doesn't re-deliberate the same burst.
     let mut last_burst_fp: u64 = 0;
-    // Recent inbound texts (bounded ring) — the exchange record the message-path
-    // loop-filler gate below judges against. Inbound only: own posts are filtered
-    // above the gate, and the peer's repeats are what re-arm the resonance.
-    let mut recent_inbound: std::collections::VecDeque<String> =
-        std::collections::VecDeque::with_capacity(RECENT_INBOUND_WINDOW);
     // Roster-name memory for engram attribution: harvested from each turn's
     // composed roster delivery (zero extra I/O — the shared projection already
     // runs per turn), consulted at admit time so her MEMORY records
@@ -130,11 +125,8 @@ pub(super) async fn serve_persona_loop_inner(
         // Taken the moment a wake is produced, BEFORE the match, because the
         // `Wake::Tick` arm does its self-tick deliberation INLINE and then `continue`s —
         // it never reaches the code below it. A permit taken after the match would have
-        // counted inbound turns and silently missed every self-directed one, which is the
-        // same blindness as draining on `activity_gate`'s `engaged` flag: that one is
-        // stamped at serving-lane acquisition, so a turn still composing its context does
-        // not appear there either. Both gaps hide turns that have consumed input and
-        // written nothing.
+        // counted inbound turns and silently missed every self-directed one: turns that have
+        // consumed input and written nothing.
         //
         // Held to the end of the loop body, so it is released on EVERY exit path — the
         // `continue` at the end of the tick arm included. A manual decrement would have to
@@ -159,6 +151,8 @@ pub(super) async fn serve_persona_loop_inner(
                 if deferred_input.take_ready_self(wake_room) {
                     last_burst_fp = 0;
                 }
+                // Never waited for by a stop: a self-tick consumes no external input (S4b).
+                let _self_tick = crate::cognition::turn_ledger::begin_self_tick();
                 serve_self_tick(
                     ctx,
                     conversation,
@@ -214,34 +208,6 @@ pub(super) async fn serve_persona_loop_inner(
             admitted_retry,
         };
 
-        // Message-path loop-filler gate (#16): the heartbeat dedups its burst, but
-        // this path ran a full ~55s decode for EVERY inbound message — so two
-        // personas trading one goodbye template cycled forever on a metronome equal
-        // to decode time (glass-boxed 2026-07-09; the [pattern] observation, the
-        // presence clause, and honored PASSes all reached her and the loop survived
-        // on scheduling alone). A near-duplicate of an already-seen contribution
-        // arriving into an ALREADY-CYCLING exchange is not news: ADMIT it to memory
-        // (she remembers hearing it) but defer the dedicated turn to the heartbeat,
-        // whose deduped fingerprint stays stable → the resonance starves. A repeated
-        // sincere question in a non-cycling exchange never defers (the never-ghost
-        // floor) — see `loop_dedup::defer_as_loop_filler` for the two-condition
-        // trigger. Scheduling hygiene, not an output gate
-        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-        // This heuristic compares text only. Equal captions do not establish
-        // that two media-bearing messages are repeated input.
-        if let LoopStep::Continue = defer_loop_filler(
-            ctx,
-            trigger,
-            &roster_names,
-            &mut recent_inbound,
-            &opts,
-            &mut outcome,
-        )
-        .await
-        {
-            continue;
-        }
-
         // Per-turn latency clock starts AFTER the filters above —
         // we measure the substrate's per-reply cost (RAG + inference
         // + say), not the wall-clock that includes pre-watermark or
@@ -277,7 +243,7 @@ pub(super) async fn serve_persona_loop_inner(
         // error, the spoke tail) drops it, which ends the turn on the admission ledger
         // — the in-flight mark the placement switch honours (a move lands between
         // turns only) and the measured turn shape it derives her cooldown from.
-        let _turn_in_flight = crate::cognition::turn_ledger::begin_turn(
+        let turn_in_flight = crate::cognition::turn_ledger::begin_turn(
             ctx.identity.peer_id.as_uuid(),
             EpochMs::now().millis(),
         );
@@ -321,7 +287,12 @@ pub(super) async fn serve_persona_loop_inner(
         // here, before any prompt could mark the trigger read.
         let candidate = admitted_retry.then(|| deferred_input.obligation_for(&msg)).flatten();
         let obligation = match obligations.admit(turn_room, &msg, wake_engram, now_ms, candidate).await {
-            crate::persona::obligation::Admission::Confirmed(turn) => turn,
+            crate::persona::obligation::Admission::Confirmed(turn) => {
+                // Durable from here: a stop that cuts this turn hands it back to the next
+                // start, so the stop no longer waits for it (stop-drain S4).
+                turn_in_flight.confirm();
+                turn
+            }
             crate::persona::obligation::Admission::Unconfirmed(candidate) => {
                 deferred_input.settle(
                     &msg,

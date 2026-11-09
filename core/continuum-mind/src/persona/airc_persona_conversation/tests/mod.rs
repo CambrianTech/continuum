@@ -53,7 +53,7 @@
             telemetry.kind = airc_core::TranscriptKind::System;
             let envelope = serde_json::from_value(serde_json::json!({
                 "eventId": telemetry.event_id.to_string(), "roomId": room.to_string(),
-                "sourceId": "grid-capacity", "createdAtMs": 1,
+                "sourceId": Uuid::new_v4().to_string(), "createdAtMs": 1,
                 "delivery": "ephemeral_coalesced",
                 "payload": { "kind": "existing_schema", "payload": {
                     "schema": "grid_capacity", "inline": {} }

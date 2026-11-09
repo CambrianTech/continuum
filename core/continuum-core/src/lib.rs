@@ -25,7 +25,7 @@ pub use continuum_engine::{ai, capacity, inference, inference_capability, model_
 pub use continuum_hands::code;
 pub use continuum_live::{live, media};
 pub use continuum_mind::{
-    cognition, context, experience, genome, memory, perception, persona, rag, recipe, vdd,
+    cognition, context, experience, genome, memory, perception, persona, recipe, vdd,
 };
 pub use continuum_kernel::{
     concurrency, docker_tier, docker_tier_pool, entity_schemas, governor, gpu, identity, logging, orm,
@@ -60,4 +60,3 @@ pub use persona::{CognitionDecision, PersonaCognitionEngine, PersonaInbox, Prior
 // Usage: clog_info!("Session started"); clog_warn!("Warning"); etc.
 pub use ipc::start_server;
 pub use logging::{extract_component, module_path_to_category};
-pub use rag::{LlmMessage, MessageRole, RagContext, RagEngine, RagOptions};

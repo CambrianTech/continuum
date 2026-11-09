@@ -173,6 +173,40 @@ mod the_newest_result_over_her_window {
             "it comes in reduced with its handle: {}", &results[0].1[..results[0].1.len().min(400)]);
     }
 
+    // what this catches: her newest result falling to a bare pointer when its first summary is
+    // still over her window (`prompt/newest_result.rs`, before ONE-ACT slice 2): the step that ends
+    // her recursion arrived with no content, so her next input could equal her last (goal 7). It
+    // comes in at a coarser level of its summary, with its handle, and content from both ends.
+    #[test]
+    fn a_result_whose_summary_is_still_over_her_window_comes_in_coarser_never_a_pointer() {
+        // context-budget-exempt: a fixture window this test is run at (one where a quarter of the
+        // result is still over it), not a budget the code sizes anything by.
+        const WINDOW: u32 = 30_000;
+        let whole = format!("BUILD START\n{}error[E0308]: mismatched types\n", "   compiling one crate of the workspace, step\n".repeat(9_000));
+        let faculty = faculty_at(&whole, Arc::new(HeuristicInferenceAdapter::new()), WINDOW);
+        let ws = Workspace::new("what did the build say?");
+        let view = faculty.prompt_view_with_visual_feedback(&ws, WINDOW, PromptCalibration::default(), None);
+        assert!(view.newest_result_reduced, "precondition: the result is over her window");
+        let results = tool_results(&view);
+        assert_eq!(results.len(), 1, "the native call/result pair is intact");
+        let shown = &results[0].1;
+        assert!(shown.contains("this is its summary") && shown.contains(&format!("tool/output {HANDLE}")), "{}", &shown[..shown.len().min(600)]);
+        assert!(shown.contains("BUILD START") && shown.contains("error[E0308]"), "content from both ends, never a bare pointer");
+        // SEMANTIC: every line it shows (besides the note and the elision markers) is a line of
+        // her result, in its own words; and the handle it names is the one her act's whole is
+        // saved under, which reopens byte-identical (`spill::saved_whole`, round-trip pinned by
+        // `spill_then_resolve_round_trips`).
+        let original: std::collections::HashSet<&str> = whole.lines().collect();
+        for line in shown.lines().filter(|line| !line.is_empty() && !line.starts_with('[') && !line.starts_with('…')) {
+            assert!(original.contains(line), "a shown line that is not hers: {line:?}");
+        }
+        let memory = faculty.working_memory.as_ref().expect("test: her memory"); // JUSTIFIED: test fixture
+        let (seq, _) = memory.active_action_full().expect("test: her act"); // JUSTIFIED: test fixture
+        assert_eq!(memory.saved_handle(seq).ok().as_deref(), Some(HANDLE), "the handle shown is her act's saved whole");
+        assert!(shown.chars().count() * 8 <= whole.chars().count(), "a level below the first summary: {} of {}", shown.chars().count(), whole.chars().count());
+        assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
+    }
+
     // what this catches: the collapse firing on a result that fits, which would cost her the
     // outcome of her own act on the very next turn.
     #[test]

@@ -16,7 +16,7 @@ impl LlmDeliberationFaculty {
         }
         let style =
             crate::ai::tool_dialect::offer_style_for(Some(self.binding.load().requested_model()));
-        self.surface = ToolSurface::build(persona_tools::native_tool_specs(), self.tools.clone(), |spec| {
+        self.surface = ToolSurface::build(persona_tools::native_offers(), self.tools.clone(), |spec| {
             crate::ai::tool_dialect::to_wire_spec_with(spec, style)
         });
         self.share_vocabulary();
@@ -116,15 +116,15 @@ impl LlmDeliberationFaculty {
     /// Whole demand before focus allocation. The epoch owner records this beside
     /// the grant; the grant never becomes a demand observation.
     pub fn tool_claim_tokens(&self, ws: &Workspace) -> (usize, usize) {
-        let held = self.working_memory.as_ref().and_then(|wm| wm.tool_head().held()).unwrap_or_default(); // unwrap_or_default: no learned head contributes no extra verbs
-        self.surface.claim_with_head(&ws.room_affordances, &held)
+        let head = self.working_memory.as_ref().and_then(|wm| wm.tool_head().held()).unwrap_or_default(); // unwrap_or_default: no learned head contributes no extra verbs
+        self.surface.claim_with_head(&ws.room_affordances, &ws.held.move_commands(), &head)
     }
 
     /// Called at epoch start with the ONE allocation's tools grant. Retain the
     /// returned selection for accounting and the wire until the next epoch.
     pub fn select_tool_surface_granted(&self, ws: &Workspace, grant_tokens: usize) -> Result<SelectedSurface<'_>, usize> {
         let (_, want) = self.tool_claim_tokens(ws);
-        let activity = self.surface.select_granted(&ws.room_affordances, grant_tokens)?;
+        let activity = self.surface.select_granted(&ws.room_affordances, &ws.held.move_commands(), grant_tokens)?;
         let selected = self.with_learned_head(activity, ws, grant_tokens);
         if selected.tokens > grant_tokens { return Err(selected.tokens); }
         Ok(selected.with_demand(want))
@@ -187,7 +187,7 @@ impl LlmDeliberationFaculty {
         if self.surface.registry().is_empty() {
             return; // no hands offered — nothing to fit, nothing to warn about
         }
-        let window = self.working_window();
+        let window = self.turn_window();
         let needed = self.min_window_for_agentic_surface();
         if window >= needed {
             return;

@@ -2,7 +2,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
+pub mod call_batch;
+pub mod call_ending;
 pub mod parser;
+pub use call_batch::{CallBatch, CallOrigin, CommittedCall, Disposed, HeldCall};
+pub use call_ending::{CallEnding, GenerationEnd, UnparsedArguments, UnreadableMarker};
 
 /// Native tool specification for providers with JSON tool support
 /// (Anthropic, OpenAI, DeepSeek, etc.)
@@ -11,7 +15,7 @@ pub mod parser;
 /// - `input_schema` NOT `inputSchema`
 ///   This must NOT use rename_all = "camelCase" because the wire format
 ///   from TypeScript AND the Anthropic API both use snake_case for this struct.
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/NativeToolSpec.ts"
@@ -24,7 +28,7 @@ pub struct NativeToolSpec {
 
 /// JSON Schema for tool input parameters.
 /// Matches Anthropic API wire format (snake_case field names).
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/ToolInputSchema.ts"

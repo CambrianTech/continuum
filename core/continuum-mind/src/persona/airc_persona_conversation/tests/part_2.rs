@@ -257,7 +257,7 @@ use super::*;
                 json!({
                     "eventId": Uuid::from_u128(9).to_string(),
                     "roomId": Uuid::from_u128(2).to_string(),
-                    "sourceId": "continuum-peer",
+                    "sourceId": PeerId::from_u128(5).as_uuid().to_string(),
                     "createdAtMs": 100u64,
                     "delivery": "durable",
                     "payload": {

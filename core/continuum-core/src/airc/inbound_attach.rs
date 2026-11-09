@@ -19,6 +19,8 @@ use crate::cognition::conversation::room_event::chat_transcript_message;
 use crate::routing::airc_realtime_wire::{bus_event_from_envelope, envelope_from_event};
 use crate::ipc::positron_kanban_source::KANBAN_CHANGED;
 use crate::ipc::positron_source::CHAT_POSTED;
+use continuum_mind::chat::import_watermark::ImportWatermark;
+use continuum_mind::chat::line_store::{LineImporter, PostedLine};
 use crate::ipc::positron_wall_source::WALL_CHANGED;
 use crate::runtime::MessageBus;
 
@@ -132,61 +134,50 @@ pub fn spawn_daemon_attach(
     });
 }
 
-/// Where the per-channel attach watermark persists — the CONSUMER CURSOR
-/// (task #242). One tiny JSON file per channel under the user's continuum
-/// state dir: the [`IpcCursor`] this process has caught up to, threaded back
-/// as [`AttachStart::After`] on the next attach so a core reboot resumes at
-/// the gap instead of replaying the room's entire history into the UI and
-/// every persona's perception (glass-boxed three times on 2026-07-30 — each
-/// reboot re-fed days of transcript as fresh inbox to every mind).
-///
-/// Under the canonical continuum home, never a cwd-relative `.`: on the 5090
-/// (2026-10-06) the Windows service had no `HOME`, the old `unwrap_or(".")`
-/// resolved `.\.continuum\state` against an unwritable working directory, and
-/// 592 persists failed "Access is denied", so every core restart re-fed the
-/// room into the desktop, the human views and every persona as if it were new.
-fn cursor_path(channel: &RoomId) -> Result<PathBuf, String> {
-    Ok(crate::paths::continuum_home()?
-        .join("state")
-        .join(format!("airc-attach-cursor-{}.json", channel.as_uuid())))
-}
-
-fn load_cursor(channel: &RoomId) -> Option<IpcCursor> {
-    let path = match cursor_path(channel) {
-        Ok(path) => path,
-        Err(error) => {
-            warn!("airc attach cursor has no home ({error}): this attach starts as a first attach");
-            return None;
-        }
-    };
-    let raw = std::fs::read_to_string(path).ok()?;
-    // A corrupt watermark degrades to first-attach semantics (one full seed) —
-    // annoying, never wrong. It is presentation-adjacent state, not truth: the
-    // durable transcript is the storage of record either way.
-    serde_json::from_str(&raw).ok()
-}
-
-fn persist_cursor(channel: &RoomId, cursor: &IpcCursor) {
-    let path = match cursor_path(channel) {
-        Ok(path) => path,
-        Err(error) => {
-            warn!("failed to persist airc attach cursor: no continuum home ({error})");
-            return;
-        }
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+/// The per-channel attach watermark — the CONSUMER CURSOR (task #242): the [`IpcCursor`] this
+/// core has caught up to, threaded back as [`AttachStart::After`] on the next attach so a reboot
+/// resumes at the gap instead of replaying the room's history into the UI and every persona's
+/// perception (glass-boxed three times on 2026-07-30). It lives in the chat store beside the lines
+/// it vouches for (`chat::import_watermark`, Slice P), written through the ORM; every line up to
+/// it has already been imported, because the seam awaits each import before the next frame.
+async fn load_cursor(lines: &dyn LineImporter, channel: &RoomId) -> Result<Option<IpcCursor>, String> {
+    if let Some(imported) = lines.watermark(*channel).await? {
+        let mark = imported.position;
+        return Ok(Some(IpcCursor { epoch: mark.epoch, counter: mark.counter, event_id: airc_core::EventId::from_uuid(mark.event_id) }));
     }
-    match serde_json::to_string(cursor) {
-        Ok(json) => {
-            if let Err(error) = std::fs::write(&path, json) {
-                warn!(
-                    "failed to persist airc attach cursor to {}: {error}",
-                    path.display()
-                );
-            }
-        }
-        Err(error) => warn!("failed to serialize airc attach cursor: {error}"),
+    migrate_legacy_cursor(lines, channel).await
+}
+
+/// One-time migration: a node that persisted its watermark as a JSON file before the store owned
+/// it (`state/airc-attach-cursor-<room>.json`) hands it to the store and removes the file, so the
+/// first attach after the upgrade resumes where the last one stopped. That file advanced
+/// independently of the old lossy writer, so it does NOT vouch that the lines before it were
+/// stored: the store records it as unvouched through that position (`ImportHistory`), and a reader
+/// of that history perceives a gap (Codex on #5694). A missing or corrupt file is a first attach.
+async fn migrate_legacy_cursor(lines: &dyn LineImporter, channel: &RoomId) -> Result<Option<IpcCursor>, String> {
+    let Ok(home) = crate::paths::continuum_home() else {
+        return Ok(None);
+    };
+    let path = home.join("state").join(format!("airc-attach-cursor-{}.json", channel.as_uuid()));
+    let Some(cursor) = std::fs::read_to_string(&path).ok().and_then(|raw| serde_json::from_str::<IpcCursor>(&raw).ok()) else { // storage boundary: the legacy cursor file's JSON
+        return Ok(None);
+    };
+    lines.migrate_watermark(*channel, mark_of(&cursor)).await?;
+    if let Err(error) = std::fs::remove_file(&path) {
+        warn!("migrated the airc attach cursor into the store but could not remove {}: {error}", path.display());
+    }
+    Ok(Some(cursor))
+}
+
+fn mark_of(cursor: &IpcCursor) -> ImportWatermark {
+    ImportWatermark { epoch: cursor.epoch, counter: cursor.counter, event_id: cursor.event_id.as_uuid() }
+}
+
+/// Record the daemon's advance (always an already-delivered, already-imported event). A failure
+/// costs a larger replay on the next attach, which the idempotent import absorbs: said, not fatal.
+async fn persist_cursor(lines: &dyn LineImporter, channel: &RoomId, cursor: &IpcCursor) {
+    if let Err(error) = lines.advance_watermark(*channel, mark_of(cursor)).await {
+        warn!("failed to persist the airc attach watermark for {channel}: {error}");
     }
 }
 
@@ -264,11 +255,27 @@ pub async fn run_daemon_attach(
     // The room starts at join for a fresh node — personas perceive the
     // room AS IT IS NOW (#131), and deep history is #249's bounded
     // durable-transcript hydration, never a perception replay.
-    let request = attach_request_for_cursor(channel, load_cursor(&channel));
+    let lines = continuum_mind::chat::line_store::ChatStore;
+    let request = attach_request_for_cursor(channel, load_cursor(&lines, &channel).await?);
     let mut stream = client
         .attach(request)
         .await
         .map_err(|error| format!("failed to attach to airc daemon: {error}"))?;
+    // The room's transport is ready: publish again what this core relayed into it and has not seen
+    // back (#5696). This attach owns the recovery; an error ends it, and the supervisor's backoff
+    // retries, so a publish refused at boot recovers without another process start.
+    let recovered = lines
+        .recover_publications(channel)
+        .await
+        .map_err(|e| format!("pending publications not recovered; re-attaching to retry: {e}"))?;
+    if recovered > 0 {
+        continuum_base::probe!(
+            class = "airc.attach.publications_recovered",
+            room = %channel.as_uuid(),
+            recovered = recovered as u64,
+            "re-published lines this core relayed and had not seen back"
+        );
+    }
 
     // WATERMARK DISCIPLINE (#261, both PR #2057 review findings): the attach
     // NEVER pre-persists the room tip. The old tip-probe persisted a cursor
@@ -303,13 +310,17 @@ pub async fn run_daemon_attach(
                 probe_class = "airc.cursor.advanced",
                 "attach watermark advanced (daemon heartbeat) — persisting"
             );
-            persist_cursor(&channel, advanced_to);
+            persist_cursor(&lines, &channel, advanced_to).await;
         }
-        handle_attach_response(response, &bus).await?;
+        handle_attach_response(response, &bus, &lines).await?;
     }
 }
 
-pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Result<(), String> {
+pub async fn handle_attach_response(
+    response: Response,
+    bus: &MessageBus,
+    lines: &dyn LineImporter,
+) -> Result<(), String> {
     match response {
         Response::Ok => Ok(()),
         // v5 owner-core schema (task #82): the daemon now streams raw
@@ -318,7 +329,7 @@ pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Res
         // TranscriptEvent. A malformed buffer is logged + skipped (the
         // live stream shouldn't die because one event failed to parse).
         Response::Event { envelope } => match decode_wire_event(envelope) {
-            Ok(event) => publish_transcript_event(&Arc::new(event), bus).await,
+            Ok(event) => publish_transcript_event(&Arc::new(event), bus, lines).await,
             Err(error) => {
                 warn!("Skipping malformed airc daemon event: {error}");
                 Ok(())
@@ -338,6 +349,7 @@ pub async fn handle_attach_response(response: Response, bus: &MessageBus) -> Res
 pub async fn publish_transcript_event(
     event: &Arc<airc_core::TranscriptEvent>,
     bus: &MessageBus,
+    lines: &dyn LineImporter,
 ) -> Result<(), String> {
     // THE ONE INBOUND DECODE POINT for room events: the transport kind and headers
     // decide protocol frame or conversation, before anything reads the payload. The
@@ -365,12 +377,51 @@ pub async fn publish_transcript_event(
     // core, instead of from a per-persona subscription (which on the 5090 never
     // carried other peers' durable pushes while this path did). Synchronous and
     // cheap: one classification, one lock per resident, no await.
+    // ATTRIBUTION BEFORE ANYTHING CONSUMES THE LINE (Codex on #5696): a line claiming to speak for
+    // someone other than its transport author reaches perception, the store and the projection only
+    // when this core's publication obligation proves it; otherwise it is refused here, said, and
+    // dropped, never relabeled.
+    let delegated = match attribution_gate(event, lines).await? {
+        Gate::Pass { delegated } => delegated,
+        Gate::Refused => return Ok(()),
+    };
+    // THE STORE FIRST, ONCE (Slice P; Codex on #5696): a room line is imported, awaited, before
+    // anything consumes it; an error ends this attach before the watermark passes the line, and the
+    // re-attach replays it. A line the store already holds (a replay after a restart, a re-published
+    // relayed line) is not perceived or projected again. Known gap until P2 perceives from the store:
+    // a line imported but not yet fed when the core died is not re-fed on replay.
+    let decoded = envelope_from_event(event);
+    let chat_line = match &decoded {
+        Ok(None) => posted_from_message(event),
+        Ok(Some(envelope)) => posted_from_envelope(envelope, event).map(|mut line| {
+            line.retires_publication = delegated;
+            line
+        }),
+        Err(_) => None,
+    };
+    if let Some(line) = &chat_line {
+        let imported = lines
+            .import(line.clone())
+            .await
+            .map_err(|e| format!("inbound line not stored; re-attaching to replay it: {e}"))?;
+        if let continuum_mind::chat::line_store::Imported::Duplicate { arrival_seq } = imported {
+            continuum_base::probe!(
+                class = "airc.inbound.duplicate_line",
+                room = %event.room_id.as_uuid(),
+                message = %line.message_id,
+                arrival_seq = arrival_seq,
+                "a line the store already holds arrived again; not perceived or projected twice"
+            );
+            return Ok(());
+        }
+    }
     let fed = crate::persona::perception_feed::feed(&conversation, EpochMs::now().millis());
     if fed > 0 {
         continuum_base::probe!(
             class = "mind.feed.event",
             room = %event.room_id.as_uuid(),
             from = %event.peer_id.as_uuid(),
+            event_id = %event.event_id.as_uuid(),
             residents = fed,
             "a room event fed to resident minds"
         );
@@ -379,7 +430,7 @@ pub async fn publish_transcript_event(
     // review is verified (signed by its author, accepted in the room's projection,
     // admitted by the room's self-review policy). It used to settle here, on any
     // review-shaped event, unchecked.
-    let envelope = match envelope_from_event(event) {
+    let envelope = match decoded {
         Ok(Some(envelope)) => envelope,
         // Not a Continuum EventBridge envelope. Before dropping it, try
         // the thin chat projection: a plain airc chat message projects
@@ -394,7 +445,7 @@ pub async fn publish_transcript_event(
             // content). An event is at most one of these; anything else is not
             // ours here → skip. Classification, never a fallback — a
             // non-matching kind fabricates nothing.
-            if let Some((name, payload)) = chat_posted_from_message(event) {
+            if let Some(line) = &chat_line {
                 // task #84: the persona-turn / plain-airc-message stream into
                 // the room. This is the seam a client's live read surface
                 // (positron ChatViewState) is fed from — probe it so the turn
@@ -412,9 +463,9 @@ pub async fn publish_transcript_event(
                 crate::cognition::deliberation_budget::record_room_speech(
                     event.room_id.as_uuid(),
                     Some(event.peer_id.as_uuid()),
-                    payload["content"].as_str().unwrap_or_default(),
+                    &line.text,
                 );
-                bus.publish_async_only(name, payload);
+                bus.publish_async_only(CHAT_POSTED, chat_posted_payload(&line));
             } else if let Some((name, payload)) = wall_changed_from_event(event) {
                 bus.publish_async_only(name, payload);
             } else if let Some((name, payload)) = kanban_changed_from_event(event) {
@@ -456,10 +507,17 @@ pub async fn publish_transcript_event(
                 "first capacity offer heard from a grid peer",
             );
         }
-    } else if let Some((name, payload)) = chat_posted_from_envelope(&envelope, event) {
+    } else if let Some(mut line) = posted_from_envelope(&envelope, event) {
+        line.retires_publication = delegated;
+        // The same awaited, idempotent import as the plain arm (a human line was stored by
+        // chat/send under this id already; the import reuses its row and arrival).
+        lines
+            .import(line.clone())
+            .await
+            .map_err(|e| format!("inbound line not stored; re-attaching to replay it: {e}"))?;
         continuum_base::probe!(
             class = "airc.chat.projected",
-            sender_id = %payload["senderId"],
+            sender_id = %line.author.as_uuid(),
             room_id = %event.room_id.as_uuid(),
             event_id = %event.event_id.as_uuid(),
             "chat_transcript envelope projected to chat:posted for positron"
@@ -468,9 +526,9 @@ pub async fn publish_transcript_event(
         crate::cognition::deliberation_budget::record_room_speech(
             event.room_id.as_uuid(),
             Some(event.peer_id.as_uuid()),
-            payload["content"].as_str().unwrap_or_default(),
+            &line.text,
         );
-        bus.publish_async_only(name, payload);
+        bus.publish_async_only(CHAT_POSTED, chat_posted_payload(&line));
     }
     Ok(())
 }
@@ -478,7 +536,7 @@ pub async fn publish_transcript_event(
 /// Project a `chat_transcript` envelope (a human `chat/send`, the web
 /// client — the `Body::Json` room-message shape) into the SAME thin
 /// `chat:posted` payload the plain-text sibling
-/// [`chat_posted_from_message`] emits. Returns `None` for any other
+/// [`posted_from_message`] emits. Returns `None` for any other
 /// envelope (EventBridge, presence, media-control) — it is not a chat line.
 ///
 /// Identity-free like its sibling: `senderId` is the envelope's logical
@@ -492,11 +550,11 @@ pub async fn publish_transcript_event(
 /// the inline id means the projection, the durable chat store, and the
 /// original `chat/send` all agree on ONE identity per human message, so
 /// the store-side projector (#140) dedups instead of double-writing.
-fn chat_posted_from_envelope(
+fn posted_from_envelope(
     envelope: &AircRealtimeEnvelope,
     event: &airc_core::TranscriptEvent,
-) -> Option<(&'static str, serde_json::Value)> {
-    let (sender_id, content) = chat_transcript_message(envelope, event.peer_id.as_uuid())?;
+) -> Option<PostedLine> {
+    let (sender_id, content) = chat_transcript_message(envelope, crate::routing::airc_realtime_wire::logical_sender(event))?;
     let message_id = match &envelope.payload {
         crate::routing::airc_realtime::AircRealtimePayload::ExistingSchema { payload } => payload
             .inline
@@ -507,14 +565,84 @@ fn chat_posted_from_envelope(
         _ => None,
     }
     .unwrap_or_else(|| event.event_id.as_uuid());
-    let payload = serde_json::json!({
-        "messageId": message_id,
-        "roomId": event.room_id.as_uuid(),
-        "senderId": sender_id,
-        "content": content,
-        "timestamp": event.occurred_at_ms,
-    });
-    Some((CHAT_POSTED, payload))
+    let mut line = posted_line(event, content)?;
+    line.message_id = message_id;
+    line.author = airc_core::PeerId::from_uuid(sender_id);
+    Some(line)
+}
+
+/// Whether a line may be consumed, decided by attribution.
+enum Gate {
+    Pass { delegated: bool },
+    Refused,
+}
+
+/// Attribute a line before it is consumed: no claim (or a claim naming its transport author) passes
+/// as the author's own; a claim to speak for someone else passes only on an exact publication
+/// obligation (`chat::publication::attribute`), read through the injected store.
+async fn attribution_gate(event: &airc_core::TranscriptEvent, lines: &dyn LineImporter) -> Result<Gate, String> {
+    use crate::routing::airc_realtime_wire::{claimed_message, claimed_sender, envelope_from_event};
+    use continuum_mind::chat::publication::{attribute, publication_digest, Attribution};
+    use crate::routing::airc_realtime_wire::SenderClaim;
+    let claim = claimed_sender(event);
+    if claim == SenderClaim::Absent || claim == SenderClaim::Named(event.peer_id) {
+        return Ok(Gate::Pass { delegated: false });
+    }
+    let obligation = match claimed_message(event) {
+        Some(id) => lines.publication(id).await?,
+        None => None,
+    };
+    // The line as received, from the one chat_transcript decoder (its claimed sender, its text and
+    // media); a line that does not decode matches no publication.
+    let received = match (claimed_message(event), claim, envelope_from_event(event)) {
+        (Some(message), SenderClaim::Named(sender), Ok(Some(envelope))) => {
+            crate::cognition::conversation::room_event::chat_transcript_content(&envelope, sender.as_uuid())
+                .map(|turn| publication_digest(message, event.room_id, sender, &turn.text, &turn.media))
+        }
+        _ => None,
+    };
+    match attribute(event.peer_id, claim, event.room_id, obligation.as_ref(), received) {
+        Attribution::Author(_) => Ok(Gate::Pass { delegated: false }),
+        Attribution::Delegated { .. } => Ok(Gate::Pass { delegated: true }),
+        Attribution::Refused { claimed, reason } => {
+            continuum_base::probe!(
+                class = "airc.inbound.delegation_refused",
+                room = %event.room_id.as_uuid(),
+                transport = %event.peer_id.as_uuid(),
+                claimed = ?claimed.map(|c| c.as_uuid()),
+                reason = ?reason,
+                "a line claimed to speak for someone it could not prove; refused, not relabeled"
+            );
+            Ok(Gate::Refused)
+        }
+    }
+}
+
+/// The typed line of a room event, from its header (kind, ids, addressee) and its decoded text;
+/// `None` when the event is not a room line.
+fn posted_line(event: &airc_core::TranscriptEvent, text: String) -> Option<PostedLine> {
+    let arrival = continuum_mind::chat::arrival::Arrival::of_event(event)?;
+    Some(PostedLine {
+        message_id: arrival.message_id,
+        room: arrival.room,
+        author: arrival.author,
+        kind: arrival.kind,
+        direct_to: arrival.direct_to,
+        occurred_at_ms: event.occurred_at_ms,
+        text,
+        retires_publication: false,
+    })
+}
+
+/// The `chat:posted` projection cue the positron renderer reads, derived from the typed line.
+fn chat_posted_payload(line: &PostedLine) -> serde_json::Value {
+    serde_json::json!({
+        "messageId": line.message_id,
+        "roomId": line.room.as_uuid(),
+        "senderId": line.author.as_uuid(),
+        "content": line.text,
+        "timestamp": line.occurred_at_ms,
+    })
 }
 
 /// Decode a `grid_capacity` envelope's inline payload into a [`CapacityOffer`].
@@ -547,21 +675,12 @@ fn capacity_offer_from_envelope(
 /// is a presence fact, never a message fact — see
 /// `airc-to-positron-chat-projection`. airc's `event_id` IS the stable
 /// `message_id` (same event → same id across replay + peers).
-fn chat_posted_from_message(
-    event: &airc_core::TranscriptEvent,
-) -> Option<(&'static str, serde_json::Value)> {
+fn posted_from_message(event: &airc_core::TranscriptEvent) -> Option<PostedLine> {
     if event.kind != TranscriptKind::Message {
         return None;
     }
     let content = event.body.as_ref()?.as_text()?;
-    let payload = serde_json::json!({
-        "messageId": event.event_id.as_uuid(),
-        "roomId": event.room_id.as_uuid(),
-        "senderId": event.peer_id.as_uuid(),
-        "content": content,
-        "timestamp": event.occurred_at_ms,
-    });
-    Some((CHAT_POSTED, payload))
+    posted_line(event, content.to_string())
 }
 
 /// Project a `WallPostPublished` transcript event into the `wall:changed`

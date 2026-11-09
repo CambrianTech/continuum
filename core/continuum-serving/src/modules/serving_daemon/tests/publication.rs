@@ -30,38 +30,6 @@ fn the_admission_gate_counts_the_engines_lanes_not_the_plans() {
     );
 }
 
-// what this catches (2026-09-01 live): the re-home guard measured only the
-// per-slot window, so a plan that GREW total token-space by adding lanes
-// while trimming per-slot (2×57,600 → 4×47,426, +65% space, +2 warm slots)
-// computed a negative gain and never relaunched — five residents thrashed
-// two slots at hit_rate 0.0 until an operator cycled the server by hand.
-// The evidence currency is window × lanes.
-#[test]
-fn rehome_evidence_counts_lanes_not_just_per_slot_window() {
-    use super::rehome_gain_evidence;
-    // The live incident shape: more lanes, smaller per-slot, bigger total.
-    let (live, plan, gain, worth_it) = rehome_gain_evidence(57_600, 2, 47_426, 4);
-    assert_eq!(live, 115_200);
-    assert_eq!(plan, 189_704);
-    assert_eq!(gain, 74_504);
-    assert!(
-        worth_it,
-        "65% more total space must qualify as re-home evidence"
-    );
-    // Same total space re-sliced: not evidence (a relaunch kills in-flight turns).
-    let (_, _, _, worth_it) = rehome_gain_evidence(40_000, 2, 20_000, 4);
-    assert!(!worth_it, "re-slicing the same space is not a gain");
-    // Sub-threshold growth (<15%): not evidence.
-    let (_, _, _, worth_it) = rehome_gain_evidence(40_000, 2, 44_000, 2);
-    assert!(!worth_it, "10% is under the 15% margin");
-    // A dead lane (0 window) never qualifies — recovery is a different path.
-    let (_, _, _, worth_it) = rehome_gain_evidence(0, 1, 40_000, 2);
-    assert!(
-        !worth_it,
-        "live_space=0 is the recovery arm's job, not re-home"
-    );
-}
-
 // what this catches (card 29e4ab34, the M5 2026-09-19 17:20:35Z): the thirteen-second
 // boot window in which no lane has reported a model. The knee lookup must key on the
 // remembered model then — otherwise the roster (17 runtimes) goes unclamped into the
@@ -137,10 +105,6 @@ fn a_boot_before_any_lane_reports_its_model_reads_the_remembered_models_knee() {
     assert_eq!(
         cold.lanes, 2,
         "remembered model applies its knee before boot, not the eight-core maximum"
-    );
-    assert!(
-        roster_short_of_slots(1, cold.lanes),
-        "a prior one-lane collapse can recover the second slot"
     );
 }
 
@@ -379,6 +343,7 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
         .clone()
         .expect("a cold boot publishes the best runnable plan, starved or not");
     assert!(starved.served_context_window <= 32_768);
+    assert!(starved.served_context_window > 2_048, "a genuinely starved node launches its own measured window, never a 2,048 fallback (Cormac's case 2 on #5739)");
     assert!(
         !crate::inference::planning::serving_plan::persona_lane_holds(
             starved.served_context_window,
@@ -678,3 +643,49 @@ async fn a_hold_is_published_keeps_its_start_and_is_cleared_on_release() {
     daemon.publish_hold(&Occupancy::Free);
     assert_eq!(daemon.serving_tx.borrow().held_for, None, "a released engine is not held");
 }
+
+// what this catches: a sequence published the engine's whole shared pool as its window (every
+// mind budgeting 290k of a 290k pool), shares that sum past the pool (a full pool fails the
+// whole decode batch), or a share that moves with the plan's per-tick lane guess. Each of the
+// engine's own sequences gets an equal share, capped at the model's trained window.
+#[test]
+fn each_sequence_is_published_its_share_of_the_shared_pool() {
+    use super::sequence_share;
+    let (share, sequences) = sequence_share(290_560, 5, 262_144);
+    assert_eq!((share, sequences), (58_112, 5), "the M5: four residents and the scratch sequence");
+    assert!(share * sequences <= 290_560, "the shares fit the pool");
+    assert_eq!(sequence_share(290_560, 1, 100_000), (100_000, 1), "one sequence is capped at the trained window");
+    assert_eq!(sequence_share(290_560, 0, 262_144), (262_144, 1), "no sequence count is one, never a divide by zero");
+}
+
+// what this catches (b4be7bc59 on the M5, 2026-11-03 18:18Z, rolled back): a cold boot publishing
+// (so launching once, for the engine's life) a plan computed off the footprint record the same pass
+// retired: 2,048 at a sampled 23 GB; the next pass, without the record, planned 2 x 184,320. A
+// starved plan re-plans exactly when its own pass retired its record and nothing is published yet;
+// a published plan stands; a plan starved by inputs that survived is published (a dark node is
+// worse). And the loop re-runs a pass only while it retires its record (Cormac's case 1 on #5739).
+#[test]
+fn a_pass_that_retires_its_record_re_plans_never_publishing_the_starved_plan() {
+    use super::super::planning::{starved_plan, until_decided, PlanOutcome, Starved};
+    assert_eq!(starved_plan(false, true), Starved::Replan, "cold boot, record retired: re-plan, never publish");
+    assert_eq!(starved_plan(false, false), Starved::Publish, "cold boot, starved by surviving inputs: publish");
+    assert_eq!(starved_plan(true, true), Starved::PreviousStands, "a published plan stands");
+    assert_eq!(starved_plan(true, false), Starved::PreviousStands);
+    let mut passes = vec![PlanOutcome::RetiredItsRecord, PlanOutcome::RetiredItsRecord, PlanOutcome::Decided].into_iter();
+    let mut ran = 0;
+    until_decided(|| {
+        ran += 1;
+        passes.next().expect("no pass after the deciding one")
+    });
+    assert_eq!(ran, 3, "re-plans while a pass retires its record, stops at the pass that decides");
+}
+
+// what this catches: a launch before any plan exists (no sampled budget, no plan published):
+// the engine must not start from defaults (Cormac's case 3 on #5739).
+#[tokio::test]
+async fn no_plan_published_means_no_launch() {
+    let daemon = daemon_with(Arc::new(FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)));
+    assert!(daemon.plan_tx.borrow().plan.is_none(), "nothing planned yet");
+    assert!(daemon.reconcile_to_plan().is_none(), "no plan, no launch");
+}
+

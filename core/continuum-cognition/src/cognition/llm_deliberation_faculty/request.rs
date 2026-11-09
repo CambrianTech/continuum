@@ -21,6 +21,14 @@ impl TurnKind {
         }
     }
 
+    /// The tokens this turn kind decodes within its latency budget at the measured `tps`: the
+    /// time term the allowance reports and the ceiling a reply may test upward to. `None` with no
+    /// measured rate (after a restart the rate reads 0), so nothing grows on a guess.
+    pub(super) fn time_term(self, tps: Option<f64>) -> Option<u32> {
+        tps.filter(|t| t.is_finite() && *t > 0.0)
+            .map(|t| (self.latency_budget_secs() * t).round() as u32)
+    }
+
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Act => "act",
@@ -65,9 +73,7 @@ pub(super) fn output_allowance(
     need: Option<super::super::working_set::OutputNeed>,
     allowance: u32,
 ) -> OutputAllowance {
-    let time_term = tps
-        .filter(|t| t.is_finite() && *t > 0.0)
-        .map(|t| (kind.latency_budget_secs() * t).round() as u32);
+    let time_term = kind.time_term(tps);
     let need_term = need.map(|n| n.total());
     let allowance = allowance.max(1);
     OutputAllowance {
@@ -127,6 +133,8 @@ impl LlmDeliberationFaculty {
         binding: &ModelBinding,
         context_window: u32,
         mut request: TextGenerationRequest,
+        // What the adapter enforces at dispatch (`DispatchTerms`): her think budget and admission.
+        terms: crate::ai::types::DispatchTerms,
         // The allocation her prompt was fitted under: the receipt carries it with the capture.
         allocation: Option<crate::ai::provenance::AllocationReceipt>,
         receipts: &mut Vec<crate::ai::provenance::GenerationReceipt>,
@@ -183,23 +191,6 @@ impl LlmDeliberationFaculty {
         // musing or a long ambient turn. Directed calls take from the full pool. Scoped to a
         // block so every lane releases the instant generation returns — downstream
         // capture/parse/act hold nothing. [[conversational-latency-is-a-misdirection-budget]]
-        // WIRE CAPTURE (2026-08-24, the churn hunt's missing instrument): when
-        // `SERVING_WIRE_CAPTURE_DIR` is configured (config.env — same channel as
-        // SERVING_KV_CACHE_TYPE), append this request's EXACT message list to
-        // `<dir>/<persona>.wire.jsonl` before it ships. Byte-diffing consecutive
-        // rows names the precise prompt position where the KV prefix dies —
-        // today that diagnosis ran on the BID capture, which is not the wire,
-        // and misled twice. Off (unset) = zero cost, zero IO — the Noop default
-        // every capture sink owes the hot path.
-        if let Some(dir) = continuum_base::config_env::read("SERVING_WIRE_CAPTURE_DIR") {
-            append_wire_capture(
-                std::path::Path::new(&dir),
-                self.persona_id,
-                &self.persona_name,
-                ws.room_id,
-                &request,
-            );
-        }
         // Resolve a switch ONCE: admission and dispatch must use the same concrete
         // handle even if placement changes while this call waits. A later call that
         // falls home resolves again and acquires the local permits normally.
@@ -216,9 +207,6 @@ impl LlmDeliberationFaculty {
             let _admission = self
                 .admit_generation(ws, &request, adapter.generation_admission(), &mut capture)
                 .await?;
-            // HER task-positive system is engaged from here: the per-citizen boredom gate
-            // (dreams) reads this stamp, never a room wake.
-            crate::cognition::activity_gate::persona_engaged(self.persona_id);
             // COGNITION PULSE per generation, not only per turn start. The claim-renewal
             // gate reads this stamp, and a single service-loop turn can run many acts: on
             // the M5 an act takes 7-9 minutes, so a multi-act turn outlives the 30-minute
@@ -252,7 +240,9 @@ impl LlmDeliberationFaculty {
                     turn_bound,
                     None,
                 );
-                let result = adapter.generate_stream_checked(request, sink.clone()).await;
+                let result = _admission
+                    .run(adapter.generate_admitted(request, terms, sink.clone()))
+                    .await;
                 witness.disarm();
                 result
             } else {
@@ -265,7 +255,9 @@ impl LlmDeliberationFaculty {
                     turn_bound,
                     Some(receiver),
                 );
-                let result = adapter.generate_stream_checked(request, sink).await;
+                let result = _admission
+                    .run(adapter.generate_admitted(request, terms, sink))
+                    .await;
                 witness.disarm();
                 result
             }
@@ -289,19 +281,26 @@ impl LlmDeliberationFaculty {
                 .map(|t| (t.cached_tokens, t.prefill_tokens)),
         );
         let receipt = match &gen_result {
-            Ok(response) => crate::ai::provenance::GenerationReceipt::from_response(request_id, response),
-            Err(error) => crate::ai::provenance::GenerationReceipt::faulted(request_id, error.to_string()),
+            Ok(response) => {
+                crate::ai::provenance::GenerationReceipt::from_response(request_id, response)
+            }
+            Err(error) => {
+                crate::ai::provenance::GenerationReceipt::faulted(request_id, error.to_string())
+            }
         };
         // Counted where the served receipt is made, the one producer of the facts her service
         // window reads: in the window it was served in, whether or not her turn settles soon.
-        if matches!(receipt.outcome, crate::ai::provenance::GenerationOutcome::Served { .. }) {
+        if matches!(
+            receipt.outcome,
+            crate::ai::provenance::GenerationOutcome::Served { .. }
+        ) {
             crate::cognition::resident_service::note_generation(self.persona_id);
         }
         receipts.push(
             receipt
-            .with_capture(completed.as_deref())
-            .with_genes(genes)
-            .with_allocation(allocation),
+                .with_capture(completed.as_deref())
+                .with_genes(genes)
+                .with_allocation(allocation),
         );
         Some(gen_result)
     }
@@ -309,9 +308,9 @@ impl LlmDeliberationFaculty {
     pub fn build_request_within(
         &self,
         binding: &ModelBinding,
-        // The reply's grant as the prompt plan granted it
-        // (`DeliberationPromptView::completion_reserve`): carried as `max_tokens`
-        // verbatim, never re-derived here — the prompt was fitted to leave exactly it.
+        // The request's cap for the view it is sent with ([`request_allowance`]): a pass's
+        // grant (`DeliberationPromptView::completion_reserve`), an act's window room after
+        // its prompt. Carried as `max_tokens` verbatim, never re-derived here.
         allowance: u32,
         messages: Vec<ChatMessage>,
         tools: Option<Vec<NativeToolSpec>>,
@@ -358,17 +357,13 @@ impl LlmDeliberationFaculty {
             // reward metric is reproducible; `None` (live cognition) → her own
             // configured temperature. Wait-free read, like `genome` below.
             temperature: Some((**self.decoding.load()).unwrap_or(self.temperature)),
-            // Generation is bounded to the room the prompt plan GRANTED it — the
-            // reply's flex allocation, the same value `prompt_view` subtracts from the
-            // served window. This is the ONE place the two must agree: the prompt is
-            // sized to leave this many tokens, so the reply is allowed exactly this
-            // many. Left unbounded (`None`), a verbose turn overruns the reserve,
-            // `prompt + completion` reaches `n_ctx`, and llama-server (started with
-            // `--embeddings`, so context-shift is off) returns 500 "Compute error" —
-            // muting the persona for the whole tick. This is NOT the flat cap that
-            // truncated qwen3.5 mid-`<think>`: the grant comes out of the real served
-            // window by priority against everything else in it, so the reply gets every
-            // token allocated to it — never a const we picked, never an overrun ([[fallbacks-are-illegal-fail-loud]]).
+            // Generation is bounded inside the window the prompt was fitted to
+            // ([`request_allowance`]): a pass by its grant in the one allocation, an act by
+            // the room its prompt leaves (its answer is payload; its think is bounded by
+            // the reasoning budget). Never past the window: left unbounded (`None`), a
+            // verbose turn reaches `n_ctx`, and llama-server (started with `--embeddings`,
+            // so context-shift is off) returns 500 "Compute error", muting the persona
+            // for the whole tick. Never a const we picked ([[fallbacks-are-illegal-fail-loud]]).
             max_tokens: Some(max_tokens),
             top_p: None,
             top_k: None,

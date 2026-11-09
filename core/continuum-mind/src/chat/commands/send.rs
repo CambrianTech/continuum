@@ -18,7 +18,6 @@ use uuid::Uuid;
 
 use crate::chat::types::{ChatSendParams, ChatSendResult};
 use crate::chat::ChatModule;
-use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::CommandError;
 
 /// The caller-facing wire shape — `senderId` is OPTIONAL here and resolved by
@@ -55,7 +54,7 @@ crate::action_command! {
     /// (personas act as themselves; the operator's CLI speaks as the operator
     /// self-peer). This is a persona's primary voice: it stores the message locally
     /// AND broadcasts it over airc.
-    pub struct ChatSend { executor_slot: Arc<LateBound<CommandExecutor>> }
+    pub struct ChatSend { executor_slot: Arc<crate::chat::ChatSlot> }
     name: "chat/send",
     access: AiSafe,
     params: ChatSendWireParams,
@@ -65,9 +64,23 @@ crate::action_command! {
         // the AGENT self-peer — never as the human operator. Attribution is
         // identity's whole point (Joel, 2026-09-01).
         let agent_session = ctx.claimed_actor_kind.as_deref() == Some("agent");
-        let sender_id = p
-            .sender_id
-            .or_else(|| ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()))
+        // The sender is bound to the authenticated caller: a persona or a grid peer speaks as
+        // itself, and naming anyone else is refused (it was the first link of the chain, so any
+        // caller could post as anyone). Only the substrate's own local code (`caller: None`,
+        // the owner) may name the sender, as the live-call transcript does for a speaker.
+        if let (Some(caller), Some(named)) = (ctx.caller.as_ref(), p.sender_id) {
+            if caller.peer_id.as_uuid() != named {
+                return Err(CommandError::Denied(format!(
+                    "chat/send: caller {} may not speak as {named}; omit senderId to speak as yourself",
+                    caller.peer_id.as_uuid()
+                )));
+            }
+        }
+        let sender_id = ctx
+            .caller
+            .as_ref()
+            .map(|c| c.peer_id.as_uuid())
+            .or(p.sender_id)
             .or_else(|| {
                 if agent_session {
                     crate::persona::operator_peer::agent_runtime()
@@ -150,7 +163,11 @@ crate::action_command! {
                 }
                 if let Some(e) = publish_err {
                     // The say missed: fall back to the envelope leg so the line
-                    // still reaches the wire, and say why.
+                    // still reaches the wire, and say why. The core now publishes for the caller,
+                    // so its publication obligation is recorded first (#5696).
+                    chat.record_publication(result.message_id, &params)
+                        .await
+                        .map_err(CommandError::Internal)?;
                     let fallback = chat
                         .broadcast_envelope(
                             result.message_id,
@@ -218,6 +235,23 @@ mod tests {
     // every caller binds to) and stays AiSafe — chat/send WRITES, but posting a message
     // is a normal persona action, not the Owner-locked data/delete class. A regression
     // that renamed the path or narrowed access (gagging personas) is caught here.
+    // what this catches: impersonation through chat/send (an explicit senderId used to win over
+    // the authenticated caller, so any persona or grid peer could post as Joel): a caller naming
+    // anyone but itself is refused before anything is stored or published.
+    #[tokio::test]
+    async fn an_authenticated_caller_cannot_speak_as_someone_else() {
+        let command = ChatSend { executor_slot: Arc::new(crate::chat::ChatSlot::new()) };
+        let caller = crate::identity::PeerId::from_uuid(Uuid::new_v4());
+        let ctx = crate::sdk_codegen::Ctx {
+            caller: Some(crate::routing::CallerIdentity::airc(caller)),
+            ..Default::default()
+        };
+        let joel = Uuid::new_v4();
+        let params = ChatSendWireParams { room_id: Uuid::new_v4(), sender_id: Some(joel), text: "hi".into(), reply_to_id: None };
+        let refused = command.run(&ctx, params).await;
+        assert!(matches!(refused, Err(CommandError::Denied(_))), "speaking as someone else is refused: {refused:?}");
+    }
+
     #[test]
     fn name_and_access_are_the_contract() {
         assert_eq!(ChatSend::NAME, "chat/send");

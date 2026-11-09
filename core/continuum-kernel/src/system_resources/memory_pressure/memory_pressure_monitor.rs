@@ -387,10 +387,10 @@ impl MemoryPressureMonitor {
         let mut results: Vec<(usize, ReporterCallOutcome)> = Vec::with_capacity(live.len());
         for (idx, reporter) in live {
             let handle = tokio::task::spawn_blocking(move || {
-                std::panic::catch_unwind(AssertUnwindSafe(|| reporter.report()))
+                std::panic::catch_unwind(AssertUnwindSafe(|| (reporter.report(), reporter.priority())))
             });
             let outcome = match tokio::time::timeout(REPORTER_TIMEOUT, handle).await {
-                Ok(Ok(Ok(report))) => ReporterCallOutcome::Report(report),
+                Ok(Ok(Ok((report, priority)))) => ReporterCallOutcome::Report(report, priority),
                 Ok(Ok(Err(_panic))) => ReporterCallOutcome::Panicked,
                 Ok(Err(join_err)) => ReporterCallOutcome::JoinError(format!("{join_err:?}")),
                 Err(_elapsed) => ReporterCallOutcome::TimedOut,
@@ -404,12 +404,21 @@ impl MemoryPressureMonitor {
             let mut st = self.state.lock();
 
             let mut module_reports = Vec::with_capacity(results.len());
+            let mut held_by_priority: Vec<HeldAtPriority> = Vec::new();
             for (idx, outcome) in results {
                 let entry = &mut st.reporters[idx];
                 let name = entry.reporter.name();
                 match outcome {
-                    ReporterCallOutcome::Report(report) => {
+                    ReporterCallOutcome::Report(report, priority) => {
                         entry.consecutive_panics = 0;
+                        // Only what can shed shares an overrun: an unsheddable reporter would claim a
+                        // share it never frees (Cormac on #5697).
+                        if report.can_shed {
+                            match held_by_priority.iter_mut().find(|held| held.priority == priority) {
+                                Some(held) => held.bytes += report.bytes,
+                                None => held_by_priority.push(HeldAtPriority { priority, bytes: report.bytes }),
+                            }
+                        }
                         module_reports.push(report);
                     }
                     ReporterCallOutcome::Panicked => {
@@ -501,6 +510,7 @@ impl MemoryPressureMonitor {
                 available_bytes: available,
                 swap_used_bytes: swap_used,
                 modules: module_reports,
+                held_by_priority,
                 timestamp_ms: now_ms,
                 consecutive_at_level,
             };

@@ -203,6 +203,56 @@ async fn three_deadline_misses_make_the_lane_cold_and_the_next_request_fails_fas
     assert!(err.contains("df72dbf2"));
 }
 
+// what this catches: a miss that is not a `Timeout` resetting the breaker as if the peer had
+// answered. A seat that forms no session fails as a transport error (airc's "no session with the
+// peer before the deadline"); on IntelMac 2026-11-02 three residents retried such a seat every act,
+// ~630 s each, and the lane never went cold (card ce043fcc). No answer, of any kind, is a miss.
+#[tokio::test]
+async fn no_session_and_no_route_count_as_misses_and_make_the_lane_cold() {
+    let misses = [
+        RemoteInferenceError::Transport {
+            message: "transport: addressed: no session with the peer before the deadline".into(),
+        },
+        RemoteInferenceError::NoPeerReachable { message: "route: no route".into() },
+        RemoteInferenceError::Transport { message: "addressed transport: write failed".into() },
+    ];
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let transport = StubInferenceTransport::new(move |_| {
+        let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(misses[i % misses.len()].clone())
+    });
+    let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer("ce043fcc-no-session");
+    for _ in 0..COLD_AFTER_DEADLINES {
+        assert!(!adapter.is_cold(), "warm until the misses add up");
+        adapter.generate_text(req("hi")).await.unwrap_err();
+    }
+    assert!(adapter.is_cold(), "no session and no route are misses, not answers");
+    let err = adapter.generate_text(req("hi")).await.unwrap_err();
+    assert!(err.contains("cold"), "refused here, not after another full deadline: {err}");
+}
+
+// what this catches: the mirror. A peer that ANSWERS, even with a refusal, is alive: the misses
+// before it do not add up across it, so a lane is not exiled for a peer that evaluates its mail.
+#[tokio::test]
+async fn an_answering_refusal_resets_the_misses() {
+    let script: [Result<RemoteInferenceResponse, RemoteInferenceError>; 5] = [
+        Err(RemoteInferenceError::Transport { message: "no session".into() }),
+        Err(RemoteInferenceError::Timeout { elapsed_ms: 1 }),
+        Err(RemoteInferenceError::PeerAdapterFailed { message: "the peer's adapter refused".into() }),
+        Err(RemoteInferenceError::Transport { message: "no session".into() }),
+        Err(RemoteInferenceError::Timeout { elapsed_ms: 1 }),
+    ];
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let transport = StubInferenceTransport::new(move |_| {
+        script[next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % script.len()].clone()
+    });
+    let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer("ce043fcc-answers");
+    for _ in 0..5 {
+        adapter.generate_text(req("hi")).await.unwrap_err();
+    }
+    assert!(!adapter.is_cold(), "two misses, an answer, two misses: never three in a row");
+}
+
 #[tokio::test]
 async fn timeout_error_surfaces_with_elapsed_ms() {
     let transport = StubInferenceTransport::always_failing(RemoteInferenceError::Timeout {
@@ -496,4 +546,42 @@ async fn the_served_window_on_an_answer_reaches_the_sink() {
     assert_eq!(receipt.responding_peer, "peer");
     assert_eq!(receipt.correlation_id, "wire-correlation");
     assert_eq!(receipt.elapsed_ms, 42);
+}
+
+// ── dispatch terms: the grid lane's difference ─────────────
+
+// what this catches: a mind's think budget sent to a seat that would generate it unbounded. The
+// lane forwards the budget only to a seat whose beacon advertises `RemoteThinkBudget`
+// (affirmative membership, never a version guess); with no such offer heard it refuses typed and
+// nothing reaches the transport. On the wire the budget rides beside the request as `think`.
+#[tokio::test]
+async fn the_grid_lane_carries_a_think_budget_only_to_a_seat_that_advertises_it() {
+    use crate::ai::adapter::DispatchTermsPolicy;
+    use crate::ai::types::{DispatchTerms, ThinkBudget};
+    let sent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = sent.clone();
+    let transport = StubInferenceTransport::new(move |_| {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(RemoteInferenceError::Transport { message: "not reached".to_string() })
+    });
+    let adapter = AircRemoteInferenceAdapter::new(transport).with_target_peer(uuid::Uuid::new_v4().to_string());
+    let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let terms = DispatchTerms { admission: None, think: Some(ThinkBudget(338)) };
+    let refused = adapter.generate_admitted(req("act"), terms, sink).await;
+    assert!(matches!(refused, Err(crate::ai::inference_error::InferenceError::ThinkUnenforceable { .. })), "{refused:?}");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::SeqCst), 0, "never sent unbounded");
+
+    let mut offer: crate::capacity::gossip::CapacityOffer = serde_json::from_value(serde_json::json!({
+        "gpuTotalBytes": 1u64, "gpuFreeBytesLive": 0u64, "systemRamFreeBytes": 0u64, "atMs": 0u64,
+    }))
+    .expect("the wire shape of a seat's beacon");
+    assert!(!takes_think(Some(&offer)), "an older seat advertises nothing: refused");
+    assert!(!takes_think(None), "no beacon heard: refused");
+    offer.capabilities = crate::capacity::gossip::this_build_capabilities();
+    assert!(takes_think(Some(&offer)), "this build's seat advertises it");
+
+    let wire = RemoteInferenceRequest::new(req("act")).with_think(Some(ThinkBudget(0))).wire_params().expect("serializable");
+    assert_eq!(wire["think"], serde_json::json!(0), "zero is a budget on the wire too");
+    let plain = RemoteInferenceRequest::new(req("act")).wire_params().expect("serializable");
+    assert!(plain.get("think").is_none(), "no budget, no field");
 }

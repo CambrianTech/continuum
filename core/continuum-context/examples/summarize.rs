@@ -5,7 +5,7 @@
 //!
 //! `code` parses the hands gutter (`  N | code`), the format `code/read` renders.
 
-use continuum_context::levels::{summarize, Shape, LEVEL_RATIO};
+use continuum_context::levels::{summarize, Shape};
 
 fn gutter(line: &str) -> Option<(u32, &str)> {
     let (number, code) = line.split_once(" | ")?;
@@ -27,10 +27,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     match summarize(&full, shape) {
         Some(summary) => {
             let level = summary.chars().count();
-            println!("full {chars} chars, summary {level} chars ({:.1}% of full; bound {:.0}%)", 100.0 * level as f64 / chars as f64, 100.0 / LEVEL_RATIO as f64);
+            println!("full {chars} chars, summary {level} chars ({:.1}% of full)", 100.0 * level as f64 / chars as f64);
             println!("{}", summary.lines().take(12).collect::<Vec<_>>().join("\n"));
         }
-        None => println!("full {chars} chars: no summary within 1/{LEVEL_RATIO}; the view chooses whole or pointer"),
+        None => println!("full {chars} chars: no smaller level carries content; the view chooses whole or pointer"),
     }
     Ok(())
 }

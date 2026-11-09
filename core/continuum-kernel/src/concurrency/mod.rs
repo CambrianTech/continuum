@@ -1,33 +1,11 @@
-//! Concurrency primitives — single source of truth for hot-path coordination.
+//! Concurrency primitives: the one home for hot-path coordination policy.
 //!
-//! Consolidates the previously-parallel `concurrent/` and `concurrency/`
-//! top-level dirs into one module. Prior to this refactor:
-//!   - `concurrent/`: data structures (MessageProcessor, PriorityQueue)
-//!   - `concurrency/`: policies (ConcurrencyPolicy, TokioConcurrencyPolicy,
-//!     single-flight maps, semaphores)
+//! `policy`: the ConcurrencyPolicy trait and its TokioConcurrencyPolicy impl, single-flight per-key
+//! coordination and refcount guards (#1235). Re-exported flat at `crate::concurrency::X`.
 //!
-//! Two dirs with overlapping names was an architecture smell — neither
-//! was the canonical "where do concurrency mechanics live" answer. This
-//! module now is. Domain modules import from `crate::concurrency::*`.
-//!
-//! ## Module layout
-//!
-//! - `policy` — ConcurrencyPolicy trait + TokioConcurrencyPolicy impl,
-//!   single-flight per-key coordination, refcount guards (#1235).
-//! - `message_processor` — Reusable `MessageProcessor` trait for
-//!   processing messages concurrently. Generic over message type.
-//! - `priority_queue` — Generic priority-based message queue.
-//!
-//! ## Submodules vs flat
-//!
-//! Files stay separate so callers reading a 200-LOC priority_queue
-//! impl don't also have to scroll past 600+ LOC of policy machinery.
-//! Re-exports here keep the public API flat at `crate::concurrency::X`.
+//! The generic `MessageProcessor` and `ConcurrentPriorityQueue` that also lived here had no caller
+//! outside their own files and the re-export lists (#5395), and went with their only, ignored, test.
 
-pub mod message_processor;
 pub mod policy;
-pub mod priority_queue;
 
-pub use message_processor::*;
 pub use policy::*;
-pub use priority_queue::*;

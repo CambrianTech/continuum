@@ -51,7 +51,6 @@ crate::action_command! {
         let cognition = PersonaCognition::new(
             p.persona_id,
             p.persona_name.clone(),
-            this.state.rag_engine.clone(),
         );
         this.state.personas.insert(p.persona_id, cognition);
 

@@ -22,6 +22,8 @@ struct FakeControl {
     /// The KV decision the fake's running engine was launched with; `None` = unknown
     /// (the default, so every pre-existing case adopts on the other axes alone).
     launched_kv: Option<crate::inference::lane_process::LaunchKv>,
+    /// Launched with fixed slots (no `--kv-unified`).
+    partitioned: bool,
     /// Whether the fake "owns" the running child (we spawned it). `false` =
     /// an adopted orphan (the conservative default that exercises the
     /// smoke-probe gate).
@@ -58,6 +60,7 @@ impl FakeControl {
             decode_ok: true,
             slots_busy: None,
             launched_kv: None,
+            partitioned: false,
             owns: false,
             served_lanes: 0,
             served_window: 32768,
@@ -121,6 +124,11 @@ impl FakeControl {
         self.launched_kv = Some(crate::inference::lane_process::LaunchKv { cache_type: cache_type.map(str::to_string), flash_attn, cache_ram_mib: None });
         self
     }
+    /// Model an engine launched with fixed slots, no shared pool.
+    fn launched_partitioned(mut self) -> Self {
+        self.partitioned = true;
+        self
+    }
     /// Model an engine launched on THIS KV decision with a `--cache-ram` grant of `mib`.
     fn launched_with_cache(mut self, mib: u32) -> Self {
         let planned = crate::inference::kv_cache_plan::resolve();
@@ -169,7 +177,7 @@ impl LlamaServerControl for FakeControl {
     async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
         self.serves.fetch_add(1, Ordering::SeqCst);
         if self.retirement_refused {
-            return Err(LlamaServerError::RetirementRefused("adopted checkpoint requires a known pool".into()));
+            return Err(LlamaServerError::RetirementRefused(super::RetirementRefusal::Checkpoint(crate::inference::slots::AdoptedCheckpointRefusal::UnknownPool(crate::inference::slots::PoolDiscoveryMiss::NoGeometry))));
         }
         if self.serve_ok {
             Ok(())
@@ -183,6 +191,10 @@ impl LlamaServerControl for FakeControl {
         // snapshot; defaults to the target window so the window-grow relaunch
         // check is a no-op unless a test deliberately floors it.
         Ok(self.served_window)
+    }
+    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
+        // The fake's pool: its window over its lanes (at least one), as an engine reports it.
+        Ok(self.served_window.saturating_mul(self.served_lanes.max(1)))
     }
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
         // The slot count the fake's /props reports (configurable via
@@ -200,6 +212,9 @@ impl LlamaServerControl for FakeControl {
     }
     fn launch_kv(&self) -> Option<crate::inference::lane_process::LaunchKv> {
         self.launched_kv.clone()
+    }
+    fn pool_launch(&self) -> Option<super::PoolLaunch> {
+        self.partitioned.then_some(super::PoolLaunch::FixedSlots)
     }
     fn owns_child(&self) -> bool {
         self.owns

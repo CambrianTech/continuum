@@ -64,14 +64,20 @@ pub mod emit;
 pub mod events;
 pub mod handler;
 pub use command::{
-    outcome_projector, project_result, stateless_command_objects, ActVerdict, ActionCommand,
-    DynCommand, OutcomeProjector, ProjectsOutcome, StatelessCommand, ToolVerdict,
+    natives_without_an_outcome, outcome_projector, project_result, read_outcome, read_refusals_only, stateless_command_objects,
+    ActVerdict, ActionCommand, DynCommand, OutcomeProjector, ProjectsOutcome, StatelessCommand, ToolVerdict,
 };
+/// A call's arguments, refused typed before it runs (ONE-ACT 6b); re-exported beside
+/// [`CommandError`], whose `Arguments` arm carries it.
+pub use crate::runtime::arguments::{ArgumentsRefusal, FieldProblem, FieldRefusal, JsonKind};
 #[cfg(feature = "ts-codegen")]
 pub use emit::write_typescript_sdk;
 /// What a command does to the world, declared on it (`ActionCommand::EFFECT`); re-exported so
 /// `action_command!`'s `effect:` clause resolves in any crate that expands it.
 pub use continuum_base::tool_effect::ToolEffect;
+/// Where a command's verb sits in a mind's hands, declared on it (`ActionCommand::DISCLOSURE`);
+/// re-exported so `action_command!`'s `disclosure:` clause resolves in any crate that expands it.
+pub use continuum_base::tool_disclosure::Disclosure;
 pub use events::{event_registry, EventDescriptor, EventSpec};
 #[cfg(feature = "ts-codegen")]
 pub use events::{generate_event_api, generate_event_map};
@@ -93,41 +99,55 @@ macro_rules! register_command {
     };
 }
 
-/// Opt a command into TRUTHFUL tool receipts — one line at the command's own site.
-///
-/// The command must implement [`sdk_codegen::ProjectsOutcome`]. Without this
-/// submission a command's receipts behave exactly as before: the transport arm
-/// alone decides, and a failure returned as data still renders a tick.
+/// Declare what a command's result means — REQUIRED of every native tool (ONE-ACT 6b):
+/// `action_command!`'s `native: true` submits it, and `natives_without_an_outcome`
+/// holds a hand-written native command to it.
 ///
 /// ```ignore
-/// register_outcome!(CodeRun);
+/// register_outcome!(CodeRun);                  // decodes its result; reads `ProjectsOutcome`
+/// register_outcome!(WorkList, refusals_only);  // its result has no failure state
 /// ```
+///
+/// The first form decodes the dispatched value ONCE as the command's own declared result:
+/// one that does not decode is schema drift (`ActVerdict::Undecodable`), never a success. The
+/// second declares that every failure the command has is a refusal (`Err`), so a value it
+/// returns is the work done.
 #[macro_export]
 macro_rules! register_outcome {
     ($cmd:ty) => {
         inventory::submit! {
             $crate::sdk_codegen::OutcomeProjector::new(
-                <$cmd as $crate::sdk_codegen::ActionCommand>::NAME,
-                |value| {
-                    // ONE decode, both facts. A registered projector that cannot
-                    // decode its OWN declared output is SCHEMA DRIFT, not an outcome.
-                    // It must never collapse into "no projector" (which renders
-                    // success) — the payload is preserved and the claim is withheld.
-                    match ::serde_json::from_value::<
-                        <$cmd as $crate::sdk_codegen::ActionCommand>::Output,
-                    >(value.clone())
-                    {
-                        Ok(o) => (
-                            $crate::sdk_codegen::ActVerdict::Declared(
-                                <$cmd as $crate::sdk_codegen::ProjectsOutcome>::outcome(&o),
-                            ),
-                            <$cmd as $crate::sdk_codegen::ProjectsOutcome>::dispatch_handle(&o),
-                        ),
-                        Err(_) => ($crate::sdk_codegen::ActVerdict::Undecodable, None),
-                    }
-                },
+                <$cmd as $crate::sdk_codegen::CommandSpec>::NAME,
+                $crate::sdk_codegen::read_outcome::<$cmd>,
             )
         }
+    };
+    ($cmd:ty, refusals_only) => {
+        inventory::submit! {
+            $crate::sdk_codegen::OutcomeProjector::new(
+                <$cmd as $crate::sdk_codegen::CommandSpec>::NAME,
+                $crate::sdk_codegen::read_refusals_only,
+            )
+        }
+    };
+}
+
+/// `ProjectsOutcome` for commands whose result has no failure state (every failure is a refusal,
+/// `Err`): the projection a macro-declared native tool needs when `register_outcome!(C,
+/// refusals_only)` is not open to it, because `action_command!`'s `native: true` already submits
+/// the decoding form.
+///
+/// ```ignore
+/// projects_success_on_return! { CodeGitAdd => GitAddResult, WebFetch => WebFetchResult }
+/// ```
+#[macro_export]
+macro_rules! projects_success_on_return {
+    ($($cmd:ty => $out:ty),+ $(,)?) => {
+        $(impl $crate::sdk_codegen::ProjectsOutcome for $cmd {
+            fn outcome(_: &$out) -> $crate::sdk_codegen::ToolVerdict {
+                $crate::sdk_codegen::ToolVerdict::Succeeded
+            }
+        })+
     };
 }
 
@@ -197,6 +217,45 @@ macro_rules! register_stateless_command {
 /// explicitly rather than `self` because a macro-introduced `self` is invisible to
 /// the call-site body under macro hygiene — naming it threads call-site hygiene
 /// through.) The body returns `Result<Output, CommandError>` — `?` works.
+///
+/// **A native tool says what its result means** (ONE-ACT 6b). `native: true` submits the
+/// command's [`ProjectsOutcome`](crate::sdk_codegen::ProjectsOutcome) projection, so with it the
+/// tool builds:
+/// ```
+/// # use continuum_kernel::sdk_codegen::*;
+/// # #[derive(serde::Deserialize, ts_rs::TS, schemars::JsonSchema)] pub struct P { x: String }
+/// # #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)] pub struct R { success: bool }
+/// continuum_kernel::action_command! {
+///     /// A tool that reports its own failure as data.
+///     pub struct Tool;
+///     name: "doc/tool",
+///     access: AiSafe,
+///     native: true,
+///     params: P,
+///     output: R,
+///     run(_this, _ctx, _p) => { Ok(R { success: true }) }
+/// }
+/// impl ProjectsOutcome for Tool {
+///     fn outcome(r: &R) -> ToolVerdict { ToolVerdict::of_success(r.success) }
+/// }
+/// ```
+/// and without it, the same tool does not compile (what this catches: a native tool whose
+/// failure returned as data renders as a success, `code/edit` before ONE-ACT 6b):
+/// ```compile_fail,E0277
+/// # use continuum_kernel::sdk_codegen::*;
+/// # #[derive(serde::Deserialize, ts_rs::TS, schemars::JsonSchema)] pub struct P { x: String }
+/// # #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)] pub struct R { success: bool }
+/// continuum_kernel::action_command! {
+///     /// A tool that reports its own failure as data.
+///     pub struct Tool;
+///     name: "doc/tool",
+///     access: AiSafe,
+///     native: true,
+///     params: P,
+///     output: R,
+///     run(_this, _ctx, _p) => { Ok(R { success: true }) }
+/// }
+/// ```
 #[macro_export]
 macro_rules! action_command {
     // ── Stateless: unit struct, auto-registered onto the ONE registry. ──
@@ -205,9 +264,10 @@ macro_rules! action_command {
         $vis:vis struct $cmd:ident;
         name: $name:expr,
         access: $access:ident,
-        $(native: $native:expr,)?
+        $(native: $native:tt,)?
         $(aliases: $aliases:expr,)?
         $(effect: $effect:ident,)?
+        $(disclosure: $disclosure:ident,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
@@ -215,7 +275,8 @@ macro_rules! action_command {
         $(#[doc = $doc])*
         #[derive(::std::default::Default)]
         $vis struct $cmd;
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], [$($disclosure)?], $params, $output, $this, $ctx, $p, $body);
+        $($crate::action_command!(@outcome $cmd, $native);)?
         $crate::register_stateless_command!($cmd);
     };
 
@@ -226,16 +287,18 @@ macro_rules! action_command {
         $vis:vis struct $cmd:ident { $($(#[$field_meta:meta])* $field:ident : $fty:ty),+ $(,)? }
         name: $name:expr,
         access: $access:ident,
-        $(native: $native:expr,)?
+        $(native: $native:tt,)?
         $(aliases: $aliases:expr,)?
         $(effect: $effect:ident,)?
+        $(disclosure: $disclosure:ident,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
     ) => {
         $(#[doc = $doc])*
         $vis struct $cmd { $($(#[$field_meta])* pub $field: $fty),+ }
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], [$($disclosure)?], $params, $output, $this, $ctx, $p, $body);
+        $($crate::action_command!(@outcome $cmd, $native);)?
         // Register the DESCRIPTOR (type-only — no instance needed) so the command
         // appears in `command_registry()`, the persona tool surface, the ACL, and
         // codegen. Its RUNTIME object is constructed with deps by the owning
@@ -243,8 +306,15 @@ macro_rules! action_command {
         $crate::register_command!($cmd);
     };
 
+    // ── Internal: a native tool says what its result means. `native: true` submits the
+    //    command's `ProjectsOutcome` projection, so a native tool without one does not compile.
+    (@outcome $cmd:ident, true) => {
+        $crate::register_outcome!($cmd);
+    };
+    (@outcome $cmd:ident, false) => {};
+
     // ── Internal: the shared `ActionCommand` impl both forms expand to. ──
-    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:expr)?], [$($aliases:expr)?], [$($effect:ident)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
+    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:tt)?], [$($aliases:expr)?], [$($effect:ident)?], [$($disclosure:ident)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
         #[::async_trait::async_trait]
         impl $crate::sdk_codegen::ActionCommand for $cmd {
             const NAME: &'static str = $name;
@@ -252,10 +322,9 @@ macro_rules! action_command {
             // Doc comment ⟹ model-facing DESCRIPTION. Each `///` line keeps its
             // leading space, so concatenation separates lines naturally; no docs ⇒ "".
             const DESCRIPTION: &'static str = ::std::concat!($($doc),*);
-            // Optional `native: <bool>,` clause ⟹ NATIVE; absent ⇒ false (catalog-only).
-            // `false || <expr>` when present, bare `false` when absent — const-valid, no
-            // unused bindings.
-            const NATIVE: bool = false $(|| $native)?;
+            // Optional `native: true|false,` clause ⟹ NATIVE (`true` also requires the command's
+            // `ProjectsOutcome`, submitted after this impl). Absent ⇒ the trait default, false.
+            $(const NATIVE: bool = $native;)?
             // Optional `aliases: &[...],` clause ⟹ ALIASES (the trained/former names a
             // model reaches for, resolved inbound by tool_dialect). Absent ⇒ the trait
             // default (empty). Emitted only when present, so the default stands otherwise.
@@ -264,6 +333,9 @@ macro_rules! action_command {
             // only a command that declares it `Observes` can have an unchanged result render as a
             // repeat). Absent ⇒ the trait default, `Undeclared`, which authorizes nothing.
             $(const EFFECT: $crate::sdk_codegen::ToolEffect = $crate::sdk_codegen::ToolEffect::$effect;)?
+            // Optional `disclosure: <Disclosure variant>,` clause ⟹ DISCLOSURE (where the verb sits
+            // in her hands: `Core`, `OnDemand` or `Withheld`). Absent ⇒ the trait default, `Core`.
+            $(const DISCLOSURE: $crate::sdk_codegen::Disclosure = $crate::sdk_codegen::Disclosure::$disclosure;)?
             type Params = $params;
             type Output = $output;
             async fn run(

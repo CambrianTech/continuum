@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use crate::inference::llama_server::EngineProbe;
 use std::time::Duration;
 
 // Sahar's measured generation estimate was 2s while healthy restores took >3s.
@@ -32,7 +33,7 @@ async fn healthy_restore_outlives_generation_prediction() -> Result<(), Box<dyn 
     pool.note_saved(key);
     let sem = Arc::new(Semaphore::new(1));
     let client = reqwest::Client::new();
-    let mut admitting = Box::pin(admit_turn(&sem, Some(key), Some(pool.clone()),
+    let mut admitting = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()),
         &client, &root, 100, AdmissionPatience::for_turn()));
     tokio::select! {
         result = &mut admitting => return Err(format!("admitted before restore: {:?}", result.err()).into()),
@@ -51,7 +52,7 @@ async fn healthy_restore_outlives_generation_prediction() -> Result<(), Box<dyn 
     drop(admitted);
     drop(admitting);
     let subsequent = tokio::time::timeout(Duration::from_secs(5),
-        admit_turn(&sem, Some(key), Some(pool), &client, &root,
+        admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool), &client, &root,
             100, AdmissionPatience::for_turn())).await??;
     assert!(subsequent.page_confirmed);
     drop(subsequent);
@@ -117,7 +118,7 @@ async fn abandoned_context_switch_finishes_save_without_starting_restore() {
     let sem = Arc::new(Semaphore::new(1));
     let client = reqwest::Client::new();
     let mut resident = admit_turn(
-        &sem,
+        &sem, crate::inference::slots::SlotClass::Turn,
         Some(old),
         Some(pool.clone()),
         &client,
@@ -131,7 +132,7 @@ async fn abandoned_context_switch_finishes_save_without_starting_restore() {
     drop(resident);
     pool.note_saved(next);
     let mut admitting = Box::pin(admit_turn(
-        &sem,
+        &sem, crate::inference::slots::SlotClass::Turn,
         Some(next),
         Some(pool.clone()),
         &client,
@@ -207,7 +208,7 @@ async fn abandoned_restore_retains_slot_lane_and_generation_until_terminal_recei
             let sem = Arc::new(Semaphore::new(1));
             let client = reqwest::Client::new();
             let mut admitting = Box::pin(admit_turn(
-                &sem,
+                &sem, crate::inference::slots::SlotClass::Turn,
                 Some(key),
                 Some(pool.clone()),
                 &client,
@@ -317,9 +318,11 @@ async fn paging_progress_watchdog_covers_the_complete_response_body() {
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let client = reqwest::Client::new();
     let mut probes = 0;
+    let unwatched = PageLiveness::new(Box::new(|| None), super::super::page_liveness::Condemnation::Never);
     let receipt = bounded_page_receipt(
         client.post(format!("{root}/slots/0")),
         Duration::from_millis(20),
+        &unwatched,
         || {
             probes += 1;
             let initial = probes == 1;
@@ -341,7 +344,7 @@ async fn paging_progress_watchdog_covers_the_complete_response_body() {
         .await
         .expect("test: watchdog ends incomplete body receipt");
     assert!(
-        outcome.is_none(),
+        matches!(outcome, Receipt::Stopped),
         "headers must not escape as a completed receipt"
     );
     assert_eq!(
@@ -369,7 +372,7 @@ async fn paging_owner_panic_releases_guards_and_quarantines_uncertain_io() {
     let sem = Arc::new(Semaphore::new(1));
     let client = reqwest::Client::new();
     let admission = admit_turn(
-        &sem,
+        &sem, crate::inference::slots::SlotClass::Turn,
         Some(key),
         Some(pool.clone()),
         &client,

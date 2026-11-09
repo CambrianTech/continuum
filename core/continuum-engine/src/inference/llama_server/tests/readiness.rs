@@ -103,26 +103,19 @@ fn a_loading_engine_of_ours_is_not_a_failed_one() {
 }
 
 #[test]
-fn tail_or_hang_marker_fingerprints_empty_and_tails_nonempty() {
+fn tail_or_hang_marker_fingerprints_empty_and_names_the_fault_and_the_log() {
+    let log = "/logs/llama-server-58057.log";
     assert!(
-        tail_or_hang_marker("").contains("OOM/jetsam"),
+        tail_or_hang_marker(log, "").contains("OOM/jetsam"),
         "an empty log is the no-output fingerprint naming the OOM-kill cause, not a silent blank"
     );
     assert!(
-        tail_or_hang_marker("   \n\n \t \n").contains("OOM/jetsam"),
+        tail_or_hang_marker(log, "   \n\n \t \n").contains("OOM/jetsam"),
         "whitespace-only counts as empty"
     );
-    let log = (1..=30)
-        .map(|i| format!("line{i}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let tail = tail_or_hang_marker(&log);
-    assert!(
-        tail.contains("line30") && tail.contains("line11") && !tail.contains("line10"),
-        "keeps the LAST 20 lines in original order, not the first: {tail}"
-    );
-    // sanity: order preserved (line11 appears before line30)
-    assert!(tail.find("line11") < tail.find("line30"));
+    let report = tail_or_hang_marker(log, "load_model: loading\nGGML_ASSERT(n_ctx > 0) failed\n\n");
+    assert!(report.starts_with("GGML_ASSERT(n_ctx > 0) failed"), "the last printed line leads: {report}");
+    assert!(report.contains(log), "the whole log stays reachable by its path: {report}");
 }
 
 // what this catches (M5 2026-10-25, card 9e3350bd's second site): a synthetic smoke decode

@@ -174,24 +174,47 @@ impl AircRemoteInferenceAdapter {
     /// any answer (even a refusal) proves the peer evaluates our mail and
     /// resets the count.
     fn observe(&self, outcome: &Result<(), &RemoteInferenceError>) {
-        match outcome {
-            Err(RemoteInferenceError::Timeout { .. }) => {
-                // Fold this miss into the PEER's shared breaker: `Some(n)` means THIS
-                // miss — summed across every persona on the peer — tripped it cold.
-                if let Some(n) = self.breaker.observe_timeout(EpochMs::now_or_latest().millis()) {
-                    continuum_base::probe!(
-                        class = "remote_lane.cold",
-                        peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
-                        persona = %self.persona_label(),
-                        deadlines = n,
-                        cold_for_s = COLD_WINDOW.as_secs(),
-                        "the remote peer let requests die at the deadline in a row \
-                         (summed across every persona on it); refusing here for the \
-                         window instead of burning turns"
-                    );
-                }
-            }
-            _ => self.breaker.observe_answer(),
+        // Only the peer ANSWERING resets its breaker: any reply, a refusal included, proves
+        // it alive. A request that got no answer at all (it timed out, no route reached the
+        // peer, or the session or wire failed before any reply) is a miss, whatever its
+        // type. Counting only `Timeout` let a seat that never formed a session reset the
+        // breaker on every act: IntelMac 2026-11-02 13:08Z, Delia, Iris and Paige each
+        // waited ~630 s per act on a seat that took no handshake, never went cold and never
+        // fell home (card ce043fcc). Exhaustive, so a new error must be classified here.
+        let answered = match outcome {
+            Ok(()) => true,
+            Err(
+                RemoteInferenceError::PeerAdapterFailed { .. }
+                | RemoteInferenceError::PolicyDenied { .. }
+                | RemoteInferenceError::CorrelationMismatch { .. }
+                | RemoteInferenceError::SeatOverloaded { .. },
+            ) => true,
+            Err(
+                RemoteInferenceError::Timeout { .. }
+                | RemoteInferenceError::NoPeerReachable { .. }
+                | RemoteInferenceError::Transport { .. },
+            ) => false,
+        };
+        if answered {
+            self.breaker.observe_answer();
+            return;
+        }
+        // Fold this miss into the PEER's shared breaker: `Some(n)` means THIS
+        // miss — summed across every persona on the peer — tripped it cold.
+        if let Some(n) = self
+            .breaker
+            .observe_timeout(EpochMs::now_or_latest().millis())
+        {
+            continuum_base::probe!(
+                class = "remote_lane.cold",
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
+                persona = %self.persona_label(),
+                deadlines = n,
+                cold_for_s = COLD_WINDOW.as_secs(),
+                "the remote peer answered none of the last requests in a row \
+                 (summed across every persona on it): deadlines, no route or no \
+                 session; refusing here for the window instead of burning turns"
+            );
         }
     }
 
@@ -301,125 +324,10 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
     /// forms exactly like a local one, and the lane's liveness is the next chunk.
     async fn generate_stream(
         &self,
-        mut request: TextGenerationRequest,
+        request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, String> {
-        // The lane serves ONE model and the peer refuses any other: a request
-        // that names the caller's local model is refused there after the full
-        // wait (2026-09-07 02:01Z, +186 s: "model 'Ornith…' is not the active
-        // served model (serving: Qwen3.8-27B)"). The lane's model is the
-        // truth for every request on it; a caller's different name is noted.
-        if let Some(lane_model) = &self.default_model {
-            if let Some(requested) = &request.model {
-                if requested != lane_model {
-                    continuum_base::probe!(
-                        class = "remote_lane.model_overridden",
-                        peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
-                        requested = %requested,
-                        served = %lane_model,
-                        "the caller named a model the remote lane does not serve; the lane's model rides the wire"
-                    );
-                }
-            }
-            request.model = Some(lane_model.clone());
-        }
-        if self.is_cold() {
-            continuum_base::probe!(
-                class = "remote_lane.refused_cold",
-                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
-                persona = %self.persona_label(),
-                "remote lane is cold; request refused without a round trip"
-            );
-            return Err(format!(
-                "remote lane to {} is cold: {} deadline misses in a row; retry after the {} s window",
-                self.default_target_peer.as_deref().unwrap_or("the default peer"),  // unwrap_or: error text only — names the transport default when no peer is pinned
-                COLD_AFTER_DEADLINES,
-                COLD_WINDOW.as_secs()
-            ));
-        }
-        if self.held_by_overload() {
-            continuum_base::probe!(
-                class = "remote_lane.refused_overloaded",
-                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
-                persona = %self.persona_label(),
-                "the seat refused her as overloaded and has not offered a slot since; not asked again"
-            );
-            return Err(RemoteInferenceError::SeatOverloaded {
-                message: "refused as overloaded; waiting for the seat's beacon to offer a free slot"
-                    .to_string(),
-            }
-            .to_string());
-        }
-        let mut envelope = RemoteInferenceRequest::new(request);
-        if let Some(peer) = &self.default_target_peer {
-            envelope = envelope.with_target_peer(peer.clone());
-        }
-        let started = std::time::Instant::now();
-        let sent = self.transport.send_request_streaming(envelope, sink).await;
-        self.observe(&sent.as_ref().map(|_| ()));
-        let refused_at_ms = match sent {
-            Err(RemoteInferenceError::SeatOverloaded { .. }) => EpochMs::now_or_latest().millis().max(1),
-            _ => 0,
-        };
-        self.overloaded_since_ms.store(refused_at_ms, Ordering::Relaxed);
-        // Every request ends in exactly one row. Before this the only remote
-        // rows were the breaker's — a turn that timed out, errored, or answered
-        // was invisible here, and 9 misses in 200 s could not be told from 3
-        // ten-minute waits (2026-09-07 01:59Z, the first read after #3818).
-        match &sent {
-            Ok(r) => continuum_base::probe!(
-                class = "remote_lane.answered",
-                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
-                persona = %self.persona_label(),
-                served_by = %r.served_by,
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                out_tokens = r.text_response.usage.output_tokens,
-                finish = ?r.text_response.finish_reason,
-                served_window = ?r.text_response.routing.as_ref().and_then(|x| x.served_context_window),
-                "remote inference answered"
-            ),
-            Err(e) => continuum_base::probe!(
-                class = "remote_lane.failed",
-                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
-                persona = %self.persona_label(),
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                error = %e,
-                "remote inference failed"
-            ),
-        }
-        let response = sent.map_err(|e| e.to_string())?;
-        if let Some(window) = response
-            .text_response
-            .routing
-            .as_ref()
-            .and_then(|x| x.served_context_window)
-            .filter(|w| *w > 0)
-        {
-            *self.offer_at_feedback.write().expect("remote offer lock") = self.advertised_window(); // Poisoning invalidates the feedback witness; fail loudly rather than invent capacity.
-            self.learned_window.store(window, Ordering::Relaxed);
-            self.window_changed.send_replace(());
-            if let Some(sink) = self.window_sink.as_ref() {
-                sink(window);
-            }
-        }
-        // First successful round-trip flips the health observation
-        // bit so subsequent health_check calls can report Healthy.
-        // Relaxed is fine: a stale Unknown -> Healthy transition is
-        // a one-way edge; readers tolerate either value.
-        self.has_observed_success.store(true, Ordering::Relaxed);
-        // The transport stamps the wire receipt; preserve it and the serving
-        // metadata while identifying this caller's route as remote.
-        let mut text = response.text_response;
-        // Preserve whatever routing info the peer's adapter set;
-        // we add ours on top.
-        text.provider = AIRC_REMOTE_PROVIDER_ID.to_string();
-        RoutingInfo::stamp(
-            &mut text.routing,
-            AIRC_REMOTE_PROVIDER_ID,
-            false,
-            "remote_inference",
-        );
-        Ok(text)
+        self.generate_with(request, None, sink).await
     }
 
     async fn health_check(&self) -> HealthStatus {
@@ -529,6 +437,171 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         self.default_model
             .as_deref()
             .is_none_or(|lane| lane == model)
+    }
+}
+
+
+impl AircRemoteInferenceAdapter {
+    /// The remote lane's generation, carrying the requester's think budget to the seat.
+    async fn generate_with(
+        &self,
+        mut request: TextGenerationRequest,
+        think: Option<crate::ai::types::ThinkBudget>,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, String> {
+        // The lane serves ONE model and the peer refuses any other: a request
+        // that names the caller's local model is refused there after the full
+        // wait (2026-09-07 02:01Z, +186 s: "model 'Ornith…' is not the active
+        // served model (serving: Qwen3.8-27B)"). The lane's model is the
+        // truth for every request on it; a caller's different name is noted.
+        if let Some(lane_model) = &self.default_model {
+            if let Some(requested) = &request.model {
+                if requested != lane_model {
+                    continuum_base::probe!(
+                        class = "remote_lane.model_overridden",
+                        peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
+                        requested = %requested,
+                        served = %lane_model,
+                        "the caller named a model the remote lane does not serve; the lane's model rides the wire"
+                    );
+                }
+            }
+            request.model = Some(lane_model.clone());
+        }
+        if self.is_cold() {
+            continuum_base::probe!(
+                class = "remote_lane.refused_cold",
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
+                persona = %self.persona_label(),
+                "remote lane is cold; request refused without a round trip"
+            );
+            return Err(format!(
+                "remote lane to {} is cold: {} deadline misses in a row; retry after the {} s window",
+                self.default_target_peer.as_deref().unwrap_or("the default peer"),  // unwrap_or: error text only — names the transport default when no peer is pinned
+                COLD_AFTER_DEADLINES,
+                COLD_WINDOW.as_secs()
+            ));
+        }
+        if self.held_by_overload() {
+            continuum_base::probe!(
+                class = "remote_lane.refused_overloaded",
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision
+                persona = %self.persona_label(),
+                "the seat refused her as overloaded and has not offered a slot since; not asked again"
+            );
+            return Err(RemoteInferenceError::SeatOverloaded {
+                message: "refused as overloaded; waiting for the seat's beacon to offer a free slot"
+                    .to_string(),
+            }
+            .to_string());
+        }
+        let mut envelope = RemoteInferenceRequest::new(request).with_think(think);
+        if let Some(peer) = &self.default_target_peer {
+            envelope = envelope.with_target_peer(peer.clone());
+        }
+        let started = std::time::Instant::now();
+        let sent = self.transport.send_request_streaming(envelope, sink).await;
+        self.observe(&sent.as_ref().map(|_| ()));
+        let refused_at_ms = match sent {
+            Err(RemoteInferenceError::SeatOverloaded { .. }) => EpochMs::now_or_latest().millis().max(1),
+            _ => 0,
+        };
+        self.overloaded_since_ms.store(refused_at_ms, Ordering::Relaxed);
+        // Every request ends in exactly one row. Before this the only remote
+        // rows were the breaker's — a turn that timed out, errored, or answered
+        // was invisible here, and 9 misses in 200 s could not be told from 3
+        // ten-minute waits (2026-09-07 01:59Z, the first read after #3818).
+        match &sent {
+            Ok(r) => continuum_base::probe!(
+                class = "remote_lane.answered",
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
+                persona = %self.persona_label(),
+                served_by = %r.served_by,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                out_tokens = r.text_response.usage.output_tokens,
+                finish = ?r.text_response.finish_reason,
+                served_window = ?r.text_response.routing.as_ref().and_then(|x| x.served_context_window),
+                "remote inference answered"
+            ),
+            Err(e) => continuum_base::probe!(
+                class = "remote_lane.failed",
+                peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer
+                persona = %self.persona_label(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                error = %e,
+                "remote inference failed"
+            ),
+        }
+        let response = sent.map_err(|e| e.to_string())?;
+        if let Some(window) = response
+            .text_response
+            .routing
+            .as_ref()
+            .and_then(|x| x.served_context_window)
+            .filter(|w| *w > 0)
+        {
+            *self.offer_at_feedback.write().expect("remote offer lock") = self.advertised_window(); // Poisoning invalidates the feedback witness; fail loudly rather than invent capacity.
+            self.learned_window.store(window, Ordering::Relaxed);
+            self.window_changed.send_replace(());
+            if let Some(sink) = self.window_sink.as_ref() {
+                sink(window);
+            }
+        }
+        // First successful round-trip flips the health observation
+        // bit so subsequent health_check calls can report Healthy.
+        // Relaxed is fine: a stale Unknown -> Healthy transition is
+        // a one-way edge; readers tolerate either value.
+        self.has_observed_success.store(true, Ordering::Relaxed);
+        // The transport stamps the wire receipt; preserve it and the serving
+        // metadata while identifying this caller's route as remote.
+        let mut text = response.text_response;
+        // Preserve whatever routing info the peer's adapter set;
+        // we add ours on top.
+        text.provider = AIRC_REMOTE_PROVIDER_ID.to_string();
+        RoutingInfo::stamp(
+            &mut text.routing,
+            AIRC_REMOTE_PROVIDER_ID,
+            false,
+            "remote_inference",
+        );
+        Ok(text)
+    }
+
+    /// The seat this lane reaches takes a think budget: its beacon advertises
+    /// `CapabilityId::RemoteThinkBudget` (affirmative membership, never a version guess).
+    fn seat_takes_think(&self, model: Option<&str>) -> bool {
+        let seat = self.default_target_peer.as_deref().and_then(|peer| uuid::Uuid::parse_str(peer).ok());
+        let offer = seat.and_then(|seat| super::seat_deadline::heard_seat_offer(seat, model, EpochMs::now_or_latest().millis()));
+        takes_think(offer.as_ref())
+    }
+}
+
+/// Whether a seat's offer advertises the think budget; no offer heard takes nothing.
+fn takes_think(offer: Option<&crate::capacity::gossip::CapacityOffer>) -> bool {
+    offer.is_some_and(|offer| {
+        crate::capacity::gossip::capability_decision(offer, crate::capacity::gossip::CapabilityId::RemoteThinkBudget)
+            == crate::capacity::gossip::CapabilityDecision::Allow
+    })
+}
+
+/// The grid lane: an admission it cannot enforce is refused; a think budget rides the wire to a
+/// seat that advertises it, and a seat that does not is refused typed (never sent unbounded).
+#[async_trait]
+impl crate::ai::adapter::DispatchTermsPolicy for AircRemoteInferenceAdapter {
+    async fn generate_admitted(
+        &self,
+        request: TextGenerationRequest,
+        terms: crate::ai::types::DispatchTerms,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+        crate::ai::adapter::refuse_unenforceable_admission(&request, &terms)?;
+        let model = self.default_model.as_deref().or(request.model.as_deref());
+        if terms.think.is_some() && !self.seat_takes_think(model) {
+            return Err(crate::ai::inference_error::InferenceError::ThinkUnenforceable {
+                model: model.unwrap_or_default().to_owned(), // unwrap_or_default: no lane model and none requested is said as empty
+            });
+        }
+        self.generate_with(request, terms.think, sink).await.map_err(Into::into)
     }
 }
 

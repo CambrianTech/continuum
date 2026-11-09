@@ -55,14 +55,16 @@ pub use liveness::{
 
 mod convergence_attempt;
 mod reconcile;
+mod shared_pool;
+pub use shared_pool::PoolLaunch;
+mod pool_growth;
+pub use pool_growth::{end_hold_if_decided, end_stale_hold, growth_requested, request_pool_growth};
 pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
-#[cfg(test)]
-pub(crate) use reconcile::{grow_refused_by_memory_gate, lane_grow_would_narrow_the_window};
 
 mod smoke;
 use smoke::{
-    scratch_slot_for, smoke_attempt, smoke_seat, smoke_verdict, SmokeSeat, SmokeVerdict,
-    QUICK_SMOKE_BUDGET, THINKING_SMOKE_BUDGET,
+    scratch_slot_for, smoke_answer_tokens, smoke_attempt, smoke_attempt_verdict, smoke_seat,
+    smoke_verdict, SmokeCap, SmokeSeat, SmokeVerdict,
 };
 mod target;
 pub use target::{
@@ -98,7 +100,6 @@ use engine_install::{
 };
 mod snapshot;
 pub mod serving_hold;
-use snapshot::SERVING_STATE;
 pub use snapshot::{
     await_ready_serving, await_snapshot_resettle, current_serving, has_reconciled,
     install_serving_state, mark_first_reconcile, serving_state_receiver, MultimodalSupport,
@@ -108,21 +109,20 @@ mod vision;
 pub use vision::vision_lane_ready;
 use vision::{main_lane_mmproj_decision_for, MainLaneMmproj};
 mod external;
-pub use external::{external_serving_pin, probe_external_serving, wait_for_serving_window_settle};
+pub use external::{external_serving_pin, probe_external_serving};
 
 mod progress;
 pub(crate) use progress::{
-    engine_probe, engine_props, restore_probe, unmoved_window, wait_while_engine_progresses, EngineProbe,
-    WaitBounds, UNMOVED_CEILING,
+    engine_probe, engine_props, restore_probe, slots_probe, unmoved_window, wait_while_engine_progresses, EngineProbe,
+    EngineProgress, WaitBounds, UNMOVED_CEILING,
 };
 #[cfg(test)]
-pub(crate) use progress::{engine_probe_within, slots_progress, window_at_rate, window_rate, EngineProgress};
+pub(crate) use progress::{engine_probe_within, slots_progress, window_at_rate, window_rate};
 
 mod slot_work;
 pub use progress::{condemn, condemnations, engine_condemned, note_serving_ready, until_condemned};
 #[cfg(test)]
 pub(crate) use progress::Condemnations;
-#[cfg(test)]
 pub(crate) use progress::until_condemned_on;
 pub use slot_work::{in_flight_slot, slot_advanced, slot_work, InFlightSlot, SlotWork};
 pub(crate) use slot_work::InFlightSlotGuard;
@@ -130,10 +130,12 @@ pub(crate) use slot_work::InFlightSlotGuard;
 pub(crate) use slot_work::slot_work_of;
 
 mod control;
+mod retirement_refusal;
+pub use retirement_refusal::RetirementRefusal;
 pub use control::{
     EngineRetirementError, EngineRetirementReceipt, EngineRetirementStatus, EnsureOutcome,
     LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
-    OwnedServingTarget, ServingLifecycleCheck,
+    ObservedGeometry, OwnedServingTarget, ServingLifecycleCheck,
 };
 mod prepared_launch;
 use prepared_launch::{unsupported_launch_environment, PreparedLocalLaunch};

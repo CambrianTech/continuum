@@ -30,6 +30,17 @@ static GATES: LazyLock<Mutex<HashMap<PageKey, Weak<Semaphore>>>> = LazyLock::new
 /// The right to run one act of a mind. Dropping it lets the next queued act of that mind run.
 pub(crate) struct MindTurn {
     _permit: OwnedSemaphorePermit,
+    _custody: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+
+static CUSTODY: LazyLock<Mutex<HashMap<uuid::Uuid, Weak<tokio::sync::RwLock<()>>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+fn custody(persona: uuid::Uuid) -> Arc<tokio::sync::RwLock<()>> {
+    let mut owners = CUSTODY.lock();
+    if let Some(owner) = owners.get(&persona).and_then(Weak::upgrade) { return owner; }
+    owners.retain(|_, owner| owner.strong_count() > 0);
+    let owner = Arc::new(tokio::sync::RwLock::new(()));
+    owners.insert(persona, Arc::downgrade(&owner));
+    owner
 }
 
 /// The gate of `key`, made on first use; dead entries are swept on the way.
@@ -46,15 +57,88 @@ fn gate(key: PageKey) -> Arc<Semaphore> {
 
 impl MindTurn {
     /// Wait for `key`'s running act (and every act queued before this one) to finish.
-    /// Nothing closes a gate, so the error is unreachable; it is a refusal, never a panic.
+    /// A transferring grant parks on the existing grant watch, holding no physical custody.
     pub(crate) async fn begin(key: PageKey) -> Result<MindTurn, String> {
-        let permit = gate(key).acquire_owned().await.map_err(|_| format!("the act gate of {key} was closed"))?;
-        Ok(MindTurn { _permit: permit })
+        Self::begin_waiting(key, crate::capacity::mind_window::grants_waiter,
+            || crate::capacity::window_grant::is_grant_retiring(key.persona())).await
+    }
+
+    async fn begin_waiting<S, W, B>(key: PageKey, subscribe: S, blocked: B) -> Result<MindTurn, String>
+    where
+        S: Fn() -> Result<W, crate::capacity::mind_window::GrantsUnavailable>,
+        W: std::future::Future<Output = Result<(), crate::capacity::mind_window::GrantsUnavailable>>,
+        B: Fn() -> bool,
+    {
+        loop {
+            // Subscribe before inspecting state, so publication between check and wait is seen.
+            let next = subscribe();
+            if !blocked() {
+                let read = custody(key.persona()).read_owned().await;
+                let permit = gate(key).acquire_owned().await.map_err(|_| format!("the act gate of {key} was closed"))?;
+                if !blocked() {
+                    return Ok(MindTurn { _permit: permit, _custody: read });
+                }
+                drop(permit);
+                drop(read);
+            }
+            next.map_err(|e| e.to_string())?.await.map_err(|e| e.to_string())?;
+        }
+    }
+
+    /// All page users of this persona (including forks) drain before physical reclamation.
+    pub(crate) async fn reclaim(persona: uuid::Uuid) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        custody(persona).write_owned().await
     }
 
     /// The act now, or `None` when the mind is mid-act (best-effort callers such as
     /// warm-ahead: a mind mid-act already has her KV in a slot).
     pub(crate) fn try_begin(key: PageKey) -> Option<MindTurn> {
-        gate(key).try_acquire_owned().ok().map(|permit| MindTurn { _permit: permit })
+        let read = custody(key.persona()).try_read_owned().ok()?;
+        if crate::capacity::window_grant::is_grant_retiring(key.persona()) { return None; }
+        gate(key).try_acquire_owned().ok().map(|permit| MindTurn { _permit: permit, _custody: read })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn a_transferring_mind_parks_without_holding_page_custody() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let persona = uuid::Uuid::new_v4();
+        let key = PageKey::mind(persona).expect("mind");
+        let blocked = AtomicBool::new(true);
+        let (tx, rx) = tokio::sync::watch::channel(0u8);
+        let begin = MindTurn::begin_waiting(key, || {
+            let mut rx = rx.clone();
+            rx.borrow_and_update();
+            Ok(async move { rx.changed().await.map_err(|_| crate::capacity::mind_window::GrantsUnavailable) })
+        }, || blocked.load(Ordering::SeqCst));
+        tokio::pin!(begin);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut begin).await.is_err());
+        let physical = tokio::time::timeout(std::time::Duration::from_secs(1), MindTurn::reclaim(persona)).await.expect("waiting turn holds no read custody");
+        drop(physical);
+        tx.send(1).expect("publication");
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut begin).await.is_err(), "still blocked after unrelated publication");
+        blocked.store(false, Ordering::SeqCst);
+        tx.send(2).expect("grant returned");
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(1), begin).await.expect("wake").is_ok());
+    }
+    #[tokio::test]
+    async fn reclaim_drains_forks_and_bars_new_page_users_without_stopping_other_minds() {
+        let persona = uuid::Uuid::new_v4();
+        let fork = PageKey::fork(persona, uuid::Uuid::new_v4()).expect("fork");
+        let active = MindTurn::begin(fork).await.expect("active fork");
+        let reclaim = MindTurn::reclaim(persona);
+        tokio::pin!(reclaim);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut reclaim).await.is_err());
+        let other = PageKey::mind(uuid::Uuid::new_v4()).expect("other mind");
+        assert!(MindTurn::try_begin(other).is_some(), "unrelated residents keep running");
+        drop(active);
+        let reclaimed = tokio::time::timeout(std::time::Duration::from_secs(1), reclaim).await.expect("writer progresses");
+        assert!(MindTurn::try_begin(fork).is_none());
+        assert!(MindTurn::try_begin(PageKey::mind(persona).expect("mind")).is_none());
+        drop(reclaimed);
+        assert!(MindTurn::try_begin(fork).is_some());
     }
 }

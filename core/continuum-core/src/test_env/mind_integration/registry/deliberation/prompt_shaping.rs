@@ -285,6 +285,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
         capacity_error: None, budget_fault: None, protocol_error: None, segments: Vec::new(),
         newest_result_reduced: false, newest_result_tokens: 0, allocation: None,
         messages: roomy.messages, tools: crate::cognition::tool_surface::SelectedSurface::none(), tools_grant: 0,
+        act_room: crate::cognition::working_set::ActRoom::Unmeasured, output_shortfall: None,
     };
     let corrected = faculty.refit_rejected_prompt(snapshot, estimate as u32 + 1, estimate as u32, 0).unwrap();
     assert!(corrected.estimated_prompt_tokens < estimate);
@@ -765,25 +766,28 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // surface did NOT shrink and the framing did NOT shrink. The ceiling
     // assertion above still passes and `needed > window` still holds, both
     // measuring the same surface as before. What changed is that the budget
-    // stopped RESERVING for a surface it does not send. This turn narrows to her
-    // hands, and the message budget used to subtract the whole registry anyway —
+    // stopped RESERVING for a surface it does not send. This turn sends her core
+    // hands (Joel, 2026-11-04: "Core hands in prompt, rest on demand"), and the message budget used to subtract the whole registry anyway —
     // so the conversation was trimmed to fit room that was never occupied, and
     // the newest line fell off the end of a window that had space for it.
     //
     // That is the difference between "this window is too small for a citizen"
     // and "we were spending her window on tools we withheld". Only the second
     // was ever true here.
+    //
+    // 2026-11-04, stated plainly as the ratchet demands: her core hands grew by the verbs
+    // that carry her work out (`code/git/push`, `code/github/pr-create`, `pr-comment`; Joel:
+    // "git is perfect for all project work") and by `yield_turn`, which now rides every
+    // surface (`Disclosure::Always`). At 8192 they no longer fit beside her framing, so the
+    // second invariant above binds: the turn refuses with the real number and sends nothing
+    // smaller (a smaller set of hands is the #206 cliff). The roomy control below still
+    // pins that the newest line reaches her once the window holds her hands.
+    let refused = view.capacity_error.as_ref().expect(
+        "at 8192 her core hands do not fit beside her framing: the turn must say so with a number",
+    );
     assert!(
-        view.user_text()
-            .contains("LATEST: did the deploy fix land?"),
-        "the newest burst line must survive once the budget prices the surface it \
-                 actually sends — if this regresses, the accounting is double-counting the \
-                 withheld registry again (card dec1a7ff); selected={}, estimated={}, reserve={}, capacity={:?}\n{}",
-        faculty.prompt_view(&ws).tools.tokens,
-        view.estimated_prompt_tokens,
-        view.completion_reserve,
-        view.capacity_error,
-        &view.user_text()[..view.user_text().len().min(600)]
+        refused.required_tokens > refused.budget_tokens,
+        "the refusal names what she needs beyond what the window gives: {refused:?}"
     );
     assert!(
         view.system.contains("Taking your turn"),

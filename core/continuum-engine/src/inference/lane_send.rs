@@ -73,6 +73,20 @@ pub(crate) struct FillReceipt<'a> {
     pub model: &'a str,
     pub prompt_tokens: usize,
     pub prompt_quote: Option<PromptQuote<'a>>,
+    /// The admission the request was rendered under: at dispatch, after the wait for the lane, its
+    /// lease on her grant is RESERVED (`window_grant::reserve`) against her grant now, with the
+    /// engine's exact count, or the send is refused typed.
+    pub admission: Option<DispatchAdmission>,
+}
+
+/// A request's admission and whose grant it was rendered against.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DispatchAdmission {
+    pub persona: uuid::Uuid,
+    pub admission: crate::ai::types::RequestAdmission,
+    /// The engine incarnation (pid, OS start time) the request's endpoint admission is bound to:
+    /// the lease must name it, or the attempt is refused (the published lease is only a watch value).
+    pub engine: Option<(u32, u64)>,
 }
 
 /// Request-specific authority for the engine's finalized-prompt counter. The adapter
@@ -101,6 +115,9 @@ pub(crate) async fn send_with_lane_retry(
     body: Vec<u8>,
     turn_bound: Option<std::time::Duration>,
     mut fill: FillReceipt<'_>,
+    // Where the request's reservation of her grant is kept until its terminal receipt (the caller
+    // drops it when the stream ends).
+    reservation: &mut Option<crate::capacity::window_grant::GrantReservation>,
 ) -> Result<reqwest::Response, InferenceError> {
     // The header wait in force for THIS turn: the floor, or the request's measured bound
     // above it. Computed once — the relaunch retries below re-arm the same wait.
@@ -145,6 +162,10 @@ pub(crate) async fn send_with_lane_retry(
             super::serving_guard::guard_resident_model(
                 cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller,
             ).await?;
+            if let Some(DispatchAdmission { admission, .. }) = fill.admission {
+                super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }
+                    .check(admission.window, &cfg.name, quote.caller)?;
+            }
             continuum_base::probe!(
                 class = "inference.prompt.prompt_quote",
                 request_id = quote.request_id,
@@ -154,6 +175,35 @@ pub(crate) async fn send_with_lane_retry(
                 attempt = relaunch_retries,
                 "selected engine counted the finalized prompt"
             );
+        }
+        // Her lease on her grant, re-reserved before EVERY attempt's POST (after the lane wait, with
+        // the count just taken on this attempt's engine): a grant that moved since render, a
+        // replacement engine, or a count past it refuses typed and nothing is sent; a reserved
+        // lease holds every regrant off until the engine's terminal receipt.
+        if let Some(DispatchAdmission { persona, admission, engine }) = fill.admission {
+            if let Some(leased) = admission.lease {
+                // Bound to the engine this request's endpoint admission holds, never inferred from
+                // the published grants: a lease on any other incarnation (or none known) is refused.
+                let leased_on = leased.engine.map(|e| (e.pid, e.started_s));
+                if engine.is_none() || leased_on != engine {
+                    *reservation = None;
+                    return Err(InferenceError::GrantChanged { rendered: leased.tokens, current: None });
+                }
+                let needed = (fill.prompt_tokens as u64)
+                    .saturating_add(u64::from(fill.prompt_quote.map_or(0, |q| q.reply))) // map_or: no quote, no explicit reply allowance
+                    .min(u64::from(u32::MAX)) as u32;
+                crate::capacity::window_grant::reserve_attempt(reservation, persona, leased, needed).map_err(|refused| match refused {
+                    crate::capacity::window_grant::ReserveRefused::Changed { leased, current } => {
+                        InferenceError::GrantChanged { rendered: leased.tokens, current: current.map(|lease| lease.tokens) }
+                    }
+                    crate::capacity::window_grant::ReserveRefused::Retiring { leased } => {
+                        InferenceError::GrantChanged { rendered: leased.tokens, current: None }
+                    }
+                    crate::capacity::window_grant::ReserveRefused::Over { count, grant } => {
+                        InferenceError::ContextExceeded { requested: count, available: grant }
+                    }
+                })?;
+            }
         }
         let send_start = Instant::now();
         let attempt_builder = request_builder

@@ -31,22 +31,23 @@ pub(super) const ACT_EXTENSIONS: u32 = 2;
 pub(super) async fn until_act_stalls<F: std::future::Future>(
     deadline: tokio::time::Instant,
     bound: std::time::Duration,
-    persona: Option<uuid::Uuid>,
+    act: Option<crate::cognition::llm_deliberation_faculty::admission_clock::ActAt>,
     step: F,
 ) -> Result<F::Output, Abandoned> {
-    until_act_stalls_or(deadline, bound, persona, step, crate::inference::llama_server::until_condemned()).await
+    until_act_stalls_or(deadline, bound, act, step, crate::inference::llama_server::until_condemned()).await
 }
 
 /// [`until_act_stalls`] with the condemnation it listens for given, so a test can raise it.
 pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::Future<Output = ()>>(
     deadline: tokio::time::Instant,
     bound: std::time::Duration,
-    persona: Option<uuid::Uuid>,
+    act: Option<crate::cognition::llm_deliberation_faculty::admission_clock::ActAt>,
     step: F,
     condemned: C,
 ) -> Result<F::Output, Abandoned> {
     use crate::cognition::llm_deliberation_faculty::admission_clock;
-    let (queue_tx, mut queue_rx) = tokio::sync::watch::channel(admission_clock::QueueTime::new(deadline, bound));
+    let persona = act.map(|a| a.persona);
+    let (queue_tx, mut queue_rx) = tokio::sync::watch::channel(admission_clock::QueueTime::new(deadline, bound, act));
     let step = admission_clock::scope(queue_tx.clone(), step);
     tokio::pin!(step);
     tokio::pin!(condemned);
@@ -61,8 +62,20 @@ pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::
             _ = queue_rx.changed() => continue,
             () = &mut condemned => {
                 let abandoned = Abandoned::at(&queue_rx);
+                // WHICH generation this ends, so a relaunch's cost is named one by one, never
+                // inferred from timestamps (Codex on the 2026-11-02 06:26Z M5 re-home): its turn
+                // and step, and the slot and endpoint it was dispatched to; `None` when unknown.
+                // The slot and endpoint are the ones this generation was DISPATCHED to (its own
+                // in-flight registration). The engine process is not named: the live engine read
+                // now could be a replacement or another endpoint, never proof of where this ran.
+                let pinned = persona.and_then(crate::inference::llama_server::in_flight_slot);
                 continuum_base::probe!(
                     class = "settle.tick.condemned",
+                    persona = ?persona,
+                    turn = ?act.map(|a| a.turn),
+                    step = ?act.map(|a| a.step),
+                    slot = ?pinned.as_ref().map(|p| p.slot),
+                    endpoint = ?pinned.as_ref().map(|p| p.root.as_str()),
                     dispatched = abandoned.dispatched,
                     extensions = extensions as u64,
                     "the engine was condemned mid-act: ending the act now, so the relaunch's drain is not held to its next checkpoint"
@@ -126,9 +139,9 @@ pub(super) fn act_probe_client() -> &'static reqwest::Client {
 // its own truncation). Still used here for the settlement answer-head.
 /// Drive the mind to SETTLEMENT: tick → if `Act`, run it + fold the observation
 /// into the next perception → re-tick → until it `Speak`s/`Pass`es or the
-/// external `max_acts` budget is spent.
+/// external step budget ([`TurnBudget`]) is spent.
 ///
-/// `max_acts` is the EXTERNAL observer's stopwatch — the grader holds it because
+/// The [`TurnBudget`] is the EXTERNAL observer's stopwatch — the grader holds it because
 /// the eval room has no heartbeat to pace re-perception. It is NOT a cap that
 /// lives in the persona's head (the live path has no such bound; an "acts
 /// forever" persona is a fitness gap to train away, never a substrate ceiling —
@@ -155,10 +168,6 @@ pub(super) fn act_probe_client() -> &'static reqwest::Client {
 /// citizen's identity lives. A cycle with no `ActingBody` is pure cognition (a
 /// faculty test, a replay) — it is nobody's lived experience, so there is no
 /// stream it belongs in. That is a structural absence, not a skipped write.
-/// Consecutive spoken plans a workspace-deliverable turn tolerates before it
-/// settles without a deliverable (each is re-perceived, not ended).
-pub(in crate::cognition::act_observe) const NARRATION_BUDGET: usize = 3;
-
 /// WHAT A SETTLE ITERATION WAS — an act, or a wait wearing an act's clothes.
 ///
 /// Measured on the M5 2026-09-20 ~21:55Z (build 0047d521b, 4 residents sharing 2 lanes
@@ -242,10 +251,10 @@ impl PaceCadence {
 pub fn drive_to_settle(
     cycle: &WorkspaceCycle,
     burst: impl Into<Burst>,
-    max_acts: usize,
+    budget: TurnBudget,
     framing: TurnFraming,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + '_ {
-    drive_with_input(cycle, burst.into(), max_acts, framing, None, None)
+    drive_with_input(cycle, burst.into(), budget, framing, None, None)
 }
 
 /// The live driver leases its existing conversation between steps. No second
@@ -253,11 +262,11 @@ pub fn drive_to_settle(
 pub fn drive_to_settle_with_input<'a>(
     cycle: &'a WorkspaceCycle,
     burst: Burst,
-    max_acts: usize,
+    budget: TurnBudget,
     framing: TurnFraming,
     conversation: &'a mut dyn crate::cognition::conversation::PersonaConversation,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
-    drive_with_input(cycle, burst, max_acts, framing, Some(conversation), None)
+    drive_with_input(cycle, burst, budget, framing, Some(conversation), None)
 }
 
 /// A live card-linked turn uses the same driver with its own credit capture.
@@ -265,20 +274,20 @@ pub fn drive_to_settle_with_input<'a>(
 pub fn drive_to_settle_with_credit<'a>(
     cycle: &'a WorkspaceCycle,
     burst: Burst,
-    max_acts: usize,
+    budget: TurnBudget,
     framing: TurnFraming,
     conversation: &'a mut dyn crate::cognition::conversation::PersonaConversation,
     credit: Option<&'a mut dyn TurnCredit>,
 ) -> impl std::future::Future<Output = SettleOutcome> + Send + 'a {
     // Return the shared driver directly: an async forwarding wrapper needlessly
     // nests its state in every live/eval caller and inflates future layout depth.
-    drive_with_input(cycle, burst, max_acts, framing, Some(conversation), credit)
+    drive_with_input(cycle, burst, budget, framing, Some(conversation), credit)
 }
 
 pub(super) async fn drive_with_input<'c>(
     cycle: &WorkspaceCycle,
     burst: Burst,
-    max_acts: usize,
+    budget: TurnBudget,
     framing: TurnFraming,
     conversation: Option<&mut dyn crate::cognition::conversation::PersonaConversation>,
     mut credit: Option<&mut (dyn TurnCredit + 'c)>,
@@ -288,7 +297,7 @@ pub(super) async fn drive_with_input<'c>(
     let settled = settle_to_outcome(
         cycle,
         burst,
-        max_acts,
+        budget,
         framing,
         conversation,
         credit.as_deref_mut(),

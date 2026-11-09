@@ -56,11 +56,6 @@ impl Drop for ForcedProbe {
 impl ServingDaemonModule {
     /// This daemon's lifecycle gate, for the boot path to publish (`LifecycleGate::set_global`).
     pub fn lifecycle_gate(&self) -> LifecycleGate {
-        LifecycleGate::new(
-            self.reconciling.clone(),
-            self.reconcile_started_ms.clone(),
-            self.reconcile_step.clone(),
-            self.plan_published.clone(),
-        )
+        self.lifecycle.clone()
     }
 }

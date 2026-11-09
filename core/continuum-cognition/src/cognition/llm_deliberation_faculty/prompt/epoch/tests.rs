@@ -26,6 +26,7 @@ fn streams(first_turn: usize, recall: &str) -> Streams {
             block("room-kanban", "BOARD: you hold 1 card; 3 claimable"),
             block("recall", recall),
         ],
+        ..Default::default()
     }
 }
 
@@ -102,8 +103,8 @@ fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front(
         LlmDeliberationFaculty::view_sources(&now, Some(&memory_streams)).iter().map(|s| s.name()).collect();
     assert_eq!(
         names,
-        ["workspace-map", "actions", "conversation", "room-kanban", "recall", "thoughts", "tasks", "open-views", "notices"],
-        "settled blocks, then her actions and conversation, then what counts or changes within an epoch"
+        ["workspace-map", "held-work", "actions", "conversation", "room-kanban", "recall", "thoughts", "tasks", "open-views", "notices"],
+        "settled blocks and her held work (it changes only on a card's transition), then her actions and conversation, then what counts or changes within an epoch"
     );
 
     let (kept, length, survived) = two_acts_and_a_turnover(true);
@@ -130,4 +131,35 @@ fn a_fitting_view_restores_only_when_the_next_act_would_turn_it_over() {
     assert_eq!(turnover_due(30_000, 32_000, Some(5_000), || Ok::<_, ()>(false)), Ok(Turnover::Keep), "nothing to restore: keep");
     assert_eq!(turnover_due(33_000, 32_000, Some(5_000), never), Ok(Turnover::Overflow), "over its grant: turn over");
     assert_eq!(turnover_due(30_000, 32_000, Some(5_000), || Err("mismatch")), Err("mismatch"), "a broken allocation refuses");
+}
+
+// what this catches: a turn sized before her window is known (granted nothing) turning her view
+// over to an empty start, after which the next act re-appends every item her sources hold and
+// turns over again (2026-11-02, every M5 resident at boot). With nothing allowed the view is kept.
+#[test]
+fn a_view_granted_nothing_is_kept_never_started_empty() {
+    let due = turnover_due::<()>(33_165, 0, Some(10_000), || Ok(true)).expect("pure");
+    assert_eq!(due, Turnover::Keep, "no grant is not an overflow");
+    let due = turnover_due::<()>(33_165, 29_000, Some(10_000), || Ok(true)).expect("pure");
+    assert_eq!(due, Turnover::Overflow, "a real grant it outgrew still turns over");
+}
+
+// what this catches (Aris on the M5, 2026-11-04 16:55-17:16Z): a view of 26-37k tokens appending
+// 5-12k an act against a ~44k allowance turned over on most acts, and her need, measured only from
+// sizes her grant bounded, never rose past the grant. An overflow measures what she would have
+// held: the view plus the next act's appends, beyond what was allowed. A deliberate start (her
+// whole history rendered at once) and an act that kept or restored within its grant measure none.
+#[test]
+fn an_overflow_measures_what_her_view_would_have_held() {
+    let (allowed, view, next) = (44_000, 46_000, 9_000);
+    let due = turnover_due::<()>(view, allowed, Some(next), || Ok(false)).expect("pure");
+    assert_eq!(due, Turnover::Overflow, "precondition: over its grant");
+    let beyond = overflow_beyond(due, false, view, allowed, Some(next)).expect("an overflow measures a shortfall");
+    assert!(allowed + beyond >= view + next, "need >= view + one act's appends: {beyond}");
+    assert_eq!(overflow_beyond(due, false, view, allowed, None), Some(view - allowed), "no append measured yet: the view alone");
+    assert_eq!(overflow_beyond(due, true, view, allowed, Some(next)), None, "a start renders her whole history: no demand");
+    let restore = turnover_due::<()>(40_000, allowed, Some(next), || Ok(true)).expect("pure");
+    assert_eq!(restore, Turnover::Restore, "precondition: a restore within the grant");
+    assert_eq!(overflow_beyond(restore, false, 40_000, allowed, Some(next)), None, "a restore fit: no shortfall");
+    assert_eq!(overflow_beyond(Turnover::Keep, false, 40_000, allowed, Some(next)), None, "a kept view fit: no shortfall");
 }

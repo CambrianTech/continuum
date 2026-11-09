@@ -58,13 +58,11 @@ pub fn in_flight() -> u64 {
 
 /// ADMIT a turn, or refuse because the node is stopping.
 ///
-/// # Why not read `activity_gate`'s engaged flag
+/// # Why a permit taken at admission
 ///
-/// `persona_engaged` is stamped where a serving LANE is acquired, deliberately — a room
-/// wake alone is not wakefulness, or a busy room would cancel every dream. So a turn that
-/// has been admitted and is still composing context, or is queued for a lane, is not yet
-/// `engaged`. Draining on that flag would walk past exactly the turns that have taken
-/// input and not yet written anything, which are the ones whose loss is invisible.
+/// A turn that has been admitted and is still composing context, or is waiting for a lane,
+/// has taken input and written nothing yet; its loss would be invisible. Admission is the
+/// first moment it exists, so the permit counts it from there.
 #[must_use = "the permit IS the turn's admission; dropping it immediately ends the turn"]
 pub fn admit() -> Option<continuum_kernel::runtime::Permit<'static>> {
     GATE.admit()
@@ -122,9 +120,19 @@ pub(crate) fn settle_bound_ms(turns: &[(u64, Option<u64>)], uncounted: bool, cap
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TurnSettle {
     pub in_flight_at_close: u64,
+    /// Admitted turns on the turn ledger (a message turn past `begin_turn`).
+    pub on_ledger: u64,
+    /// Turns the stop leaves running with a confirmed obligation: not waited for, and handed
+    /// back by the next start (stop-drain S3/S4).
+    pub handed_back: u64,
+    /// Self-ticks the stop leaves running: they consume no external input, so a cut loses
+    /// nothing a restart does not rebuild, and they are never waited for (S4b).
+    pub self_ticks: u64,
+    /// Message turns the stop tore with no confirmed obligation: these are the loss.
     pub cut: u64,
     pub bound_ms: u64,
-    /// Where the bound came from: `nothing_in_flight`, `measured` (the turns' own
+    /// Where the bound came from: `nothing_in_flight`, `none_to_wait_for` (every turn in
+    /// flight is confirmed or a self-tick, so none is waited for), `measured` (the unconfirmed turns' own
     /// remaining time), or `cap` (an unknown turn, or measured past the cap).
     pub bound_source: &'static str,
     pub waited_ms: u64,
@@ -148,18 +156,26 @@ impl continuum_kernel::runtime::extensions::SettleBeforeStop for TurnsSettle {
             continuum_base::probe!(
                 class = "cognition.turns.settled",
                 in_flight_at_close = s.in_flight_at_close,
+                on_ledger = s.on_ledger,
+                handed_back = s.handed_back,
+                self_ticks = s.self_ticks,
                 cut = s.cut,
                 bound_ms = s.bound_ms,
                 bound_source = s.bound_source,
                 waited_ms = s.waited_ms,
                 cap_ms = cap.as_millis() as u64,
-                "the stop let admitted turns finish before saving — `cut` is how many it still tore"
+                "the stop let unconfirmed message turns finish before saving; `handed_back` are confirmed turns the next start resumes, `self_ticks` initiative a cut loses nothing of, `cut` the ones it still tore"
             );
         })
     }
 }
 
 /// CLOSE THE DOOR, THEN LET THE CITIZENS FINISH: the step before a stop saves.
+///
+/// Only a turn without a confirmed obligation is waited for (stop-drain S4, card f78d7a22):
+/// a confirmed one is durable, so cutting it hands it back to the next start (S3), and
+/// waiting for it is the dark window. The 2026-11-02 IntelMac stop waited the whole 300 s
+/// cap on turns stuck behind a busy engine; on enrico 10-26, every stop was 335-352 s dark.
 ///
 /// Called only from the runtime's shutdown task, which no connection owns, so the door
 /// this closes is always followed by the shutdown it exists for (the one-way rule above).
@@ -172,9 +188,16 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     let in_flight_at_close = in_flight();
     let cap_ms = cap.as_millis().min(u128::from(u64::MAX)) as u64;
     let turns = crate::turn_ledger::in_flight_turns(EpochMs::now().millis());
-    let bound_ms = settle_bound_ms(&turns, in_flight_at_close > turns.len() as u64, cap_ms);
+    let unconfirmed: Vec<(u64, Option<u64>)> =
+        turns.iter().filter(|t| !t.confirmed).map(|t| (t.elapsed_ms, t.typical_ms)).collect();
+    // An admitted turn neither on the ledger nor a self-tick is a message turn still before
+    // `begin_turn`: unknown, so it waits the cap, as before.
+    let uncounted = in_flight_at_close > turns.len() as u64 + crate::turn_ledger::self_ticks_in_flight();
+    let bound_ms = settle_bound_ms(&unconfirmed, uncounted, cap_ms);
     let bound_source = if in_flight_at_close == 0 {
         "nothing_in_flight"
+    } else if awaited() == 0 {
+        "none_to_wait_for"
     } else if bound_ms >= cap_ms {
         "cap"
     } else {
@@ -182,16 +205,36 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     };
     let deadline = started + std::time::Duration::from_millis(bound_ms);
     let mut poll = tokio::time::interval(POLL);
-    while in_flight() > 0 && std::time::Instant::now() < deadline {
+    while awaited() > 0 && std::time::Instant::now() < deadline {
         poll.tick().await;
     }
+    let handed_back = crate::turn_ledger::confirmed_in_flight();
+    let self_ticks = crate::turn_ledger::self_ticks_in_flight();
     TurnSettle {
         in_flight_at_close,
-        cut: in_flight(),
+        on_ledger: turns.len() as u64,
+        handed_back,
+        self_ticks,
+        cut: outstanding(in_flight(), handed_back + self_ticks),
         bound_ms,
         bound_source,
         waited_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
     }
+}
+
+/// The admitted turns a stop must wait for: every turn in flight that is neither confirmed (a cut
+/// hands it back, S4) nor a self-tick (a cut loses nothing of it, S4b). The ONE answer the settle
+/// waits on and the cognition module's drain reports, so the receipt never calls a stop
+/// non-durable over turns the settle rightly left (card b5219023: the M5's "cognition drain
+/// Incomplete { in_flight: 3 }" counted every admitted turn).
+pub fn awaited() -> u64 {
+    outstanding(in_flight(), crate::turn_ledger::confirmed_in_flight() + crate::turn_ledger::self_ticks_in_flight())
+}
+
+/// PURE: how many of `in_flight` admitted turns are owed a wait, given `not_waited` of them are
+/// confirmed turns or self-ticks.
+pub(crate) fn outstanding(in_flight: u64, not_waited: u64) -> u64 {
+    in_flight.saturating_sub(not_waited)
 }
 
 #[cfg(test)]
@@ -250,5 +293,44 @@ mod tests {
         assert_eq!(settle_bound_ms(&[(1_000, Some(20_000))], true, CAP), CAP);
         // A zero cap is no settle at all.
         assert_eq!(settle_bound_ms(&[(0, Some(240_000))], true, 0), 0);
+    }
+
+    // what this catches (stop-drain S4, card f78d7a22): a stop that waits for turns whose
+    // obligation is already durable. On the IntelMac 2026-11-02 the settle sat at its 300 s
+    // cap on turns stuck behind a busy engine, though each had a confirmed obligation the
+    // next start hands back (S3). A confirmed turn is not waited for; an unconfirmed one
+    // (admitted, not yet durable) still is; and the confirmation ends with the turn.
+    #[test]
+    fn the_settle_waits_only_for_turns_not_yet_confirmed() {
+        assert_eq!(outstanding(0, 0), 0, "nothing in flight");
+        assert_eq!(outstanding(3, 3), 0, "every turn confirmed: handed back, not waited for");
+        assert_eq!(outstanding(3, 2), 1, "one admitted turn is not durable yet: wait for it");
+
+        let persona = uuid::Uuid::new_v4();
+        let now = EpochMs::now().millis();
+        let turn = crate::turn_ledger::begin_turn(persona, now);
+        // Her own turn only: the global counts move under every other test thread (Fable on #5737).
+        assert!(crate::turn_ledger::turn_in_flight(persona), "begun");
+        assert_eq!(crate::turn_ledger::confirmed_turns_of(persona), 0, "begun, not confirmed: the settle sizes its bound from it");
+        turn.confirm();
+        assert_eq!(crate::turn_ledger::confirmed_turns_of(persona), 1, "confirmed: left out of the bound");
+        drop(turn);
+        assert_eq!(crate::turn_ledger::confirmed_turns_of(persona), 0, "the confirmation ends with the turn");
+    }
+
+    // what this catches (stop-drain S4b, card 161d2590; the IntelMac 2026-11-03 07:31Z stop:
+    // in_flight 4, handed_back 0, cut 4, the 300 s cap): a self-tick blocked on a lane held the
+    // turn gate with no turn mark and no obligation, so the settle could not tell it from an
+    // unknown message turn and waited the cap. A self-tick is counted apart and never waited for;
+    // its mark ends with it.
+    #[test]
+    fn a_self_tick_is_never_waited_for() {
+        assert_eq!(outstanding(2, 2), 0, "one confirmed turn and one self-tick: nothing to wait for");
+        assert_eq!(outstanding(3, 2), 1, "plus one message turn not yet durable: wait for it");
+        let before = crate::turn_ledger::self_ticks_in_flight();
+        let tick = crate::turn_ledger::begin_self_tick();
+        assert_eq!(crate::turn_ledger::self_ticks_in_flight(), before + 1);
+        drop(tick);
+        assert_eq!(crate::turn_ledger::self_ticks_in_flight(), before, "the mark ends with the self-tick");
     }
 }

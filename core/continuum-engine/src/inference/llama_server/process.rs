@@ -68,10 +68,11 @@ pub struct LlamaServerProcess {
     /// carries it (live and ephemeral): a CPU-fallback eval lane silently corrupts a
     /// benchmark's wall-clock exactly like a live one starves citizens.
     pub(super) offload: crate::inference::placement_watch::OffloadReport,
-    /// LEARNED, once per lane: the served model spends its quick smoke budget inside
-    /// the reasoning channel (a thinking model). Latched on the first `ThinkStarved`
-    /// verdict; every later readiness check then STARTS at the thinking budget instead
-    /// of re-proving the same property by burning a doomed 24-token generation first.
+    /// LEARNED, once per lane: the served model's template thinks even when the smoke
+    /// request asks for no reasoning, so the answer-sized attempt runs out inside the
+    /// reasoning channel. Latched on the first `ThinkStarved` verdict; every later
+    /// readiness check then STARTS at the engine's own bound instead of re-proving the
+    /// same property by burning a doomed answer-sized generation first.
     /// Measured before this latch: the identical `think_retry` fired ~30×/hour on a
     /// contended lane — two generations per readiness check, forever, on the same
     /// slots the citizens were starving for. Thinking-ness is a property of the MODEL;
@@ -347,7 +348,7 @@ impl LlamaServerProcess {
             return "<no home dir>".to_string();
         };
         match std::fs::read_to_string(&path) {
-            Ok(s) => tail_or_hang_marker(&s),
+            Ok(s) => tail_or_hang_marker(&path.display().to_string(), &s),
             // The marker is the contract (never block the error path), but a bare
             // "unreadable" hides WHY — permissions vs absent vs mid-rotation.
             Err(e) => format!("<stderr log unreadable: {e}>"),
@@ -364,20 +365,18 @@ impl LlamaServerProcess {
 /// dies before llama.cpp prints its banner) vs. a genuine early-init hang (child
 /// still running at the deadline). A crash from bad args or a model-load fault
 /// prints the banner + fault FIRST, so a non-empty tail carries that directly.
-/// Pure so the load-bearing empty-vs-tail decision is unit-tested without touching
-/// the real `~/.continuum/logs` path ([[self-test-via-command-feedback-surface-
-/// never-blind]], and #72's env-dependent-test lesson).
-pub(super) fn tail_or_hang_marker(contents: &str) -> String {
-    let mut lines: Vec<&str> = contents.lines().rev().take(20).collect();
-    lines.reverse();
-    let tail = lines.join("\n");
-    if tail.trim().is_empty() {
-        "<stderr log empty — child produced no output before it stopped: with a SIGKILL/137 \
-         exit this is an OS OOM/jetsam kill (a second large model that didn't fit in free \
-         memory); with no exit status it is a genuine early-init hang>"
-            .to_string()
-    } else {
-        tail
+/// The report names the log (the whole output, reachable) and its last line (where a fault
+/// prints); it never picks a fixed number of lines to keep. Pure so the load-bearing
+/// empty-vs-fault decision is unit-tested without touching the real `~/.continuum/logs` path
+/// ([[self-test-via-command-feedback-surface-never-blind]], and #72's env-dependent-test lesson).
+pub(super) fn tail_or_hang_marker(log_path: &str, contents: &str) -> String {
+    match contents.lines().rev().find(|line| !line.trim().is_empty()) {
+        Some(last) => format!("{last} (full log: {log_path})"),
+        None => format!(
+            "<stderr log empty — child produced no output before it stopped: with a SIGKILL/137 \
+             exit this is an OS OOM/jetsam kill (a second large model that didn't fit in free \
+             memory); with no exit status it is a genuine early-init hang> (log: {log_path})"
+        ),
     }
 }
 
@@ -407,8 +406,7 @@ impl LlamaServerProcess {
         invocation: &crate::inference::lane_args::LaneInvocation,
         prepared: Option<Arc<PreparedLocalLaunch>>,
         engine_program: &str,
-        context: u32,
-        lanes: u32,
+        observed: ObservedGeometry,
     ) {
         let mut child = self.child.lock().unwrap(); // JUSTIFIED: poison means prior panic mutating the owned child.
         if let Some(owned) = child
@@ -417,7 +415,7 @@ impl LlamaServerProcess {
         {
             let prepared = prepared.map(|original| {
                 let mut verified = original.as_ref().clone();
-                verified.expected_geometry = Some((context, lanes));
+                verified.expected_geometry = Some((observed.context_window, observed.lanes));
                 Arc::new(verified)
             });
             owned.verified_target = Some(OwnedServingTarget {
@@ -429,8 +427,7 @@ impl LlamaServerProcess {
                 target: target.clone(),
                 engine_program: engine_program.to_string(),
                 invocation: invocation.clone(),
-                observed_context_window: context,
-                observed_lanes: lanes,
+                observed,
                 launched_host_prompt_cache_mib: self
                     .launched_prompt_cache_mib
                     .load(std::sync::atomic::Ordering::Relaxed),

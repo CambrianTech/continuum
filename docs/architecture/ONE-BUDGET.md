@@ -155,7 +155,12 @@ types for network grants and must stay separately capable, so the crate depends 
 (ts-rs behind a feature), the same "bubble down" rule as `airc_core::shown_id`. Its home (settled by Cormac in review): its own
 crate in the airc workspace, `crates/flex`, package `cambrian-flex`, named for the pattern and neutral to both
 repos, not inside `airc-core` (which keeps its one job). Continuum depends on it through its existing airc pin;
-airc's NETWORK-AUTHORITY consumes it. Slice 1's code therefore lands as an airc PR. Pure: no I/O, no clock, no randomness (THE-PROVING-GROUND P8). Generic over a unit type each
+airc's NETWORK-AUTHORITY consumes it. Slice 1's code therefore lands as an airc PR. The cost of that home
+(Cormac on #5723): a solver change is an airc PR plus a continuum pin bump, not an edit beside the caller. It is
+paid once per API change, not per memory-policy change: policy (values, levels, claims) lives in continuum and calls
+the solver; only the solver's own types and clearing live in airc. While a solver change is being developed, a
+local `[patch]` in the developer's `.cargo/config.toml` points continuum at their airc checkout, so the edit is
+checked in seconds and the pin moves only when the airc PR merges. Pure: no I/O, no clock, no randomness (THE-PROVING-GROUND P8). Generic over a unit type each
 consumer defines (`Tokens`, `Bytes`, `LaneSeconds`, bytes in flight); continuum-only pieces (where values come
 from, the behaviour model, ts-rs bindings) stay out of it.
 
@@ -394,6 +399,127 @@ as input and the validator sweeps the profile space (small window with slow deco
 with fast decode), replaying captured traces under each: a read stays whole across acts while the window
 has room; no turnover while unclaimed window remains; prefix reuse per act reported. A new machine is
 covered by its own measured profile, never by a list of boxes. Then one deploy per node and a 15-minute read: reads per edit, writes per hour, act time.
+
+### Slice 3b in detail: a mind's memory in the engine, granted by level and valued by prediction (2026-11-03)
+
+Joel, 2026-11-03: "One slot grows in context and the other shrinks and same for genome sizes. The goal here is
+dynamic allocation"; "Every part of prompts and these kinds of caches need to comply or the whole shebang doesn't
+work, plus it's less code and easier"; "it lets you do really advanced prediction when inputs and outputs to LLMs
+(or world models) are entirely under the same systems"; "You can then prioritize both caching and collapsing,
+expansion, in the flexbox or any of your memory constraints."
+
+**What the engine holds, by its own report** (fork `resident_state`, CambrianTech/llama.cpp#91, read live on the M5
+2026-11-03 12:51Z, Qwen3.6-35B-A3B at 2 x 128,768): target weights 20.69 GB, target KV and recurrent state 2.14 GB
+(8,317 B/token as one figure; it is two holders, below), one compute graph 1.87 GB, the draft model 3.15 GB, the projector 0.90 GB, one checkpoint 94.6 MB
+(x 32 per slot at today's `--ctx-checkpoints` = 3.0 GB per mind). Before #91 the plan saw only the first three and
+inferred the rest from the process footprint as a per-lane term that read 2.8 to 4.5 GB a minute apart.
+
+**The claims, on the node's device tier** (one pool on unified memory, normalized per part 2's pool rule):
+
+| Holder | Claim on `cambrian-flex` |
+|---|---|
+| Weights, graph, draft, projector of the serving model | `Floor::Required`, the engine's reported bytes |
+| A mind's context, resident | `Floor::Required` = what her in-flight turn holds (a grant never shrinks under a running turn); then one indivisible increment per block of her context, valued as below. On a hybrid model the attention cells are per token and may be shared (`seq_cp`); the recurrent state is per sequence and is never shared, so each owner pays her own. The two are separate claims, and the fork's report gives each its own bytes (today it reports one 8,317 B/token figure; the split is a field #91 adds) |
+| Her checkpoint | one indivisible increment of its reported bytes, at her predicted divergence point |
+| Prompt cache | divisible increments, valued by measured restore hits |
+| Her genes | one indivisible increment per adapter her focus selects; an adapter shared by several minds is ONE claim |
+
+**A page's level depends on its genes** (Cormac on #5723). Since fork #90, a paged-out KV page restores only when
+every adapter ACTIVE on it (scale != 0) is attached at the same file revision; otherwise the engine refuses it and
+she re-prefills cold (IntelMac 2026-11-03, task 519: 1,139 s for 13,144 tokens after a refused restore). So her
+page at a resident or paged level and its active genes are one bundle for the restore: the solver may keep the page
+paged only while those genes are held at a level that can attach them before the page-in, and the page-in's
+`switch_cost` includes attaching any that are not. A page whose genes are lowered below that is valued as what it
+then is, a re-prefill, never as the page-in it can no longer be. This is a dependency between claims, the joint form
+of `cambrian-flex` part 2 (airc#1632), not a rule inside either owner.
+
+**Caching, collapsing, expanding are one decision.** Each item has levels: on the GPU, paged to RAM, paged to disk,
+rebuilt from her prompt. A level is an increment on that tier's clearing (the GPU tier, the RAM tier, the disk tier),
+with its bytes as width, its value as below and its move (a page-in, a page-out, a re-prefill) as `switch_cost`.
+Caching is a level held; collapsing is a grant lowered (a `ShrinkRequested` the holder reports when done);
+expanding is a grant raised, which a prediction may raise early (prefetch). No owner has its own victim rule.
+
+**Values come from prediction, because her inputs and the engine's memory are one system.** The core writes her
+prompt and holds the memory it lands in, so the next prompt is mostly known before it is sent:
+- *who acts next*: her activity temperature, her tool calls in flight, an unread turn in her room. The value of her
+  context resident on the GPU is that chance times the prefill seconds a resident page-in saves;
+- *where her next prompt diverges*: `Motion` (continuum-context) and her view's stable end. Her checkpoint goes
+  there, valued by the tokens a resume from it saves; the engine reports each request's actual divergence (`lcp`), so
+  a miss is measured and names the defect at its source (a live value in a stable block, an unstable tool surface);
+- *how much she appends*: `appended_per_act`, so her grant grows ahead of her and a turnover is scheduled when cheap;
+- *what minds share*: identical runs of attention cells across sequences are held once (`seq_cp`), one claim with
+  several owners. The recurrent state at the end of a shared run is per sequence: copied, not shared, and each owner's
+  own claim.
+A value without its measurement is the population's for the activity, marked so (provenance), and an unmeasured
+claim is granted only its floor.
+
+**What this deletes:** `window_within`, `lanes_that_fit`, `ModelFootprint::pool_within`,
+`window_allocator::allocate`, the process-footprint inference (`lane_footprint`, `fixed_per_lane_bytes`),
+`host_prompt_cache_mib`'s own affordable figure, the `--ctx-checkpoints` / `--checkpoint-min-step` derivation,
+`gene_residency::victims`, the slots' page victim logic, `coordinator.rs evict_under_pressure`, the persona
+allocator's GPU tiers. The fork keeps checkpoints only where the core names them (the boundary rule, fork branch
+`fable/boundary-checkpoints`).
+
+**Order** (each lands before the next, each deletes its sizers):
+1. Slice 1's migration: continuum's airc pin moves to include `cambrian-flex` (38a22ab09, 3 commits past the current
+   pin); the turn's allocation, the view's start grants, the reply claim and grounding claim from it with measured
+   values; `flex_allocate` and its priorities are deleted. Proven on the proving ground's T0 first.
+2. The engine tier: serving's claims above, from the fork's report, as a child tier of the `ResourceDaemon`'s device
+   tier (slice 2's shape; until slice 2 lands, the serving daemon clears its own grant from the plan's budget).
+3. Pages and genes on the same levels; their victim rules deleted.
+4. The zero gate: `allocators_outside_the_flexbox` (a sizer outside the solver) at 0, failing on any new one.
+
+**Her own actions' results are the causal floor** (Joel: "this should help prevent the causal loops too ... anything
+where the inference needs to see a state of results from its own actions"). Her newest act, its result, a reply she is
+waiting on, and the state her action changed are `Floor::Required` claims at every tier: reserved before anything is
+traded, never shrunk, and `Infeasible` (named, refused) when they cannot all fit, never cut. An oversized newest result
+claims its summary with its handle as the floor, the rest as an increment (MIND-CONTEXT invariant 2). Everything older
+competes by value and collapses to a reopenable level. A loop needs her input to stop reflecting what she did; with the
+causal edge in the claim's type, no source's own rule can drop it (Benchy's 125 identical acts, 10-20).
+
+**Infeasible is where the budgeter starts working, not where her turn stops** (Joel: "The budgeter must iterate on
+things that while infeasible would break what she's doing or themselves entirely, till it hopefully finds a solution
+that best fits. It's a bit like a bubble sort"). The solver's pure core still reports `Infeasible`; the tier around it
+iterates:
+1. **Repair.** Every required claim declares its ladder of viable levels, each with its measured damage (how often a
+   mind held at that level re-reads, faults or loops: the behaviour model's data): her newest result whole, at its
+   summary with its handle, at a pointer she opens; her recall at summary, at pointers; a cold mind's context on the
+   GPU, paged to RAM. While the required floors do not fit, the claim whose next rung costs the least damage steps
+   down one rung and the tier clears again. Each step strictly lowers demand on finite ladders, so it ends: feasible,
+   or at every claim's last rung.
+2. **Exchange.** On a feasible clearing with indivisible levels the greedy order is a lower bound; passes over pairs
+   (one claim down a level, another up) keep a swap only when total value rises, until a pass changes nothing.
+   Value strictly rises on a finite set of states, so it ends, and each pass narrows the reported gap to the bound.
+3. **Capacity beyond the tier,** before any refusal, in order of measured cost: page another mind's cold context out;
+   grant her a larger share of the shared pool for this turn (others' cold pages to RAM, back when her turn ends, a
+   temporary grant priced by its switch cost); move pages to RAM; split her turn (an oversized result read in pages);
+   serve her alone on the whole pool, every other mind paged out for one turn (the last rung, Joel: "or reduce to one
+   lane in worst case scenario"); grow the pool into free memory once the engine resizes live (SERVING-ENGINE S2);
+   and on the grid place her where the window is larger. Each exists only because every holder is a claim with levels,
+   a cost and custody: a fixed slot or a private cap anywhere is the one place the budgeter could not move (Joel: "If
+   we follow rich and strict architectural adherence we can always get ourselves out of a bind").
+4. Only then a refusal, naming what she needed and what was tried.
+
+Both loops are bounded by the claims and their rungs, never by an iteration count someone picked, and each step is in
+the clearing's receipt, so the proving ground replays the exact sequence.
+
+**A small window is the same clearing at a lower capacity** (Joel: "even intelmacs severely limited context windows
+should be doable within an intelligent budgeting flexbox"). A mind granted a small window (16,384 tokens, say: a capacity chosen
+for the replay, not a node's measured grant; the IntelMac's "16,384 per mind" on 11-03 was a publication bug) holds
+the causal floor whole, the stable head once, then the highest-valued increments: her card's files at summary, the room's last turns,
+recall at pointers she expands on demand. The M5 at 128,768 clears the same claims to fuller levels. No per-node rule
+exists; values are measured per node, so a small node learns which levels its residents reopen.
+
+**Acceptance cases** (proving ground, then each node's live read): (0) a scenario whose required floors exceed
+capacity ends in a clearing (repaired) whose damage is no more than a brute-forced optimum's on small cases, never a
+stalled turn; (a) across every captured act of the four residents,
+her newest act and result are present whole or at their summary with a handle, at the M5's and the IntelMac's
+capacities alike; (b) no two consecutive acts with identical calls and identical inputs (the loop signature) on the
+replay; (c) at a chosen replay capacity of 16,384 tokens a resident completes a card's read-edit-test cycle on replay with no `Infeasible` clearing.
+
+**Validators:** replay the four residents' captures (`fixtures/prompt-captures`) against the fork's measured
+holdings: every clearing fits the reported capacity, resumes land at the predicted divergence, and fewer tokens are
+re-read than today's 1,244-resume baseline (80% within 8k, 10% past 25k).
 
 ### Acceptance: the user's own load (Joel, 2026-10-30: "What if we start this and someone is playing a video game or starts one later? Or Photoshop")
 

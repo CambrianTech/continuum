@@ -10,7 +10,7 @@ use serde_json::Value;
 use ts_rs::TS;
 
 /// Chat message for text generation
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ChatMessage.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
@@ -22,7 +22,7 @@ pub struct ChatMessage {
 }
 
 /// Message content - either plain text or multimodal content blocks
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/MessageContent.ts"
@@ -34,7 +34,7 @@ pub enum MessageContent {
 }
 
 /// Content part for multimodal and tool protocol messages
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ContentPart.ts")]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
@@ -65,7 +65,7 @@ pub enum ContentPart {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ImageInput.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ImageInput {
@@ -80,7 +80,7 @@ pub struct ImageInput {
     pub mime_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/AudioInput.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct AudioInput {
@@ -95,7 +95,7 @@ pub struct AudioInput {
     pub mime_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/VideoInput.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct VideoInput {
@@ -114,7 +114,10 @@ pub struct VideoInput {
 // TOOL CALLING TYPES
 // ============================================================================
 
-pub use continuum_tool_protocol::{NativeToolSpec, ToolCall, ToolInputSchema};
+pub use continuum_tool_protocol::{
+    CallBatch, CallEnding, CallOrigin, CommittedCall, Disposed, GenerationEnd, HeldCall, NativeToolSpec, ToolCall, ToolInputSchema,
+    UnparsedArguments, UnreadableMarker,
+};
 
 /// Tool result to send back to AI after execution
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -165,7 +168,7 @@ impl ResultCustody {
 }
 
 /// Tool choice specification
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ToolChoice.ts")]
 #[serde(untagged)]
 pub enum ToolChoice {
@@ -178,7 +181,7 @@ pub enum ToolChoice {
 // ============================================================================
 
 /// Active LoRA adapter to apply during generation
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/ActiveAdapterRequest.ts"
@@ -198,7 +201,7 @@ fn default_adapter_scale() -> f64 {
 }
 
 /// Text generation request
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/TextGenerationRequest.ts"
@@ -331,13 +334,66 @@ pub struct TextGenerationRequest {
     pub turn_bound: Option<std::time::Duration>,
 }
 
+/// The terms a mind's turn is DISPATCHED under, beside its request: what the faculty decided when
+/// it rendered the request, which the adapter enforces at dispatch
+/// (`AIProviderAdapter::generate_admitted`). Not part of the wire request: an adapter that cannot
+/// enforce them refuses typed rather than sending without them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DispatchTerms {
+    /// The strict admission guard it was rendered under; `None` = the lane's own window only.
+    pub admission: Option<RequestAdmission>,
+    /// The think's bound inside `max_tokens`, sized from her MEASURED output need (her grant past
+    /// her measured answer), so the answer keeps its room. A mind's turn always carries one, zero
+    /// included; `None` only for a caller with no measured need.
+    pub think: Option<ThinkBudget>,
+}
+
+/// A think budget in tokens. ZERO is a budget, not "unbounded": on our fork the reasoning-budget
+/// sampler forces the end tag the moment the think opens when its budget is 0
+/// (`common/reasoning-budget.cpp`: `remaining <= 0` -> `REASONING_BUDGET_FORCING`), and only `-1`
+/// (never sent) means unlimited (`common/sampling.cpp`). It applies where the model's chat template
+/// declares thinking end tags (`server-common.cpp`, `thinking_end_tags`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/ThinkBudget.ts")]
+pub struct ThinkBudget(pub u32);
+
+/// How a prompt's price is admitted: whether a price below its estimate is backed by the engine's
+/// exact count of the finalized body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptAdmission {
+    /// No engine count: a prompt is never priced below its estimate.
+    #[default]
+    Estimated,
+    /// The engine counts the finalized prompt and refuses at its exact count: the measured
+    /// density prices it, below the estimate too.
+    EngineCounted,
+}
+
+/// The admission a request was rendered under, checked at DISPATCH (after any wait for a lane),
+/// never only at render: on the M5 (0b2854327, 2026-11-05 01:25Z) Atlas's act was rendered
+/// against a 148,838 window, her grant shrank to 40,282 0.6 s later while she waited 26.3 s for a
+/// lane, and the engine counted 139,007 tokens and SENT it (3.45x her grant), because the only
+/// count check compared against the slot's window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestAdmission {
+    /// The window prompt plus `max_tokens` must fit strictly, by the engine's exact count.
+    pub window: u32,
+    /// Her grant's LEASE when the request was rendered (its size and the revision that published
+    /// it); at dispatch the grant owner reserves that revision, or the request is refused
+    /// (`InferenceError::GrantChanged`) and re-rendered. `None` = not on the shared pool.
+    pub lease: Option<crate::capacity::window_grant::GrantLease>,
+    /// How its prompt was priced: below the estimate only behind the engine's count.
+    pub priced: PromptAdmission,
+}
+
 /// Constrains the model's output format. OpenAI-compatible serialization:
 /// `{"type": "json_object"}` for `JsonObject`, `{"type": "text"}` for `Text`.
 /// llama.cpp / DMR honors this by constraining the sampler so the model
 /// can only emit valid JSON (when JsonObject) — no thinking prose, no
 /// commentary, no leading/trailing text. The right way to enforce structured
 /// output: at the model level, not via a downstream parser fallback.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/ResponseFormat.ts"
@@ -452,6 +508,21 @@ pub enum FinishReason {
     /// stop: a receipt must never claim an explicit stop it did not see (Codex, 2026-10-31:
     /// Kimi's reasoning-only completions read `stop` because an absent marker defaulted to it).
     Unreported,
+}
+
+impl FinishReason {
+    /// Why the generation stopped, as far as a tool call's fate is concerned: `Length` is the
+    /// output limit, `Error` is no completion receipt, and a backend that said nothing is
+    /// `Unreported`; only `Stop` and `ToolUse` are finished
+    /// (`continuum_tool_protocol::call_ending`).
+    pub fn generation_end(self) -> continuum_tool_protocol::GenerationEnd {
+        match self {
+            FinishReason::Length => continuum_tool_protocol::GenerationEnd::OutputLimit,
+            FinishReason::Unreported => continuum_tool_protocol::GenerationEnd::Unreported,
+            FinishReason::Error => continuum_tool_protocol::GenerationEnd::Failed,
+            FinishReason::Stop | FinishReason::ToolUse => continuum_tool_protocol::GenerationEnd::Finished,
+        }
+    }
 }
 
 impl std::fmt::Display for FinishReason {

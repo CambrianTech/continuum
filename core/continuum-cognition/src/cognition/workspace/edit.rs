@@ -78,9 +78,14 @@ pub enum Decision {
     /// to see the traceback"). It is captured into the observation engram so next
     /// tick she remembers the *reason*, not just the *result*. See
     /// `docs/cognition/ACTING-ORGANISM.md`.
+    ///
+    /// `origin` is where the calls came from (her generation, and why the engine says it
+    /// stopped): it travels with them to the act seam, which disposes each call once by it
+    /// (`CallBatch::classify`), so a call her generation never committed never runs.
     Act {
         calls: Vec<ToolCall>,
         intent: String,
+        origin: crate::ai::types::CallOrigin,
     },
     /// Nothing worth adding this turn (the persona's own judgment, not a gate).
     /// Together with `Speak`/`RaiseUnprompted`, this is how the organism SETTLES:
@@ -500,6 +505,15 @@ impl Contribution {
         contribution
     }
 
+    /// An act refused because her required floors and measured output need do not fit her window
+    /// ([`IrreducibleShortfall`]): parked like any capacity refusal, its cause typed.
+    pub fn output_room_refused(short: IrreducibleShortfall) -> Self {
+        let mut contribution = Self::prompt_capacity_refused(short.into());
+        contribution.reasoning = "her measured output need does not fit the serving window".into();
+        contribution.capacity_refusal = Some(short.into());
+        contribution
+    }
+
     pub fn with_capacity_readiness(mut self, readiness: Arc<CapacityReadiness>) -> Self {
         if let Some(refusal) = &mut self.capacity_refusal {
             refusal.readiness = Some(readiness);
@@ -756,6 +770,10 @@ pub struct Burst {
     /// to: threading the cause as a separate parameter through every driver would let
     /// the two drift, and provenance belongs on the thing whose provenance it is.
     pub cause: Cause,
+    /// WHICH turn this is: one id per turn, the same one its compose stamped on every RAG
+    /// capture (`ComposedTurn::turn_id`), so a capture, an act and a dropped generation of one
+    /// turn name the same turn. A burst built outside a live compose gets its own at birth.
+    pub turn: uuid::Uuid,
     /// WHICH of her hands this turn acts with: the acting context of the card claim it
     /// works, or `None` for her default hands. Bound once, at the turn's admission, by
     /// whoever admitted it; every act of the turn runs in these hands and no turn moves

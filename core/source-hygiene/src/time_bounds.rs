@@ -105,7 +105,7 @@ impl SourceRule for TimeBounds {
             if let Some((l, r)) = crate::lexer::constant_product(code).filter(|(l, r)| is_duration_name(l) || is_duration_name(r)) {
                 out.push(Violation {
                     rule: "underived_duration",
-                    file: file.rel.clone(),
+                    file: file.repo.clone(),
                     line: line_no,
                     source: format!("{l} * {r} — a bound with no measurement in it"),
                 });
@@ -118,7 +118,7 @@ impl SourceRule for TimeBounds {
                 if is_duration_name(name) && crate::lexer::is_bare_literal(value) {
                     out.push(Violation {
                         rule: "underived_duration",
-                        file: file.rel.clone(),
+                        file: file.repo.clone(),
                         line: line_no,
                         source: format!("const {name}: {ty} = {value}"),
                     });
@@ -139,8 +139,8 @@ mod tests {
     #[test]
     fn underived_durations_never_increase() {
         let violations = scan(&[&TimeBounds]);
-        let count = violations.len();
-        crate::ratchet::hold("underived_durations", count, || {
+                let count = violations.len();
+                crate::ratchet::hold_sites("underived_durations", &violations, || {
             format!(
                 "underived, unjustified durations rose to {count}. Derive it from what the substrate \
                  measures (`inference::prefill_rate`, `inference::decode_knee`), or say on the line or \

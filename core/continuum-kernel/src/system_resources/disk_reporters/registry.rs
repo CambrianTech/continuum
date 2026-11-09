@@ -71,7 +71,7 @@ struct State {
 struct Observation {
     path: std::path::PathBuf,
     volume: Option<u64>,
-    empty_custody: Option<Arc<Vec<std::fs::File>>>,
+    empty_custody: Option<Arc<Vec<continuum_host::durable::Lock>>>,
 }
 type Resolution =
     futures::future::Shared<futures::future::BoxFuture<'static, Result<Observation, String>>>;

@@ -81,7 +81,7 @@ impl SourceRule for BoundarySerialization {
             if !justified {
                 out.push(Violation {
                     rule: "boundary-serialization",
-                    file: file.rel.clone(),
+                    file: file.repo.clone(),
                     line: line_no,
                     source: code.trim().to_string(),
                 });
@@ -105,9 +105,8 @@ mod tests {
     #[test]
     fn the_unjustified_serialization_count_never_rises() {
         let violations = scan(&[&BoundarySerialization]);
-        let count = violations.len();
-
-        crate::ratchet::hold("unjustified_serialization", count, || {
+        
+        crate::ratchet::hold_sites("unjustified_serialization", &violations, || {
             format!(
                 "Serialize ONLY at a true system boundary (socket, disk format, wire protocol, \
                  foreign API) and say WHICH boundary on the same line. Between in-process layers, \

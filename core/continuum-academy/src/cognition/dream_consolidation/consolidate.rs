@@ -212,40 +212,17 @@ impl DreamConsolidationRegion {
         let consolidated = Arc::clone(&self.consolidated);
         let reviewed = Arc::clone(&self.reviewed);
         let boundaries = Arc::clone(&self.review_boundaries);
-        let mut boundary_wake = self.review_boundary_wake.subscribe();
         #[cfg(test)]
         let idle_wait = self.idle_wait.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            // #2561 preemption = paging out: an arriving demand does not queue
-            // behind a dream — it CANCELS it. The dropped future closes the
-            // generation stream (the backend abandons the slot on disconnect);
-            // the half-formed dream is discarded, and it is CHEAP to discard:
-            // dreams are the lowest-priced resident in the paging economy,
-            // re-dreamable from the same engrams on the next bored window.
-            //
-            // BOREDOM FIRST, THEN THE RACE. The wait used to live inside `dream_pass`,
-            // so the cancel arm below was armed while the pass was still parked on her
-            // gate — mid-turn the cancel won instantly, the in-flight slot cleared, and
-            // the region re-spawned every tick (measured 2026-09-03: 22 `paged_out` per
-            // citizen at an exact 30s cadence, zero consolidations). A dream arises
-            // only in her sustained idle; only THEN can wakefulness cancel it.
-            {
-                let a = crate::cognition::activity_gate::persona_activity(persona_id);
-                if !crate::cognition::activity_gate::persona_bored(
-                    a,
-                    crate::inference::measured_hold::subscribe()
-                        .borrow()
-                        .is_some(),
-                    continuum_base::time::EpochMs::now().millis(),
-                ) {
-                    continuum_base::probe!(
-                        class = "dream.awaiting_boredom",
-                        persona = %persona_id,
-                        "dream pass parked on HER activity gate — arises only in her sustained idle"
-                    );
-                }
-            }
+            // A dream pass runs while she works (row 6 of MIND-DATAFLOW-OVERHAUL, card a31e72a4):
+            // it waited for HER sustained idle and her next act cancelled it, so a resident
+            // who is always engaged never consolidated (the M5, 2026-10-31: dreams 0 in 12 h;
+            // 2026-09-14: awaiting_boredom x26, paged_out x6, zero consolidations). Its
+            // generations ask at LanePriority::Ambient inside the non-directed budget
+            // (distiller.rs), so a directed call keeps its lane; one pass per resident is in
+            // flight (the permit), and a tick launches one only when fresh episodes exist.
             if trigger == DreamTrigger::CardBoundary {
                 continuum_base::probe!(
                     class = "dream.card_boundary",
@@ -284,45 +261,12 @@ impl DreamConsolidationRegion {
                 }
                 return;
             }
-            // A review arriving while idle work is parked must not disappear behind
-            // its in-flight flag. Retire only the wait; next tick selects fresh
-            // episodes under the bounded boundary policy, including the finished work.
-            let bored = async {
-                #[cfg(test)]
-                if let Some(wait) = idle_wait {
-                    wait.notified().await;
-                    return;
-                }
-                crate::cognition::activity_gate::wait_for_boredom_of(persona_id).await;
-            };
-            tokio::select! {
-                _ = async {
-                    loop {
-                        if storage_available && boundaries.lock().unwrap().get(&persona_id).is_some_and(|r| !r.pending.is_empty()) { // JUSTIFIED: inspect the owner state without holding its guard across the wait.
-                            return;
-                        }
-                        if boundary_wake.changed().await.is_err() { return; }
-                    }
-                } => { return; }
-                _ = bored => {}
+            // A test parks the pass here, before inference, to deliver a review while it is in flight.
+            #[cfg(test)]
+            if let Some(wait) = idle_wait {
+                wait.notified().await;
             }
-            tokio::select! {
-                _ = dream_pass(
-                    reflector,
-                    persona_id,
-                    clusters,
-                    fresh,
-                    consolidated,
-                    reviewed,
-                ) => {}
-                _ = crate::cognition::activity_gate::wait_for_engagement_of(persona_id) => {
-                    continuum_base::probe!(
-                        class = "dream.paged_out",
-                        persona = %persona_id,
-                        "activity arrived mid-dream — dream cancelled and discarded (re-dreamable)"
-                    );
-                }
-            }
+            dream_pass(reflector, persona_id, clusters, fresh, consolidated, reviewed).await;
         });
 
         TickOutcome {
@@ -385,21 +329,9 @@ impl DreamConsolidationRegion {
         let reflector = reflector.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            // HER GAP, NOT BETWEEN HER TURNS (card 07188783): belief hygiene waits for her
-            // sustained idle, the same gate the idle consolidation pass takes, and her next act
-            // cancels it; its beliefs stay unreviewed for the next pass. Nothing about it is
-            // urgent, so it never interleaves with her turns.
-            crate::cognition::activity_gate::wait_for_boredom_of(persona_id).await;
-            tokio::select! {
-                _ = review_pass(reflector, persona_id, beliefs, reviewed) => {}
-                _ = crate::cognition::activity_gate::wait_for_engagement_of(persona_id) => {
-                    continuum_base::probe!(
-                        class = "dream.review_paged_out",
-                        persona = %persona_id,
-                        "activity arrived mid-review: the review is cancelled and its beliefs stay unreviewed for the next pass"
-                    );
-                }
-            }
+            // Belief hygiene runs while she works, like every dream pass (card a31e72a4); the
+            // cooldown above keeps it a trickle, and its generations ask at Ambient priority.
+            review_pass(reflector, persona_id, beliefs, reviewed).await;
         });
         Some(TickOutcome {
             published: 0,

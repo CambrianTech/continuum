@@ -84,10 +84,11 @@ They're short." The reference is `cb-mobile-sdk/cpp/utility/Threads.h` `QueueThr
 pub trait Stage: Send + 'static {
     type Input: Send;              // what wakes it (a signal, a digest handle, a frame)
     const QOS: Qos;                // its class
-    const DEPTH: usize = 1;        // bounded queue; when full, the oldest is dropped (keep-latest)
+    const OVERFLOW: Overflow;      // Reliable (default: a full slot hands the input back) or KeepNewest (signals)
     async fn handle(&mut self, input: Self::Input);
 }
-// spawn_stage(stage) -> StageInput<Input>: push() inserts, drops the oldest past DEPTH, and signals.
+// spawn_stage(stage) -> StageInput<Input>: a stage holds one input in hand and one pending (CBAR's
+// double buffer); push() fills the pending slot, or hands the input back / replaces it when full, and signals.
 // A stage that needs a shared capacity (the engine, a TTS model) submits to that capacity's Flow.
 ```
 
@@ -357,6 +358,89 @@ Pure scheduler + MindMemory + a fake engine on a virtual clock. Each case states
 
 The simulator reports what the live read reports: each resident's wait between acts, first-token latency
 for directed and live calls, switch freeze, aggregate tokens per second, and each class's worst wait.
+
+## 6b. Proving the flow does not block itself: the wait ledger (Joel, 2026-11-02)
+
+Joel: "we can make sure the data flow isn't blocking. We might need to develop analysis and
+simulations to make sure it's not blocking itself." A slow act is a symptom; a wait is the cause.
+On 2026-11-02 the M5 showed acts of 452 s with 334 s outside the model, and the cause (residents'
+own builds, a relaunch condemning acts, a session that never formed) had to be inferred from logs.
+The flow should report its waits directly, in the simulator first and live after.
+
+**One record per wait.** Every point where a mind's work can wait (lane admission, the store, a
+task handle, a reader's wake, a page in, a remote session, a lock) records one `Wait`:
+who waited (`ActAt`: persona, turn, step), on what (a typed `WaitOn`: Engine, Store, Task,
+Reader, Page, RemoteSession, Lock), on whom (the holder, when there is one), how long, and how it
+ended (granted, timed out, cancelled). A wait point that records nothing is a defect the
+census below counts.
+
+**In the simulator (§6), as validators:**
+- no wait cycle: the wait graph (waiter -> holder) is acyclic in every case;
+- a reader never waits on another reader: perception, reflex, dream and retention each wait only
+  on the store or the engine (PERCEPTION-FROM-THE-STORE.md, "Many readers, one stream");
+- the engine is the only shared bottleneck: with the engine idle, no mind with READY work (its store,
+  task and remote dependencies satisfied) waits; an idle engine cannot make unfinished IO ready, so a
+  mind blocked on a dependency is reported by that dependency, and independent ready work proceeds
+  while another dependency is blocked (Codex, review of 5086c117);
+- a directed line's first token is bounded by one decode step plus her glance, whatever the
+  deep act is doing (THE-WHOLE-MIND §2.2), in the locally admitted and resident case, tested with
+  the measured step and prefill costs; an unavailable remote endpoint, a page-in, a prefill or
+  exhausted physical capacity is outside that bound, and blocked or degraded admission is reported
+  separately, never silently excluded.
+Each case in §6 reports its wait table beside its pass rule.
+
+**Live, the same table.** The `Wait` record is a probe, so the live node produces the table the
+simulator does: per resident and per hour, time waiting by `WaitOn`, the longest waits, and any
+cycle. `citizen/health` reads it, so "she is slow" names what she waited on.
+
+**Static ratchets, one per blocking pattern, each only falls:** a lock held across an `.await`;
+an await with no bound and no cancellation owner; a number standing for "unbounded" (the
+`usize::MAX` act budget removed 2026-11-02); a constant where a measurement exists; a runtime
+complaint about a required input (`required_input_complaints`, landed 2026-11-02).
+
+Built alongside P2 (perception from the store cursor), because P2 removes the most waiting: the
+sim proves the new flow before it touches a live node.
+
+## 6c. Status of the flow (2026-11-02)
+
+Merged:
+- intake is durable and ordered: every room line commits with a commit-ordered arrival (P1,
+  #5694); one chat-store door, proven attribution, relayed lines survive a restart (#5696);
+- the brain is shared, never locked: compose, recall and admission run concurrently (#5698);
+- one step budget per turn (acts, plans, retries), and no substrate stop on identical result
+  text (#5700);
+- required inputs are enforced by type, starting with grounding (`CriticalSource` returns
+  `Grounded`), with the `required_input_complaints` ratchet over the rest (#5701).
+
+Open, in order:
+
+| piece | removes | waits on |
+|---|---|---|
+| P2: perception from the store cursor | the in-memory inbox (its capacity error ends her turn), `seen_ids`, `loop_dedup` | #5585 (task lifecycle) |
+| the wait ledger (§6b) | inferring blocking from slow acts | built with P2 |
+| the reflex and her glance | a mid-act line waiting out the generation | P2 |
+| the dream as a reader of the same stream | learning as a batch beside serving | the experience ORM (card ccc0a165) |
+| one admission owner | two lane gates in series | Codex |
+| no engine relaunch while serving | acts condemned mid-generation | Codex |
+| keyed room state in airc (doctrine, purpose) | "not in the last 200 events" | Codex |
+| the typed sweep | the remaining runtime complaints, `Params`, `LateBound`'s "not installed" | by crate (plan on airc 2026-11-02) |
+
+## 6d. Architectural refinements the day's defects named (Joel, 2026-11-02: "some architectural refinement is necessary")
+
+Each defect of 2026-11-02 was the same gap wearing a different name. Each refinement is one rule,
+an owner, and a ratchet or validator that only lets the old shape fall.
+
+| refinement | the defects that named it | owner |
+|---|---|---|
+| ONE typed owner per policy (retry, error class): callers match a typed outcome, never re-derive it | the sentinel matched error-text substrings under a guessed retry count; the remote breaker counted "no session" as an answer (#5702); airc folded distinct failures into one `DeadlineExceeded` (#1649) | Codex (airc, transport); Fable (mind) |
+| REQUIRED inputs by type: required field, non-empty type, typestate; never `Option` + runtime complaint, `LateBound` "not installed", or a number meaning "unbounded" | the cold-start absence probe; `usize::MAX` act budget; "Missing {key}" in untyped params | everyone, by crate (`required_input_complaints`) |
+| ONE door per resource: the one place that names the handle, ensures the schema and turns a refusal into an error | the chat store's seven hand-built calls (the door found the tables canary never created) | Fable (stores the mind owns) |
+| STATE is keyed, never scanned: a room fact is an indexed read | doctrine read from the newest 200 events; the work gate's 400-row page | Codex (airc room state); Fable (the work gate) |
+| MANY READERS, one stream (§6b, PERCEPTION-FROM-THE-STORE) | the in-memory inbox whose capacity error ends her turn; the text dedup filtering what she perceives | Fable (P2) |
+| LIFECYCLES have owners: every process is started, reaped and reported by its owner | a 20-hour `airc join` of unknown revision still running (its durable-feed role is distinct from owning an encrypted receiver; it is NOT a proven cause of the addressed fault); an engine relaunched under live acts; agent test windows restarting residents mid-work (0 writes in a disturbed hour, 26 in two undisturbed) | Codex (airc, serving); every agent (batch windows) |
+| EVERY fact answerable live: a probe names its subject; a boot fact is queryable, not a rotated log line | condemned acts named only by time; `mind.feed.event` with no event id; the node pump's online state lost to rotation | Fable (`ping` reports the node pump) |
+| SLEEP IS AS IMPORTANT AS RESPONSIVENESS (Joel, CBAR's signal-mutex-sleep): one wait primitive; a stage waits on a typed signal, drains, sleeps; backoff, coalescing and "unreachable until re-announce" are properties of the primitive, never consumer code; health reads owner-published snapshots, never probes; a suppressed send does no encode, seal or network work and nothing runs periodically while idle (returning its typed result is the only cost); a NoReceiver is definitive only for that recipient/host incarnation and owner generation, a NoHandshakeReply is uncertainty; a receiver reattach on the same daemon wakes suppressed work, and a lost ready announcement is bounded by the backstop, never asleep forever (Phase A, shared suspect plus backstop: Cormac on #1649; Phase B, authenticated refusal and the ready protocol: under Codex's boundary review) | airc backfill and forwards storming a retired peer (2M refusals per daemon); polled health; interval ticks with no work | Codex (airc reachability owner); Fable (the primitive is `continuum-kernel` `Stage` + `StageRunner`, already signal-woken with a `floor` backstop and one adopter, the deferred faculty: every loop migrates onto it; the runner itself records the wait ledger and wakes-without-work, so every stage reports them free; the idle-core gate: a 10 s idle sample near zero) |
+| the WAIT LEDGER (§6b) | 300 s of non-model time per act inferred, not reported | Fable (with P2) |
 
 ## 6a. The dyno and the simulator: how to use them (both proved their worth on 2026-10-28)
 

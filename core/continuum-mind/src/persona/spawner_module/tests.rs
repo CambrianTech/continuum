@@ -222,24 +222,6 @@
         }
     }
 
-    /// Regression test for the position-pairing hazard (PR #1510 review
-    /// finding #2). Pinned `#[ignore]` until slice 14 lands role-in-
-    /// seed.json + RoleAwareProvider. The body documents what slice
-    /// 14 must restore: tier-shaped multi-role rosters that survive
-    /// boot 2's alphabetic persona order without flipping roles.
-    #[test]
-    #[ignore = "tracks #133 slice 14 — role-in-seed.json + RoleAwareProvider"]
-    fn slice_14_restores_helper_plus_coder_for_compat() {
-        let plan = plan_for_tier(
-            HwCapabilityTier::MacIntelMetalDiscrete,
-            HwTierCategory::Compat,
-        );
-        // When slice 14 ships, this assertion becomes the live spec:
-        assert_eq!(plan.len(), 2);
-        assert!(plan.iter().any(|r| r.role == RoleId::Helper));
-        assert!(plan.iter().any(|r| r.role == RoleId::Coder));
-    }
-
     /// ServiceModule.plan() is the same as the free function with the
     /// module's configured tier — proves the substrate-managed and
     /// pure-function paths agree.
@@ -542,13 +524,14 @@
     // never below the resident floor, and an unknown lane count bounds nothing.
     #[test]
     fn the_draw_is_bounded_by_the_warm_slots_and_an_unknown_lane_count_bounds_nothing() {
-        use crate::cognition::health_ledger::{MINDLESS_RESIDENT_FLOOR, MINDS_PER_LANE_STARVED_ABOVE};
+        use crate::cognition::health_ledger::MINDS_PER_LANE_STARVED_ABOVE;
+        let floor = 2;
         let per = MINDS_PER_LANE_STARVED_ABOVE as usize;
-        assert_eq!(bounded_by_warm_slots(16, Some(2)), 2 * per, "two lanes seat two lanes' worth");
-        assert_eq!(bounded_by_warm_slots(16, Some(1)), per.max(MINDLESS_RESIDENT_FLOOR as usize), "one lane: the edge, never below the floor");
-        assert_eq!(bounded_by_warm_slots(16, Some(8)), 16, "lanes past the population change nothing");
-        assert_eq!(bounded_by_warm_slots(16, None), 16, "no lane known bounds nothing — an absence is not a number");
-        assert_eq!(bounded_by_warm_slots(16, Some(0)), 16, "a zero lane count is unknown, not a bound of zero");
-        assert_eq!(bounded_by_warm_slots(0, Some(2)), 0, "an empty population stays empty (the one-roster rule)");
+        assert_eq!(bounded_by_warm_slots(16, Some(2), floor), 2 * per, "two lanes seat two lanes' worth");
+        assert_eq!(bounded_by_warm_slots(16, Some(1), floor), per.max(floor), "one lane: the edge, never below the floor");
+        assert_eq!(bounded_by_warm_slots(16, Some(8), floor), 16, "lanes past the population change nothing");
+        assert_eq!(bounded_by_warm_slots(16, None, floor), 16, "no lane known bounds nothing — an absence is not a number");
+        assert_eq!(bounded_by_warm_slots(16, Some(0), floor), 16, "a zero lane count is unknown, not a bound of zero");
+        assert_eq!(bounded_by_warm_slots(0, Some(2), floor), 0, "an empty population stays empty (the one-roster rule)");
     }
 

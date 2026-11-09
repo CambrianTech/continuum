@@ -97,6 +97,8 @@ mod admission;
 pub(crate) mod admission_clock;
 use self::request::*;
 mod reply_claim;
+mod act_room;
+use self::act_room::*;
 mod read_receipt;
 pub use read_receipt::ReadReceipt;
 use self::reply_claim::*;
@@ -143,19 +145,7 @@ pub fn model_binding(
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
 
-/// The flex claim ids of the deliberation prompt plan. One window, five claimants.
-const FLEX_FRAMING: &str = "framing";
-
-const FLEX_REQUIRED: &str = "required_input";
-
-const FLEX_GROUNDING: &str = "grounding";
-
-const FLEX_HISTORY: &str = "history";
-
-const FLEX_REPLY: &str = "reply";
-
-/// Her hands (`prompt/tools_epoch.rs`): floor = the epoch's level or core hands, want = all.
-const FLEX_TOOLS: &str = "tools";
+// The claim ids of her prompt's one allocation live with it: `continuum_context::allocation::id`.
 
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
@@ -241,6 +231,9 @@ pub struct LlmDeliberationFaculty {
     >,
     /// The tool set her current view epoch chose (`prompt/tools_epoch.rs`).
     tools_epoch: parking_lot::Mutex<Option<prompt::ToolsEpoch>>,
+    /// Each standing block's last version per room (`prompt/messages.rs`): a block this
+    /// cycle did not gather keeps its place in her view instead of leaving it.
+    held_blocks: parking_lot::Mutex<std::collections::HashMap<(Uuid, String), crate::cognition::context_streams::blocks::Grounding>>,
     /// A measurement fork's (`fork_eval_cycle`): its turns warm their own page, never hers.
     forked: bool,
 }
@@ -274,6 +267,7 @@ impl LlmDeliberationFaculty {
             working_set: None,
             context_view: parking_lot::Mutex::new(None),
             tools_epoch: parking_lot::Mutex::new(None),
+            held_blocks: parking_lot::Mutex::new(std::collections::HashMap::new()),
             forked: false,
         }
     }
@@ -487,18 +481,12 @@ impl LlmDeliberationFaculty {
     /// becoming a second opinion about how small a window can get.
     pub const COMPLETION_FLOOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX / 8;
 
-    /// Does this workspace carry an [active-work] grounding contribution naming a
-    /// card she currently holds IN PROGRESS? Structural claim-state (the source read
-    /// it from airc this turn), decoded from our own wire format at the one predicate
-    /// colocated with its renderer. Drives the working-presence contract on
-    /// undirected turns; derived ONCE per prompt so the framing-token estimate and
+    /// Does she hold a card IN PROGRESS this tick? Typed claim state, read once by the cycle
+    /// (`Workspace::held`), never decoded from rendered text. Drives the working-presence
+    /// contract on undirected turns; derived ONCE per prompt so the framing-token estimate and
     /// the final render agree byte-for-byte (the budget-math invariant).
     pub fn holds_live_work(ws: &Workspace) -> bool {
-        ws.broadcast
-            .iter()
-            .filter(|c| c.decision.is_none() && !c.trailing)
-            .filter(|c| c.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK)
-            .any(|c| crate::cognition::faculty_ids::renders_held_in_progress(&c.content))
+        ws.held.holds_in_progress()
     }
 
     /// Does this workspace name a card she HOLDS (Claimed or InProgress)? The lane
@@ -536,11 +524,7 @@ impl LlmDeliberationFaculty {
     }
 
     fn holds_work_card(ws: &Workspace) -> bool {
-        ws.broadcast
-            .iter()
-            .filter(|c| c.decision.is_none() && !c.trailing)
-            .filter(|c| c.faculty.as_str() == crate::cognition::faculty_ids::ACTIVE_WORK)
-            .any(|c| crate::cognition::faculty_ids::renders_held_card(&c.content))
+        ws.held.holds_a_working_card()
     }
 }
 
@@ -694,34 +678,6 @@ fn occupancy_of(shape: TurnShape, prefill_tps: f64, decode_tps: f64) -> Option<s
     Some(std::time::Duration::from_secs_f64(secs))
 }
 
-/// Append one request's message list, whole, to `<dir>/<persona>.wire.jsonl` (the wire capture,
-/// sink 4 of PRIVACY-OF-THOUGHT.md). A turn in her mind room writes nothing. The boundary is the
-/// ADAPTER'S INPUT (`TextGenerationRequest::messages`), not the HTTP body an adapter serializes
-/// from it; a write failure is silent here, so a missing row is never evidence no request ran.
-fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &str, room_id: Uuid, request: &TextGenerationRequest) {
-    if crate::cognition::mind_room::is_private_room(persona_id, room_id) {
-        crate::cognition::mind_room::note_withheld(persona_id, "wire_capture");
-        return;
-    }
-    let row = serde_json::json!({
-        "ts_ms": continuum_base::time::EpochMs::now().millis(),
-        "persona": persona_name,
-        // Whole messages, every part: a text-only projection dropped native tool calls and
-        // results, so her newest result read as a bare label in the one input of record
-        // (Aiko, the M5, 2026-10-29: a result counted as lost was on the wire).
-        "messages": request.messages,
-    });
-    let _ = std::fs::create_dir_all(dir);
-    use std::io::Write as _;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join(format!("{persona_name}.wire.jsonl")))
-    {
-        let _ = writeln!(f, "{row}");
-    }
-}
-
 #[cfg(test)]
 mod tests;
 
@@ -745,7 +701,7 @@ pub mod test_support {
     use crate::cognition::workspace::{BurstTurn, Workspace};
 
     /// The surface internals core's registry tests price against the live registry.
-    pub use crate::cognition::tool_surface::hands_surface;
+    pub use crate::cognition::tool_surface::{core_hands, hands_surface};
     pub use super::prompt::fit::{GroundingPiece, GroundingPlan};
     pub use super::reply_claim::reply_claim;
     pub use super::request::TurnKind;
@@ -799,6 +755,10 @@ pub mod test_support {
         pub seen: Mutex<Vec<TextGenerationRequest>>,
         pub rejections: Mutex<VecDeque<crate::ai::inference_error::InferenceError>>,
         pub live_window: Option<u32>,
+        /// The adapter admits by the engine's exact prompt count (`counts_prompts_exactly`).
+        pub counts_exactly: bool,
+        /// The dispatch terms of every request, in order (`generate_admitted`), aligned with `seen`.
+        pub terms_seen: Mutex<Vec<crate::ai::types::DispatchTerms>>,
         pub window_sequence: Mutex<VecDeque<u32>>,
         pub on_window_read: Mutex<Option<WindowReadHook>>,
         pub on_request: Mutex<Option<RequestHook>>,
@@ -811,6 +771,8 @@ pub mod test_support {
                 seen: Mutex::new(Vec::new()),
                 rejections: Mutex::new(VecDeque::new()),
                 live_window: None,
+                counts_exactly: false,
+                terms_seen: Mutex::new(Vec::new()),
                 window_sequence: Mutex::new(VecDeque::new()),
                 on_window_read: Mutex::new(None),
                 on_request: Mutex::new(None),
@@ -818,6 +780,20 @@ pub mod test_support {
         }
         pub fn call_count(&self) -> usize {
             self.seen.lock().unwrap().len()
+        }
+    }
+
+    /// Records the terms each request was dispatched under beside it (`terms_seen`).
+    #[async_trait]
+    impl crate::ai::adapter::DispatchTermsPolicy for ScriptedAdapter {
+        async fn generate_admitted(
+            &self,
+            request: TextGenerationRequest,
+            terms: crate::ai::types::DispatchTerms,
+            sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
+        ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
+            self.terms_seen.lock().expect("fixture terms log").push(terms); // JUSTIFIED: test fixture lock, never poisoned
+            self.generate_stream_checked(request, sink).await
         }
     }
 
@@ -831,6 +807,9 @@ pub mod test_support {
         }
         fn default_model(&self) -> &str {
             "scripted"
+        }
+        fn counts_prompts_exactly(&self) -> bool {
+            self.counts_exactly
         }
         fn live_served_window(&self) -> Option<u32> {
             // Inject the exact load → observation → publication interleaving

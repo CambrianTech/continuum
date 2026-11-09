@@ -3,6 +3,51 @@
     use crate::cognition::llm_deliberation_faculty::admission_clock;
     use crate::inference::resource_admission::{LaneAdmission, LanePriority};
 
+    /// An act for `persona`: the first act of a turn in a fixed room.
+    fn act_of(persona: uuid::Uuid) -> admission_clock::ActAt {
+        admission_clock::ActAt { persona, turn: uuid::Uuid::from_u128(0xa11), step: 0 }
+    }
+
+    // what this catches: a relaunch's cost inferred from timestamps (Codex on the 2026-11-02 06:26Z
+    // M5 re-home): whatever ends a step reads the act it is from the step's own scope, so the
+    // condemned and dropped probes name it; outside a step there is no act, never a guessed one.
+    #[tokio::test]
+    async fn a_step_knows_which_act_it_is_and_nothing_outside_does() {
+        let act = admission_clock::ActAt { persona: uuid::Uuid::from_u128(7), turn: uuid::Uuid::from_u128(8), step: 3 };
+        let start = tokio::time::Instant::now();
+        let bound = std::time::Duration::from_secs(60);
+        let seen = super::until_act_stalls(start + bound, bound, Some(act), async { admission_clock::current_act() })
+            .await
+            .expect("the step completes");
+        assert_eq!(seen, Some(act), "inside the step, its act");
+        assert_eq!(admission_clock::current_act(), None, "outside any step, no act");
+    }
+
+    // what this catches: a generation dropped on the CANCELLATION path not naming its step
+    // (Codex on #5700): the step is ended by a condemned engine, and the drop witness inside it,
+    // dropped as the step is torn down, still reads the step it belonged to.
+    #[tokio::test]
+    async fn a_generation_dropped_by_a_condemned_engine_still_names_its_step() {
+        struct Witness(std::sync::Arc<std::sync::Mutex<Option<Option<admission_clock::ActAt>>>>);
+        impl Drop for Witness {
+            fn drop(&mut self) {
+                *self.0.lock().expect("lock") = Some(admission_clock::current_act()); // test: a fixture step that must succeed
+            }
+        }
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let act = admission_clock::ActAt { persona: uuid::Uuid::from_u128(9), turn: uuid::Uuid::from_u128(10), step: 4 };
+        let start = tokio::time::Instant::now();
+        let bound = std::time::Duration::from_secs(60);
+        let witness = Witness(std::sync::Arc::clone(&seen));
+        let step = async move {
+            let _witness = witness;
+            std::future::pending::<()>().await
+        };
+        let ended = super::until_act_stalls_or(start + bound, bound, Some(act), step, async {}).await;
+        assert!(ended.is_err(), "the condemned engine ends the step");
+        assert_eq!(*seen.lock().expect("lock"), Some(Some(act)), "the dropped generation named its step");
+    }
+
     // Inject only the engine observation; acquisition and watchdog remain real.
     async fn healthy_wait<T>(acquire: impl std::future::Future<Output=T>) -> T {
         let mut tokens = 0;
@@ -164,14 +209,14 @@
         let persona = uuid::Uuid::new_v4();
         let bound = std::time::Duration::from_secs(10);
         let deadline = tokio::time::Instant::now() + bound;
-        let turn = tokio::spawn(super::until_act_stalls(deadline, bound, Some(persona), async move {
+        let turn = tokio::spawn(super::until_act_stalls(deadline, bound, Some(act_of(persona)), async move {
             tokio::select! {
                 _ = healthy_wait(gate.acquire_serving_lane(Some(persona), LanePriority::Work, None)) => false,
                 _ = crate::cognition::directed_pending::wait(persona) => true,
             }
         }));
         queued(gate, 1).await;
-        let other = tokio::spawn(super::until_act_stalls(deadline, bound, Some(persona), std::future::pending::<()>()));
+        let other = tokio::spawn(super::until_act_stalls(deadline, bound, Some(act_of(persona)), std::future::pending::<()>()));
         tokio::time::advance(bound * 3).await;
         assert!(other.await?.is_err());
         assert!(!turn.is_finished());
@@ -194,7 +239,7 @@
         assert!(never.is_err());
         assert_eq!(start.elapsed(), bound, "no extension without a pinned slot");
         let unpinned = uuid::Uuid::new_v4();
-        let quick = super::until_act_stalls(start + bound * 2, bound, Some(unpinned), async { 42 }).await;
+        let quick = super::until_act_stalls(start + bound * 2, bound, Some(act_of(unpinned)), async { 42 }).await;
         assert_eq!(quick, Ok(42));
     }
 
@@ -250,7 +295,7 @@
         let settled = crate::cognition::act_observe::drive_to_settle_with_input(
             &cycle,
             Burst::raw_in(room, "a line".into()),
-            8,
+            crate::cognition::act_observe::TurnBudget::Steps(8),
             TurnFraming::message(TurnAttention::default()),
             &mut conversation,
         )

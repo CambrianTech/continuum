@@ -158,23 +158,24 @@ pub async fn materialize_adapters(
             }
         } else if profile.tier_category != crate::persona::hw_tier_descriptor::HwTierCategory::Cloud
         {
-            let snap = crate::inference::llama_server::current_serving();
-            // A ready snapshot always carries a real window (the daemon refuses to
-            // publish ready with 0). Guard on both so a not-yet-ready/empty
-            // snapshot never clobbers the provisional window with 0; the re-home
-            // reconciler corrects the binding once serving is ready.
-            if snap.ready && snap.served_context_window > 0 {
-                if snap.served_context_window != profile.context_length {
+            // Her window is her grant on the engine's pool (`serving_daemon/grants.rs`), never the
+            // per-sequence share the snapshot publishes (the pool divided by its sequences: 51,507
+            // on the M5; Cormac on #5733). No grant yet (the engine not serving, or no one on the
+            // seat measured) keeps her provisional window; the re-home reconciler binds her to her
+            // grant once she has one.
+            if let Some(grant) = crate::capacity::window_grant::current_grant(profile.persona_id) {
+                if grant != profile.context_length {
                     continuum_base::probe!(
                         class = "persona.upstart.window",
                         persona = %profile.persona_name,
                         persona_id = %profile.persona_id,
                         planned = profile.context_length,
-                        served = snap.served_context_window,
-                        "pinning persona context window to the gateway's real /props slot (was the drifting plan value)",
+                        served = grant,
+                        source = "grant",
+                        "binding persona context window to her grant on the engine's pool",
                     );
                 }
-                profile.context_length = snap.served_context_window;
+                profile.context_length = grant;
             }
         }
         // Register the persona's adapter in the global provider
@@ -196,11 +197,9 @@ pub async fn materialize_adapters(
         // set_airc_source so compose_for_turn has engram + airc both
         // available the moment her service loop iterates (task #148).
         // The runtime IS an AircTranscriptReader by trait bound.
-        let rag_engine = Arc::new(crate::rag::RagEngine::new());
         let mut cognition = crate::persona::unified::PersonaCognition::new(
             identity.peer_id.as_uuid(),
             identity.agent_name.clone(),
-            rag_engine,
         );
         // One airc source: it delivers her rooms to cognition and takes the read receipt
         // of every sent prompt (her cursor moves through what she was shown, never at delivery).
@@ -260,16 +259,6 @@ pub async fn materialize_adapters(
             // the eval fork's nil room) — the exam-bleed fix (#127).
             .for_room(identity.default_room),
         );
-
-        // Active-work source: grounds the persona in ITS OWN live work across all
-        // rooms (claimed cards + states), read from airc's work roster. The dynamic
-        // fix for "misremembering my own card" — never hardcode the state; surface
-        // it. Reads the persona's own airc handle (acts as itself).
-        let active_work_source: Arc<dyn crate::cognition::rag_budget::RagSource> =
-            Arc::new(crate::persona::active_work_source::ActiveWorkSource::new(
-                identity.peer_id.as_uuid(),
-                runtime.clone(),
-            ));
 
         // The persona's HANDS, built once here — consumed by the brain config
         // below AND by the workspace-map cache wire (its command executor's bus
@@ -345,7 +334,7 @@ pub async fn materialize_adapters(
         // event-folds — their projections change ONLY when a peer publishes
         // (TranscriptKind::DoctrinePublished / WallPostPublished), which is
         // rare, yet doctrine was the ONE SYNCHRONOUS airc round-trip on every
-        // live compose (ColdStartCritical, never deferred). ONE subscribe
+        // live compose (synchronous, never deferred). ONE subscribe
         // stream per persona marks both caches; the invalidator holds weak
         // handles and dies with them. No wrap without a wire: if subscribe
         // fails, both stay raw (correct, just slow) and we log loud. NOTE the
@@ -484,7 +473,7 @@ pub async fn materialize_adapters(
             // #1650/#1651 grounding silently falls out of the live path —
             // the persona forgets who is present / what the room is for.
             grounding_sources: vec![
-                // Roster — WHO is present. SYNCHRONOUS (ColdStartCritical),
+                // Roster — WHO is present. SYNCHRONOUS,
                 // like workspace-map and for the same reason: the deferral
                 // was earned by the OLD airc-fetch reader this source
                 // replaced; the ViewState roster is a watch-channel borrow
@@ -496,32 +485,32 @@ pub async fn materialize_adapters(
                 // reprojections (measured 2026-09-01: both his captures
                 // carried "[reprojected … held]"). A source this cheap
                 // never gets a fallback ([[fallbacks-are-illegal-fail-loud]]).
-                crate::cognition::persona_workspace::GroundingSource::framing(roster_source),
+                crate::cognition::persona_workspace::GroundingSource::critical(Arc::new(
+                    crate::persona::viewstate_rag::WhoIsHere::new(
+                        roster_source,
+                        identity.peer_id.as_uuid(),
+                        profile.persona_name.clone(),
+                    ),
+                )).into(),
                 // Doctrine — WHAT the room is for: the PARTICIPATION GATE. This
-                // one stays SYNCHRONOUS (ColdStartCritical): a cold-start `None`
+                // one stays SYNCHRONOUS: a cold-start `None`
                 // would let the persona speak in a room it shouldn't on turn one,
                 // which is wrong, not merely unenriched. The lone exception to
                 // "defer almost everything."
-                crate::cognition::persona_workspace::GroundingSource::framing(doctrine_source),
-                // The persona's own live work across rooms — enriching framing so
-                // it knows what it's working on (cross-activity, dynamic, no
-                // hardcoded card state). Defer-tolerant.
+                crate::cognition::persona_workspace::GroundingSource::framing(doctrine_source).into(),
                 // Where else she is needed while she works here: it changes every turn.
+                // (Her own held work is not a grounding source: the cycle reads it once per
+                // tick, `persona::held_work`, and her view renders it as keyed items.)
                 crate::cognition::persona_workspace::GroundingSource::framing(awareness_source)
                     .defer_tolerant()
-                    .volatile_content(),
-                crate::cognition::persona_workspace::GroundingSource::framing(active_work_source)
-                    .defer_tolerant()
-                    // Claim states flap per turn — floor stays, stable-tier
-                    // placement goes (debug/prompt-reuse conviction, 2026-08-22).
-                    .volatile_content(),
+                    .volatile_content().into(),
                 // WHERE code lives — the real workspace layout as framing, so a
                 // reasoner can avoid blind globs like `src/**/*.rs` from the
-                // prompt alone. ColdStartCritical (synchronous, NOT deferred):
+                // prompt alone. Synchronous (NOT deferred):
                 // measured 2026-07-13 that the deferred version was ABSENT on
                 // cold ticks (worst under repeated reboots), so some personas
                 // acted blind to the layout — a WRONG turn (blind-glob loops),
-                // not merely unenriched, which is exactly the ColdStartCritical
+                // not merely unenriched, which is exactly the Synchronous
                 // bar. It's a cheap local dir listing (unlike the airc-backed
                 // framing sources that stay deferred), so it earns synchronous
                 // presence like doctrine. requires_hands: the block SAYS "drill
@@ -533,7 +522,7 @@ pub async fn materialize_adapters(
                     // Her OWN writes mutate the map — every productive act. It sat
                     // in the stable tier breaking the KV prefix at ~8k chars of a
                     // 40k prompt (measured 2026-08-23, turn-over-turn capture diff).
-                    .volatile_content(),
+                    .volatile_content().into(),
                 // The room's pinned shared documents (airc wall) as
                 // enriching framing — the plan/instructions/recipe that
                 // shape HOW the persona works here, read from the exact
@@ -541,7 +530,7 @@ pub async fn materialize_adapters(
                 // first-tick miss costs one under-grounded turn, not a
                 // wrong one.
                 crate::cognition::persona_workspace::GroundingSource::framing(wall_source)
-                    .defer_tolerant(),
+                    .defer_tolerant().into(),
                 // The room's WHOLE work board (airc kanban) as enriching
                 // framing — every card/column/owner, so the persona can
                 // coordinate against the shared plan, not just its own
@@ -550,7 +539,7 @@ pub async fn materialize_adapters(
                 crate::cognition::persona_workspace::GroundingSource::framing(room_board_source)
                     .defer_tolerant()
                     // Card/column states churn with the round — same conviction.
-                    .volatile_content(),
+                    .volatile_content().into(),
                 // Live-call perception (#187/#192): WHO is visible on the call +
                 // what they show, as enriching framing. Defer-tolerant: a
                 // first-tick miss costs one under-grounded turn, not a wrong one —
@@ -562,7 +551,7 @@ pub async fn materialize_adapters(
                 crate::cognition::persona_workspace::GroundingSource::framing(
                     media_perception_source,
                 )
-                .defer_tolerant(),
+                .defer_tolerant().into(),
             ],
             // The persona's HANDS — built by the caller for THIS persona's
             // identity (None → speak-only). What turns "talks" into "acts".
@@ -579,9 +568,9 @@ pub async fn materialize_adapters(
             // a neural-embed + vector-search round-trip. Eval forks override
             // this to false (faithful synchronous measurement).
             defer_recall: true,
-            // LIVE mind: push the defer-tolerant grounding (roster, active_work,
+            // LIVE mind: push the defer-tolerant grounding (roster, awareness,
             // workspace_map) off the hot path too — the 90%-async win for the
-            // enriching framing. Doctrine (ColdStartCritical) stays synchronous
+            // enriching framing. Doctrine stays synchronous
             // regardless. Eval/harness override to false.
             defer_grounding: true,
             // The LIVING persona always keeps her memories — suppression is a
@@ -624,7 +613,7 @@ pub async fn materialize_adapters(
             profile,
             adapter,
             runtime,
-            cognition: Arc::new(tokio::sync::Mutex::new(cognition)),
+            cognition: Arc::new(cognition),
             system_prompt,
         }));
     }

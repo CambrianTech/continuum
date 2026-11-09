@@ -27,7 +27,7 @@ pub enum SenderType {
 }
 
 /// Input modality for messages
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "../../../protocol/typescript/persona/Modality.ts")]
 pub enum Modality {
@@ -39,7 +39,7 @@ pub enum Modality {
 // INBOX MESSAGE
 //=============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/persona/InboxMessage.ts"

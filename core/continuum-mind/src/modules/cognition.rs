@@ -29,16 +29,13 @@
 //! a turn runs is `genome::composer`, where they live is `genome::gene_residency`.
 //! - `inbox/create`: Create persona inbox (alias for create-engine)
 //!
-//! Uses `Params` helper for typed parameter extraction.
+//! Every command is a typed object whose params serde decodes at the boundary: a required field
+//! cannot be missing past it.
 
 use crate::gpu::GpuMemoryManager;
-use crate::logging::TimingGuard;
 use continuum_text_analysis::LoopDetector;
 use crate::persona::{PersonaCognition, PersonaInboxFrame, PersonaTurnFrame, PersonaTurnFrameReplayRecord};
-use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
-use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::runtime::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
@@ -52,23 +49,26 @@ use uuid::Uuid;
 /// One lock acquisition gives atomic access to engine + inbox + rate limiter +
 /// sleep state + adapter registry + genome engine.
 ///
-/// `rag_engine` and `loop_detector` are shared across all personas.
+/// `loop_detector` is shared across all personas.
 pub struct CognitionState {
     /// Unified per-persona state: 7 maps → 1.
     pub personas: Arc<DashMap<Uuid, PersonaCognition>>,
-    /// Shared RAG engine (not per-persona).
-    pub rag_engine: Arc<RagEngine>,
     /// Shared loop detector (not per-persona).
     pub loop_detector: LoopDetector,
     /// GPU memory manager — real VRAM budgets for genome paging.
     pub gpu_manager: Option<Arc<GpuMemoryManager>>,
 }
 
+impl Default for CognitionState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CognitionState {
-    pub fn new(rag_engine: Arc<RagEngine>) -> Self {
+    pub fn new() -> Self {
         Self {
             personas: Arc::new(DashMap::new()),
-            rag_engine,
             loop_detector: LoopDetector::new(),
             gpu_manager: None,
         }
@@ -100,7 +100,7 @@ impl CognitionState {
         // No lock is held across anything but the insert (a `len()` inside `or_insert_with`
         // re-entered the shard lock and self-deadlocked the live core once).
         self.personas.entry(persona_uuid).or_insert_with(|| {
-            PersonaCognition::new(persona_uuid, String::new(), self.rag_engine.clone())
+            PersonaCognition::new(persona_uuid, String::new())
         })
     }
 }
@@ -187,6 +187,7 @@ impl ServiceModule for CognitionModule {
         continuum_base::probe!(
             class = "cognition.turn_ingress.depth",
             in_flight = crate::cognition::turn_ingress::in_flight(),
+            awaited = crate::cognition::turn_ingress::awaited(),
             "citizens inside a turn right now — the drain budget's competitor, sampled before the drain instead of only at it"
         );
         checkpoint_residents(CheckpointBoundary::Periodic).await
@@ -233,10 +234,9 @@ impl ServiceModule for CognitionModule {
     ///    while we tried to save her.
     /// 2. Wait for the turns already admitted to finish, bounded.
     ///
-    /// The count comes from the permits the loops hold, not from `activity_gate`'s
-    /// `engaged` flag: engagement is stamped at serving-lane acquisition, so a turn that
-    /// has taken a message and is still composing context is not engaged, and draining on
-    /// that flag would walk past exactly the turns whose loss leaves no trace.
+    /// The count comes from the permits the loops hold: a turn that has taken a message and
+    /// is still composing context holds one before any serving lane, so the drain waits for
+    /// exactly the turns whose loss would leave no trace.
     ///
     /// Returns the number still running when the budget expired — a citizen who is still
     /// thinking is a fact the receipt reports, not one it waits forever for.
@@ -248,16 +248,21 @@ impl ServiceModule for CognitionModule {
 
         let first_to_close = crate::cognition::turn_ingress::close();
         let deadline = std::time::Instant::now() + BUDGET;
+        // Only the turns a stop owes a wait (`turn_ingress::awaited`): a confirmed turn is handed
+        // back to the next start and a self-tick holds nothing durable, so neither makes the
+        // saved state a mid-turn snapshot (card b5219023).
+        let mut poll = tokio::time::interval(POLL);
         while std::time::Instant::now() < deadline {
-            if crate::cognition::turn_ingress::in_flight() == 0 {
+            if crate::cognition::turn_ingress::awaited() == 0 {
                 return Ok(0);
             }
-            tokio::time::sleep(POLL).await;
+            poll.tick().await;
         }
-        let left = crate::cognition::turn_ingress::in_flight();
+        let left = crate::cognition::turn_ingress::awaited();
         continuum_base::probe!(
             class = "cognition.drain.incomplete",
-            in_flight = left,
+            awaited = left,
+            in_flight = crate::cognition::turn_ingress::in_flight(),
             first_to_close = first_to_close,
             "citizens were still inside turns when the drain budget expired — whatever is saved next is a snapshot taken mid-turn, and the receipt says so"
         );
@@ -269,244 +274,11 @@ impl ServiceModule for CognitionModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        let p = Params::new(&params);
-
-        match command {
-            // ================================================================
-            // Persona Lifecycle
-            // ================================================================
-            // cognition/create-engine migrated to the typed DynCommand registry (Slice 7)
-            // — see commands/cognition/create_engine.rs (dep-holding on CognitionState,
-            // access: Internal).
-
-            // NOTE: `cognition/eval` (the test-graded coder gym) is now a typed,
-            // registered, Privileged ActionCommand — see `cognition::eval::CognitionEval`.
-            // It dispatches via the central registry (so `uu` and every client can
-            // reach it, and it's discoverable + gated), no longer a match-arm here.
-            "cognition/calculate-priority" => {
-                let _timer = TimingGuard::new("module", "cognition_calculate_priority");
-                let persona_uuid = p.uuid("persona_id")?;
-                let content = p.str("content")?;
-                let sender_type_str = p.str("sender_type")?;
-                let is_voice = p.bool_or("is_voice", false);
-                let room_uuid = p.uuid("room_id")?;
-                let timestamp = p.u64("timestamp")?;
-
-                let sender = parse_sender_type(sender_type_str)?;
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                let score = persona
-                    .engine
-                    .calculate_priority(content, sender, is_voice, room_uuid, timestamp);
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&score).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            "cognition/fast-path-decision" => {
-                let _timer = TimingGuard::new("module", "cognition_fast_path_decision");
-                let persona_uuid = p.uuid("persona_id")?;
-                let message = p.value("message").ok_or("Missing message")?;
-                let inbox_msg = parse_inbox_message(message)?;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                let decision = persona.engine.fast_path_decision(&inbox_msg);
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&decision).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            // cognition/enqueue-message migrated to the typed DynCommand registry (Slice 7)
-            // — see commands/cognition/enqueue_message.rs. The wire→domain conversion now
-            // lives as InboxMessageRequest::to_inbox_message (ipc/protocol.rs).
-
-            // cognition/get-state migrated to the typed DynCommand registry (Slice 8)
-            // — see commands/cognition/get_state.rs (dep-holding, access: Internal,
-            // camelCase GetStateResult projection of PersonaState + service_cadence_ms).
-
-            // inbox/create + inbox/drain-frame migrated to the typed DynCommand registry
-            // (Slice 7) — see commands/cognition/{inbox_create,inbox_drain_frame}.rs. The
-            // frame-recording helper `record_drained_turn_frame` stays here (made
-            // pub(crate)): it is now called by two migrated commands
-            // (commands/cognition/inbox_drain_frame.rs + commands/persona/turn_frame/drain.rs).
-
-            // persona/drain-turn-frame + persona/turn-execute migrated to the typed
-            // DynCommand registry (Slices 20 + 21) — see
-            // commands/persona/turn_frame/{drain,execute}.rs (dep-holding on CognitionState,
-            // access: Internal). The Lane D turn-frame types (PersonaTurnFrameReplayRecord +
-            // its subtree) derive TS so the typed Output crosses the wire; execute.rs also
-            // carries `execute_rust_module_json` (moved with its sole consumer) — the
-            // in-process seam to the Rust inference module, fail-loud on a missing route.
-
-            // cognition/admit-inbox-message + cognition/recall-engrams migrated to the
-            // typed DynCommand registry (Slice 9) — see
-            // commands/cognition/{admit_inbox_message,recall_engrams}.rs. The wire→domain
-            // conversion for admit now reuses InboxMessageRequest::to_inbox_message
-            // (ipc/protocol.rs), the one canonical seam.
-
-            // ================================================================
-            // Vision Describe (continuum#1276) — MIGRATED to the typed registry.
-            // ================================================================
-            // `cognition/vision-describe` is now a dep-holding `ActionCommand` in
-            // `crate::commands::cognition::vision_describe` (captures this module's
-            // shared `Arc<LateBound<CommandExecutor>>` and delegates to
-            // `describe_image`). It reaches the registry via
-            // `CognitionModule::commands()`. `access: Internal`. No match arm here.
-
-            // ================================================================
-            // AI Gating — MIGRATED to the typed registry.
-            // ================================================================
-            // `cognition/should-respond` is now a stateless `ActionCommand` in
-            // `crate::commands::cognition` (it calls `evaluate_gating` over its typed
-            // request). `route_object` dispatches them via `command_registry()`,
-            // so they reach the ACL, codegen, `uu`, and grid routing. Both are
-            // `access: Internal`. No match arm here — a second registration would be
-            // the only place they could collide, and there is none.
-
-            // ================================================================
-            // Response Generation + Tool Embedding + Validate-Decision
-            // ================================================================
-            // cognition/generate-response, cognition/embed-tools,
-            // cognition/semantic-search-tools, and cognition/validate-response-decision
-            // migrated to the typed DynCommand registry as stateless unit-struct
-            // action_command!s — see commands/cognition/{generate_response,embed_tools,
-            // semantic_search_tools,validate_response_decision}.rs (access: Internal, no
-            // module state — they self-route via inventory).
-
-            // ================================================================
-            // Message Deduplication (single source of truth in Rust)
-            // ================================================================
-            // cognition/has-evaluated + cognition/mark-evaluated migrated to the typed
-            // DynCommand registry — see commands/cognition/{has_evaluated,mark_evaluated}.rs
-            // (dep-holding on CognitionState, access: Internal).
-
-            // ================================================================
-            // Unified Evaluation (6-gate pipeline, single lock)
-            // ================================================================
-            // cognition/full-evaluate migrated to the typed DynCommand registry as a
-            // dep-holding action_command! (captures this module's Arc<CognitionState>,
-            // takes the persona's rate_limiter + sleep_state + engine + message_cache under
-            // one DashMap read lock) — see commands/cognition/full_evaluate.rs (access:
-            // Internal), exposed via CognitionModule::commands(). The typed
-            // FullEvaluateRequest params deserialize the whole payload in one step
-            // (SenderType's lowercase serde matches the old parse_sender_type; the three
-            // legacy-defaulted fields carry #[serde(default)]); a request for a persona with
-            // no live cognition engine fails loud as CommandError::NotFound.
-
-            // cognition/track-response migrated to the typed DynCommand registry — see
-            // commands/cognition/track_response.rs (dep-holding on CognitionState,
-            // access: Internal).
-
-            // cognition/set-sleep-mode + cognition/configure-rate-limiter migrated to the
-            // typed DynCommand registry (Slice 6) — see
-            // commands/cognition/{set_sleep_mode,configure_rate_limiter}.rs (dep-holding on
-            // CognitionState, access: Internal).
-
-            // =================================================================
-            // Model Selection + Adapter Sync
-            // =================================================================
-            // cognition/select-model and cognition/sync-adapters migrated to the typed
-            // DynCommand registry as dep-holding action_command!s capturing CognitionState
-            // — see commands/cognition/{select_model,sync_adapters}.rs (access: Internal),
-            // exposed via commands/cognition/mod.rs::command_objects.
-
-            // =================================================================
-            // Genome Paging (LRU eviction + memory budget decisions)
-            // =================================================================
-            // Migrated to the typed DynCommand registry (Slice 4):
-            // Exposed via commands/cognition/mod.rs::command_objects (dep-holding on CognitionState).
-
-            // =================================================================
-            // Recipe generation (continuum#1295 PR-2)
-            // =================================================================
-            // cognition/generate-recipe migrated to the typed DynCommand registry as a
-            // stateless async action_command! unit struct (free fn generate_recipe_with_ai,
-            // no CognitionState) — see commands/cognition/generate_recipe.rs (access:
-            // Internal). Params ARE a typed GenerateRecipeOrchestratorParams (the whole
-            // { request, provider?, model?, temperature? } payload deserializes in one
-            // step, same wire shape as the p.json("request") + p.str_opt/p.f32_opt reads
-            // here); inference/parser failures fail loud as CommandError::Internal while
-            // structural-validation findings ride back in the response.
-
-            // =================================================================
-            // Peer-review proposal rating (continuum#1289 PR-2)
-            // =================================================================
-            // cognition/rate-proposals migrated to the typed DynCommand registry as a
-            // stateless async action_command! unit struct (free fn rate_proposals_with_ai,
-            // no CognitionState) — see commands/cognition/rate_proposals.rs (access:
-            // Internal). Params ARE a typed RateProposalsRequest (the whole payload
-            // deserializes 1:1, as the legacy arm did via from_value(params)); a rater
-            // that produces no usable judgment fails loud as CommandError::Internal, no
-            // fabricated degraded score.
-
-            // =================================================================
-            // Recipe/RAG turn batching boundary
-            // =================================================================
-            // cognition/plan-turn-batch migrated to the typed DynCommand registry as a
-            // stateless action_command! unit struct (pure sync free fn, no CognitionState)
-            // — see commands/cognition/plan_turn_batch.rs (access: Internal). The params
-            // ARE a typed RecipeTurnBatchRequest now, flattening the legacy
-            // `{ request: {...} }` envelope, and deserialize fails loud on a bad payload.
-
-            // =================================================================
-            // Domain Classification (adapter-aware keyword scoring)
-            // =================================================================
-            // Migrated to the typed DynCommand registry (Slice 5):
-            //   cognition/classify-domain          → commands/cognition/classify_domain.rs
-            //   cognition/register-domain-keywords → commands/cognition/register_domain_keywords.rs
-            // Exposed via commands/cognition/mod.rs::command_objects (dep-holding on CognitionState).
-
-            // =================================================================
-            // Domain Activity Tracking & Gap Detection
-            // =================================================================
-            // Migrated to the typed DynCommand registry (Slice 4):
-            // Exposed via commands/cognition/mod.rs::command_objects (dep-holding on CognitionState).
-
-            // =================================================================
-            // GPU Budget Query (for TypeScript genome initialization)
-            // =================================================================
-            // cognition/gpu-budget migrated to the typed DynCommand registry as a
-            // dep-holding action_command! (captures this module's Arc<CognitionState>,
-            // reads its optional GpuMemoryManager) — see commands/cognition/gpu_budget.rs
-            // (access: Internal), exposed via CognitionModule::commands(). The typed
-            // GpuBudgetInfo output replaces the hand-built serde_json::json! object; the
-            // GPU-present / CPU-only branches are honest runtime states (no-GPU reports a
-            // zeroed device + the CPU per-persona floor), not a happy-path + fallback.
-
-            // =================================================================
-            // Interaction Quality Scoring + Post-Inference Adequacy Check
-            // =================================================================
-            // cognition/score-interaction and cognition/check-adequacy migrated to the
-            // typed DynCommand registry as stateless action_command! unit structs (they
-            // wrap pure sync free fns — no CognitionState) — see
-            // commands/cognition/{score_interaction,check_adequacy}.rs (access: Internal).
-            // The typed Vec<RecentResponse> params deserialize fails loud on a malformed
-            // batch, replacing the legacy filter_map(..ok()) silent-drop.
-
-            // =================================================================
-            // Message Cache (echo chamber + post-inference adequacy)
-            // =================================================================
-            // ================================================================
-            // Recent-message cache + content dedup — MIGRATED to the typed registry.
-            // ================================================================
-            // `cognition/cache-message`, `cognition/check-content-dedup`, and
-            // `cognition/record-content` are now dep-holding `ActionCommand`s in
-            // `crate::commands::cognition` (each captures this module's
-            // `Arc<CognitionState>` and delegates to `get_or_create_persona` +
-            // the per-persona `message_cache` / `content_dedup`). They reach the
-            // registry via `CognitionModule::commands()`. All `access: Internal`.
-            _ => Err(format!("Unknown cognition command: {command}")),
-        }
+    /// Every cognition command is a typed object on the one registry (`commands()`), its params
+    /// decoded by serde at the boundary. Reaching this legacy path means a command name no
+    /// object registered.
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        Err(format!("Unknown cognition command: {command}"))
     }
 
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
@@ -559,6 +331,7 @@ fn turn_frame_replay_record(
 #[cfg(test)]
 mod turn_frame_recording_tests {
     use super::*;
+    use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
     use crate::persona::PersonaInboxFrameMetrics;
 
     fn frame_with_messages(messages: Vec<InboxMessage>) -> PersonaInboxFrame {
@@ -636,7 +409,6 @@ mod turn_frame_recording_tests {
     mod get_or_create_persona_locking {
         use super::*;
         use crate::gpu::GpuMemoryManager;
-        use crate::rag::RagEngine;
         use std::sync::mpsc;
         use std::time::Duration;
 
@@ -657,7 +429,6 @@ mod turn_frame_recording_tests {
         fn create_with_gpu_manager_does_not_self_deadlock() {
             let (done_tx, done_rx) = mpsc::channel();
             std::thread::spawn(move || {
-                let rag = Arc::new(RagEngine::new());
                 let (ptx, prx) = tokio::sync::watch::channel(0.0f32);
                 let gpu = Arc::new(GpuMemoryManager::new_for_test(
                     24 * 1024 * 1024 * 1024, // total VRAM
@@ -669,7 +440,7 @@ mod turn_frame_recording_tests {
                     ptx,
                     prx,
                 ));
-                let state = CognitionState::new(rag).with_gpu_manager(gpu);
+                let state = CognitionState::new().with_gpu_manager(gpu);
                 let id = Uuid::new_v4();
                 // First call runs the lazy-create closure (the budget read); the
                 // guard drops at the end of each statement, so the second call
@@ -685,41 +456,4 @@ mod turn_frame_recording_tests {
             );
         }
     }
-}
-
-// ============================================================================
-// Parsing helpers
-// ============================================================================
-
-fn parse_sender_type(s: &str) -> Result<SenderType, String> {
-    match s {
-        "human" => Ok(SenderType::Human),
-        "persona" => Ok(SenderType::Persona),
-        "agent" => Ok(SenderType::Agent),
-        "system" => Ok(SenderType::System),
-        _ => Err(format!("Invalid sender_type: {s}")),
-    }
-}
-
-/// Parse an InboxMessage from JSON value.
-fn parse_inbox_message(value: &Value) -> Result<InboxMessage, String> {
-    let p = Params::new(value);
-
-    Ok(InboxMessage {
-        id: p.uuid("id")?,
-        room_id: p.uuid("room_id")?,
-        sender_id: p.uuid("sender_id")?,
-        sender_name: p.str("sender_name")?.to_string(),
-        sender_type: parse_sender_type(p.str("sender_type")?)?,
-        content: p.str("content")?.to_string(),
-        timestamp: p.u64("timestamp")?,
-        priority: p.f32_or("priority", 0.5),
-        source_modality: p.str_opt("source_modality").map(|m| match m {
-            "voice" => Modality::Voice,
-            _ => Modality::Chat,
-        }),
-        voice_session_id: p
-            .str_opt("voice_session_id")
-            .and_then(|s| Uuid::parse_str(s).ok()),
-    })
 }

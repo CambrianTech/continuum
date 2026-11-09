@@ -85,7 +85,7 @@ async fn listing(hands: &ActingHands) -> String {
     };
     let out = hands
         .executor
-        .execute_native_batch(std::slice::from_ref(&call), &ctx)
+        .execute_native_batch(&crate::ai::types::CallBatch::classify([call.clone()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx)
         .await
         .expect("code/list runs");
     out.results[0].content.clone()
@@ -296,7 +296,7 @@ async fn call(hands: &ActingHands, name: &str, input: serde_json::Value) -> (Str
         },
     };
     let call = crate::ai::types::ToolCall { id: name.to_string(), name: name.to_string(), input };
-    let out = hands.executor.execute_native_batch(std::slice::from_ref(&call), &ctx).await.expect("the call runs");
+    let out = hands.executor.execute_native_batch(&crate::ai::types::CallBatch::classify([call.clone()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx).await.expect("the call runs");
     (out.results[0].content.clone(), out.results[0].is_error.is_some())
 }
 

@@ -35,16 +35,37 @@ impl ServingDaemonModule {
         // deeper fix — serving holding an explicit board lease so `granted` pins its residency
         // and the scan transient never reaches `available` at all — is the #56 consumers-LEASE
         // residual; this breaks the feedback loop cleanly in the meantime.)
-        if self.reconciling.load(Ordering::Acquire) {
+        if self.lifecycle.is_held() {
             self.note_reconcile_busy("recompute");
             return;
         }
         let (budget, leases) = self.host_budget_snapshot();
         let intent = self.intent.snapshot();
-        let catalog = self.catalog.snapshot();
-        let candidates = servable_candidates(&catalog, &intent.suppressed, &intent.pinned);
-        let on_disk = servable_candidates(&catalog, &HashSet::new(), &intent.pinned);
-        self.publish_plan_with_leases(budget, &candidates, &on_disk, intent.revision, &leases);
+        self.plan_until_decided(budget, intent.revision, &leases, || {
+            let catalog = self.catalog.snapshot();
+            (
+                servable_candidates(&catalog, &intent.suppressed, &intent.pinned),
+                servable_candidates(&catalog, &HashSet::new(), &intent.pinned),
+            )
+        });
+    }
+
+    /// Plan, and re-plan at once while the pass retires the footprint record its plan was computed
+    /// from: such a plan is invalid by construction, and `candidates` recomputes the footprints
+    /// without the record (`footprint_for` reads it). Each retire removes one record from a finite
+    /// set, so this ends. On the M5 it turns the cold boot's 2,048 plan into the 2 x 184,320 the
+    /// next tick produced (b4be7bc59, 2026-11-03; Cormac on #5739).
+    pub(super) fn plan_until_decided(
+        &self,
+        budget: HostBudget,
+        intent_revision: u64,
+        leases: &[crate::resources::lease::ResourceLease],
+        mut candidates: impl FnMut() -> (Vec<ModelFootprint>, Vec<ModelFootprint>),
+    ) {
+        until_decided(|| {
+            let (now, on_disk) = candidates();
+            self.publish_plan_with_leases(budget, &now, &on_disk, intent_revision, leases)
+        });
     }
 
     /// Pure publish step: run the classifier on the given inputs, publish the
@@ -60,8 +81,8 @@ impl ServingDaemonModule {
         budget: HostBudget,
         candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint],
-    ) {
-        self.publish_plan_for_intent(budget, candidates, on_disk, self.intent.snapshot().revision);
+    ) -> PlanOutcome {
+        self.publish_plan_for_intent(budget, candidates, on_disk, self.intent.snapshot().revision)
     }
 
     pub(super) fn publish_plan_snapshot(&self, intent_revision: u64, plan: Option<ServingPlan>) {
@@ -104,15 +125,16 @@ impl ServingDaemonModule {
         candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint],
         intent_revision: u64,
-    ) {
-        self.publish_plan_with_leases(budget, candidates, on_disk, intent_revision, &[]);
+    ) -> PlanOutcome {
+        self.publish_plan_with_leases(budget, candidates, on_disk, intent_revision, &[])
     }
 
     fn publish_plan_with_leases(
         &self, budget: HostBudget, candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint], intent_revision: u64,
         leases: &[crate::resources::lease::ResourceLease],
-    ) {
+    ) -> PlanOutcome {
+        self.plan_budget_bytes.store(budget.usable_bytes, Ordering::Relaxed);
         // Hysteresis: pass the currently-served model as the incumbent so a
         // transient free-memory dip doesn't thrash the served model.
         //
@@ -152,9 +174,7 @@ impl ServingDaemonModule {
         // boot over an inherited lane, #438) the ledger has nothing to add back, and the
         // plan's own credit is the one that keeps the successor from fleeing its
         // predecessor onto a smaller model. One credit, whichever layer holds the fact.
-        let ledger_credited = self.resource_daemon.board().attributions.iter().any(|a| {
-            a.consumer_id == SERVING_CONSUMER_ID && a.kind == serving_pool_kind() && a.bytes > 0
-        });
+        let ledger_credited = self.serving_footprint_reported();
         if !ledger_credited {
             // The boot planner adds incumbent bytes after this snapshot. That
             // enlarged budget no longer proves these leases were excluded.
@@ -173,11 +193,15 @@ impl ServingDaemonModule {
         // reading the guards that prevent them (#232's `apply_kv_quantization`, and the
         // credit-back-exactly-once ledger above). Nobody could say which arm had run, because
         // nothing said so. This says it.
-        let stable = if ledger_credited {
-            plan_serving_at_rest(&budget, candidates, incumbent.as_deref(), &demand)
+        let traced = if ledger_credited {
+            plan_serving_at_rest_traced(&budget, candidates, incumbent.as_deref(), &demand)
         } else {
-            plan_serving_stable(&budget, candidates, incumbent.as_deref(), &demand)
+            plan_serving_stable_traced(&budget, candidates, incumbent.as_deref(), &demand)
         };
+        // The chosen plan's training growth decision, reported by the change-gated
+        // serving.plan probe below instead of by the planner on every call.
+        let training_growth = traced.as_ref().and_then(|t| t.training_growth.clone());
+        let stable = traced.map(|t| t.plan);
         {
             let credited_bytes: u64 = self
                 .resource_daemon
@@ -265,9 +289,32 @@ impl ServingDaemonModule {
                         );
                         *last = Some(key);
                     }
-                    if previous_stands {
-                        self.retain_plan_for_intent(intent_revision, candidates);
-                        return;
+                    // A starved plan whose own tick just retired the record it was computed from is
+                    // invalid by construction, so it is never published on a cold boot: the engine
+                    // launches once from the first published plan and keeps that pool for life.
+                    // b4be7bc59 launched the M5 at 5 x 2,048 from exactly this plan (18:18:26Z, budget
+                    // sampled at 23 GB, record_retired=true); the next tick, with the record gone and
+                    // the candidates recomputed, planned 2 x 184,320 at the same budget. State, not a
+                    // count (Cormac on #5739): a record can be retired only once, so the next tick's
+                    // plan comes from inputs that survived, and a plan starved by those (a node that
+                    // genuinely cannot hold the requirement) is published as before.
+                    match starved_plan(previous_stands, retired) {
+                        Starved::PreviousStands => {
+                            self.retain_plan_for_intent(intent_revision, candidates);
+                            return PlanOutcome::Decided;
+                        }
+                        Starved::Replan => {
+                            continuum_base::probe!(
+                                target: "continuum_core::modules::serving_daemon", class = "serving.plan.cold_withheld",
+                                model = plan.base_model.model_id.as_str(),
+                                window = plan.served_context_window as u64,
+                                requirement = requirement.unwrap_or(0) as u64, // unwrap_or: probe label; this branch only fires with a requirement present
+                                usable_gb = (budget.usable_bytes / 1_000_000_000),
+                                "a cold boot's starved plan came from the record this tick retired: withheld, so the one launch waits for the next tick's plan"
+                            );
+                            return PlanOutcome::RetiredItsRecord;
+                        }
+                        Starved::Publish => {}
                     }
                 }
                 // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
@@ -373,7 +420,7 @@ impl ServingDaemonModule {
                                 }
                             }
                         }
-                        return;
+                        return PlanOutcome::Decided;
                     }
                     // COLD BOOT, no incumbent: a viable base the budget CAN serve beats a
                     // capability floor it cannot reach. Serve the plan instead of booting dark
@@ -427,7 +474,7 @@ impl ServingDaemonModule {
                                  incumbent plan until the squeeze proves sustained (#368)",
                             );
                             self.retain_plan_for_intent(intent_revision, candidates);
-                            return;
+                            return PlanOutcome::Decided;
                         }
                         // Sustained: a real squeeze. Adopt, and re-arm the gate.
                         self.downshift_streak.store(0, Ordering::Relaxed);
@@ -461,16 +508,7 @@ impl ServingDaemonModule {
                 // a relative deadband (>1/8 from the last-emitted value), the
                 // same shape as the #415 prefill deadband: a real re-plan
                 // (16384→26368) clears it, measurement wobble never does.
-                let decisions = format!(
-                    "{}|{}|{}|{}|{}|{}|{}",
-                    plan.base_model.model_id,
-                    plan.lanes,
-                    plan.resident_models,
-                    plan.fits_on_gpu,
-                    candidates.len(),
-                    spike_of_served.unwrap_or(0),
-                    demand.lanes,
-                );
+                let decisions = plan_decisions(&plan, candidates.len(), spike_of_served, demand.lanes, training_growth.as_ref());
                 let plan_probe_changed = {
                     let mut last = self
                         .last_plan_probe
@@ -537,6 +575,9 @@ impl ServingDaemonModule {
                         // above says only whether the WINDOW came out below demand, whatever
                         // budget did it; this names the term that decided `lanes` (card eb8d1839).
                         lanes_bound = ?plan.lanes_bound,
+                        // The shared-window growth decision for training reservations, once per
+                        // change (it was a per-call probe of its own, ~4/s).
+                        training_growth = ?training_growth,
                         "serving plan recomputed",
                     );
                     // Warm-slot oversubscription for the ADOPTED plan (#266) —
@@ -624,6 +665,7 @@ impl ServingDaemonModule {
                 self.publish_plan_snapshot(intent_revision, None);
             }
         }
+        PlanOutcome::Decided
     }
 }
 
@@ -640,10 +682,34 @@ fn account_training_leases(demand: &mut ServingDemand, leases: &[crate::resource
     }
 }
 
+
+/// The plan's decisions the `serving.plan` probe changes on: what was chosen and what chose it,
+/// never a measured byte figure that wobbles per tick. Includes the training growth decision, so
+/// the plan publisher reports it once per change instead of the planner on every call. Pure.
+fn plan_decisions(
+    plan: &ServingPlan,
+    candidates: usize,
+    spike_of_served: Option<u64>,
+    demand_lanes: u32,
+    training_growth: Option<&crate::inference::planning::window_allocator::TrainingGrowth>,
+) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{:?}",
+        plan.base_model.model_id,
+        plan.lanes,
+        plan.resident_models,
+        plan.fits_on_gpu,
+        candidates,
+        spike_of_served.unwrap_or(0), // JUSTIFIED unwrap_or: a key component; 0 is the deadband's documented disabled value, the same one the probe reports
+        demand_lanes,
+        training_growth,
+    )
+}
+
 #[cfg(test)]
 mod training_lease_tests {
     use super::*;
-    use crate::inference::planning::window_allocator::{allocate, LaneRequirement, TrainingGrowth, TrainingPrice, TrainingReserve};
+    use crate::inference::planning::window_allocator::{allocate, test_tokens, LaneRequirement, TrainingGrowth, TrainingPrice, TrainingReserve};
     use crate::resources::lease::{ReclaimPolicy, ResourceLease};
 
     // What this catches: unrelated or different-job leases cannot cancel a
@@ -656,7 +722,7 @@ mod training_lease_tests {
             source: crate::inference::planning::training_plan::NeedSource::LowerBound,
             model: "fixture".into(), shape: "fixture".into(),
         };
-        let requirement = LaneRequirement::declared(uuid::Uuid::from_u128(1), 40_000)
+        let requirement = LaneRequirement::declared(uuid::Uuid::from_u128(1), test_tokens(40_000))
             .with_training(Some(TrainingReserve::new(64_256, Some(price), Some(job))));
         let mut demand = ServingDemand::new(1, Some(40_000)).with_requirements(vec![requirement]);
         let lease = |id: &str, consumer: String, bytes| ResourceLease {
@@ -682,4 +748,69 @@ mod training_lease_tests {
         let allocated = allocate(&demand.requirements, &[model], &budget, 1).expect("fixture fits");
         assert_eq!(allocated.training_growth, TrainingGrowth::Reserved { bytes: 100, target: 64_256, reached: true });
     }
+
+    // what this catches: the training growth decision probed on every plan call (IntelMac
+    // 2026-11-02: 22,184 rows in 100 min, rotating the core log every ~23 min). It rides the
+    // plan into serving.plan's change key: an unchanged decision keeps the key, so the
+    // change-gated probe stays silent; a changed one changes it, so the probe says it once.
+    #[test]
+    fn a_training_growth_change_changes_the_plan_key_and_an_unchanged_one_does_not() {
+        use crate::inference::planning::serving_plan::LanesBound;
+        let model = ModelFootprint {
+            model_id: "fixture".into(), weights_bytes: 1 << 30, kv_per_token: 33_000,
+            context_window: 32_768, capability_rank: 1, fixed_per_lane_bytes: 0,
+        };
+        let plan = ServingPlan {
+            base_model: model,
+            served_context_window: 32_768,
+            lanes: 2,
+            grid_overflow_lanes: 0,
+            resident_models: 1,
+            fits_on_gpu: true,
+            rationale: String::new(),
+            lanes_bound: LanesBound::Demand,
+        };
+        let key = |growth: &TrainingGrowth| plan_decisions(&plan, 1, None, 2, Some(growth));
+        assert_eq!(key(&TrainingGrowth::NoDemand), key(&TrainingGrowth::NoDemand), "unchanged: the probe stays silent");
+        assert_ne!(
+            key(&TrainingGrowth::NoDemand),
+            key(&TrainingGrowth::Reserved { bytes: 100, target: 64_256, reached: false }),
+            "a changed growth decision changes the key, so the plan probe reports it once"
+        );
+    }
 }
+
+/// What one planning pass decided: a plan published, retained or refused (`Decided`), or nothing,
+/// because the plan was computed from a footprint record that this pass retired, so the caller
+/// re-plans at once from the candidates recomputed without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlanOutcome {
+    Decided,
+    RetiredItsRecord,
+}
+
+/// What a plan below the residents' requirement does. A published plan stands instead when one
+/// exists. On a cold boot, a plan computed from the footprint record its own pass retired is
+/// invalid by construction, so the pass re-plans; one starved by inputs that survived the pass is
+/// published (a dark node is worse than a starved seat).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Starved {
+    PreviousStands,
+    Replan,
+    Publish,
+}
+
+pub(super) fn starved_plan(previous_stands: bool, retired_its_record: bool) -> Starved {
+    match (previous_stands, retired_its_record) {
+        (true, _) => Starved::PreviousStands,
+        (false, true) => Starved::Replan,
+        (false, false) => Starved::Publish,
+    }
+}
+
+/// Run planning passes until one decides: a pass that retired the record its plan came from
+/// re-runs at once. Each retire removes a record from a finite set, so this ends.
+pub(super) fn until_decided(mut pass: impl FnMut() -> PlanOutcome) {
+    while pass() == PlanOutcome::RetiredItsRecord {}
+}
+

@@ -41,7 +41,7 @@ impl SourceRule for NoTenantIdentityInProduction {
             })
             .map(|(line, l)| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line,
                 source: l.trim().to_string(),
             })
@@ -97,7 +97,7 @@ impl SourceRule for NoRealUserHomePathAnywhere {
             })
             .map(|(i, l)| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line: i + 1,
                 source: l.trim().to_string(),
             })
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn tenant_identity_in_production_code_never_rises() {
         let violations = scan(&[&NoTenantIdentityInProduction]);
-        crate::ratchet::hold("tenant_lines", violations.len(), || {
+        crate::ratchet::hold_sites("tenant_lines", &violations, || {
             format!(
             "production lines naming our own org rose to {}.\n\
              This repo is for other people and their orgs: derive the identity from the \

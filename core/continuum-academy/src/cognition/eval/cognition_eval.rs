@@ -68,7 +68,7 @@ impl CognitionEval {
         let room = match p.room_id.as_deref() {
             Some(s) => {
                 let parsed = Uuid::parse_str(s)
-                    .map_err(|_| CommandError::Arguments(format!("room_id '{s}' is not a valid UUID")))?;
+                    .map_err(|_| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::not_an_id("room_id", s, "room")))?;
                 crate::identity::ActivityRoom::from_uuid(parsed).map_err(|_| {
                     CommandError::Invalid("room_id must be a real (non-nil) room".into())
                 })?
@@ -428,8 +428,8 @@ impl CognitionEval {
             );
         }
 
-        let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;
-        let max_retries = p.max_retries.unwrap_or(MAX_FAIL_RETRIES);
+        // The caller declared both: an exam's budget is part of what it measures.
+        let (max_acts, max_retries) = (p.budget, p.max_retries);
         let total = tasks.len() as u32;
         let rate = |score: u32| {
             if total > 0 {
@@ -564,6 +564,7 @@ impl CognitionEval {
                 &eval_set_label,
                 _fleet_lease.as_ref().map(|_| true),
                 _eval_lane.as_ref().and_then(|lane| lane.measured_gene.as_ref()),
+                ExamPolicy { budget: max_acts, max_retries },
             );
             world.finish().await;
             return Ok(result);
@@ -655,7 +656,7 @@ impl CognitionEval {
                                     }
                                     let who = sp
                                         .sender
-                                        .map(|u| u.to_string()[..8].to_string())
+                                        .map(airc_core::shown_id::shown_form)
                                         .unwrap_or_else(|| "peer".into()); // legacy senderless call site: an anonymous voice, labeled as such
                                     wm.record_dispatch_event(
                                         Uuid::new_v4(),
@@ -778,6 +779,7 @@ impl CognitionEval {
             &eval_set_label,
             _fleet_lease.as_ref().map(|_| true),
             None,
+            ExamPolicy { budget: max_acts, max_retries },
         );
         world.finish().await;
         Ok(result)

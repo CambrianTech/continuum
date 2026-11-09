@@ -91,6 +91,7 @@ impl ActionCommand for CommandsList {
     const NAME: &'static str = "commands/list";
     const ALIASES: &'static [&'static str] = &["list_commands"];
     const NATIVE: bool = true; // discovery pair — the persona reaches the long tail through this
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::Always;
     const DESCRIPTION: &'static str =
         "List the available commands (name, description, access, params type) from the live \
          registry. Optional `filter` is a case-insensitive name substring.";

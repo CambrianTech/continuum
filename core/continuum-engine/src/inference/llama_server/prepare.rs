@@ -274,7 +274,7 @@ impl LlamaServerProcess {
             target.adapters.iter().map(|a| a.path.clone()).collect();
         let expert_ot = target.expert_ot_value();
 
-        let mut invocation = crate::inference::lane_args::base_invocation(
+        let invocation = crate::inference::lane_args::base_invocation(
             &gguf,
             &target.model.id,
             &host,
@@ -311,6 +311,7 @@ impl LlamaServerProcess {
             max_ubatch: target.model.serving.max_ubatch,
             reasoning_budget: target.model.serving.reasoning_budget,
         });
+        let mut invocation = super::shared_pool::on_shared_pool(invocation);
         // MoE glass-box env seam (#278): when expert paging is active, the DAEMON
         // hands the fork its capture + plan file locations. Previously these envs
         // existed only when an operator hand-exported them before booting the

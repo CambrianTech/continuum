@@ -25,6 +25,10 @@ pub(super) const OWNED: &[&str] = &[
         // reaper removes every profile no live process names, at boot and on the
         // pressure edge.
         "eye-profiles",
+        // Owner: the `tool-output-spill` FilesystemTierPool (pressure_broker_wiring), oldest
+        // first, through `spill::evict_unless_live`: a handle a live mind or her persisted
+        // checkpoint names is never deleted.
+        "tool-output",
 ];
 
 /// Classes whose eviction is deferred, each with the reason and the task that owns it.
@@ -109,7 +113,7 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
         (
             "eval-captures",
             "#155: age-based sweep — every file is a re-creatable diagnostic (kv-diag \
-             snapshots, wire-request jsonl from SERVING_WIRE_CAPTURE_DIR); writers are \
+             snapshots); writers are \
              opt-in and quiet by default, so the class grows only while an operator is \
              actively hunting. Owner when built: a capped appender like the log pool",
         ),

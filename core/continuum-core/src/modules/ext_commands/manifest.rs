@@ -333,10 +333,15 @@ impl DynCommand for ProcessCommand {
             description: self.description,
             wire: WireShape::Bare,
             native: self.manifest.native,
+            // Its params are the authored process's to decode: no Rust type owns them.
+            arguments: crate::sdk_codegen::ArgumentsContract::External,
             aliases: &[],
             // An authored command runs an arbitrary process and its manifest declares no
             // effect: undeclared, so it is never a repeat and never taken as observing.
             effect: continuum_base::tool_effect::ToolEffect::Undeclared,
+            // A native authored command is one of her core hands: its manifest declares no
+            // disclosure, and the author chose `native` to put it in her prompt.
+            disclosure: continuum_base::tool_disclosure::Disclosure::Core,
             params: json.clone(),
             params_schema: self.manifest.params.clone(),
             result: json.clone(),

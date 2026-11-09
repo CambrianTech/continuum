@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 pub mod admission_gate;
+pub mod arguments;
 pub mod artifact_handle;
 pub mod boot_clock;
 pub mod boot_mode;
@@ -66,6 +67,7 @@ pub mod runtime;
 pub mod service_module;
 pub mod share_controller;
 pub mod shared_compute;
+pub mod stage;
 pub mod storage_provider;
 pub mod params;
 

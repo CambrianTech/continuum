@@ -18,10 +18,10 @@ const MIND: &str = "core/continuum-cognition/src/cognition/recall.rs";
 /// Count `rule` over the tree, hold it against the base, and judge the change's files.
 fn judge(rule: &dyn SourceRule, instead: &str) {
     let violations = scan(&[rule]);
-    let count = violations.len();
-    let advice = || format!("{instead} The contract: docs/architecture/ONE-BUDGET.md.");
+        let advice = || format!("{instead} The contract: docs/architecture/ONE-BUDGET.md.");
     crate::ratchet::touched_clean(rule.name(), &violations, advice);
-    crate::ratchet::hold(rule.name(), count, || {
+    let count = violations.len();
+    crate::ratchet::hold_sites(rule.name(), &violations, || {
         format!(
             "{} {instead} The contract: docs/architecture/ONE-BUDGET.md.\nFirst {} of {count} (not necessarily new):\n{}",
             rule.name(),
@@ -72,11 +72,16 @@ fn each_self_sizing_shape_is_found_and_owners_are_not() {
     assert_eq!(found(&SelfSized, CONSUMER, "let first = text.lines().next();"), 0, "a head read outside her text is parsing");
     assert_eq!(found(&SelfSized, MIND, "let grants = flex_allocate(window, &claims);"), 1);
     assert_eq!(
-        found(&SelfSized, "core/continuum-cognition/src/cognition/llm_deliberation_faculty/prompt/view.rs", "let grants = flex_allocate(window, &claims);"),
+        found(&SelfSized, "core/continuum-context/src/allocation.rs", "let grants = flex_allocate(window, &claims);"),
         0,
-        "the turn's allocation calls the allocator"
+        "the act's one allocation calls the allocator"
     );
-    assert_eq!(found(&SelfSized, "core/continuum-grounding/src/rag_budget/flex_allocate.rs", "const PRIORITY_MAX: u8 = 10;"), 0, "the allocator owns its algorithm");
+    assert_eq!(
+        found(&SelfSized, "core/continuum-cognition/src/cognition/llm_deliberation_faculty/prompt/view.rs", "let grants = flex_allocate(window, &claims);"),
+        1,
+        "the faculty asks the act's one allocation, never the allocator a second time (ONE-ACT stage 2)"
+    );
+    assert_eq!(found(&SelfSized, "core/continuum-context/src/flex.rs", "const PRIORITY_MAX: u8 = 10;"), 0, "the allocator owns its algorithm");
     assert_eq!(found(&SelfSized, CONSUMER, "const POLL_INTERVAL_MS: u64 = 2_000;"), 0, "a duration is not a size");
     assert_eq!(found(&SelfSized, CONSUMER, "fn cap(&self) -> usize { self.grant.take(8) }"), 1, "a body on the signature's line is code (Codex on #5609)");
     assert_eq!(found(&SelfSized, CONSUMER, "pub fn recall_tokens(&self) -> usize {"), 0, "a signature alone is a definition, not a use");

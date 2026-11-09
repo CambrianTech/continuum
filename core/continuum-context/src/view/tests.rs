@@ -1,57 +1,7 @@
 use super::*;
 use crate::cause::{Cause, Content, ElementId};
+use crate::fixtures::{item, Fake};
 use crate::source::Item;
-
-/// A fixture occurrence at `key`: its id from the key, its cause unrecorded (these tests are about
-/// levels and starts, not chains).
-fn item(key: impl Into<String>, full: String, summary: Option<String>, pointer: Option<String>) -> Item<String> {
-    let key = key.into();
-    let mut item = Item::whole(ElementId::of(&[key.as_bytes()]), Cause::Unrecorded, key, full);
-    item.summary = summary;
-    item.pointer = pointer;
-    item
-}
-
-/// A source shaped like the M5's: items keyed, each renderable in full or as a pointer.
-struct Fake {
-    name: &'static str,
-    priority: u8,
-    items: Vec<(String, String)>,
-    retired: Vec<(String, String)>,
-}
-
-impl Fake {
-    fn new(name: &'static str, priority: u8) -> Self {
-        Self { name, priority, items: Vec::new(), retired: Vec::new() }
-    }
-    fn push(&mut self, key: &str, text: &str) {
-        match self.items.iter_mut().find(|(k, _)| k == key) {
-            Some(item) => item.1 = text.to_owned(),
-            None => self.items.push((key.to_owned(), text.to_owned())),
-        }
-    }
-}
-
-impl Source<String> for Fake {
-    fn name(&self) -> &str {
-        self.name
-    }
-    fn priority(&self) -> u8 {
-        self.priority
-    }
-    fn items(&self) -> Vec<Item<String>> {
-        self.items
-            .iter()
-            .map(|(key, text)| item(key.clone(), text.clone(), None, Some(format!("[{key}: {} chars, reopen by key]", text.len()))))
-            .collect()
-    }
-    fn retired(&self) -> Vec<Item<String>> {
-        self.retired
-            .iter()
-            .map(|(key, text)| item(key.clone(), text.clone(), None, Some(text.clone())))
-            .collect()
-    }
-}
 
 fn all_full(claims: &[Claim]) -> Vec<usize> {
     claims.iter().map(|claim| claim.full_chars).collect()
@@ -93,6 +43,29 @@ fn an_act_appends_only_the_items_that_changed() {
     let advance = view.advance(&[&views]);
     assert_eq!(advance, Advance { items: 1, chars: "b.rs lines 1-40".len(), repeats: 0 });
     assert_eq!(view.advance(&[&views]), Advance::default(), "nothing changed, nothing appended");
+}
+
+// what this catches (card ef0b04e4): a whole history re-appended on one advance (2,195 items, 57.9M
+// chars after a restart) with no way to say which source did it. The breakdown names each source
+// that appended, with its items and characters, and nothing for a source that appended nothing.
+#[test]
+fn an_advance_names_each_source_that_appended() -> Result<(), GrantMismatch> {
+    let mut views = Fake::new("open-views", 4);
+    let mut actions = Fake::new("actions", 1);
+    views.push("a.rs", "aaa");
+    actions.push("#1", "first");
+    let (mut view, _) = View::start(vec![], &[&views, &actions], all_full)?;
+    actions.push("#2", "second");
+    actions.push("#3", "third");
+    view.advance(&[&views, &actions]);
+    assert_eq!(
+        view.last_advance_by_source(),
+        &[SourceAdvance { source: "actions".into(), items: 2, chars: "second".len() + "third".len() }],
+        "only the source that appended, with its own counts"
+    );
+    view.advance(&[&views, &actions]);
+    assert!(view.last_advance_by_source().is_empty(), "nothing appended, nothing named");
+    Ok(())
 }
 
 // what this catches: a collapsed item that comes back in full on the next act (rendered

@@ -117,7 +117,7 @@ impl SourceRule for LayerDiscipline {
                 seen.push((line_no, dep));
                 out.push(Violation {
                     rule: "layer-discipline",
-                    file: file.rel.clone(),
+                    file: file.repo.clone(),
                     line: line_no + 1,
                     source: format!("ring {own} imports ring {} `crate::{dep}::`", ring_of(dep).unwrap_or(own)), // unwrap_or: `is_some_and` above proved it is Some
                 });
@@ -176,7 +176,7 @@ mod tests {
     fn upward_imports_never_rise() {
         let violations = scan(&[&LayerDiscipline]);
         let count = violations.len();
-        let mut pairs = std::collections::BTreeMap::<(String, String), usize>::new();
+                let mut pairs = std::collections::BTreeMap::<(String, String), usize>::new();
         for v in &violations {
             let from = v.file.split('/').next().unwrap_or("?").to_string(); // unwrap_or: a rel path always has a first component
             let to = v.source.split('`').nth(1).unwrap_or("?").to_string(); // unwrap_or: the source line is built by `check` with the backticked path
@@ -188,7 +188,7 @@ mod tests {
         for ((from, to), n) in worst.iter().take(8) {
             eprintln!("  {from} -> {to}: {n} lines");
         }
-        crate::ratchet::hold("upward_imports", count, || {
+        crate::ratchet::hold_sites("upward_imports", &violations, || {
             "upward imports rose. A lower ring now names a higher ring: move the fact or verb \
              down to its owner, or place the module in its ring."
                 .to_string()

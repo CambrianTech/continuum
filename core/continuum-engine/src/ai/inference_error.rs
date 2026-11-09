@@ -88,6 +88,24 @@ pub enum InferenceError {
     /// her a head that lacks verbs she was told she could call, so it is refused instead.
     /// PERMANENT for the unchanged request: the caller rebuilds her surface without the tail.
     TailToolsUnreachable { model: String },
+
+    /// The request was priced behind the engine's exact prompt count (its `admission` says
+    /// `EngineCounted`), but the engine it reaches cannot count its prompt now (the route
+    /// moved to a lane without the count). Sending it would admit a prompt priced below its
+    /// estimate with no exact check, so it is refused before anything is sent. PERMANENT for
+    /// the unchanged request: the caller re-prices at its estimate.
+    AdmissionUncounted { model: String },
+
+    /// Her grant changed between render and dispatch (a re-home while she waited for a lane):
+    /// the request was priced against `rendered`, her grant is now `current` (`None` = withdrawn).
+    /// Refused before anything is sent. PERMANENT for the unchanged request: the caller re-renders
+    /// against the current grant.
+    GrantChanged { rendered: u32, current: Option<u32> },
+
+    /// The request carries a think budget the adapter (or the peer it reaches) cannot carry: no
+    /// reasoning-budget sampler, or a grid peer that does not advertise one. Refused before
+    /// anything is sent, never generated with an unbounded think. PERMANENT for this adapter.
+    ThinkUnenforceable { model: String },
 }
 
 impl InferenceError {
@@ -101,6 +119,9 @@ impl InferenceError {
             Self::ContextExceeded { .. } => false,
             Self::Protocol(_) => false,
             Self::TailToolsUnreachable { .. } => false,
+            Self::AdmissionUncounted { .. } => false,
+            Self::GrantChanged { .. } => false,
+            Self::ThinkUnenforceable { .. } => false,
             Self::Unavailable(_) | Self::Transient(_) => true,
         }
     }
@@ -111,8 +132,7 @@ impl InferenceError {
     /// `{"error":{"code":400,"message":"…","type":"exceed_context_size"}}`;
     /// Current structured errors carry `n_prompt_tokens` and `n_ctx`. Their
     /// values are authoritative even when the diagnostic prose disagrees.
-    /// Legacy responses without a machine-readable type retain their old
-    /// compatibility decoder; a tagged response never falls back to prose.
+    /// An untagged response is never decoded from its prose: it stays unclassified.
     /// Cost note: an overflow is only ever a 400, so the JSON parse is gated on
     /// that status — every other failure classifies without touching the body.
     /// Nothing here runs on the success path.
@@ -156,33 +176,9 @@ impl InferenceError {
                 ),
             });
         }
-        // Older, untyped gateways provide no structured authority. Keep this
-        // compatibility path isolated from every tagged provider response.
-        let message = error.get("message")?.as_str()?;
-        if !message.contains("context size") {
-            return None;
-        }
-        let (requested, available) = Self::two_numbers(message)?;
-        Some(Self::ContextExceeded {
-            requested,
-            available,
-        })
-    }
-
-    /// Pull the two parenthesised token counts out of llama-server's message:
-    /// `request (16751 tokens) exceeds the available context size (16384 tokens)`.
-    ///
-    /// Used ONLY to recover the numbers once the body has already been
-    /// identified as a context error — never to decide *whether* it is one when
-    /// the backend tagged it.
-    fn two_numbers(message: &str) -> Option<(u32, u32)> {
-        let mut found = message
-            .split(|c: char| !c.is_ascii_digit())
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| s.parse::<u32>().ok());
-        let requested = found.next()?;
-        let available = found.next()?;
-        Some((requested, available))
+        // An untagged body carries no authority (our fork tags every overflow with its counts):
+        // never decoded from its prose, so it stays the unclassified fault it is.
+        None
     }
 }
 
@@ -202,6 +198,18 @@ impl fmt::Display for InferenceError {
             Self::TailToolsUnreachable { model } => write!(
                 f,
                 "the engine serving {model} does not take tail_tools now: rebuild the request without its tail"
+            ),
+            Self::AdmissionUncounted { model } => write!(
+                f,
+                "the engine serving {model} cannot count this prompt exactly now: re-price it at its estimate"
+            ),
+            Self::GrantChanged { rendered, current } => write!(
+                f,
+                "her grant changed since this request was rendered ({rendered} -> {current:?}): re-render it"
+            ),
+            Self::ThinkUnenforceable { model } => write!(
+                f,
+                "the adapter serving {model} cannot bound this turn's think: refused rather than sent unbounded"
             ),
         }
     }
@@ -283,18 +291,13 @@ mod tests {
         assert!(InferenceError::Transient("decode stalled".into()).is_retryable_unchanged());
     }
 
-    // what this catches: an UNTAGGED overflow (older llama-server builds) must
-    // still classify, or the fix silently stops working after a downgrade.
+    // what this catches: an overflow decided from prose. Our fork tags every overflow with its
+    // counts (`exceed_context_size`, `n_prompt_tokens`, `n_ctx`); an untagged body's wording is
+    // never matched, so it stays an unclassified fault rather than a guessed count.
     #[test]
-    fn untagged_overflow_still_classifies_from_the_message() {
+    fn an_untagged_overflow_is_never_read_from_its_prose() {
         let body = r#"{"error":{"code":400,"message":"request (15697 tokens) exceeds the available context size (15104 tokens)"}}"#;
-        assert_eq!(
-            InferenceError::from_http(400, body),
-            InferenceError::ContextExceeded {
-                requested: 15697,
-                available: 15104
-            }
-        );
+        assert!(matches!(InferenceError::from_http(400, body), InferenceError::Transient(_)));
     }
 
     // what this catches: over-eager classification. A 400 that is NOT a context

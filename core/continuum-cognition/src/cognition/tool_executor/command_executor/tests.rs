@@ -192,7 +192,7 @@
             input: json!({ "path": "deploy.md" }),
         }];
         let out = exec
-            .execute_native_batch(&calls, &ctx())
+            .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
             .await
             .unwrap();
         assert_eq!(out.results.len(), 1);
@@ -216,7 +216,7 @@
             input: json!({ "ok": true }),
         }];
         let out = exec
-            .execute_native_batch(&calls, &ctx())
+            .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
             .await
             .unwrap();
         assert!(
@@ -229,6 +229,8 @@
     // model can recover), NOT a batch-level failure that aborts the turn.
     #[tokio::test]
     async fn failed_call_becomes_error_result_not_batch_failure() {
+        // It saves through the production store: the class is the test fixture's, never ~/.continuum.
+        crate::cognition::tool_executor::spill::prepare_store_fixture();
         let exec = executor_with_echo();
         let calls = vec![NativeToolCall {
             id: "t1".to_string(),
@@ -236,7 +238,7 @@
             input: json!({}),
         }];
         let out = exec
-            .execute_native_batch(&calls, &ctx())
+            .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
             .await
             .expect("batch itself succeeds");
         assert_eq!(
@@ -255,6 +257,54 @@
         // Line 1 is the one frame (answer.rs); the client wrapper's own text never reaches her.
         assert!(content.starts_with("refused test/nonexistent()"), "one status line: {content}");
         assert_eq!(content.matches("refused").count(), 1, "no client-wrapper prefix leaks to the model: {content}");
+    }
+
+    // what this catches: a reported note (a thought cut at the output limit) routed as a command
+    // path (the M5, 2026-11-04: every cut note logged `routing.acl.refused` for
+    // `tools/<thought cut at the output limit>`). It is decoded typed, once, and answered before
+    // the router: a module claiming `tools/` is never reached, and her result is the whole teacher
+    // text. A real `tools/` name and an unknown `tools/<…>` are not notes.
+    #[tokio::test]
+    async fn a_reported_note_is_answered_before_the_router_and_never_dispatched() {
+        struct ToolsTrap(Arc<std::sync::atomic::AtomicUsize>);
+        #[async_trait]
+        impl ServiceModule for ToolsTrap {
+            fn config(&self) -> ModuleConfig {
+                ModuleConfig {
+                    name: "tools-trap",
+                    priority: ModulePriority::Normal,
+                    command_prefixes: &["tools/"],
+                    event_subscriptions: &[],
+                    needs_dedicated_thread: false,
+                    max_concurrency: 0,
+                    tick_interval: None,
+                }
+            }
+            async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+                Ok(())
+            }
+            async fn handle_command(&self, _command: &str, params: Value) -> Result<CommandResult, String> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(CommandResult::Json(params))
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+        for note in ReportedNote::ALL {
+            assert_eq!(ReportedNote::of(note.name()), Some(note), "every note decodes from its own name");
+        }
+        assert_eq!(ReportedNote::of("tools/<made up>"), None, "only the reserved names are notes");
+        assert_eq!(ReportedNote::of("code/read"), None);
+        let reached = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register(Arc::new(ToolsTrap(reached.clone())));
+        let exec = exec_over(registry, Uuid::new_v4());
+        let calls = vec![NativeToolCall { id: "cut".into(), name: THOUGHT_CUT_SENTINEL.into(), input: json!({}) }];
+        let batch = crate::ai::types::CallBatch::classify(calls, crate::ai::types::CallOrigin::Substrate);
+        let out = exec.execute_native_batch(&batch, &ctx()).await.expect("batch itself succeeds");
+        assert_eq!(reached.load(std::sync::atomic::Ordering::SeqCst), 0, "the router never saw the note");
+        assert!(out.results[0].content.contains("NOT run for you"), "her teacher text, whole: {}", out.results[0].content);
     }
 
     /// Concurrency + load proofs. Gated behind `stress-tests` per the test
@@ -354,7 +404,7 @@
 
             let out = tokio::time::timeout(
                 Duration::from_secs(5),
-                exec.execute_native_batch(&load_calls(N), &ctx()),
+                exec.execute_native_batch(&crate::ai::types::CallBatch::classify(load_calls(N), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx()),
             )
             .await
             .expect("batch must finish — a timeout means the batch serialized")
@@ -384,7 +434,7 @@
                 .map(|_| {
                     let exec = persona_over(executor.clone());
                     tokio::spawn(async move {
-                        exec.execute_native_batch(&load_calls(1), &ctx())
+                        exec.execute_native_batch(&crate::ai::types::CallBatch::classify(load_calls(1), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
                             .await
                     })
                 })
@@ -441,7 +491,7 @@
                             let c = ctx();
                             let t0 = Instant::now();
                             let out = exec
-                                .execute_native_batch(&calls, &c)
+                                .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &c)
                                 .await
                                 .expect("batch ok");
                             stats.record(t0.elapsed().as_micros() as u64);

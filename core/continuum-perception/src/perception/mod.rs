@@ -64,6 +64,7 @@ pub mod hot_edit;
 /// `perception/interact` + `perception/session-close`: a persistent browser session a persona
 /// drives (click, type, goto) and sees after each step (card 3569675f).
 pub mod interact;
+mod native_outcomes;
 
 /// Render size for an observation, in the surface's pixels (CSS px for a UI,
 /// framebuffer px for a scene). Omit to use the adapter's current/default size.
@@ -248,6 +249,7 @@ impl crate::sdk_codegen::CommandSpec for ObserveCommand {
     const NAME: &'static str = "perception/observe";
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
     const NATIVE: bool = true; // SEE + REASON — offered natively beside interface/screenshot
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const DESCRIPTION: &'static str =
         "Observe pixels AND structure: a web URL returns page elements and layout; \
          file:///absolute/document.pdf#page=1 returns one PDF page's text and image, \

@@ -555,7 +555,7 @@ mod outcome_projection {
     /// byte-for-byte what it was before this change.
     #[test]
     fn a_command_that_did_not_opt_in_is_unprojected_not_undecodable() {
-        let v = project_result("code/read", &serde_json::json!({"anything": 1})).0;
+        let v = project_result("ping", &serde_json::json!({"anything": 1})).0;
         assert_eq!(v, ActVerdict::Unprojected);
         assert!(!v.failed() && !v.running());
         assert_eq!(
@@ -613,30 +613,5 @@ mod vdd_projection {
         assert_eq!(rec.status, crate::vdd::record::HarnessStatus::Pass);
         assert!(rec.execution_ms.is_some(), "p50 recorded as execution_ms");
         assert_eq!(rec.error_count, 0);
-    }
-}
-
-/// The argument-recovery rendering of a real dispatch refusal: the half of
-/// `dispatch_bad_params_has_argument_recovery` that names cognition's tool executor.
-mod argument_recovery {
-    use crate::sdk_codegen::handler::tests::BareHandler;
-    use crate::sdk_codegen::{dispatch, CommandError};
-
-    // Regression for 6dd8befa: malformed params get argument recovery through
-    // real dispatch; decoded domain refusals must not share that category.
-    // what this catches: the persona-facing rendering losing the real decode failure or the
-    // pointer to the command's manual.
-    #[tokio::test]
-    async fn the_persona_tool_error_keeps_the_refusal_and_names_the_manual() {
-        let err = dispatch(&BareHandler, serde_json::json!({ "text": 123 }))
-            .await
-            .expect_err("type mismatch must refuse");
-        let rendered = crate::cognition::tool_executor::command_executor::persona_tool_error(
-            "test/echo-bare", err.clone(),
-        );
-        assert!(rendered.contains(&err), "the real decode failure survives: {rendered}");
-        assert!(CommandError::is_argument_refusal("test/echo-bare", &err));
-        assert!(rendered.starts_with(&format!("{err}\n→ Call `commands/help` with name \"test/echo-bare\"")),
-            "the argument recovery branch preserves the refusal and names its manual: {rendered}");
     }
 }

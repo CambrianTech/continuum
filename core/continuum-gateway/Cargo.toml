@@ -1,0 +1,18 @@
+[package]
+name = "continuum-gateway"
+version = "0.1.0"
+edition = "2021"
+description = "The driver gateway (docs/architecture/DRIVER-GATEWAY.md): one door every external agent calls, wire formats as adapters over the one engine."
+
+[dependencies]
+continuum-engine = { path = "../continuum-engine" }
+continuum-base = { path = "../continuum-base" }
+continuum-capture = { path = "../continuum-capture" }  # the one capture of every mind's calls
+async-trait = "0.1"
+axum = "0.8"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+uuid.workspace = true
+tracing.workspace = true

@@ -116,7 +116,7 @@ pub(crate) async fn checkpoint_endpoint(
     endpoint: &std::sync::Arc<super::EndpointSlots>,
     cap: Duration,
 ) -> Option<Result<(), String>> {
-    let generation = endpoint.state.lock().generation.clone()?;
+    let generation = endpoint.state.lock().generation().cloned()?;
     let outcome = tokio::time::timeout(cap, async {
         let mut transition = endpoint
             .transition_for_generation(&generation)

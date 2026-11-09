@@ -2,38 +2,87 @@
 use super::*;
 use crate::inference::engine_residency::Liveness;
 
+/// What retiring the recorded adopted engine means now ([`LlamaServerProcess::adopted_plan`]).
+enum AdoptedPlan {
+    Resume(crate::inference::engine_residency::EngineIncarnation),
+    NoLane,
+    Dead,
+    Alive(crate::inference::engine_residency::EngineIncarnation),
+}
+
 impl LlamaServerProcess {
+    /// What retiring the recorded adopted engine means now, from state alone: resume a
+    /// retirement already signalled, nothing to retire, an engine already dead, or a live one.
+    /// The refusals here are the replacement's own, so its pre-flight and its retirement make
+    /// them from one place.
+    fn adopted_plan(&self) -> Result<AdoptedPlan, LlamaServerError> {
+        if let Some(incarnation) = *self.retiring_adopted.lock() {
+            return Ok(AdoptedPlan::Resume(incarnation));
+        }
+        let Some(lane) = crate::inference::lane_registry::live_lane() else {
+            // Absence grants no permission to kill a listener. Launch's port gate
+            // will refuse any unrecorded occupant, including another llama-server.
+            return Ok(AdoptedPlan::NoLane);
+        };
+        if lane.root_url() != self.root {
+            return Err(LlamaServerError::RetirementRefused(RetirementRefusal::OtherEndpoint));
+        }
+        let incarnation = lane.incarnation();
+        match incarnation.liveness() {
+            Liveness::Dead => Ok(AdoptedPlan::Dead),
+            Liveness::Unknown => Err(LlamaServerError::RetirementRefused(RetirementRefusal::IdentityUnverified)),
+            Liveness::Alive => Ok(AdoptedPlan::Alive(incarnation)),
+        }
+    }
+
+    /// Every refusal retiring the adopted engine can make before its drain (the replacement's
+    /// pre-flight, `EndpointSlots::drain_for_replacement`). The checkpoint repeats its own checks
+    /// under the guard. A never probed endpoint discovers its pool here, before anything is
+    /// condemned (the M5 2026-11-04 14:56Z: growth refused 5 s after adoption, before any request).
+    pub(super) async fn adopted_retirement_preflight(&self) -> Result<(), LlamaServerError> {
+        match self.adopted_plan()? {
+            AdoptedPlan::Alive(incarnation) => {
+                let directory = crate::inference::slots::directory();
+                if directory.endpoint(&self.root).paging_recovery_required() {
+                    return Ok(());
+                }
+                // Bounded like every lifecycle probe: a wedged engine refuses, never stalls the launch.
+                let discovery = directory.adopted_checkpoint_pool(&self.client, &self.root, incarnation);
+                let checked = match tokio::time::timeout(PROBE_TIMEOUT, discovery).await {
+                    Ok(checked) => checked,
+                    Err(_) => Err(crate::inference::slots::AdoptedCheckpointRefusal::UnknownPool(
+                        crate::inference::slots::PoolDiscoveryMiss::TimedOut,
+                    )),
+                };
+                checked
+                    .map(drop)
+                    .map_err(|refusal| LlamaServerError::RetirementRefused(refusal.into()))
+            }
+            AdoptedPlan::Resume(_) | AdoptedPlan::NoLane | AdoptedPlan::Dead => Ok(()),
+        }
+    }
+
     pub(super) async fn retire_adopted(
         &self,
         transition: &mut crate::inference::slots::EndpointTransition,
         current: &ServingLifecycleCheck<'_>,
     ) -> Result<(), LlamaServerError> {
-        let pending = *self.retiring_adopted.lock();
-        if let Some(incarnation) = pending {
-            // Resume observation, never checkpoint or reopen a process already
-            // signalled by an earlier cancelled/timed-out launch.
-            return self.await_adopted_exit(incarnation, Duration::from_secs(10)).await;
-        }
-        let Some(lane) = crate::inference::lane_registry::live_lane() else {
-            // Absence grants no permission to kill a listener. Launch's port gate
-            // will refuse any unrecorded occupant, including another llama-server.
-            return Ok(());
-        };
-        if lane.root_url() != self.root {
-            return Err(LlamaServerError::RetirementRefused("recorded live lane belongs to another endpoint".into()));
-        }
-        let incarnation = lane.incarnation();
         use crate::inference::slots::DiscardReason;
         let endpoint = crate::inference::slots::directory().endpoint(&self.root);
-        match incarnation.liveness() {
-            Liveness::Dead => {
+        let incarnation = match self.adopted_plan()? {
+            // Resume observation, never checkpoint or reopen a process already
+            // signalled by an earlier cancelled/timed-out launch.
+            AdoptedPlan::Resume(incarnation) => {
+                return self.await_adopted_exit(incarnation, Duration::from_secs(10)).await
+            }
+            AdoptedPlan::NoLane => return Ok(()),
+            AdoptedPlan::Dead => {
                 // Its residents' KV died with it; their next turns name this (card 6b28a445).
                 endpoint.pending_discard(DiscardReason::AdoptedEngineDead).commit();
                 return Ok(());
             }
-            Liveness::Unknown => return Err(LlamaServerError::RetirementRefused("adopted engine identity is unverified".into())),
-            Liveness::Alive => {}
-        }
+            AdoptedPlan::Alive(incarnation) => incarnation,
+        };
         // Quarantined paging cannot save: its residents are captured now and recorded only
         // when the engine is seen dead, so a superseded, refused or still-waiting retirement
         // never reports a loss (card 6b28a445).
@@ -42,7 +91,7 @@ impl LlamaServerProcess {
         } else {
             transition.checkpoint_adopted_before_replacement(
                 &self.client, &self.root, incarnation, current,
-            ).await.map_err(LlamaServerError::RetirementRefused)?;
+            ).await.map_err(|refusal| LlamaServerError::RetirementRefused(refusal.into()))?;
             None
         };
         if !current() {
@@ -56,7 +105,7 @@ impl LlamaServerProcess {
                 }
                 return Ok(());
             }
-            Liveness::Unknown => return Err(LlamaServerError::RetirementRefused("adopted engine identity became unverified after checkpoint".into())),
+            Liveness::Unknown => return Err(LlamaServerError::RetirementRefused(RetirementRefusal::IdentityUnverifiedAfterCheckpoint)),
             Liveness::Alive => {}
         }
         continuum_process::signal_if_same(
@@ -64,7 +113,7 @@ impl LlamaServerProcess {
                 pid: incarnation.pid,
                 start_time: incarnation.started_s,
             },
-        ).map_err(LlamaServerError::RetirementRefused)?;
+        ).map_err(|detail| LlamaServerError::RetirementRefused(RetirementRefusal::Signal(detail)))?;
         // No await between signalling and retaining custody. Cancellation of the
         // wait cannot turn this predecessor back into a serving candidate. A signal is
         // not a death: the residents' loss is recorded when the exit is observed.
@@ -168,7 +217,11 @@ mod tests {
         let untouched = crate::inference::slots::directory().endpoint(&format!("{root}-untouched"));
         let transition = untouched.transition_if(&|| true).await.map_err(|()| "transition refused")?;
         super::super::launch::handle_retirement_failure(&transition,
-            &LlamaServerError::RetirementRefused("checkpoint refused before signal".into()));
+            &LlamaServerError::RetirementRefused(RetirementRefusal::Checkpoint(
+                crate::inference::slots::AdoptedCheckpointRefusal::UnknownPool(
+                    crate::inference::slots::PoolDiscoveryMiss::NoGeometry,
+                ),
+            )));
         drop(transition);
         assert!(untouched.admit().await.is_ok(), "pre-signal refusal still hands admission back");
         assert!(!super::super::engine_install::roll_back_engine_after_failed_launch(&error),

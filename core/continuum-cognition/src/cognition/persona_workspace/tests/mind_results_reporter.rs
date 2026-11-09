@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::ai::types::ResultCustody;
 use crate::cognition::persona_workspace::mind_results_reporter::{
-    budget_of, over_gate, prove, resident_bytes, shed_to, LastCopy, Minds, ProvenCopies,
+    budget_of, prove, resident_bytes, shed_to, LastCopy, Minds, ProvenCopies,
 };
 use crate::cognition::tool_executor::spill::{self, LivePin};
 use crate::cognition::working_memory::WorkingMemory;
@@ -64,6 +64,8 @@ fn resident(memory: &WorkingMemory) -> Vec<String> {
 // length, and its saved copy loads back to exactly what she read.
 #[test]
 fn the_shed_moves_the_oldest_across_minds_down_to_the_allocation() {
+    // It saves through the production store: the class is the test fixture's, never ~/.continuum.
+    crate::cognition::tool_executor::spill::prepare_store_fixture();
     let (pa, pb) = (Uuid::new_v4(), Uuid::new_v4());
     let pin = LivePin::new();
     let (a, b) = (
@@ -126,6 +128,8 @@ fn the_shed_moves_the_oldest_across_minds_down_to_the_allocation() {
 // load would render a pointer. Real files through the spill owner, never an injected verdict.
 #[test]
 fn a_copy_that_cannot_reproduce_the_body_keeps_it_resident() {
+    // It saves through the production store: the class is the test fixture's, never ~/.continuum.
+    crate::cognition::tool_executor::spill::prepare_store_fixture();
     let persona = Uuid::new_v4();
     let pin = LivePin::new();
     let memory = Arc::new(WorkingMemory::new(8));
@@ -178,6 +182,8 @@ fn a_copy_that_cannot_reproduce_the_body_keeps_it_resident() {
 // answers the same from the cache, and an unproven body counts as pinned.
 #[test]
 fn budget_answers_from_the_proof_cache_without_the_filesystem() {
+    // It saves through the production store: the class is the test fixture's, never ~/.continuum.
+    crate::cognition::tool_executor::spill::prepare_store_fixture();
     let persona = Uuid::new_v4();
     let pin = LivePin::new();
     let memory = Arc::new(WorkingMemory::new(8));
@@ -243,27 +249,3 @@ fn report_sums_resident_bytes_across_minds() {
     );
 }
 
-// what this catches: a shed target of our own invention. The bytes shed are how far the host's
-// used RAM stands past the monitor's own gate for this priority; nothing before the first poll.
-#[test]
-fn the_shed_target_is_the_hosts_overrun_past_the_monitors_gate() {
-    use continuum_kernel::system_resources::{MemoryPriority, PressureSnapshot};
-    assert_eq!(
-        over_gate(&PressureSnapshot::default()),
-        0,
-        "no poll yet: nothing to shed"
-    );
-    let total = 100 * 1024 * 1024 * 1024u64;
-    let gate = (total as f64 * MemoryPriority::Interactive.pressure_gate()) as u64;
-    let snapshot = |used: u64| PressureSnapshot {
-        total_bytes: total,
-        available_bytes: total - used,
-        ..Default::default()
-    };
-    assert_eq!(over_gate(&snapshot(gate)), 0, "at the gate: nothing");
-    assert_eq!(
-        over_gate(&snapshot(gate + 5 * BODY as u64)),
-        5 * BODY as u64,
-        "past it: exactly the overrun"
-    );
-}

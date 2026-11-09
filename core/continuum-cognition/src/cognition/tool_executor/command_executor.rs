@@ -45,7 +45,7 @@ use super::types::{
     CallVerdict, NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
 use super::ToolExecutor;
-use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
+use crate::ai::types::{CallBatch, Disposed, ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
 use crate::sdk_codegen::{command_registry, AccessLevel, ActVerdict};
@@ -243,14 +243,46 @@ pub(crate) const CUT_AT_LIMIT_SENTINEL: &str = "tools/<cut at the output limit>"
 /// never executed; her thinking is already in working memory, and she decides.
 pub(crate) const THOUGHT_CUT_SENTINEL: &str = "tools/<thought cut at the output limit>";
 
-/// A reserved `tools/<…>` pseudo-call: the substrate REPORTING a turn's shape (no name given, a
-/// think-only turn, a cut at the output limit), never a command that runs. The one owner of
-/// that test: the refusal probe skips them, and stop-drain S2 never records one as an effect.
+/// A reported note: the substrate REPORTING a turn's shape (no name given, a think-only turn, a
+/// cut at the output limit), never a command that runs. Typed once here, from the exact reserved
+/// name the faculty wrote, and handled BEFORE dispatch: it never reaches the router, so it is
+/// never permission-checked as a command path (the M5, 2026-11-04: every cut note logged
+/// `routing.acl.refused` for `tools/<thought cut at the output limit>`) and never refused as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReportedNote {
+    NamelessArgs,
+    ThinkOnly,
+    CutAtLimit,
+    ThoughtCut,
+}
+
+impl ReportedNote {
+    pub(crate) const ALL: [Self; 4] = [Self::NamelessArgs, Self::ThinkOnly, Self::CutAtLimit, Self::ThoughtCut];
+
+    /// The reserved name the faculty writes for this note.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::NamelessArgs => NAMELESS_ARGS_SENTINEL,
+            Self::ThinkOnly => THINK_ONLY_SENTINEL,
+            Self::CutAtLimit => CUT_AT_LIMIT_SENTINEL,
+            Self::ThoughtCut => THOUGHT_CUT_SENTINEL,
+        }
+    }
+
+    /// The note a call's name reports, if it is one: the one decoding of the reserved names.
+    pub(crate) fn of(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|note| note.name() == name)
+    }
+}
+
+/// Whether `name` is a [`ReportedNote`]. The one owner of that test: the refusal probe skips them,
+/// dispatch answers them without the router, and stop-drain S2 never records one as an effect.
 pub(crate) fn is_reported_sentinel(name: &str) -> bool {
-    name.starts_with("tools/<")
+    ReportedNote::of(name).is_some()
 }
 
 pub fn persona_tool_error(attempted: &str, raw: String) -> String {
+    let note = ReportedNote::of(attempted);
     // The MISSING-name case, which is not the wrong-name case and must not borrow its
     // sentence. Rendering "`X` is not a tool you can call" here would be actively
     // misleading: nothing she wrote was wrong, something was absent. Measured live
@@ -264,7 +296,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     // nothing), and silence would be the dead turn this sentinel exists to break. Name
     // what happened and the three commitment affordances; her reasoning is already in
     // working memory, so the retry starts from her own conclusions.
-    if attempted == THINK_ONLY_SENTINEL {
+    if note == Some(ReportedNote::ThinkOnly) {
         return "Your whole generation was private reasoning — the turn ended inside the \
                 thinking channel, so nothing was said and nothing ran. Your thinking is \
                 saved in your working memory, but nobody else can see it, and it is not \
@@ -286,7 +318,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     // thinking, before she had committed anything. Whatever call she was weighing at the
     // cut was NOT run on her behalf: it was a thought, not a choice. Say so, and hand the
     // decision back.
-    if attempted == THOUGHT_CUT_SENTINEL {
+    if note == Some(ReportedNote::ThoughtCut) {
         return "Your thinking reached the output limit before you decided anything, so \
                 nothing ran and nothing changed. Any tool call you were weighing when it \
                 was cut was NOT run for you. Your thinking so far is saved in your working \
@@ -295,7 +327,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
             .to_string();
     }
 
-    if attempted == CUT_AT_LIMIT_SENTINEL {
+    if note == Some(ReportedNote::CutAtLimit) {
         return "Your last generation reached the output limit before a tool call was \
                 committed, so NOTHING ran and nothing changed — the act did not land. \
                 What you were composing is noted in your working memory. Do not \
@@ -305,7 +337,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
             .to_string();
     }
 
-    if attempted == NAMELESS_ARGS_SENTINEL {
+    if note == Some(ReportedNote::NamelessArgs) {
         return format!(
             "You emitted tool ARGUMENTS with no tool NAME, so nothing ran:\n{raw}\n\n\
              The arguments look right — they just need a tool in front of them. The form is:\n\
@@ -327,16 +359,7 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
         return format!("{raw}\n{}\n{}", withheld.why, withheld.instead); // the status line already says it was refused
     }
 
-    // The exact how-to-call manual for a command SHE can run, rendered inline so the
-    // fix rides back in THIS observation — she retries next turn with no discovery
-    // detour (Joel: "feedback truly links back into cognition effectively"). Single
-    // source of truth: the same renderer `commands/help` uses.
-    let manual_for = |name: &str| -> Option<String> {
-        command_registry()
-            .into_iter()
-            .find(|d| d.name == name && d.access_level == AccessLevel::AiSafe)
-            .map(|d| crate::sdk_codegen::ai_help::render_ai_help(d.name, d.description, &d.params_schema))
-    };
+    let manual_for = super::arguments::manual_for;
 
     // Unknown command: the substrate's dev-facing message is useless to her. Suggest
     // the nearest AiSafe names (category + shared-segment match — catches both a
@@ -430,20 +453,6 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
         );
     }
 
-    // Only a request-shape refusal calls for the manual. A decoded call can fail
-    // a domain precondition (e.g. an empty patch); changing arguments is not its fix.
-    if crate::sdk_codegen::CommandError::is_argument_refusal(&normalized, &raw) {
-        if let Some(manual) = manual_for(&normalized) {
-            return format!(
-                "{raw}\n\nHere is the correct call — fix your arguments and retry:\n{manual}"
-            );
-        }
-        return format!(
-            "{raw}\n→ Call `commands/help` with name \"{normalized}\" to see the \
-             exact argument names, types, and a fill-in-the-blanks example, then retry."
-        );
-    }
-
     // Any other substrate refusal already carries its own real reason — pass it
     // through unchanged (fail loud, name the cause). [[fallbacks-are-illegal-fail-loud]]
     raw
@@ -484,6 +493,16 @@ pub(crate) fn manual_blanks_in(input: &Value) -> Vec<String> {
     out
 }
 
+/// Why a call in her batch did not run: its arguments, refused typed before dispatch, or the
+/// substrate's refusal of the dispatch itself.
+enum Refused {
+    /// The classifier held it: its generation never committed it (cut, errored, unreported, or
+    /// malformed). Never dispatched.
+    Held(crate::ai::types::CallEnding),
+    Arguments { canonical: String, refusal: crate::sdk_codegen::ArgumentsRefusal },
+    Client(ClientError),
+}
+
 #[async_trait]
 impl ToolExecutor for CommandToolExecutor {
     fn command_executor(&self) -> Option<Arc<CommandExecutor>> {
@@ -520,16 +539,16 @@ impl ToolExecutor for CommandToolExecutor {
 
     async fn execute_native_batch(
         &self,
-        calls: &[NativeToolCall],
+        batch: &CallBatch,
         ctx: &ToolExecutionContext,
     ) -> Result<NativeBatchOutcome, ToolError> {
         // No memory records this batch's handles, so its saves are pinned only while it runs.
-        self.execute_native_batch_pinned(calls, ctx, &spill::LivePin::new()).await
+        self.execute_native_batch_pinned(batch, ctx, &spill::LivePin::new()).await
     }
 
     async fn execute_native_batch_pinned(
         &self,
-        calls: &[NativeToolCall],
+        batch: &CallBatch,
         ctx: &ToolExecutionContext,
         pin: &spill::LivePin,
     ) -> Result<NativeBatchOutcome, ToolError> {
@@ -543,9 +562,14 @@ impl ToolExecutor for CommandToolExecutor {
         // irrelevant. No per-call FIFO — a burst at O(batch). Each future holds
         // its own cheap Connection clone, so they share zero mutable state beyond
         // the lock-free executor underneath.
-        let dispatches = calls.iter().map(|call| {
+        let dispatches = batch.entries().iter().map(|entry| {
             let conn = scoped.clone();
             async move {
+                let call = entry.call();
+                // Only a committed call is dispatched: a held one answers with why it never ran.
+                if let Disposed::Held(held) = entry {
+                    return (call.id.clone(), Err(Refused::Held(held.ending())));
+                }
                 // Tool name IS the command name. Map the underscore form some
                 // models emit (`code_read`) back to the slash form (`code/read`)
                 // — but only ALLOCATE when there's actually an underscore; the
@@ -569,7 +593,25 @@ impl ToolExecutor for CommandToolExecutor {
                 // a turn (09-14), sixty-four-zero artifact hashes on work/submit ×56 in a
                 // day (M5, 09-16). Each verb refused in its own words and she tried again.
                 // One seam names the FIELD and what belongs in it, and never dispatches.
-                let outcome: Result<Value, _> = match manual_blanks_in(&call.input) {
+                let canonical = crate::ai::tool_dialect::resolve_wire_name(&call.name);
+                if let Some(refusal) = super::arguments::refusal_before_dispatch(&canonical, &call.input) {
+                    continuum_base::probe!(
+                        class = "tool.call.arguments_refused",
+                        persona = %ctx.persona_name,
+                        command = %canonical,
+                        refusal = %refusal,
+                        "a tool call's arguments did not decode as its command's params — refused before it ran"
+                    );
+                    return (call.id.clone(), Err(Refused::Arguments { canonical, refusal }));
+                }
+                let outcome: Result<Value, Refused> = match manual_blanks_in(&call.input) {
+                    // A reported note is answered here, before the router: never a command path to
+                    // permission-check or resolve, and her teacher text is the whole result.
+                    _ if is_reported_sentinel(&call.name) => Err(Refused::Client(ClientError::Refused {
+                        command: call.name.clone(),
+                        outcome: None,
+                        reason: format!("reported, not run: {}", call.input),
+                    })),
                     blanks if !blanks.is_empty() => {
                         continuum_base::probe!(
                             class = "tool.call.manual_blank",
@@ -578,7 +620,7 @@ impl ToolExecutor for CommandToolExecutor {
                             fields = %blanks.join(","),
                             "a tool call carried the manual's placeholder as a value — refused before dispatch"
                         );
-                        Err(ClientError::Refused {
+                        Err(Refused::Client(ClientError::Refused {
                             command: command.to_string(),
                             outcome: None,
                             reason: format!(
@@ -593,12 +635,13 @@ impl ToolExecutor for CommandToolExecutor {
                                     .collect::<Vec<_>>()
                                     .join(", ")
                             ),
-                        })
+                        }))
                     }
                     _ => {
                         conn.commands()
                             .execute_value(command.as_ref(), call.input.clone())
                             .await
+                            .map_err(Refused::Client)
                     }
                 };
                 (call.id.clone(), outcome)
@@ -606,12 +649,12 @@ impl ToolExecutor for CommandToolExecutor {
         });
 
         // Filled by the Ok arm below, correlated by tool_use_id (never position).
-        let mut verdicts: Vec<CallVerdict> = Vec::with_capacity(calls.len());
+        let mut verdicts: Vec<CallVerdict> = Vec::with_capacity(batch.len());
         let results = join_all(dispatches)
             .await
             .into_iter()
             // Each result is its call's: zipped, never indexed, so a result can never lack one.
-            .zip(calls.iter())
+            .zip(batch.entries().iter().map(Disposed::call))
             .map(|((tool_use_id, outcome), call)| match outcome {
                 Ok(mut value) => {
                     // THE TOOL'S OWN VERDICT, derived HERE — before the fold, from
@@ -702,14 +745,29 @@ impl ToolExecutor for CommandToolExecutor {
                         }
                     }
                 }
-                Err(e) => {
-                    let raw = match e {
-                        ClientError::Refused { reason, .. } => reason,
-                        other => other.to_string(),
-                    };
+                Err(refused) => {
                     // Index back to the call that failed (the OK path never pays
                     // this — names are only needed to build recovery guidance).
                     let attempted = call.name.as_str();
+                    let (raw, guidance) = match refused {
+                        // A reported sentinel held with its cut generation keeps its own words.
+                        Refused::Held(_) if is_reported_sentinel(attempted) => {
+                            let raw = call.input.to_string();
+                            (raw.clone(), persona_tool_error(attempted, raw))
+                        }
+                        Refused::Held(ending) => {
+                            let canonical = crate::ai::tool_dialect::resolve_wire_name(attempted);
+                            let refusal = super::arguments::refusal_of_held(call, ending);
+                            (refusal.to_string(), super::arguments::render(&canonical, &refusal))
+                        }
+                        Refused::Arguments { canonical, refusal } => {
+                            (refusal.to_string(), super::arguments::render(&canonical, &refusal))
+                        }
+                        Refused::Client(ClientError::Refused { reason, .. }) => {
+                            (reason.clone(), persona_tool_error(attempted, reason))
+                        }
+                        Refused::Client(other) => (other.to_string(), persona_tool_error(attempted, other.to_string())),
+                    };
                     // A refusal is a wall in her hands; it must reach the probe stream,
                     // not only her. Kimi's own ledger showed work/create ✗×6 on
                     // 2026-10-05 and nothing on our side could say why without opening
@@ -745,7 +803,7 @@ impl ToolExecutor for CommandToolExecutor {
                         attempted,
                         &call.input,
                         None,
-                        &persona_tool_error(attempted, raw),
+                        &guidance,
                         None,
                     );
                     let (content, custody) = pin.whole_or_handle(rendered, ctx.persona_id).into_parts();
@@ -852,7 +910,7 @@ pub mod test_support {
             input,
         }];
         let out = exec
-            .execute_native_batch(&calls, &ctx())
+            .execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx())
             .await
             .expect("batch itself succeeds — a failed CALL is a result, not a batch error");
         let r = &out.results[0];

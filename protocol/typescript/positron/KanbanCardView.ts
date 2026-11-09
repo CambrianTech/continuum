@@ -3,6 +3,7 @@ import type { KanbanCardState } from "./KanbanCardState";
 import type { KanbanHold } from "./KanbanHold";
 import type { KanbanPriority } from "./KanbanPriority";
 import type { KanbanPullRequest } from "./KanbanPullRequest";
+import type { KanbanReviewView } from "./KanbanReviewView";
 import type { Provenance } from "./Provenance";
 import type { SenderKind } from "./SenderKind";
 
@@ -104,6 +105,11 @@ hold: KanbanHold,
  * Landing link, once a PR exists for the card. `None` before then.
  */
 pull_request?: KanbanPullRequest, 
+/**
+ * The latest review of the card's latest submission, finding included. `None` before
+ * any review.
+ */
+review?: KanbanReviewView, 
 /**
  * Unix-ms airc creation time — the board MAY show card age.
  */

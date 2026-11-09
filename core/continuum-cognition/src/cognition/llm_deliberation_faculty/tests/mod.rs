@@ -1,180 +1,35 @@
 #![cfg(test)]
 
-// what this catches: a turn in her mind room landing in the wire capture (sink 4 of
-// PRIVACY-OF-THOUGHT.md): zero bytes; an ordinary room still writes its row.
-#[test]
-fn a_turn_in_her_mind_room_writes_zero_wire_capture_bytes() {
-    let dir = tempfile::tempdir().expect("wire capture dir");
-    let persona = uuid::Uuid::new_v4();
-    let request = crate::ai::types::TextGenerationRequest {
-        messages: vec![crate::ai::types::ChatMessage::text("user", "a private thought")],
-        ..Default::default()
-    };
-    let file = dir.path().join("Kimi.wire.jsonl");
-    super::append_wire_capture(dir.path(), persona, "Kimi", crate::cognition::mind_room::mind_room_id(persona), &request);
-    assert!(!file.exists(), "her mind room: no wire row");
-    super::append_wire_capture(dir.path(), persona, "Kimi", uuid::Uuid::new_v4(), &request);
-    assert!(std::fs::metadata(&file).expect("row written").len() > 0, "an ordinary room still captures");
-}
-
-// what this catches (the M5, 2026-10-29): the wire capture keeping only Text parts, so a
-// native tool call or result (her newest result rides as one) was recorded as its label alone
-// and read as a lost body. Every message must round-trip whole: role, name, and its typed parts
-// in order with their ids and error flag.
-#[test]
-fn the_wire_capture_records_every_message_whole() {
-    use crate::ai::types::{ChatMessage, ContentPart, MessageContent};
-    let dir = tempfile::tempdir().expect("wire capture dir");
-    let persona = uuid::Uuid::new_v4();
-    let messages = vec![
-        ChatMessage {
-            role: "assistant".into(),
-            content: MessageContent::Parts(vec![
-                ContentPart::Text { text: "checking the tree".into() },
-                ContentPart::ToolUse { id: "call-1".into(), name: "code/shell".into(), input: serde_json::json!({"cmd": "git status"}) },
-            ]),
-            name: Some("Aiko".into()),
-        },
-        ChatMessage {
-            role: "tool".into(),
-            content: MessageContent::Parts(vec![ContentPart::ToolResult {
-                tool_use_id: "call-1".into(),
-                content: "nothing to commit, working tree clean".into(),
-                is_error: Some(false),
-            }]),
-            name: None,
-        },
-    ];
-    let request = crate::ai::types::TextGenerationRequest { messages: messages.clone(), ..Default::default() };
-    super::append_wire_capture(dir.path(), persona, "Aiko", uuid::Uuid::new_v4(), &request);
-    let row: serde_json::Value = serde_json::from_str(std::fs::read_to_string(dir.path().join("Aiko.wire.jsonl")).expect("row written").trim()).expect("row is json");
-    let recorded: Vec<ChatMessage> = serde_json::from_value(row["messages"].clone()).expect("messages deserialize");
-    assert_eq!(serde_json::to_value(&recorded).expect("recorded"), serde_json::to_value(&messages).expect("sent"));
-}
-
 // what this catches (Kimi, 2026-09-25): a cut act must leave her a record of what
-// she was composing and that it did not land; a long payload is trimmed to its two
-// edges so the record cannot crowd the retry the way the payload did.
+// she was composing and that it did not land. A long many-line payload reads at the codec's
+// level (its head and tail, the count between), so the record cannot crowd the retry the way
+// the payload did; nothing is cut at a size picked here.
 #[test]
 fn a_cut_act_records_that_it_did_not_land_and_what_it_was() {
     let short = cut_act_fact("work/note({\"card\": \"a9c8f8ae\"");
     assert!(short.contains("did not land"), "{short}");
     assert!(short.contains("a9c8f8ae"), "{short}");
-    let long: String = format!("HEAD{}TAIL", "x".repeat(5_000));
+    let long: String = format!("HEAD\n{}TAIL", "line of the payload\n".repeat(500));
     let fact = cut_act_fact(&long);
-    assert!(fact.contains("after 5008 chars"), "{fact}");
+    assert!(fact.contains(&format!("after {} chars", long.chars().count())), "{fact}");
     assert!(fact.starts_with("my last act was CUT"), "{fact}");
     assert!(fact.contains("HEAD") && fact.contains("TAIL"), "both edges survive");
-    assert!(fact.chars().count() < 800, "the record is bounded, not the payload: {}", fact.chars().count());
+    assert!(fact.chars().count() < long.chars().count() / 2, "the record reads at a level, not the payload: {}", fact.chars().count());
 }
 
 use super::*;
 use super::verdict::*;
-use crate::cognition::tool_surface::{core_hands, hands_surface, is_extended_hand};
-
-// what this catches: the hands surface chosen on WIRE names — `code/` prefixes
-// matched nothing after the dialect renamed them and every work turn went out
-// with zero tools (2026-09-04). The filter runs on the raw command names.
-#[test]
-fn hands_surface_is_chosen_on_command_names_and_keeps_the_discovery_pair() {
-    let raw: Vec<NativeToolSpec> = [
-        "code/read",
-        "work/state",
-        "chat/send",
-        "commands/list",
-        "room/join",
-        "code/git/status",
-        "code/git/apply",
-        "work/submission",
-        "work/review",
-        "work/submit",
-        "web/fetch",
-        "focus/continue",
-    ]
-    .iter()
-    .map(|n| NativeToolSpec {
-        name: (*n).to_string(),
-        description: String::new(),
-        input_schema: crate::ai::types::ToolInputSchema {
-            schema_type: "object".to_string(),
-            properties: serde_json::json!({}),
-            required: None,
-            definitions: None,
-        },
-    })
-    .collect();
-    let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
-    // A capable citizen (an unknown level counts as capable: more, not less) also gets
-    // the web, like Claude (Joel, 2026-09-28); her rooms and chat are hands, and so is all
-    // of work/**, the reviewer verbs included: offering those only while she held a review
-    // card made her card state an input to the surface (goal 10).
-    assert_eq!(
-        hands,
-        [
-            "code/read",
-            "work/state",
-            "chat/send",
-            "commands/list",
-            "room/join",
-            "code/git/status",
-            "work/submission",
-            "work/review",
-            "work/submit",
-            "web/fetch",
-            "focus/continue"
-        ],
-        "git/apply takes a peer's diff and stays one commands/help away; every other verb here is hers"
-    );
-    // what this also catches: a window too small for the extended verbs keeps her CORE
-    // hands (never nothing), with the web and the push/PR verbs one commands/list away.
-    // focus/continue is EXTENDED since #4758: the survival window keeps the newest line
-    // over her self-determination verbs, as it does over the web.
-    let core: Vec<String> = core_hands(&raw).into_iter().map(|s| s.name).collect();
-    assert_eq!(core, ["code/read", "work/state", "commands/list", "code/git/status", "work/submit"]);
-    // regression (Idris, 2026-09-29): a verb and the verb that finishes it travel
-    // together. code/shell tells her to poll a running execution with code/shell-poll,
-    // so a window that carries shell carries shell-poll.
-    assert!(!is_extended_hand("code/shell-poll"));
-    assert!(!is_extended_hand("code/shell"));
-}
 
 use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
 
 // what this catches: her INITIATIVE turn (holding nothing, offered by her own heartbeat)
 // going out as a message turn: the message surface and the PASS allowance, so she could
 // talk about work but never do it. It must take exactly a work turn's surface, reason and
-// ACT kind without being a deliverable turn, and those hands must keep the verbs that let
-// her choose work for herself: find it, take it, start it, write it, land it.
+// ACT kind without being a deliverable turn. That her core hands keep the verbs of choosing and
+// doing her own work is checked on the real registry's declarations (core's
+// `the_real_registry_declares_her_own_work_as_core_hands`).
 #[test]
 fn an_initiative_turn_takes_a_work_turns_hands_and_act_kind() {
-    let own_work = [
-        "work/list",
-        "work/claim",
-        "work/create",
-        "code/write",
-        "code/edit",
-        "code/git/commit",
-        "code/git/push",
-        "code/github/pr-create",
-        "room/join",
-        "chat/send",
-    ];
-    let raw: Vec<NativeToolSpec> = own_work
-        .iter()
-        .map(|n| NativeToolSpec {
-            name: (*n).to_string(),
-            description: String::new(),
-            input_schema: crate::ai::types::ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: serde_json::json!({}),
-                required: None,
-                definitions: None,
-            },
-        })
-        .collect();
-    let hands: Vec<String> = hands_surface(&raw).into_iter().map(|s| s.name).collect();
-    assert_eq!(hands, own_work, "every verb of choosing and doing her own work is in her hands");
-
     let window = 65_536;
     let faculty = LlmDeliberationFaculty::new(
         uuid::Uuid::new_v4(),
@@ -258,4 +113,32 @@ async fn remote_admission_bypasses_busy_local_resources_and_home_reacquires() {
     // A completed call leaves the lane reusable.
     let next = admit_target(GenerationAdmissionOwner::SharedLocal, local()).await;
     assert!(matches!(next, Some(GenerationAdmission::SharedLocal { .. })));
+}
+
+// what this catches (Atlas on the M5, 2026-11-04 07:09:18Z): a cycle that did not gather
+// `[room-wall]` rebuilt her view's front without it; 18 s later it was back at message 2 and
+// 13,667 tokens re-prefilled. A block not gathered keeps its place; one whose faculty ran and
+// said nothing leaves; another room's block is never carried.
+#[test]
+fn a_standing_block_not_gathered_this_cycle_keeps_its_place_until_its_faculty_ends() {
+    use crate::cognition::context_streams::blocks::Grounding;
+    let faculty = LlmDeliberationFaculty::new(
+        uuid::Uuid::new_v4(),
+        "Atlas",
+        "You are Atlas.",
+        std::sync::Arc::new(HeuristicInferenceAdapter::new()),
+    );
+    let block = |name: &str| Grounding::atomic(uuid::Uuid::nil(), name, format!("{name} body"));
+    let names = |blocks: &[Grounding]| blocks.iter().map(|b| b.faculty.clone()).collect::<Vec<_>>();
+    let (room, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+
+    let first = faculty.carry_held_blocks(room, vec![block("room-wall"), block("room-kanban")], &[]);
+    let missed = faculty.carry_held_blocks(room, vec![block("room-kanban")], &[]);
+    assert_eq!(names(&missed), names(&first), "the wall this cycle did not gather keeps its place");
+
+    let ended = faculty.carry_held_blocks(room, vec![block("room-kanban")], &["room-wall"]);
+    assert_eq!(names(&ended), ["room-kanban"], "a faculty that ran and said nothing has ended");
+
+    let elsewhere = faculty.carry_held_blocks(other, vec![], &[]);
+    assert!(elsewhere.is_empty(), "another room's blocks are never carried");
 }

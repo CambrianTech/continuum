@@ -64,8 +64,12 @@ use serde::{Deserialize, Serialize};
 
 mod substrate_context;
 pub use substrate_context::*;
-mod flex_allocate;
-pub use flex_allocate::*;
+// The allocator itself (`flex_allocate`, its claim and plan types) lives in
+// `continuum_context::flex`, the one owner of a mind's context budget.
+mod stub_source;
+pub use stub_source::*;
+mod critical_source;
+pub use critical_source::{CriticalSource, Grounded, Required};
 
 //=============================================================================
 // TESTS

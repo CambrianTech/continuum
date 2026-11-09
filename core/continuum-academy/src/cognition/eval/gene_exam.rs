@@ -27,6 +27,13 @@ const UNRELATED_SET: &str = "lc-unrelated";
 const NLL_UNMEASURED: &str = "the engine has no forward-only route that scores a supplied completion (POST /learn \
      trains a shadow adapter and refuses lr 0), and the acceptance sets carry no reference solutions";
 
+/// The gene exam's declared policy: the bounds its earlier runs were measured under (32 steps
+/// per task, 3 test-output retries), kept so its scores stay comparable across runs.
+const GENE_EXAM_POLICY: ExamPolicy = ExamPolicy {
+    budget: crate::cognition::act_observe::TurnBudget::Steps(32),
+    max_retries: 3,
+};
+
 pub struct MindExamHost;
 
 #[async_trait]
@@ -103,7 +110,7 @@ impl ExamHost for MindExamHost {
             cycle.page_in(genome);
             let (cycle, isolation, root) = (&cycle, &isolation, root_str.as_str());
             async move {
-                let out = run_pass(cycle, isolation, &tasks, room, DEFAULT_MAX_ACTS as usize, MAX_FAIL_RETRIES, Some(root), None).await;
+                let out = run_pass(cycle, isolation, &tasks, room, GENE_EXAM_POLICY.budget, GENE_EXAM_POLICY.max_retries, Some(root), None).await;
                 match out.infra_reason {
                     Some(why) => Err(why),
                     None => Ok(ArmTally { settled: tasks.len() as u32, passed: out.pass }),

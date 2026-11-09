@@ -280,6 +280,30 @@ pub enum BatchOperationType {
     Read,
     Update,
     Delete,
+    /// Create the row unless a row with its id already exists; an existing row is left untouched.
+    /// An idempotent import: the same line written twice is one row.
+    Ensure,
+    /// Create the row with the next value of a commit-ordered sequence, unless a row already
+    /// holds the same unique value (then nothing is written and that row's sequence is returned).
+    Append(SequenceSpec),
+}
+
+/// How an [`BatchOperationType::Append`] numbers its row: `sequence` is assigned
+/// `max(sequence) + 1` inside the batch's write transaction, so sequence order IS commit order
+/// (a row can never be acknowledged past an earlier allocation that commits later); `unique`
+/// names the field whose value identifies the row, so a duplicate reuses the first row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/SequenceSpec.ts")]
+pub struct SequenceSpec {
+    pub sequence: String,
+    pub unique: String,
+}
+
+/// What an append did: `fresh` when this batch created the row, otherwise the existing row's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sequenced {
+    pub seq: u64,
+    pub fresh: bool,
 }
 
 /// Batch storage operation

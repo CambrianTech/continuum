@@ -30,6 +30,14 @@ mod staging;
 /// A real `DataModule` over a real SQLite adapter, reached through the SAME
 /// dispatch and authorization path production uses — a local persona must
 /// not pass here merely because the fixture omitted the grid trust policy.
+/// An id as a resident types it back, from its full form: the work verbs' params take
+/// `Shown` (the form the board shows her), so a fixture names a full id the same way.
+pub(super) fn shown<T: airc_core::shown_id::ShownKind>(
+    id: Uuid,
+) -> Result<airc_core::shown_id::Shown<T>, airc_core::shown_id::ShownIdError> {
+    airc_core::shown_id::Shown::try_from(id.to_string().as_str())
+}
+
 pub(super) fn data_runtime() -> Arc<CommandExecutor> {
     let registry = Arc::new(crate::runtime::ModuleRegistry::new());
     registry.register(Arc::new(crate::modules::data_wiring::data_module()));

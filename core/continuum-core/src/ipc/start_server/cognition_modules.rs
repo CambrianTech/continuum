@@ -2,9 +2,8 @@
 
 use super::*;
 
-/// The two handles the IPC server state shares with these modules.
+/// The handle the IPC server state shares with these modules.
 pub(super) struct CognitionHandles {
-    pub(super) rag_engine: Arc<RagEngine>,
     pub(super) channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
 }
 
@@ -16,9 +15,8 @@ pub(super) fn register_cognition_and_memory_modules(
     serving_daemon: &Arc<crate::modules::serving_daemon::ServingDaemonModule>,
 ) -> CognitionHandles {
     // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
-    let rag_engine = Arc::new(RagEngine::new());
     let cognition_state =
-        Arc::new(CognitionState::new(rag_engine.clone()).with_gpu_manager(gpu_manager.clone()));
+        Arc::new(CognitionState::new().with_gpu_manager(gpu_manager.clone()));
     let personas = cognition_state.personas.clone();
     runtime.register(Arc::new(CognitionModule::new(cognition_state)));
 
@@ -51,7 +49,6 @@ pub(super) fn register_cognition_and_memory_modules(
     let rag_state = Arc::new(RagState::new(memory_manager.clone()));
     runtime.register(Arc::new(RagModule::new(rag_state)));
     CognitionHandles {
-        rag_engine,
         channel_registries,
     }
 }

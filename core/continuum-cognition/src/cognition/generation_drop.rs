@@ -165,9 +165,14 @@ impl Drop for InFlight {
             self.turn_bound,
         );
         let lost_names = partial.tool_calls.join(",");
+        // The act this generation belonged to, from the step's own scope; `None` when it ran
+        // outside a settle step (never guessed).
+        let act = crate::cognition::llm_deliberation_faculty::admission_clock::current_act();
         continuum_base::probe!(
             class = "persona.generation.dropped",
             persona = %self.persona,
+            turn = ?act.map(|a| a.turn),
+            step = ?act.map(|a| a.step),
             at = "generation",
             elapsed_secs = self.started.elapsed().as_secs(),
             // The turn's OWN bound and where it came from. `floor` here means the turn

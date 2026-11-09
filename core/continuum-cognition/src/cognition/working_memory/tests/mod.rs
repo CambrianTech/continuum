@@ -1,5 +1,6 @@
 #![cfg(test)]
 use super::*;
+use super::residency::Resident;
 
 mod action_log;
 mod actions;

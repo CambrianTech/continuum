@@ -20,7 +20,6 @@ use crate::persona::rag_capture::{
     NoopRagCaptureSink, RagCaptureEvent, RagCaptureSink, RecordingRagSource,
 };
 use crate::cognition::recall_metadata::RecallMetadataRegistry;
-use crate::rag::RagEngine;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -49,7 +48,7 @@ pub struct PersonaCognition {
     /// state (salience, access_count, last_accessed_ms,
     /// protected_until_ms). Shared with AdmissionState (admit-time
     /// writes flow through there) and with the future recall scorer
-    /// + decay tick (read-mostly hot paths). Per-persona because each
+    /// and decay tick (read-mostly hot paths). Per-persona because each
     /// persona's recall state is independent.
     pub recall_metadata: Arc<RecallMetadataRegistry>,
     /// The persona's live-airc RAG source, per
@@ -92,15 +91,18 @@ pub struct PersonaCognition {
 pub struct ComposedTurn {
     /// One delivery per bound source, airc first, then the roster.
     pub deliveries: Vec<RagDelivery>,
+    /// The turn this compose belongs to: the id every capture of it carries, and the id its
+    /// burst takes (`Burst::for_turn`).
+    pub turn_id: Uuid,
 }
 
 impl PersonaCognition {
     /// Create a new PersonaCognition with default sub-states.
     /// Engine and inbox require persona_id; everything else uses defaults.
     /// Capture sink defaults to `NoopRagCaptureSink` (zero overhead).
-    pub fn new(persona_id: Uuid, persona_name: String, rag_engine: Arc<RagEngine>) -> Self {
+    pub fn new(persona_id: Uuid, persona_name: String) -> Self {
         let sink: Arc<dyn RagCaptureSink> = Arc::new(NoopRagCaptureSink);
-        Self::with_capture_sink(persona_id, persona_name, rag_engine, sink)
+        Self::with_capture_sink(persona_id, persona_name, sink)
     }
 
     /// Create with a custom capture sink — production callers swap
@@ -110,14 +112,13 @@ impl PersonaCognition {
     pub fn with_capture_sink(
         persona_id: Uuid,
         persona_name: String,
-        rag_engine: Arc<RagEngine>,
         capture_sink: Arc<dyn RagCaptureSink>,
     ) -> Self {
         let (_, shutdown_rx) = tokio::sync::watch::channel(false);
         let recall_metadata = Arc::new(RecallMetadataRegistry::new());
         let admission = Arc::new(AdmissionState::new(recall_metadata.clone()));
         Self {
-            engine: PersonaCognitionEngine::new(persona_id, persona_name, rag_engine, shutdown_rx),
+            engine: PersonaCognitionEngine::new(persona_id, persona_name, shutdown_rx),
             inbox: PersonaInbox::new(persona_id),
             rate_limiter: RateLimiterState::default(),
             sleep_state: SleepState::default(),
@@ -172,7 +173,7 @@ impl PersonaCognition {
     /// Called by the supervisor at boot with the same `Airc` handle that
     /// backs `airc_source` (it satisfies `AircRosterReader`). Decorated
     /// with the brain's `capture_sink` so roster deliveries are recorded
-    /// + replayable on the same wire as engrams and airc transcript
+    /// and replayable on the same wire as engrams and airc transcript
     /// (per [[persona-record-replay-is-a-product-requirement]]). Boot-
     /// time wire, not a per-turn allocation.
     pub fn set_roster_source(&mut self, raw_source: Arc<dyn RagSource>) {
@@ -213,13 +214,17 @@ impl PersonaCognition {
         room: Option<uuid::Uuid>,
     ) -> ComposedTurn {
         let persona_id = self.engine.persona_id();
-        let rag_ctx = match room {
+        // The turn's id rides the context every source receives, so each capture names its turn:
+        // composes are concurrent (the brain is shared, never locked), so position cannot pair a
+        // delivery with its turn (Cormac on #5698).
+        let turn_id = Uuid::new_v4();
+        let mut rag_ctx = match room {
             Some(r) => RagContext::for_persona_in_room(persona_id, now_ms, r),
             None => RagContext::for_persona(persona_id, now_ms),
         };
+        rag_ctx.substrate.turn_id = Some(turn_id);
 
         let sources = self.airc_source.iter().chain(self.roster_source.iter());
-        let turn_id = Uuid::new_v4();
         // A turn in her mind room: no retrieval capture at all (sink 5).
         let captured = !crate::persona::rag_capture::turn_is_private(&rag_ctx);
         if captured {
@@ -241,7 +246,7 @@ impl PersonaCognition {
                 turn_id: Some(turn_id),
             });
         }
-        ComposedTurn { deliveries }
+        ComposedTurn { deliveries, turn_id }
     }
 }
 
@@ -289,8 +294,7 @@ mod tests {
     #[test]
     fn test_persona_cognition_defaults() {
         let id = Uuid::new_v4();
-        let rag = Arc::new(RagEngine::new());
-        let pc = PersonaCognition::new(id, "TestBot".into(), rag);
+        let pc = PersonaCognition::new(id, "TestBot".into());
 
         assert_eq!(pc.engine.persona_id(), id);
         assert!(pc.inbox.is_empty());
@@ -331,7 +335,7 @@ mod tests {
     // capture decorator, airc first; nothing unbound appears.
     #[tokio::test]
     async fn compose_for_turn_delivers_every_item_of_her_bound_sources() {
-        let mut pc = PersonaCognition::new(Uuid::new_v4(), "TestBot".into(), Arc::new(RagEngine::new()));
+        let mut pc = PersonaCognition::new(Uuid::new_v4(), "TestBot".into());
         assert!(pc.compose_for_turn(1_000_000, None).await.deliveries.is_empty(), "nothing bound, nothing delivered");
         pc.set_airc_source(Arc::new(CannedSource { id: "airc", items: 300 }));
         let (cached, _) = crate::cognition::cached_source::CachedRagSource::new(Arc::new(CannedSource { id: "roster", items: 40 }));
@@ -350,7 +354,7 @@ mod tests {
         let sink = Arc::new(InMemoryRagCaptureSink::new());
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
         let mut pc =
-            PersonaCognition::with_capture_sink(id, "Kimi".into(), Arc::new(RagEngine::new()), sink_dyn);
+            PersonaCognition::with_capture_sink(id, "Kimi".into(), sink_dyn);
         pc.set_airc_source(Arc::new(CannedSource { id: "airc", items: 2 }));
         let mind = crate::cognition::mind_room::mind_room_id(id);
         let _ = pc.compose_for_turn(1_000_000, Some(mind)).await;
@@ -365,7 +369,7 @@ mod tests {
     async fn compose_for_turn_emits_capture_events_for_replay() {
         let sink = Arc::new(InMemoryRagCaptureSink::new());
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
-        let mut pc = PersonaCognition::with_capture_sink(Uuid::new_v4(), "TestBot".into(), Arc::new(RagEngine::new()), sink_dyn);
+        let mut pc = PersonaCognition::with_capture_sink(Uuid::new_v4(), "TestBot".into(), sink_dyn);
         pc.set_airc_source(Arc::new(CannedSource { id: "airc", items: 2 }));
         let _ = pc.compose_for_turn(1_000_000, None).await;
         let kinds: Vec<&str> = sink
@@ -378,5 +382,57 @@ mod tests {
             })
             .collect();
         assert_eq!(kinds, ["TurnStart", "SourceDelivered", "TurnEnd"]);
+        // what this catches: deliveries paired to turns by position, which interleaving composes
+        // break: every SourceDelivered names its turn, the same id TurnStart minted (#5698).
+        let turns: Vec<Option<Uuid>> = sink
+            .events()
+            .iter()
+            .map(|e| match e {
+                RagCaptureEvent::TurnStart { turn_id, .. }
+                | RagCaptureEvent::SourceDelivered { turn_id, .. }
+                | RagCaptureEvent::TurnEnd { turn_id, .. } => *turn_id,
+            })
+            .collect();
+        assert!(turns[0].is_some() && turns.iter().all(|t| *t == turns[0]), "one turn id throughout: {turns:?}");
+    }
+
+    // what this catches: deliveries paired to turns by position once the brain is shared (Cormac
+    // on #5698): two composes on one persona run at once, and each SourceDelivered names its own
+    // turn, one of the two the TurnStarts minted, never None.
+    #[tokio::test]
+    async fn concurrent_composes_tag_every_delivery_with_its_own_turn() {
+        let sink = Arc::new(InMemoryRagCaptureSink::new());
+        let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
+        let mut pc = PersonaCognition::with_capture_sink(Uuid::new_v4(), "TestBot".into(), sink_dyn);
+        pc.set_airc_source(Arc::new(CannedSource { id: "airc", items: 2 }));
+        let pc = Arc::new(pc);
+        let (a, b) = (Arc::clone(&pc), Arc::clone(&pc));
+        let _ = tokio::join!(
+            tokio::spawn(async move { a.compose_for_turn(1_000_000, None).await }),
+            tokio::spawn(async move { b.compose_for_turn(1_000_001, None).await }),
+        );
+        let events = sink.events();
+        let started: Vec<Uuid> = events
+            .iter()
+            .filter_map(|e| match e {
+                RagCaptureEvent::TurnStart { turn_id, .. } => *turn_id,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started.len(), 2);
+        assert_ne!(started[0], started[1], "each compose is its own turn");
+        let delivered: Vec<Option<Uuid>> = events
+            .iter()
+            .filter_map(|e| match e {
+                RagCaptureEvent::SourceDelivered { turn_id, .. } => Some(*turn_id),
+                _ => None,
+            })
+            .collect();
+        // One source, so each turn has exactly one delivery: its own, named by its own id.
+        for turn in &started {
+            let own = delivered.iter().filter(|d| **d == Some(*turn)).count();
+            assert_eq!(own, 1, "turn {turn} has exactly its own delivery: {delivered:?}");
+        }
+        assert_eq!(delivered.len(), started.len(), "no delivery outside a turn: {delivered:?}");
     }
 }

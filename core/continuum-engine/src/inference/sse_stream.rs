@@ -278,6 +278,9 @@ pub(crate) struct StreamOutcome {
     pub(crate) stream_timings: Option<OpenAITimings>,
     pub(crate) resp_model: Option<String>,
     pub(crate) probe_persona: String,
+    /// The engine's terminal receipt: present only when its final frame carried a finish reason;
+    /// a stream that reached EOF without one did not end on the engine's word.
+    pub(crate) terminal: Option<crate::capacity::window_grant::TerminalReceipt>,
 }
 
 /// Consume `response`'s SSE stream to completion (or a watchdog failure).
@@ -312,7 +315,8 @@ pub(crate) async fn consume_sse_stream(
     response: reqwest::Response,
     sink: &tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
 ) -> Result<StreamOutcome, String> {
-    // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives.
+    // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives, and its
+    // consumer gets the turn before the next is parsed (`stream_sinks::deliver`).
     // Liveness is the per-token idle watchdog ([`STREAM_IDLE_TIMEOUT_SECS`]) —
     // silence means the backend died, NOT that generation is simply long.
     use futures::StreamExt;
@@ -783,11 +787,15 @@ pub(crate) async fn consume_sse_stream(
                         if local_lane {
                             crate::inference::llama_server::note_real_prefill_progress();
                         }
-                        let _ = sink.send(GenerationChunk::Prefill {
-                            processed: p.processed,
-                            total: p.total,
-                            cached: p.cache,
-                        });
+                        crate::ai::stream_sinks::deliver(
+                            sink,
+                            GenerationChunk::Prefill {
+                                processed: p.processed,
+                                total: p.total,
+                                cached: p.cache,
+                            },
+                        )
+                        .await;
                     }
                 }
                 // Any REAL output (token, reasoning, tool delta, finish) means
@@ -805,14 +813,14 @@ pub(crate) async fn consume_sse_stream(
                         if let Some(c) = delta.content {
                             if !c.is_empty() {
                                 acc_content.push_str(&c);
-                                let _ = sink.send(GenerationChunk::Token(c));
+                                crate::ai::stream_sinks::deliver(sink, GenerationChunk::Token(c)).await;
                                 last_progress = Instant::now();
                             }
                         }
                         if let Some(r) = delta.reasoning_content {
                             if !r.is_empty() {
                                 acc_reasoning.push_str(&r);
-                                let _ = sink.send(GenerationChunk::Reasoning(r));
+                                crate::ai::stream_sinks::deliver(sink, GenerationChunk::Reasoning(r)).await;
                                 last_progress = Instant::now();
                             }
                         }
@@ -832,7 +840,9 @@ pub(crate) async fn consume_sse_stream(
     }
 
 
+    let terminal = finish_reason_str.clone().map(|finish| crate::capacity::window_grant::TerminalReceipt { finish });
     Ok(StreamOutcome {
+        terminal,
         acc_content,
         acc_reasoning,
         acc_tools,

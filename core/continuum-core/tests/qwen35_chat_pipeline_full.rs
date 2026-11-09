@@ -17,6 +17,7 @@
 // unit tests are the windows-supported surface today.
 #![cfg(unix)]
 
+use continuum_core::inference::backends::llamacpp::GenerationAllocation;
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use continuum_core::inference::backends::{SamplingConfig, JSON_GRAMMAR};
 use llama::{render_chat, ChatMsg, FlashAttn};
@@ -53,7 +54,6 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
     let backend = LlamaCppBackend::load(LlamaCppConfig {
         model_path: PathBuf::from(model_path()),
         n_gpu_layers,
-        context_length: Some(context_length),
         n_seq_max: 1,
         n_ubatch: 128,
         flash_attn: FlashAttn::Disabled,
@@ -93,7 +93,7 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
     // model produced correct '12 × 7 = 84' inside <think> but never
     // reached the visible-text phase before max_tokens.
     let (text, n_tokens) = backend
-        .generate(&prompt, 2500, sampling, &stop, &[])
+        .generate(GenerationAllocation::new(std::num::NonZeroU32::new(context_length).expect("explicit test allocation")), &prompt, 2500, sampling, &stop, &[])
         .expect("generate");
 
     eprintln!("[full] tokens={n_tokens} text={text:?}");
@@ -133,7 +133,6 @@ fn qwen35_scheduler_json_grammar_returns_object() {
     let backend = LlamaCppBackend::load(LlamaCppConfig {
         model_path: PathBuf::from(model_path()),
         n_gpu_layers: -1,
-        context_length: Some(32_768),
         n_seq_max: 1,
         n_ubatch: 128,
         flash_attn: FlashAttn::Disabled,
@@ -161,7 +160,7 @@ fn qwen35_scheduler_json_grammar_returns_object() {
     };
 
     let (text, n_tokens) = backend
-        .generate(
+        .generate(GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
             &prompt,
             128,
             sampling,

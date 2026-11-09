@@ -167,21 +167,44 @@ impl EngineContext {
     }
 }
 
-fn allocated_capacity(props: &serde_json::Value, slots: u32, n_ctx_per_slot: u32) -> Option<u64> {
-    match props.get("context_geometry") {
-        Some(geometry) => {
-            let tokens = geometry.get("allocated_tokens")?.as_u64()?;
-            let capacity = geometry.get("sequence_capacity")?.as_u64()?;
-            let window = geometry.get("max_tokens_per_sequence")?.as_u64()?;
-            if tokens == 0 || capacity != u64::from(slots) || window != u64::from(n_ctx_per_slot) || window > tokens {
-                return None;
-            }
-            Some(tokens)
-        }
-        // Older managed engines used divided caches. Only absence permits their
-        // legacy geometry; a present malformed receipt must never take this path.
-        None => Some(u64::from(slots) * u64::from(n_ctx_per_slot)),
+/// The KV geometry OUR fork reports on `/props` (`context_geometry`): the contract every node's
+/// engine keeps, so nothing here infers a pool from upstream fields. `allocated_tokens` is
+/// `llama_n_ctx`: the ONE shared pool under `--kv-unified`, the sum of the slots without it.
+/// `n_ctx` x slots is never the pool: under a unified cache the server caps each slot's `n_ctx`
+/// at the trained window (a 65,536 pool read 32,768 on the IntelMac, 2026-11-03).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextGeometry {
+    pub allocated_tokens: u64,
+    pub max_tokens_per_sequence: u64,
+    pub sequence_capacity: u64,
+}
+
+impl ContextGeometry {
+    /// `None` when the engine reports no geometry (not our fork) or one that does not hold
+    /// together: zero tokens, no sequence, or one sequence allowed more than the pool.
+    pub fn from_props(props: &serde_json::Value) -> Option<Self> {
+        let geometry = props.get("context_geometry")?;
+        let read = |field: &str| geometry.get(field)?.as_u64();
+        let reported = Self {
+            allocated_tokens: read("allocated_tokens")?,
+            max_tokens_per_sequence: read("max_tokens_per_sequence")?,
+            sequence_capacity: read("sequence_capacity")?,
+        };
+        (reported.allocated_tokens > 0
+            && reported.sequence_capacity > 0
+            && reported.max_tokens_per_sequence <= reported.allocated_tokens)
+            .then_some(reported)
     }
+}
+
+/// The pool, when the fork's geometry agrees with the slot geometry `/props` reports beside it:
+/// the same sequences, and a slot window within one sequence's limit. Within, not equal: the
+/// server caps a slot's `n_ctx` at the trained window, below the per-sequence limit whenever the
+/// pool is larger (IntelMac 2026-11-03: n_ctx 32,768 beside 65,536; Cormac on #5722).
+fn allocated_capacity(props: &serde_json::Value, slots: u32, n_ctx_per_slot: u32) -> Option<u64> {
+    let geometry = ContextGeometry::from_props(props)?;
+    (geometry.sequence_capacity == u64::from(slots) && u64::from(n_ctx_per_slot) <= geometry.max_tokens_per_sequence)
+        .then_some(geometry.allocated_tokens)
 }
 
 /// The slot geometry an engine reports on `/props`: `total_slots` and each slot's `n_ctx`, both
@@ -232,6 +255,9 @@ mod tests {
         let mut with_slots = props.clone();
         with_slots["total_slots"] = 2.into();
         with_slots["default_generation_settings"] = serde_json::json!({"n_ctx": 2048});
+        with_slots["context_geometry"] = serde_json::json!({
+            "allocated_tokens": 4096, "max_tokens_per_sequence": 2048, "sequence_capacity": 2
+        });
         let ctx = EngineContext::from_props(&with_slots).expect("reads");
         assert_eq!((ctx.context_bytes, ctx.slots, ctx.n_ctx_per_slot), (117440512, 2, 2048));
         assert_eq!(ctx.beyond_weights, 117440512 + 66594944);
@@ -243,10 +269,20 @@ mod tests {
             "allocated_tokens": 2048, "max_tokens_per_sequence": 2048, "sequence_capacity": 2
         });
         assert_eq!(EngineContext::from_props(&unified).expect("unified receipt").allocated_tokens, 2048);
+        // a pool larger than the trained window: the slot's n_ctx is capped below the
+        // per-sequence limit, and the reading still stands (the IntelMac's 65,536 / 32,768)
+        let mut capped = with_slots.clone();
+        capped["default_generation_settings"] = serde_json::json!({"n_ctx": 32_768});
+        capped["context_geometry"] = serde_json::json!({
+            "allocated_tokens": 65_536, "max_tokens_per_sequence": 65_536, "sequence_capacity": 2
+        });
+        assert_eq!(EngineContext::from_props(&capped).expect("capped slot window").allocated_tokens, 65_536);
         for invalid in [
             serde_json::Value::Null,
             serde_json::json!({"allocated_tokens": 0, "max_tokens_per_sequence": 2048, "sequence_capacity": 2}),
             serde_json::json!({"allocated_tokens": 2048, "max_tokens_per_sequence": 2048, "sequence_capacity": 3}),
+            // a slot window past one sequence's limit is not this engine's geometry
+            serde_json::json!({"allocated_tokens": 2048, "max_tokens_per_sequence": 1024, "sequence_capacity": 2}),
         ] {
             unified["context_geometry"] = invalid;
             assert_eq!(EngineContextReading::of(&unified), EngineContextReading::Invalid);
@@ -265,10 +301,11 @@ mod tests {
         let mut malformed = with_slots.clone();
         malformed["memory_breakdown"] = "not a list".into();
         assert_eq!(EngineContextReading::of(&malformed), EngineContextReading::Invalid);
-        // only an engine without the field is the device delta's to measure
+        // an engine without our fork's geometry is no reading at all, never a legacy engine to
+        // guess a pool for (2026-11-03: every node runs our fork)
         assert_eq!(
             EngineContextReading::of(&serde_json::json!({"total_slots": 1, "default_generation_settings": {"n_ctx": 4096}})),
-            EngineContextReading::Absent
+            EngineContextReading::Invalid
         );
         // and what is not a props document at all is no reading, never a legacy engine
         assert_eq!(EngineContextReading::of(&serde_json::Value::Null), EngineContextReading::Invalid, "null");

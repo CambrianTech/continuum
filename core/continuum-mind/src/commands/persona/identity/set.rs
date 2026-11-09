@@ -144,11 +144,11 @@ crate::action_command! {
     run(this, ctx, p) => {
         // Resolve WHO is being edited. Default to the authenticated caller (self-edit).
         // A short/mistyped id resolves against the personas this process knows
-        // (their registered cards) — the ONE id_resolve primitive (#164).
+        // (their registered cards) through airc's Shown reading (#164).
         let caller = ctx.caller.as_ref();
         let target_id = match p.persona_id.as_ref().map(|r| r.as_str()) {
-            Some(raw) => continuum_base::id_resolve::resolve(raw, &crate::persona::card::ids(), "persona")
-                .map_err(CommandError::Invalid)?,
+            Some(raw) => crate::persona::persona_scope::persona_in(raw, &crate::persona::persona_scope::PersonaCards)
+                .map_err(|e| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::id("persona_id", e)))?,
             None => caller
                 .map(|c| c.peer_id.as_uuid())
                 .ok_or_else(|| CommandError::Invalid(

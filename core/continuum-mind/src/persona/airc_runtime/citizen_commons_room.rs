@@ -161,15 +161,6 @@ pub struct PersonaAircRuntime {
     /// out of presence. Without it, co-resident personas never see each other in
     /// `[Present in this room]` — the roster-grounding-goes-dark bug.
     pub(super) _heartbeat: Option<AbortOnDrop>,
-    /// Periodic re-publisher of this persona's airc identity CARD (name + role +
-    /// bio + avatar), on the heartbeat cadence — BigMama's half of #262, adopted
-    /// (cherry-pick 1225f2eee): the card is a one-shot emit at attach; a peer that
-    /// joins the room LATER (a desktop reconnecting, a fresh grid peer) missed it
-    /// and would render `peer-<uuid>` + default glyph forever. This task re-emits
-    /// the card every cadence so any late arrival is grounded by name within a
-    /// heartbeat window. `None` on `from_attached` (tests/demo). Held for the
-    /// persona's lifetime; aborted on drop, like the heartbeat pump.
-    pub(super) identity_republish: Option<JoinHandle<()>>,
     /// Tasks whose life ends with this runtime (see `AircCitizen::own_task`).
     pub(super) owned_tasks: std::sync::Mutex<Vec<JoinHandle<()>>>,
     /// Where this citizen's identity came from — resumed from disk

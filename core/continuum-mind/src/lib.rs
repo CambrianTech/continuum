@@ -9,7 +9,7 @@ pub use continuum_live::*;
 pub use continuum_genome::genome;
 pub use continuum_memory::memory;
 pub use continuum_experience::{experience, recipe};
-pub use continuum_perception::{perception, rag};
+pub use continuum_perception::perception;
 
 pub use continuum_academy::cognition;
 pub mod activity;
@@ -17,6 +17,7 @@ pub mod chat;
 pub mod commands;
 pub mod context;
 pub mod modules;
+mod native_outcomes;
 pub mod persona;
 pub mod room;
 pub mod vdd;

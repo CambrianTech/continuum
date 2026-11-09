@@ -293,10 +293,10 @@ fn settle_step_to_json(
         SettleStep::Acted { calls, intent } => serde_json::json!({
             "outcome": "acted", "intent": intent, "calls": calls.len(),
         }),
-        SettleStep::WouldAct { calls, intent } => serde_json::json!({
+        SettleStep::WouldAct { calls, intent, .. } => serde_json::json!({
             "outcome": "wouldAct", "intent": intent, "calls": calls.len(),
         }),
-        SettleStep::ActUnfulfilled { calls, intent } => serde_json::json!({
+        SettleStep::ActUnfulfilled { calls, intent, .. } => serde_json::json!({
             "outcome": "actUnfulfilled", "intent": intent, "calls": calls.len(),
         }),
         SettleStep::CapacityRefused {
@@ -338,7 +338,6 @@ mod tests {
     use crate::cognition::workspace::TurnMetrics;
     use crate::persona::PersonaCognition;
     use crate::cognition::conversation::types::{InboxMessage, Modality, SenderType};
-    use crate::rag::RagEngine;
     use crate::sdk_codegen::{AccessLevel, ActionCommand, Ctx};
 
     // Build a TurnExecute command over a fresh CognitionState carrying one live persona
@@ -347,11 +346,10 @@ mod tests {
     // (that needs a real adapter + model). So a turn WITH messages here exercises the
     // not-hosted fail-loud path; the real settle_step outcome is validated live via `uu`.
     fn command_with_persona(persona_id: Uuid) -> (TurnExecute, Arc<CognitionState>) {
-        let rag_engine = Arc::new(RagEngine::new());
-        let state = Arc::new(CognitionState::new(rag_engine.clone()));
+        let state = Arc::new(CognitionState::new());
         state.personas.insert(
             persona_id,
-            PersonaCognition::new(persona_id, "Test Persona".to_string(), rag_engine),
+            PersonaCognition::new(persona_id, "Test Persona".to_string()),
         );
         (
             TurnExecute {
@@ -410,8 +408,7 @@ mod tests {
     // BEFORE touching the brain — idle ticks are routine, never a caller error.
     #[tokio::test]
     async fn absent_persona_is_noop_not_error() {
-        let rag_engine = Arc::new(RagEngine::new());
-        let state = Arc::new(CognitionState::new(rag_engine));
+        let state = Arc::new(CognitionState::new());
         let cmd = TurnExecute { state };
 
         let out = cmd

@@ -5,6 +5,7 @@
 export type { ChangeNode } from './ChangeNode';
 export type { ClassifiedLine } from './ClassifiedLine';
 export type { DiffHunk } from './DiffHunk';
+export type { DiffScope } from './DiffScope';
 export type { DirEntry } from './DirEntry';
 export type { EditMode } from './EditMode';
 export type { ExistsResult } from './ExistsResult';

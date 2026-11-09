@@ -44,33 +44,33 @@ pub async fn git_status(workspace_root: &Path) -> GitStatusInfo {
     let mut untracked = Vec::new();
 
     for line in status_output.lines() {
-        if line.len() < 3 {
+        // Porcelain v1: the index status, the work-tree status, a space, then the path.
+        let mut chars = line.chars();
+        let (Some(index), Some(tree), Some(' ')) = (chars.next(), chars.next(), chars.next()) else {
             continue;
-        }
+        };
+        let file_path = chars.as_str().trim().to_string();
+        let either = |code: char| index == code || tree == code;
 
-        let status_code = &line[..2];
-        let file_path = line[3..].trim().to_string();
-
-        // Parse porcelain v1 status codes
-        // First char = index status, second char = work tree status
-        match status_code {
-            "??" => untracked.push(file_path),
-            s if s.starts_with('A') || s.ends_with('A') => added.push(file_path),
-            s if s.starts_with('D') || s.ends_with('D') => deleted.push(file_path),
-            s if s.starts_with('M')
-                || s.ends_with('M')
-                || s.starts_with('R')
-                || s.ends_with('R')
-                || s.starts_with('C')
-                || s.ends_with('C') =>
-            {
-                modified.push(file_path)
-            }
-            _ => {
-                // Catch-all: treat as modified
-                if !file_path.is_empty() {
-                    modified.push(file_path);
-                }
+        match (index, tree) {
+            ('?', '?') => untracked.push(file_path),
+            _ if either('A') => added.push(file_path),
+            _ if either('D') => deleted.push(file_path),
+            // M modified, R renamed, C copied, T type changed, U unmerged: the path's content
+            // differs from HEAD. `!` is an ignored path (not reported). Porcelain v1 has no
+            // other codes, so the match names every one.
+            _ if either('M') || either('R') || either('C') || either('T') || either('U') => modified.push(file_path),
+            ('!', '!') => {}
+            (index, tree) => {
+                return GitStatusInfo {
+                    success: false,
+                    branch,
+                    modified: Vec::new(),
+                    added: Vec::new(),
+                    deleted: Vec::new(),
+                    untracked: Vec::new(),
+                    error: Some(format!("git status reported an unknown porcelain status {index:?}{tree:?} for {file_path}")),
+                };
             }
         }
     }
@@ -86,16 +86,69 @@ pub async fn git_status(workspace_root: &Path) -> GitStatusInfo {
     }
 }
 
-/// Get git diff output for the workspace.
-///
-/// If `staged` is true, shows staged changes (--cached).
-/// Otherwise shows unstaged working tree changes.
-pub async fn git_diff(workspace_root: &Path, staged: bool) -> Result<String, String> {
-    let mut args = vec!["diff"];
-    if staged {
-        args.push("--cached");
+// A resident's edits are checkpointed into wip(...) commits every act, so a working-tree-only
+// diff is always empty and read as "my edits were phantom" (Aiko re-read the same files for 80
+// minutes, 2026-11-02). These doc lines are the schema text every mind reads: keep them short.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/code/DiffScope.ts")]
+pub enum DiffScope {
+    // All her work since her branch started, checkpoints included.
+    #[default]
+    YourWork,
+    Unstaged,
+    Staged,
+}
+
+/// A diff and what it was taken against, so a reader knows what an empty one means.
+pub struct Diff {
+    pub text: String,
+    pub against: String,
+}
+
+/// Git diff output for the workspace, in `scope`. `YourWork` needs the checkout's recorded work
+/// base and refuses without one; it never falls back to a comparison that would read empty.
+pub async fn git_diff(workspace_root: &Path, scope: DiffScope) -> Result<Diff, String> {
+    match scope {
+        DiffScope::Unstaged => Ok(Diff { text: run_git(workspace_root, &["diff"]).await?, against: "the index".into() }),
+        DiffScope::Staged => Ok(Diff { text: run_git(workspace_root, &["diff", "--cached"]).await?, against: "HEAD (staged)".into() }),
+        DiffScope::YourWork => {
+            let base = work_base(workspace_root).await?;
+            Ok(Diff {
+                text: run_git(workspace_root, &["diff", &base.sha]).await?,
+                against: format!("{} (where this branch left {})", base.short, base.from),
+            })
+        }
     }
-    run_git(workspace_root, &args).await
+}
+
+/// Where this checkout's work starts: the merge-base of HEAD with the integration ref the
+/// checkout's owner recorded at allocation (airc's `AllocationEvidence`), so a branch rebased
+/// onto a newer integration tip still diffs from where it actually left it.
+pub struct WorkBase {
+    pub sha: String,
+    /// Git's own unambiguous short form of `sha`.
+    pub short: String,
+    /// The recorded integration ref the base was taken on.
+    pub from: String,
+}
+
+/// The recorded work base of the checkout at `workspace_root`. A checkout with no allocation
+/// record (one airc did not allocate) has no known base, and says so; git failures propagate.
+pub async fn work_base(workspace_root: &Path) -> Result<WorkBase, String> {
+    let root = workspace_root.to_path_buf();
+    let evidence = tokio::task::spawn_blocking(move || airc_lib::work_worktree::allocation_evidence(&root))
+        .await
+        .map_err(|e| format!("reading the checkout's allocation record: {e}"))??
+        .ok_or_else(|| {
+            "this checkout has no allocation record, so where its work starts is unknown; \
+             ask for scope `unstaged` or `staged`"
+                .to_owned()
+        })?;
+    let from = evidence.start_ref;
+    let sha = run_git(workspace_root, &["merge-base", "HEAD", &from]).await?.trim().to_owned();
+    let short = run_git(workspace_root, &["rev-parse", "--short", &sha]).await?.trim().to_owned();
+    Ok(WorkBase { sha, short, from })
 }
 
 /// The `owner/name` board key this checkout belongs to, read from `origin`.

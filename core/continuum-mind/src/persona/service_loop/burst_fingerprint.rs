@@ -52,7 +52,10 @@ pub(super) fn burst_fingerprint(
     }
     // The interior drive: her own claimed work. Cards, not chat — so this adds
     // self-origination without reopening the self-talk flood (see doc above). The
-    // source_id literal mirrors the "airc" literal above; `ActiveWorkSource` owns it.
+    // DEAD in production: `compose_for_turn` binds only the airc and roster sources, so no
+    // delivery here is `active-work` (and that source is gone: her held work is typed on the
+    // workspace, `persona::held_work`). Follow-up (Fable, STATE-DRIVEN-SURFACE.md): fold her held
+    // cards' states into this fingerprint from `persona::held_work` and delete this branch.
     for item in deliveries
         .iter()
         .filter(|d| d.source_id == "active-work")
@@ -308,7 +311,7 @@ pub(super) async fn run_self_cycle(
         return;
     }
     let composed = {
-        let cognition = ctx.cognition.lock().await;
+        let cognition = &ctx.cognition;
         // Passing None here is what made idle ticks blind to the board (#331 / #127).
         cognition
             .compose_for_turn(
@@ -377,7 +380,8 @@ pub(super) async fn run_self_cycle(
         // lost. Handles are what would make it nameable
         // (docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md).
         crate::cognition::workspace::Cause::Ambient,
-    );
+    )
+    .for_turn(composed.turn_id);
     // A continuation naming her mind room lands here as `tick_room`: it runs on her MIND
     // cycle, with its own working memory (PRIVACY-OF-THOUGHT.md §4).
     let Some(cycle) = crate::cognition::persona_workspace::global()

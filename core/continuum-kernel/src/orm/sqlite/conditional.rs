@@ -58,6 +58,22 @@ impl SqliteAdapter {
     }
 }
 
+/// Insert `record` unless a row with its id exists (left untouched). Returns whether it inserted.
+pub(super) fn ensure_row(conn: &Connection, record: &DataRecord) -> Result<bool, String> {
+    let table = naming::to_table_name(&record.collection);
+    let now = chrono::Utc::now().to_rfc3339();
+    let (columns, values) = insert_columns(record, &now);
+    let sql = format!(
+        "INSERT INTO {table} ({}) VALUES ({}) ON CONFLICT(id) DO NOTHING",
+        columns.join(", "),
+        vec!["?"; columns.len()].join(", "),
+    );
+    let params: Vec<&dyn rusqlite::ToSql> = values.iter().map(|b| b.as_ref()).collect();
+    conn.execute(&sql, params.as_slice())
+        .map(|rows| rows == 1)
+        .map_err(|e| format!("ensure failed: {e}"))
+}
+
 /// Insert `record`, or overwrite its row only where the stored `field` <= the new one.
 fn upsert_monotonic(conn: &Connection, record: &DataRecord, field: &str) -> StorageResult<bool> {
     let table = naming::to_table_name(&record.collection);

@@ -99,10 +99,7 @@ pub(super) fn start_persona_host(
     // Persona floor — how many citizens to host (read early: it is ALSO the
     // serving plan's lane DEMAND, so it must be set before the first
     // compute_plan; see below for the full doc).
-    let persona_floor = continuum_base::config_env::read("CONTINUUM_PERSONA_FLOOR")
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&n| n >= 1)
-        .unwrap_or(1);
+    let persona_floor = continuum_base::population::persona_floor();
     // Lanes serve DEMAND: the floor is how many minds need a concurrent
     // lane. Without this, the planner maximized lane count and split the KV
     // budget across slots nobody asked for — 2 personas served through 4

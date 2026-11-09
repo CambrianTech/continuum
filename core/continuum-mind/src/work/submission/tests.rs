@@ -65,7 +65,7 @@
     // the SHA-256 of her patch; a benchmark checkout names its instance from its path
     // and a repo worktree names the card; a worktree with no base to diff against is a
     // named refusal, never a diff against HEAD.
-    use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
+    use super::{artifact_of_patch, base_sha_of, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
 
     /// The seam's fixture: no datasets, no grader, and the candidate diff in the grader's form
     /// computed by plain `git diff`, so the derivation is exercised against a real repository.
@@ -225,6 +225,141 @@
         assert_eq!(p.review_card_id, "3f2a91c0");
         assert_eq!(p.card_id.as_deref(), Some("0c4317e1"));
         assert!(p.room.is_none(), "the card decides the room");
+    }
+
+    // what this catches (Cormac's review of #5775 at 79e9dec89; the 2026-07-13 measurement
+    // that 28% of live work/claim calls carried a full UUID with one character added or
+    // dropped, e.g. `d7cfe47e0-8e39-...`): work/submit's `claim_id` stays a String on the
+    // `id_resolve` path it had on canary, scoped to THIS card's one claim. Its full and
+    // shown forms resolve. The corrupted full id is pinned as REFUSED, because that path is
+    // `resolve_handle`, which never repaired (the repairing `id_resolve::resolve` is not
+    // what work/submit called): card 484b000b adds the 8-hex-group form to `Shown` and
+    // flips the last assertion when it migrates this field.
+    #[test]
+    fn a_submit_claim_id_keeps_its_canary_path_full_and_shown_resolve(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let claim = uuid::Uuid::parse_str("d7cfe47e-8e39-4c1a-9b2f-0a1b2c3d4e5f")?;
+        let p: super::WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "card_id": "0c4317e1", "claim_id": "d7cfe47e"
+        }))?;
+        assert_eq!(p.claim_id.as_deref(), Some("d7cfe47e"), "the claim handle decodes as she typed it");
+        let resolve = |raw: &str| resolve_shown(raw, &[claim], "claim");
+        assert!(matches!(resolve("d7cfe47e"), Ok(id) if id == claim), "the shown form");
+        assert!(matches!(resolve(&claim.to_string()), Ok(id) if id == claim), "the full form");
+        assert!(
+            resolve("d7cfe47e0-8e39-4c1a-9b2f-0a1b2c3d4e5f").is_err(),
+            "canary's strict path refuses a one-char-corrupted full id; 484b000b flips this"
+        );
+        Ok(())
+    }
+
+    /// A card holding `submissions`, the one candidate set `submission_named` reads.
+    fn card_with_submissions(
+        submissions: &[airc_work::SubmissionId],
+    ) -> Result<airc_work::WorkCard, Box<dyn std::error::Error>> {
+        use airc_core::PeerId;
+        use airc_work::{CardState, ClaimId, GitObjectId, Priority, RepoId, WorkCard, WorkCardId, WorkSubmission};
+        let card_id = WorkCardId::new();
+        let claim_id = ClaimId::new();
+        let artifact: airc_work::SubmissionArtifact = serde_json::from_value(serde_json::json!({
+            "hash": "a".repeat(64), "size_bytes": 5, "mime": "text/x-diff"
+        }))?;
+        let base_sha = GitObjectId::new("b".repeat(40))?;
+        let publisher = PeerId::new();
+        Ok(WorkCard {
+            card_id,
+            repo: RepoId::new("CambrianTech/continuum")?,
+            title: "a card".to_string(),
+            body: None,
+            priority: Priority::P2,
+            lane_id: None,
+            state: CardState::Claimed,
+            owner: Some(publisher),
+            claim_provenance: None,
+            claim_id: Some(claim_id),
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: publisher,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            reviews: None,
+            submissions: submissions
+                .iter()
+                .map(|&submission_id| WorkSubmission {
+                    submission_id,
+                    card_id,
+                    claim_id,
+                    instance: "ordinary".into(),
+                    base_sha: base_sha.clone(),
+                    artifact: artifact.clone(),
+                    publisher,
+                    submitted_at_ms: 10,
+                })
+                .collect(),
+            last_submission_rejection: None,
+        })
+    }
+
+    // what this catches (Benchy, M5 2026-11-04 17:51:56Z): `persona.act.refused
+    // command="work/submit" reason=work/submit: [arguments] CommandRequest deserialization
+    // failed: UUID parsing failed: invalid length: expected length 32 for simple f...`.
+    // work/submit's submission_id (and work/review's review_id, submission_id and
+    // review_claim_id) were raw `Uuid`, so the id she was SHOWN died in serde before any
+    // handler could resolve it. They decode as airc's `Shown<T>` and resolve against the one
+    // card the verb read: a short id resolves on both verbs, a full id passes through, a
+    // prefix two submissions share is the typed `Ambiguous` refusal naming both, and junk is
+    // refused at decode with a sentence that names the accepted form.
+    #[test]
+    fn a_shown_submission_id_resolves_on_its_card_and_a_shared_prefix_is_refused_by_type(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use airc_core::shown_id::ShownIdError;
+        use airc_work::SubmissionId;
+        let a = SubmissionId::from_uuid(uuid::Uuid::parse_str("d61513e4-a332-4cd3-a208-5bf0e8acd50d")?);
+        let b = SubmissionId::from_uuid(uuid::Uuid::parse_str("d61599ff-0000-4000-8000-000000000000")?);
+        let card = card_with_submissions(&[a, b])?;
+
+        // work/submit: the short id she was shown decodes and names her submission.
+        let submit: super::WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "card_id": "0c4317e1", "submission_id": "d61513e4", "claim_id": "136f8174"
+        }))?;
+        let named = submit.submission_id.ok_or("the submission id she sent")?;
+        assert_eq!(super::submission_named(&named, Some(&card)), Ok(a));
+
+        // work/review: every id she was shown decodes; the submission resolves the same way.
+        let review: super::WorkReviewParams = serde_json::from_value(serde_json::json!({
+            "review_card_id": "3f2a91c0", "outcome": "passed", "card_id": "0c4317e1",
+            "submission_id": "d61599ff", "review_id": "9a0b1c2d", "review_claim_id": "136f8174"
+        }))?;
+        let named = review.submission_id.ok_or("the submission id she sent")?;
+        assert_eq!(super::submission_named(&named, Some(&card)), Ok(b));
+
+        // A full id still works, and passes without its candidates (a new id she mints).
+        let fresh = uuid::Uuid::new_v4();
+        let full: super::WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "card_id": "0c4317e1", "submission_id": fresh.to_string()
+        }))?;
+        let named = full.submission_id.ok_or("the submission id she sent")?;
+        assert_eq!(super::submission_named(&named, None), Ok(SubmissionId::from_uuid(fresh)));
+
+        // A prefix both submissions share is refused by TYPE, naming both, never guessed.
+        let shared: super::WorkSubmitParams = serde_json::from_value(serde_json::json!({
+            "card_id": "0c4317e1", "submission_id": "d615"
+        }))?;
+        let named = shared.submission_id.ok_or("the submission id she sent")?;
+        let refused = super::submission_named(&named, Some(&card));
+        assert!(
+            matches!(&refused, Err(ShownIdError::Ambiguous { matches, .. }) if matches.len() == 2),
+            "{refused:?}"
+        );
+
+        // Junk never decodes, and what she reads names the form that is accepted.
+        let junk = serde_json::from_value::<super::WorkSubmitParams>(serde_json::json!({
+            "card_id": "0c4317e1", "submission_id": "placeholder"
+        }));
+        let what_she_reads = junk.err().ok_or("junk must not decode")?.to_string();
+        assert!(what_she_reads.contains("give the full id or at least"), "{what_she_reads}");
+        Ok(())
     }
 
     // what this catches (Kimi, 2026-09-28): a citizen with a pushed commit in hand passes its
@@ -475,6 +610,13 @@
         assert_eq!(recorded.artifact.size_bytes, derived.artifact.size_bytes);
         let empty = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(clean_base), None, &[]).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
+        // Regression for Aris's loop (2026-10-31, investigation card 3a8a243a): each "no patch"
+        // refusal names the same open way forward, and the empty-card hint does not send her
+        // back to a submit that has nothing to publish.
+        let empty_card = super::submissions_on_card(&[]);
+        for said in [empty.to_string(), empty_card] {
+            assert!(said.contains("work/note") && said.contains("work/state closed"), "{said}");
+        }
         // Regression for 6dd8befa: a valid empty submission is not malformed
         // arguments. The real refusal reaches her without advice to retry its schema.
         let refusal = format!("work/submit: {empty}");
@@ -484,40 +626,59 @@
         );
     }
 
-    // what this catches (Kimi, 2026-09-21): the two halves of the supplied-claim guard
-    // shared one sentence — "submission requires your matching claim on this card" — so a
-    // citizen who OWNED the card and HELD a live lease, but passed a STALE claim id from a
-    // re-claim, was told only that something did not match. `claim_id` is documented
-    // optional and therefore a fillable blank in her manual, and citizens fill those
-    // (ab76eb848). Each half must now name what it saw, and the stale half must name the
-    // way out that actually works — omitting claim_id, which makes the caller read the
-    // live claim off the board so this guard passes.
+    // what this catches (Kimi, 2026-09-21; Codex on the precondition redesign): work/submit's
+    // decision at its mutation boundary, through the command's own error mapping. Someone else's
+    // card names the holder; a stale claim id from a re-claim names the live claim and the way out
+    // that works (omit claim_id), with the card as it is NOW and her moves on it now; and a card
+    // that moved to Review since she acted still takes her revised submission.
     #[test]
-    fn each_half_of_the_holder_guard_names_what_it_saw() {
-        let me = airc_core::PeerId::new();
-        let peer = airc_core::PeerId::new();
-        let card = uuid::Uuid::new_v4();
-        let mine = super::ClaimId::from_uuid(uuid::Uuid::new_v4());
-        let stale = super::ClaimId::from_uuid(uuid::Uuid::new_v4());
-
-        // The holder's own live claim passes.
-        assert!(holder_guard(Some(me), me, Some(mine), mine, card).is_ok());
-
-        // Someone else holds it: say WHO, and reuse the holder sentence.
-        let held = holder_guard(Some(peer), me, Some(mine), mine, card).expect_err("not hers");
-        let held = held.to_string();
+    fn the_submit_decision_at_the_boundary_names_what_it_saw_and_her_moves_now() {
+        use crate::cognition::work_preconditions::{decide, fixture_card, submit, ClaimArg, Request, FIXTURE_NOW_MS};
+        use airc_work::CardState;
+        let me = airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(1));
+        let peer = airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(2));
+        let at = FIXTURE_NOW_MS;
+        let any = Request::any(at);
+        let theirs = fixture_card(CardState::InProgress, Some(peer), None, "x");
+        let held = crate::work::refused(decide(submit(&theirs, me, &any), &theirs, me, at).expect_err("not hers")).to_string();
         assert!(held.contains(&short8(peer.as_uuid())), "names the holder: {held}");
-        assert!(held.contains("only the holder submits"), "{held}");
+        // Since she read it, the card moved to Review and her claim was re-taken.
+        let now = fixture_card(CardState::Review, Some(me), None, "x");
+        let stale = super::ClaimId::from_uuid(uuid::Uuid::from_u128(0x57a1e));
+        let named = Request { at_ms: at, claim: ClaimArg::Named(stale), seen_revision: None };
+        let bad = crate::work::refused(decide(submit(&now, me, &named), &now, me, at).expect_err("stale id")).to_string();
+        let live = now.claim_id.expect("an owned fixture holds a claim"); // expect: fixture_card claims an owned card
+        assert!(bad.contains(&short8(live.as_uuid())) && bad.contains("omit claim_id"), "names the live claim and the way out: {bad}");
+        assert!(bad.contains("review") && bad.contains("work/submit"), "the card now, and her moves now: {bad}");
+        assert_eq!(decide(submit(&now, me, &any), &now, me, at), Ok(live), "a revised submission in Review is publishable");
+    }
 
-        // Hers, but the id she passed is stale: name BOTH ids and the way out.
-        let bad = holder_guard(Some(me), me, Some(mine), stale, card).expect_err("stale id");
-        let bad = bad.to_string();
-        assert!(bad.contains(&short8(stale.as_uuid())), "names what she passed: {bad}");
-        assert!(bad.contains(&short8(mine.as_uuid())), "names the live claim: {bad}");
-        assert!(bad.contains("omit claim_id"), "names the corrective that works: {bad}");
-        assert!(!bad.contains("only the holder submits"), "she IS the holder: {bad}");
-
-        // An unclaimed card names THAT absence rather than printing an empty slot.
-        let none = holder_guard(Some(me), me, None, stale, card).expect_err("no live claim");
-        assert!(none.to_string().contains("unclaimed"), "{}", none);
+    // what this catches: Benchy on the M5, 2026-11-04, five refused submits of the same patch.
+    // An identical submission (same publisher, patch hash, base and instance) answers as success
+    // naming the existing one; a changed patch is a new submission (the precondition above lets it
+    // publish in Review).
+    #[test]
+    fn an_identical_submission_is_answered_with_the_existing_one_and_a_changed_patch_is_new() {
+        let key = |hash: &str| super::SubmissionKey {
+            id: uuid::Uuid::from_u128(1),
+            publisher: uuid::Uuid::from_u128(2),
+            artifact_hash: hash.into(),
+            base_sha: "b4se".into(),
+            instance: "card".into(),
+        };
+        assert_eq!(super::same_submission([key("dc597e")], &key("dc597e")), Some(uuid::Uuid::from_u128(1)));
+        assert_eq!(super::same_submission([key("dc597e")], &key("ffff00")), None, "a changed patch submits");
+        let existing = airc_work::WorkSubmission {
+            submission_id: airc_work::SubmissionId::from_u128(1),
+            card_id: airc_work::WorkCardId::from_u128(3),
+            claim_id: super::ClaimId::from_uuid(uuid::Uuid::from_u128(4)),
+            instance: "card".into(),
+            base_sha: airc_work::GitObjectId::new("a".repeat(40)).expect("a full sha"), // expect: 40 hex is a valid sha
+            artifact: artifact_of_patch("diff --git a/x b/x\n").into_artifact().expect("a patch reference"), // expect: a sha-256 reference
+            publisher: airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(2)),
+            submitted_at_ms: 7,
+        };
+        let answer = super::already_submitted(&existing, uuid::Uuid::from_u128(5), &[], false);
+        assert_eq!((answer.outcome, answer.submission_id), (super::SubmitOutcome::AlreadySubmitted, uuid::Uuid::from_u128(1)));
+        assert!(answer.next.contains("already your submission"), "{}", answer.next);
     }

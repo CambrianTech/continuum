@@ -110,10 +110,18 @@ impl Burst {
             rendered,
             now_ms,
             cause,
+            turn: uuid::Uuid::new_v4(),
             room_updates: Arc::default(),
             hands: None,
             effects: None,
         }
+    }
+
+    /// This burst is the turn `turn` (the id its compose minted), so its acts and its RAG
+    /// captures name one turn.
+    pub fn for_turn(mut self, turn: uuid::Uuid) -> Self {
+        self.turn = turn;
+        self
     }
 
     /// This turn acts with the hands of `context` (the card claim it works).
@@ -142,6 +150,7 @@ impl Burst {
             rendered: s,
             now_ms: None,
             cause: Cause::Synthetic,
+            turn: uuid::Uuid::new_v4(),
             room_updates: Arc::default(),
             hands: None,
             effects: None,
@@ -164,6 +173,7 @@ impl From<String> for Burst {
             // A raw string arrives with no channel and no antecedent — a fixture, by
             // construction. Honest, never invented.
             cause: Cause::Synthetic,
+            turn: uuid::Uuid::new_v4(),
             room_updates: Arc::default(),
             hands: None,
             effects: None,
@@ -411,6 +421,12 @@ pub struct Workspace {
     /// stays one `commands/list` away). This is how "recipe = content-type + RULES"
     /// stops being half true: the rules reach her hands, not only the renderer.
     pub room_affordances: Vec<String>,
+    /// Her held work this tick, read once by the cycle ([`HeldWork`](super::HeldWork)): the
+    /// cards she holds and the moves each one's state gives her. Her tool surface adds those
+    /// moves to the room's declared set, and her view renders each card as one keyed item, so
+    /// what she can do follows her card's state (STATE-DRIVEN-SURFACE.md). Empty for a turn
+    /// with no body and for a read that failed.
+    pub held: Arc<super::HeldWork>,
     /// The persona's NOW at burst assembly (see [`Burst::now_ms`]) — rendered as a
     /// [now …] line in the system prompt so time is a fact she can perceive (#125).
     pub now_ms: Option<u64>,
@@ -469,6 +485,7 @@ impl Workspace {
             workspace_deliverable: false,
             initiative: false,
             room_affordances: Vec::new(),
+            held: Arc::default(),
             now_ms: burst_now,
             token_sink: None,
         }
@@ -539,6 +556,13 @@ impl Workspace {
     /// per tick from the node's experience source.
     pub fn room_affordances(mut self, commands: Vec<String>) -> Self {
         self.room_affordances = commands;
+        self
+    }
+
+    /// Stamp her held work for this tick (builder form; see [`held`](Self::held)). The cycle
+    /// calls this once per tick from the one read of her board.
+    pub fn held_work(mut self, held: super::HeldWork) -> Self {
+        self.held = Arc::new(held);
         self
     }
 

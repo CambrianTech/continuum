@@ -306,11 +306,19 @@ mod tests {
                     while !props_open.load(std::sync::atomic::Ordering::SeqCst) {
                         tokio::time::sleep(Duration::from_millis(20)).await;
                     }
-                    axum::Json(serde_json::json!({ "default_generation_settings": { "n_ctx": 32768 }, "total_slots": 1 }))
+                    axum::Json(serde_json::json!({
+                        "default_generation_settings": { "n_ctx": 32768 },
+                        "total_slots": 1,
+                        "context_geometry": { "allocated_tokens": 32768, "max_tokens_per_sequence": 32768, "sequence_capacity": 1 }
+                    }))
                 }
             }))
             .route("/v1/models", axum::routing::get(|| async {
                 axum::Json(serde_json::json!({ "data": [{ "id": "late-model" }] }))
+            }))
+            // The fork's tokenizer, as the smoke sizes its probe by the answer's own tokens.
+            .route("/tokenize", axum::routing::post(|| async {
+                axum::Json(serde_json::json!({ "tokens": (0..19).collect::<Vec<u32>>() }))
             }))
             .route("/v1/chat/completions", axum::routing::post(|| async {
                 axum::Json(serde_json::json!({

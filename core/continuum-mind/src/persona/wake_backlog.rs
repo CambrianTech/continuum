@@ -674,7 +674,7 @@ mod tests {
             )
         };
         let refused =
-            drive_to_settle_with_input(&cycle, burst(&original), 8, framing, &mut conversation).await;
+            drive_to_settle_with_input(&cycle, burst(&original), crate::cognition::act_observe::TurnBudget::Steps(8), framing, &mut conversation).await;
         assert!(refused.deferred_before_dispatch);
         assert_eq!(refused.acts, 0);
         assert!(exec.seen_context.lock().unwrap().is_none());
@@ -686,7 +686,7 @@ mod tests {
 
         // A second failed admission neither consumes nor replaces the original.
         let retried = pending.message().unwrap().clone();
-        let refused_again = drive_to_settle_with_input(&cycle, burst(&retried), 8, framing, &mut conversation).await;
+        let refused_again = drive_to_settle_with_input(&cycle, burst(&retried), crate::cognition::act_observe::TurnBudget::Steps(8), framing, &mut conversation).await;
         let (step, _, _) = SettleStep::from_settled(refused_again);
         pending.settle(&retried, cause, framing.attention, &step);
         assert_eq!(pending.message(), Some(&original));
@@ -696,7 +696,7 @@ mod tests {
         let completed = drive_to_settle_with_input(
             &cycle,
             burst(pending.message().unwrap()),
-            8,
+            crate::cognition::act_observe::TurnBudget::Steps(8),
             framing,
             &mut conversation,
         )

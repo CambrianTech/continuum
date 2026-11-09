@@ -193,7 +193,7 @@ pub async fn resolve_recall_embedder(
 }
 
 /// Resolve the recall embedder WITHOUT a chat adapter — for the GLOBAL memory
-/// manager (agent-memory bridge + hydrated corpora), which has no per-persona
+/// manager (hydrated corpora), which has no per-persona
 /// chat gateway to offer. Tries the dedicated in-process embed model (GPU, no
 /// HTTP hop), then the lexical floor. Same process-stable, probe-gated,
 /// LOUD-on-degrade contract as [`resolve_recall_embedder`]; it simply omits the

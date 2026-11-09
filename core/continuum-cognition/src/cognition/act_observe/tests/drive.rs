@@ -68,7 +68,7 @@ async fn drive_to_settle_acts_then_settles_on_speak() {
     let outcome = drive_to_settle(
         &cycle,
         "[eval]\npeer: what is 2+2?",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::ambient(),
     )
     .await;
@@ -119,7 +119,7 @@ async fn acted_then_capacity_refused_retains_work_without_replay() {
         Arc::new(SalienceArbiter),
     )
     .with_acting(body_with_wm(exec, admission(), wm));
-    let outcome = drive_to_settle(&cycle, "perform the task", 8, TurnFraming::ambient()).await;
+    let outcome = drive_to_settle(&cycle, "perform the task", crate::cognition::act_observe::TurnBudget::Steps(8), TurnFraming::ambient()).await;
     assert_eq!(outcome.acts, 1);
     assert_eq!(outcome.turn_acts.len(), 1);
     assert_eq!(outcome.metrics.input_tokens, 700);
@@ -162,7 +162,7 @@ async fn capacity_refusal_leaves_the_driver_once_with_typed_custody() {
     let faculty = Arc::new(Refusing(std::sync::atomic::AtomicUsize::new(0)));
     let cycle = WorkspaceCycle::new(vec![faculty.clone()], Arc::new(SalienceArbiter));
     let outcome =
-        drive_to_settle(&cycle, "keep the complete input", 8, TurnFraming::ambient()).await;
+        drive_to_settle(&cycle, "keep the complete input", crate::cognition::act_observe::TurnBudget::Steps(8), TurnFraming::ambient()).await;
     assert_eq!(faculty.0.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert!(outcome.inference_error.is_none());
     assert!(outcome.deferred_before_dispatch);
@@ -181,12 +181,12 @@ async fn capacity_refusal_leaves_the_driver_once_with_typed_custody() {
 // 2026-08-04 on sympy-21379: one `code/tree`, then a prose explanation of the bug —
 // 0 patch bytes, 29 of 30 acts unspent, run over). When the CALLER declared the
 // deliverable to be the workspace, a Speak that changed no file must not end the
-// turn: she gets up to NARRATION_BUDGET more perceptions, each carrying the
-// structural fact that her working memory holds no mutation (2026-09-05: one was
-// too few — a plan, one act, a second plan ended every work turn). Bounded — the
-// budget spends and it settles, so a determined Speak is never trapped in a loop.
+// turn: she keeps perceiving, each time carrying the structural fact that her working
+// memory holds no mutation (2026-09-05: one was too few — a plan, one act, a second
+// plan ended every work turn). Bounded by the turn's own step budget, which plans
+// spend like acts, so a determined Speak is never trapped in a loop.
 #[tokio::test]
-async fn a_zero_change_speak_reperceives_up_to_the_narration_budget_when_the_workspace_is_the_deliverable(
+async fn a_zero_change_speak_reperceives_within_the_turns_step_budget_when_the_workspace_is_the_deliverable(
 ) {
     let speaker = CountingSpeaker::new();
     let wm = Arc::new(WorkingMemory::new(8));
@@ -205,16 +205,23 @@ async fn a_zero_change_speak_reperceives_up_to_the_narration_budget_when_the_wor
     let outcome = drive_to_settle(
         &cycle,
         "fix the bug in sympy/core/basic.py",
-        8,
+        crate::cognition::act_observe::TurnBudget::Steps(8),
         TurnFraming::directed().on_workspace(),
     )
     .await;
 
     assert_eq!(
         speaker.generations(),
-        super::super::settle::NARRATION_BUDGET + 1,
-        "the zero-deliverable Speaks bought exactly the narration budget of perceptions — not zero, not a loop"
+        8,
+        "the zero-deliverable Speaks spend the turn's own 8-step budget — not one, not a loop"
     );
+    // what this catches: generations of one turn indistinguishable in a drop or condemn probe
+    // (Codex on #5700): every generation of the turn names the same turn and its own step.
+    let steps = speaker.steps();
+    let turn = steps[0].expect("an acting turn's generation knows its step").turn;
+    assert!(steps.iter().all(|s| s.is_some_and(|s| s.turn == turn)), "one turn throughout: {steps:?}");
+    let indices: Vec<u64> = steps.iter().map(|s| s.map_or(u64::MAX, |s| s.step)).collect();
+    assert_eq!(indices, (0..8).collect::<Vec<u64>>(), "each generation its own step");
     assert!(
         wm.recent().iter().any(|l| l.contains("[no-deliverable]")),
         "the structural fact reached working memory, where the next tick perceives it: {:?}",
@@ -248,7 +255,7 @@ async fn an_ordinary_turn_still_settles_on_the_first_speak() {
     .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
 
     let outcome =
-        drive_to_settle(&cycle, "what do you think?", 8, TurnFraming::directed()).await;
+        drive_to_settle(&cycle, "what do you think?", crate::cognition::act_observe::TurnBudget::Steps(8), TurnFraming::directed()).await;
 
     assert_eq!(
         speaker.generations(),
@@ -290,6 +297,7 @@ impl Faculty for VaryingAct {
                     input: serde_json::json!({ "path": format!("src/file_{n}.rs") }),
                 }],
                 intent: "keep reading".into(),
+                origin: crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
             },
             0.9,
             "reads forever, never writes",
@@ -323,7 +331,7 @@ async fn drive_to_settle_gates_discovery_at_half_budget_on_workspace_deliverable
     let outcome = drive_to_settle(
         &cycle,
         "fix the bug",
-        20,
+        crate::cognition::act_observe::TurnBudget::Steps(20),
         TurnFraming::ambient().on_workspace(),
     )
     .await;
@@ -353,7 +361,7 @@ async fn drive_to_settle_gates_discovery_at_half_budget_on_workspace_deliverable
         Arc::new(SalienceArbiter),
     )
     .with_acting(body(exec2, admission()));
-    let ambient = drive_to_settle(&cycle2, "look around", 20, TurnFraming::ambient()).await;
+    let ambient = drive_to_settle(&cycle2, "look around", crate::cognition::act_observe::TurnBudget::Steps(20), TurnFraming::ambient()).await;
     assert_eq!(
         ambient.acts, 20,
         "a non-workspace turn reads to the full budget — the gate scopes to \
@@ -386,7 +394,7 @@ async fn act_budget_facts_reach_working_memory_on_workspace_turns_only() {
     drive_to_settle(
         &cycle,
         "fix the bug",
-        6,
+        crate::cognition::act_observe::TurnBudget::Steps(6),
         TurnFraming::ambient().on_workspace(),
     )
     .await;
@@ -423,7 +431,7 @@ async fn act_budget_facts_reach_working_memory_on_workspace_turns_only() {
         Arc::new(SalienceArbiter),
     )
     .with_acting(body2);
-    drive_to_settle(&cycle2, "look around", 6, TurnFraming::ambient()).await;
+    drive_to_settle(&cycle2, "look around", crate::cognition::act_observe::TurnBudget::Steps(6), TurnFraming::ambient()).await;
     assert!(
         !wm2.recent_entries()
             .iter()
@@ -446,7 +454,7 @@ async fn drive_to_settle_returns_unsettled_act_when_budget_exhausted() {
     let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
 
-    let outcome = drive_to_settle(&cycle, "go", 2, TurnFraming::ambient()).await;
+    let outcome = drive_to_settle(&cycle, "go", crate::cognition::act_observe::TurnBudget::Steps(2), TurnFraming::ambient()).await;
 
     assert_eq!(outcome.acts, 2, "spent exactly the observer's budget");
     assert!(
@@ -459,12 +467,13 @@ async fn drive_to_settle_returns_unsettled_act_when_budget_exhausted() {
     );
 }
 
-// what this catches: changing results preserve productive iteration, while
-// identical input AND output yields honestly after three repeated observations.
+// what this catches: the substrate ending her turn on identical result TEXT, which does not
+// prove no progress (a mutating command can return the same success text each time it changes
+// state; Codex on #5700): identical and changing results alike spend the caller's whole budget.
 #[tokio::test]
 async fn repeated_calls_respect_the_callers_budget() {
     for (results, expected_acts) in [
-        (["unchanged"; 6], 4),
+        (["unchanged"; 6], 6),
         (
             [
                 "pending 1",
@@ -480,12 +489,30 @@ async fn repeated_calls_respect_the_callers_budget() {
         let exec = Arc::new(ScriptedExecutor::new(results));
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter))
             .with_acting(body(exec.clone(), admission()));
-        let outcome = drive_to_settle(&cycle, "go", 6, TurnFraming::ambient()).await;
+        let outcome = drive_to_settle(&cycle, "go", crate::cognition::act_observe::TurnBudget::Steps(6), TurnFraming::ambient()).await;
         assert_eq!(outcome.acts, expected_acts);
         assert_eq!(exec.results.lock().unwrap().len(), 6 - expected_acts);
         assert!(matches!(outcome.decision, Decision::Act { .. }));
         assert!(outcome.spoken.is_none());
     }
+}
+
+// what this catches: two turns in one room naming the same turn (Codex on #5700): each burst is
+// its own turn, so their generations are told apart in every probe.
+#[tokio::test]
+async fn two_turns_in_one_room_are_two_turns() {
+    let speaker = CountingSpeaker::new();
+    let wm = Arc::new(WorkingMemory::new(8));
+    let exec = Arc::new(RecordingExecutor { seen_context: Arc::new(Mutex::new(None)), result_content: "src/".into() });
+    let cycle = WorkspaceCycle::new(vec![Arc::clone(&speaker) as Arc<dyn Faculty>], Arc::new(SalienceArbiter))
+        .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm)));
+    let _ = drive_to_settle(&cycle, "first", crate::cognition::act_observe::TurnBudget::Steps(8), TurnFraming::ambient()).await;
+    let _ = drive_to_settle(&cycle, "second", crate::cognition::act_observe::TurnBudget::Steps(8), TurnFraming::ambient()).await;
+    let steps = speaker.steps();
+    assert_eq!(steps.len(), 2, "one generation per ambient turn");
+    let (a, b) = (steps[0].expect("first turn's step"), steps[1].expect("second turn's step"));
+    assert_ne!(a.turn, b.turn, "two turns, two ids");
+    assert_eq!((a.step, b.step), (0, 0), "each its own turn's first step");
 }
 
 // what this catches: fixed-point evidence ignores correlation IDs but never
@@ -499,7 +526,7 @@ async fn fixed_point_requires_available_finished_result_evidence() {
         .with_acting(body(exec, admission()));
     let mut call = tool_call();
     let mut acts = acts_of(apply_act(
-        &cycle, &[call.clone()], "inspect", Uuid::new_v4(), &ActChain::new(),
+        &cycle, &[call.clone()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished), "inspect", Uuid::new_v4(), &ActChain::new(),
         None,
         None,
         )

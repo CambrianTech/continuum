@@ -152,7 +152,7 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
         );
         let original_world = burst.rendered.clone();
         let outcome =
-            drive_to_settle_with_input(&cycle, burst, 8, framing, &mut conversation).await;
+            drive_to_settle_with_input(&cycle, burst, crate::cognition::act_observe::TurnBudget::Steps(8), framing, &mut conversation).await;
         assert!(
             outcome.inference_error.is_none(),
             "{:?}",

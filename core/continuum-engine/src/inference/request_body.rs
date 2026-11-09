@@ -34,15 +34,6 @@ pub(crate) fn apply_enable_thinking_false(body: &mut Value) {
 /// when the hands surface is offered.
 pub const ACT_PURPOSE: &str = "cognition/act";
 
-// context-budget-exempt: a budget for the model's REASONING channel on an act turn, not a window bound
-/// How much a reasoning model may think before its tool call on an ACT turn.
-/// Measured 2026-09-07 (Qwen3.8-27B off-box): committed acts ran 4,188–9,818
-/// output tokens, nearly all of it thinking, 150–260 s per act on a shared lane
-/// (card 12ef9c10). A tool call plus its sentence needs a few hundred tokens of
-/// thought, not thousands. llama-server reads `reasoning_budget_tokens` and
-/// closes the thinking block at the budget; other gateways ignore the field.
-pub(crate) const ACT_REASONING_BUDGET: u32 = 1024;
-
 /// The purpose a deliberation (speak / pass) turn announces on its request.
 pub const DELIBERATION_PURPOSE: &str = "cognition/deliberation";
 
@@ -57,54 +48,20 @@ pub const FORK_DELIBERATION_PURPOSE: &str = "cognition/fork-deliberation";
 /// Keep it distinct from persona deliberation for routing and diagnostics.
 pub const VISION_DESCRIPTION_PURPOSE: &str = "cognition/vision-describe";
 
-/// The share of a deliberation turn's allowance the ANSWER keeps once thinking is
-/// bounded: three quarters may be thought, one quarter is left for what she says.
-// derived-or-floor: a share of the turn's own allowance (`output_allowance`, measured need
-// under the lane's reserve), never a token count — a capable model with a large allowance
-// thinks proportionally more. The quarter is the floor the answer can never lose.
-pub(crate) const DELIBERATION_ANSWER_SHARE_DIVISOR: u64 = 4;
-
-/// Bound the reasoning channel on a DELIBERATION request from the allowance the turn
-/// already carries. Returns the budget it applied.
+/// Bound the reasoning channel at the budget the turn's caller sized, or leave it to the model.
+/// Returns the budget it applied.
 ///
-/// Until now only an act carried a budget, and a deliberation could spend its whole
-/// allowance thinking: the generation ended inside the reasoning channel with no answer
-/// and no call (`persona.act.think_only`, the think-only sentinel). Kimi on the 5090 lost
-/// whole turns that way on 2026-09-26 while composing an answer (`[health] think-only`);
-/// the control on the M5 the same morning showed the budget BINDS on our llama.cpp build
-/// (budget 64 → 73 completion tokens with an answer; no budget → 287 tokens, empty). The
-/// budget is derived from her own `max_tokens`, so it is not a clamp on capable models:
-/// it only guarantees the answer its share of what the turn was already allowed.
-///
-/// ONE seam for both kinds (Fable's review of #4413): an ACT thinks the fixed
-/// [`ACT_REASONING_BUDGET`] before its call; a DELIBERATION turn thinks
-/// [`deliberation_reasoning_budget`] of its own allowance, the answer keeping its share —
-/// and vision descriptions reuse that same answer share. This applies only when
-/// the body carries an allowance to derive it from. Any other purpose is
-/// left to the model. Returns the budget it applied.
-pub fn apply_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> Option<u64> {
-    let obj = body.as_object_mut()?;
-    let budget = match purpose {
-        Some(ACT_PURPOSE | FORK_ACT_PURPOSE) => u64::from(ACT_REASONING_BUDGET),
-        Some(DELIBERATION_PURPOSE | FORK_DELIBERATION_PURPOSE | VISION_DESCRIPTION_PURPOSE) => {
-            deliberation_reasoning_budget(obj.get("max_tokens")?.as_u64()?)?
-        }
-        _ => return None,
-    };
-    obj.insert("reasoning_budget_tokens".to_string(), json!(budget));
+/// ONE owner of a think budget, the caller's MEASURED need (`DispatchTerms::reasoning_budget`: her
+/// grant past her measured answer, `llm_deliberation_faculty::act_room`), never a rule here. A
+/// fixed act budget of 1,024 stood here and never applied below a 1,024 cap, so a 72-89 token act
+/// cap was spent whole on the think and every act was cut at its first sentence (the M5,
+/// 2026-11-04, a95afe3d1: 302 of 414 acts); a quarter-of-the-allowance answer share stood beside
+/// it, a constant where her measured answer exists. A sensory description does not think at all
+/// (`finish_body`): its whole allowance is the answer.
+pub fn apply_reasoning_budget(requested: Option<crate::ai::types::ThinkBudget>, body: &mut Value) -> Option<u64> {
+    let budget = u64::from(requested?.0);
+    body.as_object_mut()?.insert("reasoning_budget_tokens".to_string(), json!(budget));
     Some(budget)
-}
-
-/// THE ONE RULE for a deliberation turn's reasoning budget, read by the request builder
-/// (to set it) and by the emission classifier (to know a think that stopped AT it was
-/// censored by it, not measured): three quarters of the allowance; `None` when the
-/// allowance is too small for the answer to keep a quarter.
-pub fn deliberation_reasoning_budget(max_tokens: u64) -> Option<u64> {
-    let answer_share = max_tokens / DELIBERATION_ANSWER_SHARE_DIVISOR;
-    if answer_share == 0 {
-        return None;
-    }
-    Some(max_tokens - answer_share)
 }
 
 /// `tail_tools`: whether the engine this request is routed to takes our fork's `tail_tools`
@@ -118,6 +75,8 @@ pub(crate) fn finish_body(
     request: &TextGenerationRequest,
     model: &str,
     tail_tools: bool,
+    // The think's bound her caller sized (`DispatchTerms::think`), zero included; `None` leaves it to the model.
+    reasoning_budget: Option<crate::ai::types::ThinkBudget>,
     body: &mut Value,
 ) -> Result<(), crate::ai::inference_error::InferenceError> {
     // Thinking suppression — the REAL lever for qwen3-family forged templates.
@@ -137,15 +96,14 @@ pub(crate) fn finish_body(
     // cloud providers ignore unknown body fields; a template without
     // `enable_thinking` ignores the kwarg. The `/no_think` switch is left in place
     // for any template that DOES honor the soft token.
-    if cfg.thinking == ThinkingMode::Suppress {
+    // A sensory description is an answer, never a think: its allowance is the description
+    // (a think-only description said nothing, the reason it once had a share of its own).
+    if cfg.thinking == ThinkingMode::Suppress || request.purpose.as_deref() == Some(VISION_DESCRIPTION_PURPOSE) {
         apply_enable_thinking_false(body);
     }
-    // The reasoning channel is bounded by the turn's kind, whichever gateway serves it
-    // — the remote path builds this same body on the responder. An ACT thinks a fixed
-    // amount before its call; a DELIBERATION turn keeps its answer's share of its own
-    // allowance, so a turn can no longer end inside the reasoning channel with nothing
-    // said.
-    if let Some(budget) = apply_reasoning_budget(request.purpose.as_deref(), body) {
+    // The reasoning channel is bounded at what the turn's caller sized from her measured need
+    // (`DispatchTerms::reasoning_budget`), so the answer keeps its measured room.
+    if let Some(budget) = apply_reasoning_budget(reasoning_budget, body) {
         let budget_class = match request.purpose.as_deref() {
             Some(ACT_PURPOSE | FORK_ACT_PURPOSE) => "delib.act.reasoning_budgeted",
             Some(VISION_DESCRIPTION_PURPOSE) => "vision.description.reasoning_budgeted",
@@ -155,8 +113,8 @@ pub(crate) fn finish_body(
             class = budget_class,
             model = %model,
             budget,
-            max_tokens = request.max_tokens.map(u64::from).unwrap_or(0), // unwrap_or: an act's fixed budget needs no allowance; absent is said as 0
-            "reasoning channel bounded by the turn's kind — the answer keeps its room"
+            max_tokens = request.max_tokens.map(u64::from).unwrap_or(0), // unwrap_or: a caller's budget needs no allowance; absent is said as 0
+            "reasoning channel bounded at her measured need: the answer keeps its room"
         );
     }
 
@@ -726,20 +684,37 @@ mod tests {
         assert_eq!(wire_messages(&[only_result], None, true, true, "test").len(), 1);
     }
 
-    // what this catches: through the ONE seam, the ACT budget is the fixed
-    // ACT_REASONING_BUDGET count, applied to an act request and to nothing else — a
-    // deliberation derives its own from its allowance (and carries none without one),
-    // and a turn with no purpose carries none.
+    // what this catches: a think budget sized anywhere but by her caller's measured need. The one
+    // seam applies exactly the budget it is given (an act's: her grant past her measured answer)
+    // and none otherwise: no fixed act count (a 72-token cap spent whole on a 1,024 think), no
+    // quarter-share rule.
     #[test]
-    fn the_act_budget_is_a_fixed_count_and_only_an_act_carries_it() {
-        let mut act = json!({ "model": "m" });
-        assert_eq!(apply_reasoning_budget(Some(ACT_PURPOSE), &mut act), Some(u64::from(ACT_REASONING_BUDGET)));
-        assert_eq!(act["reasoning_budget_tokens"], json!(ACT_REASONING_BUDGET));
-        let mut delib = json!({ "model": "m" });
-        assert_eq!(apply_reasoning_budget(Some("cognition/deliberation"), &mut delib), None);
-        assert!(delib.get("reasoning_budget_tokens").is_none());
-        let mut none = json!({ "model": "m" });
+    fn the_think_budget_is_the_callers_measured_one_and_nothing_else() {
+        let mut act = json!({ "model": "m", "max_tokens": 434 });
+        assert_eq!(apply_reasoning_budget(Some(crate::ai::types::ThinkBudget(338)), &mut act), Some(338));
+        assert_eq!(act["reasoning_budget_tokens"], json!(338));
+        let mut closed = json!({ "model": "m", "max_tokens": 96 });
+        assert_eq!(apply_reasoning_budget(Some(crate::ai::types::ThinkBudget(0)), &mut closed), Some(0), "zero is a budget: no thinking");
+        assert_eq!(closed["reasoning_budget_tokens"], json!(0));
+        let mut none = json!({ "model": "m", "max_tokens": 400 });
         assert_eq!(apply_reasoning_budget(None, &mut none), None);
+        assert!(none.get("reasoning_budget_tokens").is_none(), "no caller budget, no rule of its own");
+    }
+
+    // what this catches: a sensory description spending its whole allowance thinking (Kimi's
+    // vision/look, 2026-09-30: no description text). Its body never thinks, on any gateway; a
+    // persona's turn on the same gateway keeps its thinking.
+    #[test]
+    fn a_description_never_thinks_and_a_turn_keeps_its_thinking() {
+        let describe = TextGenerationRequest { purpose: Some(VISION_DESCRIPTION_PURPOSE.into()), ..Default::default() };
+        let mut body = json!({ "model": "m", "max_tokens": 50 });
+        assert!(finish_body(&gateway(true), &describe, "m", false, None, &mut body).is_ok());
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], json!(false), "the description is all answer");
+        let act = TextGenerationRequest { purpose: Some(ACT_PURPOSE.into()), ..Default::default() };
+        let mut body = json!({ "model": "m", "max_tokens": 434 });
+        assert!(finish_body(&gateway(true), &act, "m", false, Some(crate::ai::types::ThinkBudget(338)), &mut body).is_ok());
+        assert!(body.get("chat_template_kwargs").is_none(), "her turn thinks");
+        assert_eq!(body["reasoning_budget_tokens"], json!(338), "at her measured budget");
     }
 
     fn gateway(llamacpp: bool) -> OpenAICompatibleConfig {
@@ -815,16 +790,16 @@ mod tests {
         };
         let cfg = gateway;
         let mut served = json!({ "model": "m" });
-        assert!(finish_body(&cfg(true), &request, "m", true, &mut served).is_ok());
+        assert!(finish_body(&cfg(true), &request, "m", true, None, &mut served).is_ok());
         assert_eq!(served["tools"].as_array().map(Vec::len), Some(1), "the head holds only its own verbs");
         assert_eq!(served["tail_tools"][0]["function"]["name"], "code_git_apply");
         // A tail the destination cannot take is refused for a rebuild, never silently dropped.
         let mut cloud = json!({ "model": "m" });
         assert_eq!(
-            finish_body(&cfg(false), &request, "m", false, &mut cloud),
+            finish_body(&cfg(false), &request, "m", false, None, &mut cloud),
             Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model: "m".into() })
         );
         let headless = TextGenerationRequest { tail_tools: None, ..request.clone() };
-        assert!(finish_body(&cfg(false), &headless, "m", false, &mut json!({ "model": "m" })).is_ok(), "no tail, nothing to refuse");
+        assert!(finish_body(&cfg(false), &headless, "m", false, None, &mut json!({ "model": "m" })).is_ok(), "no tail, nothing to refuse");
     }
 }

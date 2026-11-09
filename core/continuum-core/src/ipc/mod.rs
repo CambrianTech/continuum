@@ -39,7 +39,6 @@ use crate::modules::vision::VisionModule;
 /// - Modular runtime routes commands through ServiceModule trait (Phase 1+)
 use crate::persona::ChannelRegistry;
 use crate::cognition::conversation::types::PersonaState;
-use crate::rag::RagEngine;
 use crate::runtime::{CommandResult, Runtime};
 use crate::system_resources::SystemResourceMonitor;
 use crate::{log_debug, log_error, log_info};
@@ -58,8 +57,8 @@ use uuid::Uuid;
 // ============================================================================
 // Request/Response Protocol + Memory Diagnostics
 // ============================================================================
-// Split out of this file 2026-05-18 — see ipc/protocol.rs (InboxMessageRequest,
-// Response) and ipc/diagnostics.rs (per-command RSS tracking). Re-exported
+// Split out of this file 2026-05-18 — see ipc/protocol.rs
+// (Response) and ipc/diagnostics.rs (per-command RSS tracking). Re-exported
 // here so existing call sites resolve unchanged.
 pub mod command_ingress;
 pub mod diagnostics;
@@ -105,7 +104,6 @@ pub mod ws;
 
 use diagnostics::{current_rss_mb, dump_memory_report, log_command_rss_delta};
 
-pub use continuum_mind::commands::cognition::inbox_message_request::InboxMessageRequest;
 
 use protocol::Response;
 

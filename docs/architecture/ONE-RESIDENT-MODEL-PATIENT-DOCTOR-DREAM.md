@@ -200,6 +200,8 @@ Compute is ahead of the data at every step of this list; the list is ordered by 
 
 ## 9. The DREAM stage, as an interface (S4, drafted 2026-09-28)
 
+When she dreams, how deeply, and how fast she wakes (sleep pressure, opportunity, the amygdala's startle, pushing through) is [SLEEP-AND-WAKE-AT-EVERY-SCALE](SLEEP-AND-WAKE-AT-EVERY-SCALE.md); this section is the stage itself.
+
 > Joel, 2026-09-28, after the first 27B dream was refused for a 14,519-token example against a 1,025-token window: "Stupidly low token sizes are idiotic … the same as inference. Gotta be huge." "Why is training following a totally different workflow." "You're not supposed to make learning so different from reality." "You guys keep screwing up academy."
 
 **What went wrong.** The batch job was the S3 interim, and we shipped it and tuned it as if it were the design:
