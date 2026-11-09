@@ -108,18 +108,18 @@ async fn settle(engine: &LearningEngine, admitted: &LedgerEngine, residency: &Re
     if &ledger.engine != admitted {
         return unproven(format!("another incarnation answers ({:?}); the admitted one ({admitted:?}) is not proven dead", ledger.engine));
     }
-    // The unload names a lora id read from the admitted incarnation; binding the unload itself to
-    // that incarnation (so a relaunch between the read and the unload is refused) is the engine's,
-    // asked of Codex 2026-11-09.
+    // the unload and the release name the admitted incarnation: a relaunch between the read and
+    // either mutation refuses stale_engine and changes nothing (the engine checks before any lookup)
     if let Some(lora) = ledger.residencies.iter().find(|held| held.id == id).map(|held| held.lora_id).filter(|lora| *lora >= 0) {
-        engine.unseat(lora).await.map_err(|error| format!("unload of adapter {lora} refused: {error}"))?;
+        engine.unseat(admitted, lora).await.map_err(|error| format!("unload of adapter {lora} refused: {error}"))?;
     }
-    match engine.release_residency(&id).await {
+    match engine.release_residency(admitted, &id).await {
         Ok(LedgerAnswer::Ledger(released)) if &released.ledger.engine != admitted => {
             unproven(format!("the release was answered by another incarnation ({:?})", released.ledger.engine))
         }
         Ok(LedgerAnswer::Ledger(released)) => match released.refused {
             None | Some(ResidencyRefusal::UnknownResidency) => Ok(()),
+            Some(ResidencyRefusal::StaleEngine) => unproven("the release reached another incarnation, which changed nothing".into()),
             Some(why) => Err(format!("residency {residency} release refused: {why:?}")),
         },
         Ok(LedgerAnswer::NoLedger) => unproven("the engine at that address lost its learning ledger".into()),

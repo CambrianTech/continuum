@@ -293,8 +293,9 @@ impl LearningEngine {
 
     /// `POST /learn/residency/release`: the engine forgets a residency whose allocations have left;
     /// refused (busy) while any is pending or live.
-    pub async fn release_residency(&self, id: &str) -> Result<LedgerAnswer<Registered<ResidencyRefusal>>, LlamaServerError> {
-        let body = serde_json::json!({ "id": id });
+    pub async fn release_residency(&self, engine: &LedgerEngine, id: &str) -> Result<LedgerAnswer<Registered<ResidencyRefusal>>, LlamaServerError> {
+        // the incarnation the residency was registered with: another one refuses stale_engine unchanged
+        let body = serde_json::json!({ "engine": engine, "id": id });
         let reply = self.ledger_request::<ResidencyRefusal>(self.client.post(format!("{}/learn/residency/release", self.root)).json(&body)).await?;
         Ok(reply.map(LedgerReply::registered))
     }
@@ -308,8 +309,9 @@ impl LearningEngine {
     }
 
     /// `POST /lora-adapters/unload`: the shadow leaves the engine (its optimizer released first).
-    pub async fn unseat(&self, lora_id: i64) -> Result<LoadedAdapter, LlamaServerError> {
-        let body = serde_json::json!({ "id": lora_id });
+    pub async fn unseat(&self, engine: &LedgerEngine, lora_id: i64) -> Result<LoadedAdapter, LlamaServerError> {
+        // bound to the incarnation that loaded it: a relaunch reusing the id refuses, never unloads
+        let body = serde_json::json!({ "engine": engine, "id": lora_id });
         self.adapter_change(self.client.post(format!("{}/lora-adapters/unload", self.root)).json(&body)).await
     }
 
