@@ -52,6 +52,10 @@ async fn main() -> Result<(), String> {
     }
     if let Ok(LedgerAnswer::Ledger(ledger)) = engine.learn_ledger().await {
         println!("while learning: {} residencies, optimizer buffers {:?}", ledger.residencies.len(), ledger.memory.optimizer.iter().map(|b| b.bytes).collect::<Vec<_>>());
+        for residency in &ledger.residencies {
+            let rows: Vec<_> = residency.rows.iter().map(|row| format!("{:?} {} {}", row.kind, row.buffer_type, row.bytes)).collect();
+            println!("  residency {}: {}", residency.subject, rows.join(", "));
+        }
     }
     mind.stop().await.map_err(|why| format!("stop: {why}"))?;
     // her optimizer was the engine's last: its workspace residency goes too
