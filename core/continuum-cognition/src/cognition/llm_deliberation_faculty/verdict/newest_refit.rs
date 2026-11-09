@@ -44,12 +44,11 @@ impl LlmDeliberationFaculty {
         if refused.newest_result_reduced {
             return None;
         }
-        // The higher of the two prices: the averaged ratio may already charge the result more.
-        let calibration = match newest_result_price(refused, requested) {
-            Some(price) if denser(price, calibration) => price,
-            _ => calibration,
-        };
-        let refit = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual);
+        // The higher of the two prices for her newest result alone: the averaged ratio may already
+        // charge it more. Every other part keeps the averaged price: the excess was charged to the
+        // result, so it never reprices her framing, tools or view (Codex, Sahar 2026-11-08 19:48).
+        let newest = newest_result_price(refused, requested).filter(|price| denser(*price, calibration));
+        let refit = self.prompt_view_priced(ws, fit_window, calibration, newest, visual);
         if !refit.newest_result_reduced {
             return None;
         }

@@ -219,12 +219,12 @@ mod the_newest_result_over_her_window {
         let whole = "x".repeat(400_000);
         let faculty = faculty_at(&whole, Arc::new(HeuristicInferenceAdapter::new()), ARIS_WINDOW);
         let prompt = faculty.messages_with_visual_feedback(&Workspace::new("and?"), None, None);
-        let continuum_context::allocation::Newest::Pageable { whole: whole_tokens, least } = faculty.newest_result_claim(&prompt) else {
+        let continuum_context::allocation::Newest::Pageable { whole: whole_tokens, least } = faculty.newest_result_claim(&prompt, prompt.pricing) else {
             panic!("a saved result has a page");
         };
         assert!(least < whole_tokens, "its least page is smaller than its whole");
         let mut paged = faculty.messages_with_visual_feedback(&Workspace::new("and?"), None, None);
-        assert!(faculty.fit_newest_result(&mut paged, 0), "paged");
+        assert!(faculty.fit_newest_result(&mut paged, paged.pricing, 0), "paged");
         let shown = paged
             .latest_result
             .iter()

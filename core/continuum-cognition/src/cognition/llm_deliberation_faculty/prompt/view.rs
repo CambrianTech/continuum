@@ -175,6 +175,21 @@ impl LlmDeliberationFaculty {
         calibration: PromptCalibration,
         visual: Option<&ActiveVisualFeedback>,
     ) -> DeliberationPromptView {
+        self.prompt_view_priced(ws, context_window, calibration, None, visual)
+    }
+
+    /// Her view with her newest result priced on its own: `newest` is the density a refusal
+    /// measured for that result alone, so it prices the result's claim and page and nothing else.
+    /// Framing, tools, history and her view keep `calibration` (Sahar, 2026-11-08 19:48: a
+    /// result-only 7.57x price passed as the shared one repriced framing 16,968 and tools 33,692).
+    pub(in super::super) fn prompt_view_priced(
+        &self,
+        ws: &Workspace,
+        context_window: u32,
+        calibration: PromptCalibration,
+        newest: Option<PromptCalibration>,
+        visual: Option<&ActiveVisualFeedback>,
+    ) -> DeliberationPromptView {
         // THE REPLY'S CLAIM ([`reply_claim`]): what she is expected to write, at the
         // priority this turn gives it. It competes in the window's one allocation below;
         // its grant travels with the view into `build_request_within` as `max_tokens`.
@@ -224,6 +239,8 @@ impl LlmDeliberationFaculty {
         let calibration = calibration.for_input(input_identity);
         // One price for every message of this act: her view's start, the fit and a refit.
         all_messages.pricing = calibration;
+        // Her newest result alone may carry a refusal's own price (`prompt_view_priced`).
+        let newest_pricing = newest.map_or(calibration, |price| price.for_input(input_identity));
         // Her view already carries every block that rides the conversation. Measured BEFORE her
         // newest result is levelled: demand is the sum of wants (FOCUS-CONTRACT rule 5), so a
         // result shown at a smaller level still asks for its whole, or the window never grows for it.
@@ -250,7 +267,7 @@ impl LlmDeliberationFaculty {
         let required_tokens = required.stimulus.saturating_add(required.action_statement);
         use continuum_context::ladder::{Leveled, Rungs};
         // Her newest result whole and at its least page, in the allocation's unit (`newest_result.rs`).
-        let newest = self.newest_result_claim(&all_messages);
+        let newest = self.newest_result_claim(&all_messages, newest_pricing);
         // Her hands and her framing (the head of her prompt), and her grounding: each a consumer
         // whose levels come from its items' shapes and whose hard limit is derived from them.
         let tools_offer = self.tools_offer(ws, &claim);
@@ -547,7 +564,7 @@ impl LlmDeliberationFaculty {
                     .required_tokens()
                     .saturating_sub(newest_now)
                     .saturating_add(calibration.prompt_budget(act.granted(claim_id::LAST_MOVE) as usize));
-                self.fit_newest_result(&mut all_messages, granted.min(tail_budget.saturating_sub(beside)))
+                self.fit_newest_result(&mut all_messages, newest_pricing, granted.min(tail_budget.saturating_sub(beside)))
             }
             None => false,
         };

@@ -121,23 +121,25 @@ impl Saved<'_> {
 impl LlmDeliberationFaculty {
     /// Her newest result for the act's one allocation (`continuum_context::allocation::Newest`), in
     /// this prompt's estimate: what it costs whole and, when it is saved, at its least page.
-    pub(in super::super) fn newest_result_claim(&self, prompt: &PromptMessages) -> Newest {
+    /// `pricing` is her newest result's own price: the prompt's shared one, or what a refusal
+    /// measured for the result alone (`refit_newest_after_refusal`), never applied to the rest.
+    pub(in super::super) fn newest_result_claim(&self, prompt: &PromptMessages, pricing: PromptCalibration) -> Newest {
         if prompt.latest_result.is_empty() {
             return Newest::Absent;
         }
-        let whole = prompt.pricing.estimate_all(&prompt.latest_result);
+        let whole = pricing.estimate_all(&prompt.latest_result);
         let mut least = prompt.latest_result.clone();
-        if !self.page_newest(prompt.pricing, &mut least, 0, false) {
+        if !self.page_newest(pricing, &mut least, 0, false) {
             return Newest::Whole(whole as u32);
         }
-        Newest::Pageable { whole: whole as u32, least: prompt.pricing.estimate_all(&least) as u32 }
+        Newest::Pageable { whole: whole as u32, least: pricing.estimate_all(&least) as u32 }
     }
 
     /// Show her newest result as the allocation granted it: its first page within `room` (this
     /// prompt's estimate). Answers whether it was shown short of whole
     /// (`DeliberationPromptView::newest_result_reduced`).
-    pub(in super::super) fn fit_newest_result(&self, prompt: &mut PromptMessages, room: usize) -> bool {
-        self.page_newest(prompt.pricing, &mut prompt.latest_result, room, true)
+    pub(in super::super) fn fit_newest_result(&self, prompt: &mut PromptMessages, pricing: PromptCalibration, room: usize) -> bool {
+        self.page_newest(pricing, &mut prompt.latest_result, room, true)
     }
 
     /// `group` (her newest result's messages) cut to `room`: its largest slot first, each to its
