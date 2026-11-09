@@ -22,12 +22,9 @@ pub(in super::super) struct BudgetLedger<'a> {
     pub messages: &'a [ChatMessage],
     /// Her view leads `messages`, whole: the fit never cuts it (`view.rs`).
     pub view_len: usize,
-    /// The grounding block range, right after her view.
-    pub grounding_len: usize,
     pub framing_grant: u32,
     pub required_grant: u32,
     pub history_grant: u32,
-    pub grounding_grant: u32,
     /// Her view's sources' grants plus the room no claim took that she may append into.
     pub view_grant: u32,
 }
@@ -44,10 +41,8 @@ impl LlmDeliberationFaculty {
             return None;
         }
         let view_end = ledger.view_len.min(ledger.messages.len());
-        let grounding_end = view_end.saturating_add(ledger.grounding_len).min(ledger.messages.len());
         let view_cost = charge(ledger.calibration.estimate_all(&ledger.messages[..view_end]));
-        let grounding_cost = charge(ledger.calibration.estimate_all(&ledger.messages[view_end..grounding_end]));
-        let tail_cost = charge(ledger.calibration.estimate_all(&ledger.messages[grounding_end..]));
+        let tail_cost = charge(ledger.calibration.estimate_all(&ledger.messages[view_end..]));
         let framing_cost = charge(ledger.calibration.estimate_system(ledger.system).saturating_add(ledger.tool_tokens));
         continuum_base::probe!(
             class = "delib.budget.violated",
@@ -59,8 +54,6 @@ impl LlmDeliberationFaculty {
             framing_cost,
             view_grant = ledger.view_grant,
             view_cost,
-            grounding_grant = ledger.grounding_grant,
-            grounding_cost,
             tail_grant = ledger.required_grant.saturating_add(ledger.history_grant),
             tail_cost,
             "the assembled prompt breaks the one budget: some part of it is not a charged \

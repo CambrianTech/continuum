@@ -522,13 +522,13 @@ impl RequiredParts {
     }
 }
 
-/// Finite optional representations remaining in the admitted prompt. Grounding
-/// stays frozen at its original position; required messages remain one intact tail.
+/// Finite optional representations remaining in the admitted prompt. Her view (with her
+/// grounding, its blocks) stays whole before `grounding_at`; required messages remain one
+/// intact tail.
 #[derive(Debug, Clone, Default)]
 pub struct PromptRefit {
     pub(in super::super) history_len: usize,
     pub(in super::super) grounding_at: usize,
-    pub(in super::super) grounding_len: usize,
     pub(in super::super) result_pointers: Vec<(usize, ChatMessage)>,
 }
 

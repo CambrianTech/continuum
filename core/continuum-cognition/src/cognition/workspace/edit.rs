@@ -336,8 +336,9 @@ pub struct Contribution {
     /// settle-act only appends to the very end of the token stream and only that
     /// small new tail re-prefills. The append-only formatting the working-memory
     /// faculty already uses (see its `contribute`) finally pays off, because the
-    /// growing block is now genuinely last. Defaults `false` (system-message context);
-    /// set via [`trailing`](Self::trailing).
+    /// growing block is now genuinely last. Every context contribution is a block of her
+    /// view (`context_streams::blocks`): `true` from [`context`](Self::context), so no
+    /// context renders outside the view; a decision or a fault is never a block.
     pub trailing: bool,
     /// The **atomic units** this content is made of, in the order the faculty
     /// emitted them — the granularity at which it is still truthful to cut.
@@ -417,7 +418,7 @@ impl Contribution {
             capacity_refusal: None,
             receipts: Vec::new(),
             raw_generation: None,
-            trailing: false,
+            trailing: true,
         }
     }
 

@@ -6,12 +6,6 @@ impl LlmDeliberationFaculty {
         (faculty.len() + body_bytes + "\n[]\n\n".len()).div_ceil(GUARD_CHARS_PER_TOKEN)
     }
 
-    /// What wrapping a non-empty assembled context costs: its header (it rides the tail after her
-    /// view, never the system message; `deliberation_prompt::working_context_message`).
-    pub fn working_context_header_cost() -> usize {
-        deliberation_prompt::WORKING_CONTEXT_HEADER.len().div_ceil(GUARD_CHARS_PER_TOKEN)
-    }
-
     /// The system message's estimate: its text. The chat template's own tokens around each message
     /// are no constant here: they are in the engine's count of every prompt, so her measured
     /// density prices them (`Density`, `delib.prompt.density`); unmeasured, the estimate stands
@@ -225,7 +219,6 @@ impl LlmDeliberationFaculty {
         let refit = PromptRefit {
             history_len: prompt.history.len(),
             grounding_at,
-            grounding_len: 0,
             result_pointers: prompt.result_pointers.into_iter()
                 .filter_map(|(index, pointer)| index.checked_sub(start).map(|i| (i, pointer)))
                 .collect(),
@@ -278,11 +271,7 @@ impl LlmDeliberationFaculty {
         if reduction == 0 { return Err(refusal()); }
         let input_budget = old_estimate.saturating_sub(reduction);
         let fixed_tokens = old_estimate.saturating_sub(view.pricing.estimate_all(&view.messages));
-        let grounding: Vec<_> = view.messages.drain(
-            view.refit.grounding_at..view.refit.grounding_at + view.refit.grounding_len
-        ).collect();
         let required = view.messages.split_off(view.refit.history_len);
-        let frozen_grounding_tokens = view.pricing.estimate_all(&grounding);
         let prompt = PromptMessages {
             streams: Default::default(),
             input_identity: view.input_identity,
@@ -294,13 +283,10 @@ impl LlmDeliberationFaculty {
             action_statement: None,
             pricing: view.pricing,
         };
-        let mut fitted = self.fit_messages(prompt, input_budget
-            .saturating_sub(fixed_tokens).saturating_sub(frozen_grounding_tokens))?;
+        let fitted = self.fit_messages(prompt, input_budget.saturating_sub(fixed_tokens))?;
         if fitted.refit.remaining_reductions() >= old_reductions {
             return Err(refusal());
         }
-        fitted.refit.grounding_len = grounding.len();
-        fitted.messages.splice(fitted.grounding_at..fitted.grounding_at, grounding);
         let estimate = fixed_tokens.saturating_add(view.pricing.estimate_all(&fitted.messages));
         if estimate >= old_estimate { return Err(refusal()); }
         view.messages = fitted.messages;
@@ -310,17 +296,4 @@ impl LlmDeliberationFaculty {
         view.capacity_error = None;
         Ok(view)
     }
-}
-
-#[derive(Default)]
-pub(in super::super) struct ContextComposition {
-    pub(in super::super) context_window: u32,
-    pub(in super::super) framing_tokens: usize,
-    pub(in super::super) conversation_tokens: usize,
-    pub(in super::super) ctx_floor: usize,
-    pub(in super::super) after_framing: usize,
-    pub(in super::super) tool_tokens: usize,
-    /// WHY the surface priced in `tool_tokens` is the one sent: the receipt that says which
-    /// arm put a 38-tool surface on a CPU lane (card 3026b83e).
-    pub(in super::super) surface_reason: SurfaceReason,
 }
