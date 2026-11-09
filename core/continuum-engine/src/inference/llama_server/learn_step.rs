@@ -29,6 +29,11 @@ pub struct LearnExample {
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 pub struct LearnOutcome {
     pub success: bool,
+    /// Optimizer updates this step committed to her shadow, as the engine counted them.
+    pub committed_steps: i64,
+    /// The engine failed mid-step and quarantined her shadow: its parameters may hold partial
+    /// writes, so it is never snapshotted or trusted again (refusal `effects_uncertain`).
+    pub effects_uncertain: bool,
     /// The ledger's refusal name, `none` when it was admitted.
     pub refusal: String,
     pub loss: f64,
