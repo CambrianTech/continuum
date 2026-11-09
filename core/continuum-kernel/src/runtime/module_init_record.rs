@@ -154,7 +154,11 @@ mod tests {
         store.save(&SlowestHealthyInit { module: "a".into(), ms: 1843 });
         assert_eq!(InitRecordStore::under_home(dir.path()).deadline(), once);
 
-        std::fs::write(dir.path().join("state/module-init.json"), b"{ not json").expect("corrupt");
-        assert_eq!(InitRecordStore::under_home(dir.path()).deadline(), InitDeadline::unmeasured());
+        // A corrupt record is no prior. Written into a home this process never read: the saved-state
+        // store reads each file once per process, so a write under it would never be seen (#5847).
+        let corrupt = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(corrupt.path().join("state")).expect("state dir");
+        std::fs::write(corrupt.path().join("state/module-init.json"), b"{ not json").expect("corrupt");
+        assert_eq!(InitRecordStore::under_home(corrupt.path()).deadline(), InitDeadline::unmeasured());
     }
 }
