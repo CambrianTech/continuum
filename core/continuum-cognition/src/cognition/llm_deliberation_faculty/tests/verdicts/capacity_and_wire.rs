@@ -552,11 +552,9 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
         tool_tokens: tools,
         messages: &view.messages,
         view_len: view.refit.grounding_at,
-        grounding_len: view.refit.grounding_len,
         framing_grant: 0,
         required_grant: 0,
         history_grant: 0,
-        grounding_grant: 0,
         view_grant: 0,
     };
     assert!(faculty.budget_violation(&ledger(charged)).is_none(), "at its window the prompt complies");

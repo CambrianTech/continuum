@@ -24,8 +24,7 @@ fn directedness_flip_keeps_the_grounding_inside_the_reusable_prefix() {
         .with_context_window(8192);
 
     // Same room content + the same standing grounding (a session-stable roster
-    // contribution renders the [What you are working with] block); only the
-    // directedness dimension flips.
+    // contribution, a block of her view); only the directedness dimension flips.
     let with_grounding = |directed: bool| {
         let mut ws = Workspace::new("the team is chatting about the plan");
         ws.broadcast.push(
@@ -78,8 +77,8 @@ fn directedness_flip_keeps_the_grounding_inside_the_reusable_prefix() {
 // prompt and her warm page could not serve the other room. Her system message must be
 // byte-identical across rooms, the second room's prompt must open with everything her
 // first act's view held (the engine reuses it whole), and each room's grounding must still
-// reach her when she acts there: its doctrine as a block of her view, a context no source
-// marked as a view block in the tail after it.
+// reach her when she acts there: its doctrine and its roster, each the newest version of its
+// block in her view (every grounding contribution is a view block).
 #[test]
 fn two_rooms_share_her_head_and_each_room_grounds_her_when_she_acts_there() -> Result<(), String> {
     use crate::cognition::workspace::Burst;
@@ -104,7 +103,7 @@ fn two_rooms_share_her_head_and_each_room_grounds_her_when_she_acts_there() -> R
                 .session_stable()
                 .trailing(),
         );
-        // A context no producer marked as a view block: it must still stay out of the head.
+        // A context its producer never marked: a view block all the same, never the head.
         ws.broadcast.push(
             Contribution::context(FacultyId::Custom("room-roster".to_string()), roster, 0.9, "framing")
                 .session_stable(),
@@ -128,13 +127,12 @@ fn two_rooms_share_her_head_and_each_room_grounds_her_when_she_acts_there() -> R
     assert!(view_a > 0, "her view leads the messages:\n{ta:#?}");
     assert_eq!(tb.get(..view_a), ta.get(..view_a), "room B's prompt must open with room A's whole view");
 
-    // Each room still grounds her where she acts: its doctrine is the newest version of the
-    // block in her view, and its unmarked context rides the tail after the view.
-    let newest_doctrine = |t: &[String]| t.iter().rev().find(|m| m.starts_with("[room-doctrine]")).cloned();
-    assert!(newest_doctrine(&ta).is_some_and(|m| m.contains("DOCTRINE-A")), "{ta:#?}");
-    assert!(newest_doctrine(&tb).is_some_and(|m| m.contains("DOCTRINE-B")), "{tb:#?}");
-    let tail_holds = |t: &[String], needle: &str| t[view_a.min(t.len())..].iter().any(|m| m.contains(needle));
-    assert!(tail_holds(&ta, "ROSTER-A"), "room A's context reaches her in room A:\n{ta:#?}");
-    assert!(tail_holds(&tb, "ROSTER-B") && !tail_holds(&tb, "ROSTER-A"), "room B's context, not A's:\n{tb:#?}");
+    // Each room still grounds her where she acts: its doctrine and its roster are each the newest
+    // version of their block in her view.
+    let newest = |t: &[String], block: &str| t.iter().rev().find(|m| m.starts_with(block)).cloned();
+    assert!(newest(&ta, "[room-doctrine]").is_some_and(|m| m.contains("DOCTRINE-A")), "{ta:#?}");
+    assert!(newest(&tb, "[room-doctrine]").is_some_and(|m| m.contains("DOCTRINE-B")), "{tb:#?}");
+    assert!(newest(&ta, "[room-roster]").is_some_and(|m| m.contains("ROSTER-A")), "room A's roster reaches her in room A:\n{ta:#?}");
+    assert!(newest(&tb, "[room-roster]").is_some_and(|m| m.contains("ROSTER-B")), "room B's roster, not A's:\n{tb:#?}");
     Ok(())
 }

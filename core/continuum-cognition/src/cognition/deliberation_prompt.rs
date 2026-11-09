@@ -59,8 +59,8 @@ pub(super) struct SystemPromptParts<'a> {
     pub tools: &'a [NativeToolSpec],
     /// Categories to expand inline this turn (the rest render as collapsed bookmarks).
     pub expanded: &'a BTreeSet<String>,
-    // No `context`: the assembled context is a room's, and the system message is hers
-    // (module doc). It renders after her view ([`working_context_message`]).
+    // No `context`: a room's grounding is her view's blocks (`context_streams::blocks`),
+    // and the system message is hers in every room (module doc).
     /// A turn DIRECTED at her (question/@mention/DM) withholds the silent-PASS hatch.
     pub directed: bool,
     /// Wall-clock (or eval-pinned) NOW in ms — rendered as `[now …]` standing context
@@ -563,38 +563,6 @@ pub const OWN_TIME_BLOCK: &str = "\n\n[Your own time]\n\
      not a failure to find something. What you do with this time is yours alone; \
      nothing here is telling you which to pick.";
 
-/// `[What you are working with right now]` — the assembled context that did not ride
-/// her view, as ONE message of the fresh tail after it. It is a room's context, so it
-/// never enters the system message, which is hers in every room (module doc). Grounding
-/// sources ride her view (`RagSourceFaculty::contribute`), so in the live path this
-/// carries only a contribution no source marked as a view block. Returns `None` when
-/// the mind assembled no such context.
-pub(super) fn working_context_message(context: &str) -> Option<String> {
-    if context.is_empty() {
-        return None;
-    }
-    // A message opens at its header; the header's leading blank lines separated it from
-    // the system blocks it used to follow.
-    let header = WORKING_CONTEXT_HEADER.trim_start_matches('\n');
-    let mut s = String::with_capacity(header.len() + context.len());
-    s.push_str(header);
-    s.push_str(context);
-    Some(s)
-}
-
-/// The wrapper the working-context message opens with when there is a NON-empty
-/// assembled context. `pub(super)` so the faculty's budget math can charge the ctx
-/// budget for it (`working_context_header_cost`, which also charges the message's
-/// chat-template wrapper): without the explicit charge the prompt exceeds the estimate
-/// by exactly this header whenever any context renders (a systematic ~50-token
-/// under-count, masked by rounding slop until the tool-menu example grew the prompt to
-/// the budget edge, 2026-07-13).
-pub(super) const WORKING_CONTEXT_HEADER: &str = "\n\n[What you are working with right now]\n\
-     The following is the context your mind assembled this moment — \
-     recalled memory, who is present, the room's nature, your read of \
-     the situation. Ground your contribution in it; you need not cite \
-     every line:\n";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -811,19 +779,6 @@ mod tests {
             own.contains("[Your own time]"),
             "self-initiated ⇒ own-time block: {own}"
         );
-    }
-
-    // what this catches: the assembled-context message drifting from the header the
-    // budget charges for (`working_context_header_cost`), or gaining the blank lines that
-    // separated it from the system blocks it used to follow; and an empty context
-    // rendering an empty-but-headed message into her tail.
-    #[test]
-    fn the_working_context_message_opens_at_its_header_and_is_absent_when_empty() {
-        let m = working_context_message("CTX").expect("a non-empty context renders");
-        assert!(m.starts_with("[What you are working with right now]"), "{m}");
-        assert!(m.ends_with("CTX"), "{m}");
-        assert!(m.len() <= WORKING_CONTEXT_HEADER.len() + "CTX".len(), "never more than it is charged");
-        assert_eq!(working_context_message(""), None);
     }
 
     // what this catches: the anti-refusal coherence anchor. Live glass-box showed

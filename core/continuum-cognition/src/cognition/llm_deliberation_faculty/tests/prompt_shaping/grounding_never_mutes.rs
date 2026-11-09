@@ -36,7 +36,7 @@ fn an_unaffordable_standing_source_does_not_fault_the_turn() {
 
     // The fixture must actually be unaffordable whole, or this test proves nothing.
     assert!(
-        LlmDeliberationFaculty::assembled_context_cost(&ws) > 4_096,
+        ws.broadcast.iter().map(|c| estimate_guard_tokens(&c.content)).sum::<usize>() > 4_096,
         "fixture must make the standing grounding genuinely unaffordable whole"
     );
 
@@ -54,29 +54,4 @@ fn an_unaffordable_standing_source_does_not_fault_the_turn() {
     // token budget"): the standing grounding reaches her at a level that fits.
     let text: String = view.messages.iter().map(|m| m.content_text()).collect();
     assert!(text.contains("[room-roster]") || text.contains("[room-wall]"), "her standing grounding reaches her reduced, not dropped");
-}
-
-// what this catches: a reduction that cannot state its own magnitude (the saturating-subtract
-// mistake that destroyed the diagnosis one layer up: "over by 31,000" and "exactly at the line"
-// arrived as the same number). The grounding consumer's want is every contribution whole, whatever
-// level a budget shows it at, and its levels reach below any budget the fixture could need.
-#[test]
-fn the_grounding_consumer_keeps_its_want_whatever_level_it_is_shown_at() {
-    let mut ws = Workspace::new("stimulus");
-    ws.broadcast.push(
-        Contribution::context(
-            FacultyId::Custom("room-roster".into()),
-            "standing world state".repeat(200),
-            0.9,
-            "standing",
-        )
-        .standing_grounding(),
-    );
-    let offer = super::super::super::prompt::grounding::GroundingOffer::of(&ws, &|tokens| tokens as u32);
-    let whole = LlmDeliberationFaculty::assembled_context_cost(&ws) as u32;
-    assert!(whole > 0, "the fixture must actually want something");
-    assert!(offer.leveled.want() >= whole, "the WANT survives every reduction: {} of {whole}", offer.leveled.want());
-    let reduced = offer.leveled.reduce(whole / 4);
-    assert!(reduced.cost <= whole / 4, "a smaller budget is met by a smaller level: {} for {}", reduced.cost, whole / 4);
-    assert!(reduced.cost > 0, "a level that still carries content, not nothing");
 }
