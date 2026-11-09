@@ -88,6 +88,9 @@ struct EngineLearning {
 
 struct Seated {
     policy: LearnPolicy,
+    /// The signature of the competence she learns here, minted from the examples that seated her
+    /// (a fork's parent on it): stamped on the gene her generation becomes.
+    signature: Option<crate::genome::signature::GeneSignature>,
     /// The longest grant the engine accepts, as it reported it: what a renewal asks for.
     expiry: std::time::Duration,
     mind: MindLearner,
@@ -179,7 +182,7 @@ async fn steps(
     for row in rows {
         let total = u32::try_from(row.examples.len()).map_err(|_| format!("submission {} holds too many examples to count", row.id))?;
         loop {
-            if !seat(authority, state, held, key, row, engine).await? {
+            if !seat(authority, state, held, key, row, rows, engine).await? {
                 pass.deferred = true;
                 return Ok(Lost::No);
             }
@@ -288,9 +291,34 @@ async fn checkpoint(state: &TrainingTriggerState, key: &BucketKey, seated: &mut 
 
 /// Make sure a learner is seated for `key` in `held`'s engine, restored from the bucket's newest
 /// generation when it has one. `false` when it cannot be seated now; the bucket defers.
-async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut EngineLearning, key: &BucketKey, row: &Arrival, engine: EngineIncarnation) -> Result<bool, String> {
+async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut EngineLearning, key: &BucketKey, row: &Arrival, rows: &[Arrival], engine: EngineIncarnation) -> Result<bool, String> {
     if held.minds.contains_key(key) {
         return Ok(true);
+    }
+    // WHICH gene this competence trains, by the one rule (competence::decide): the bucket's pending
+    // examples are the competence; nothing of hers learns it yet (no learner is seated for it).
+    let examples: Vec<crate::genome::fine_tuning::types::TrainingExample> = rows.iter().flat_map(|r| r.examples.iter().cloned()).collect();
+    let mut signature = super::competence::mint_signature(format!("inline:{}", key.trait_kind), &key.trait_kind, &examples).await;
+    if let Some(sig) = signature.as_mut() {
+        let asking = super::competence::Asking { persona_id: key.persona_id, persona_name: &row.persona_name, trait_kind: &key.trait_kind, base_model: &key.base_model, examples: examples.len() };
+        let adoption = crate::genome::gene_trial::Adoption::default_paths();
+        match super::competence::decide(&asking, sig, &adoption, &[]).await {
+            Ok(crate::genome::competence::Decision::Mint) => {}
+            Ok(crate::genome::competence::Decision::Fork { parent, .. }) => sig.parent = Some(parent), // learned from the base with its lineage, as the trainer it replaces did
+            Ok(crate::genome::competence::Decision::Reuse { gene, similarity }) => {
+                let _reused_or_refused = super::competence::reuse(&asking, &gene, similarity, &adoption).await; // probed either way; the examples wait for its trial
+                return Ok(false);
+            }
+            Ok(other) => {
+                continuum_base::probe!(class = "training.in_place.not_learning", persona = %key.persona_id, decision = ?other,
+                    "the competence decision does not learn now (awaiting a trial, or memories suffice); the examples stay pending");
+                return Ok(false);
+            }
+            Err(why) => {
+                continuum_base::probe!(class = "training.in_place.undecided", persona = %key.persona_id, reason = %why, "the competence could not be decided; nothing learns blind");
+                return Ok(false);
+            }
+        }
     }
     let policy = match learn_policy(row.lora.as_ref(), row.schedule.as_ref()) {
         Ok(policy) => policy,
@@ -325,7 +353,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
         Ok(mind) => {
             let binding = format!("{}:{}:{}", key.persona_id, key.trait_kind, key.base_model);
             let checkpointed = generation.iter().flat_map(|g| g.positions.iter()).map(|p| (p.submission, p.learned)).collect();
-            held.minds.insert(key.clone(), Seated { policy, expiry, mind, binding, restore: generation, progress: HashMap::new(), checkpointed });
+            held.minds.insert(key.clone(), Seated { policy, signature, expiry, mind, binding, restore: generation, progress: HashMap::new(), checkpointed });
             Ok(true)
         }
         Err(StartFailure::NotSeated(why)) => {

@@ -161,3 +161,78 @@ pub(crate) async fn decide(
     );
     Ok(decision)
 }
+
+/// Why a reuse adopted nothing: the hub gene did not pull, or the adoption refused it. The examples
+/// stay pending either way.
+#[derive(Debug)]
+pub(crate) enum ReuseRefused {
+    Pull(String),
+    Adopt(String),
+}
+
+/// Reuse `gene` for `asking`'s competence: pull it when it is on the hub, then adopt it for trial
+/// on her cards, with no training. The trial's id.
+pub(crate) async fn reuse(
+    asking: &Asking<'_>,
+    gene: &crate::genome::competence::GeneRef,
+    similarity: f32,
+    adoption: &Result<Adoption, crate::genome::gene_trial::AdoptRefusal>,
+) -> Result<uuid::Uuid, ReuseRefused> {
+    use crate::genome::competence::GeneRef;
+    let path = match gene {
+        GeneRef::Local { path } => path.clone(),
+        GeneRef::Hub { repo } => {
+            let pulled = crate::commands::genome_share::pull_gene(&crate::commands::genome_share::GenomePullParams {
+                repo: repo.clone(),
+                base_model: asking.base_model.to_owned(),
+                alias: Some(asking.trait_kind.to_owned()),
+            })
+            .await;
+            match pulled {
+                Ok(r) => std::path::PathBuf::from(r.path),
+                Err(e) => {
+                    continuum_base::probe!(
+                        class = "genome.reuse.refused",
+                        persona = %asking.persona_name,
+                        trait_kind = %asking.trait_kind,
+                        gene = %gene,
+                        error = %e,
+                        "the hub gene this competence would reuse did not pull: no trial, no learning; the examples stay pending"
+                    );
+                    return Err(ReuseRefused::Pull(format!("reuse of {gene}: pull failed: {e}")));
+                }
+            }
+        }
+    };
+    let adopted = adoption
+        .as_ref()
+        .map_err(Clone::clone)
+        .and_then(|a| a.adopt(asking.persona_id, asking.trait_kind, &path, asking.base_model, None, continuum_base::time::EpochMs::now().millis()));
+    match adopted {
+        Ok(trial) => {
+            continuum_base::probe!(
+                class = "genome.reused",
+                persona = %asking.persona_name,
+                trait_kind = %asking.trait_kind,
+                examples = asking.examples as u64,
+                gene = %gene,
+                path = %path.display(),
+                similarity = similarity,
+                trial = %trial.id,
+                "an existing gene carries this competence: adopted, no training; with no learning here the examiner receipts it unexaminable"
+            );
+            Ok(trial.id)
+        }
+        Err(refusal) => {
+            continuum_base::probe!(
+                class = "genome.reuse.refused",
+                persona = %asking.persona_name,
+                trait_kind = %asking.trait_kind,
+                gene = %gene,
+                refusal = %refusal,
+                "the gene this competence would reuse was not adopted: no trial, no learning; the examples stay pending"
+            );
+            Err(ReuseRefused::Adopt(format!("reuse of {gene}: {refusal}")))
+        }
+    }
+}
