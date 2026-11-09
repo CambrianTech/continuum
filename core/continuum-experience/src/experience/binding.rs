@@ -141,7 +141,7 @@ impl RoomRecipeBinding {
     pub fn declared_review(&self) -> Result<Option<ReviewPolicy>, String> {
         match self.params.get("review") {
             None | Some(serde_json::Value::Null) => Ok(None),
-            Some(v) => serde_json::from_value(v.clone())
+            Some(v) => serde_json::from_value(v.clone()) // boundary: the binding's params arrive as JSON in the recipe wall record (airc's wire + store)
                 .map(Some)
                 .map_err(|e| format!("the room's review policy is not {{required, roles, self}}: {e}")),
         }

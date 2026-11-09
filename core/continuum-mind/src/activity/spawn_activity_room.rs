@@ -510,7 +510,7 @@ pub(super) async fn publish_standing_in(
     room: &airc_lib::Room,
     next: &RoomStanding,
 ) -> Result<String, CommandError> {
-    let body = serde_json::to_string(next)
+    let body = serde_json::to_string(next) // boundary: the standing wall record, airc's wire + store
         .map_err(|source| CommandError::Internal(format!("encode standing: {source}")))?;
     airc.publish_wall_post_in(room, STANDING_WALL_CATEGORY.to_string(), body, None)
         .await
