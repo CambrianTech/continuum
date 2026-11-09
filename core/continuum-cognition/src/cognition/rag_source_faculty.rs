@@ -137,34 +137,22 @@ impl RagSourceFaculty {
     /// disagree about their identity.
     pub fn new(persona_id: Uuid, source: Arc<dyn RagSource>, policy: SaliencePolicy) -> Self {
         let source_id = source.source_id().to_string();
-        // THE CACHEABLE PREFIX TAKES STANDING CHURN ONLY (card c119ace7, Cormac's
-        // condition on #4280). A declaration is not a measurement: `room-wall` was
-        // registered as plain framing — no `volatile_content` — and so rode the SYSTEM
-        // prefix ahead of the conversation, while its bytes change whenever ANY teammate
-        // writes a card ledger. The M5's 2026-09-20 log holds both halves of the proof:
-        // the turns where the wall changed reused exactly 2,046 tokens (6%, the tools +
-        // identity head), and the turns where it did not reused 65-78% WITH THE SAME
-        // CONVERSATION BEHIND IT — which is only possible if the conversation is the more
-        // stable of the two. So placement is not left to whoever registers a source:
-        // Board- and Turn-churn grounding is never `stable`, and since 2026-10-23 no
-        // grounding is placed in the system message at all (`contribute`).
-        let stable = matches!(policy, SaliencePolicy::StandingFraming)
-            && matches!(
-                super::deliberation_prompt::churn_of(&source_id),
-                super::deliberation_prompt::PromptChurn::Standing
-            );
+        // Standing framing is topic-independent by contract: a deferred reprojection holds its
+        // salience (`deferred_faculty`). Where it sits in her prompt is no flag of a source's:
+        // every grounding is a block of her view, ordered at a start by its measured motion
+        // (`deliberation_prompt::stable_prefix_order`), so a block whose bytes change (the
+        // wall: any teammate's card ledger) moves behind the ones that do not, by measurement.
+        let stable = matches!(policy, SaliencePolicy::StandingFraming);
         let faculty_id = FacultyId::Custom(source_id);
         Self {
             persona_id,
             source,
             faculty_id,
             salience: policy.salience(),
-            // Standing framing is session-stable by default; retrieved grounding
-            // is volatile, and a Board/Turn-churn source is never stable however it
-            // was registered (above). `with_volatile_content` narrows further, for
-            // Standing-churn framing whose BYTES still mutate per turn (workspace-map
-            // — her own writes change it): importance keeps the floor, placement
-            // follows content stability.
+            // Standing framing is session-stable by default; retrieved grounding is
+            // volatile. `with_volatile_content` narrows further, for framing whose BYTES
+            // still mutate per turn (workspace-map — her own writes change it):
+            // importance keeps the floor.
             stable,
             standing_grounding: matches!(policy, SaliencePolicy::StandingFraming),
             clock: wall_clock(),

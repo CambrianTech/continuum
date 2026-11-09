@@ -102,10 +102,14 @@ mod tests {
     }
 
     // what this catches: a restart order by label; the roster was labelled stable and changed with
-    // every room switch (5 of 12 turnovers kept 3-6%).
+    // every room switch (5 of 12 turnovers kept 3-6%). Zero since the churn table was deleted:
+    // the view orders every start by measured motion.
     #[test]
-    fn hand_churn_labels_never_increase() {
-        hold(&HandChurnLabels, "The view orders a start by measured motion (continuum_context::motion).");
+    fn hand_churn_labels_is_zero() {
+        let violations = scan(&[&HandChurnLabels]);
+        crate::ratchet::zero(HandChurnLabels.name(), &violations, || {
+            format!("The view orders a start by measured motion (continuum_context::motion); order by name within an epoch. {RECIPE}")
+        });
     }
 
     // what this catches: the predicates that make the rules useful rather than noise.

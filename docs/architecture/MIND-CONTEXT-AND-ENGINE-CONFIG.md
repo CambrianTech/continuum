@@ -326,7 +326,7 @@ no faculty re-implements them:
 |---|---|---|
 | prompt messages built outside the view and the fresh tail's one renderer (`ChatMessage::text`/`tool_results` in `llm_deliberation_faculty/prompt`) | 13 | the tail's single renderer only |
 | collapse outside the view (`collapse_over` / `collapse_results_over_cap` callers) | 4 | 0: working memory bounds RAM by handle, never what she sees |
-| hand churn labels (`churn_of` callers; production lines, ratchet `hand_churn_labels`) | 3 | 0: `Motion` orders every start |
+| hand churn labels (`churn_of` callers; production lines, ratchet `hand_churn_labels`) | 0 since 2026-11-09 (the table is deleted; the ratchet is a zero gate) | 0: `Motion` orders every start |
 | positron `ViewState` kinds that are not context `Source`s | 13; 10 on 2026-11-07 (the kanban, the wall and the roster declare their shape through `continuum_context::nav`; one keyed item per card, post and member) | 0: one adapter, items with levels and expand handles |
 
 **Media is the same codec** (Joel, 2026-10-26: "Should be positron. This is common across so
