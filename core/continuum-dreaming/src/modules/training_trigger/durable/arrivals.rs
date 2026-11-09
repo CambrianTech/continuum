@@ -71,3 +71,60 @@ impl DurableStore {
         self.submissions.update(id, &row).await.map_err(|e| e.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn submission(sequence: u64, examples: usize) -> (Uuid, Submission) {
+        let base = BaseEntity::for_new_record();
+        let id = entity_id(&base).expect("test: a fresh entity id");
+        let example = |n: usize| TrainingExample { prompt: format!("p{n}"), completion: "c".into(), metadata: None, lived: None };
+        let batch = PendingBatch {
+            submission_ids: vec![id],
+            submission_examples: vec![examples as u32],
+            submission_returned: vec![false],
+            returned: false,
+            persona_name: "Kimi".into(),
+            source: crate::genome::fine_tuning::TrainingSource::OperatorCurated,
+            examples: (0..examples).map(example).collect(),
+            lora: None,
+            schedule: None,
+            local_artifact_dir: None,
+            preferred_provider: None,
+            min_examples: 1,
+            validation_split: 0.0,
+            eval_set: None,
+        };
+        let row = Submission {
+            base,
+            sequence,
+            persona_id: Uuid::nil(),
+            trait_kind: "code".into(),
+            base_model: "qwen".into(),
+            batch,
+            is_pending: true,
+            dispatch_id: None,
+            retirement_id: None,
+            learned: 0,
+        };
+        (id, row)
+    }
+
+    // what this catches: the learned cursor moving backwards, past its examples, or leaving a row
+    // pending once every example is learned (or pending-free before then). Arrivals read it back.
+    #[tokio::test]
+    async fn the_learned_cursor_advances_and_retires_the_row_when_every_example_is_learned() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let store = DurableStore::new(adapter).await.expect("test: store");
+        let (id, row) = submission(1, 2);
+        store.submissions.save(id, &row).await.expect("test: saved");
+        store.record_learned(id, 1).await.expect("test: one learned");
+        let arrived = store.arrivals(0, 8).await.expect("test: arrivals");
+        assert_eq!((arrived.len(), arrived[0].learned), (1, 1), "still pending, one learned");
+        assert!(store.record_learned(id, 0).await.is_err(), "never backwards");
+        assert!(store.record_learned(id, 3).await.is_err(), "never past its examples");
+        store.record_learned(id, 2).await.expect("test: all learned");
+        assert!(store.arrivals(0, 8).await.expect("test: arrivals").is_empty(), "retired once every example is learned");
+    }
+}

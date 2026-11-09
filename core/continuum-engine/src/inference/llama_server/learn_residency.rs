@@ -346,3 +346,65 @@ impl LearningEngine {
             .map_err(|e| LlamaServerError::Unreachable(format!("the learning plan answered no plan: {e}")))
     }
 }
+
+/// A checkpoint the engine published: one immutable generation directory holding her shadow's
+/// weights, its optimizer state and a manifest, flushed before and after its one rename.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct Checkpoint {
+    /// The generation directory (`<name>.checkpoint`).
+    pub path: String,
+    /// Optimizer updates the saved shadow had committed: what the generation holds.
+    pub steps: i64,
+    pub binding: String,
+}
+
+/// What a checkpoint save answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckpointAnswer {
+    Saved(Checkpoint),
+    /// The shadow has learned nothing yet: there is no optimizer state to save.
+    NoOptimizerState,
+}
+
+impl LearningEngine {
+    /// `POST /lora-adapters/save` with a checkpoint: publish shadow `lora_id`'s weights and optimizer
+    /// state as generation `<name>.checkpoint`, under incarnation `engine`, bound to `binding`, with
+    /// `provenance` recorded in its manifest. Refused while she is learning.
+    pub async fn save_checkpoint(
+        &self,
+        engine: &LedgerEngine,
+        lora_id: i64,
+        name: &str,
+        binding: &str,
+        provenance: serde_json::Value,
+    ) -> Result<CheckpointAnswer, LlamaServerError> {
+        let body = serde_json::json!({ "id": lora_id, "name": name, "checkpoint": { "engine": engine, "binding": binding, "provenance": provenance } });
+        let resp = self
+            .client
+            .post(format!("{}/lora-adapters/save", self.root))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        let status = resp.status();
+        let bytes = resp.bytes().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !status.is_success() {
+            return Err(LlamaServerError::Unreachable(format!("checkpoint save refused ({status}): {}", String::from_utf8_lossy(&bytes))));
+        }
+        #[derive(serde::Deserialize)]
+        struct Answer {
+            #[serde(default)]
+            refusal: Option<String>,
+            #[serde(default)]
+            checkpoint: Option<Checkpoint>,
+        }
+        let answer: Answer = serde_json::from_slice(&bytes) // engine HTTP wire: the save's answer
+            .map_err(|e| LlamaServerError::Unreachable(format!("checkpoint save answered nothing readable: {e}")))?;
+        match (answer.refusal.as_deref(), answer.checkpoint) {
+            (Some("no_optimizer_state"), _) => Ok(CheckpointAnswer::NoOptimizerState),
+            (Some(other), _) => Err(LlamaServerError::Unreachable(format!("checkpoint save refused: {other}"))),
+            (None, Some(checkpoint)) => Ok(CheckpointAnswer::Saved(checkpoint)),
+            (None, None) => Err(LlamaServerError::Unreachable("checkpoint save answered without a checkpoint".into())),
+        }
+    }
+}

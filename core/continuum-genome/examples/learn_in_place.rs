@@ -55,6 +55,11 @@ async fn main() -> Result<(), String> {
         let outcome = mind.learn(&authority, &mut workspace, example.clone(), None, 0, 0.001).await.map_err(|e| format!("learn {step}: {e}"))?;
         println!("step {step}: {outcome:?}");
     }
+    let saved = mind
+        .checkpoint(&format!("e2e-{}.gguf", uuid::Uuid::new_v4().simple()), "e2e", serde_json::json!({"example": "capital of Kansas", "steps": 2}))
+        .await
+        .map_err(|e| format!("checkpoint: {e}"))?;
+    println!("checkpoint: {saved:?}");
     if let Ok(LedgerAnswer::Ledger(ledger)) = engine.learn_ledger().await {
         println!("while learning: {} residencies, optimizer buffers {:?}", ledger.residencies.len(), ledger.memory.optimizer.iter().map(|b| b.bytes).collect::<Vec<_>>());
         for residency in &ledger.residencies {
