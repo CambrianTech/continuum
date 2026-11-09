@@ -55,15 +55,33 @@ impl std::fmt::Display for SeatRefusal {
     }
 }
 
+/// The authorities a seat answers to: the one resource authority, and the serving lifecycle gate
+/// leases are read and granted under.
+pub struct Authority {
+    pub resources: std::sync::Arc<crate::resources::ResourceDaemon>,
+    pub serving: crate::inference::serving_lifecycle::LifecycleGate,
+}
+
+impl Authority {
+    /// This core's authorities, as installed at start.
+    pub fn installed() -> Result<Self, SeatRefusal> {
+        Ok(Self {
+            resources: crate::resources::ResourceDaemon::global().ok_or_else(|| SeatRefusal::Unleased("the resource authority is not running".into()))?,
+            serving: crate::inference::serving_lifecycle::LifecycleGate::global()
+                .ok_or_else(|| SeatRefusal::Unleased("the serving lifecycle gate is not installed".into()))?,
+        })
+    }
+}
+
 /// Seat `shadow` for `consumer` (her learning's name on the resource board) in `engine`.
-pub async fn seat(engine: LearningEngine, consumer: &str, shadow: FreshShadow) -> Result<Seat, SeatRefusal> {
+pub async fn seat(authority: &Authority, engine: LearningEngine, consumer: &str, shadow: FreshShadow) -> Result<Seat, SeatRefusal> {
     let plan = match engine.plan_fresh_shadow(&shadow).await {
         Ok(LedgerAnswer::Ledger(plan)) => plan,
         Ok(LedgerAnswer::NoLedger) => return Err(SeatRefusal::NoLedger),
         Err(error) => return Err(SeatRefusal::Unmeasured(error.to_string())),
     };
     let rows: Vec<ResidencyRow> = plan.weights.into_iter().map(|row| ResidencyRow::of(row, RowKind::Weights)).collect();
-    let leases = lease_rows(consumer, &rows).await?;
+    let leases = lease_rows(authority, consumer, &rows).await?;
     let terms = ResidencyTerms {
         id: ResidencyId::issue(),
         engine: plan.engine.clone(),
@@ -94,17 +112,14 @@ pub async fn seat(engine: LearningEngine, consumer: &str, shadow: FreshShadow) -
 
 /// Lease each class of the rows (device memory as VRAM, host memory as RAM) from the resource
 /// authority, under the serving lifecycle gate.
-async fn lease_rows(consumer: &str, rows: &[ResidencyRow]) -> Result<Vec<(LeaseKind, u64, LeaseGuard)>, SeatRefusal> {
-    let daemon = crate::resources::ResourceDaemon::global().ok_or_else(|| SeatRefusal::Unleased("the resource authority is not running".into()))?;
-    let gate = crate::inference::serving_lifecycle::LifecycleGate::global()
-        .ok_or_else(|| SeatRefusal::Unleased("the serving lifecycle gate is not installed".into()))?;
+async fn lease_rows(authority: &Authority, consumer: &str, rows: &[ResidencyRow]) -> Result<Vec<(LeaseKind, u64, LeaseGuard)>, SeatRefusal> {
     let mut leases = Vec::new();
     for (kind, resource, host) in [(LeaseKind::Vram, ResourceKind::Vram, false), (LeaseKind::Ram, ResourceKind::Ram, true)] {
         let bytes: u64 = rows.iter().filter(|row| row.host == host).map(|row| row.bytes).sum();
         if bytes == 0 {
             continue;
         }
-        let guard = crate::inference::training_admission::wait_for_training_memory(daemon.clone(), &gate, consumer, resource, bytes, |_| {})
+        let guard = crate::inference::training_admission::wait_for_training_memory(authority.resources.clone(), &authority.serving, consumer, resource, bytes, |_| {})
             .await
             .map_err(SeatRefusal::Unleased)?;
         leases.push((kind, bytes, guard));
@@ -130,3 +145,6 @@ impl Seat {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
