@@ -1,6 +1,13 @@
 # Hourly canary publication: staged activation
 
-The publisher is dispatched hourly for the latest unpublished canary revision.
+The enabled dispatcher runs after successful `Continuum Rust Tests` push runs on
+canary, as well as hourly, for the latest unpublished canary revision. Both events
+use the same admission script and concurrency group. PR/fork runs, failures and
+manual upstream runs do not trigger publication. Both automatic events obey
+`CORE_BINARIES_HOURLY_ENABLED`; disabling it retains manual dry-run/dispatch.
+`workflow_run`, like cron, requires this workflow on the repository default branch.
+The hourly event still recovers missed completions; a delayed cron no longer holds
+a tested merged fix until the next scheduled wake.
 `core-binaries.yml` retains urgent manual dispatch and has no automatic push trigger.
 No service or deployment ledger changes are involved.
 

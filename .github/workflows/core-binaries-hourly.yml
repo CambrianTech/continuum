@@ -1,7 +1,11 @@
-# Cron executes this file from the repository default branch and dispatches canary.
+# Cron and completed canary checks use the same publication admission owner.
 # Activation and rollback: docs/operations/HOURLY-CORE-PUBLICATION.md.
 name: core-binaries-hourly
 on:
+  workflow_run:
+    workflows: ['Continuum Rust Tests']
+    types: [completed]
+    branches: [canary]
   schedule:
     - cron: '23 * * * *'
   workflow_dispatch:
@@ -31,8 +35,17 @@ jobs:
       - run: node --test tools/scripts/tests/core-binaries-hourly.test.mjs
   dispatch:
     needs: fixtures
-    # Enabling cron requires the separately reviewed phase-2 activation below.
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.CORE_BINARIES_HOURLY_ENABLED == 'true')
+    # Successful canary push checks wake the same enabled dispatcher as cron.
+    # PR/fork runs, failed checks and manual upstream runs cannot publish.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (vars.CORE_BINARIES_HOURLY_ENABLED == 'true' &&
+       (github.event_name == 'schedule' ||
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'canary' &&
+         github.event.workflow_run.head_repository.full_name == github.repository)))
     runs-on: ubuntu-latest
     permissions:
       contents: read
