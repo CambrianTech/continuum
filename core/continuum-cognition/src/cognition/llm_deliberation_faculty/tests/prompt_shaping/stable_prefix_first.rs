@@ -21,7 +21,9 @@ fn at(v: &DeliberationPromptView, needle: &str) -> usize {
 // places turn to turn (both orders are in the M5's 2026-09-20 captures), and
 // the prefix cache lost every byte behind the swap although none had changed.
 // Same set in, same bytes out, whatever attention ranked and whatever order
-// the faculties bid in; and the order is the churn order, standing → board.
+// the faculties bid in. A new mind's first start (nothing measured yet) lays
+// the blocks by name; every later start orders them by measured motion
+// (`continuum_context::motion`, pinned there).
 #[test]
 fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
@@ -85,17 +87,13 @@ fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() 
         "a re-ranked, re-ordered standing grounding must emit IDENTICAL messages"
     );
 
-    // The order, most stable first: the settled grounding in churn order (STANDING map,
-    // then the BOARD's wall), then her held work (one item per card, changing only on a
-    // transition) lead her view; then the conversation
-    // (dated history, which grows and collapses at its front); then the kanban's CLAIMS,
-    // which count and change fastest; then the per-turn facts; then the clock + presence
-    // framing; then the ask, last. Within an epoch every act appends, so the
-    // order decides only what a turnover keeps: the prefix up to the first source whose
-    // front changed (`view_sources`).
+    // The order of a first start: her grounding blocks by name, her held work, the
+    // conversation, the per-turn facts, the clock + presence framing, the ask last.
+    // Within an epoch every act appends; at a later start motion decides what leads
+    // (`view_sources`).
     assert!(
-        a.messages[0].content_text().starts_with("[workspace-map]"),
-        "the settled grounding leads the message list — nothing growing ahead of it:\n{:#?}",
+        a.messages[0].content_text().starts_with("[room-kanban]"),
+        "her grounding leads the message list — nothing growing ahead of it:\n{:#?}",
         bodies(&a)
     );
     let history_first = at(&a, "[occurred 2023-11-14T22:13:20.000Z] Operator: we shipped");
@@ -108,15 +106,15 @@ fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() 
     let clock = at(&a, "[now ");
     let ask = at(&a, "[occurred 2023-11-14T22:15:20.000Z] Operator: what's next");
     assert!(
-        map < wall
-            && wall < held
+        board < wall
+            && wall < map
+            && map < held
             && held < history_first
-            && history_last < board
-            && board < facts
+            && history_last < facts
             && facts < clock
             && clock < ask,
-        "order must be map < wall < my work < history < kanban < facts < clock < ask, \
-                     got {map} {wall} {held} {history_first}..{history_last} {board} {facts} \
+        "order must be kanban < wall < map < my work < history < facts < clock < ask, \
+                     got {board} {wall} {map} {held} {history_first}..{history_last} {facts} \
                      {clock} {ask}:\n{:#?}",
         bodies(&a)
     );
@@ -140,10 +138,10 @@ fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() 
     assert!(
         a.messages[..history_first].iter().all(|m| {
             let text = m.content_text();
-            ["[workspace-map]", "[my work]", "[room-wall]"].iter().any(|tag| text.starts_with(tag))
+            ["[room-kanban]", "[room-wall]", "[workspace-map]", "[my work]"].iter().any(|tag| text.starts_with(tag))
         }),
-        "every message ahead of the history is settled grounding — no clock, no fact, no \
-                     counter, nothing that grows:\n{:#?}",
+        "every message ahead of the history is grounding or her held work — no clock, no \
+                     fact, nothing that grows:\n{:#?}",
         bodies(&a)
     );
 }
@@ -189,7 +187,7 @@ fn the_next_act_holds_the_whole_previous_view_as_its_head() {
 
     let head = first.refit.grounding_at;
     assert!(head > 0, "precondition: her view leads the messages:\n{:#?}", bodies(&first));
-    assert!(bodies(&first)[0].starts_with("[workspace-map]"), "settled grounding leads:\n{:#?}", bodies(&first));
+    assert!(bodies(&first)[0].starts_with("[room-kanban]"), "her grounding leads a first start, by name:\n{:#?}", bodies(&first));
     assert_eq!(first.system, second.system, "the system message is the same bytes");
     assert_eq!(
         bodies(&first)[..head],

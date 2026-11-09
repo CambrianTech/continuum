@@ -488,43 +488,27 @@ impl LlmDeliberationFaculty {
         }
     }
 
-    /// Her sources in the order an epoch start renders them, the front that survives a
-    /// turnover first: the settled blocks (standing and board churn, in their canonical
-    /// order), her actions, her conversation, the blocks that count or change within an
-    /// epoch (the kanban's claims, recall, awareness, an unknown block), her thoughts, her open
-    /// views, then the notices her substrate posted, whose investigation tally changes most acts. Within an epoch the order cannot matter (every act appends), so it is
-    /// chosen for the one rewrite an epoch costs: a turnover keeps the prefix up to the
-    /// first source whose FRONT changed.
+    /// Her sources in the order handed to her view. Within an epoch the order cannot matter
+    /// (every act appends) beyond being the same on every act. At a start her view orders them
+    /// by their measured motion (`continuum_context::motion`, `View::start`): the source whose
+    /// front never changed leads, so a turnover keeps the prefix up to the first source whose
+    /// front changed. This order is only the tie her view keeps among sources it has not yet
+    /// measured, a new mind's first start: her grounding blocks by name, her held work, her
+    /// actions, her conversation, her thoughts, her tasks, her open views, her notices, the facts.
     ///
-    /// A growing source's front changes at nearly every turnover, because that is where it
-    /// collapses: her conversation led, and a turnover broke the prompt at its first message,
-    /// re-prefilling everything behind identity and tools (Benchy on the M5, 2026-10-24
-    /// 00:32Z: turnover of 98 items, `delib.prompt.common_prefix` index 2, 20% shared; Delia
-    /// on the IntelMac, 10-24 00:14Z: index 2 at `[actions]`, 41%). The settled blocks lead,
-    /// then her actions, whose collapsed items keep their pointers so their front outlives a
-    /// turnover, then her conversation, whose collapsed turns leave the view. Nothing ahead
-    /// of her history counts or dates anything: the kanban's claimable count and claim
-    /// column changed on 30% of turns (card 5b09111e), so it rides after her history with
-    /// recall's "N ago" ages, awareness and her thoughts.
+    /// It replaced a hand-written split by churn label (standing and board blocks ahead of her
+    /// history, the kanban and recall after it): the label guessed per faculty id what motion
+    /// now measures per mind (the kanban changed on 30% of turns on the M5, card 5b09111e;
+    /// a growing conversation's front changes at nearly every turnover, Benchy 2026-10-24).
     fn view_sources<'a>(
         streams: &'a Streams,
         memory: Option<&'a MemoryStreams<'a>>,
     ) -> Vec<&'a dyn Source<ContextMessage>> {
-        use crate::cognition::deliberation_prompt::{churn_of, PromptChurn};
-        let settled = |block: &&crate::cognition::context_streams::blocks::Grounding| {
-            churn_of(&block.faculty) < PromptChurn::Claims
-        };
-        let as_source = |block: &'a crate::cognition::context_streams::blocks::Grounding| {
-            block as &dyn Source<ContextMessage>
-        };
         let mut sources: Vec<&dyn Source<ContextMessage>> =
-            streams.blocks.iter().filter(settled).map(as_source).collect();
-        // Her held work changes only on a card's transition (board churn), so it rides with the
-        // settled blocks, where the active-work block it replaced sorted.
+            streams.blocks.iter().map(|block| block as &dyn Source<ContextMessage>).collect();
         sources.push(&streams.held);
         sources.extend(memory.map(|m| &m.actions as &dyn Source<ContextMessage>));
         sources.push(&streams.conversation);
-        sources.extend(streams.blocks.iter().filter(|block| !settled(block)).map(as_source));
         sources.extend(memory.map(|m| &m.thoughts as &dyn Source<ContextMessage>));
         // A task's state changes within an epoch (running, then its end), so it rides with the
         // sources that change, where her dispatched list rendered before.
