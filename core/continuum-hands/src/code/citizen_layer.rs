@@ -79,7 +79,9 @@ pub async fn ensure_citizen_layer_from_base(
         // rather than denying the persona her hands.
         match crate::code::git_bridge::git_sync_from_shared(&layer, base, actor).await {
             Ok(report) if report.synced => {
-                write_workspace_sync_note(&layer, &report.summary);
+                if let Err(error) = write_workspace_sync_note(&layer, &report.summary) {
+                    tracing::warn!(peer = %peer, error = %error, "workspace synced but its teaching note could not be written");
+                }
                 continuum_base::probe!(
                     class = "workspace.layer.sync",
                     peer = %peer,
@@ -170,9 +172,9 @@ pub(crate) async fn init_vendor_submodule(layer: &std::path::Path, base: &std::p
     let reference = reference.to_string_lossy();
     let args = ["submodule", "update", "--init", "--quiet", "--reference", &reference, VENDOR];
     let deadline = tokio::time::Instant::now() + BOUND;
-    match crate::code::git_bridge::within(deadline, run_git(layer, &args)).await {
+    match crate::code::git_bridge::within(deadline, crate::code::git_bridge::run_git_input(layer, None, &args, &[], None)).await {
         Ok(_) => "shared".to_string(),
-        Err(why) if tokio::time::Instant::now() >= deadline => format!("failed: timed out after {} s: {why}", BOUND.as_secs()),
+        Err(why) if why.out_of_time() => format!("failed: timed out after {} s: {why}", BOUND.as_secs()),
         Err(why) => format!("failed: {why}"),
     }
 }
@@ -224,8 +226,7 @@ pub(crate) async fn share_layer_objects_with_base(layer: &std::path::Path, base:
     }
     let started = std::time::Instant::now();
     let outcome = async {
-        std::fs::create_dir_all(objects.join("info")).map_err(|e| e.to_string())?;
-        continuum_host::durable::write_replace(&alternates, want.as_bytes()).map_err(|e| e.to_string())?;
+        write_layer_file(layer, ".git/objects/info/alternates", want.as_bytes()).map_err(|e| e.to_string())?;
         run_git(layer, &["repack", "-a", "-d", "-l", "-q"]).await?;
         // Worktree entries the copy inherited point at the BASE's trees, never hers.
         let mut dropped = 0usize;
@@ -265,7 +266,7 @@ pub(crate) async fn share_layer_objects_with_base(layer: &std::path::Path, base:
 /// a note we couldn't write never blocks her hands. This is the bootstrap of the
 /// habit; the durable form is an onboarding lesson she internalizes
 /// ([[onboarding-lora-tool-fluency-degree-system]]).
-pub(crate) fn write_workspace_sync_note(layer: &std::path::Path, summary: &str) {
+pub(crate) fn write_workspace_sync_note(layer: &std::path::Path, summary: &str) -> std::io::Result<()> {
     let note = format!(
         "# Your workspace just synced with the shared codebase\n\n\
          {summary}.\n\n\
@@ -279,7 +280,45 @@ pub(crate) fn write_workspace_sync_note(layer: &std::path::Path, summary: &str) 
          Uncommitted edits are auto-saved before a sync, but committing yourself \
          (with a real message) keeps your history clean and your work clearly yours.\n"
     );
-    if let Err(error) = continuum_host::durable::write_replace(&layer.join("WORKSPACE.md"), note.as_bytes()) {
-        tracing::warn!(layer = %layer.display(), %error, "workspace sync note not written; her hands go on without it");
+    write_layer_file(layer, "WORKSPACE.md", note.as_bytes())
+}
+
+
+/// Substrate-owned files in a citizen's workspace belong to the registered citizens class.
+fn write_layer_file(layer: &std::path::Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let class = continuum_kernel::system_resources::disk_reporters::tracked_dir("citizens")
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "the citizens disk class is not registered"))?;
+    write_layer_file_in(&class, layer, name, bytes)
+}
+
+fn write_layer_file_in(
+    class: &std::sync::Arc<continuum_kernel::system_resources::disk_reporters::TrackedDir>,
+    layer: &std::path::Path, name: &str, bytes: &[u8],
+) -> std::io::Result<()> {
+    let within = layer.strip_prefix(class.path()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput,
+            format!("{} is outside the citizens class {}", layer.display(), class.path().display()))
+    })?;
+    class.writer().replace(&within.join(name), bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // What this catches: provisioning metadata and the sync note escaping the measured
+    // citizens root, or bypassing the class writer when it creates nested git metadata.
+    #[test]
+    fn layer_metadata_writes_stay_in_the_citizens_class() -> std::io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let class = continuum_kernel::system_resources::disk_reporters::TrackedDir::new("citizens", root.path().join("citizens"));
+        let layer = class.path().join("peers").join(uuid::Uuid::new_v4().to_string()).join("workspace");
+        for name in [".git/objects/info/alternates", "WORKSPACE.md"] {
+            write_layer_file_in(&class, &layer, name, b"owned")?;
+            assert_eq!(std::fs::read(layer.join(name))?, b"owned");
+        }
+        assert!(write_layer_file_in(&class, root.path(), "outside", b"refused").is_err());
+        assert!(!root.path().join("outside").exists());
+        Ok(())
     }
 }

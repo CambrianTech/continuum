@@ -107,7 +107,10 @@ pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard)
         {
             return;
         }
-    } else if checkout_present(&existing) && !lacks_creation_anchor(&existing).await {
+    } else if checkout_present(&existing) && creation_anchor(&existing).await.is_some() {
+        // An anchored checkout is never restaged on a turn, even one whose HEAD left its anchor:
+        // putting it back strands what it holds, and only claim and submit can tell her that
+        // (card f76005e8). An anchorless one goes to the stager.
         return;
     }
     let key = (peer, card.card_id.as_uuid());
@@ -133,19 +136,27 @@ pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard)
     }
 }
 
-/// A card checkout with no creation anchor (`refs/worktree/airc-creation-base`): made before
-/// airc recorded one, so nothing can name where her work began and `work/submit` cannot derive a
-/// base. Only airc's stager (`ensure_card_clone`) may decide what becomes of it: it re-allocates
-/// one that holds nothing unpublished and refuses one that does, naming what it holds (airc
-/// #1668). Handing it back as-is kept Kimi on a weeks-old clone that could never submit (the
-/// Windows node, 2026-11-08). A checkout with its anchor is reused as before, including one from
-/// before airc wrote the full allocation record. Local git only, off the runtime threads.
-pub async fn lacks_creation_anchor(checkout: &Path) -> bool {
-    let checkout = checkout.to_path_buf();
-    !matches!(
-        tokio::task::spawn_blocking(move || airc_lib::work_worktree::creation_base(&checkout)).await,
-        Ok(Ok(_))
-    )
+/// A card checkout off its creation anchor (`refs/worktree/airc-creation-base`): it has none (made
+/// before airc recorded one), or its HEAD no longer descends from it (an earlier arrival adopted a
+/// branch that predates the allocation). Either way `work/submit` cannot derive a base, so only the
+/// stager may decide what becomes of it: airc re-allocates an anchorless clone holding nothing
+/// unpublished and refuses one that does (airc #1668), and arrival puts an anchored one back on its
+/// anchor, keeping what it had under a stranded ref. Handing it back as-is kept Kimi on a clone that
+/// could never submit (the Windows node, 2026-11-08). A checkout whose HEAD descends from its anchor
+/// is reused as before, including one from before airc wrote the full allocation record.
+pub async fn off_creation_anchor(checkout: &Path) -> bool {
+    let Some(anchor) = creation_anchor(checkout).await else {
+        return true;
+    };
+    crate::code::git_bridge::run_git(checkout, &["merge-base", "--is-ancestor", &anchor, "HEAD"]).await.is_err()
+}
+
+/// The checkout's creation anchor, when airc recorded one.
+async fn creation_anchor(checkout: &Path) -> Option<String> {
+    crate::code::git_bridge::run_git(checkout, &["rev-parse", "--verify", "-q", airc_lib::work_worktree::CREATION_BASE_REF])
+        .await
+        .ok()
+        .map(|anchor| anchor.trim().to_string())
 }
 
 /// The gym artifact root, shared by claim staging, hands binding and grading.
@@ -156,14 +167,14 @@ pub fn gym_workspace(home: &Path, peer: Uuid) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{checkout_present, lacks_creation_anchor};
+    use super::{checkout_present, off_creation_anchor};
 
     // what this catches (card 7f824214, Codex on #5873): a held turn and a submit handed an
     // existing checkout back as-is, so a clone with no creation anchor never reached airc's
     // re-allocation; and the opposite slip (#5873 CI): a checkout with its anchor but no full
     // allocation record (made before airc wrote one, possibly holding her work) sent to the stager.
     #[tokio::test]
-    async fn only_a_checkout_without_its_creation_anchor_goes_to_the_stager() -> Result<(), Box<dyn std::error::Error>> {
+    async fn only_a_checkout_off_its_creation_anchor_goes_to_the_stager() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let git = |args: &[&str]| -> Result<String, Box<dyn std::error::Error>> {
             let output = airc_core::process::background("git").current_dir(root.path()).args(args).output()?;
@@ -173,11 +184,15 @@ mod tests {
         git(&["init", "--quiet"])?;
         git(&["-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "--quiet", "--allow-empty", "-m", "base"])?;
         let base = git(&["rev-parse", "HEAD"])?;
-        assert!(lacks_creation_anchor(root.path()).await, "a clone made before the anchor existed");
+        assert!(off_creation_anchor(root.path()).await, "a clone made before the anchor existed");
         git(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base])?;
-        assert!(!lacks_creation_anchor(root.path()).await, "an anchor without the allocation record is still anchored");
+        assert!(!off_creation_anchor(root.path()).await, "an anchor without the allocation record is still anchored");
+        // HEAD moved onto a line that does not contain the anchor (an adopted stale branch).
+        git(&["checkout", "--quiet", "--orphan", "stale"])?;
+        git(&["-c", "user.name=t", "-c", "user.email=t@t.invalid", "commit", "--quiet", "--allow-empty", "-m", "stale"])?;
+        assert!(off_creation_anchor(root.path()).await, "HEAD no longer descends from its anchor");
         git(&["update-ref", "-d", airc_lib::work_worktree::CREATION_BASE_REF])?;
-        assert!(lacks_creation_anchor(root.path()).await, "the anchor gone");
+        assert!(off_creation_anchor(root.path()).await, "the anchor gone");
         Ok(())
     }
 
