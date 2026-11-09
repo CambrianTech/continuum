@@ -463,6 +463,28 @@
             assert!(airc.room_by_name_or_channel(&key, "check").await.is_err(), "no second, tree-keyed room was made");
         }
 
+        // what this catches: a second node making its own room for a path another node already
+        // stands at (Cormac on #5878). This scope never held `run-3`; its parent's wall carries the
+        // announcement another node made when it adopted that pre-tree room. Opening the path walks
+        // to that room by the record, never subscribes a second, tree-keyed one.
+        #[tokio::test]
+        async fn a_node_that_never_held_the_room_walks_to_it_by_its_parents_record() {
+            let (_home, airc) = scope().await;
+            let path = crate::experience::room_path::RoomPath::parse("projects/demo/run-3").expect("a room path");
+            let parent = open_ancestors(&airc, &path).await.expect("ancestors open").expect("a nested path has a parent");
+            let elsewhere = airc_lib::Room::from_name(airc.home(), "run-3").expect("a channel derives").channel;
+            let record = crate::experience::children::RoomChildRecord {
+                room_id: elsewhere.as_uuid(), name: path.as_str().to_string(), recipe: "chat".into(), suite: None, spawned_at_ms: 1,
+            };
+            let body = serde_json::to_string(&record).expect("a record encodes");
+            airc.publish_wall_post_in(&parent, CHILD_WALL_CATEGORY.to_string(), body, None).await.expect("announced");
+            assert!(airc.room_by_name_or_channel("run-3", "check").await.is_err(), "this scope never held it");
+
+            let opened = spawn_activity_room(&airc, path.as_str(), "chat", None, &Default::default(), None, None).await.expect("opened");
+            assert_eq!(opened.room_id, elsewhere, "it lands in the room the parent announces");
+            assert!(airc.room_by_name_or_channel(&path.channel_key(), "check").await.is_err(), "no second, tree-keyed room was made");
+        }
+
         // what this catches: adoption taking over an unrelated room that shares the last segment.
         // A pre-tree room bound to another recipe stays as it is, and the path gets its own room.
         #[tokio::test]

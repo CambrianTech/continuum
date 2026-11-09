@@ -337,7 +337,8 @@ pub(super) async fn open_ancestors(airc: &Airc, path: &RoomPath) -> Result<Optio
 /// A child room announces itself on its parent's wall ([`crate::experience::children`]), so a
 /// node that never opened it can find it. Never fails the opening: a missing record is probed.
 /// The room at `path`: its tree channel when this scope holds it, else a run opened before the
-/// room tree, adopted, else a new tree channel. Before the tree a nested activity's channel was its
+/// room tree, adopted, else the room its parent announces at this path (opened first on another
+/// node), else a new tree channel. Before the tree a nested activity's channel was its
 /// last segment alone, so opening such a run by its tree key would make a second, empty room and
 /// orphan the first's cards, board and records. A pre-tree room is adopted only when this scope
 /// holds it and it is bound to the same recipe; adopting writes its path into its binding and
@@ -385,9 +386,45 @@ async fn open_path_room(
             }
         }
     }
-    airc.subscribe_room(&key)
+    let channel = match parent {
+        Some(parent) => announced_channel(airc, parent, path).await?.unwrap_or(key),
+        None => key,
+    };
+    airc.subscribe_room(&channel)
         .await
         .map_err(|source| CommandError::Invalid(format!("could not open room {}: {source}", path.uri())))
+}
+
+/// The channel the parent's wall announces for `path`, when another node opened it first: any
+/// node walks the tree to the room that already stands there (a pre-tree run another node
+/// adopted keeps its old channel), never makes a second one beside it. A record names the room
+/// by id, so the channel is the candidate name whose derived id matches; `None` when the wall
+/// names no room at this path. A record naming a room by neither name is refused, never guessed.
+async fn announced_channel(airc: &Airc, parent: &airc_lib::Room, path: &RoomPath) -> Result<Option<String>, CommandError> {
+    let posts = airc
+        .wall_posts_in(parent, Some(crate::experience::children::CHILD_WALL_CATEGORY))
+        .await
+        .map_err(|e| CommandError::Internal(format!("cannot read the children of {}: {e}", parent.name)))?;
+    let Some(announced) = crate::experience::children::project_children(&posts)
+        .into_iter()
+        .filter(|record| record.name == path.as_str())
+        .max_by_key(|record| record.spawned_at_ms)
+    else {
+        return Ok(None);
+    };
+    for candidate in std::iter::once(path.channel_key()).chain(path.pre_tree_channel().map(str::to_string)) {
+        let derived = airc_lib::Room::from_name(airc.home(), &candidate)
+            .map_err(|e| CommandError::Internal(format!("cannot derive channel {candidate:?}: {e}")))?;
+        if derived.channel.as_uuid() == announced.room_id {
+            return Ok(Some(candidate));
+        }
+    }
+    Err(CommandError::Invalid(format!(
+        "{}'s parent announces room {} at this path, a channel this node cannot derive from the path; \
+         open it by that id instead of making a second room",
+        path.uri(),
+        announced.room_id
+    )))
 }
 
 /// The room this scope already holds under `channel`, without joining it: `None` when it holds
