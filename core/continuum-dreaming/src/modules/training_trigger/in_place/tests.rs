@@ -1,12 +1,18 @@
 use super::*;
 
 fn outcome(committed_steps: i64, effects_uncertain: bool) -> LearnOutcome {
-    serde_json::from_value(serde_json::json!({
+    outcome_with_loss(committed_steps, effects_uncertain, 0.0)
+}
+
+fn outcome_with_loss(committed_steps: i64, effects_uncertain: bool, loss: f64) -> LearnOutcome {
+    let mut outcome: LearnOutcome = serde_json::from_value(serde_json::json!({
         "success": committed_steps > 0, "committed_steps": committed_steps, "effects_uncertain": effects_uncertain,
         "refusal": "none", "loss": 0.0, "n_labels": 0, "t_ms": 0.0, "max_chunk_ms": 0.0, "restoration_ms": 0.0,
         "entry_ms": 0.0, "max_graph_ms": 0.0, "max_restore_ms": 0.0, "cleanup_ms": 0.0
     }))
-    .expect("test: an engine outcome")
+    .expect("test: an engine outcome");
+    outcome.loss = loss; // JSON has no NaN: a non-finite loss is set on the decoded outcome
+    outcome
 }
 
 // what this catches: the cursor moving on an example the engine did not commit, or a quarantined
@@ -17,6 +23,8 @@ fn only_a_committed_certain_update_moves_the_cursor() {
     assert_eq!(verdict(&outcome(0, false)), Verdict::Again, "refused, deferred, or ended before an update");
     assert_eq!(verdict(&outcome(1, true)), Verdict::Quarantined, "committed, then uncertain: quarantined, never counted");
     assert_eq!(verdict(&outcome(0, true)), Verdict::Quarantined);
+    assert_eq!(verdict(&outcome_with_loss(1, false, f64::NAN)), Verdict::Quarantined, "a non-finite loss is a poisoned update, never counted");
+    assert_eq!(verdict(&outcome_with_loss(1, false, f64::INFINITY)), Verdict::Quarantined);
 }
 
 #[test]

@@ -46,7 +46,9 @@ pub(crate) enum Verdict {
 
 /// PURE: the verdict for one learning outcome.
 pub(crate) fn verdict(outcome: &LearnOutcome) -> Verdict {
-    if outcome.effects_uncertain {
+    // a non-finite loss is a poisoned update: never counted, never checkpointed, so every generation
+    // holds only finite steps (Codex on 5f26871bc)
+    if outcome.effects_uncertain || !outcome.loss.is_finite() {
         Verdict::Quarantined
     } else if outcome.committed_steps > 0 {
         Verdict::Learned
@@ -108,11 +110,6 @@ struct Seated {
     checkpointed: HashMap<Uuid, u32>,
     /// Her name, for the provenance her candidates carry.
     persona_name: String,
-    /// The losses learned since her last candidate gene: every one must be finite for the next.
-    losses: Vec<f64>,
-    /// Her newest candidate's trial, and how many examples her generations held when it was taken.
-    candidate: Option<Uuid>,
-    candidate_at: u32,
 }
 
 /// What one bucket's pass did.
@@ -165,14 +162,7 @@ impl InPlace {
             }
         }
         if let Some(seated) = held.minds.get_mut(key) {
-            if let Some(generation) = checkpoint(state, key, seated).await? {
-                pass.checkpointed = true;
-                let store = state.durable.require()?;
-                let name = seated.persona_name.clone();
-                if let snapshot::Snapshot::Refused(why) = snapshot::maybe(&store, key, &name, seated, &generation).await? {
-                    continuum_base::probe!(class = "training.in_place.candidate_refused", persona = %key.persona_id, reason = %why, "no candidate gene from this generation");
-                }
-            }
+            pass.checkpointed = checkpoint(state, key, seated).await?.is_some();
         }
         Ok(pass)
     }
@@ -222,15 +212,14 @@ async fn steps(
             let step = match seated.restore.as_ref() {
                 Some(generation) => {
                     let from = RestoreCheckpoint { name: generation.name.clone(), binding: generation.binding.clone(), steps: generation.steps };
-                    seated.mind.restore(authority, workspace, framed.messages, framed.tools, slot.slot(), rate, &from).await.map(|outcome| (restored(&outcome), true, outcome.refusal, 0.0))
+                    seated.mind.restore(authority, workspace, framed.messages, framed.tools, slot.slot(), rate, &from).await.map(|outcome| (restored(&outcome), true, outcome.refusal, ()))
                 }
-                None => seated.mind.learn(authority, workspace, framed.messages, framed.tools, slot.slot(), rate).await.map(|outcome| (verdict(&outcome), false, outcome.refusal, outcome.loss)),
+                None => seated.mind.learn(authority, workspace, framed.messages, framed.tools, slot.slot(), rate).await.map(|outcome| (verdict(&outcome), false, outcome.refusal, ())),
             };
             match step {
                 Ok((Verdict::Learned, true, _, _)) => seated.restore = None, // restored: the same example is learned next
-                Ok((Verdict::Learned, false, _, loss)) => {
+                Ok((Verdict::Learned, false, _, _)) => {
                     seated.progress.insert(row.id, learned + 1);
-                    seated.losses.push(loss);
                     pass.learned += 1;
                 }
                 Ok((Verdict::Again, _, refusal, _)) if refusal == "unknown_grant" && !renewed => {
@@ -300,7 +289,16 @@ async fn checkpoint(state: &TrainingTriggerState, key: &BucketKey, seated: &mut 
     match seated.mind.checkpoint(&name, &seated.binding, provenance.clone()).await {
         Ok(CheckpointAnswer::Saved(generation)) => {
             let store = state.durable.require()?;
-            store.commit_checkpoint(key, name, seated.binding.clone(), generation.steps, provenance, &positions).await?;
+            let published = super::durable::Generation {
+                name,
+                path: generation.path.clone(),
+                binding: seated.binding.clone(),
+                steps: generation.steps,
+                provenance,
+                persona_name: seated.persona_name.clone(),
+                signature: seated.signature.clone(),
+            };
+            store.commit_checkpoint(key, published, &positions).await?;
             for position in &positions {
                 let floor = seated.checkpointed.entry(position.submission).or_default();
                 *floor = (*floor).max(position.learned);
@@ -397,9 +395,6 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
                     progress: HashMap::new(),
                     checkpointed,
                     persona_name: row.persona_name.clone(),
-                    losses: Vec::new(),
-                    candidate: None,
-                    candidate_at: 0,
                 },
             );
             Ok(true)
@@ -501,6 +496,13 @@ impl TrainingTriggerState {
                     checkpointed = pass.checkpointed, deferred = pass.deferred, "accepted examples learned in place");
             }
         }
+        // every bucket's newest generation is candidate work of its own, retried until taken: a
+        // candidate interrupted after its generation, or a bucket with nothing pending, is not lost
+        for generation in store.checkpoints().await? {
+            if crate::model_registry::artifacts::names_the_same_base(served_model, &generation.base_model) {
+                snapshot::maybe(&store, &generation).await;
+            }
+        }
         Ok(())
     }
 
@@ -512,6 +514,12 @@ impl TrainingTriggerState {
 }
 
 mod snapshot;
+
+/// Whether `generation` is a due candidate (its state on the durable row).
+#[cfg(test)]
+pub(crate) fn snapshot_due(generation: &super::durable::LearnCheckpoint) -> bool {
+    snapshot::due(generation.learned(), generation.candidate_at)
+}
 
 #[cfg(test)]
 mod tests;
