@@ -166,8 +166,16 @@ mod tests {
         let (id, row) = submission(1, 2);
         let key = BucketKey { persona_id: row.persona_id, trait_kind: row.trait_kind.clone(), base_model: row.base_model.clone() };
         store.submissions.save(id, &row).await.expect("test: accepted");
-        store.commit_checkpoint(&key, "generation-1.gguf".into(), "binding".into(), 1,
-            serde_json::json!({"submission": id}), &[Position { submission: id, learned: 1 }])
+        let generation = super::super::learn_checkpoint::Generation {
+            name: "generation-1.gguf".into(),
+            path: "/train/generation-1.gguf.checkpoint".into(),
+            binding: "binding".into(),
+            steps: 1,
+            provenance: serde_json::json!({"submission": id}),
+            persona_name: "Kimi".into(),
+            signature: None,
+        };
+        store.commit_checkpoint(&key, generation, &[Position { submission: id, learned: 1 }])
             .await.expect("test: confirmed generation");
         // Materialize the crash boundary: the generation write is durable, the submission still
         // has its pre-projection contents. Reopen the store rather than retaining its owner.
