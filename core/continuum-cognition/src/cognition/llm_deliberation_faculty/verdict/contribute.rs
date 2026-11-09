@@ -43,9 +43,10 @@ impl LlmDeliberationFaculty {
         // Retain the capacity observation that precedes assembly. Sampling again
         // after an await could mistake newly grown capacity for the refused one.
         // Her window, from the one determiner (card de7bb6e8). On the shared pool it is her grant. An
-        // ungranted mind is measured first (her view records her wish, never submitted), then parks on
-        // the grants watch, then decides again (Cormac on #5752).
-        let decided = match crate::capacity::mind_window::decide_window(
+        // ungranted mind is measured first (her view records her wish, never submitted), then waits for the
+        // first grants evaluation after it: granted, she decides again; not, her turn defers with its reason.
+        let decided = match super::admission_clock::stage("deliberation.window_grant", crate::capacity::mind_window::decide_window(
+            self.persona_id,
             || crate::capacity::mind_window::mind_window(self.persona_id, loaded.adapter.as_ref(), loaded.context_window),
             || {
                 continuum_base::probe!(
@@ -53,14 +54,26 @@ impl LlmDeliberationFaculty {
                     persona = %self.persona_name,
                     "no grant on the shared pool yet: measuring her view, then waiting for one"
                 );
-                let _measured = self.prompt_view_with_visual_feedback(ws, loaded.context_window, PromptCalibration::default(), None);
+                // Her wish priced at HER measured density, not the default: a default under-asks by her
+                // excess and the grant she then waits for is too small (Fable's audit, 2026-11-09).
+                let (_, calibration) = self.prompt_fit(&loaded);
+                let _measured = self.prompt_view_with_visual_feedback(ws, loaded.context_window, calibration, None);
             },
-            crate::capacity::mind_window::grants_waiter,
-        )
+            crate::capacity::mind_window::evaluation_after,
+        ))
         .await
         {
             Ok(decided) => decided,
-            Err(refused) => return Some(Contribution::deliberation_fault(refused.to_string())),
+            // A deferral (LaneStarved): nothing dispatched, her act budget kept, the next tick asks again.
+            Err(refused) => {
+                continuum_base::probe!(
+                    class = "delib.window.refused",
+                    persona = %self.persona_name,
+                    reason = %refused,
+                    "the first grants evaluation after her measure granted her no window"
+                );
+                return Some(Contribution::deliberation_fault(refused.to_string()));
+            }
         };
         let decided_window = decided.tokens();
         // The grant LEASE this turn is rendered against (size and revision), when she is on the

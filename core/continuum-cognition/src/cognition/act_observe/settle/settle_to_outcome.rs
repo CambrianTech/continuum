@@ -418,6 +418,10 @@ pub(super) async fn settle_to_outcome<'c>(
                     room = %room_id,
                     acts_so_far = acts as u64,
                     dropped_in_flight = dropped_in_flight,
+                    // WHICH await held, and for how long (card 5e79e1c1): the M5's 25-minute
+                    // parks were anonymous until this, and a stall is fixed by its name.
+                    stage = abandoned.stage.map_or("unnamed", |(name, _)| name),
+                    stage_s = abandoned.stage.map_or(0, |(_, held)| held.as_secs()),
                     deadline_s = act_bound.as_secs(),
                     // Which sized it: `turn_bound` = her measured turn raised the floor,
                     // `floor` = she has no measured turn yet and the constant governed.
@@ -429,10 +433,11 @@ pub(super) async fn settle_to_outcome<'c>(
                 (
                     SettleStep::InferenceFailed {
                         error: format!(
-                            "tick exceeded {}s deadline ({}) at act {} — an in-tick await parked                              (infra), turn ended loudly so the measured hold releases",
+                            "tick exceeded {}s deadline ({}) at act {} in stage {} — an in-tick await parked                              (infra), turn ended loudly so the measured hold releases",
                             act_bound.as_secs(),
                             act_bound_source.as_str(),
-                            acts
+                            acts,
+                            abandoned.stage.map_or("unnamed", |(name, _)| name)
                         ),
                     },
                     None,

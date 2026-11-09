@@ -156,6 +156,99 @@ pub fn current_lease(persona: uuid::Uuid) -> Option<GrantLease> {
     GRANTS.get()?.borrow().as_ref()?.lease_for(persona)
 }
 
+/// Why one grants evaluation granted nobody: every way `grant_inputs` has nothing to grant from,
+/// typed (card 5e79e1c1; Codex: "type those truthfully").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoGrants {
+    /// The engine does not serve yet (relaunching, faulted, not adopted).
+    NotReady,
+    /// The engine serves but reported a 0-token per-sequence window.
+    ServedWindowZero,
+    /// The engine reported no pool (`context_geometry.allocated_tokens` = 0).
+    PoolZero,
+    /// The served model is not in the registry, so its trained window is unknown.
+    ModelUnresolved,
+    /// The engine's pool kind cannot be read: no lane pidfile, or no recorded launch.
+    PoolKindUnknown,
+}
+
+/// Why a measured mind's requirement entered no demand on one evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Excluded {
+    /// Her requirement has no observed need yet.
+    NeedUnobserved,
+    /// Her requirement has no wish.
+    NoWish,
+    /// Her target rounds to no tokens.
+    NoTarget,
+}
+
+/// One run of the grants publisher, published EVERY time it runs, changed or not: the grants it
+/// published with, and, when it granted nobody, why; and each requirement it left out, and why. One
+/// value, so a mind reads her grant and its reason from the same evaluation, never two watches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantEvaluation {
+    /// Rises by one per evaluation: a waiter waits for one newer than what it saw.
+    pub seq: u64,
+    /// When this evaluation began reading its inputs: a mind measured before it is in them.
+    pub started: std::time::Instant,
+    pub engine: Option<crate::inference::engine_residency::EngineIncarnation>,
+    /// The grants current after this evaluation (`None` when none are published).
+    pub grants: Option<PoolGrants>,
+    /// Why nobody could be granted; `None` when the inputs were there.
+    pub nobody: Option<NoGrants>,
+    /// Each requirement this evaluation could not turn into a demand.
+    pub excluded: BTreeMap<uuid::Uuid, Excluded>,
+}
+
+impl GrantEvaluation {
+    /// Why `persona` holds no grant after this evaluation; `None` when she holds one.
+    pub fn ungranted(&self, persona: uuid::Uuid) -> Option<Ungranted> {
+        if self.grants.as_ref().and_then(|g| g.grant_for(persona)).is_some() {
+            return None;
+        }
+        Some(match (self.nobody, self.excluded.get(&persona)) {
+            (Some(nobody), _) => Ungranted::Nobody(nobody),
+            (None, Some(excluded)) => Ungranted::Excluded(*excluded),
+            (None, None) => Ungranted::NotADemand,
+        })
+    }
+}
+
+/// Why one mind holds no grant after an evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ungranted {
+    /// The publisher could grant nobody.
+    Nobody(NoGrants),
+    /// Her requirement was there and left out.
+    Excluded(Excluded),
+    /// The publisher had inputs, but no requirement of hers reached it.
+    NotADemand,
+}
+
+impl std::fmt::Display for Ungranted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Nobody(why) => write!(f, "the grants publisher could grant nobody: {why:?}"),
+            Self::Excluded(why) => write!(f, "her requirement was left out of the demands: {why:?}"),
+            Self::NotADemand => f.write_str("no requirement of hers reached the grants publisher"),
+        }
+    }
+}
+
+static EVALUATIONS: std::sync::OnceLock<tokio::sync::watch::Receiver<Option<GrantEvaluation>>> = std::sync::OnceLock::new();
+
+/// Install the grants publisher's evaluations beside its grants ([`install_grants`]). Set once.
+pub fn install_evaluations(rx: tokio::sync::watch::Receiver<Option<GrantEvaluation>>) -> bool {
+    EVALUATIONS.set(rx).is_ok()
+}
+
+/// A receiver of the publisher's evaluations: what an ungranted mind waits on. `None` before the
+/// serving daemon installs them.
+pub fn evaluations_receiver() -> Option<tokio::sync::watch::Receiver<Option<GrantEvaluation>>> {
+    EVALUATIONS.get().cloned()
+}
+
 /// One measured mind's current demand on the pool: her floor and target, and whether a turn of hers
 /// is in flight now. A mind not measured yet has no `Demand`: there is no number to grant her
 /// (`Measure::Unmeasured`), and her first view measures her.
