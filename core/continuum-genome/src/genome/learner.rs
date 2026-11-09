@@ -3,6 +3,7 @@
 //! on the same resident weights, under the one budget: no separate trainer, window or reserve.
 
 pub mod custody;
+pub mod example;
 pub mod seat;
 pub mod memory;
 pub mod grant;
