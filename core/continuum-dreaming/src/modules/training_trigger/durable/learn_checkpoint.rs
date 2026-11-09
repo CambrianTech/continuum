@@ -157,6 +157,26 @@ mod tests {
         Generation { name: name.into(), path: format!("/train/{name}.checkpoint"), binding: "her:code:qwen".into(), steps: 8, provenance: serde_json::json!({}), persona_name: "Kimi".into(), signature: None }
     }
 
+    // The candidate sweep reads before adoption awaits; a learning pass can publish
+    // the next generation before that old candidate's adoption receipt returns.
+    #[tokio::test]
+    async fn an_older_candidate_receipt_cannot_rewind_the_checkpoint() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let store = DurableStore::new(adapter).await.expect("test: store");
+        let key = BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() };
+        let submission = Uuid::new_v4();
+        store.commit_checkpoint(&key, generation("g1"), &[Position { submission, learned: 1 }]).await.expect("test: g1");
+        let old = store.checkpoint_of(&key).await.expect("test: read").expect("test: g1 exists");
+        store.commit_checkpoint(&key, generation("g2"), &[Position { submission, learned: 2 }]).await.expect("test: g2");
+        let trial = Uuid::new_v4();
+        store.record_candidate(&old, trial).await.expect("test: adoption receipt");
+        let current = store.checkpoint_of(&key).await.expect("test: read").expect("test: g2 exists");
+        assert_eq!(current.name, "g2", "an old candidate receipt must not overwrite the surviving optimizer generation");
+        assert_eq!(current.positions, vec![Position { submission, learned: 2 }]);
+        assert_eq!(current.candidate_trial, Some(trial));
+        assert_eq!(current.candidate_at, 1, "only the adopted generation's coverage is credited");
+    }
+
     // what this catches: a candidate interrupted after its generation (a failed provenance write, a
     // refused adoption, a stopped process) never taken again, or taken twice (Codex on 5f26871bc).
     // The generation is due on the durable row, across a reopen, until its candidate is recorded;
