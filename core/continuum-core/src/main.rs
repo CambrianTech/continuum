@@ -655,7 +655,7 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
             .ok()
             .and_then(|s| s.parse().ok())
             .filter(|&s| s > 0)
-            .unwrap_or(300),
+            .unwrap_or(300), // unwrap_or: the pre-bind backstop; module init is measured after the bind, and nothing is measured before it
     );
     let wait_ready = async {
         if *ipc_ready_rx.borrow_and_update() {

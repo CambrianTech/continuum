@@ -309,7 +309,7 @@ pub(super) async fn run_tick_loop_for(
         // every module was card 948c30c2's row 4. `None` = the registered cadence
         // stands. If the period changed, rebuild the ticker — `Interval` doesn't
         // expose a setter for its period, and rebuilding is cheap on that slow path.
-        let new_interval = module.tick_interval_now().unwrap_or(initial_interval);
+        let new_interval = module.tick_interval_now().unwrap_or(initial_interval); // unwrap_or: None = the registered cadence stands
         if new_interval != current_interval {
             continuum_base::probe!(
                 class = "tick.cadence_changed",

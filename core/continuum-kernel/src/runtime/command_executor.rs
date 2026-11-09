@@ -647,7 +647,7 @@ impl CommandExecutor {
             handle,
             result,
         };
-        match serde_json::to_value(&event) {
+        match serde_json::to_value(&event) { // boundary: the bus carries JSON payloads to every subscriber, socket clients included
             Ok(payload) => bus.publish_async_only(COMMAND_COMPLETED_TOPIC, payload),
             Err(e) => {
                 // Should be impossible (the struct is plain fields
@@ -772,16 +772,17 @@ impl CommandExecutor {
 
         // Check success
         if response.get("success").and_then(|v| v.as_bool()) == Some(true) {
-            let result = response.get("result").cloned().unwrap_or(Value::Null);
+            let result = response.get("result").cloned().unwrap_or(Value::Null); // unwrap_or: a success with no result field returned nothing
             log.info(&format!("Command '{}' succeeded", command));
             Ok(result)
         } else {
-            let error = response
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown error from TypeScript");
+            // A failure without an error field says so with the response itself, never an invented reason.
+            let error = match response.get("error").and_then(|v| v.as_str()) {
+                Some(error) => error.to_string(),
+                None => format!("TypeScript reported failure with no error field: {response}"),
+            };
             log.error(&format!("Command '{}' failed: {}", command, error));
-            Err(error.to_string())
+            Err(error)
         }
     }
 }

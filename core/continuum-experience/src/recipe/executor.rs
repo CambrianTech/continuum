@@ -271,7 +271,7 @@ impl PipelineExecutor {
                         Err(e) => return self.fail(run, format!("step {idx} ({}): {e}", step.command)).await,
                     },
                 };
-                let start = run.cursor.item.unwrap_or(0) as usize;
+                let start = run.cursor.item.unwrap_or(0) as usize; // unwrap_or: no item cursor = this step has not started, so it starts at its first item
                 for (i, item) in items.into_iter().enumerate().skip(start) {
                     if self.cancel_requested(run).await? {
                         return self.finish(run, RunPhase::Cancelled).await;

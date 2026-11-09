@@ -80,7 +80,7 @@ impl ActionCommand for PingCommand {
             ok: true,
             round_trip_ms: 0,
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
-            build_number: env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0),
+            build_number: env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0), // unwrap_or: build.rs stamps a decimal (0 without git), so the parse cannot fail; a typed unknown is card 2e68ba85
             built_at: env!("CONTINUUM_BUILD_AT").to_string(),
         })
     }
