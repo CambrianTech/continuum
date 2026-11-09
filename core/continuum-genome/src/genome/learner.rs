@@ -3,3 +3,4 @@
 //! on the same resident weights, under the one budget: no separate trainer, window or reserve.
 
 pub mod seat;
+pub mod memory;
