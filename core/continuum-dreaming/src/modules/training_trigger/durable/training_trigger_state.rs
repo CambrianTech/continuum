@@ -453,6 +453,7 @@ impl TrainingTriggerState {
             is_pending: true,
             dispatch_id: None,
             retirement_id: None,
+            learned: 0,
         };
         if let Err(error) = store.submissions.save(id, &row).await {
             if !self.buckets.contains_key(key) && !self.active_dispatches.contains_key(key) {

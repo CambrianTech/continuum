@@ -50,6 +50,11 @@ pub(in crate::modules::training_trigger) struct Submission {
     /// row written before the verb existed.
     #[serde(default)]
     pub(super) retirement_id: Option<Uuid>,
+    /// How many of `batch.examples`, in order, were learned in place: each counted only when the
+    /// engine committed its update with certain effects (card 4114a2c6). The row leaves pending when
+    /// every example is. Absent on rows written before in-place learning: none learned.
+    #[serde(default)]
+    pub(super) learned: u32,
 }
 
 /// The journaled withdrawal of bucket-pending submissions: what was pulled back
