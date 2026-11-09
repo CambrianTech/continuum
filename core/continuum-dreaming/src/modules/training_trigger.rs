@@ -293,7 +293,7 @@ impl ServiceModule for TrainingTriggerModule {
         // `commands()`); the legacy path must fail loud.
         match command {
             "genome/training-trigger/submit"
-            | "genome/training-trigger/flush"
+            | "genome/training-trigger/retire"
             | "genome/training-trigger/status" => Err(format!(
                 "'{command}' is migrated to the typed registry \
                  (commands/training_trigger/) — it must route via route_object, \

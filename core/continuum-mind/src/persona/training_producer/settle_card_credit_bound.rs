@@ -236,7 +236,7 @@ pub(super) fn staged_submission_params(
     if verdict == CardVerdict::Corrected {
         // The reviewed correction (#4900) is the one labelled source: its own bucket, learned
         // in place like every accepted example, at the one default schedule
-        // (`native_jobs::DEFAULT_LEARNING_RATE`, 1e-4, measured on the 5090 2026-10-10).
+        // (`lora_defaults::DEFAULT_LEARNING_RATE`, 1e-4, measured on the 5090 2026-10-10).
         params["traitKind"] = json!(format!("{}/{CORRECTED_BUCKET}", plan.bucket_key()));
     }
     Ok(params)

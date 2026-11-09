@@ -20,8 +20,12 @@ pub(super) fn register_ai_provider_and_genome_modules(
         // A batch /train run a previous core bound to a still-live engine has no owner since
         // learning moved in place: cancel it and release its residency record, so serving is
         // not held for the engine's lifetime (card 4114a2c6). Its examples are already pending.
-        if let Ok(home) = crate::paths::continuum_home() {
-            tokio::spawn(crate::genome::fine_tuning::batch_wind_down::wind_down(home, resource_daemon.clone()));
+        match crate::paths::continuum_home() {
+            Ok(home) => {
+                tokio::spawn(crate::genome::fine_tuning::batch_wind_down::wind_down(home, resource_daemon.clone()));
+            }
+            Err(error) => continuum_base::probe!(class = "training.batch_wind_down.no_home", error = %error,
+                "no continuum home: no residency record can be read, so no batch run is wound down"),
         }
 
         // genome/teach and genome/recall. Her learning runs in place in the training trigger.
