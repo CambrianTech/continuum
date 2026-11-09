@@ -499,9 +499,19 @@ impl TrainingTriggerState {
         // every bucket's newest generation is candidate work of its own, retried until taken: a
         // candidate interrupted after its generation, or a bucket with nothing pending, is not lost
         for generation in store.checkpoints().await? {
-            if crate::model_registry::artifacts::names_the_same_base(served_model, &generation.base_model) {
-                snapshot::maybe(&store, &generation).await;
+            if !crate::model_registry::artifacts::names_the_same_base(served_model, &generation.base_model) {
+                continue;
             }
+            // under the bucket's owned gate, so it is ordered with that bucket's learning
+            let key = BucketKey { persona_id: generation.persona_id, trait_kind: generation.trait_kind.clone(), base_model: generation.base_model.clone() };
+            self.run_owned(key, move |state, key| async move {
+                let store = state.durable.require()?;
+                if let Some(current) = store.checkpoint_of(&key).await? {
+                    snapshot::maybe(&store, &current).await;
+                }
+                Ok::<(), String>(())
+            })
+            .await??;
         }
         Ok(())
     }
