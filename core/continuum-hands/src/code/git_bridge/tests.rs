@@ -2,6 +2,11 @@
     use super::*;
     use std::fs;
 
+    /// The actor fixture commits are made by: a test's own identity, never the host's config.
+    fn tester() -> GitActor {
+        GitActor::citizen(uuid::Uuid::nil(), Some("Tester"))
+    }
+
     // what this catches: a remote URL form that yields the WRONG board key, or none.
     // `benchmark/dispatch` keys every card it posts by this slug, so a bad parse
     // silently files a run's cards under a repo nobody is looking at — and the scp-style
@@ -70,7 +75,7 @@
         // Create an initial commit
         fs::write(dir.path().join("initial.txt"), "hello\n").unwrap();
         run_git(dir.path(), &["add", "."]).await.expect("git add");
-        run_git(dir.path(), &["commit", "-m", "Initial"]).await.expect("git commit");
+        run_git_as(dir.path(), &tester(), &["commit", "-m", "Initial"]).await.expect("git commit");
 
         dir
     }
@@ -103,10 +108,10 @@
         // shared advances (a new framework file), citizen has its OWN uncommitted work.
         fs::write(shared.path().join("framework.rs"), "// shared code\n").unwrap();
         run_git(shared.path(), &["add", "."]).await.unwrap();
-        run_git(shared.path(), &["commit", "-m", "shared: add framework.rs"]).await.unwrap();
+        run_git_as(shared.path(), &tester(), &["commit", "-m", "shared: add framework.rs"]).await.unwrap();
         fs::write(citizen.path().join("my_work.rs"), "// persona code\n").unwrap();
 
-        let report = git_sync_from_shared(citizen.path(), shared.path()).await.expect("sync ok");
+        let report = git_sync_from_shared(citizen.path(), shared.path(), &tester()).await.expect("sync ok");
         assert!(report.synced, "should report a sync: {}", report.summary);
 
         // BOTH survive: shared's new file arrives, the persona's work is preserved.
@@ -124,7 +129,7 @@
         );
 
         // Idempotent: a second sync is a clean no-op.
-        let again = git_sync_from_shared(citizen.path(), shared.path()).await.expect("2nd sync ok");
+        let again = git_sync_from_shared(citizen.path(), shared.path(), &tester()).await.expect("2nd sync ok");
         assert!(!again.synced, "already current: {}", again.summary);
     }
 
@@ -148,10 +153,10 @@
 
         fs::write(shared.path().join("framework.rs"), "// shared code\n").unwrap();
         run_git(shared.path(), &["add", "."]).await.unwrap();
-        run_git(shared.path(), &["commit", "-m", "shared: add framework.rs"]).await.unwrap();
+        run_git_as(shared.path(), &tester(), &["commit", "-m", "shared: add framework.rs"]).await.unwrap();
         fs::write(citizen.path().join("repro_scratch.py"), "# workspace debris\n").unwrap();
 
-        let report = git_sync_from_shared(citizen.path(), shared.path()).await.expect("sync ok");
+        let report = git_sync_from_shared(citizen.path(), shared.path(), &tester()).await.expect("sync ok");
         assert!(!report.synced, "a card branch is not synced: {}", report.summary);
         assert_eq!(run_git(citizen.path(), &["rev-parse", "HEAD"]).await.unwrap(), head, "no autosave or merge commit");
         assert!(!citizen.path().join("framework.rs").exists(), "shared was not merged in");
@@ -173,7 +178,7 @@
         // Debris file exists in the common base.
         fs::write(shared.path().join("conway.rs"), "// v1\n").unwrap();
         run_git(shared.path(), &["add", "."]).await.unwrap();
-        run_git(shared.path(), &["commit", "-m", "base: debris present"]).await.unwrap();
+        run_git_as(shared.path(), &tester(), &["commit", "-m", "base: debris present"]).await.unwrap();
 
         // Citizen cp-clone (related history).
         let citizen = tempfile::tempdir().unwrap();
@@ -192,10 +197,10 @@
         run_git(shared.path(), &["rm", "-q", "conway.rs"]).await.unwrap();
         fs::write(shared.path().join("framework3.rs"), "// newer\n").unwrap();
         run_git(shared.path(), &["add", "framework3.rs"]).await.unwrap();
-        run_git(shared.path(), &["commit", "-m", "shared: sweep debris"]).await.unwrap();
+        run_git_as(shared.path(), &tester(), &["commit", "-m", "shared: sweep debris"]).await.unwrap();
         fs::write(citizen.path().join("conway.rs"), "// persona edit\n").unwrap();
 
-        let report = git_sync_from_shared(citizen.path(), shared.path()).await
+        let report = git_sync_from_shared(citizen.path(), shared.path(), &tester()).await
             .expect("sync must survive modify/delete");
         assert!(report.synced, "should sync: {}", report.summary);
         assert!(
@@ -245,7 +250,7 @@
             .to_string();
         fs::write(sub.path().join("v2.txt"), "v2\n").unwrap();
         run_git(sub.path(), &["add", "."]).await.unwrap();
-        run_git(sub.path(), &["commit", "-m", "sub: v2"]).await.unwrap();
+        run_git_as(sub.path(), &tester(), &["commit", "-m", "sub: v2"]).await.unwrap();
         let s2 = run_git(sub.path(), &["rev-parse", "HEAD"]).await
             .unwrap()
             .trim()
@@ -271,7 +276,7 @@
         );
         // Pin the submodule at P0 (submodule add checks out its current HEAD = S2 tip;
         // rewind the gitlink so both sides start from a common base pointer).
-        run_git(shared.path(), &["commit", "-m", "shared: add submodule"]).await.unwrap();
+        run_git_as(shared.path(), &tester(), &["commit", "-m", "shared: add submodule"]).await.unwrap();
 
         // Citizen: cp-clone of shared (related history), like the CoW layer.
         let citizen = tempfile::tempdir().unwrap();
@@ -297,9 +302,9 @@
         .unwrap();
         fs::write(shared.path().join("framework2.rs"), "// newer shared\n").unwrap();
         run_git(shared.path(), &["add", "framework2.rs"]).await.unwrap();
-        run_git(
+        run_git_as(
             shared.path(),
-            &["commit", "-m", "shared: bump sub + framework2"],
+            &tester(), &["commit", "-m", "shared: bump sub + framework2"],
         ).await
         .unwrap();
 
@@ -318,14 +323,14 @@
             ],
         ).await
         .unwrap();
-        run_git(
+        run_git_as(
             citizen.path(),
-            &["commit", "-m", "citizen: drifted pointer"],
+            &tester(), &["commit", "-m", "citizen: drifted pointer"],
         ).await
         .unwrap();
         fs::write(citizen.path().join("my_work.rs"), "// persona code\n").unwrap();
 
-        let report = git_sync_from_shared(citizen.path(), shared.path()).await
+        let report = git_sync_from_shared(citizen.path(), shared.path(), &tester()).await
             .expect("sync must survive a diverged submodule pointer");
         assert!(report.synced, "should sync: {}", report.summary);
 
@@ -386,7 +391,7 @@
         let evidence = format!(
             r#"{{"repo":"o/r","requested_branch":"b","integration_base":"canary","start_ref":"{start_ref}","creation_sha":"{creation}"}}"#
         );
-        let blob = run_git_input(root, &["hash-object", "-w", "--stdin"], &[], Some(evidence.into_bytes())).await.unwrap();
+        let blob = run_git_input(root, None, &["hash-object", "-w", "--stdin"], &[], Some(evidence.into_bytes())).await.unwrap();
         run_git(root, &["update-ref", airc_lib::work_worktree::ALLOCATION_REF, blob.trim()]).await.unwrap();
         run_git(root, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &creation]).await.unwrap();
     }
@@ -403,7 +408,7 @@
         run_git(root, &["update-ref", "refs/remotes/origin/canary", "HEAD"]).await.unwrap();
         record_allocation(root, "refs/remotes/origin/canary").await;
         fs::write(root.join("initial.txt"), "her edit\n").unwrap();
-        run_git(root, &["commit", "-qam", "wip(card): continuum act on node n"]).await.unwrap();
+        run_git_as(root, &tester(), &["commit", "-qam", "wip(card): continuum act on node n"]).await.unwrap();
         run_git(root, &["update-ref", "refs/remotes/origin/main", "HEAD"]).await.unwrap();
 
         assert!(git_diff(root, DiffScope::Unstaged).await.unwrap().text.is_empty(), "the checkpoint left the tree clean");
@@ -419,7 +424,7 @@
         let dir = setup_git_repo().await;
         let root = dir.path();
         fs::write(root.join("initial.txt"), "committed\n").unwrap();
-        run_git(root, &["commit", "-qam", "work"]).await.unwrap();
+        run_git_as(root, &tester(), &["commit", "-qam", "work"]).await.unwrap();
         let refused = git_diff(root, DiffScope::YourWork).await.err().expect("no recorded base refuses");
         assert!(refused.contains("allocation record"), "{refused}");
         assert!(git_diff(root, DiffScope::Unstaged).await.is_ok(), "explicit scopes stay usable");
@@ -472,7 +477,7 @@
         assert!(status.added.contains(&"feature.txt".to_string()));
 
         // Commit it
-        let hash = git_commit(dir.path(), "Add feature").await.expect("git commit should work");
+        let hash = git_commit(dir.path(), &tester(), "Add feature").await.expect("git commit should work");
         assert!(!hash.is_empty());
         assert!(hash.len() >= 7); // At least a short hash
 
@@ -483,11 +488,42 @@
         assert!(status_after.untracked.is_empty());
     }
 
+    // what this catches: a resident's commit made under the node's git config: a bare `git commit`
+    // took the operator's identity as author AND committer (e5c80c7f, b51f4b59), and the autosave
+    // left him the committer. The repo's own config here stands in for the node's (it outranks the
+    // global one, so a leak would show): the commit is hers twice over, and a committing git that
+    // names no actor is refused before it runs, never run as the config's identity.
+    #[tokio::test]
+    async fn a_commit_through_her_tools_is_hers_as_author_and_committer() {
+        use crate::routing::CallerIdentity;
+        let dir = setup_git_repo().await;
+        let her = crate::identity::PeerId::new();
+        let mut ctx = crate::sdk_codegen::Ctx::default();
+        ctx.caller = Some(CallerIdentity::local_persona(her));
+        let state = crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current());
+        let actor = crate::modules::code_commands::engine_err::acting_git_actor(&state, &ctx).expect("her caller is an actor");
+        fs::write(dir.path().join("fix.rs"), "// her fix\n").unwrap();
+        git_add(dir.path(), &["fix.rs"]).await.unwrap();
+        git_commit(dir.path(), &actor, "her fix").await.expect("her commit");
+        let who = run_git(dir.path(), &["log", "-1", "--format=%an|%ae|%cn|%ce"]).await.unwrap();
+        let email = format!("{}@airc.citizen", her.as_uuid());
+        let shown = airc_core::shown_id::shown_form(her.as_uuid());
+        assert_eq!(who.trim(), format!("{shown}|{email}|{shown}|{email}"), "author and committer are her, never the config's Test");
+
+        fs::write(dir.path().join("more.rs"), "// more\n").unwrap();
+        git_add(dir.path(), &["more.rs"]).await.unwrap();
+        let refused = run_git_input(dir.path(), None, &["commit", "-m", "no one"], &[], None).await.unwrap_err();
+        assert_eq!(refused.end, GitEnd::NoActor, "{refused}");
+        let head = run_git(dir.path(), &["log", "-1", "--format=%s"]).await.unwrap();
+        assert_eq!(head.trim(), "her fix", "the refused commit never ran");
+        assert_eq!(crate::modules::code_commands::engine_err::acting_git_actor(&state, &crate::sdk_codegen::Ctx::default()), Err(crate::code::git_actor::NoGitActor::NoActingPeer), "no caller, no actor");
+    }
+
     #[tokio::test]
     async fn test_git_commit_empty_fails() {
         let dir = setup_git_repo().await;
         // Nothing staged — commit should fail
-        let result = git_commit(dir.path(), "Empty commit").await;
+        let result = git_commit(dir.path(), &tester(), "Empty commit").await;
         assert!(result.is_err());
     }
 
@@ -518,6 +554,7 @@
     async fn a_git_ends_with_its_waiter_and_says_how_it_ended() {
         use std::os::unix::fs::PermissionsExt;
         let dir = setup_git_repo().await;
+        let actor = tester();
         let hooks = tempfile::tempdir().unwrap();
         let hook_pid = hooks.path().join("hook.pid");
         // a pre-commit hook is a process git starts: it records itself and outlives every bound here
@@ -529,7 +566,7 @@
 
         // the deadline only has to land while the hook sleeps (600 s); 2 s is that margin, not a tuning
         let started = tokio::time::Instant::now();
-        let err = within(started + std::time::Duration::from_secs(2), run_git_input(dir.path(), &commit, &[], None)).await.unwrap_err();
+        let err = within(started + std::time::Duration::from_secs(2), run_git_input(dir.path(), Some(&actor), &commit, &[], None)).await.unwrap_err();
         assert!(err.end == GitEnd::Interrupted && err.out_of_time(), "a git the deadline ended is interrupted: {err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(60), "the deadline ended it, not the hook");
         // regression for card 0d18171d (canary a3546a125, run 38689841317): SIGKILL to another
@@ -552,13 +589,13 @@
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
 
-        let err = within(tokio::time::Instant::now(), run_git_input(dir.path(), &["status"], &[], None)).await.unwrap_err();
-        assert!(err.out_of_time() && err.end == GitEnd::NeverRan, "with no time left a git never starts: {err}");
+        let err = within(tokio::time::Instant::now(), run_git_input(dir.path(), None, &["status"], &[], None)).await.unwrap_err();
+        assert!(err.end == GitEnd::NeverRan && err.out_of_time(), "with no time left a git never starts: {err}");
 
         let _ = fs::remove_file(&hook_pid);
         let context = crate::identity::hands_context::HandsContext::fresh();
         let lease = std::sync::Arc::new(crate::identity::hands_gate::admit(context).expect("open hands"));
-        let run = crate::identity::hands_gate::admitted(Some(lease), run_git(dir.path(), &commit));
+        let run = crate::identity::hands_gate::admitted(Some(lease), run_git_as(dir.path(), &actor, &commit));
         tokio::select! {
             out = run => panic!("the git ended on its own: {out:?}"),
             () = async {
@@ -588,7 +625,7 @@
         .expect("the release confirms the cancelled git's tree ended");
 
         // a pipe holds 64 KiB; 1 MiB to a git that never reads stdin can't be delivered whole
-        let err = run_git_input(dir.path(), &["--version"], &[], Some(vec![b'x'; 1 << 20])).await.unwrap_err();
+        let err = run_git_input(dir.path(), None, &["--version"], &[], Some(vec![b'x'; 1 << 20])).await.unwrap_err();
         assert_eq!(err.end, GitEnd::Unknown, "it exited 0 without taking its input: what it did is unknown");
         assert!(err.to_string().contains("--version"), "input the git never took is an error naming it, never its output: {err}");
     }

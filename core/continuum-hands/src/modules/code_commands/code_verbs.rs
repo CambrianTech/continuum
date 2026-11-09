@@ -548,8 +548,9 @@ impl ActionCommand for CodeShell {
             let mut shell = self.state.shell_sessions.get_mut(&who).ok_or_else(|| {
                 CommandError::Internal("shell vanished after provisioning".into())
             })?;
+            let resident = super::engine_err::resident_shell(&self.state, ctx).map_err(|e| CommandError::Internal(e.to_string()))?;
             let exec_id = shell
-                .execute(&p.cmd, p.kill_after_ms, &self.state.rt_handle)
+                .execute_as(&p.cmd, p.kill_after_ms, &self.state.rt_handle, resident)
                 .map_err(CommandError::Internal)?;
             shell
                 .get_execution_state(&exec_id)

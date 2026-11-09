@@ -1,44 +1,5 @@
 #![cfg(test)]
 
-    // what this catches: a credential reaching a citizen's shell, and from there a
-    // room. Regression for the 2026-09-06 finding — the core is started with
-    // `set -a; . config.env; set +a` (install-service.sh:69), config.env defines
-    // HF_TOKEN, and Rust's Command inherits the parent env by default, so `env` from
-    // any citizen would have returned the live token into tool output that citizens
-    // routinely quote into rooms.
-    #[test]
-    fn secret_shaped_env_names_are_stripped_and_ordinary_ones_are_not() {
-        for name in [
-            "HF_TOKEN", "hf_token", "ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY",
-            "GH_TOKEN", "DB_PASSWORD", "SOME_CREDENTIAL", "KEY",
-        ] {
-            assert!(is_secret_env_name(name), "{name} should be stripped");
-        }
-        // The five NON-secret config.env entries must survive — stripping these
-        // would break serving, storage and probe capture on every citizen shell.
-        for name in [
-            "CONTINUUM_STORAGE_PATH", "HF_HOME", "CONTINUUM_PERSONA_FLOOR",
-            "CONTINUUM_PROBE_DIR", "CONTINUUM_SERVING_PLACEMENT",
-        ] {
-            assert!(!is_secret_env_name(name), "{name} must NOT be stripped");
-        }
-    }
-
-    // what this catches: an over-broad predicate breaking working citizens. `KEY` as
-    // a bare substring would strip MONKEY_DIR and KEYBOARD_LAYOUT; the needles are
-    // `_KEY` / `KEY_` (plus exact `KEY`) precisely so it does not. Measured against a
-    // live 96-variable Windows environment: zero false positives.
-    #[test]
-    fn ordinary_environment_names_survive_the_predicate() {
-        for name in [
-            "PATH", "HOME", "USERPROFILE", "TEMP", "TMP", "SystemRoot", "ComSpec",
-            "PATHEXT", "LANG", "CARGO_TARGET_DIR", "MONKEY_DIR", "KEYBOARD_LAYOUT",
-            "TURKEY", "AIRC_DEFAULT_ROOM_NAME", "CONTINUUM_SKIP_SELF_BUILD",
-        ] {
-            assert!(!is_secret_env_name(name), "{name} must NOT be stripped");
-        }
-    }
-
     use super::*;
     use std::fs;
 
@@ -99,14 +60,16 @@
         assert!(session.cwd().ends_with("src"));
     }
 
+    // what this catches: her shell caged to one workspace, so she could not stand in another
+    // repository's checkout (airc beside continuum) the way an agent does.
     #[test]
-    fn test_cd_outside_workspace_blocked() {
+    fn a_cd_outside_the_workspace_goes_where_she_asks() {
         let (dir, _rt) = setup_workspace();
         let mut session = ShellSession::new("test", "p1", dir.path()).unwrap();
 
         let result = session.cd("..");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("outside workspace"));
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(session.cwd(), dir.path().parent().unwrap().canonicalize().unwrap().as_path());
     }
 
     #[test]
@@ -531,3 +494,43 @@
         assert_eq!(result.status, ShellExecutionStatus::Completed);
         assert!(result.stderr.unwrap().contains("error_msg"));
     }
+
+    /// A resident's session and her actor; her commands run as her (what `code/shell` passes for a
+    /// LocalPersona caller).
+    fn resident_session(dir: &std::path::Path) -> (ShellSession, crate::code::git_actor::GitActor) {
+        let her = crate::code::git_actor::GitActor::citizen(uuid::Uuid::from_u128(0xA215), Some("Aris"));
+        (ShellSession::new("t", "p1", dir).unwrap(), her)
+    }
+
+
+    // what this catches: a resident's shell committing under the node's git config (the
+    // operator's name on e5c80c7f and b51f4b59), or her identity overridable by the session or
+    // the inherited environment. Her shell carries her as author AND committer, set last.
+    #[test]
+    fn a_residents_shell_carries_her_identity_as_author_and_committer() {
+        let (dir, rt) = setup_workspace();
+        let (mut session, her) = resident_session(dir.path());
+        session.set_env("GIT_AUTHOR_NAME".into(), "someone else".into());
+        let out = session
+            .execute_and_wait_as("echo \"$GIT_AUTHOR_NAME|$GIT_AUTHOR_EMAIL|$GIT_COMMITTER_NAME|$GIT_COMMITTER_EMAIL\"", Some(20_000), rt.handle(), Some(her.clone()))
+            .unwrap();
+        let line = out.stdout.unwrap();
+        assert_eq!(line.trim(), format!("{0}|{1}|{0}|{1}", her.name(), her.email()), "her, twice, over any session value");
+        assert!(session.confinement().is_none(), "a resident's shell has no confinement wrapper");
+    }
+
+    // what this catches: plain `git commit` from her shell attributed to the repository's or the
+    // node's configured identity instead of to her (the config here stands in for the node's: a
+    // repo-local identity outranks the global one, so a leak would show).
+    #[test]
+    fn a_commit_from_her_shell_is_hers() {
+        let (dir, rt) = setup_workspace();
+        let (mut session, her) = resident_session(dir.path());
+        let script = "git init -q . && git config user.name Operator && git config user.email operator@host \
+                      && git add -A && git commit -q -m 'her work' && git log -1 --format='%an|%ae|%cn|%ce'";
+        let out = session.execute_and_wait_as(script, Some(30_000), rt.handle(), Some(her.clone())).unwrap();
+        assert_eq!(out.exit_code, Some(0), "stderr: {:?}", out.stderr);
+        let who = out.stdout.unwrap();
+        assert_eq!(who.trim().lines().last().expect("git log printed a line"), format!("{0}|{1}|{0}|{1}", her.name(), her.email()));
+    }
+

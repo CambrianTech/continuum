@@ -104,8 +104,8 @@ impl ArrivalOutcome {
 /// Otherwise check `branch` out AT the fetched commit. Diverged local commits and
 /// dirty edits are committed whole (no hooks) and kept under [`STRANDED_REF_PREFIX`]`<branch>-<now_ms>`; the remote wins the
 /// branch and the tree. Synchronous git; [`arrive_for`] is the bounded, probed form.
-pub async fn arrive(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
-    if let Some(realigned) = realign_to_anchor(root, branch, now_ms).await {
+pub async fn arrive(root: &Path, branch: &str, now_ms: u64, actor: &GitActor) -> ArrivalOutcome {
+    if let Some(realigned) = realign_to_anchor(root, branch, now_ms, actor).await {
         return realigned;
     }
     // The mirror of the push guard (and the same policy/mechanism split): fetching from a
@@ -116,14 +116,14 @@ pub async fn arrive(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
             return ArrivalOutcome::NotTransferable { branch: branch.to_string(), reason: LOCAL_ORIGIN_REASON };
         }
     }
-    arrive_over(root, branch, now_ms).await
+    arrive_over(root, branch, now_ms, actor).await
 }
 
 /// A checkout whose HEAD no longer descends from its creation anchor is put back on it, keeping
 /// everything it had: the recovery for a checkout an earlier arrival moved onto a branch that
 /// predates its allocation (Kimi on the Windows node, 2026-11-08, Codex 52754e2a). `None` when
 /// there is no anchor or HEAD descends from it (nothing to do).
-pub(super) async fn realign_to_anchor(root: &Path, branch: &str, now_ms: u64) -> Option<ArrivalOutcome> {
+pub(super) async fn realign_to_anchor(root: &Path, branch: &str, now_ms: u64, actor: &GitActor) -> Option<ArrivalOutcome> {
     let branch_s = branch.to_string();
     let anchor = run_git(root, &["rev-parse", "--verify", "-q", airc_lib::work_worktree::CREATION_BASE_REF]).await.ok()?;
     let anchor = anchor.trim().to_string();
@@ -140,7 +140,7 @@ pub(super) async fn realign_to_anchor(root: &Path, branch: &str, now_ms: u64) ->
         Err(error) => return Some(ArrivalOutcome::Failed { branch: branch_s, stage: "status", error }),
     };
     let keep = if dirty {
-        commit_tree_no_hooks(root, &format!("stranded: {branch} off its creation anchor"), false, None).await
+        commit_tree_no_hooks(root, &format!("stranded: {branch} off its creation anchor"), false, actor, TreeScope::Everything).await
     } else {
         run_git(root, &["rev-parse", "HEAD"]).await.map(|s| s.trim().to_string())
     };
@@ -171,7 +171,7 @@ pub(super) async fn realign_to_anchor(root: &Path, branch: &str, now_ms: u64) ->
 /// (a missing object, a deadline, the runner) is no answer, said.
 pub(super) async fn is_ancestor(root: &Path, ancestor: &str, of: &str) -> Result<bool, String> {
     use crate::code::git_bridge::{run_git_input, GitEnd};
-    match run_git_input(root, &["merge-base", "--is-ancestor", ancestor, of], &[], None).await {
+    match run_git_input(root, None, &["merge-base", "--is-ancestor", ancestor, of], &[], None).await {
         Ok(_) => Ok(true),
         Err(error) if error.end == GitEnd::Refused && error.code == Some(1) => Ok(false),
         Err(error) => Err(error.to_string()),
@@ -228,12 +228,12 @@ pub(super) async fn complete_history_if_departed(root: &Path, held: HeldCheckout
 }
 
 /// [`arrive`] past the transfer-target policy — the fetch / checkout / strand mechanism.
-pub(super) async fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
+pub(super) async fn arrive_over(root: &Path, branch: &str, now_ms: u64, actor: &GitActor) -> ArrivalOutcome {
     let branch_s = branch.to_string();
     if !root.join(".git").exists() {
         return ArrivalOutcome::Failed { branch: branch_s, stage: "checkout", error: NOT_A_REPO_REASON.into() };
     }
-    if let Err(error) = crate::code::git_bridge::run_git_input(root, &["fetch", "--no-tags", "origin", branch], &[], None).await {
+    if let Err(error) = crate::code::git_bridge::run_git_input(root, None, &["fetch", "--no-tags", "origin", branch], &[], None).await {
         return match remote_branch_absent(root, branch).await {
             Ok(true) => ArrivalOutcome::NoRemoteBranch { branch: branch_s },
             Ok(false) => ArrivalOutcome::Unreachable { branch: branch_s, error: error.to_string() },
@@ -289,7 +289,7 @@ pub(super) async fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> Arriv
     if dirty || local_only > 0 {
         let reference = format!("{STRANDED_REF_PREFIX}{branch}-{now_ms}");
         let keep = if dirty {
-            match commit_tree_no_hooks(root, &format!("stranded: local state of {branch} before transfer"), false, None).await {
+            match commit_tree_no_hooks(root, &format!("stranded: local state of {branch} before transfer"), false, actor, TreeScope::Everything).await {
                 Ok(sha) => sha,
                 Err(error) => return ArrivalOutcome::Failed { branch: branch_s, stage: "strand_commit", error },
             }
@@ -320,12 +320,12 @@ pub(super) async fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> Arriv
 /// an arrival commits, moves refs and resets the tree (Codex on f76005e8): first any history a
 /// shallow checkout needs to prove where it stands, then the arrival within [`ARRIVE_BOUND`].
 /// Every git it starts keeps the lock until that git has ended.
-pub(super) async fn arrive_locked(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
-    arrive_locked_with(root, branch, now_ms, airc_lib::work_worktree::complete_card_history).await
+pub(super) async fn arrive_locked(root: &Path, branch: &str, now_ms: u64, actor: &GitActor) -> ArrivalOutcome {
+    arrive_locked_with(root, branch, now_ms, airc_lib::work_worktree::complete_card_history, actor).await
 }
 
 /// [`arrive_locked`] with the history completer named (a test's stand-in).
-pub(super) async fn arrive_locked_with(root: &Path, branch: &str, now_ms: u64, complete: HistoryCompleter) -> ArrivalOutcome {
+pub(super) async fn arrive_locked_with(root: &Path, branch: &str, now_ms: u64, complete: HistoryCompleter, actor: &GitActor) -> ArrivalOutcome {
     let lock = CHECKOUT_SYNC.entry(root.to_path_buf()).or_default().clone();
     let Ok(one_at_a_time) = tokio::time::timeout(ARRIVE_BOUND, lock.lock_owned()).await else {
         return ArrivalOutcome::Failed {
@@ -337,7 +337,7 @@ pub(super) async fn arrive_locked_with(root: &Path, branch: &str, now_ms: u64, c
     let held: HeldCheckout = std::sync::Arc::new(one_at_a_time);
     continuum_process::holding(held.clone(), async {
         complete_history_if_departed(root, held, complete).await;
-        crate::code::git_bridge::within(tokio::time::Instant::now() + ARRIVE_BOUND, arrive(root, branch, now_ms)).await
+        crate::code::git_bridge::within(tokio::time::Instant::now() + ARRIVE_BOUND, arrive(root, branch, now_ms, actor)).await
     })
     .await
 }
@@ -346,12 +346,12 @@ pub(super) async fn arrive_locked_with(root: &Path, branch: &str, now_ms: u64, c
 /// (`continuum_process::holding`), as the act-end sync's does, so every git the arrival starts
 /// keeps the checkout until its tree has ended. Hands that are closing, or a card with no claim to
 /// admit to, are a named failure; nothing runs.
-async fn admitted_arrival(hands: Option<crate::identity::hands_context::HandsContext>, root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
+async fn admitted_arrival(hands: Option<crate::identity::hands_context::HandsContext>, root: &Path, branch: &str, now_ms: u64, actor: &GitActor) -> ArrivalOutcome {
     let Some(hands) = hands else {
         return ArrivalOutcome::Failed { branch: branch.to_string(), stage: "admission", error: "the card has no claim, so there are no hands to arrive in".into() };
     };
     match crate::identity::hands_gate::admit(hands) {
-        Ok(lease) => crate::identity::hands_gate::admitted(Some(std::sync::Arc::new(lease)), arrive_locked(root, branch, now_ms)).await,
+        Ok(lease) => crate::identity::hands_gate::admitted(Some(std::sync::Arc::new(lease)), arrive_locked(root, branch, now_ms, actor)).await,
         Err(error) => ArrivalOutcome::Failed { branch: branch.to_string(), stage: "admission", error },
     }
 }
@@ -360,11 +360,12 @@ async fn admitted_arrival(hands: Option<crate::identity::hands_context::HandsCon
 /// [`ARRIVE_BOUND`], receipted as `workspace.transfer` with card, branch, sha, from and
 /// to node. The claim is authoritative and the checkout is convenience: no outcome here
 /// undoes a claim, every outcome is said.
-pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid, hands: Option<crate::identity::hands_context::HandsContext>) -> ArrivalOutcome {
+/// Any commit it makes (a stranded save) is by `actor`, the claimer the checkout is staged for.
+pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid, hands: Option<crate::identity::hands_context::HandsContext>, actor: &GitActor) -> ArrivalOutcome {
     let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock stamps 0; the ref is still unique per branch per arrival in practice
     let started = std::time::Instant::now();
     // Preserve the failing step and its owner-rendered reason; never classify Git errors from text.
-    let outcome = admitted_arrival(hands, &root, &branch, now_ms).await;
+    let outcome = admitted_arrival(hands, &root, &branch, now_ms, actor).await;
     let (sha, from_node, stranded, error) = match &outcome {
         ArrivalOutcome::Transferred { sha, from_node, stranded, .. } => {
             (sha.as_str(), from_node.clone().unwrap_or_default(), stranded.clone().unwrap_or_default(), String::new()) // unwrap_or_default: probe labels only

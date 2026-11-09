@@ -55,7 +55,8 @@ use std::sync::LazyLock;
 use dashmap::DashMap;
 use uuid::Uuid;
 
-use crate::code::git_bridge::{run_git, run_git_with_env};
+use crate::code::git_bridge::run_git;
+use crate::persona::git_actor::GitActor;
 
 /// Where a diverged local checkout is kept when the remote wins an arrival.
 pub const STRANDED_REF_PREFIX: &str = "refs/continuum/stranded/";
@@ -231,6 +232,16 @@ pub(crate) async fn is_dirty(root: &Path) -> Result<bool, String> {
     run_git(root, &["status", "--porcelain", "--untracked-files=all"]).await.map(|s| !s.trim().is_empty())
 }
 
+/// Does she hold work the branch does not carry? The same question `work/submit` asks before it
+/// publishes a commit: substrate and build byproducts (`SOLUTION_PATH_EXCLUDES`) are not her work.
+/// The autosave asks THIS, so a tree a submission called clean gets no `wip` commit after it, and
+/// the branch head stays the submitted head the merge gate compares with the PR's (HeadMoved).
+pub(crate) async fn has_uncommitted_work(root: &Path) -> Result<bool, String> {
+    let mut status = vec!["status", "--porcelain", "--untracked-files=all", "--", "."];
+    status.extend_from_slice(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES);
+    run_git(root, &status).await.map(|s| !s.trim().is_empty())
+}
+
 /// Count each side of two immutable tips. Arrival and branch publication use the
 /// same ancestry question; reachability from an unrelated branch is not delivery.
 async fn history_counts(root: &Path, remote: &str, local: &str) -> Result<(u64, u64), String> {
@@ -274,8 +285,8 @@ pub async fn has_unpushed_work(root: &Path) -> bool {
         Carry::Nothing(_) => false,
         // No origin refs exist to count commits against, so the dirty tree IS the work:
         // nothing ever commits into a checkout that cannot carry (see `sync_after_act`).
-        Carry::NoOrigin => is_dirty(root).await.unwrap_or(true), // unwrap_or: unreadable = assume work, never move on a guess
-        Carry::Via(_) | Carry::LocalOrigin => match (is_dirty(root).await, needs_branch_publication(root).await) {
+        Carry::NoOrigin => has_uncommitted_work(root).await.unwrap_or(true), // unwrap_or: unreadable = assume work, never move on a guess
+        Carry::Via(_) | Carry::LocalOrigin => match (has_uncommitted_work(root).await, needs_branch_publication(root).await) {
             (Ok(dirty), Ok(unpublished)) => dirty || unpublished,
             _ => true,
         },
@@ -286,18 +297,11 @@ pub async fn has_unpushed_work(root: &Path) -> bool {
 /// the "from" half of the transfer receipt on arrival, read back by
 /// [`node_of_wip_subject`]. Plain text in the commit, so plain git carries it.
 ///
-/// The acting citizen is credited as a co-author, keyed to her airc identity
-/// (`<name> <peer_id@airc.citizen>`, the convention adopted 2026-10-05): her name on the
-/// commits she made is the receipt that she made them. Kimi's §12 pass committed as a bare
-/// `wip(...)` and the merger had to add her trailer by hand (card e5e72485).
-pub fn wip_message(card: Uuid, node: &str, actor: Option<(Uuid, &str)>) -> String {
-    let subject = format!("wip({card}): continuum act on node {node}");
-    match actor {
-        Some((peer, name)) => format!("{subject}
-
-Co-Authored-By: {name} <{peer}@airc.citizen>"),
-        None => subject,
-    }
+/// The acting citizen is the commit's author AND committer ([`GitActor`], applied by the git
+/// runner), so her name on the commits she made needs no trailer (card e5e72485 had to add it
+/// by hand when she was neither).
+pub fn wip_message(card: Uuid, node: &str) -> String {
+    format!("wip({}): continuum act on node {node}", airc_core::shown_id::shown_form(card))
 }
 
 /// PURE: the node a [`wip_message`] names, or `None` for any other subject.
@@ -312,6 +316,17 @@ pub fn node_of_wip_subject(subject: &str) -> Option<String> {
         .filter(|n| !n.is_empty())
 }
 
+/// What a commit of the working tree takes in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TreeScope {
+    /// Her work only: substrate and build byproducts stay out, as they stay out of a submission
+    /// (a `wip` commit carrying them would be refused by her next submit, and `.airc` holds
+    /// credentials that must never reach a remote).
+    Work,
+    /// Everything, for a stranded save that must lose nothing.
+    Everything,
+}
+
 /// Commit the whole working tree (tracked edits and untracked files, minus what the
 /// repo's excludes hide) as one commit on `HEAD`'s parent chain, WITHOUT running any
 /// hook: `add -A`, `write-tree`, `commit-tree`, and — when `advance_branch` — an
@@ -321,20 +336,21 @@ async fn commit_tree_no_hooks(
     root: &Path,
     message: &str,
     advance_branch: bool,
-    actor: Option<(Uuid, &str)>,
+    actor: &GitActor,
+    scope: TreeScope,
 ) -> Result<String, String> {
-    run_git(root, &["add", "-A"]).await?;
+    let mut add = vec!["add", "-A", "--", "."];
+    if scope == TreeScope::Work {
+        add.extend_from_slice(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES);
+    }
+    run_git(root, &add).await?;
     let tree = run_git(root, &["write-tree"]).await?.trim().to_string();
     let parent = head_sha(root).await;
-    // The acting citizen is the AUTHOR; the node stays the committer (Cormac, e5e72485).
-    let email = actor.map(|(peer, _)| format!("{peer}@airc.citizen"));
-    let env: Vec<(&str, &str)> = match (&actor, &email) {
-        (Some((_, name)), Some(email)) => vec![("GIT_AUTHOR_NAME", name), ("GIT_AUTHOR_EMAIL", email.as_str())],
-        _ => Vec::new(),
-    };
+    // The acting citizen is author AND committer: the runner applies `actor` (e5e72485).
+    use crate::code::git_bridge::run_git_input;
     let commit = match &parent {
-        Some(p) => run_git_with_env(root, &["commit-tree", &tree, "-p", p, "-m", message], &env).await?,
-        None => run_git_with_env(root, &["commit-tree", &tree, "-m", message], &env).await?,
+        Some(p) => run_git_input(root, Some(actor), &["commit-tree", &tree, "-p", p, "-m", message], &[], None).await?,
+        None => run_git_input(root, Some(actor), &["commit-tree", &tree, "-m", message], &[], None).await?,
     }
     .trim()
     .to_string();
@@ -376,7 +392,7 @@ const LS_REMOTE_NO_MATCH: i32 = 2;
 /// and holds no such branch.
 async fn remote_branch_absent(root: &Path, branch: &str) -> Result<bool, crate::code::git_bridge::GitError> {
     let reference = format!("refs/heads/{branch}");
-    match crate::code::git_bridge::run_git_input(root, &["ls-remote", "--exit-code", "origin", &reference], &[], None).await {
+    match crate::code::git_bridge::run_git_input(root, None, &["ls-remote", "--exit-code", "origin", &reference], &[], None).await {
         Ok(_) => Ok(false),
         Err(error) if error.code == Some(LS_REMOTE_NO_MATCH) => Ok(true),
         Err(error) => Err(error),
@@ -389,7 +405,7 @@ async fn remote_branch_absent(root: &Path, branch: &str) -> Result<bool, crate::
 /// current branch to `origin`, each git owned and within any deadline its caller set; the bounded, probed form the
 /// turn path calls is [`sync_after_act_for`]. `node` is stamped into the WIP commit's
 /// subject so the receiving node can say where the work came from.
-pub async fn sync_after_act(root: &Path, card: Uuid, node: &str, actor: Option<(Uuid, &str)>) -> PushOutcome {
+pub async fn sync_after_act(root: &Path, card: Uuid, node: &str, actor: &GitActor) -> PushOutcome {
     sync_after_act_over(root, card, node, carry_of(root).await, actor, CommitPolicy::TurnEnd).await
 }
 
@@ -400,7 +416,7 @@ pub async fn sync_after_act(root: &Path, card: Uuid, node: &str, actor: Option<(
 /// two real clones and a real remote, and an offline test's remote is necessarily a local
 /// path — the very thing the policy refuses. Injecting the decision lets each be tested as
 /// what it is, instead of a fixture quietly proving neither.
-async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, actor: Option<(Uuid, &str)>, commit: CommitPolicy) -> PushOutcome {
+async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, actor: &GitActor, commit: CommitPolicy) -> PushOutcome {
     // Asked BEFORE anything is written: a checkout that cannot carry is left exactly as
     // her act left it. No WIP commit either — a commit whose push can never happen only
     // makes the work harder to see (and a benchmark copy's commits are its grade).
@@ -414,12 +430,12 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
         return PushOutcome::NotPushable { reason: DETACHED_REASON };
     };
     let mut committed = false;
-    match is_dirty(root).await {
+    match has_uncommitted_work(root).await {
         Ok(true) if commit == CommitPolicy::Never => {
             return PushOutcome::NotPushable { reason: DIRTY_CARRY_REASON };
         }
         Ok(true) => {
-            if let Err(error) = commit_tree_no_hooks(root, &wip_message(card, node, actor), true, actor).await {
+            if let Err(error) = commit_tree_no_hooks(root, &wip_message(card, node), true, actor, TreeScope::Work).await {
                 return PushOutcome::CommitFailed { branch, error };
             }
             committed = true;
@@ -433,7 +449,7 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
         // remote's branch first, so publication is decided against what it holds, and a
         // push that landed isn't repeated as if it hadn't
         let spec = format!("+refs/heads/{branch}:refs/remotes/origin/{branch}");
-        if let Err(error) = crate::code::git_bridge::run_git_input(root, &["fetch", "--no-tags", "origin", &spec], &[], None).await {
+        if let Err(error) = crate::code::git_bridge::run_git_input(root, None, &["fetch", "--no-tags", "origin", &spec], &[], None).await {
             match remote_branch_absent(root, &branch).await {
                 Ok(true) => {} // it never landed: the branch isn't there
                 Ok(false) => return push_failure(branch, error),
@@ -453,7 +469,7 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
     // returns nothing here) leaves the remote unknown, and only a push that completed says what
     // the remote holds (Codex reviewer on #5037)
     REMOTE_UNKNOWN.insert(root.to_path_buf());
-    let pushed = crate::code::git_bridge::run_git_input(root, &["push", "--porcelain", "-u", "origin", &branch], &[], None).await;
+    let pushed = crate::code::git_bridge::run_git_input(root, None, &["push", "--porcelain", "-u", "origin", &branch], &[], None).await;
     // only a push that answered, or one that never ran, settles what the remote holds. One git
     // refused may still have landed (the remote can take the ref and the connection fail before
     // git hears so), and one cut off or unreadable may too: the remote stays unknown, and the
@@ -465,7 +481,7 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
         }
         Err(error) => match error.end {
             crate::code::git_bridge::GitEnd::Unknown | crate::code::git_bridge::GitEnd::Interrupted => PushOutcome::PushInterrupted { branch, error: error.into() },
-            crate::code::git_bridge::GitEnd::NeverRan => {
+            crate::code::git_bridge::GitEnd::NeverRan | crate::code::git_bridge::GitEnd::NoActor => {
                 REMOTE_UNKNOWN.remove(root);
                 push_failure(branch, error)
             }
@@ -565,7 +581,7 @@ async fn sync_admitted(persona: Uuid, persona_name: &str, root: PathBuf, card: U
     let node = crate::capacity::gossip::this_process_origin().to_string();
     let started = std::time::Instant::now();
     let outcome = sync_by(tokio::time::Instant::now() + SYNC_BOUND, &root, async {
-        sync_after_act_over(&root, card, &node, carry_of(&root).await, Some((persona, persona_name)), commit).await
+        sync_after_act_over(&root, card, &node, carry_of(&root).await, &GitActor::citizen(persona, Some(persona_name)), commit).await
     }).await;
     // Recorded whenever this checkout could hold work a move would strand — INCLUDING a
     // local-path origin, which is exactly the case that must pin her. Only a checkout
@@ -631,7 +647,7 @@ async fn sync_by(deadline: tokio::time::Instant, root: &Path, sync: impl std::fu
 /// enforced inside the locked sync, so becoming dirty while waiting returns a typed
 /// NotPushable outcome and cannot commit.
 pub async fn carry_committed(lease: std::sync::Arc<crate::identity::hands_gate::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> Option<PushOutcome> {
-    match is_dirty(&root).await {
+    match has_uncommitted_work(&root).await {
         Ok(false) => {}
         _ => return None,
     }

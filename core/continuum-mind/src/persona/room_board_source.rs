@@ -322,6 +322,7 @@ impl RoomBoardSource {
             Some(candidate.submission_id.as_uuid()), &outcomes,
             crate::recipe::benchmark_catalog::graded_at_submit(&card.title),
             Some(review.review_card_id),
+            card.pull_request.as_ref(),
         )?;
         Some(format!("{next} Read work/submission card_id={} submission_id={} for all {} signed verdicts, reviewers, and evidence.", card.card_id, candidate.submission_id, reviews.len()))
     }

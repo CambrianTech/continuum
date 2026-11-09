@@ -97,7 +97,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
             // or DIVERGED from it. The transfer owner fetches and preserves same-branch unpublished
             // successors/edits when origin adds no commits; genuine divergence is saved under a ref
             // before transferring.
-            let arrived = crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid(), claim_hands(claimer, card)).await;
+            let arrived = crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid(), claim_hands(claimer, card), &crate::persona::git_actor::of_persona(claimer)).await;
             return Staging::Ready { path: existing, arrival: arrived.notable() };
         }
     }
@@ -171,7 +171,7 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
             // A branch cut here from the clone's HEAD: if another node already
             // pushed this card's branch, her work is there — fetch it and stand
             // at its tip before her first turn (card 73eefbbb).
-            let arrived = crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid(), claim_hands(claimer, card)).await;
+            let arrived = crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid(), claim_hands(claimer, card), &crate::persona::git_actor::of_persona(claimer)).await;
             Staging::Ready { path, arrival: arrived.notable() }
         }
         Err(error) => Staging::Failed { stage: "worktree", error },

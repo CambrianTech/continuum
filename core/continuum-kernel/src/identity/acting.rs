@@ -17,6 +17,9 @@ pub trait ActingProvider: Send + Sync {
     fn acting_peer_id(&self, ctx: &Ctx) -> Option<Uuid>;
     /// Is `peer` one of this node's local identities (operator or agent self-peer)?
     fn is_local_identity(&self, peer: Uuid) -> bool;
+    /// The display name of `peer` when this node hosts her (a resident, or the agent or operator
+    /// self-peer). What her commits are signed with beside her airc address.
+    fn acting_name(&self, peer: Uuid) -> Option<String>;
     /// The root a persona's acting context is rooted at, if any.
     fn acting_root_in(&self, persona: Uuid, context: Option<HandsContext>) -> Option<PathBuf>;
     /// The prepared instance environment's python for a checkout, if it has one.

@@ -3323,6 +3323,7 @@ dependencies = [
  "continuum-base",
  "continuum-engine",
  "continuum-git",
+ "continuum-host",
  "continuum-kernel",
  "continuum-process",
  "dashmap",

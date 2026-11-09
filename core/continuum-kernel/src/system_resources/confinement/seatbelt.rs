@@ -14,6 +14,8 @@ use super::{Confinement, Enforcement};
 /// between rules of the SAME operation, so deny and allow are always written as the
 /// same pair.
 const SEATBELT_OPS: [&str; 2] = ["file-read*", "file-write*"];
+/// The read half of [`SEATBELT_OPS`]: what a read-only root grants.
+const SEATBELT_READ_OPS: [&str; 1] = ["file-read*"];
 
 /// The device files a shell writes to on nearly every command (`> /dev/null`, the tty,
 /// `/dev/fd/N` behind `/dev/stderr`, dyld's dtrace helper), granted as writes after the
@@ -60,7 +62,7 @@ pub fn seatbelt_profile(home: &Path, list: &AllowList) -> String {
         }
     }
     for root in &list.read {
-        rule(&mut out, "allow", &SEATBELT_OPS[..1], root);
+        rule(&mut out, "allow", &SEATBELT_READ_OPS, root);
     }
     for root in &list.write {
         rule(&mut out, "allow", &SEATBELT_OPS, root);
@@ -77,15 +79,6 @@ pub fn seatbelt_profile(home: &Path, list: &AllowList) -> String {
 /// Escape a literal path fragment for an SBPL `#"..."` regex.
 fn regex_escape(fragment: &str) -> String {
     fragment.chars().flat_map(|c| if ".^$*+?()[]{}|\\".contains(c) { vec!['\\', c] } else { vec![c] }).collect()
-}
-
-/// The profile for a HOST-reach resident: everything the operator's process may do, minus
-/// the credential roots and scope keys, written as denials only. Deny-capable, so it needs
-/// no carved grant: a directory she creates after her shell started is hers like any other.
-pub fn seatbelt_host_profile(list: &AllowList) -> String {
-    let mut out = String::from("(version 1)\n(allow default)\n");
-    deny_credentials(&mut out, list);
-    out
 }
 
 /// The carve-outs and scope keys, last: within an operation the last match wins.
@@ -115,7 +108,7 @@ pub(super) fn confined_command_with(
     program: &Path,
     args: &[std::ffi::OsString],
 ) -> (tokio::process::Command, Enforcement) {
-    let profile = if confinement.reaches_host() { seatbelt_host_profile(list) } else { seatbelt_profile(&confinement.home, list) };
+    let profile = seatbelt_profile(&confinement.home, list);
     let mut cmd = tokio::process::Command::new("/usr/bin/sandbox-exec");
     cmd.arg("-p").arg(profile).arg(program).args(args);
     (cmd, Enforcement::Enforced { mechanism: "seatbelt" })
