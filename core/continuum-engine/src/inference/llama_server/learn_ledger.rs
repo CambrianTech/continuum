@@ -49,15 +49,23 @@ impl std::fmt::Display for GrantId {
     }
 }
 
-/// What a grant allows: of every `period`, at most `share_ppm` millionths of the engine's time
-/// for learning while another slot serves, until `expires_in` (the engine turns it into its own
-/// clock, so no translation can go wrong).
+/// How much of the engine's time a grant lets learning take while another slot serves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantShare {
+    /// Learning only while no other slot serves; every contended step is refused. The bootstrap
+    /// before anything has been measured (Codex, 2026-11-09: share 0, never an invented number).
+    UncontendedOnly,
+    /// Of every `period`, at most `share_ppm` millionths, from measurement.
+    Measured { share_ppm: std::num::NonZeroU32, period: std::time::Duration },
+}
+
+/// What a grant allows, until `expires_in` (the engine turns it into its own clock, so no
+/// translation can go wrong).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrantTerms {
     pub id: GrantId,
     pub engine: LedgerEngine,
-    pub period: std::time::Duration,
-    pub share_ppm: std::num::NonZeroU32,
+    pub share: GrantShare,
     pub expires_in: std::time::Duration,
 }
 
@@ -206,11 +214,15 @@ impl LearningEngine {
 
     /// `POST /learn/grants`: register `terms` with the engine.
     pub async fn register_learn_grant(&self, terms: &GrantTerms) -> Result<LedgerAnswer<Registered<GrantRefusal>>, LlamaServerError> {
+        let (share_ppm, period_ms) = match terms.share {
+            GrantShare::UncontendedOnly => (0, 0),
+            GrantShare::Measured { share_ppm, period } => (share_ppm.get(), duration_ms(period)?),
+        };
         let body = serde_json::json!({
             "id": terms.id.to_string(),
             "engine": terms.engine,
-            "period_ms": duration_ms(terms.period)?,
-            "share_ppm": terms.share_ppm.get(),
+            "period_ms": period_ms,
+            "share_ppm": share_ppm,
             "expires_in_ms": duration_ms(terms.expires_in)?,
         });
         let reply = self.ledger_request::<GrantRefusal>(self.client.post(format!("{}/learn/grants", self.root)).json(&body)).await?;
