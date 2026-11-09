@@ -148,4 +148,34 @@ mod tests {
         assert_eq!(buckets.len(), 1);
         assert_eq!(buckets[0].1.iter().map(|row| row.id).collect::<Vec<_>>(), vec![eligible], "found past the first page");
     }
+
+    // Independent recovery fixture: the checkpoint row survived but its submission projection
+    // did not. A pass may already hold that stale submission when recovery projects the cursor.
+    #[tokio::test]
+    async fn a_reopened_checkpoint_keeps_a_captured_stale_arrival_past_its_committed_example() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let store = DurableStore::new(adapter.clone()).await.expect("test: store");
+        let (id, row) = submission(1, 2);
+        let key = BucketKey { persona_id: row.persona_id, trait_kind: row.trait_kind.clone(), base_model: row.base_model.clone() };
+        store.submissions.save(id, &row).await.expect("test: accepted");
+        store.commit_checkpoint(&key, "generation-1.gguf".into(), "binding".into(), 1,
+            serde_json::json!({"submission": id}), &[Position { submission: id, learned: 1 }])
+            .await.expect("test: confirmed generation");
+        // Materialize the crash boundary: the generation write is durable, the submission still
+        // has its pre-projection contents. Reopen the store rather than retaining its owner.
+        store.submissions.update(id, &row).await.expect("test: interrupted projection state");
+        drop(store);
+        let reopened = DurableStore::new(adapter).await.expect("test: reopened");
+        let captured = reopened.arrivals(0, 8).await.expect("test: capture before recovery");
+        assert_eq!(captured[0].learned, 0);
+        let generation = reopened.checkpoint_of(&key).await.expect("test: checkpoint query").expect("test: durable generation");
+        assert_eq!((generation.name.as_str(), generation.steps), ("generation-1.gguf", 1));
+        reopened.project(&generation).await.expect("test: recovery projection");
+        reopened.project(&generation).await.expect("test: duplicate recovery");
+        assert_eq!(reopened.arrivals(0, 8).await.expect("test: projected")[0].learned, 1);
+        let checkpointed = generation.positions.iter().find(|p| p.submission == id).map(|p| p.learned);
+        let next = super::super::super::in_place::start(captured[0].learned, checkpointed, None);
+        assert_eq!(next, 1, "the captured stale row must not replay example zero");
+        assert_eq!(captured[0].examples[next as usize].prompt, "p1");
+    }
 }
