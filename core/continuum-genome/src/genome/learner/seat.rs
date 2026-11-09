@@ -14,7 +14,7 @@
 //! unload, release the residency, then drop the leases, never the other way.
 
 use crate::inference::llama_server::{
-    CoveringLease, FreshShadow, LeaseKind, LearningEngine, LedgerAnswer, LedgerEngine, ResidencyId,
+    CoveringLease, FreshShadow, LeaseKind, LearningEngine, LedgerAnswer, LedgerEngine, LoadedAdapter, ResidencyId,
     ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind,
 };
 use crate::resources::{LeaseGuard, ResourceKind};
@@ -24,7 +24,7 @@ pub struct Seat {
     pub engine: LearningEngine,
     pub ledger: LedgerEngine,
     pub residency: ResidencyId,
-    pub lora_id: i64,
+    pub shadow: LoadedAdapter,
     leases: Vec<LeaseGuard>,
 }
 
@@ -99,20 +99,20 @@ pub async fn seat(authority: &Authority, engine: LearningEngine, consumer: &str,
         Ok(LedgerAnswer::NoLedger) => return Err(SeatRefusal::NoLedger),
         Err(error) => return Err(SeatRefusal::Unleased(format!("the residency was not registered: {error}"))),
     }
-    let lora_id = match engine.seat_fresh(&shadow, terms.id).await {
-        Ok(lora_id) => lora_id,
+    let loaded = match engine.seat_fresh(&shadow, terms.id).await {
+        Ok(loaded) => loaded,
         Err(error) => {
             // nothing was allocated inside the residency: release it before the leases drop
             let _released = engine.release_residency(&terms.id.to_string()).await; // the leases drop below either way; an unreleased residency is reconciled by its owner id
             return Err(SeatRefusal::Unloaded(error.to_string()));
         }
     };
-    Ok(Seat { engine, ledger: plan.engine, residency: terms.id, lora_id, leases: leases.into_iter().map(|(_, _, guard)| guard).collect() })
+    Ok(Seat { engine, ledger: plan.engine, residency: terms.id, shadow: loaded, leases: leases.into_iter().map(|(_, _, guard)| guard).collect() })
 }
 
 /// Lease each class of the rows (device memory as VRAM, host memory as RAM) from the resource
 /// authority, under the serving lifecycle gate.
-async fn lease_rows(authority: &Authority, consumer: &str, rows: &[ResidencyRow]) -> Result<Vec<(LeaseKind, u64, LeaseGuard)>, SeatRefusal> {
+pub(super) async fn lease_rows(authority: &Authority, consumer: &str, rows: &[ResidencyRow]) -> Result<Vec<(LeaseKind, u64, LeaseGuard)>, SeatRefusal> {
     let mut leases = Vec::new();
     for (kind, resource, host) in [(LeaseKind::Vram, ResourceKind::Vram, false), (LeaseKind::Ram, ResourceKind::Ram, true)] {
         let bytes: u64 = rows.iter().filter(|row| row.host == host).map(|row| row.bytes).sum();
@@ -131,7 +131,7 @@ impl Seat {
     /// Unseat in the reverse order: unload the shadow, release its residency, then the leases go
     /// with the seat. A release the engine refuses (busy) keeps the seat, so its leases stay.
     pub async fn unseat(self) -> Result<(), (Self, String)> {
-        if let Err(error) = self.engine.unseat(self.lora_id).await {
+        if let Err(error) = self.engine.unseat(self.shadow.id).await {
             return Err((self, format!("unload refused: {error}")));
         }
         match self.engine.release_residency(&self.residency.to_string()).await {
