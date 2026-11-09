@@ -451,7 +451,8 @@ pub(super) async fn settle_to_outcome<'c>(
         // This act's model wall-time, captured before the accumulate consumes
         // the metrics — the pace row below splits act time into model vs
         // residue with it.
-        let act_model_ms = step_metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0);
+        // `None` when the step carried no metrics: no measured model time, never a measured 0 ms.
+        let act_model_ms = step_metrics.as_ref().map(|m| m.latency_ms);
         // How many generations THIS step dispatched — counted before the receipts are
         // folded into the turn's, because it is the other half of "did this iteration
         // reach the model at all" (`classify_act`).
@@ -501,7 +502,7 @@ pub(super) async fn settle_to_outcome<'c>(
                     act = acts,
                     waited_secs = act_secs as u64,
                     lanes_available = crate::inference::resource_admission::serving_lane_permits_available() as u64,
-                    model_ms = act_model_ms,
+                    model_ms = ?act_model_ms,
                     generations = act_generations as u64,
                     "this iteration never reached the model — she waited and produced nothing; it is NOT counted as an act"
                 );
@@ -522,8 +523,8 @@ pub(super) async fn settle_to_outcome<'c>(
                 // subtracting log aggregates; a stall hiding in tools vs a stall
                 // hiding in the model were the same number. Now each act names
                 // where its time went, per-act, at the moment it happens.
-                model_ms = act_model_ms,
-                residue_ms = ((act_secs * 1000.0) as u64).saturating_sub(act_model_ms),
+                model_ms = ?act_model_ms,
+                residue_ms = ?act_model_ms.map(|model| ((act_secs * 1000.0) as u64).saturating_sub(model)),
                 // THE CLASSIFICATION, on the row itself: `reached_model=false` is a
                 // WAIT, not an act, and `pace_samples` says how many acts the mean
                 // beside it actually stands on.

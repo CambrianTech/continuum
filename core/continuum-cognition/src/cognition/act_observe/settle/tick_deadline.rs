@@ -193,14 +193,15 @@ pub(crate) enum ActClass {
     LaneStarved,
 }
 
-/// PURE: classify one settle iteration. `model_ms` is the act's generation wall-time;
+/// PURE: classify one settle iteration. `model_ms` is the act's generation wall-time (`None` when
+/// the step carried no metrics);
 /// `generations` is how many generation receipts the step dispatched.
 ///
 /// A FAULTED call still pushes a receipt (`GenerationReceipt::faulted`), so a model
 /// that answered badly is an act that reached the model — never a starve. Only an
 /// iteration that dispatched NOTHING is a wait.
-pub(crate) fn classify_act(model_ms: u64, generations: usize) -> ActClass {
-    if model_ms == 0 && generations == 0 {
+pub(crate) fn classify_act(model_ms: Option<u64>, generations: usize) -> ActClass {
+    if generations == 0 && model_ms.is_none_or(|ms| ms == 0) {
         ActClass::LaneStarved
     } else {
         ActClass::Act

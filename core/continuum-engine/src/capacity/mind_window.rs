@@ -220,6 +220,7 @@ mod tests {
             grants,
             nobody,
             excluded: Default::default(),
+            waiting: Default::default(),
         })
     }
 
@@ -277,6 +278,22 @@ mod tests {
         .expect("one evaluation ends the wait");
         publisher.await.expect("publisher");
         assert_eq!(refused, Err(WindowRefused::Ungranted(Ungranted::Nobody(NoGrants::PoolKindUnknown))), "the newer evaluation's reason, not the stale one's");
+    }
+
+    // what this catches (Codex on #5890): a demand that reached the publisher and waits for room
+    // reported as one that never arrived (NotADemand). Her evaluation names her queue place.
+    #[tokio::test]
+    async fn a_demand_waiting_for_room_says_so_not_that_it_never_arrived() {
+        use super::super::window_grant::{Ungranted, Waiting};
+        let her = uuid::Uuid::from_u128(4);
+        let after = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let mut queued = evaluation(after, grants(&[]), None).expect("evaluation");
+        queued.waiting.insert(her, Waiting::Queued { position: 2, of: 3 });
+        let (_sender, installed) = tokio::sync::watch::channel(Some(queued));
+        let refused = decide_window(her, || MindWindow::Ungranted, || {}, |at| Ok(next_evaluation(installed.clone(), at))).await;
+        assert_eq!(refused, Err(WindowRefused::Ungranted(Ungranted::Waiting(Waiting::Queued { position: 2, of: 3 }))));
+        let absent = evaluation(after, grants(&[]), None).expect("evaluation");
+        assert_eq!(absent.ungranted(her), Some(Ungranted::NotADemand), "no demand of hers reached it");
     }
 
     // what this catches (Fable on #5890): a stalled publisher (its tick blocked, its sender alive)

@@ -17,6 +17,13 @@ pub struct FairGrantState {
     changed: BTreeMap<uuid::Uuid, u64>,
 }
 
+impl FairGrantState {
+    /// Her place in the queue for room (1-based) and the queue's length, read after a publish.
+    pub fn queued(&self, mind: uuid::Uuid) -> Option<(usize, usize)> {
+        self.waiters.iter().position(|m| *m == mind).map(|at| (at + 1, self.waiters.len()))
+    }
+}
+
 /// The callback publishes while the reservation lock is held. Tickets leave only after the
 /// old holder is absent from the publication and its physical claim is fixed separately.
 pub fn publish_fair_grants<R>(

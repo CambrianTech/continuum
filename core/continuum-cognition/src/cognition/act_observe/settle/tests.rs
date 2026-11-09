@@ -372,13 +372,14 @@
     #[test]
     fn an_iteration_that_never_reached_the_model_is_a_wait_not_an_act() {
         // The two measured starved rows: no model time, no generation dispatched.
-        assert_eq!(classify_act(0, 0), ActClass::LaneStarved, "365,000 ms residue, model_ms=0");
+        assert_eq!(classify_act(None, 0), ActClass::LaneStarved, "365,000 ms residue, no model time");
+        assert_eq!(classify_act(Some(0), 0), ActClass::LaneStarved);
         // A real act: the model answered.
-        assert_eq!(classify_act(18_400, 1), ActClass::Act);
+        assert_eq!(classify_act(Some(18_400), 1), ActClass::Act);
         // A FAULTED generation still pushed a receipt — it reached the lane, so it is an
         // act that failed, never a starve. Misreading it as a starve would hide the very
         // inference faults `settle.inference_failed` exists to surface.
-        assert_eq!(classify_act(0, 1), ActClass::Act);
+        assert_eq!(classify_act(None, 1), ActClass::Act);
         assert!(can_defer_input(0, 0, 0, 0));
         assert!(!can_defer_input(1, 0, 0, 0), "a dispatched generation is not replayable input");
         assert!(!can_defer_input(0, 1, 1, 0), "completed actions survive without replay");

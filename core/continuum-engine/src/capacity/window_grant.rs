@@ -19,7 +19,8 @@ use std::collections::BTreeMap;
 use crate::inference::planning::window_allocator::Tokens;
 
 mod lease;
-pub(crate) use lease::{record_reclaimed_grant, record_refused_grant, is_grant_retiring};
+pub(crate) use lease::{record_reclaimed_grant, record_refused_grant};
+pub use lease::is_grant_retiring;
 pub use lease::{publish_fair_grants, FairGrantState, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
 
 /// One publication of one mind's grant: monotonic and never reused in this process. A grant that
@@ -202,6 +203,25 @@ pub struct GrantEvaluation {
     pub nobody: Option<NoGrants>,
     /// Each requirement this evaluation could not turn into a demand.
     pub excluded: BTreeMap<uuid::Uuid, Excluded>,
+    /// Each demand that reached the publisher and holds no grant after it, and why (Codex on #5890:
+    /// a demand waiting for room is not one that never arrived).
+    pub waiting: BTreeMap<uuid::Uuid, Waiting>,
+}
+
+/// Why a demand the publisher received holds no grant after its evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waiting {
+    /// Her need is above what one sequence holds: no grant can seat her.
+    NeedAboveCeiling { need: u32, ceiling: u32 },
+    /// Her need is above the whole pool.
+    NeedAbovePool { need: u32, pool: u32 },
+    /// Her own grant is being reclaimed: she is regranted after its receipt.
+    Reclaiming,
+    /// Queued for room behind others (1-based `position` of `of`): a holder must yield first.
+    Queued { position: usize, of: usize },
+    /// Seatable, not reclaiming, and in no queue: the fair publisher left her out, which it should
+    /// never do. Named, so a live read shows the defect instead of a reason it does not have.
+    Unplaced,
 }
 
 impl GrantEvaluation {
@@ -210,10 +230,11 @@ impl GrantEvaluation {
         if self.grants.as_ref().and_then(|g| g.grant_for(persona)).is_some() {
             return None;
         }
-        Some(match (self.nobody, self.excluded.get(&persona)) {
-            (Some(nobody), _) => Ungranted::Nobody(nobody),
-            (None, Some(excluded)) => Ungranted::Excluded(*excluded),
-            (None, None) => Ungranted::NotADemand,
+        Some(match (self.nobody, self.excluded.get(&persona), self.waiting.get(&persona)) {
+            (Some(nobody), _, _) => Ungranted::Nobody(nobody),
+            (None, Some(excluded), _) => Ungranted::Excluded(*excluded),
+            (None, None, Some(waiting)) => Ungranted::Waiting(*waiting),
+            (None, None, None) => Ungranted::NotADemand,
         })
     }
 }
@@ -225,6 +246,8 @@ pub enum Ungranted {
     Nobody(NoGrants),
     /// Her requirement was there and left out.
     Excluded(Excluded),
+    /// Her demand reached the publisher and waits, for the named reason.
+    Waiting(Waiting),
     /// The publisher had inputs, but no requirement of hers reached it.
     NotADemand,
 }
@@ -234,6 +257,7 @@ impl std::fmt::Display for Ungranted {
         match self {
             Self::Nobody(why) => write!(f, "the grants publisher could grant nobody: {why:?}"),
             Self::Excluded(why) => write!(f, "her requirement was left out of the demands: {why:?}"),
+            Self::Waiting(why) => write!(f, "her demand reached the grants publisher and waits: {why:?}"),
             Self::NotADemand => f.write_str("no requirement of hers reached the grants publisher"),
         }
     }

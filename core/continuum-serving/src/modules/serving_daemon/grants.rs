@@ -5,7 +5,7 @@
 //! 2026-11-03: "System accommodates it doesn't do stupid division"). Published on every tick
 //! that moves a grant; the re-home reconciler binds each mind to hers.
 use super::*;
-use crate::capacity::window_grant::{Demand, Excluded, GrantEvaluation, NoGrants, PoolGrants};
+use crate::capacity::window_grant::{Demand, Excluded, GrantEvaluation, NoGrants, PoolGrants, Waiting};
 
 /// What one evaluation grants from: the demands, the pool and one sequence's cap, and each
 /// requirement that entered no demand.
@@ -36,18 +36,27 @@ impl ServingDaemonModule {
             });
             (next, changed)
         };
-        let (((next, changed), tickets), nobody, excluded) = match self.grant_inputs() {
-            Ok(GrantInputs { demands, pool, cap, excluded }) => (
-                crate::capacity::window_grant::publish_fair_grants(
-                    &mut self.fair_grants.lock(), &demands, pool, cap, engine,
+        let (((next, changed), tickets), nobody, excluded, waiting) = match self.grant_inputs() {
+            Ok(GrantInputs { demands, pool, cap, excluded }) => {
+                // One fair-state lock across the publish and the read of its queue, so the queue
+                // positions are the ones this publish left.
+                let mut fair = self.fair_grants.lock();
+                let published = crate::capacity::window_grant::publish_fair_grants(
+                    &mut fair, &demands, pool, cap, engine,
                     || self.grants_tx.borrow().clone(), |next| publish(Some(next)),
-                ),
-                None,
-                excluded,
-            ),
+                );
+                let granted = published.0.0.as_ref();
+                let waiting = demands
+                    .iter()
+                    .filter(|d| granted.and_then(|g| g.grant_for(d.mind)).is_none())
+                    .map(|d| (d.mind, waiting_reason(d, pool, fair.queued(d.mind))))
+                    .collect();
+                (published, None, excluded, waiting)
+            }
             Err(nobody) => (
                 (crate::capacity::window_grant::honoring_reservations(engine, |_| publish(None)), Vec::new()),
                 Some(nobody),
+                Default::default(),
                 Default::default(),
             ),
         };
@@ -55,7 +64,7 @@ impl ServingDaemonModule {
         // her grant from one evaluation and its reason from another (Codex on the C2 design).
         self.evaluations_tx.send_modify(|evaluation| {
             let seq = evaluation.as_ref().map_or(1, |previous| previous.seq + 1);
-            *evaluation = Some(GrantEvaluation { seq, started, cadence: TICK, engine, grants: next.clone(), nobody, excluded });
+            *evaluation = Some(GrantEvaluation { seq, started, cadence: TICK, engine, grants: next.clone(), nobody, excluded, waiting });
         });
         for ticket in tickets {
             // The endpoint owns preparation and IO; dropping this observer cannot cancel them.
@@ -138,6 +147,19 @@ impl ServingDaemonModule {
         let shared = self.server.pool_launch()?.kv_shared();
         *self.shared_pool_of.lock() = Some((pid, shared));
         Some(shared)
+    }
+}
+
+/// Why a demand the publisher received holds no grant after it. A need no sequence or pool can hold
+/// is named before the queue.
+fn waiting_reason(d: &Demand<uuid::Uuid>, pool: u32, queued: Option<(usize, usize)>) -> Waiting {
+    let need = d.need.get();
+    match queued {
+        _ if need > d.ceiling => Waiting::NeedAboveCeiling { need, ceiling: d.ceiling },
+        _ if need > pool => Waiting::NeedAbovePool { need, pool },
+        Some((position, of)) => Waiting::Queued { position, of },
+        None if crate::capacity::window_grant::is_grant_retiring(d.mind) => Waiting::Reclaiming,
+        None => Waiting::Unplaced,
     }
 }
 

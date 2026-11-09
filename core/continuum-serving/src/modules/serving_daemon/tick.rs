@@ -23,9 +23,16 @@ impl ServiceModule for ServingDaemonModule {
         // Install our serving-state watch as the process-wide readable seam so
         // free functions + adapters read "what's live" as a pointer instead of
         // each probing /v1/models. Set-once (singleton daemon).
-        let _ = crate::inference::llama_server::install_serving_state(self.subscribe_serving());
-        let _ = crate::capacity::window_grant::install_grants(self.subscribe_grants());
-        let _ = crate::capacity::window_grant::install_evaluations(self.subscribe_evaluations());
+        for (seam, installed) in [
+            ("serving state", crate::inference::llama_server::install_serving_state(self.subscribe_serving())),
+            ("grants", crate::capacity::window_grant::install_grants(self.subscribe_grants())),
+            ("grant evaluations", crate::capacity::window_grant::install_evaluations(self.subscribe_evaluations())),
+        ] {
+            if !installed {
+                // Set-once seams: a re-initialize keeps the first daemon's watches, said so.
+                continuum_base::probe!(class = "serving.seam.kept", seam = seam, "this seam was already installed; the first serving daemon's watch stays");
+            }
+        }
         // THE DEVICE-BUDGET AUTHORITY, wired here rather than promised in a doc comment.
         // Without it `EphemeralServingLane::spawn` admits every engine with only a
         // free-port check — which is how three sidecars once shared one GPU. Set-once
@@ -156,10 +163,8 @@ impl ServingDaemonModule {
         let Ok(mut guard) = self.division.lock() else {
             return None;
         };
-        let stale = guard
-            .as_ref()
-            .map(|a| a.model_id() != active)
-            .unwrap_or(true);
+        // No division yet, or one for another model: both are stale.
+        let stale = guard.as_ref().is_none_or(|a| a.model_id() != active);
         if stale {
             // Live-anchored budget: the board's free-VRAM-after-fit (the #305 device
             // axis — already net of the resident serve and the placement margin) IS the

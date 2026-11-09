@@ -822,8 +822,8 @@ impl LlmDeliberationFaculty {
         //  (b) the model emitted a tool call as JSON in its prose (small models that
         //      ignore the native tool channel) — strictly better than dropping it.
         if !self.tools.is_empty() {
-            if matches!(resp.finish_reason, FinishReason::ToolUse) {
-                let mut calls = resp.tool_calls.clone().unwrap_or_default();
+            // A ToolUse finish with no calls carries none to run: it falls to the prose path below.
+            if let (FinishReason::ToolUse, Some(mut calls)) = (&resp.finish_reason, resp.tool_calls.clone()) {
                 // Wire dialect → canonical command names, BEFORE the
                 // authorization gate and the executor ever see them (the
                 // reverse half of the offer-side rename above).
