@@ -766,57 +766,16 @@ pub(super) fn finish_run(
     })
 }
 
-/// One example as `/train` reads it. A lived call goes as its served conversation: the
-/// system prompt and every served message framed exactly as serving framed them
-/// ([`crate::inference::request_body::wire_messages`]: her earlier tool calls kept, tool
-/// results as `role: tool`), then her reply with its reasoning and tool calls. Earlier
-/// assistant turns in that history are context (`"train": false`), not this lesson. The tools she was offered ride along so the rendered prompt has the tool
-/// block she saw. Anything else goes as `{prompt, completion}`.
+/// One example as `/train` reads it: a lived call as its served conversation, framed by the
+/// learner's one owner ([`crate::genome::learner::example::learn_messages`]); anything else as
+/// `{prompt, completion}`.
 pub(super) fn engine_example(e: &TrainingExample) -> EngineExample {
-    let Some(call) = e.lived.as_ref() else {
+    if e.lived.is_none() {
         return EngineExample::Pair {
             prompt: e.prompt.clone(),
             completion: e.completion.clone(),
         };
-    };
-    use crate::inference::request_body::{close_trailing_assistant, wire_messages, wire_tool_call};
-    // The history exactly as serving framed it; images drop (the trainer is text-only,
-    // and a text model was served the description bridge anyway).
-    let mut messages = wire_messages(
-        &call.request.messages,
-        call.request.system_prompt.as_deref(),
-        false,
-        false,
-        PROVIDER_ID,
-    );
-    // serving closes a history that ends in her own turn before she replies (a self-tick's
-    // continuation); without it the trained render has two assistant turns in a row
-    close_trailing_assistant(&mut messages);
-    for m in messages.iter_mut().filter(|m| m["role"] == "assistant") {
-        m["train"] = json!(false);
     }
-    let r = &call.response;
-    let calls: Vec<Value> = r
-        .tool_calls
-        .iter()
-        .flatten()
-        .map(|c| wire_tool_call(&c.id, &c.name, &c.input))
-        .collect();
-    let mut reply = json!({"role": "assistant", "content": r.text});
-    if let Some(reasoning) = r.reasoning.as_deref().filter(|s| !s.is_empty()) {
-        reply["reasoning_content"] = json!(reasoning);
-    }
-    if !calls.is_empty() {
-        reply["tool_calls"] = json!(calls);
-    }
-    messages.push(reply);
-    EngineExample::Conversation {
-        messages,
-        tools: call
-            .request
-            .tools
-            .as_deref()
-            .filter(|t| !t.is_empty())
-            .map(|tools| json!(crate::inference::request_body::openai_tools(tools))),
-    }
+    let framed = crate::genome::learner::example::learn_messages(e);
+    EngineExample::Conversation { messages: framed.messages, tools: framed.tools }
 }
