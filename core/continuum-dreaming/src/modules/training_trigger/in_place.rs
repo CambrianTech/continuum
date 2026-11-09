@@ -270,7 +270,18 @@ async fn checkpoint(state: &TrainingTriggerState, key: &BucketKey, seated: &mut 
     }
     let positions: Vec<Position> = seated.progress.iter().map(|(submission, learned)| Position { submission: *submission, learned: *learned }).collect();
     let name = format!("{}-{}-{}.gguf", key.persona_id.simple(), file_safe(&key.trait_kind), Uuid::new_v4().simple());
-    let provenance = serde_json::json!({ "personaId": key.persona_id, "traitKind": key.trait_kind, "baseModel": key.base_model, "positions": positions.len() });
+    // the manifest records what the generation consumed (ONE-RESIDENT 9.2): each submission and how
+    // many of its examples, merged over the generations before it
+    let mut consumed: HashMap<Uuid, u32> = seated.checkpointed.clone();
+    for position in &positions {
+        let held = consumed.entry(position.submission).or_default();
+        *held = (*held).max(position.learned);
+    }
+    let consumed: Vec<Position> = consumed.into_iter().map(|(submission, learned)| Position { submission, learned }).collect();
+    let provenance = serde_json::json!({
+        "personaId": key.persona_id, "traitKind": key.trait_kind, "baseModel": key.base_model,
+        "consumed": consumed, "signature": seated.signature.as_ref().map(|sig| sig.corpus.content_hash.clone()),
+    });
     match seated.mind.checkpoint(&name, &seated.binding, provenance.clone()).await {
         Ok(CheckpointAnswer::Saved(generation)) => {
             let store = state.durable.require()?;
