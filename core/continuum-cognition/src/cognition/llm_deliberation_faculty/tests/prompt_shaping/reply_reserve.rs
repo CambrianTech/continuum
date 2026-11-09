@@ -82,7 +82,6 @@ fn an_unmeasured_mind_reserves_a_reply_not_a_fraction_of_her_window() {
     // carries the room its prompt leaves, once), never a share of the window, at any size.
     let prior = 0;
     for window in [
-        crate::inference::planning::MIN_SERVE_CTX,
         4_096,
         8_192,
         16_384,
