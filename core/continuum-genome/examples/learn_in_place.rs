@@ -37,17 +37,14 @@ async fn main() -> Result<(), String> {
     // the zero grant's backstop is the engine's own maximum, as it reports it; stop revokes it
     let expiry = std::time::Duration::from_millis(ledger.max_expiry_ms);
     let mut workspace = None;
-    let mind = MindLearner::start(&authority, engine.clone(), "learning:e2e", shadow, &mut workspace, expiry)
-        .await
-        .map_err(|why| format!("start: {why}"))?;
-    let workspace_held = workspace.as_ref().ok_or("start leased no workspace")?;
-    println!("seated shadow {} with its learning memory and an uncontended-only grant", mind.shadow());
+    let mut mind = MindLearner::start(&authority, engine.clone(), "learning:e2e", shadow, expiry).await.map_err(|why| format!("start: {why}"))?;
+    println!("seated shadow {} with an uncontended-only grant", mind.shadow());
     let example = vec![
         serde_json::json!({"role": "user", "content": "What is the capital of Kansas?"}),
         serde_json::json!({"role": "assistant", "content": "Topeka."}),
     ];
     for step in 1..=2 {
-        let outcome = mind.learn(workspace_held, example.clone(), None, 0, 0.001).await.map_err(|e| format!("learn {step}: {e}"))?;
+        let outcome = mind.learn(&authority, &mut workspace, example.clone(), None, 0, 0.001).await.map_err(|e| format!("learn {step}: {e}"))?;
         println!("step {step}: {outcome:?}");
     }
     if let Ok(LedgerAnswer::Ledger(ledger)) = engine.learn_ledger().await {
@@ -57,7 +54,7 @@ async fn main() -> Result<(), String> {
             println!("  residency {}: {}", residency.subject, rows.join(", "));
         }
     }
-    mind.stop().await.map_err(|why| format!("stop: {why}"))?;
+    mind.stop().await.map_err(|(_, why)| format!("stop: {why}"))?;
     // her optimizer was the engine's last: its workspace residency goes too
     if let Some(held) = workspace.take() {
         held.release(&engine).await.map_err(|(_, why)| format!("workspace release: {why}"))?;

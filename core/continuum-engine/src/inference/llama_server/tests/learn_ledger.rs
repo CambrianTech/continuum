@@ -138,8 +138,9 @@ async fn a_residency_mirrors_the_measured_rows_and_the_leases_that_cover_them() 
 }
 
 // what this catches: a learning preflight's refusal read as a plan (zero bytes would lease nothing
-// and then allocate unleased), and serving's held workspace read as a requirement. A refusal is typed;
-// held rows are evidence beside the required ones.
+// and then allocate unleased), serving's held workspace read as a requirement, and a preflight priced
+// without the example it is for. A refusal is typed; held rows are evidence beside the required ones;
+// the example goes on the wire and the engine's count of its reply comes back.
 #[tokio::test]
 async fn a_preflight_refusal_is_typed_and_held_rows_are_evidence() {
     let app = axum::Router::new().route(
@@ -148,7 +149,8 @@ async fn a_preflight_refusal_is_typed_and_held_rows_are_evidence() {
             if body["lora_id"] == 9 {
                 return axum::Json(serde_json::json!({"engine": "e", "refusal": "busy", "detail": "learning retains the context", "reserved": false, "requirements": []}));
             }
-            axum::Json(serde_json::json!({"engine": "e", "refusal": "none", "reserved": false, "lora_id": 1, "requirements": [
+            assert_eq!(body["messages"][1]["content"], "Topeka.", "the example is priced, not a window");
+            axum::Json(serde_json::json!({"engine": "e", "refusal": "none", "reserved": false, "lora_id": 1, "reply_rows": 4, "served_window": 32768, "requirements": [
                 {"device": "CUDA0", "buffer_type": "CUDA0", "kind": "optimizer_static_required", "bytes": 6488192, "host": false},
                 {"device": "CUDA0", "buffer_type": "CUDA0", "kind": "shared_compute_held", "bytes": 9374336, "host": false}
             ]}))
@@ -156,13 +158,18 @@ async fn a_preflight_refusal_is_typed_and_held_rows_are_evidence() {
     );
     let (process, server) = engine(app).await;
     let engine_id: LedgerEngine = serde_json::from_value(serde_json::json!("e")).expect("test: an engine id is a string");
-    let LedgerAnswer::Ledger(refused) = process.learning_preflight(&engine_id, 9).await.expect("test: the engine answered") else {
+    let example = [
+        serde_json::json!({"role": "user", "content": "What is the capital of Kansas?"}),
+        serde_json::json!({"role": "assistant", "content": "Topeka."}),
+    ];
+    let LedgerAnswer::Ledger(refused) = process.learning_preflight(&engine_id, 9, &example, None).await.expect("test: the engine answered") else {
         panic!("test: an engine with the routes plans")
     };
     assert_eq!(refused, Preflight::Refused { refusal: PreflightRefusal::Busy, detail: Some("learning retains the context".into()) });
-    let LedgerAnswer::Ledger(Preflight::Planned(plan)) = process.learning_preflight(&engine_id, 1).await.expect("test: the engine answered") else {
+    let LedgerAnswer::Ledger(Preflight::Planned(plan)) = process.learning_preflight(&engine_id, 1, &example, None).await.expect("test: the engine answered") else {
         panic!("test: a planned preflight")
     };
     assert_eq!(plan.requirements.iter().filter(|row| row.kind.ends_with("_required")).map(|row| row.bytes).sum::<u64>(), 6_488_192);
+    assert_eq!((plan.reply_rows, plan.served_window), (4, 32_768), "the engine's own count of the reply");
     server.abort();
 }

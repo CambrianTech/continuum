@@ -25,7 +25,7 @@ pub struct Seat {
     pub ledger: LedgerEngine,
     pub residency: ResidencyId,
     pub shadow: LoadedAdapter,
-    leases: Vec<LeaseGuard>,
+    _leases: Vec<LeaseGuard>,
 }
 
 /// Why a shadow was not seated. Nothing is left allocated or leased after any of them.
@@ -39,8 +39,12 @@ pub enum SeatRefusal {
     Unleased(String),
     /// The engine refused to mirror the leases.
     Unmirrored(ResidencyRefusal),
-    /// The engine refused to write or load the shadow inside its residency.
+    /// The engine refused to write or load the shadow inside its residency, and confirmed nothing
+    /// is live there (its release was accepted), so the leases are dropped.
     Unloaded(String),
+    /// The engine's answer was lost or it would not confirm the residency empty: whatever it holds
+    /// keeps its leases in `retained` until [`Retained::settle`] confirms the release.
+    Unfenced { why: String, retained: Retained },
 }
 
 impl std::fmt::Display for SeatRefusal {
@@ -51,6 +55,7 @@ impl std::fmt::Display for SeatRefusal {
             SeatRefusal::Unleased(why) => write!(f, "the shadow's memory was not leased: {why}"),
             SeatRefusal::Unmirrored(why) => write!(f, "the engine refused the residency: {why:?}"),
             SeatRefusal::Unloaded(why) => write!(f, "the shadow was not loaded: {why}"),
+            SeatRefusal::Unfenced { why, retained } => write!(f, "the shadow's load is unconfirmed, {retained:?} keeps its leases: {why}"),
         }
     }
 }
@@ -102,12 +107,15 @@ pub async fn seat(authority: &Authority, engine: LearningEngine, consumer: &str,
     let loaded = match engine.seat_fresh(&shadow, terms.id).await {
         Ok(loaded) => loaded,
         Err(error) => {
-            // nothing was allocated inside the residency: release it before the leases drop
-            let _released = engine.release_residency(&terms.id.to_string()).await; // the leases drop below either way; an unreleased residency is reconciled by its owner id
-            return Err(SeatRefusal::Unloaded(error.to_string()));
+            // a lost reply is not proof that nothing loaded: the engine's release answer is the fence
+            let retained = Retained { engine, residency: terms.id, _leases: leases.into_iter().map(|(_, _, guard)| guard).collect() };
+            return Err(match retained.settle().await {
+                Ok(()) => SeatRefusal::Unloaded(error.to_string()),
+                Err((retained, why)) => SeatRefusal::Unfenced { why: format!("{error}; then {why}"), retained },
+            });
         }
     };
-    Ok(Seat { engine, ledger: plan.engine, residency: terms.id, shadow: loaded, leases: leases.into_iter().map(|(_, _, guard)| guard).collect() })
+    Ok(Seat { engine, ledger: plan.engine, residency: terms.id, shadow: loaded, _leases: leases.into_iter().map(|(_, _, guard)| guard).collect() })
 }
 
 /// Lease each class of the rows (device memory as VRAM, host memory as RAM) from the resource
@@ -137,14 +145,56 @@ impl Seat {
     /// Release the weight residency of an unloaded shadow; the leases go with the seat. A release
     /// the engine refuses (busy) keeps the seat, so its leases stay.
     pub async fn release(self) -> Result<(), (Self, String)> {
-        match self.engine.release_residency(&self.residency.to_string()).await {
-            Ok(LedgerAnswer::Ledger(released)) if released.refused.is_none() => Ok(()),
-            Ok(LedgerAnswer::Ledger(released)) => {
-                let why = format!("residency release refused: {:?}", released.refused);
-                Err((self, why))
+        match confirm_release(&self.engine, &self.residency).await {
+            Ok(()) => Ok(()),
+            Err(why) => Err((self, why)),
+        }
+    }
+}
+
+/// Release `residency`; `Ok` only when the engine confirms it (a busy, unknown or unanswered release
+/// is an error, so whoever holds the leases keeps them).
+pub(super) async fn confirm_release(engine: &LearningEngine, residency: &ResidencyId) -> Result<(), String> {
+    match engine.release_residency(&residency.to_string()).await {
+        Ok(LedgerAnswer::Ledger(released)) if released.refused.is_none() => Ok(()),
+        Ok(LedgerAnswer::Ledger(released)) => Err(format!("residency {residency} release refused: {:?}", released.refused)),
+        Ok(LedgerAnswer::NoLedger) => Err("the engine lost its learning ledger".into()),
+        Err(error) => Err(format!("residency {residency} release failed: {error}")),
+    }
+}
+
+/// A residency whose release the engine has not confirmed, holding its leases until it does: the
+/// memory stays charged while the engine may still hold it, never dropped on a lost answer.
+pub struct Retained {
+    engine: LearningEngine,
+    residency: ResidencyId,
+    _leases: Vec<LeaseGuard>,
+}
+
+impl std::fmt::Debug for Retained {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Retained({})", self.residency)
+    }
+}
+
+impl Retained {
+    /// Settle it: unload whatever adapter the engine bound inside the residency, then release it.
+    /// The leases drop only once the engine confirms the release; otherwise it is handed back.
+    pub async fn settle(self) -> Result<(), (Self, String)> {
+        let id = self.residency.to_string();
+        let bound = match self.engine.learn_ledger().await {
+            Ok(LedgerAnswer::Ledger(ledger)) => ledger.residencies.iter().find(|held| held.id == id).map(|held| held.lora_id).filter(|lora| *lora >= 0),
+            Ok(LedgerAnswer::NoLedger) => return Err((self, "the engine lost its learning ledger".into())),
+            Err(error) => return Err((self, format!("the ledger did not answer: {error}"))),
+        };
+        if let Some(lora) = bound {
+            if let Err(error) = self.engine.unseat(lora).await {
+                return Err((self, format!("unload of adapter {lora} refused: {error}")));
             }
-            Ok(LedgerAnswer::NoLedger) => Err((self, "the engine lost its learning ledger".into())),
-            Err(error) => Err((self, format!("residency release failed: {error}"))),
+        }
+        match confirm_release(&self.engine, &self.residency).await {
+            Ok(()) => Ok(()),
+            Err(why) => Err((self, why)),
         }
     }
 }

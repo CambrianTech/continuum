@@ -94,3 +94,85 @@ async fn a_refused_residency_releases_its_lease() {
     assert_eq!(seen.lock().unwrap_or_else(|p| p.into_inner()).len(), 2, "nothing was written after the refusal"); // test-owned lock
     server.abort();
 }
+
+/// A fake engine that plans `WEIGHTS`, registers residencies, loses the shadow's load reply (a 504
+/// after the write may or may not have happened), shows no adapter bound in its ledger, and answers
+/// a residency release with `release`.
+async fn engine_losing_the_load(release: &'static str) -> (LearningEngine, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let app = axum::Router::new()
+        .route(
+            "/lora-adapters/fresh",
+            axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                if body["dry_run"] == true {
+                    return (axum::http::StatusCode::OK, axum::Json(serde_json::json!({"engine": ENGINE, "reserved": false,
+                        "weights": [{"device": "CUDA0", "buffer_type": "CUDA0", "bytes": WEIGHTS, "host": false}]})));
+                }
+                (axum::http::StatusCode::GATEWAY_TIMEOUT, axum::Json(serde_json::json!({"error": "upstream timed out"})))
+            }),
+        )
+        .route("/learn/residency", axum::routing::post(|| async { axum::Json(ledger("none")) }))
+        .route("/learn/grants", axum::routing::get(|| async { axum::Json(ledger("none")) }))
+        .route("/learn/residency/release", axum::routing::post(move || async move { axum::Json(ledger(release)) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+    let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+    (LearningEngine::at(root), tokio::spawn(async move { axum::serve(listener, app).await }))
+}
+
+// what this catches: a lost load reply read as proof that nothing loaded (Codex's audit of fed5f3f64).
+// Unless the engine confirms the residency's release, the lease stays held inside the refusal.
+#[tokio::test]
+async fn a_lost_load_keeps_its_lease_until_the_engine_confirms_the_release() {
+    let authority = authority();
+    let (engine, server) = engine_losing_the_load("busy").await;
+    let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
+    let SeatRefusal::Unfenced { retained, .. } = refused else { panic!("test: an unconfirmed load is unfenced, got {refused}") };
+    assert_eq!(leased(&authority), WEIGHTS, "the lease is held while the engine may hold the shadow");
+    drop(retained);
+    server.abort();
+}
+
+// what this catches: the other side of the fence. A release the engine confirms proves nothing is
+// live in the residency, so the lease drops and the refusal is a plain unloaded.
+#[tokio::test]
+async fn a_lost_load_the_engine_confirms_empty_releases_its_lease() {
+    let authority = authority();
+    let (engine, server) = engine_losing_the_load("none").await;
+    let refused = seat(&authority, engine, "learning:her", shadow()).await.err().expect("test: refused");
+    assert!(matches!(refused, SeatRefusal::Unloaded(_)), "{refused}");
+    assert_eq!(leased(&authority), 0, "a confirmed-empty residency holds nothing");
+    server.abort();
+}
+
+// what this catches: a stop that fails partway dropping the value, and with it leases the engine's
+// memory still holds (Codex's audit of fed5f3f64). A refused release hands the mind back, lease held.
+#[tokio::test]
+async fn a_refused_stop_hands_the_mind_back_with_its_lease() {
+    let authority = authority();
+    let app = axum::Router::new()
+        .route(
+            "/lora-adapters/fresh",
+            axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                if body["dry_run"] == true {
+                    return axum::Json(serde_json::json!({"engine": ENGINE, "reserved": false,
+                        "weights": [{"device": "CUDA0", "buffer_type": "CUDA0", "bytes": WEIGHTS, "host": false}]}));
+                }
+                axum::Json(serde_json::json!({"success": true, "id": 3, "path": "/train/her-shadow.gguf"}))
+            }),
+        )
+        .route("/lora-adapters/unload", axum::routing::post(|| async { axum::Json(serde_json::json!({"success": true, "id": 3, "path": "/train/her-shadow.gguf"})) }))
+        .route("/learn/residency", axum::routing::post(|| async { axum::Json(ledger("none")) }))
+        .route("/learn/grants", axum::routing::post(|| async { axum::Json(ledger("none")) }))
+        .route("/learn/grants/revoke", axum::routing::post(|| async { axum::Json(ledger("none")) }))
+        .route("/learn/residency/release", axum::routing::post(|| async { axum::Json(ledger("busy")) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+    let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mind = crate::genome::learner::mind::MindLearner::start(&authority, LearningEngine::at(root), "learning:her", shadow(), std::time::Duration::from_secs(60))
+        .await
+        .map_err(|why| why.to_string())
+        .expect("test: started");
+    let (mind, _why) = mind.stop().await.err().expect("test: the release is refused");
+    assert_eq!(leased(&authority), WEIGHTS, "her weights stay leased while the engine holds them");
+    drop(mind);
+    server.abort();
+}
