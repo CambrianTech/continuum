@@ -283,36 +283,19 @@ impl LlmDeliberationFaculty {
         ).collect();
         let required = view.messages.split_off(view.refit.history_len);
         let frozen_grounding_tokens = view.pricing.estimate_all(&grounding);
-        // Her view is never the refit's to cut (`budget.rs`): held out of the fit and spliced back
-        // whole, as the first fit holds it (`view.rs`). The fit drops oldest first, and her view's
-        // front is what changed least (motion orders it), so a refit that saw it dropped her most
-        // stable blocks first.
-        let view_len = view.refit.grounding_at;
-        let held_view: Vec<_> = view.messages.drain(..view_len).collect();
-        let held_view_tokens = view.pricing.estimate_all(&held_view);
-        let (view_pointers, tail_pointers): (Vec<_>, Vec<_>) =
-            view.refit.result_pointers.into_iter().partition(|(index, _)| *index < view_len);
         let prompt = PromptMessages {
             streams: Default::default(),
             input_identity: view.input_identity,
             history: view.messages,
-            result_pointers: tail_pointers.into_iter().map(|(index, pointer)| (index - view_len, pointer)).collect(),
-            grounding_at: 0,
+            result_pointers: view.refit.result_pointers,
+            grounding_at: view.refit.grounding_at,
             stimulus: None,
             latest_result: required,
             action_statement: None,
             pricing: view.pricing,
         };
         let mut fitted = self.fit_messages(prompt, input_budget
-            .saturating_sub(fixed_tokens).saturating_sub(frozen_grounding_tokens).saturating_sub(held_view_tokens))?;
-        fitted.messages.splice(0..0, held_view);
-        fitted.grounding_at += view_len;
-        fitted.refit.grounding_at += view_len;
-        fitted.refit.history_len += view_len;
-        for (index, _) in &mut fitted.refit.result_pointers {
-            *index += view_len;
-        }
-        fitted.refit.result_pointers.splice(0..0, view_pointers);
+            .saturating_sub(fixed_tokens).saturating_sub(frozen_grounding_tokens))?;
         if fitted.refit.remaining_reductions() >= old_reductions {
             return Err(refusal());
         }
