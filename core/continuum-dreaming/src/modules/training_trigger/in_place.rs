@@ -306,12 +306,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
         let adoption = crate::genome::gene_trial::Adoption::default_paths();
         // her other learners seated on this base are her competences in flight: a near one joins it
         // rather than minting a second gene beside it (Codex on e473f72b1)
-        let in_flight: Vec<(Uuid, crate::genome::signature::GeneSignature)> = held
-            .minds
-            .iter()
-            .filter(|(other, _)| other.persona_id == key.persona_id && other.base_model == key.base_model)
-            .filter_map(|(_, seated)| seated.signature.clone().map(|sig| (seated.id, sig)))
-            .collect();
+        let in_flight = in_flight(key, held.minds.iter().map(|(other, seated)| (other, seated.id, seated.signature.as_ref())));
         match super::competence::decide(&asking, sig, &adoption, &in_flight).await {
             Ok(crate::genome::competence::Decision::Mint) => {}
             Ok(crate::genome::competence::Decision::Fork { parent, .. }) => sig.parent = Some(parent), // learned from the base with its lineage, as the trainer it replaces did
@@ -429,6 +424,16 @@ pub(crate) async fn eligible_buckets(store: &super::durable::DurableStore, serve
             _ => return Ok(buckets),
         }
     }
+}
+
+/// PURE: the competences of `key`'s persona already learning on `key`'s base, from the seated
+/// learners `seats` (bucket, seat id, signature): her others on this base, never this bucket, another
+/// persona's, or another base's; a learner without a signature is not comparable and is left out.
+pub(crate) fn in_flight<'a, S: Clone + 'a>(key: &BucketKey, seats: impl Iterator<Item = (&'a BucketKey, Uuid, Option<&'a S>)>) -> Vec<(Uuid, S)> {
+    seats
+        .filter(|(other, _, _)| *other != key && other.persona_id == key.persona_id && other.base_model == key.base_model)
+        .filter_map(|(_, id, signature)| signature.cloned().map(|signature| (id, signature)))
+        .collect()
 }
 
 /// `trait_kind` as a file-name part (`code/owner` -> `code-owner`).

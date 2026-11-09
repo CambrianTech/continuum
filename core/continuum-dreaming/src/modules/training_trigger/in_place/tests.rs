@@ -66,3 +66,17 @@ fn a_step_starts_past_the_generation_even_on_a_stale_journal_row() {
     assert_eq!(start(3, Some(3), Some(5)), 5, "volatile progress past the generation");
     assert_eq!(start(4, None, None), 4, "no generation names it: the journal");
 }
+
+// what this catches: two of her buckets on one base each minting a gene for one competence (Codex
+// on e473f72b1). Her other same-base learner is in flight for the decision; this bucket, another
+// persona's and another base's are not, and a learner without a signature cannot be compared.
+#[test]
+fn her_other_learners_on_this_base_are_in_flight() {
+    let her = Uuid::new_v4();
+    let key = |persona: Uuid, trait_kind: &str, base: &str| BucketKey { persona_id: persona, trait_kind: trait_kind.into(), base_model: base.into() };
+    let this = key(her, "code", "qwen");
+    let (sibling, unsigned, other_base, other_persona) = (key(her, "code/owner", "qwen"), key(her, "review", "qwen"), key(her, "code", "llama"), key(Uuid::new_v4(), "code", "qwen"));
+    let ids: Vec<Uuid> = (0..5).map(|_| Uuid::new_v4()).collect();
+    let seats = vec![(&this, ids[0], Some(&1u8)), (&sibling, ids[1], Some(&2u8)), (&unsigned, ids[2], None), (&other_base, ids[3], Some(&4u8)), (&other_persona, ids[4], Some(&5u8))];
+    assert_eq!(in_flight(&this, seats.into_iter()), vec![(ids[1], 2u8)]);
+}
