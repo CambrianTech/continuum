@@ -3,7 +3,8 @@ use super::*;
 fn outcome(committed_steps: i64, effects_uncertain: bool) -> LearnOutcome {
     serde_json::from_value(serde_json::json!({
         "success": committed_steps > 0, "committed_steps": committed_steps, "effects_uncertain": effects_uncertain,
-        "refusal": "none", "loss": 0.0, "n_labels": 0, "t_ms": 0.0, "max_chunk_ms": 0.0, "restoration_ms": 0.0
+        "refusal": "none", "loss": 0.0, "n_labels": 0, "t_ms": 0.0, "max_chunk_ms": 0.0, "restoration_ms": 0.0,
+        "entry_ms": 0.0, "max_graph_ms": 0.0, "max_restore_ms": 0.0, "cleanup_ms": 0.0
     }))
     .expect("test: an engine outcome")
 }
