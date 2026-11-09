@@ -135,9 +135,13 @@ mod tests {
         );
         assert!(!first.newest_result_reduced, "fixture begins with a whole result");
         assert!(first.newest_result_tokens > 0);
+        // The shared price and the refusal's count are chosen independently (Codex on #5889): a
+        // shared density derived from this same count would leave the newest result priced at the
+        // average once the others are subtracted at it. Shared 1.5, counted 2.0: the result's own
+        // price is 1.5 + 0.5 x (whole / newest), denser than the shared one, and 2x pages it.
         let requested = (first.estimated_prompt_tokens * 2) as u32;
         let Some(average) = PromptCalibration::observed(
-            first.estimated_prompt_tokens, requested, Some(first.input_identity),
+            first.estimated_prompt_tokens, (first.estimated_prompt_tokens * 3 / 2) as u32, Some(first.input_identity),
         ) else { panic!("fixture has positive counts"); };
         let Some(refit) = faculty.refit_newest_after_refusal(
             &workspace, window, average, None, &first, requested, window,
