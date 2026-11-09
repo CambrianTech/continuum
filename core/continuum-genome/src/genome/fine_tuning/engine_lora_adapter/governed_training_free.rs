@@ -123,30 +123,10 @@ pub(super) fn failure(error: impl std::fmt::Display) -> FineTuningError {
     FineTuningError::LocalTrainerFailed(error.to_string())
 }
 
-/// HF module names (what [`super::LoRAHyperparams::target_modules`] carries, and what the
-/// PyTorch/MLX trainers take) to the GGUF tensor names the engine's adapter writer targets.
-/// An unknown name is refused: silently dropping a target trains a different adapter.
+/// The engine's target list for `modules`, by the learner's one mapping
+/// ([`crate::genome::learner::policy::gguf_targets`]), as the `/train` wire's comma list.
 pub(super) fn gguf_targets(modules: &[String]) -> Result<String, String> {
-    let mut out: Vec<&str> = Vec::new();
-    for m in modules {
-        let t = match m.as_str() {
-            "q_proj" | "attn_q" => "attn_q",
-            "k_proj" | "attn_k" => "attn_k",
-            "v_proj" | "attn_v" => "attn_v",
-            "o_proj" | "attn_output" => "attn_output",
-            "gate_proj" | "ffn_gate" => "ffn_gate",
-            "up_proj" | "ffn_up" => "ffn_up",
-            "down_proj" | "ffn_down" => "ffn_down",
-            other => return Err(format!("LoRA target module {other:?} has no engine (GGUF) equivalent")),
-        };
-        if !out.contains(&t) {
-            out.push(t);
-        }
-    }
-    if out.is_empty() {
-        return Err("no LoRA target modules".into());
-    }
-    Ok(out.join(","))
+    crate::genome::learner::policy::gguf_targets(modules).map(|targets| targets.join(","))
 }
 
 /// The shape a footprint is measured for: the training context's memory is a function of the

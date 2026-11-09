@@ -96,6 +96,10 @@ pub mod lora_module;
 pub mod mlx_lora_adapter;
 pub mod mlx_train;
 mod native_jobs;
+/// The training defaults' one owner (native_jobs), for in-place learning (learner::policy).
+pub(crate) fn native_jobs_defaults() -> (types::LoRAHyperparams, types::ScheduleParams) {
+    (native_jobs::default_lora(), native_jobs::default_schedule())
+}
 mod python_trainer_readiness;
 pub use native_jobs::materialized_defaults;
 pub mod cuda_lora_adapter;
