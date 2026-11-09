@@ -55,10 +55,16 @@ test('API uncertainty fails instead of dispatching expensive work', async () => 
   assert.equal(calls.filter(call => call.options.method === 'POST').length, 0);
 });
 
-test('hourly publication replaces push and protects active builds', async () => {
+test('cron and successful canary checks share admission and protect active builds', async () => {
   const workflow = await readFile(new URL('../../../.github/workflows/core-binaries-hourly.yml', import.meta.url), 'utf8');
   const publisher = await readFile(new URL('../../../.github/workflows/core-binaries.yml', import.meta.url), 'utf8');
   assert.match(workflow, /cron: '23 \* \* \* \*'/);
+  assert.match(workflow, /workflow_run:\r?\n    workflows: \['Continuum Rust Tests'\]\r?\n    types: \[completed\]\r?\n    branches: \[canary\]/);
+  assert.match(workflow, /workflow_run\.conclusion == 'success'/);
+  assert.match(workflow, /workflow_run\.event == 'push'/);
+  assert.match(workflow, /workflow_run\.head_branch == 'canary'/);
+  assert.match(workflow, /workflow_run\.head_repository\.full_name == github\.repository/);
+
   assert.match(workflow, /ref: canary/);
   assert.match(workflow, /CORE_BINARIES_HOURLY_ENABLED == 'true'/);
   assert.match(workflow, /default: true/);
