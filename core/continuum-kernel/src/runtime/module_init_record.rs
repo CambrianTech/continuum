@@ -5,7 +5,11 @@
 //! The estimator is RFC 6298's retransmission timeout, the standard answer to "how long to wait
 //! for something whose duration is measured each time": a smoothed duration plus four times its
 //! mean deviation. It follows the node both ways: a slow boot raises the bound, steady boots
-//! shrink the deviation term. An init that never returns never writes: a wedge is not a sample.
+//! shrink the deviation term, but never below the floor RFC 6298 keeps under it (§2.3's max(G, ..)):
+//! here the largest single-boot overshoot this node has shown, seeded with the first sample's own
+//! assumed deviation. Without it the term decays as 0.75^N and the deadline converges onto the
+//! typical init, so ordinary jitter would degrade a healthy module (Cormac on #5842). An init that
+//! never returns never writes: a wedge is not a sample.
 //!
 //! One saved-state file per node (`state/module-init.json`).
 
@@ -30,31 +34,36 @@ const RFC6298_ALPHA: f64 = 1.0 / 8.0;
 const RFC6298_BETA: f64 = 1.0 / 4.0;
 const RFC6298_K: f64 = 4.0;
 
-/// The estimate the record keeps: smoothed slowest healthy init, its mean deviation, and the
-/// boot's slowest module for the operator.
+/// The estimate the record keeps: smoothed slowest healthy init, its mean deviation, the largest
+/// overshoot it has seen (the floor under the deviation term), and the boot's slowest module.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InitEstimate {
     pub smoothed_ms: f64,
     pub deviation_ms: f64,
+    /// The most one boot's sample has exceeded the smoothed value it was folded into, seeded with
+    /// the first sample's assumed deviation (R/2). Only ever rises: a node that once booted this
+    /// much slower than usual can do so again.
+    pub worst_excess_ms: f64,
     pub last: SlowestHealthyInit,
 }
 
 impl InitEstimate {
     fn first(sample: SlowestHealthyInit) -> Self {
         let r = sample.ms as f64;
-        Self { smoothed_ms: r, deviation_ms: r / 2.0, last: sample }
+        Self { smoothed_ms: r, deviation_ms: r / 2.0, worst_excess_ms: r / 2.0, last: sample }
     }
 
     fn update(&self, sample: SlowestHealthyInit) -> Self {
         let r = sample.ms as f64;
         let deviation_ms = (1.0 - RFC6298_BETA) * self.deviation_ms + RFC6298_BETA * (self.smoothed_ms - r).abs();
         let smoothed_ms = (1.0 - RFC6298_ALPHA) * self.smoothed_ms + RFC6298_ALPHA * r;
-        Self { smoothed_ms, deviation_ms, last: sample }
+        let worst_excess_ms = self.worst_excess_ms.max(r - self.smoothed_ms);
+        Self { smoothed_ms, deviation_ms, worst_excess_ms, last: sample }
     }
 
     fn deadline(&self) -> InitDeadline {
         InitDeadline::Measured {
-            ms: (self.smoothed_ms + RFC6298_K * self.deviation_ms).ceil() as u64,
+            ms: (self.smoothed_ms + (RFC6298_K * self.deviation_ms).max(self.worst_excess_ms)).ceil() as u64,
             smoothed_ms: self.smoothed_ms.round() as u64,
             deviation_ms: self.deviation_ms.round() as u64,
             slowest_module: self.last.module.clone(),
@@ -65,7 +74,7 @@ impl InitEstimate {
 struct ModuleInitRecord;
 impl SavedState for ModuleInitRecord {
     const KIND: &'static str = "module-init";
-    const FORMAT: u32 = 1;
+    const FORMAT: u32 = 2; // 2: worst_excess_ms; a format-1 record is no prior (one Unmeasured boot)
     const RETENTION: Retention =
         Retention::PerKey { bound: "one file per node, rewritten by every boot" };
     type Key = Singleton;
@@ -146,6 +155,16 @@ mod tests {
         }
         assert!(steady < after_slow, "steady boots shrink the deviation term: {steady} vs {after_slow}");
         assert!(steady > 1843, "and never below the samples themselves: {steady}");
+
+        // The floor (Cormac on #5842): after 50 identical boots the deviation term has decayed
+        // to nothing, yet a boot 10% slower than usual still fits, because the term never falls
+        // below the largest overshoot seen (seeded with the first sample's R/2).
+        let fresh = tempfile::tempdir().expect("tempdir");
+        let mut settled = InitDeadline::unmeasured();
+        for _ in 0..50 {
+            settled = boot(fresh.path(), 1843);
+        }
+        assert!(settled.duration().as_millis() >= 1843 * 11 / 10, "a 10% slower boot stays Ready: {settled:?}");
 
         // Two saves in one boot fold into the same prior: the second replaces the first.
         let store = InitRecordStore::under_home(dir.path());
