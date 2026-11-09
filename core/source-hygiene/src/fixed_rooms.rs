@@ -13,9 +13,10 @@
 //! The reserved rooms continuum ships (`general`, `academy`, ...) are legitimate constants, declared
 //! ONCE in `continuum_base::reserved_rooms` so moving one is one line (Joel: "General and academy as
 //! well as some others are literally reserved and shipped constants", "Ideally in one place too so
-//! we don't have to change a ton to move"). This rule counts production lines spelling a reserved
-//! room's name anywhere else; the count may only fall, and a touched file leaves with none: refer
-//! to the constant, or take the room from the activity, the recipe or the host's configuration.
+//! we don't have to change a ton to move"). This rule counts production lines elsewhere that spell
+//! a reserved room's name on a line about a room (the line also says `room`; a bare `"academy"`
+//! passes it). The count may only fall, and a touched file leaves with none: refer to the
+//! constant, or take the room from the activity, the recipe or the host's configuration.
 
 use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
 

@@ -11,6 +11,3 @@ pub const GENERAL: &str = "general";
 /// The learning tree's root: benchmarks, training and coursework live inside it
 /// (`airc://room:academy/benchmarks/<run>`).
 pub const ACADEMY: &str = "academy";
-
-/// Every reserved room, for a reader that lists or protects them.
-pub const ALL: &[&str] = &[GENERAL, ACADEMY];
