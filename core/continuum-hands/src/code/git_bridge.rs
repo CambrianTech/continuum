@@ -363,11 +363,14 @@ pub async fn git_sync_from_shared(
 
     // 1. Preserve: commit in-flight persona work before merging.
     // A preserve that fails stops the sync: merging over work that was not committed could lose it.
-    let porcelain = run_git(workspace_root, &["status", "--porcelain"]).await
+    // A submodule checkout that lags its pin is not work to preserve (keep_submodule_pins).
+    let porcelain = run_git(workspace_root, &["status", "--porcelain", "--ignore-submodules=all"]).await
         .map_err(|e| format!("could not read the workspace's status, so it was not synced (your work is untouched): {e}"))?;
     if !porcelain.trim().is_empty() {
         run_git(workspace_root, &["add", "-A"]).await
             .map_err(|e| format!("could not stage your work to preserve it, so the workspace was not synced (your work is untouched): {e}"))?;
+        keep_submodule_pins(workspace_root).await
+            .map_err(|e| format!("could not keep the submodule pins while preserving your work, so the workspace was not synced (your work is staged, untouched): {e}"))?;
         run_git_as(workspace_root, actor, &["commit", "-m", "workspace: autosave persona work before shared sync"]).await
             .map_err(|e| format!("could not commit your work to preserve it, so the workspace was not synced (your work is staged, untouched): {e}"))?;
     }
@@ -526,6 +529,44 @@ pub(crate) fn deadline() -> Option<tokio::time::Instant> {
 /// runner (env stripped, ceiling set, no terminal prompt) is shared by every crate seam
 /// that shells to git — `persona::workspace_transfer` carries a card's branch between
 /// nodes through it — rather than each seam re-deriving the hygiene below.
+/// A submodule's recorded commit is never an autosave's to move. A checkout's submodule can lag its
+/// branch (a rebase moves the pin, the checkout stays), and `add -A` records the lag as a pin
+/// change: Benchy's #5883 was an autosave whose whole diff moved the engine pin back (card
+/// a7a37ce7). After an autosave's `add`, every staged gitlink change goes back to HEAD's pin. The
+/// ONE owner for every autosave (the card's work save and the shared sync, card 432809f4); a pin
+/// moves only by a deliberate commit. Returns the pins it kept.
+pub async fn keep_submodule_pins(root: &Path) -> Result<Vec<String>, String> {
+    // `--raw -z`: each entry is `:<old mode> <new mode> <old sha> <new sha> <status>` NUL `<path>` NUL,
+    // so a path with any character parses whole. 160000 is a gitlink's mode.
+    let staged = run_git(root, &["diff", "--cached", "--raw", "-z", "--no-renames", "HEAD"]).await?;
+    let mut fields = staged.split('\0');
+    let mut pins = Vec::new();
+    while let (Some(meta), Some(path)) = (fields.next(), fields.next()) {
+        let mut modes = meta.trim_start_matches(':').split_whitespace();
+        if let (Some(old_mode), Some(new_mode)) = (modes.next(), modes.next()) {
+            if old_mode == GITLINK_MODE || new_mode == GITLINK_MODE {
+                pins.push(path.to_string());
+            }
+        }
+    }
+    if pins.is_empty() {
+        return Ok(pins);
+    }
+    let mut reset = vec!["reset", "-q", "HEAD", "--"];
+    reset.extend(pins.iter().map(String::as_str));
+    run_git(root, &reset).await?;
+    continuum_base::probe!(
+        class = "workspace.autosave.pin_kept",
+        root = %root.display(),
+        pins = %pins.join(","),
+        "a submodule checkout differed from the branch's pin: the autosave kept the pin, not the checkout"
+    );
+    Ok(pins)
+}
+
+/// git's mode for a submodule entry (a gitlink) in a tree or the index.
+const GITLINK_MODE: &str = "160000";
+
 pub async fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(run_git_input(workspace_root, None, args, &[], None).await?)
 }
