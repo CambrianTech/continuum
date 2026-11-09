@@ -224,7 +224,8 @@ mod the_newest_result_over_her_window {
         };
         assert!(least < whole_tokens, "its least page is smaller than its whole");
         let mut paged = faculty.messages_with_visual_feedback(&Workspace::new("and?"), None, None);
-        assert!(faculty.fit_newest_result(&mut paged, paged.pricing, 0), "paged");
+        let pricing = paged.pricing;
+        assert!(faculty.fit_newest_result(&mut paged, pricing, 0), "paged");
         let shown = paged
             .latest_result
             .iter()
