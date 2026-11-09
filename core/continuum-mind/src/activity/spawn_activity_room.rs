@@ -386,8 +386,12 @@ async fn open_path_room(
             }
         }
     }
-    let channel = match parent {
-        Some(parent) => announced_channel(airc, parent, path).await?.unwrap_or(key),
+    let announced = match parent {
+        Some(parent) => announced_channel(airc, parent, path).await?,
+        None => None,
+    };
+    let channel = match announced {
+        Some(channel) => channel,
         None => key,
     };
     airc.subscribe_room(&channel)
