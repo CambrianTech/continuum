@@ -336,7 +336,8 @@ fn record_reclaimed(&self, proof: crate::inference::slots::grant_handoff::Reclai
 }
 }
 
-pub(crate) fn is_grant_retiring(persona: uuid::Uuid) -> bool {
+/// Whether her grant is being reclaimed now (a handoff in flight): she is regranted after its receipt.
+pub fn is_grant_retiring(persona: uuid::Uuid) -> bool {
     let state = RESERVATIONS.lock();
     state.retiring.contains_key(&persona) || state.yield_after.get(&persona).is_some_and(|(lease, baseline)| {
         state.receipts.get(&persona).is_some_and(|(engine, revision)| *engine == lease.engine && revision > baseline)

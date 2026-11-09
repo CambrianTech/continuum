@@ -54,10 +54,9 @@ impl LlmDeliberationFaculty {
         );
         {
             let class = deliberation_slot_class(request.purpose.as_deref(), ws.attention);
-            crate::inference::measured_hold::defer_while_held(
-                class,
-                Some(self.persona_id),
-                request.purpose.as_deref(),
+            super::admission_clock::stage(
+                "deliberation.measured_hold",
+                crate::inference::measured_hold::defer_while_held(class, Some(self.persona_id), request.purpose.as_deref()),
             )
             .await;
         }
@@ -133,7 +132,7 @@ impl LlmDeliberationFaculty {
             priority,
             expected,
         );
-        let admission = super::admission_clock::waiting(
+        let admission = super::admission_clock::stage("deliberation.lane", super::admission_clock::waiting(
             wait,
             observe_wait(acquire, tokio::time::sleep(lane_bound), || {
                 continuum_base::probe!(
@@ -146,7 +145,7 @@ impl LlmDeliberationFaculty {
                     "lane wait exceeded its estimate; retaining the same admission request and queue position"
                 );
             }),
-        );
+        ));
         let _lane = if ws.attention.requires_priority() {
             admission.await
         } else {

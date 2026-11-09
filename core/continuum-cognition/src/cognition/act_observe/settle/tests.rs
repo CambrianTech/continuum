@@ -257,9 +257,9 @@
             std::future::pending::<()>().await
         })
         .await;
-        assert_eq!(dispatched, Err(super::Abandoned { dispatched: true }));
+        assert_eq!(dispatched, Err(super::Abandoned { dispatched: true, stage: None }));
         let waited = super::until_act_stalls(start + bound * 2, bound, None, std::future::pending::<()>()).await;
-        assert_eq!(waited, Err(super::Abandoned { dispatched: false }), "a step that never armed is a wait");
+        assert_eq!(waited, Err(super::Abandoned { dispatched: false, stage: None }), "a step that never armed is a wait");
     }
 
     // what this catches (Fable on #5498): a generation the act deadline dropped in flight
@@ -306,6 +306,42 @@
         assert_eq!(start.elapsed(), crate::inference::turn_bound::TICK_DEADLINE, "one bound, no in-place retry");
     }
 
+    // what this catches (card 5e79e1c1): a 25-minute park nobody could name. The M5 made 0 acts
+    // 16:00-19:55Z 2026-11-09 with every tick ending at the floor and no probe saying which await
+    // held. The deadline names the innermost stage the step is in, with that stage's own time; a
+    // stage that finished, or was cancelled, gives its name back to the stage around it.
+    #[tokio::test(start_paused = true)]
+    async fn a_deadline_names_the_await_that_held_and_a_finished_or_cancelled_stage_gives_way() {
+        use crate::cognition::llm_deliberation_faculty::admission_clock::stage;
+        let bound = std::time::Duration::from_secs(1500);
+        let start = tokio::time::Instant::now();
+        let inner = super::until_act_stalls(start + bound, bound, None, stage("outer", async {
+            tokio::time::sleep(std::time::Duration::from_secs(100)).await;
+            stage("inner", std::future::pending::<()>()).await
+        }))
+        .await;
+        let named = inner.expect_err("test: the deadline ends a parked step").stage.expect("test: a named stage");
+        assert_eq!(named.0, "inner", "the innermost await is the one that held");
+        assert_eq!(named.1, bound - std::time::Duration::from_secs(100), "timed from its own entry, not the step's");
+        let start = tokio::time::Instant::now();
+        let finished = super::until_act_stalls(start + bound, bound, None, stage("outer", async {
+            stage("inner", async {}).await;
+            std::future::pending::<()>().await
+        }))
+        .await;
+        assert_eq!(finished.expect_err("test: parked").stage.map(|s| s.0), Some("outer"), "a finished stage gives its name back");
+        let start = tokio::time::Instant::now();
+        let cancelled = super::until_act_stalls(start + bound, bound, None, stage("outer", async {
+            tokio::select! {
+                () = stage("inner", std::future::pending::<()>()) => {}
+                () = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
+            }
+            std::future::pending::<()>().await
+        }))
+        .await;
+        assert_eq!(cancelled.expect_err("test: parked").stage.map(|s| s.0), Some("outer"), "a cancelled stage gives its name back");
+    }
+
     // what this catches (card 4d2a64a2): an act on a condemned engine holding the relaunch's
     // drain until its next checkpoint. enrico, 2026-10-26: the quarantine flipped serving
     // not-ready at 21:10Z, and `ensure_serving` waited 23 min for an act whose next
@@ -321,7 +357,7 @@
             std::future::pending::<()>().await
         }, condemned)
         .await;
-        assert_eq!(ended, Err(super::Abandoned { dispatched: true }));
+        assert_eq!(ended, Err(super::Abandoned { dispatched: true, stage: None }));
         assert_eq!(start.elapsed(), std::time::Duration::from_secs(120), "at the condemnation, not the 1500 s checkpoint");
         let quick = super::until_act_stalls_or(start + bound * 2, bound, None, async { 7 }, std::future::pending::<()>()).await;
         assert_eq!(quick, Ok(7), "no condemnation: the step's own answer");
@@ -336,13 +372,14 @@
     #[test]
     fn an_iteration_that_never_reached_the_model_is_a_wait_not_an_act() {
         // The two measured starved rows: no model time, no generation dispatched.
-        assert_eq!(classify_act(0, 0), ActClass::LaneStarved, "365,000 ms residue, model_ms=0");
+        assert_eq!(classify_act(None, 0), ActClass::LaneStarved, "365,000 ms residue, no model time");
+        assert_eq!(classify_act(Some(0), 0), ActClass::LaneStarved);
         // A real act: the model answered.
-        assert_eq!(classify_act(18_400, 1), ActClass::Act);
+        assert_eq!(classify_act(Some(18_400), 1), ActClass::Act);
         // A FAULTED generation still pushed a receipt — it reached the lane, so it is an
         // act that failed, never a starve. Misreading it as a starve would hide the very
         // inference faults `settle.inference_failed` exists to surface.
-        assert_eq!(classify_act(0, 1), ActClass::Act);
+        assert_eq!(classify_act(None, 1), ActClass::Act);
         assert!(can_defer_input(0, 0, 0, 0));
         assert!(!can_defer_input(1, 0, 0, 0), "a dispatched generation is not replayable input");
         assert!(!can_defer_input(0, 1, 1, 0), "completed actions survive without replay");
