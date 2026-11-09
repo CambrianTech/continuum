@@ -12,6 +12,7 @@ pub(crate) struct Arrival {
     pub(crate) id: Uuid,
     pub(crate) sequence: u64,
     pub(crate) key: BucketKey,
+    pub(crate) persona_name: String,
     pub(crate) examples: Vec<TrainingExample>,
     /// Examples already learned, in order.
     pub(crate) learned: u32,
@@ -47,6 +48,7 @@ impl DurableStore {
                     sequence: row.sequence,
                     key: BucketKey { persona_id: row.persona_id, trait_kind: row.trait_kind, base_model: row.base_model },
                     learned: row.learned,
+                    persona_name: row.batch.persona_name,
                     lora: row.batch.lora,
                     schedule: row.batch.schedule,
                     examples: row.batch.examples,

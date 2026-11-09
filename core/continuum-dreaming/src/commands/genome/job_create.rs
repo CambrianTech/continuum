@@ -13,7 +13,7 @@ use crate::genome::fine_tuning::{
 
 use super::fine_tuning_error_kind;
 use crate::genome::training_outcome::Took;
-use crate::genome::competence::{Decision, GeneRef};
+use crate::genome::competence::Decision;
 use crate::genome::gene_trial::Adoption;
 
 /// Wire shape for `genome/job-create` params. Mirrors [`TrainingJobRequest`]
@@ -407,63 +407,20 @@ crate::action_command! {
             // when it lives on the hub, then registered dormant and handed to the examiner.
             // No training. Her work decides it; a retired one is never offered again.
             Some(Decision::Reuse { gene, similarity }) => {
-                let refused = |error_kind: &str, error: String| {
-                    Ok(JobCreateOutcome { success: false, result: None, error: Some(error), error_kind: Some(error_kind.into()), took: None, capacity_wait: None })
+                let asking = crate::modules::training_trigger::competence::Asking {
+                    persona_id: watched_persona_id,
+                    persona_name: &p.request.persona_name,
+                    trait_kind: &p.request.trait_kind,
+                    base_model: &p.request.base_model,
+                    examples: p.request.dataset.examples.len(),
                 };
-                let path = match gene {
-                    GeneRef::Local { path } => path.clone(),
-                    GeneRef::Hub { repo } => {
-                        let pulled = crate::commands::genome_share::pull_gene(&crate::commands::genome_share::GenomePullParams {
-                            repo: repo.clone(),
-                            base_model: p.request.base_model.clone(),
-                            alias: Some(p.request.trait_kind.clone()),
-                        })
-                        .await;
-                        match pulled {
-                            Ok(r) => std::path::PathBuf::from(r.path),
-                            Err(e) => {
-                                continuum_base::probe!(
-                                    class = "genome.reuse.refused",
-                                    persona = %p.request.persona_name,
-                                    trait_kind = %p.request.trait_kind,
-                                    gene = %gene,
-                                    error = %e,
-                                    "the hub gene this competence would reuse did not pull: no trial, no job; the bucket keeps its examples"
-                                );
-                                return refused(ERROR_KIND_REUSE_PULL_FAILED, format!("reuse of {gene}: pull failed: {e}"));
-                            }
-                        }
+                match crate::modules::training_trigger::competence::reuse(&asking, gene, *similarity, &adoption).await {
+                    Ok(trial) => return without_job(Took::Reused { trial, gene: gene.clone() }),
+                    Err(crate::modules::training_trigger::competence::ReuseRefused::Pull(error)) => {
+                        return Ok(JobCreateOutcome { success: false, result: None, error: Some(error), error_kind: Some(ERROR_KIND_REUSE_PULL_FAILED.into()), took: None, capacity_wait: None })
                     }
-                };
-                let adopted = adoption
-                    .as_ref()
-                    .map_err(Clone::clone)
-                    .and_then(|a| a.adopt(watched_persona_id, &p.request.trait_kind, &path, &p.request.base_model, None, continuum_base::time::EpochMs::now().millis()));
-                match adopted {
-                    Ok(trial) => {
-                        continuum_base::probe!(
-                            class = "genome.reused",
-                            persona = %p.request.persona_name,
-                            trait_kind = %p.request.trait_kind,
-                            examples,
-                            gene = %gene,
-                            path = %path.display(),
-                            similarity = *similarity,
-                            trial = %trial.id,
-                            "an existing gene carries this competence: adopted, no training; with no training job here the examiner receipts it unexaminable"
-                        );
-                        return without_job(Took::Reused { trial: trial.id, gene: gene.clone() });
-                    }
-                    Err(refusal) => {
-                        continuum_base::probe!(
-                            class = "genome.reuse.refused",
-                            persona = %p.request.persona_name,
-                            trait_kind = %p.request.trait_kind,
-                            gene = %gene,
-                            refusal = %refusal,
-                            "the gene this competence would reuse was not adopted: no trial, no job; the bucket keeps its examples"
-                        );
-                        return refused(ERROR_KIND_REUSE_ADOPT_FAILED, format!("reuse of {gene}: {refusal}"));
+                    Err(crate::modules::training_trigger::competence::ReuseRefused::Adopt(error)) => {
+                        return Ok(JobCreateOutcome { success: false, result: None, error: Some(error), error_kind: Some(ERROR_KIND_REUSE_ADOPT_FAILED.into()), took: None, capacity_wait: None })
                     }
                 }
             }
