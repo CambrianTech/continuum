@@ -1,5 +1,6 @@
 #![cfg(test)]
     use super::*;
+    use crate::genome::competence::GeneRef;
 
     // what this catches (the 5090, 2026-10-10): a durable dispatch from before #4794
     // holding `took` as the bare id of the joined job, refused by the tagged enum so that
