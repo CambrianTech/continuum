@@ -38,12 +38,12 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
     // WorkingMemory (this harness faculty has none), so no ledger
     // message here — the ledger-specific behavior is pinned in
     // steps_ledger_renders_receipts_and_explicit_zero_case below.
-    // …plus the presence contract, which now stands in her view as its own
-    // block (cached once per epoch, not re-sent each act), and the short live
-    // line naming it, still ask-last (the 2026-10-25 framing split).
+    // …plus the presence contract, which stands in her view as its own block
+    // (cached once per epoch, not re-sent each act; a block leads a first start),
+    // and the short live line naming it, still ask-last (the 2026-10-25 framing split).
     assert_eq!(
         roles,
-        vec!["user", "assistant", "user", "user", "user", "user"],
+        vec!["user", "user", "assistant", "user", "user", "user"],
         "view: {view:?}"
     );
     let text_of = |m: &crate::ai::types::ChatMessage| match &m.content {

@@ -539,7 +539,8 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
     turns.push(BurstTurn::attributed(false, "Peer", "What changed?", Some(41)));
     let view = faculty.prompt_view(&Workspace::new(Burst::from_turns(room, turns)));
     assert!(view.budget_fault.is_none(), "{:?}", view.budget_fault);
-    assert!(view.messages.first().is_some_and(|m| m.content_text().contains("turn_0 ")), "her view leads the prompt");
+    let in_view = |v: &DeliberationPromptView| v.messages[..v.refit.grounding_at].iter().any(|m| m.content_text().contains("turn_0 "));
+    assert!(in_view(&view), "her view leads the prompt");
     let framing = LlmDeliberationFaculty::framing_cost(&view.system);
     let tools = view.estimated_prompt_tokens - framing - PromptCalibration::default().estimate_all(&view.messages);
     let charged = view.estimated_prompt_tokens + view.completion_reserve as usize;
@@ -561,7 +562,7 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
     assert!(faculty.budget_violation(&ledger(charged)).is_none(), "at its window the prompt complies");
     let fault = faculty.budget_violation(&ledger(charged - 1)).expect("one token over is a budget fault");
     assert!(fault.contains("prompt budget violated"), "{fault}");
-    assert!(view.messages.first().is_some_and(|m| m.content_text().contains("turn_0 ")), "nothing was cut to comply");
+    assert!(in_view(&view), "nothing was cut to comply");
 }
 
 // what this catches (Codex on #5491): a tail her destination can no longer take, either silently
