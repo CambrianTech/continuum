@@ -28,11 +28,9 @@
 //!   value all return `Err` — never a guessed default. Same posture as
 //!   `backends::read_gguf_metadata` (Joel's 2026-04-23 fix removed all
 //!   the silent-llama-fallback paths there).
-//! - **`general.parameter_count` is OPTIONAL** with a typed fallback
-//!   that LOGS the inference (file_size × bytes-per-param-inverse).
-//!   The fallback path is loud — every caller sees "parameter_count
-//!   estimated from file size, not GGUF metadata" so a future PR can
-//!   tighten when canon files start carrying the field reliably.
+//! - **`general.parameter_count` is OPTIONAL** for a complete tensor table:
+//!   tensor dimensions supply the count when the declaration is absent.
+//!   A partial shard without a declaration cannot establish the model total.
 //! - **Unknown architecture**: not blocked here — the residency gate's
 //!   `unsupported_layer_kinds_on_backend` already filters per backend.
 //!   PR-2's job is to extract data, not gate. Returns `Ok` with an
@@ -61,14 +59,11 @@ pub fn read_qwen_model_metadata(path: &Path) -> Result<QwenModelMetadata, String
     let content = crate::inference_capability::gguf_keys::read_bounded_header(&mut file, &|| false)
         .map_err(|e| format!("Failed to read GGUF at {}: {e}", path.display()))?;
 
-    let file_size_bytes = std::fs::metadata(path)
-        .map(|m| m.len())
-        .map_err(|e| format!("Failed to stat GGUF {}: {e}", path.display()))?;
     // A display label names the actual artifact even for a non-UTF8 basename.
     // It does not supply architecture, dimensions, or residency evidence.
     let artifact_label = path.display().to_string();
 
-    parse_qwen_metadata_from_content(&content, artifact_label, file_size_bytes, path)
+    parse_qwen_metadata_from_content(&content, artifact_label, path)
 }
 
 /// Pure parser — extracts `QwenModelMetadata` from already-parsed
@@ -80,7 +75,6 @@ pub fn read_qwen_model_metadata(path: &Path) -> Result<QwenModelMetadata, String
 fn parse_qwen_metadata_from_content(
     content: &gguf_file::Content,
     artifact_label: String,
-    file_size_bytes: u64,
     path: &Path,
 ) -> Result<QwenModelMetadata, String> {
     // architecture: required (same posture as backends::read_gguf_metadata).
@@ -135,20 +129,7 @@ fn parse_qwen_metadata_from_content(
         )
     })?;
 
-    // parameter_count: prefer metadata, fall back to file_size/bytes_per_param.
-    // The fallback is loud — comment in the QwenModelMetadata field documents
-    // that bytes_per_parameter_quantized is the input to the estimate, so a
-    // user who sees "30B Q4_K_M = 17GB" can sanity-check.
-    let parameter_count_billions = crate::inference_capability::gguf_keys::parameter_count(content)
-        .map(|n| n as f64 / 1.0e9)
-        .unwrap_or_else(|| {
-            // Fallback: derive from file size. Approximate — GGUF includes
-            // metadata overhead, token-embedding tables, output projection,
-            // etc., which aren't pure parameter bytes. Off by ~5-10% on
-            // large models; close enough for the gate's coarse decision.
-            let est_params = file_size_bytes as f64 / bytes_per_parameter_quantized;
-            est_params / 1.0e9
-        });
+    let parameter_count_billions = artifact_parameter_count(content)? as f64 / 1.0e9;
 
     let layer_kinds_needing_check = layer_kinds_for_architecture(&architecture);
 
@@ -160,6 +141,35 @@ fn parse_qwen_metadata_from_content(
         bytes_per_parameter_quantized,
         layer_kinds_needing_check,
     })
+}
+
+/// A declared model total or the element count of a complete tensor table.
+/// File length includes metadata, padding and mixed quantization; it is not a
+/// parameter count and must not become residency evidence.
+fn artifact_parameter_count(content: &gguf_file::Content) -> Result<u64, String> {
+    if let Some(value) = content.metadata.get("general.parameter_count") {
+        let count = value.to_u64().map_err(|e| format!("invalid parameter count: {e}"))?;
+        return if count > 0 { Ok(count) } else { Err("zero parameter count".into()) };
+    }
+    if crate::inference_capability::gguf_keys::split_count(content)? > 1 {
+        return Err("partial GGUF shard cannot establish the model parameter total".into());
+    }
+    let mut count = 0_u64;
+    for tensor in content.tensor_infos.values() {
+        let mut elements = 1_u64;
+        for &dimension in tensor.shape.dims() {
+            let dimension = u64::try_from(dimension).map_err(|e| e.to_string())?;
+            elements = elements.checked_mul(dimension).ok_or("tensor element count overflow")?;
+        }
+        if elements == 0 {
+            return Err("empty tensor cannot establish parameter count".into());
+        }
+        count = count.checked_add(elements).ok_or("model parameter count overflow")?;
+    }
+    if count == 0 {
+        return Err("empty tensor table cannot establish parameter count".into());
+    }
+    Ok(count)
 }
 
 /// Map the GGUF `general.file_type` enum value to bytes-per-parameter
@@ -243,6 +253,33 @@ pub(crate) fn layer_kinds_for_architecture(arch: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parameter_total_uses_shapes_and_rejects_partial_or_malformed_evidence() -> Result<(), String> {
+        use candle_core::quantized::{gguf_file::{Content, TensorInfo, Value, VersionedMagic}, GgmlDType};
+        let mut content = Content {
+            magic: VersionedMagic::GgufV3,
+            metadata: Default::default(),
+            tensor_infos: [("weight".into(), TensorInfo {
+                ggml_dtype: GgmlDType::F32,
+                shape: candle_core::Shape::from(vec![3, 7]),
+                offset: 0,
+            })].into_iter().collect(),
+            tensor_data_offset: 0,
+        };
+        // Actual elements do not depend on quantization bytes or header padding.
+        assert_eq!(super::artifact_parameter_count(&content)?, 21);
+        content.metadata.insert("split.count".into(), Value::U16(2));
+        assert!(super::artifact_parameter_count(&content).is_err());
+        content.metadata.insert("general.parameter_count".into(), Value::U64(42));
+        assert_eq!(super::artifact_parameter_count(&content)?, 42);
+        content.metadata.insert("general.parameter_count".into(), Value::String("42".into()));
+        assert!(super::artifact_parameter_count(&content).is_err());
+        content.metadata.clear();
+        content.tensor_infos.clear();
+        assert!(super::artifact_parameter_count(&content).is_err());
+        Ok(())
+    }
+
     use super::*;
 
     // ===== file_type_to_bytes_per_param =====
