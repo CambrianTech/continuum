@@ -82,16 +82,21 @@ impl LlmDeliberationFaculty {
         claims
             .into_iter()
             .zip(&sources)
-            .map(|(claim, source)| continuum_context::allocation::ViewClaim {
+            .map(|(claim, source)| {
+                // What her live epoch already holds is computed once and resident: it floors the
+                // claim, so the act's other wants never take back what a re-prefill would cost.
+                let floor = claim.floor.max(claim.held);
+                continuum_context::allocation::ViewClaim {
                 claim: continuum_context::flex::FlexClaim {
                     source_id: format!("{VIEW_CLAIM}{}", claim.source),
                     priority: claim.weight(),
-                    floor_tokens: Self::clamp_u32(claim.floor),
-                    min_tokens: Self::clamp_u32(claim.floor),
-                    max_tokens: Self::clamp_u32(claim.full),
+                    floor_tokens: Self::clamp_u32(floor),
+                    min_tokens: Self::clamp_u32(floor),
+                    max_tokens: Self::clamp_u32(claim.full.max(claim.held)),
                     required: source.required(),
                 },
                 consumer: source.consumer(),
+            }
             })
             .collect()
     }

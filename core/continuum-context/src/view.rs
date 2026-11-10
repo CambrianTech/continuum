@@ -45,6 +45,12 @@ pub struct Claim {
     pub newest: usize,
     /// What of its floor her collapsed log already lays down byte for byte.
     pub logged: usize,
+    /// What the live epoch already renders for it, every version it superseded included: computed
+    /// once and resident in the engine. An act granting less turns the epoch over and re-prefills
+    /// the whole view behind it (on the M5, 2026-11-10, 65% of all re-prefilled tokens, an epoch
+    /// every second act: the act's other claims took back the reserve a start had left). 0 at a
+    /// start, which recomputes anyway.
+    pub held: usize,
     /// Its items carry acts, so a re-read of one is measured (`crate::rereads`).
     pub instrumented: bool,
     /// What a deeper start could collapse, newest first, with her measured re-read chance for each
@@ -215,6 +221,7 @@ fn claim<T: Block>(cost: &dyn Estimate<T>, source: &dyn Source<T>, items: &[Item
         full: items.iter().map(|item| crate::cost::whole(item, cost)).sum(),
         newest: items.last().map_or(0, |item| crate::cost::whole(item, cost)), // map_or: a source with no items has no newest end
         logged: 0,
+        held: 0,
         instrumented: items.iter().any(|item| item.act().is_some()),
         collapsible: crate::depth::collapsible(items, rereads, cost),
     }
@@ -247,7 +254,16 @@ impl<T: Block> View<T> {
     /// on each collapsible item (`Claim::collapsible`); [`claims`] has no view and so no measured
     /// re-read.
     pub fn claims(&self, cost: &dyn Estimate<T>, sources: &[&dyn Source<T>]) -> Vec<Claim> {
-        sources.iter().map(|source| claim(cost, *source, &source.items(), self.motion.rereads())).collect()
+        sources
+            .iter()
+            .map(|source| Claim { held: self.held(cost, source.name()), ..claim(cost, *source, &source.items(), self.motion.rereads()) })
+            .collect()
+    }
+
+    /// What this epoch renders for `source`, every version it superseded included, priced by `cost`.
+    fn held(&self, cost: &dyn Estimate<T>, source: &str) -> usize {
+        let prefix = format!("{source}/");
+        self.epoch.events().iter().filter(|event| event.source.0.starts_with(&prefix)).map(|event| cost.block(&event.text)).sum()
     }
 
     /// The first epoch. `allocate` answers each claim with a grant in `cost`, the caller's price

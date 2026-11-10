@@ -32,6 +32,26 @@ fn every_act_of_an_epoch_only_appends() -> Result<(), GrantMismatch> {
     Ok(())
 }
 
+// what this catches: an act's allocation granting a live epoch's source less than the epoch
+// already renders for it, so the epoch turns over and the engine re-prefills every token behind
+// it (the M5, 2026-11-10: 65% of re-prefilled tokens, an epoch every second act). A live view's
+// claim holds what its epoch renders, superseded versions included (they are resident too); a
+// start's claim holds nothing.
+#[test]
+fn a_live_claim_holds_what_its_epoch_already_renders() -> Result<(), GrantMismatch> {
+    let mut views = Fake::new("open-views", 4);
+    views.push("a.rs", &"a".repeat(5_000));
+    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&views], all_full)?;
+    views.push("a.rs", "a.rs lines 1-40");
+    view.advance(&[&views]);
+    let rendered: usize = view.render().map(|block| block.chars().count()).sum();
+    let live = view.claims(&crate::cost::Chars, &[&views]);
+    assert_eq!(live[0].held, rendered, "the epoch's whole rendering of the source, both versions");
+    assert!(live[0].held > live[0].full, "held counts the superseded version no want counts");
+    assert_eq!(claims(&crate::cost::Chars, &[&views])[0].held, 0, "a start recomputes: it holds nothing");
+    Ok(())
+}
+
 // what this catches: a source that grew by one item re-sending all of itself (the
 // snapshot rendering that sank #5210 live: 0.37 reuse).
 #[test]
@@ -866,6 +886,7 @@ fn a_source_she_re_reads_from_weighs_more_and_an_unmeasured_one_keeps_its_priori
         full: 10_000,
         newest: 500,
         logged: 0,
+        held: 0,
         instrumented: true,
         collapsible: (0..4).map(|age| Collapsible { whole: 2_000, saves: 1_900, age, hazard }).collect(),
     };

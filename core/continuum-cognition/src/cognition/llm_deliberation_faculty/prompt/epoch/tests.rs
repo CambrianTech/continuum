@@ -199,6 +199,7 @@ fn depth_one_token_under_her_newest() -> (Vec<continuum_context::view::Claim>, c
         full: 10,
         newest: 6,
         logged: 0,
+        held: 0,
         instrumented: true,
         collapsible: vec![Collapsible { whole: 4, saves: 4, age: 1, hazard: Hazard::Measured { tally: Tally { exposure: 1_000.0, events: 0.0 }, prior: 1.0 } }],
     };
