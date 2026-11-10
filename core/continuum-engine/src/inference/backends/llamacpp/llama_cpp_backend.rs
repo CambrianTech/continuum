@@ -14,7 +14,7 @@ impl LlamaCppBackend {
             .model_path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".into());
+            .unwrap_or_else(|| "unknown".into()); // unwrap_or_else: a model path with no file stem is named "unknown" in logs and receipts
 
         let load_start = Instant::now();
         let model = Model::load(

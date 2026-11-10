@@ -251,11 +251,11 @@ impl EmbeddingProvider for LazyRecallEmbedder {
         self.resolved
             .get()
             .map(|p| p.id())
-            .unwrap_or("recall-embedder(resolving)")
+            .unwrap_or("recall-embedder(resolving)") // unwrap_or: before resolution the provider names itself resolving
     }
 
     fn dim(&self) -> usize {
-        self.resolved.get().map(|p| p.dim()).unwrap_or(0)
+        self.resolved.get().map(|p| p.dim()).unwrap_or(0) // unwrap_or: an unresolved embedder has no dimension yet
     }
 
     async fn embed(&self, text: &str) -> Vec<f32> {

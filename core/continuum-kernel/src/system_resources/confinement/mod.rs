@@ -327,7 +327,7 @@ impl Confinement {
         let mut read: Vec<PathBuf> = READABLE_HOME_ENTRIES.iter().map(|e| home.join(e)).collect();
         // `~/.continuum`, minus the citizens' directories (hers is a write root above),
         // the shared cache (a write root above) and the core's secrets.
-        let continuum = home.join(".continuum");
+        let continuum = self.continuum_root.clone();
         if let Ok(entries) = std::fs::read_dir(&continuum) {
             for entry in entries.flatten() {
                 let name = entry.file_name();

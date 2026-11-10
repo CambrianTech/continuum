@@ -469,8 +469,10 @@ impl LlmDeliberationFaculty {
     /// small on purpose: a floor that is too low costs nothing when the need is
     /// measured and is not consulted when it is not; a bound that is too low ended
     /// turns inside the reasoning channel (the M5, 2026-09-20).
+    // derived-or-floor: a floor the measured need overrides; a floor too low costs nothing (the M5, 2026-09-20)
     pub const ACT_LATENCY_BUDGET_SECS: f64 = 150.0;
 
+    // derived-or-floor: the pass's floor, overridden by her measured need like the act's
     pub const PASS_LATENCY_BUDGET_SECS: f64 = 60.0;
 
     /// Floor so a tiny window still yields a usable reply, and the same term the prompt
@@ -618,7 +620,7 @@ impl LlmDeliberationFaculty {
                             image: ImageInput {
                                 url: None,
                                 base64: Some(
-                                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                                    base64::engine::general_purpose::STANDARD.encode(bytes), // boundary: the image crosses to the model's wire as base64
                                 ),
                                 mime_type: Some(image.mime),
                             },
