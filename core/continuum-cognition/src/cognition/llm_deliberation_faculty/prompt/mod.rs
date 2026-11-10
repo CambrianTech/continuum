@@ -14,7 +14,6 @@ pub(super) use self::budget::BudgetLedger;
 #[cfg(test)]
 pub(super) use self::epoch::start_grants;
 pub(super) mod fit;
-pub(super) use self::fit::*;
 mod segments;
 mod newest_result;
 mod tools_epoch;
