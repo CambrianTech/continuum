@@ -383,11 +383,17 @@ impl Registry {
                     .retain(|entry| !Arc::ptr_eq(entry, &dir));
             }
         }
+        // A root already recorded keeps its recorded device (below): observing it again every
+        // tick walked the filesystem for a result nothing read (the M5, 2026-11-10: ~270
+        // resolutions a minute over 29 roots, 78% of the core's log lines).
+        let recorded: Option<std::collections::HashSet<std::path::PathBuf>> =
+            self.1.lock().await.as_ref().map(|records| records.saved.keys().cloned().collect());
         let mut observations = Vec::new();
         for dir in self
             .snapshot()
             .into_iter()
             .filter(|dir| CARGO_TARGET_CLASSES.contains(&dir.class()))
+            .filter(|dir| recorded.as_ref().is_none_or(|recorded| !recorded.contains(dir.path())))
         {
             let volume = self
                 .path_work(dir.path(), PathWork::Observe)
