@@ -174,13 +174,22 @@ fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
     {
         return;
     }
+    let now = continuum_base::time::EpochMs::now().millis();
+    let stabilized = stored.candidate_set_at_ms > 0
+        && (now - stored.candidate_set_at_ms) >= CANDIDATE_STABILIZATION_MS;
+
+    if !stabilized {
+        // Candidate hasn't survived the stabilization window yet.
+        // Update token tracking but don't promote geometry fields or clear candidate.
+        stored.typical_prompt_tokens = tokens;
+        stored.observed_prompt_tokens = Some(tokens);
+        write_record(path, &stored);
+        return;
+    }
+
     stored.model_id = geometry.model_id.clone();
     stored.per_slot_window = geometry.per_slot_window;
     stored.lanes = geometry.lanes;
-    stored.typical_prompt_tokens = tokens;
-    stored.observed_prompt_tokens = Some(tokens);
-    stored.set_at_ms = continuum_base::time::EpochMs::now().millis();
-    write_record(path, &stored);
 }
 /// Place the record through the one durable primitive: staged in its directory, synced, renamed
 /// over the old one, so a crash leaves the previous record or the new one, never a torn file.
