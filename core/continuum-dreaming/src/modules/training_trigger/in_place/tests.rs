@@ -53,8 +53,8 @@ fn engine(port: u16) -> EngineIncarnation {
 
 // what this catches (Codex on B, card 23069702): her learner waiting for her act while holding her
 // bucket's gate, so her own submit stalled behind her background work. The learner waits for her
-// acts holding nothing of the trigger; the gate stays free, and once her act ends the step is
-// admitted (here refused: this engine has no pool) and the pass ends deferred, never failed.
+// acts first, holding nothing of the trigger; the gate stays free, and once her act ends the pass
+// moves on (here to the trigger's own refusal: this bare trigger never recovered durable state).
 #[tokio::test]
 async fn her_waiting_learner_never_holds_her_bucket_gate() {
     let state = Arc::new(TrainingTriggerState::new(authority()));
@@ -66,12 +66,10 @@ async fn her_waiting_learner_never_holds_her_bucket_gate() {
     let mut pass = Box::pin(state.learn_bucket(key.clone(), vec![row], engine(9)));
     assert!(futures::poll!(&mut pass).is_pending(), "her act comes first: the learner waits");
     assert!(state.submit_gates.try_acquire(&key).is_some(), "her bucket's gate is free while her learner waits");
+    assert!(state.in_place.engine(engine(9)).try_lock_owned().is_ok(), "and so is the engine");
     drop(acting);
-    let pass = tokio::time::timeout(std::time::Duration::from_secs(5), pass)
-        .await
-        .expect("test: the pass ends once her act does")
-        .expect("test: deferred, not failed");
-    assert_eq!(pass, BucketPass { deferred: true, ..Default::default() });
+    let moved_on = tokio::time::timeout(std::time::Duration::from_secs(5), pass).await.expect("test: the pass moves on once her act ends");
+    assert!(moved_on.is_err_and(|why| why.contains("has not recovered")), "past her act, the trigger's own refusal");
 }
 
 // what this catches (Codex on B): one mind's pass waiting (for her act, her slot, an engine) holding

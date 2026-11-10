@@ -136,7 +136,7 @@ impl InPlace {
     /// answer's fence runs on its own, holding this engine and the slot until the stop is confirmed.
     async fn step(&self, state: &Arc<TrainingTriggerState>, mut held: tokio::sync::OwnedMutexGuard<EngineLearning>, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation, slot: LearnSlot, renewed: &mut bool, pass: &mut BucketPass) -> Result<Next, String> {
         // Bound first: the step's borrow of `held` ends here, before the arm below moves `held` into the fence.
-        let stepped = step_on(&self.authority, state, &mut held, key, rows, engine, slot, renewed, pass).await?;
+        let stepped = step_on(&self.authority, &mut held, key, rows, slot, renewed, pass).await?;
         match stepped {
             Stepped::Next(next) => Ok(next),
             Stepped::Lost { mind, slot } => {
@@ -151,6 +151,40 @@ impl InPlace {
         }
     }
 
+    /// Seat `key`'s learner if needed and cover her next pending example's memory, waiting for this
+    /// engine (holding no serving resource): the step that follows only revalidates. Seating's
+    /// embeddings, competence decision and leases all happen here, never under her serving guards.
+    async fn prepare(&self, state: &TrainingTriggerState, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation) -> Result<Prepared, String> {
+        let mut held = self.engine(engine).lock_owned().await;
+        for row in rows {
+            let total = u32::try_from(row.examples.len()).map_err(|_| format!("submission {} holds too many examples to count", row.id))?;
+            match seat(&self.authority, state, &mut held, key, row, rows, engine).await? {
+                Seating::Seated => {}
+                Seating::NotNow => return Ok(Prepared::Deferred),
+                Seating::AwaitMemory(wait) => return Ok(Prepared::AwaitMemory(wait)),
+            }
+            let EngineLearning { minds, workspace } = &mut *held;
+            let Some(seated) = minds.get_mut(key) else {
+                return Err(format!("the learner seated for {} left before its cover", key.persona_id));
+            };
+            let learned = start(row.learned, seated.checkpointed.get(&row.id).copied(), seated.progress.get(&row.id).copied());
+            if learned >= total {
+                continue;
+            }
+            let framed = learn_messages(&row.examples[learned as usize]);
+            return match seated.mind.cover(&self.authority, workspace, &framed.messages, framed.tools.as_ref()).await {
+                Ok(()) => Ok(Prepared::Ready),
+                Err(LearnFailure::Uncovered(crate::genome::learner::seat::SeatRefusal::AwaitingMemory(wait))) => Ok(Prepared::AwaitMemory(wait)),
+                Err(failure) => {
+                    continuum_base::probe!(class = "training.in_place.deferred", persona = %key.persona_id, reason = %failure,
+                        "her next example's memory was not covered; it is tried again on a later pass");
+                    Ok(Prepared::Deferred)
+                }
+            };
+        }
+        Ok(Prepared::Nothing)
+    }
+
     /// Publish what `key`'s seated learner learned since its newest generation, waiting for its
     /// engine holding no serving resource. `false` when nothing was published.
     async fn publish(&self, state: &TrainingTriggerState, key: &BucketKey, engine: EngineIncarnation) -> Result<bool, String> {
@@ -163,7 +197,7 @@ impl InPlace {
 }
 
 /// What a bucket does after one step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Next {
     /// Learned or restored: her next example is admitted next.
     Again,
@@ -172,6 +206,20 @@ enum Next {
     /// The answer was lost: her learner is gone and the fence holds the engine until its stop is
     /// confirmed, so nothing is published.
     Fenced,
+    /// The step's memory was not free on this attempt: everything was let go; wait, then again.
+    AwaitMemory(crate::inference::training_admission::TrainingWait),
+}
+
+/// Where a bucket stands before its next step, decided holding no serving resource.
+enum Prepared {
+    /// Seated, her next example's memory covered: admit the step.
+    Ready,
+    /// Nothing pending for her learner.
+    Nothing,
+    /// Not now (not seated for a reason that is not memory, or the cover failed): the pass ends.
+    Deferred,
+    /// Her shadow's or her step's memory is not free: wait for the authority, holding nothing.
+    AwaitMemory(crate::inference::training_admission::TrainingWait),
 }
 
 /// What one step left: the bucket's next move, or a lost answer the fence must hold.
@@ -184,24 +232,20 @@ enum Stepped {
 #[allow(clippy::too_many_arguments)] // the step's whole custody, each owned by its caller
 async fn step_on(
     authority: &Authority,
-    state: &TrainingTriggerState,
     held: &mut EngineLearning,
     key: &BucketKey,
     rows: &[Arrival],
-    engine: EngineIncarnation,
     mut slot: LearnSlot,
     renewed: &mut bool,
     pass: &mut BucketPass,
 ) -> Result<Stepped, String> {
     for row in rows {
         let total = u32::try_from(row.examples.len()).map_err(|_| format!("submission {} holds too many examples to count", row.id))?;
-        if !seat(authority, state, held, key, row, rows, engine).await? {
-            pass.deferred = true;
-            return Ok(Stepped::Next(Next::Stop));
-        }
         let EngineLearning { minds, workspace } = held;
         let Some(seated) = minds.get_mut(key) else {
-            return Err(format!("the learner seated for {} left before its step", key.persona_id));
+            // stopped since it was prepared: prepare again, holding nothing (seating waits on
+            // embeddings and memory, never under her serving resources)
+            return Ok(Stepped::Next(Next::Again));
         };
         let learned = start(row.learned, seated.checkpointed.get(&row.id).copied(), seated.progress.get(&row.id).copied());
         if learned >= total {
@@ -209,6 +253,20 @@ async fn step_on(
         }
         let framed = learn_messages(&row.examples[learned as usize]);
         let rate = seated.policy.learning_rate;
+        // revalidate its memory under these owners (the engine's shared workspace may have moved),
+        // one attempt: short, everything is let go and the step waits holding nothing
+        match seated.mind.cover(authority, workspace, &framed.messages, framed.tools.as_ref()).await {
+            Ok(()) => {}
+            Err(LearnFailure::Uncovered(crate::genome::learner::seat::SeatRefusal::AwaitingMemory(wait))) => {
+                return Ok(Stepped::Next(Next::AwaitMemory(wait)));
+            }
+            Err(failure) => {
+                continuum_base::probe!(class = "training.in_place.deferred", persona = %key.persona_id, reason = %failure,
+                    "a learning step's memory was not covered; it is tried again on a later pass");
+                pass.deferred = true;
+                return Ok(Stepped::Next(Next::Stop));
+            }
+        }
         // the POST is about to be sent: from here the slot holds whatever the engine leaves
         slot.dispatching();
         let step = match seated.restore.as_ref() {
@@ -325,11 +383,21 @@ async fn checkpoint(state: &TrainingTriggerState, key: &BucketKey, seated: &mut 
     }
 }
 
+/// Whether her learner is seated.
+enum Seating {
+    Seated,
+    /// Not now (the competence does not learn, the policy is unlearnable, the engine is not
+    /// reachable): the bucket's pass ends, the examples stay pending.
+    NotNow,
+    /// Her shadow's memory is not free on this attempt; nothing is held.
+    AwaitMemory(crate::inference::training_admission::TrainingWait),
+}
+
 /// Make sure a learner is seated for `key` in `held`'s engine, restored from the bucket's newest
 /// generation when it has one. `false` when it cannot be seated now; the bucket defers.
-async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut EngineLearning, key: &BucketKey, row: &Arrival, rows: &[Arrival], engine: EngineIncarnation) -> Result<bool, String> {
+async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut EngineLearning, key: &BucketKey, row: &Arrival, rows: &[Arrival], engine: EngineIncarnation) -> Result<Seating, String> {
     if held.minds.contains_key(key) {
-        return Ok(true);
+        return Ok(Seating::Seated);
     }
     // WHICH gene this competence trains, by the one rule (competence::decide): the bucket's pending
     // examples are the competence; nothing of hers learns it yet (no learner is seated for it).
@@ -346,16 +414,16 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
             Ok(crate::genome::competence::Decision::Fork { parent, .. }) => sig.parent = Some(parent), // learned from the base with its lineage, as the trainer it replaces did
             Ok(crate::genome::competence::Decision::Reuse { gene, similarity }) => {
                 super::competence::reuse(&asking, &gene, similarity, &adoption).await; // probed either way; the examples wait for its trial
-                return Ok(false);
+                return Ok(Seating::NotNow);
             }
             Ok(other) => {
                 continuum_base::probe!(class = "training.in_place.not_learning", persona = %key.persona_id, decision = ?other,
                     "the competence decision does not learn now (another of her learners has it, a trial awaits, or memories suffice); the examples stay pending");
-                return Ok(false);
+                return Ok(Seating::NotNow);
             }
             Err(why) => {
                 continuum_base::probe!(class = "training.in_place.undecided", persona = %key.persona_id, reason = %why, "the competence could not be decided; nothing learns blind");
-                return Ok(false);
+                return Ok(Seating::NotNow);
             }
         }
     }
@@ -364,7 +432,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
         Err(why) => {
             continuum_base::probe!(class = "training.in_place.unlearnable_policy", persona = %key.persona_id, reason = %why,
                 "this bucket's policy names nothing the engine can learn; it stays pending");
-            return Ok(false);
+            return Ok(Seating::NotNow);
         }
     };
     let store = state.durable.require()?;
@@ -376,7 +444,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
     let expiry = match learning.learn_ledger().await {
         Ok(LedgerAnswer::Ledger(ledger)) => std::time::Duration::from_millis(ledger.max_expiry_ms),
         Ok(LedgerAnswer::NoLedger) => return Err("the serving engine has no learning ledger: nothing can learn in place".into()),
-        Err(_unreachable) => return Ok(false),
+        Err(_unreachable) => return Ok(Seating::NotNow),
     };
     let id = Uuid::new_v4();
     let shadow = FreshShadow {
@@ -407,16 +475,17 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
                     persona_name: row.persona_name.clone(),
                 },
             );
-            Ok(true)
+            Ok(Seating::Seated)
         }
+        Err(StartFailure::NotSeated(crate::genome::learner::seat::SeatRefusal::AwaitingMemory(wait))) => Ok(Seating::AwaitMemory(wait)),
         Err(StartFailure::NotSeated(why)) => {
             continuum_base::probe!(class = "training.in_place.unseated", persona = %key.persona_id, reason = %why, "her shadow was not seated; tried again on a later pass");
-            Ok(false)
+            Ok(Seating::NotNow)
         }
         Err(StartFailure::Ungranted { why, seated }) => {
             continuum_base::probe!(class = "training.in_place.ungranted", persona = %key.persona_id, reason = %why, "seated but not granted; stopped, tried again on a later pass");
             let _orphaned = seated.stop().await; // what it holds stays in custody until the engine confirms each release
-            Ok(false)
+            Ok(Seating::NotNow)
         }
     }
 }
@@ -633,10 +702,12 @@ impl TrainingTriggerState {
     }
 
     /// Learn bucket `key`'s pending `rows` on `engine` until it stops, then publish what it learned.
-    /// Each step is admitted first, holding nothing of the trigger: her acts finish, then her slot is
-    /// admitted as a keyed dream (lane, permit, page). Only then are the bucket's gate and the engine
-    /// tried; on contention everything is let go, the owner is waited for holding no serving
-    /// resource, and the step is admitted again (Codex on B). The step runs inside the owned operations.
+    /// Each step: (1) her acts finish, holding nothing; (2) her learner is seated and the example's
+    /// memory covered under the bucket's gate and the engine, holding no serving resource, every
+    /// memory lease one attempt, a shortfall waited for holding nothing; (3) her slot is admitted as
+    /// a keyed dream (lane, permit, page); (4) the gate and the engine are only tried, and on
+    /// contention everything is let go and waited for holding no serving resource; (5) the step
+    /// revalidates its memory, marks custody and posts, inside the owned operations (Codex on B).
     pub(crate) async fn learn_bucket(self: &Arc<Self>, key: BucketKey, rows: Vec<Arrival>, engine: EngineIncarnation) -> Result<BucketPass, String> {
         let mut pass = BucketPass::default();
         if rows.iter().all(|row| row.learned as usize >= row.examples.len()) {
@@ -646,12 +717,35 @@ impl TrainingTriggerState {
         let mut renewed = false;
         let mut stepped_any = false;
         loop {
+            // 1. her acts first, holding nothing
             if let Err(why) = crate::inference::slots::her_acts_done(key.persona_id).await {
                 continuum_base::probe!(class = "training.in_place.step_deferred", persona = %key.persona_id, reason = %why,
                     "her act gate could not be waited on; the examples stay pending");
                 pass.deferred = true;
                 break;
             }
+            // subscribed BEFORE any attempt, so a release between the attempt and the wait is seen
+            let mut changes = self.in_place.authority.resources.subscribe();
+            changes.borrow_and_update();
+            // 2. seat and cover her next example, holding no serving resource
+            let prepare_rows = Arc::clone(&rows);
+            let prepared = self
+                .run_owned(key.clone(), move |state, key| async move { state.in_place.prepare(&state, &key, &prepare_rows, engine).await })
+                .await??;
+            match prepared {
+                Prepared::Ready => {}
+                Prepared::Nothing => break,
+                Prepared::Deferred => {
+                    pass.deferred = true;
+                    break;
+                }
+                Prepared::AwaitMemory(wait) => {
+                    self.await_memory(&key, &mut changes, &wait).await?;
+                    continue;
+                }
+            }
+            stepped_any = true; // a seated learner may hold progress to publish
+            // 3. her slot as a keyed dream (an act begun since step 1 refuses it: back to step 1)
             let slot = match crate::inference::slots::learn_slot(engine, key.persona_id).await {
                 Ok(slot) => slot,
                 Err(crate::inference::slots::LearnSlotRefusal::Busy) => continue, // her act began after the wait: it comes first
@@ -683,7 +777,6 @@ impl TrainingTriggerState {
                 })
                 .await?;
             renewed = renewed_now;
-            stepped_any = true;
             pass.learned += stepped.learned;
             pass.deferred |= stepped.deferred;
             pass.quarantined |= stepped.quarantined;
@@ -691,13 +784,21 @@ impl TrainingTriggerState {
                 Next::Again => continue,
                 Next::Stop => break,
                 Next::Fenced => return Ok(pass),
+                Next::AwaitMemory(wait) => self.await_memory(&key, &mut changes, &wait).await?,
             }
         }
         if stepped_any {
-            // only a pass that reached her learner can have progress to publish
+            // only a pass that seated her learner can have progress to publish
             pass.checkpointed = self.run_owned(key, move |state, key| async move { state.in_place.publish(&state, &key, engine).await }).await??;
         }
         Ok(pass)
+    }
+
+    /// Wait, holding nothing, for what kept her learner's memory from being granted.
+    async fn await_memory(&self, key: &BucketKey, changes: &mut tokio::sync::watch::Receiver<crate::resources::LeaseBoard>, wait: &crate::inference::training_admission::TrainingWait) -> Result<(), String> {
+        continuum_base::probe!(class = "training.in_place.awaiting_memory", persona = %key.persona_id, wait = %wait,
+            "her learning step waits for memory holding no serving resource; her acts run meanwhile");
+        crate::inference::training_admission::await_training_change(changes, wait).await
     }
 
     /// Take each due candidate in `page` whose base `served_model` serves, under its bucket's gate.
