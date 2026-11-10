@@ -151,16 +151,8 @@ impl crate::persona::held_work::AircWorkReader for AircHandleAdapter {
             .unwrap_or_default()) // the roster has no row for her: she holds no claims, the fact rather than a guess
     }
 
-    /// Every subscribed room's board: the horizon a card id resolves against.
-    async fn boards(&self) -> Vec<airc_work::BoardSnapshot> {
-        match crate::persona::work_board::horizon::board_horizon_for_card(&self.inner, None).await {
-            Ok(horizon) => horizon.boards.into_iter().map(|(_, board)| board.snapshot()).collect(),
-            Err(error) => {
-                continuum_base::probe!(class = "persona.held_work.boards_unread", error = %error,
-                    "her boards could not be read: her send-backs are not shown this tick");
-                Vec::new()
-            }
-        }
+    async fn boards(&self) -> Result<Vec<std::sync::Arc<airc_work::BoardSnapshot>>, AircError> {
+        crate::persona::work_board::board_index::boards(self.inner.as_ref()).await
     }
 }
 

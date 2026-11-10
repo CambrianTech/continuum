@@ -40,10 +40,9 @@ pub trait AircWorkReader: Send + Sync {
     }
 
     /// Every board she can see, one per subscribed room: where her send-backs and the review cards
-    /// of their resubmissions live (card 7f8c248e). Default empty, for a reader of her claims alone.
-    async fn boards(&self) -> Vec<airc_work::BoardSnapshot> {
-        Vec::new()
-    }
+    /// of their resubmissions live (card 7f8c248e). Required: a reader that cannot answer says so,
+    /// so no reader shows her nothing by default.
+    async fn boards(&self) -> Result<Vec<std::sync::Arc<airc_work::BoardSnapshot>>, AircError>;
 }
 
 /// A claim as her last successful read saw it: what it is called, its state, and the board
@@ -65,8 +64,20 @@ static BASELINES: OnceLock<Mutex<HashMap<Uuid, HashMap<WorkCardId, Seen>>>> = On
 pub async fn read(persona: Uuid) -> Option<HeldWork> {
     let runtime = crate::persona::PersonaAircRuntimeRegistry::try_global()?.get(persona)?;
     let holder = runtime.airc().peer_id();
-    let claims = AircWorkReader::active_claims(runtime.as_ref()).await;
-    let boards = AircWorkReader::boards(runtime.as_ref()).await;
+    read_through(runtime.as_ref(), persona, holder).await
+}
+
+/// [`read`] through `reader`, her citizen's board access: the one path, a test's stub included.
+pub(crate) async fn read_through(reader: &(dyn AircWorkReader + '_), persona: Uuid, holder: airc_core::PeerId) -> Option<HeldWork> {
+    let claims = reader.active_claims().await;
+    let boards = match reader.boards().await {
+        Ok(boards) => boards,
+        Err(error) => {
+            continuum_base::probe!(class = "persona.held_work.boards_unread", error = %error,
+                "her boards could not be read: her send-backs are not shown this read");
+            Vec::new()
+        }
+    };
     let baselines = BASELINES.get_or_init(Default::default);
     let mut baselines = baselines.lock().unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a poisoned baseline map still holds the last good reads
     let baseline = baselines.entry(persona).or_default();
@@ -86,7 +97,7 @@ pub async fn read(persona: Uuid) -> Option<HeldWork> {
 /// submission (`submission_review_card_id`), but only while that card is open and nobody else's.
 /// Resolved, closed, merged, superseded by a later verdict of hers, or taken by another reviewer:
 /// it leaves her view. Rebuilt from the board on every read, so a restart loses nothing.
-fn awaiting(boards: &[airc_work::BoardSnapshot], me: airc_core::PeerId) -> Vec<AwaitingResubmission> {
+fn awaiting(boards: &[std::sync::Arc<airc_work::BoardSnapshot>], me: airc_core::PeerId) -> Vec<AwaitingResubmission> {
     use airc_work::{CardState, WorkReviewOutcome};
     let terminal = |state: CardState| matches!(state, CardState::Merged | CardState::Closed);
     let mut awaiting: Vec<AwaitingResubmission> = Vec::new();
@@ -281,10 +292,10 @@ mod tests {
             review_card_id: WorkCardId::new(), review_claim_id: airc_work::ClaimId::new(), reviewer: by, outcome,
             evidence: artifact.clone(), evidence_text: None, reviewed_at_ms: at,
         };
-        let board = |cards: Vec<airc_lib::WorkCard>, reviews: Vec<airc_work::WorkSubmissionReview>| BoardSnapshot {
+        let board = |cards: Vec<airc_lib::WorkCard>, reviews: Vec<airc_work::WorkSubmissionReview>| std::sync::Arc::new(BoardSnapshot {
             cards, submission_reviews: reviews, lanes: Vec::new(), workspaces: Vec::new(), repo_tracking: Vec::new(),
             pull_requests: Vec::new(), manager_hats: Vec::new(), agent_availability: Vec::new(), hygiene_reports: Vec::new(),
-        };
+        });
         // 1. waiting: her send-back judged the latest submission
         let mut waiting = parent(1, CardState::Review);
         let judged = submission(&waiting);
@@ -318,5 +329,36 @@ mod tests {
         // another reviewer's send-back is not hers
         let theirs = verdict(&waiting, judged.submission_id, airc_core::PeerId::new(), WorkReviewOutcome::Failed, 20);
         assert!(awaiting(&[board(vec![waiting], vec![theirs])], me).is_empty(), "only her own verdicts");
+    }
+
+    // what this catches (Codex on #5908 at db440c5dd): the send-back computed but never reaching her,
+    // because the reader her read goes through answered no boards. Through the one read path with
+    // a citizen whose board carries her send-back, her held work carries it.
+    #[tokio::test]
+    async fn her_read_carries_her_send_back_from_her_boards() {
+        use airc_work::{BoardSnapshot, CardState, SubmissionId, WorkCardId, WorkReviewOutcome};
+        let me = her();
+        let artifact: airc_work::SubmissionArtifact = serde_json::from_value(serde_json::json!({"hash": "a".repeat(64), "size_bytes": 5, "mime": "text/x-diff"}))
+            .expect("test: an artifact");
+        let mut card = crate::cognition::work_preconditions::fixture_card(CardState::Review, Some(airc_core::PeerId::new()), None, "Sahar's resubmission");
+        card.card_id = WorkCardId::from_u128(7);
+        let judged = airc_work::WorkSubmission {
+            submission_id: SubmissionId::new(), card_id: card.card_id, claim_id: airc_work::ClaimId::new(), instance: "ordinary".into(),
+            base_sha: airc_work::GitObjectId::new("b".repeat(40)).expect("test: a sha"), head: airc_work::SubmissionHead::Unrecorded,
+            artifact: artifact.clone(), publisher: airc_core::PeerId::new(), submitted_at_ms: 10,
+        };
+        card.submissions.insert(0, judged.clone());
+        let sent_back = airc_work::WorkSubmissionReview {
+            review_id: airc_work::WorkReviewId::new(), card_id: card.card_id, submission_id: judged.submission_id, artifact: artifact.clone(),
+            review_card_id: WorkCardId::new(), review_claim_id: airc_work::ClaimId::new(), reviewer: me, outcome: WorkReviewOutcome::Failed,
+            evidence: artifact, evidence_text: None, reviewed_at_ms: 20,
+        };
+        let board = BoardSnapshot {
+            cards: vec![card.clone()], submission_reviews: vec![sent_back], lanes: Vec::new(), workspaces: Vec::new(), repo_tracking: Vec::new(),
+            pull_requests: Vec::new(), manager_hats: Vec::new(), agent_availability: Vec::new(), hygiene_reports: Vec::new(),
+        };
+        let citizen = crate::persona::airc_citizen::StubAircCitizen::new(me.as_uuid()).with_board_snapshots(vec![board]);
+        let held = read_through(&citizen, uuid::Uuid::new_v4(), me).await.expect("test: a good read");
+        assert_eq!(held.awaiting.iter().map(|item| (item.card, item.reviewed)).collect::<Vec<_>>(), vec![(card.card_id, judged.submission_id)]);
     }
 }
