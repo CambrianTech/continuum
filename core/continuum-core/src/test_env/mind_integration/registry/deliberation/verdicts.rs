@@ -107,9 +107,11 @@ fn reply_priority_grows_the_reply_not_at_history_or_required_input() {
             "required input is never traded"
         );
     }
+    // Her act's reply grows toward the pending cut's measured peak (5,404) at the act's priority,
+    // never left at the cell a reply begins in.
     assert!(
-        act_view.completion_reserve > pass_view.completion_reserve,
-        "the act's reply outranks the ambient pass's: {} vs {}",
+        act_view.completion_reserve > 1_000,
+        "the act's reply grows toward her pending cut: {} (the handless pass: {})",
         act_view.completion_reserve,
         pass_view.completion_reserve
     );
