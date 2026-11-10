@@ -16,12 +16,12 @@ fn rendered(view: &View<String>) -> String {
 // ring grows by one result an act and the volatile sources change every act, and each
 // act's view still starts with the previous act's view.
 #[test]
-fn every_act_of_an_epoch_only_appends() {
+fn every_act_of_an_epoch_only_appends() -> Result<(), GrantMismatch> {
     let mut board = Fake::new("board", 3);
     board.push("card", "card 1b232595 claimed");
     let mut actions = Fake::new("actions", 5);
     let mut notices = Fake::new("notices", 2);
-    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&board, &actions, &notices], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&board, &actions, &notices], all_full)?;
     for act in 1..=6 {
         let before = rendered(&view);
         actions.push(&format!("#{act}"), &format!("code/read result {act}"));
@@ -29,20 +29,22 @@ fn every_act_of_an_epoch_only_appends() {
         view.advance(&[&board, &actions, &notices]);
         assert!(rendered(&view).starts_with(&before), "act {act} rewrote the prefix");
     }
+    Ok(())
 }
 
 // what this catches: a source that grew by one item re-sending all of itself (the
 // snapshot rendering that sank #5210 live: 0.37 reuse).
 #[test]
-fn an_act_appends_only_the_items_that_changed() {
+fn an_act_appends_only_the_items_that_changed() -> Result<(), GrantMismatch> {
     let mut views = Fake::new("open-views", 4);
     views.push("a.rs", &"a".repeat(5_000));
     views.push("b.rs", &"b".repeat(5_000));
-    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&views], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&views], all_full)?;
     views.push("b.rs", "b.rs lines 1-40");
     let advance = view.advance(&[&views]);
     assert_eq!(advance, Advance { items: 1, chars: "b.rs lines 1-40".len(), repeats: 0 });
     assert_eq!(view.advance(&[&views]), Advance::default(), "nothing changed, nothing appended");
+    Ok(())
 }
 
 // what this catches (card ef0b04e4): a whole history re-appended on one advance (2,195 items, 57.9M
@@ -72,22 +74,23 @@ fn an_advance_names_each_source_that_appended() -> Result<(), GrantMismatch> {
 // differently, so "changed"), the collapse-then-uncollapse churn the sticky ring collapse
 // was patched for; and her next act's result being born collapsed because its source was.
 #[test]
-fn a_collapsed_item_stays_collapsed_and_a_new_one_arrives_in_full() {
+fn a_collapsed_item_stays_collapsed_and_a_new_one_arrives_in_full() -> Result<(), GrantMismatch> {
     let mut actions = Fake::new("actions", 1);
     actions.push("#1", &"x".repeat(9_000));
-    let (mut view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |claims| vec![0; claims.len()]).unwrap();
+    let (mut view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |claims| vec![0; claims.len()])?;
     assert_eq!(start.collapsed, 1);
     let at_start = view.chars();
     actions.push("#2", "short");
     let advance = view.advance(&[&actions]);
     assert_eq!(advance, Advance { items: 1, chars: "short".len(), repeats: 0 }, "only the new result, in full");
     assert!(view.chars() - at_start < 100, "the old result did not come back in full");
+    Ok(())
 }
 
 // what this catches: a grant spent on the oldest items (she reads stale results in full and
 // her latest ones as pointers), or a grant overspent past what the allocator gave.
 #[test]
-fn a_grant_keeps_the_newest_items_in_full() {
+fn a_grant_keeps_the_newest_items_in_full() -> Result<(), GrantMismatch> {
     let mut actions = Fake::new("actions", 1);
     for act in 1..=3 {
         actions.push(&format!("#{act}"), &"r".repeat(1_000));
@@ -95,10 +98,11 @@ fn a_grant_keeps_the_newest_items_in_full() {
     let pointer = |item: &Item<String>| item.pointer.as_ref().map_or(0, String::len);
     let floor: usize = actions.items().iter().map(pointer).sum();
     let grant = floor + 2 * (1_000 - pointer(&actions.items()[0]));
-    let (view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |_| vec![grant]).unwrap();
+    let (view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |_| vec![grant])?;
     assert_eq!(start.collapsed, 1);
     assert!(rendered(&view).starts_with("[#1:"), "the oldest collapsed, the newest two whole");
     assert!(view.chars() <= grant);
+    Ok(())
 }
 
 // what this catches: an allocator that answers for fewer sources than it was asked about,
@@ -114,41 +118,43 @@ fn a_grant_for_the_wrong_number_of_sources_is_refused() {
 // what this catches: a turnover that keeps an item the source no longer offers, or one
 // that loses the allocator's choice; and a retired item that silently vanishes mid-epoch.
 #[test]
-fn turnover_renders_only_what_the_sources_offer_now() {
+fn turnover_renders_only_what_the_sources_offer_now() -> Result<(), GrantMismatch> {
     let mut views = Fake::new("open-views", 4);
     views.push("a.rs", "a.rs contents");
-    let (mut view, _) = View::start(&crate::cost::Chars, vec!["head".into()], &[&views], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["head".into()], &[&views], all_full)?;
     views.items.clear();
     views.retired.push(("a.rs".into(), "[closed a.rs]".into()));
     view.advance(&[&views]);
     assert!(rendered(&view).ends_with("[closed a.rs]"), "the close is appended, not a rewrite");
     views.retired.clear();
     views.push("b.rs", "b.rs contents");
-    let start = view.turn_over(&crate::cost::Chars, vec!["head".into()], &[&views], all_full).unwrap();
+    let start = view.turn_over(&crate::cost::Chars, vec!["head".into()], &[&views], all_full)?;
     assert_eq!(start.epoch, 2);
     assert_eq!(rendered(&view), "head\nb.rs contents");
     assert_eq!(view.superseded_chars(), 0);
+    Ok(())
 }
 
 // what this catches: a growth reserve sized from one outlier act instead of the epoch's
 // typical act.
 #[test]
-fn appended_per_act_is_the_median_act_of_the_epoch() {
+fn appended_per_act_is_the_median_act_of_the_epoch() -> Result<(), GrantMismatch> {
     let mut actions = Fake::new("actions", 1);
-    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&actions], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&actions], all_full)?;
     assert_eq!(view.appended_per_act(), None);
     for (act, size) in [(1, 100), (2, 120), (3, 9_000)] {
         actions.push(&format!("#{act}"), &"r".repeat(size));
         view.advance(&[&actions]);
     }
     assert_eq!(view.appended_per_act(), Some(120));
+    Ok(())
 }
 
 // what this catches: a collapsed item with nothing to leave behind still costing the view (a
 // short conversation turn whose one-line pointer weighs what the turn does), or rendering an
 // empty message.
 #[test]
-fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
+fn an_item_without_a_pointer_leaves_the_view_when_collapsed() -> Result<(), GrantMismatch> {
     struct Turns(Vec<&'static str>);
     impl Source<String> for Turns {
         fn name(&self) -> &str {
@@ -166,31 +172,33 @@ fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
         }
     }
     let mut turns = Turns(vec!["one", "two", "three"]);
-    let (mut view, start) = View::start(&crate::cost::Chars, vec![], &[&turns], |_| vec!["three".len()]).unwrap();
+    let (mut view, start) = View::start(&crate::cost::Chars, vec![], &[&turns], |_| vec!["three".len()])?;
     assert_eq!((start.collapsed, rendered(&view)), (2, "three".to_owned()));
     turns.0.push("four");
     view.advance(&[&turns]);
     assert_eq!(rendered(&view), "three\nfour", "a new turn arrives whole; the collapsed stay gone");
+    Ok(())
 }
 
 // what this catches: a restart rebuilding her view from scratch. Restored, the view must render
 // the same bytes (the engine's saved page for it still matches) and keep its epoch's choices:
 // a collapsed item stays collapsed, and the next act only appends.
 #[test]
-fn a_restored_view_renders_the_same_bytes_and_keeps_appending() {
+fn a_restored_view_renders_the_same_bytes_and_keeps_appending() -> Result<(), Box<dyn std::error::Error>> {
     let mut actions = Fake::new("actions", 1);
     actions.push("#1", &"x".repeat(9_000));
     actions.push("#2", "short");
-    let (mut view, _) = View::start(&crate::cost::Chars, vec!["head".into()], &[&actions], |claims| vec![claims[0].floor + 10]).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["head".into()], &[&actions], |claims| vec![claims[0].floor + 10])?;
     view.advance(&[&actions]);
-    let saved = serde_json::to_string(&view).unwrap();
-    let mut restored: View<String> = serde_json::from_str(&saved).unwrap();
+    let saved = serde_json::to_string(&view)?; // boundary: disk format, the checkpoint a restored view reads back
+    let mut restored: View<String> = serde_json::from_str(&saved)?; // boundary: disk format, the checkpoint read back
     assert_eq!(rendered(&restored), rendered(&view));
     let before = rendered(&restored);
     actions.push("#3", "next");
     restored.advance(&[&actions]);
     assert!(rendered(&restored).starts_with(&before), "the next act only appends");
     assert!(!rendered(&restored).contains(&"x".repeat(9_000)), "a collapsed item stays collapsed");
+    Ok(())
 }
 
 // what this catches: an oversized arrival forcing a turnover. A whole-file read arrived in full
