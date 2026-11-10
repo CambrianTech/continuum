@@ -359,15 +359,13 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     fn launch_kv(&self) -> Option<crate::inference::lane_process::LaunchKv> {
-        let (_host, port) = split_host_port(&self.root);
-        let record = crate::inference::lane_registry::live_lane().filter(|r| r.port == port)?;
+        let record = self.registered_lane()?;
         let argv = crate::inference::lane_process::command_args(record.pid)?;
         Some(crate::inference::lane_process::launch_kv_in(&argv))
     }
 
     fn pool_launch(&self) -> Option<super::PoolLaunch> {
-        let (_host, port) = split_host_port(&self.root);
-        let record = crate::inference::lane_registry::live_lane().filter(|r| r.port == port)?;
+        let record = self.registered_lane()?;
         let argv = crate::inference::lane_process::command_args(record.pid)?;
         Some(super::shared_pool::pool_launch(&argv))
     }
