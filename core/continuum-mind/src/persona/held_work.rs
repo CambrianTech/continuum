@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::cognition::work_preconditions::Held;
-use crate::cognition::workspace::{EndedClaim, HeldWork};
+use crate::cognition::workspace::{AwaitingResubmission, EndedClaim, HeldWork};
 
 /// Reads THIS persona's currently-claimed work cards from airc. A supertrait of
 /// `AircCitizen` (like `AircRosterReader`): the persona's runtime implements it
@@ -37,6 +37,12 @@ pub trait AircWorkReader: Send + Sync {
     /// so a reader that only knows its own claims still compiles; production answers.
     async fn card(&self, _card_id: uuid::Uuid) -> Option<WorkCard> {
         None
+    }
+
+    /// Every board she can see, one per subscribed room: where her send-backs and the review cards
+    /// of their resubmissions live (card 7f8c248e). Default empty, for a reader of her claims alone.
+    async fn boards(&self) -> Vec<airc_work::BoardSnapshot> {
+        Vec::new()
     }
 }
 
@@ -60,14 +66,56 @@ pub async fn read(persona: Uuid) -> Option<HeldWork> {
     let runtime = crate::persona::PersonaAircRuntimeRegistry::try_global()?.get(persona)?;
     let holder = runtime.airc().peer_id();
     let claims = AircWorkReader::active_claims(runtime.as_ref()).await;
+    let boards = AircWorkReader::boards(runtime.as_ref()).await;
     let baselines = BASELINES.get_or_init(Default::default);
     let mut baselines = baselines.lock().unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a poisoned baseline map still holds the last good reads
     let baseline = baselines.entry(persona).or_default();
     let mut seen = (!baseline.is_empty()).then(|| std::mem::take(baseline));
     let at_ms = continuum_base::time::EpochMs::now().millis(); // the read's own time: what her moves are decided at
-    let held = observe(&mut seen, holder, at_ms, claims, crate::persona::claim_rejections::recent(persona));
+    let mut held = observe(&mut seen, holder, at_ms, claims, crate::persona::claim_rejections::recent(persona));
     *baseline = seen.unwrap_or_default(); // unwrap_or_default: no good read yet leaves no baseline
+    if let Some(held) = held.as_mut() {
+        held.awaiting = awaiting(&boards, holder);
+    }
     held
+}
+
+/// PURE: her open send-backs on `boards` (card 7f8c248e). A card counts when her NEWEST verdict on
+/// it failed and it is not terminal. It waits while its latest submission is the one she judged;
+/// once the author resubmits, it carries the review card the board opened for that exact
+/// submission (`submission_review_card_id`), but only while that card is open and nobody else's.
+/// Resolved, closed, merged, superseded by a later verdict of hers, or taken by another reviewer:
+/// it leaves her view. Rebuilt from the board on every read, so a restart loses nothing.
+fn awaiting(boards: &[airc_work::BoardSnapshot], me: airc_core::PeerId) -> Vec<AwaitingResubmission> {
+    use airc_work::{CardState, WorkReviewOutcome};
+    let terminal = |state: CardState| matches!(state, CardState::Merged | CardState::Closed);
+    let mut awaiting: Vec<AwaitingResubmission> = Vec::new();
+    for board in boards {
+        for card in board.cards.iter().filter(|card| card.reviews.is_none() && !terminal(card.state)) {
+            let newest = board.submission_reviews.iter().filter(|review| review.card_id == card.card_id && review.reviewer == me).max_by_key(|review| review.reviewed_at_ms);
+            let Some(mine) = newest.filter(|review| review.outcome == WorkReviewOutcome::Failed) else {
+                continue; // no verdict of hers, or her newest one is not a send-back
+            };
+            let Some(latest) = card.latest_submission() else {
+                continue;
+            };
+            let resubmitted = if latest.submission_id == mine.submission_id {
+                None
+            } else {
+                let review = airc_work::submission_review_card_id(card.card_id, latest.submission_id);
+                let open = board.cards.iter().find(|candidate| candidate.card_id == review);
+                match open {
+                    Some(open) if !terminal(open.state) && open.owner.is_none_or(|owner| owner == me) => Some(review),
+                    _ => continue, // decided, taken by another reviewer, or its review card not on the board yet
+                }
+            };
+            if !awaiting.iter().any(|known| known.card == card.card_id) {
+                awaiting.push(AwaitingResubmission { card: card.card_id, title: card.title.clone(), reviewed: mine.submission_id, resubmitted });
+            }
+        }
+    }
+    awaiting.sort_unstable_by_key(|item| item.card); // reproducible order
+    awaiting
 }
 
 /// PURE but for the baseline it advances: her held work from one read of her claims. A failed
@@ -121,7 +169,7 @@ fn observe(
         })
         .collect();
     *baseline = Some(now);
-    Some(HeldWork { holds, selected, ended, rejections })
+    Some(HeldWork { holds, selected, ended, rejections, awaiting: Vec::new() }) // her send-backs are read from the boards by `read`
 }
 
 #[cfg(test)]
@@ -204,5 +252,71 @@ mod tests {
         c.state = CardState::Review;
         c.updated_at_ms = 30;
         assert_eq!(entered(&mut baseline, &c), 30, "Review again is a new entry");
+    }
+
+    // what this catches (card 7f8c248e; Kimi on BigMama 2026-11-10 made placeholder cards to wait for
+    // Sahar's resubmission): her send-back must read as a wait while the author has not resubmitted;
+    // once the author has, as the review card the board opened for that exact submission, offered
+    // to her first; and never when another reviewer holds that card, when the parent is terminal, or
+    // when her newest verdict on it passed.
+    #[test]
+    fn her_send_backs_wait_for_the_exact_resubmission_and_yield_to_other_reviewers() {
+        use airc_work::{BoardSnapshot, CardState, SubmissionId, WorkCardId, WorkReviewOutcome};
+        let me = her();
+        let artifact: airc_work::SubmissionArtifact = serde_json::from_value(serde_json::json!({"hash": "a".repeat(64), "size_bytes": 5, "mime": "text/x-diff"}))
+            .expect("test: an artifact");
+        let author = airc_core::PeerId::new();
+        let parent = |n: u128, state: CardState| {
+            let mut card = crate::cognition::work_preconditions::fixture_card(state, Some(author), None, "Sahar's resubmission");
+            card.card_id = WorkCardId::from_u128(n);
+            card
+        };
+        let submission = |card: &airc_lib::WorkCard| airc_work::WorkSubmission {
+            submission_id: SubmissionId::new(), card_id: card.card_id, claim_id: airc_work::ClaimId::new(), instance: "ordinary".into(),
+            base_sha: airc_work::GitObjectId::new("b".repeat(40)).expect("test: a sha"), head: airc_work::SubmissionHead::Unrecorded,
+            artifact: artifact.clone(), publisher: author, submitted_at_ms: 10,
+        };
+        let verdict = |card: &airc_lib::WorkCard, on: SubmissionId, by: airc_core::PeerId, outcome: WorkReviewOutcome, at: u64| airc_work::WorkSubmissionReview {
+            review_id: airc_work::WorkReviewId::new(), card_id: card.card_id, submission_id: on, artifact: artifact.clone(),
+            review_card_id: WorkCardId::new(), review_claim_id: airc_work::ClaimId::new(), reviewer: by, outcome,
+            evidence: artifact.clone(), evidence_text: None, reviewed_at_ms: at,
+        };
+        let board = |cards: Vec<airc_lib::WorkCard>, reviews: Vec<airc_work::WorkSubmissionReview>| BoardSnapshot {
+            cards, submission_reviews: reviews, lanes: Vec::new(), workspaces: Vec::new(), repo_tracking: Vec::new(),
+            pull_requests: Vec::new(), manager_hats: Vec::new(), agent_availability: Vec::new(), hygiene_reports: Vec::new(),
+        };
+        // 1. waiting: her send-back judged the latest submission
+        let mut waiting = parent(1, CardState::Review);
+        let judged = submission(&waiting);
+        waiting.submissions.insert(0, judged.clone());
+        let sent_back = verdict(&waiting, judged.submission_id, me, WorkReviewOutcome::Failed, 20);
+        let found = awaiting(&[board(vec![waiting.clone()], vec![sent_back.clone()])], me);
+        assert_eq!(found.iter().map(|item| (item.card, item.reviewed, item.resubmitted)).collect::<Vec<_>>(), vec![(waiting.card_id, judged.submission_id, None)]);
+        // 2. resubmitted: the review card opened for the EXACT newer submission is offered to her
+        let mut resubmitted = waiting.clone();
+        let newer = submission(&resubmitted);
+        resubmitted.submissions.insert(0, newer.clone());
+        let review_card = |owner| {
+            let mut card = crate::cognition::work_preconditions::fixture_card(CardState::Open, owner, Some(resubmitted.card_id), "review");
+            card.card_id = airc_work::submission_review_card_id(resubmitted.card_id, newer.submission_id);
+            card
+        };
+        let found = awaiting(&[board(vec![resubmitted.clone(), review_card(None)], vec![sent_back.clone()])], me);
+        assert_eq!(found.iter().map(|item| item.resubmitted).collect::<Vec<_>>(), vec![Some(airc_work::submission_review_card_id(resubmitted.card_id, newer.submission_id))]);
+        // a review card for an older submission is not this one: nothing is offered until the exact card opens
+        let mut stale = review_card(None);
+        stale.card_id = airc_work::submission_review_card_id(resubmitted.card_id, judged.submission_id);
+        assert!(awaiting(&[board(vec![resubmitted.clone(), stale], vec![sent_back.clone()])], me).is_empty(), "only the exact submission's review card");
+        // 3. claimed by another reviewer: honoured, it leaves her view
+        assert!(awaiting(&[board(vec![resubmitted.clone(), review_card(Some(airc_core::PeerId::new()))], vec![sent_back.clone()])], me).is_empty(), "another reviewer holds it");
+        // 4. a terminal parent, or her newest verdict passing, ends the wait
+        let mut merged = waiting.clone();
+        merged.state = CardState::Merged;
+        assert!(awaiting(&[board(vec![merged], vec![sent_back.clone()])], me).is_empty(), "a merged card awaits nothing");
+        let passed_later = verdict(&waiting, judged.submission_id, me, WorkReviewOutcome::Passed, 30);
+        assert!(awaiting(&[board(vec![waiting.clone()], vec![sent_back.clone(), passed_later])], me).is_empty(), "her newest verdict passed");
+        // another reviewer's send-back is not hers
+        let theirs = verdict(&waiting, judged.submission_id, airc_core::PeerId::new(), WorkReviewOutcome::Failed, 20);
+        assert!(awaiting(&[board(vec![waiting], vec![theirs])], me).is_empty(), "only her own verdicts");
     }
 }
