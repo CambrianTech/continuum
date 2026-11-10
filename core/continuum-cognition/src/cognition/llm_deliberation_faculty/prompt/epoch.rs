@@ -231,7 +231,12 @@ impl LlmDeliberationFaculty {
             "her view outgrew what the window granted its sources and started a new epoch, \
              its growing sources leaving a reserve as large as their start"
         );
-        Ok(ViewFitted { head_funded: funds_head })
+        // Her head changes only where nothing of hers is cached: the act that started her view (the
+        // first after a start or restart). A growth turnover keeps the head the engine holds and
+        // re-prefills only her view; adopting a new head there recomputed everything (Benchy, the
+        // M5, 2026-11-10 21:52Z: her tools changed at a turnover, 0 of 25,228 tokens cached). New
+        // verbs ride her tail until then.
+        Ok(ViewFitted { head_funded: funds_head && view.started })
     }
 
     /// Append this act's changes to her view and return its messages, and whether this act
