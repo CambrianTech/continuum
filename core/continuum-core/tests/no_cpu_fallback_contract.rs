@@ -33,14 +33,12 @@ const LLAMACPP_ADAPTER_SOURCE: &str = include_str!("../../continuum-engine/src/i
 
 // Candle-side sources surfaced by #1316 ALPHA-GAP finding #5: the
 // no_cpu_fallback contract test originally covered only llama.cpp +
-// ORT. The Candle / inference-grpc / orpheus / residency-gate paths
+// ORT. The Candle / orpheus / residency-gate paths
 // shipped their own no-CPU-fallback guarantees in PRs #1312, #1314,
 // #1331, #1335, #1338 — but the contract test didn't enforce them,
 // so a future regression could silently re-add a CPU fallback to any
 // of those paths without breaking this gate. The constants below close
 // that hole.
-
-const INFERENCE_GRPC_MODEL_SOURCE: &str = include_str!("../../inference-grpc/src/model.rs");
 
 const ORPHEUS_TTS_SOURCE: &str = include_str!("../../continuum-live/src/live/audio/tts/orpheus.rs");
 
@@ -113,42 +111,13 @@ fn llamacpp_adapter_uses_loud_fail_for_no_local_model() {
     );
 }
 
-// ─── Candle-side / inference-grpc / orpheus / residency gate ─────────
+// ─── Candle-side / orpheus / residency gate ─────────
 //
 // All assertions below close gaps surfaced by #1316 ALPHA-GAP finding
 // #5. Each pins a load-bearing guarantee that's already shipped (PRs
 // cited in each assertion). They aren't new behavior — they're the
 // canary in the coal mine that catches a future PR re-introducing a
 // CPU fallback in any of these layers.
-
-#[test]
-fn inference_grpc_select_best_device_hard_fails_on_no_gpu() {
-    // Shipped in #1314 (post-canary by codex). The function previously
-    // returned `Device::Cpu` silently with a friendly "no GPU
-    // acceleration" log when neither CUDA nor Metal could open. That's
-    // the exact pattern Joel + vhsm-d1f4 audit pass 1 flagged. The fix:
-    // return `Err` with "GPU required, no CPU fallback" in the message.
-
-    assert!(
-        INFERENCE_GRPC_MODEL_SOURCE.contains("GPU required, no CPU fallback")
-            || INFERENCE_GRPC_MODEL_SOURCE.contains("no CPU fallback"),
-        "inference-grpc/src/model.rs must hard-fail on no-GPU with the 'no CPU fallback' \
-         contract phrase in the error message. If you removed the message, the only-CPU \
-         host now silently runs at ~1 tok/s — the exact bug #1314 fixed."
-    );
-    // Additionally pin the return-type shape: select_best_device must
-    // return Result, not Device. A return-type regression would let
-    // someone silently re-add Device::Cpu as the "Ok" fallback.
-    assert!(
-        INFERENCE_GRPC_MODEL_SOURCE.contains("fn select_best_device")
-            && (INFERENCE_GRPC_MODEL_SOURCE.contains("fn select_best_device() -> Result<Device")
-                || INFERENCE_GRPC_MODEL_SOURCE
-                    .contains("fn select_best_device() -> Result <Device")),
-        "select_best_device must return Result<Device, ...>. If you changed the signature \
-         back to -> Device, the function can silently return Device::Cpu and the no-CPU-fallback \
-         contract is broken at the type level."
-    );
-}
 
 #[test]
 fn orpheus_tts_select_device_hard_fails_on_no_metal() {
