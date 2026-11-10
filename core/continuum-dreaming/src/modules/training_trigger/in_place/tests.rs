@@ -152,6 +152,27 @@ async fn a_due_candidate_reaches_its_trial_while_another_bucket_waits() {
     }
 }
 
+// what this catches (Codex on #5915 at 8021168b3): a learner waiting on memory measured against an
+// engine that was replaced. The old need never fits, so the pass (and the recovery that would read
+// the new engine) waited forever. A serving change while her engine still serves keeps the wait; the
+// change that replaces it ends the wait; with no serving state there is nothing to end it.
+#[tokio::test]
+async fn a_memory_wait_ends_when_its_engine_is_replaced() {
+    let (publish, changes) = tokio::sync::watch::channel(0u32);
+    let serving = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let still = Arc::clone(&serving);
+    let mut wait = Box::pin(while_engine_serves(Some(changes), move || still.load(std::sync::atomic::Ordering::SeqCst)));
+    assert!(futures::poll!(&mut wait).is_pending(), "her engine serves: the wait holds");
+    publish.send_replace(1); // a serving change that keeps her engine
+    tokio::task::yield_now().await;
+    assert!(futures::poll!(&mut wait).is_pending(), "still her engine: the wait holds");
+    serving.store(false, std::sync::atomic::Ordering::SeqCst);
+    publish.send_replace(2); // the replacement
+    tokio::time::timeout(std::time::Duration::from_secs(5), wait).await.expect("test: the replacement ends the wait");
+    let mut none = Box::pin(while_engine_serves::<u32>(None, || false));
+    assert!(futures::poll!(&mut none).is_pending(), "no serving state: nothing can end it");
+}
+
 // what this catches: a restored learner re-teaching examples its generation already holds, when the
 // journal row was read before the generation's positions were projected onto it (Codex on 76f829e2b).
 #[test]
