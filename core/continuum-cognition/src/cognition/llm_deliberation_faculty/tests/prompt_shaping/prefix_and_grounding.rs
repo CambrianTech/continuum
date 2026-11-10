@@ -18,7 +18,7 @@ use super::*;
 fn directedness_flip_keeps_the_grounding_inside_the_reusable_prefix() {
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 8192))
         // Ample window so budget pressure never perturbs what renders — this
         // isolates the framing POSITION, not truncation.
         .with_context_window(8192);
@@ -84,7 +84,7 @@ fn directedness_flip_keeps_the_grounding_inside_the_reusable_prefix() {
 fn two_rooms_share_her_head_and_each_room_grounds_her_when_she_acts_there() -> Result<(), String> {
     use crate::cognition::workspace::Burst;
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048))
         // Ample window: no turnover, no history dropped; this isolates placement.
         .with_context_window(16_384);
     let turns = vec![

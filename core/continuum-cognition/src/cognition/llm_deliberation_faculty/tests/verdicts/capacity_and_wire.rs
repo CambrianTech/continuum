@@ -29,7 +29,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         // saved, as the act path saves every result too large to keep in RAM (`spill`)
         wm.record_receipt_typed(&[], &result, None, crate::ai::types::ResultCustody::Whole { handle: "wire-evidence".into() });
         let faculty =
-            LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+            LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
                 .with_context_window(window)
                 .with_tools(vec![read_tool()])
                 .with_working_memory(wm);
@@ -229,7 +229,7 @@ async fn an_8192_window_keeps_required_content_and_refuses_an_act_past_her_need(
         None,
     )]));
     let faculty =
-        LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", adapter.clone())
+        LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
         .with_context_window(window)
         .with_tools(vec![read_tool()])
         .with_working_set(reg)
@@ -266,7 +266,7 @@ async fn an_8192_window_keeps_required_content_and_refuses_an_act_past_her_need(
 #[test]
 fn a_turn_whose_input_floors_exactly_fit_proceeds_and_one_token_short_is_refused_typed() {
     let build = |window: u32| {
-        LlmDeliberationFaculty::new(Uuid::new_v4(), "Benchy", "You are Benchy.", Arc::new(ScriptedAdapter::new(vec![])))
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Benchy", "You are Benchy.", crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(ScriptedAdapter::new(vec![])), None, window))
             .with_context_window(window)
             .with_tools(vec![read_tool()])
     };
@@ -372,7 +372,7 @@ async fn prompt_capacity_fault_keeps_demand_and_never_calls_the_adapter() {
         };
         ws.now_ms = Some(1);
         let faculty =
-            LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+            LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
                 .with_context_window(window)
                 .with_working_memory(wm)
                 .with_working_set(registry.clone());
@@ -466,7 +466,7 @@ async fn tool_use_response_becomes_an_act_verdict() {
     // (these two tests silently exercised the blank-prompt bug path for
     // months; the scripted adapter masked it).
     let faculty =
-        LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+        LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, 32_768))
             .with_tools(vec![read_tool()])
             .with_working_memory(memory.clone())
             .with_context_window(32_768);
@@ -529,7 +529,7 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
         Uuid::new_v4(),
         "Ivar",
         "You are Ivar.",
-        Arc::new(ScriptedAdapter::new(vec![])),
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(ScriptedAdapter::new(vec![])), None, window),
     )
     .with_context_window(window)
     .with_tools(vec![read_tool()]);
@@ -584,7 +584,7 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
                 InferenceError::TailToolsUnreachable { model: "scripted".into() }
             })
         }));
-        let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+        let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, 32_768))
             .with_context_window(32_768)
             .with_tools(vec![read_tool()]);
         let ws = Workspace::new(Burst::from_turns(
@@ -617,7 +617,7 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
 async fn an_allocator_answering_for_the_wrong_sources_refuses_the_turn_before_dispatch() {
     use crate::cognition::workspace::Burst;
     let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, 32_768))
         .with_context_window(32_768)
         .with_tools(vec![read_tool()]);
     let room = crate::identity::ActivityRoom::mint();
@@ -668,7 +668,7 @@ async fn an_act_on_a_large_window_with_a_small_need_sends_the_room() {
     }
     for deliverable in [true, false] {
         let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
-        let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", adapter.clone())
+        let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
             .with_context_window(window)
             .with_tools(vec![read_tool()])
             .with_working_set(reg.clone());
@@ -711,7 +711,7 @@ async fn an_acts_room_refusal_shrinks_the_cap_and_keeps_her_view() {
             + request.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of); // map_or: no tools, no schemas
         Some(InferenceError::ContextExceeded { requested: prompt as u32 + excess, available: window })
     }));
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter.clone())
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
         .with_context_window(window)
         .with_tools(vec![read_tool()]);
     let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 40, true);
@@ -752,7 +752,7 @@ async fn a_tool_call_cut_at_the_limit_is_an_answer_cut_held_for_the_retry() {
     let adapter = Arc::new(ScriptedAdapter::new(vec![cut]));
     let wm = Arc::new(WorkingMemory::new(8));
     let reg = WorkingSetRegistry::new();
-    let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", adapter.clone())
+    let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, 40_960))
         .with_context_window(40_960)
         .with_tools(vec![read_tool()])
         .with_working_set(reg.clone())
@@ -781,7 +781,7 @@ async fn a_tool_call_cut_at_the_limit_is_an_answer_cut_held_for_the_retry() {
     // left): it is reported as the cut-act sentinel, never run.
     let parsed = ToolCall { id: "call-read".into(), name: "code/read".into(), input: json!({ "file_path": "src/accounts.rs" }) };
     let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Length, "", Some(vec![parsed]))]));
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aiko", "You are Aiko.", adapter)
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aiko", "You are Aiko.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 40_960))
         .with_context_window(40_960)
         .with_tools(vec![read_tool()]);
     let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");

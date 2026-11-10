@@ -18,7 +18,7 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
         persona,
         "Asha",
         "You are Asha, a thoughtful engineer on the grid.",
-        adapter,
+        crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 8192),
     )
     .with_context_window(8192);
 
@@ -109,7 +109,7 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
 // for what it kept and dropped, and says when it emptied the history.
 fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let history: Vec<ChatMessage> = (0..12)
         .map(|i| ChatMessage::text("user", format!("room {i} {}", "word ".repeat(95))))
         .collect();
@@ -156,7 +156,7 @@ fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
 #[test]
 fn fit_drops_whole_oldest_messages_and_opens_on_a_cluster_opener() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let msgs: Vec<ChatMessage> = (0..40)
         .map(|i| ChatMessage::text("user", format!("m{i} {}", "word ".repeat(95))))
         .collect();
@@ -268,7 +268,7 @@ fn fit_drops_whole_oldest_messages_and_opens_on_a_cluster_opener() {
 #[test]
 fn the_pinned_result_rides_last_and_nothing_rides_after_the_ask() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let prompt = |result: bool| PromptMessages {
         streams: Default::default(),
         result_pointers: Vec::new(),
@@ -314,7 +314,7 @@ fn continuity_followup_keeps_completed_action_evidence() {
 #[test]
 fn continuity_insufficient_capacity_refuses_instead_of_dropping_evidence() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let prompt = PromptMessages {
         streams: Default::default(),
         result_pointers: Vec::new(),
@@ -339,7 +339,7 @@ fn a_binding_without_a_model_name_carries_the_adapters_served_model() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     let served = adapter.default_model().to_owned();
     assert!(!served.is_empty(), "the fixture adapter names a model");
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     assert_eq!(faculty.binding.load().model.as_deref(), Some(served.as_str()),
         "a bound faculty always names the model it is bound to");
 }
@@ -366,7 +366,7 @@ fn asha_with_hands() -> LlmDeliberationFaculty {
         })
         .collect();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    LlmDeliberationFaculty::new(Uuid::new_v4(), "Asha", "You are Asha.", adapter).with_tools(raw)
+    LlmDeliberationFaculty::new(Uuid::new_v4(), "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048)).with_tools(raw)
 }
 
 /// The schemas a surface puts on the wire, as bytes.

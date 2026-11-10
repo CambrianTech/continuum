@@ -35,7 +35,7 @@ fn an_initiative_turn_takes_a_work_turns_hands_and_act_kind() {
         uuid::Uuid::new_v4(),
         "Aris",
         "You are Aris.",
-        std::sync::Arc::new(HeuristicInferenceAdapter::new()),
+        crate::cognition::llm_deliberation_faculty::model_binding(std::sync::Arc::new(HeuristicInferenceAdapter::new()), None, window),
     )
     .with_context_window(window)
     .with_tools(vec![super::test_support::read_tool()]);
@@ -126,7 +126,7 @@ fn a_standing_block_not_gathered_this_cycle_keeps_its_place_until_its_faculty_en
         uuid::Uuid::new_v4(),
         "Atlas",
         "You are Atlas.",
-        std::sync::Arc::new(HeuristicInferenceAdapter::new()),
+        crate::cognition::llm_deliberation_faculty::model_binding(std::sync::Arc::new(HeuristicInferenceAdapter::new()), None, 2_048),
     );
     let block = |name: &str| Grounding::atomic(uuid::Uuid::nil(), name, format!("{name} body"));
     let names = |blocks: &[Grounding]| blocks.iter().map(|b| b.faculty.clone()).collect::<Vec<_>>();

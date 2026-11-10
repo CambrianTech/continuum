@@ -82,7 +82,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
         crate::ai::types::ResultCustody::Unsaved,
     );
 
-    let faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 8192))
         .with_context_window(8192)
         .with_working_memory(wm.clone());
 
@@ -196,7 +196,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     for entry in &mut legacy_snapshot.entries { entry.native_calls.clear(); }
     let legacy_memory = Arc::new(WorkingMemory::new(8));
     legacy_memory.restore(legacy_snapshot);
-    let legacy_faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", Arc::new(HeuristicInferenceAdapter::new()))
+    let legacy_faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()), None, 8192))
         .with_context_window(8192).with_working_memory(legacy_memory);
     let legacy_view = legacy_faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&visual));
     assert!(legacy_view.protocol_error.is_none());
@@ -381,7 +381,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         persona,
         "Asha",
         "You are Asha, a thoughtful engineer on the grid.",
-        adapter,
+        crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, window),
     )
     .with_context_window(window)
     .with_tools(tools);
@@ -416,7 +416,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         persona,
         "Asha",
         "You are Asha, a thoughtful engineer on the grid.",
-        Arc::new(HeuristicInferenceAdapter::new()),
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()), None, 32_768),
     )
     .with_context_window(32_768)
     .with_tools(vec![]);
@@ -426,7 +426,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
             persona,
             "Asha",
             "You are Asha.",
-            Arc::new(HeuristicInferenceAdapter::new()),
+            crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()), None, 32_768),
         )
         .with_context_window(32_768)
         .with_tools(persona_tools::native_tool_specs());
@@ -823,7 +823,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         persona,
         "Asha",
         "You are Asha.",
-        Arc::new(HeuristicInferenceAdapter::new()),
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()), None, 16_384),
     )
     .with_tools(roomy_tools)
     .with_context_window(16_384);

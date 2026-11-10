@@ -17,7 +17,7 @@ async fn paged_in_gene_rides_into_the_generation_request() {
         make_response(FinishReason::Stop, "gene answer", None),
     ]));
     let faculty =
-        LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter.clone())
+        LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, 2_048))
             .with_genome(Arc::clone(&genome));
 
     let ws = Workspace::new("write is_prime");
@@ -73,7 +73,7 @@ async fn text_emitted_tool_call_becomes_an_act_verdict() {
     };
     // Real window (see tool_use_response_becomes_an_act_verdict — same
     // starved-default story).
-    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
         .with_tools(vec![ping_spec])
         .with_context_window(32_768);
 
@@ -107,7 +107,7 @@ async fn empty_content_with_reasoning_tool_intent_lifts_the_final_call() {
     let mut resp = make_response(FinishReason::Stop, "", None);
     resp.reasoning = Some(reasoning);
     let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
-    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
         .with_tools(vec![read_tool()])
         .with_context_window(32_768);
 
@@ -142,7 +142,7 @@ async fn committed_content_is_never_overridden_by_reasoning_calls() {
     let mut resp = make_response(FinishReason::Stop, "It prints hello world.", None);
     resp.reasoning = Some(reasoning);
     let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
-    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
         .with_tools(vec![read_tool()])
         .with_context_window(32_768);
 
@@ -171,7 +171,7 @@ async fn a_thought_cut_at_the_limit_lifts_nothing_and_hands_her_the_decision() {
     let mut resp = make_response(FinishReason::Length, "", None);
     resp.reasoning = Some(reasoning);
     let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
-    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
         .with_tools(vec![read_tool()])
         .with_context_window(32_768);
 
@@ -214,7 +214,7 @@ async fn a_response_without_usage_is_counted_by_what_it_carries() {
     let mut cut = make_response(FinishReason::Length, "The parser is fine, but the", None);
     cut.usage.output_tokens = 0;
     for (resp, landed) in [(answer, 1), (think, 0), (cut, 2)] {
-        let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", Arc::new(ScriptedAdapter::new(vec![resp])))
+        let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(ScriptedAdapter::new(vec![resp])), None, 32_768))
             .with_context_window(32_768);
         let before = crate::cognition::health_ledger::hour(crate::cognition::health_ledger::Read::Peek).stops;
         faculty.contribute(&Workspace::new("is the parser right?")).await.expect("verdict");
@@ -246,7 +246,7 @@ async fn a_turn_cancelled_at_its_read_receipt_still_counts_its_stop() {
     let entered = Arc::new(tokio::sync::Notify::new());
     let mut resp = make_response(FinishReason::Length, "", None);
     resp.reasoning = Some("I should read the parser first, then compare it with".to_string());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", Arc::new(ScriptedAdapter::new(vec![resp])))
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(ScriptedAdapter::new(vec![resp])), None, 32_768))
         .with_tools(vec![read_tool()])
         .with_context_window(32_768)
         .with_read_receipt(Arc::new(NeverReturns(entered.clone())));
@@ -273,7 +273,7 @@ async fn a_length_cut_inside_reasoning_is_counted_as_a_cut_think() {
     let mut resp = make_response(FinishReason::Length, "", None);
     resp.reasoning = Some("I should read the parser first, then compare it with".to_string());
     let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
-    let faculty = LlmDeliberationFaculty::new(persona, "Aris", "You are Aris.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Aris", "You are Aris.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
         .with_tools(vec![read_tool()])
         .with_context_window(32_768);
 
@@ -295,7 +295,7 @@ async fn think_only_turn_routes_the_teacher_sentinel_not_empty_speak() {
             .to_string(),
     );
     let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
-    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
         .with_tools(vec![read_tool()])
         .with_context_window(32_768);
 
@@ -336,7 +336,7 @@ async fn native_lane_text_fence_with_sibling_args_still_becomes_an_act() {
         text,
         None, // NO native tool_calls — the exact starved shape
     )]));
-    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
         .with_tools(vec![read_tool()])
         .with_context_window(32_768);
 
@@ -379,7 +379,7 @@ async fn native_structured_calls_win_over_a_text_fence() {
         text,
         Some(vec![native]),
     )]));
-    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
         .with_tools(vec![read_tool()])
         .with_context_window(32_768);
 
@@ -418,7 +418,7 @@ async fn directed_turn_withholds_the_silence_escape() {
     use crate::cognition::conversation::persona_identity::PersonaIdentity;
     let adapter = Arc::new(ScriptedAdapter::new(vec![]));
     let faculty =
-        LlmDeliberationFaculty::new(Uuid::new_v4(), "Kimi", "You are Kimi.", adapter);
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Kimi", "You are Kimi.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     // 2026-09-01: presence framing rides the conversation tail (the KV
     // split applied for real), so these assertions read the WHOLE
     // delivered prompt — system + turns — not the system string alone.
@@ -538,7 +538,7 @@ async fn no_tools_authorized_never_acts() {
     )]));
     // No `.with_tools(...)` — speak-only.
     let faculty =
-        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter);
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
 
     let c = faculty
         .contribute(&Workspace::new("anything"))
@@ -565,7 +565,7 @@ fn her_action_stream_reaches_the_prompt() {
     let adapter = Arc::new(ScriptedAdapter::new(vec![]));
     let wm = Arc::new(WorkingMemory::new(8));
     let faculty =
-        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048))
             .with_working_memory(Arc::clone(&wm));
     let ws = Workspace::new("hello room");
     let texts = |view: &DeliberationPromptView| -> Vec<String> {
@@ -601,7 +601,7 @@ async fn verdict_records_reasoning_into_working_memory() {
     let wm = Arc::new(WorkingMemory::new(3));
 
     let faculty =
-        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048))
             .with_working_memory(Arc::clone(&wm));
 
     let ws = Workspace::new("should we ship the deploy?");
@@ -633,7 +633,7 @@ async fn suppressed_thinking_records_no_working_memory() {
     )]));
     let wm = Arc::new(WorkingMemory::new(3));
     let faculty =
-        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048))
             .with_working_memory(Arc::clone(&wm));
 
     let _ = faculty.contribute(&Workspace::new("what is 12*12?")).await;
@@ -653,7 +653,7 @@ async fn empty_prose_with_no_tools_is_a_pass() {
         None,
     )]));
     let faculty =
-        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter);
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let c = faculty
         .contribute(&Workspace::new("anything"))
         .await

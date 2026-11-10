@@ -16,7 +16,7 @@ use super::*;
 #[test]
 fn a_binding_fill_budget_keeps_her_own_last_move_and_its_result() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let mut history: Vec<ChatMessage> = (0..40)
         .map(|i| ChatMessage::text("user", format!("old{i} {}", "word ".repeat(95))))
         .collect();
@@ -237,7 +237,7 @@ fn near_duplicate_own_turns_remain_visible_with_repetition_evidence() {
         persona,
         "Casper",
         "You are Casper, a thoughtful engineer on the grid.",
-        adapter,
+        crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 8192),
     )
     .with_context_window(8192);
 
@@ -319,7 +319,7 @@ fn near_duplicate_own_turns_remain_visible_with_repetition_evidence() {
 fn self_initiated_turn_frames_rest_as_co_equal_and_stays_neutral() {
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 8192))
         .with_context_window(8192);
 
     // self_initiated = true, undirected.
@@ -382,7 +382,7 @@ fn catalog_fits_the_minimum_serving_window() {
             },
         })
         .collect();
-    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, window))
         .with_context_window(window)
         .with_tools(tools);
 

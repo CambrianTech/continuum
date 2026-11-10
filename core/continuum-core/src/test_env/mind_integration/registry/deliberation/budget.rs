@@ -28,7 +28,7 @@ fn faculty_with_the_real_registry(window: u32) -> LlmDeliberationFaculty {
         Uuid::new_v4(),
         "Asha",
         "You are Asha.",
-        Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>, None, window),
     )
     .with_context_window(window)
     .with_tools(persona_tools::native_tool_specs())
@@ -175,7 +175,7 @@ async fn a_scaled_calibration_after_turnovers_keeps_her_view_within_the_window()
     for tick in 0..3 {
         registry.record_emission_in_memory(persona, 834, 0, crate::cognition::working_set::EmissionStop::Landed, tick);
     }
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
         .with_context_window(window)
         .with_tools(vec![read_tool()])
         .with_working_set(registry);

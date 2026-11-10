@@ -24,7 +24,7 @@ async fn a_writing_turn_after_a_cut_gets_its_reply_on_a_46848_window() {
     assert_eq!(reg.need_of(persona).map(|n| n.answer_room()), Some(10_808), "her answer room is the median past the bound");
     let wm = Arc::new(WorkingMemory::new(8));
     let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
-    let faculty = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", adapter.clone())
+    let faculty = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
         .with_context_window(window)
         .with_tools(persona_tools::native_tool_specs())
         .with_working_set(reg)
@@ -66,7 +66,7 @@ fn reply_priority_grows_the_reply_not_at_history_or_required_input() {
         persona,
         "Benchy",
         "You are Benchy.",
-        Arc::new(ScriptedAdapter::new(vec![])),
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(ScriptedAdapter::new(vec![])), None, window),
     )
     .with_context_window(window)
     .with_tools(vec![read_tool()])
@@ -88,7 +88,7 @@ fn reply_priority_grows_the_reply_not_at_history_or_required_input() {
     // so the act on the pass's faculty would inherit the pass's epoch. What this test
     // pins is the allocation, which each turn makes from its own state.
     let fresh = || {
-        LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", Arc::new(ScriptedAdapter::new(vec![])))
+        LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(ScriptedAdapter::new(vec![])), None, window))
             .with_context_window(window)
             .with_tools(vec![read_tool()])
             .with_working_memory(Arc::clone(&wm))
@@ -158,7 +158,7 @@ async fn provider_context_feedback_bounds_replay_and_scales_next_turn() {
         registry.record_emission_in_memory(persona, 834, 0, crate::cognition::working_set::EmissionStop::Landed, tick);
     }
     let faculty =
-        LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+        LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
             .with_context_window(window)
             .with_tools(vec![read_tool()])
             .with_working_set(registry);
@@ -291,7 +291,7 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
             registry.record_emission_in_memory(persona, 1_000, 0, crate::cognition::working_set::EmissionStop::Landed, now);
         }
         let faculty =
-            LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+            LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
                 .with_context_window(window)
                 .with_tools(persona_tools::native_tool_specs())
                 .with_working_memory(wm)

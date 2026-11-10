@@ -30,7 +30,7 @@ fn an_unaffordable_standing_source_does_not_fault_the_turn() {
         Uuid::new_v4(),
         "Kimi",
         "You are Kimi.",
-        Arc::new(HeuristicInferenceAdapter::new()),
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()), None, 4_096),
     )
     .with_context_window(4_096);
 

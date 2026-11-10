@@ -564,11 +564,10 @@ pub(super) fn assemble_workspace_cycle(
         cfg.context_window,
     );
     let deliberation =
-        LlmDeliberationFaculty::new(cfg.persona_id, cfg.persona_name, cfg.system_prompt, adapter)
+        LlmDeliberationFaculty::new(cfg.persona_id, cfg.persona_name, cfg.system_prompt, Arc::clone(&model_binding))
             .with_working_memory(Arc::clone(&working_memory))
             .with_genome(Arc::clone(&genome))
             .with_decoding(Arc::clone(&decoding))
-            .with_model_binding(Arc::clone(&model_binding))
             // Every mind reports what its turns actually COST into the shared registry the
             // serving daemon provisions the window from. Without this line the measurement
             // exists and reaches nobody, and `serving_plan` falls back to the cold-start

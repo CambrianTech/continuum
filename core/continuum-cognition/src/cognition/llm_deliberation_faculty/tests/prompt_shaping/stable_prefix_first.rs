@@ -26,7 +26,7 @@ fn at(v: &DeliberationPromptView, needle: &str) -> usize {
 fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     let faculty =
-        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 16_384))
             .with_context_window(16_384);
     let room_uuid = Uuid::new_v4();
     let view_for = |order: [usize; 3], sal: [f32; 3]| {
@@ -160,7 +160,7 @@ fn the_next_act_holds_the_whole_previous_view_as_its_head() {
 
     let wm = Arc::new(WorkingMemory::new(8));
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
         .with_context_window(32_768)
         .with_working_memory(Arc::clone(&wm));
     let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4()).expect("test: a room id");
@@ -240,7 +240,7 @@ fn a_served_prompt_is_the_whole_head_of_her_next_act() {
 
     let wm = Arc::new(WorkingMemory::new(8));
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter)
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 65_536))
         .with_context_window(65_536)
         .with_working_memory(Arc::clone(&wm));
     let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4()).expect("test: a room id");

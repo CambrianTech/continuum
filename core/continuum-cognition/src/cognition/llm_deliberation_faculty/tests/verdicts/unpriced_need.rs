@@ -20,7 +20,7 @@ fn an_unpriced_minds_need_is_her_irreducible_window_never_her_wish() {
     let reg = WorkingSetRegistry::new();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     // No working memory: her act time is unmeasured, so her act is unpriced.
-    let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, window))
         .with_context_window(window)
         .with_tools(vec![read_tool()])
         .with_working_set(reg.clone());

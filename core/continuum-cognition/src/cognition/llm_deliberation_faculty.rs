@@ -239,22 +239,21 @@ pub struct LlmDeliberationFaculty {
 }
 
 impl LlmDeliberationFaculty {
+    /// A faculty is built with its binding: the model and the window it thinks in are the
+    /// caller's to state ([`model_binding`]), never a default. A throwaway binding at the
+    /// planner's smallest lane stood in for "not bound yet" and posed as a window (the
+    /// `planner_floor_outside_the_planner` ratchet).
     pub fn new(
         persona_id: Uuid,
         persona_name: impl Into<String>,
         system_prompt: impl Into<String>,
-        adapter: Arc<dyn AIProviderAdapter>,
+        binding: ModelBindingHandle,
     ) -> Self {
         Self {
             persona_id,
             persona_name: persona_name.into(),
             system_prompt: system_prompt.into(),
-            // A private throwaway binding at the runnable floor — the live spawn
-            // path immediately REPLACES it with the shared handle via
-            // `with_model_binding` (so a `serving/pin` re-home is seen here), and
-            // `with_model`/`with_context_window` mutate it for tests. Mirrors how
-            // `new` builds an `empty_genome()` that `with_genome` then shares in.
-            binding: model_binding(adapter, None, crate::inference::planning::MIN_SERVE_CTX),
+            binding,
             prompt_feedback: ArcSwapOption::empty(),
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
@@ -298,16 +297,6 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    /// Share the persona's model binding — the same [`ArcSwap`] the owning
-    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) re-homes when the
-    /// served model changes. REPLACES the throwaway handle `new` built, so after
-    /// this call a `rebind_model` on the cycle takes effect on the faculty's next
-    /// generation — exactly like `with_genome`/`with_decoding`. See
-    /// [[seamless-persona-failover-model-and-genome]].
-    pub fn with_model_binding(mut self, binding: ModelBindingHandle) -> Self {
-        self.binding = binding;
-        self
-    }
 
     /// Attach a verbatim prompt/response capture sink — every LLM call this
     /// faculty makes is appended to it (best-effort). Off by default.
@@ -464,8 +453,10 @@ impl LlmDeliberationFaculty {
     /// small on purpose: a floor that is too low costs nothing when the need is
     /// measured and is not consulted when it is not; a bound that is too low ended
     /// turns inside the reasoning channel (the M5, 2026-09-20).
+    // derived-or-floor: a FLOOR the time term may rise to (budget x her measured decode rate), never the bound: her measured need bounds the allowance
     pub const ACT_LATENCY_BUDGET_SECS: f64 = 150.0;
 
+    // derived-or-floor: the pass's FLOOR on the same time term, never its bound
     pub const PASS_LATENCY_BUDGET_SECS: f64 = 60.0;
 
     /// Floor so a tiny window still yields a usable reply, and the same term the prompt
@@ -620,7 +611,7 @@ impl LlmDeliberationFaculty {
                             image: ImageInput {
                                 url: None,
                                 base64: Some(
-                                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                                    base64::engine::general_purpose::STANDARD.encode(bytes), // boundary: foreign API, an OpenAI-compatible chat request carries an image only as base64
                                 ),
                                 mime_type: Some(image.mime),
                             },

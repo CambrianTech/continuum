@@ -284,7 +284,7 @@ mod review_growth_tests {
         }).collect();
         let adapter: std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter> =
             std::sync::Arc::new(crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new());
-        let faculty = LlmDeliberationFaculty::new(uuid::Uuid::new_v4(), "Asha", "You are Asha.", adapter).with_tools(tools);
+        let faculty = LlmDeliberationFaculty::new(uuid::Uuid::new_v4(), "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048)).with_tools(tools);
         let ws = Workspace::new("what changed on the board?");
         let charge = |tokens: usize| tokens as u32;
         let offer = faculty.tools_offer(&ws, &charge);

@@ -36,7 +36,7 @@ fn aikos_act(persona: Uuid, need: Option<u32>) -> (LlmDeliberationFaculty, Works
             registry.record_emission_in_memory(persona, need, need / 2, EmissionStop::Landed, tick);
         }
     }
-    let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", Arc::new(HeuristicInferenceAdapter::new()))
+    let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()), None, AIKO_WINDOW))
         .with_context_window(AIKO_WINDOW)
         .with_tools(persona_tools::native_tool_specs())
         .with_working_set(registry)

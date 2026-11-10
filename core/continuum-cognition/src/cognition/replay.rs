@@ -703,7 +703,7 @@ mod tests {
         let requests = Arc::new(Mutex::new(Vec::<TextGenerationRequest>::new()));
         let adapter =
             Arc::new(HeuristicInferenceAdapter::new().with_request_recorder(Arc::clone(&requests)));
-        let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+        let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
             .with_context_window(32_768);
         let bid = faculty
             .contribute(&ws)

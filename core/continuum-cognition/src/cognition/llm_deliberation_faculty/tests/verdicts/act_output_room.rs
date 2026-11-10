@@ -73,7 +73,7 @@ async fn an_act_carries_her_measured_room_the_guard_and_its_receipt() {
     let (window, persona) = (40_960u32, Uuid::new_v4());
     let reg = measured(persona, 338, 96);
     let adapter = counted_adapter(2);
-    let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", adapter.clone())
+    let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
         .with_context_window(window)
         .with_tools(vec![read_tool()])
         .with_working_set(reg.clone());
@@ -123,7 +123,7 @@ async fn a_need_past_her_window_is_refused_recorded_and_waits_for_the_governor()
     let (window, persona) = (16_384u32, Uuid::new_v4());
     let reg = measured(persona, 30_000, 2_000);
     let adapter = counted_adapter(1);
-    let faculty = LlmDeliberationFaculty::new(persona, "Aris", "You are Aris.", adapter.clone())
+    let faculty = LlmDeliberationFaculty::new(persona, "Aris", "You are Aris.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
         .with_context_window(window)
         .with_tools(vec![read_tool()])
         .with_working_set(reg.clone());
@@ -142,7 +142,7 @@ async fn a_need_past_her_window_is_refused_recorded_and_waits_for_the_governor()
     let need = requirement.measure.observed_need().expect("the governor reads her need").value().get();
     assert!(need >= 32_000, "the governor's input carries her measured need: {need}");
     // The governor's grant (a window that holds her need) is what lets the act go.
-    let granted = LlmDeliberationFaculty::new(persona, "Aris", "You are Aris.", adapter.clone())
+    let granted = LlmDeliberationFaculty::new(persona, "Aris", "You are Aris.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, 65_536))
         .with_context_window(65_536)
         .with_tools(vec![read_tool()])
         .with_working_set(reg.clone());
@@ -164,7 +164,7 @@ async fn a_denser_prompt_than_her_samples_is_recapped_once_from_the_engines_coun
     let (window, persona) = (40_960u32, Uuid::new_v4());
     let reg = measured(persona, 338, 96);
     let adapter = counted_adapter(2);
-    let faculty = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", adapter.clone())
+    let faculty = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
         .with_context_window(window)
         .with_tools(vec![read_tool()])
         .with_working_set(reg);
@@ -228,7 +228,7 @@ async fn a_grant_that_shrinks_before_dispatch_re_renders_her_turn_against_it() {
         .lock()
         .unwrap() // JUSTIFIED: test fixture lock, never poisoned
         .push_back(InferenceError::GrantChanged { rendered, current: Some(current) });
-    let faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", adapter.clone())
+    let faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, rendered))
         .with_context_window(rendered)
         .with_tools(vec![read_tool()])
         .with_working_set(measured(persona, 338, 96));
@@ -276,7 +276,7 @@ async fn a_prompt_that_eats_the_reserve_is_re_rendered_or_refused_never_sent_pas
         // The engine counts the prompt at all but 200 tokens of the window: below her 434 reserve.
         std::mem::take(&mut once).then_some(InferenceError::ContextExceeded { requested: window - 200, available: window })
     }));
-    let faculty = LlmDeliberationFaculty::new(persona, "Aris", "You are Aris.", adapter.clone())
+    let faculty = LlmDeliberationFaculty::new(persona, "Aris", "You are Aris.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
         .with_context_window(window)
         .with_tools(vec![read_tool()])
         .with_working_set(measured(persona, 338, 96));

@@ -117,7 +117,7 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
         let persona = body.persona_id;
         *exec.pending_persona.lock().unwrap() = Some(persona);
         let faculty =
-            LlmDeliberationFaculty::new(body.persona_id, "Asha", "You are Asha.", adapter)
+            LlmDeliberationFaculty::new(body.persona_id, "Asha", "You are Asha.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
                 .with_context_window(32_768)
                 .with_working_memory(Arc::clone(&wm))
                 .with_tools(vec![crate::ai::types::NativeToolSpec {

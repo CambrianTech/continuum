@@ -32,7 +32,7 @@ fn a_turns_bound_is_its_measured_occupancy_with_headroom_and_outgrows_every_floo
 #[test]
 fn a_fresh_mind_carries_no_bound_and_the_floors_govern() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter);
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     assert_eq!(faculty.expected_occupancy(), None, "no last turn = no expectation");
     assert_eq!(faculty.turn_bound(), None, "no expectation = no bound (an absence is not a number)");
     assert_eq!(
@@ -55,8 +55,8 @@ fn a_residents_turns_warm_her_one_page_and_a_forks_never_do() {
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
     let her = Uuid::new_v4();
     let (general, academy) = (Uuid::new_v4(), Uuid::new_v4());
-    let resident = LlmDeliberationFaculty::new(her, "Ivar", "You are Ivar.", adapter.clone());
-    let fork = LlmDeliberationFaculty::new(her, "Ivar", "You are Ivar.", adapter).forked();
+    let resident = LlmDeliberationFaculty::new(her, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, 2_048));
+    let fork = LlmDeliberationFaculty::new(her, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048)).forked();
     for kind in [TurnKind::Act, TurnKind::Pass] {
         for room in [general, academy] {
             let engine = |f: &LlmDeliberationFaculty| class_for(Some(f.turn_purpose(kind))).page_key(Some(her), Some(room));

@@ -374,7 +374,7 @@ fn the_final_fit_and_a_view_start_price_a_multi_role_sequence_identically() {
         .iter()
         .map(|message| AllocationEstimate(pricing).block(&ContextMessage::from_chat(message).expect("test: a message her view holds")))
         .sum();
-    let faculty = LlmDeliberationFaculty::new(uuid::Uuid::new_v4(), "T", "You are T.", std::sync::Arc::new(crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new()));
+    let faculty = LlmDeliberationFaculty::new(uuid::Uuid::new_v4(), "T", "You are T.", crate::cognition::llm_deliberation_faculty::model_binding(std::sync::Arc::new(crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new()), None, 2_048));
     let prompt = PromptMessages {
         streams: Default::default(),
         result_pointers: Vec::new(),

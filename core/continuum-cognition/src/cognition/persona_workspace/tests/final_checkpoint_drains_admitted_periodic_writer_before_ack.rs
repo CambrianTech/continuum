@@ -388,7 +388,7 @@ use super::*;
             persona,
             "Ivar",
             system_prompt,
-            adapter,
+            crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048),
         ));
         let faculties: Vec<Arc<dyn Faculty>> = vec![
             Arc::new(RecallFaculty::new(persona, admission)),

@@ -69,7 +69,7 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
             .with_responses(responses)
             .with_request_recorder(Arc::clone(&recorded)),
     );
-    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "Review the project.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Asha", "Review the project.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
         .with_context_window(32_768)
         .with_working_memory(Arc::clone(&wm))
         .with_tools(vec![crate::ai::types::NativeToolSpec {

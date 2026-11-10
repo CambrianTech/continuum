@@ -22,7 +22,7 @@ async fn a_huge_legacy_result_arrives_reduced_with_its_handle_never_refused() {
         Uuid::new_v4(),
         "Sahar",
         "You are Sahar.",
-        Arc::new(HeuristicInferenceAdapter::new()),
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()), None, window),
     )
     .with_context_window(window)
     .with_working_memory(Arc::clone(&wm));
@@ -101,7 +101,7 @@ mod the_newest_result_over_her_window {
         };
         let rendered = observation.render_recency();
         wm.record_receipt_typed(&[observation], &rendered, Some(room), ResultCustody::Whole { handle: HANDLE.into() });
-        LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter)
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, window))
             .with_context_window(window)
             .with_working_memory(wm)
     }

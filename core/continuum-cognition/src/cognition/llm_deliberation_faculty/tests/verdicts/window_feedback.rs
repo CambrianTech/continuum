@@ -26,9 +26,8 @@ async fn live_window_reductions_bound_actual_requests_and_persist() {
             Uuid::new_v4(),
             "Reviewer",
             "You are Reviewer.",
-            adapter.clone(),
+            binding.clone(),
         )
-        .with_model_binding(binding.clone())
         .with_tools(vec![read_tool()]);
         let mut turns: Vec<_> = (0..180)
             .map(|i| {
@@ -134,9 +133,8 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
             Uuid::new_v4(),
             "Reviewer",
             "You are Reviewer.",
-            old_adapter.clone(),
+            binding.clone(),
         )
-        .with_model_binding(binding.clone())
         .with_tools(vec![read_tool()]);
         let ws = Workspace::new("Review the current work.");
         let verdict = faculty.contribute(&ws).await.expect("first verdict");
@@ -235,7 +233,7 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
             );
         }
         let faculty =
-            LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+            LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
                 .with_context_window(window)
                 .with_tools(vec![read_tool()])
                 .with_working_memory(wm.clone())
@@ -421,7 +419,7 @@ async fn provider_context_feedback_faults_when_required_input_cannot_fit() {
             },
         );
     let faculty =
-        LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+        LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
             .with_context_window(window)
             .with_working_memory(wm.clone())
             .with_working_set(registry.clone());
@@ -527,7 +525,7 @@ async fn a_replys_engine_prompt_count_refits_the_next_prompt() {
         turns,
     ));
     let adapter = Arc::new(ScriptedAdapter::new(vec![]));
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window))
         .with_context_window(window);
     let before = faculty.prompt_view(&ws);
     // precondition: the window binds (her history was cut to fit it), or a refit has
@@ -587,7 +585,7 @@ async fn a_prompt_denser_than_her_measured_density_is_refit_before_generation() 
     let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(crate::identity::ActivityRoom::mint(), turns));
     // Her engine counts every finalized prompt: only then is a price below the estimate allowed.
     let adapter = Arc::new(ScriptedAdapter { counts_exactly: true, ..ScriptedAdapter::new(vec![]) });
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone()).with_context_window(window);
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, window)).with_context_window(window);
     // A sparse history: her reply counted 3/4 of the estimate.
     let first = faculty.prompt_view(&ws);
     let mut light = make_response(FinishReason::Stop, "PASS", None);
@@ -634,7 +632,7 @@ async fn capacity_growth_during_assembly_is_not_lost_when_refusal_is_published()
     *scripted.window_sequence.lock().unwrap() = [4096, 8192].into();
     let adapter = Arc::new(scripted);
     let faculty = LlmDeliberationFaculty::new(
-        Uuid::new_v4(), "Reviewer", "You are Reviewer.", adapter.clone(),
+        Uuid::new_v4(), "Reviewer", "You are Reviewer.", crate::cognition::llm_deliberation_faculty::model_binding(adapter.clone(), None, 4096),
     ).with_context_window(4096).with_tools(vec![read_tool()]);
     let ws = Workspace::new("required original request ".repeat(10_000));
     let outcome = faculty.contribute(&ws).await.expect("typed refusal");

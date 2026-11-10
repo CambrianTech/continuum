@@ -23,7 +23,7 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
     wm.pin_expandable_fact("ledger", &reference, Some(render_for_turn(&ledger, ledger.by)));
 
     let faculty = LlmDeliberationFaculty::new(
-        Uuid::new_v4(), "T", "You are T.", Arc::new(HeuristicInferenceAdapter::new()),
+        Uuid::new_v4(), "T", "You are T.", crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()), None, 2_048),
     ).with_working_memory(Arc::clone(&wm));
     let mut ws = Workspace::new("continue the existing task");
     let bids: Vec<_> = (0..6).map(|i| Contribution::context(
@@ -70,7 +70,7 @@ async fn substrate_notices_survive_attention_and_history_pressure_once() {
     let only = Arc::new(WorkingMemory::new(8));
     only.record_fact("[no-deliverable] No workspace change yet.");
     let faculty = LlmDeliberationFaculty::new(
-        Uuid::new_v4(), "T", "You are T.", Arc::new(HeuristicInferenceAdapter::new()),
+        Uuid::new_v4(), "T", "You are T.", crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()), None, 2_048),
     ).with_working_memory(only);
     ws.broadcast.clear();
     let view = faculty.prompt_view_within(&ws, 16_384);
@@ -110,7 +110,7 @@ async fn a_busy_room_cannot_make_a_citizen_mute() {
     ws.now_ms = Some(1);
 
     let faculty =
-        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, window))
             .with_context_window(window);
 
     let view = faculty.prompt_view(&ws);
@@ -151,9 +151,9 @@ async fn own_history_preserves_corrections_at_each_inference_step() {
         persona,
         "Anwen",
         "You are Anwen.",
-        Arc::new(
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(
             HeuristicInferenceAdapter::new().with_request_recorder(Arc::clone(&calls)),
-        ),
+        ), None, 32_768),
     )
     .with_context_window(32_768)
     .with_working_memory(Arc::clone(&wm));
@@ -314,7 +314,7 @@ async fn deliberates_through_a_real_adapter() {
         persona,
         "Ivar",
         "You are Ivar, a thoughtful engineer on the grid.",
-        adapter,
+        crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048),
     );
 
     assert!(faculty.reacts_to_broadcast(), "deliberation is phase 2");
@@ -356,7 +356,7 @@ async fn playback_captures_actual_dispatch_before_completion_and_cancellation() 
             .with_delay_ms(60)
             .with_request_recorder(Arc::clone(&calls)),
     );
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048))
         .with_prompt_capture(Arc::new(
             JsonlPromptCaptureSink::open(dir.path(), persona).expect("real capture writer"),
         ));
@@ -460,7 +460,7 @@ async fn playback_records_inference_failure_without_a_fake_response() {
         persona,
         "Ivar",
         "You are Ivar.",
-        Arc::new(HeuristicInferenceAdapter::new().with_responses(Vec::new())),
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new().with_responses(Vec::new())), None, 2_048),
     )
     .with_prompt_capture(Arc::new(
         JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture sink"),
@@ -514,11 +514,11 @@ async fn playback_excludes_typed_error_responses_from_completed_training_rows() 
         persona,
         "Ivar",
         "You are Ivar.",
-        Arc::new(HeuristicInferenceAdapter::new().with_responses(vec![
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new().with_responses(vec![
             finish_error,
             field_error,
             response,
-        ])),
+        ])), None, 2_048),
     )
     .with_prompt_capture(Arc::new(
         JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture sink"),
@@ -587,7 +587,7 @@ fn prompt_view_stays_within_the_served_window() {
         persona,
         "Ivar",
         "You are Ivar, a thoughtful engineer on the grid.",
-        adapter,
+        crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, window),
     )
     .with_context_window(window);
 
@@ -726,7 +726,7 @@ async fn an_unmeasured_turn_carries_its_measured_grant_and_no_cap() {
         persona,
         "Ivar",
         "You are Ivar, a thoughtful engineer on the grid.",
-        adapter,
+        crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, window),
     )
     .with_context_window(window);
     let ws = Workspace::new("act on the card");

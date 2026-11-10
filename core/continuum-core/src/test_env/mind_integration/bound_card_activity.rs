@@ -155,7 +155,7 @@ async fn bound_card_activity_is_shared_by_perception_and_execution() {
         persona,
         "Ivar",
         "You are Ivar.",
-        Arc::new(crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new()),
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new()), None, 2_048),
     )
     .with_working_memory(wm)
     .prompt_view(&ws);

@@ -20,7 +20,7 @@ fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
         persona,
         "Ivar",
         "You are Ivar, a thoughtful engineer on the grid.",
-        adapter,
+        crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, window),
     )
     .with_context_window(window);
 
@@ -91,7 +91,7 @@ fn an_unmeasured_mind_reserves_a_reply_not_a_fraction_of_her_window() {
         1_048_576,
     ] {
         let faculty =
-            LlmDeliberationFaculty::new(Uuid::new_v4(), "Iris", "You are Iris.", Arc::clone(&adapter))
+            LlmDeliberationFaculty::new(Uuid::new_v4(), "Iris", "You are Iris.", crate::cognition::llm_deliberation_faculty::model_binding(Arc::clone(&adapter), None, window))
                 .with_context_window(window);
         // Grounding that wants more than the whole window, in pieces that each
         // fit: the reply competes with the world for the room.
@@ -158,7 +158,7 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
         persona,
         "Ivar",
         "You are Ivar, a thoughtful engineer on the grid.",
-        adapter,
+        crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, window),
     )
     .with_context_window(window)
     .with_working_set(reg.clone());
@@ -199,7 +199,7 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
         quiet,
         "Quiet",
         "You are Quiet.",
-        Arc::new(HeuristicInferenceAdapter::new()),
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()), None, window),
     )
     .with_context_window(window)
     .with_working_set(reg.clone())
@@ -254,7 +254,7 @@ fn measured_reserve_recovers_past_a_censored_large_reply() {
             persona,
             "Kimi",
             "You are Kimi.",
-            Arc::new(HeuristicInferenceAdapter::new()),
+            crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()), None, window),
         )
         .with_context_window(window)
         .with_working_set(reg.clone());
@@ -281,7 +281,7 @@ fn measured_reserve_recovers_past_a_censored_large_reply() {
 fn stable_framing_serializes_before_higher_salience_volatile_grounding() {
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
 
     let mut ws = Workspace::new("teammate: what's the plan?");
     // Volatile recall bids HIGH salience — would lead a pure salience-desc block.
@@ -340,7 +340,7 @@ fn stable_tier_bytes_are_identical_however_salience_ranks_them() {
         Uuid::new_v4(),
         "Ivar",
         "You are Ivar.",
-        Arc::clone(&adapter),
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::clone(&adapter), None, 2_048),
     );
 
     // Same three stable blocks, built with per-turn salience + push order.
@@ -448,7 +448,7 @@ fn stable_tier_bytes_are_identical_however_salience_ranks_them() {
 fn a_long_conversation_cannot_starve_grounding_to_zero() {
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 24_128))
         .with_context_window(24_128);
 
     // A conversation long enough to swallow the whole window on its own.
@@ -486,7 +486,7 @@ fn a_long_conversation_cannot_starve_grounding_to_zero() {
 fn a_truncated_block_names_the_exact_verb_that_yields_the_rest() {
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let mut ws = Workspace::new("anything open?");
     let board = board_like(60).with_expand_command(Some("work/list"));
     let total = board.parts.len();
@@ -517,7 +517,7 @@ fn a_truncated_block_names_the_exact_verb_that_yields_the_rest() {
 fn a_block_its_source_cut_short_says_so_even_when_every_part_fits() {
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let render = |board: Contribution, budget: usize| {
         let mut ws = Workspace::new("anything open?");
         ws.broadcast.push(board);
@@ -548,7 +548,7 @@ fn a_block_its_source_cut_short_says_so_even_when_every_part_fits() {
 fn a_source_with_no_expansion_verb_states_only_the_omission() {
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let mut ws = Workspace::new("anything open?");
     ws.broadcast.push(board_like(60)); // expand_command defaults to None
 
@@ -578,7 +578,7 @@ fn a_source_with_no_expansion_verb_states_only_the_omission() {
 fn a_divisible_grounding_block_contributes_its_leads_when_the_whole_will_not_fit() {
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let mut ws = Workspace::new("anything open?");
     let board = board_like(60);
     let whole = estimate_guard_tokens(&board.content);
@@ -633,7 +633,7 @@ fn a_divisible_grounding_block_contributes_its_leads_when_the_whole_will_not_fit
 fn an_indivisible_top_salience_block_can_lose_its_slot_to_a_cheaper_lesser_one() {
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let mut ws = Workspace::new("what should I work on?");
 
     // The repo map: essential, expensive, and INDIVISIBLE — no `with_parts`,
@@ -695,7 +695,7 @@ fn an_indivisible_top_salience_block_can_lose_its_slot_to_a_cheaper_lesser_one()
 fn an_indivisible_contribution_is_still_dropped_whole_never_cut_mid_content() {
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let mut ws = Workspace::new("what happened yesterday?");
     let engram = "we agreed the gather promise binds every reachable kernel, and that \
                           the in-place consumption path inherits none of the alignment the \
@@ -732,7 +732,7 @@ fn an_indivisible_contribution_is_still_dropped_whole_never_cut_mid_content() {
 fn a_budget_too_small_for_even_one_unit_emits_no_header_at_all() {
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 2_048));
     let mut ws = Workspace::new("anything open?");
     ws.broadcast.push(board_like(60));
 
@@ -768,7 +768,7 @@ fn the_results_ring_renders_before_churning_grounding() {
     wm.record_receipt_typed(&[], "RING-ENTRY older result", None, custody("1111111111111111"));
     wm.record_receipt_typed(&[], "the newest result", None, custody("2222222222222222"));
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 32_768))
         .with_context_window(32_768)
         .with_working_memory(Arc::clone(&wm));
     let mut ws = Workspace::new("continue the card");
@@ -788,7 +788,7 @@ fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
     use crate::ai::types::MessageContent;
     let persona = Uuid::new_v4();
     let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", crate::cognition::llm_deliberation_faculty::model_binding(adapter, None, 8192))
         // Ample window so budget pressure never perturbs what renders — this
         // isolates POSITION (system vs trailing), not truncation.
         .with_context_window(8192);

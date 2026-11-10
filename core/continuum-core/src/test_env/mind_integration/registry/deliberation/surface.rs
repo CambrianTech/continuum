@@ -6,7 +6,7 @@ fn faculty_on(window: u32) -> LlmDeliberationFaculty {
         Uuid::new_v4(),
         "Aiko",
         "You are Aiko.",
-        Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+        crate::cognition::llm_deliberation_faculty::model_binding(Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>, None, window),
     )
     .with_context_window(window)
     .with_tools(persona_tools::native_tool_specs())
