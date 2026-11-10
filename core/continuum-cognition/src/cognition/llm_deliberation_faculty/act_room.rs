@@ -67,17 +67,20 @@ pub(super) struct ShortRoom {
     pub(super) prompt: u32,
 }
 
-/// The think's bound inside a turn's cap: the room her reply claim was granted past her MEASURED
-/// answer (an act's call and its serialization, a pass's sentence), so the answer always keeps its
-/// measured room; unmeasured, past the smallest usable reply
+/// The think's bound inside a turn's `cap`: everything past her MEASURED answer (an act's call and
+/// its serialization, a pass's sentence), so the answer always keeps its measured room. For an act
+/// the cap is the room past her prompt, so she thinks as far as her window lets her; bounded by
+/// her past thinks instead (her reply's grant), a mind could never think further than she already
+/// had (the M5, 2026-11-09: median 536 tokens of thought per act, 302-2,445). Unmeasured, past the
+/// smallest usable reply
 /// ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`], the reply claim's own floor). Never a
 /// fixed count or a share of the cap, and never unbounded: a grant that leaves the think nothing
 /// is a budget of ZERO (no thinking: the template's `enable_thinking = false` on every pin, and the
 /// sampler's zero budget from the fork fix on, `request_body::apply_think`).
-pub(super) fn act_reasoning_budget(room: ActRoom, reserve: u32) -> crate::ai::types::ThinkBudget {
+pub(super) fn act_reasoning_budget(room: ActRoom, cap: u32) -> crate::ai::types::ThinkBudget {
     crate::ai::types::ThinkBudget(
-        room.think_within(reserve)
-            .unwrap_or_else(|| reserve.saturating_sub(LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS)), // unwrap_or_else: unmeasured, past the smallest usable reply
+        room.think_within(cap)
+            .unwrap_or_else(|| cap.saturating_sub(LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS)), // unwrap_or_else: unmeasured, past the smallest usable reply
     )
 }
 
@@ -96,7 +99,11 @@ impl LlmDeliberationFaculty {
     ) -> (crate::ai::types::DispatchTerms, Option<crate::ai::provenance::OutputRoom>) {
         let terms = crate::ai::types::DispatchTerms {
             admission: Some(crate::ai::types::RequestAdmission { window, lease, priced: calibration.admission }),
-            think: crate::ai::types::Think::Budget(act_reasoning_budget(view.act_room, view.completion_reserve)),
+            // an act thinks within its cap (the room past her prompt); a pass within its grant
+            think: crate::ai::types::Think::Budget(act_reasoning_budget(
+                view.act_room,
+                request.max_tokens.filter(|_| kind == TurnKind::Act).unwrap_or(view.completion_reserve), // unwrap_or: a pass's cap IS its grant
+            )),
         };
         let Some(cap) = request.max_tokens.filter(|_| kind == TurnKind::Act) else {
             return (terms, None);

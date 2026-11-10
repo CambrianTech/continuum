@@ -54,6 +54,10 @@ fn the_live_cut_caps_become_her_measured_room_behind_the_engines_count() {
     assert!(new >= claim.floor_tokens);
     assert_eq!(act_reasoning_budget(crate::cognition::working_set::ActRoom::of(Some(need)), 434), ThinkBudget(338), "the answer keeps its measured room");
     assert_eq!(act_reasoning_budget(crate::cognition::working_set::ActRoom::of(Some(need)), 96), ThinkBudget(0), "a grant that holds only her answer: zero, never unbounded");
+    // what this catches: her think bounded by her past thinks (her reply's grant), so it could
+    // never grow (the M5, 2026-11-09: median 536 tokens of thought per act). An act's cap is the
+    // room past her prompt, and she thinks into all of it but her answer's room.
+    assert_eq!(act_reasoning_budget(crate::cognition::working_set::ActRoom::of(Some(need)), new), ThinkBudget(new - 96), "she thinks as far as her room allows");
     assert_eq!(
         reply_claim(TurnKind::Act, None, 0, true, false, None).floor_tokens,
         0,
@@ -94,10 +98,9 @@ async fn an_act_carries_her_measured_room_the_guard_and_its_receipt() {
     assert!(cap >= 434, "her measured think plus answer: {cap}");
     assert!(cap >= view.completion_reserve, "never below the reply's grant");
     let terms = *adapter.terms_seen.lock().unwrap().last().expect("dispatched under terms"); // JUSTIFIED: test fixture lock, never poisoned
-    let budget = terms.think.budget().expect("an act's think is bounded by her need").0;
-    assert!(budget >= 338 && budget + 96 <= cap, "the answer keeps its room inside the cap: {budget} of {cap}");
-    // A large write with a bounded thought: the cap allows the long answer, the think stays at its budget.
-    assert!(cap >= budget + 1_000, "room for a write far past her measured answer: think {budget}, cap {cap}");
+    let budget = terms.think.budget().expect("an act's think is bounded by its cap").0;
+    // her think is the cap past her measured answer: as far as her room allows, the answer kept
+    assert_eq!(budget + 96, cap, "she thinks into all of her room but her answer's: {budget} of {cap}");
     let admission = terms.admission.expect("every request carries the admission it was rendered under");
     assert_eq!((admission.window, admission.priced), (window, PromptAdmission::EngineCounted), "priced below the estimate only behind the engine's count");
     let allocation = receipts.last().and_then(|r| r.allocation.as_ref()).expect("the receipt names its allocation");
