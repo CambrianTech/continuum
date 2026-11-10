@@ -50,6 +50,7 @@ pub mod test_mod_singularity;
 pub mod tls_stack;
 pub mod ts_bindings;
 pub mod sql_outside_the_orm;
+pub mod row_decode;
 pub mod subprocess_spawn;
 pub mod swallowed_errors;
 pub mod unwrap_justification;
