@@ -417,7 +417,7 @@ impl Registry {
             .await
             .map_err(|error| error.to_string())?;
         let mut saved = std::collections::HashMap::new();
-        for (_, record) in store.find_all().await.map_err(|error| error.to_string())? {
+        for (_, record) in store.find_all().await.map_err(|error| error.to_string())? { // bounded: one record per tracked cargo root, retired when it empties
             if !CARGO_TARGET_CLASSES.contains(&record.class.as_str()) {
                 return Err(format!("unknown tracked Cargo class {}", record.class));
             }
@@ -577,7 +577,7 @@ impl DurableRoots {
             .saved
             .get(&physical)
             .cloned()
-            .unwrap_or_else(|| RootRecord::new(class, &physical));
+            .unwrap_or_else(|| RootRecord::new(class, &physical)); // unwrap_or_else: a root with no saved record starts one
         record.volume_id = volume_id;
         if let Some(peer) = citizen {
             if record.citizen.is_some_and(|prior| prior != peer) {
@@ -656,7 +656,7 @@ pub async fn admit_cargo_target(
 fn register_pool(broker: &PressureBroker, dir: Arc<TrackedDir>) {
     let budget = DiskPressureMonitor::volume_for(dir.path())
         .map(|volume| super::super::cargo_target_budget_bytes(volume.total_bytes))
-        .unwrap_or(super::super::DEFAULT_CARGO_TARGET_BUDGET_BYTES);
+        .unwrap_or(super::super::DEFAULT_CARGO_TARGET_BUDGET_BYTES); // unwrap_or: a root whose volume does not read takes the default budget until it does
     broker.register(Arc::new(CargoTargetPool::new(dir, budget)));
 }
 

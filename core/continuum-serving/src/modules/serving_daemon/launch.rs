@@ -371,7 +371,7 @@ impl ServingDaemonModule {
             let launched_cache_mib = server
                 .launched_prompt_cache_mib()
                 .or_else(adopted_prompt_cache_mib)
-                .unwrap_or(0);
+                .unwrap_or(0); // unwrap_or: neither the launch nor the adopted argv names it; the measurement withholds
             // THE GRANT THE ENGINE HOLDS vs THE ONE TODAY'S DECISION WANTS (2026-09-21).
             // `--cache-ram` is passed ONCE at spawn and is immutable for the engine's life,
             // while the derived target is re-computed every tick — so a transient trough at
@@ -475,7 +475,7 @@ impl ServingDaemonModule {
                     let sidecar_rows: Vec<crate::model_registry::types::Model> =
                         crate::model_registry::try_global()
                             .map(|r| r.models().cloned().collect())
-                            .unwrap_or_default();
+                            .unwrap_or_default(); // unwrap_or_default: no registry yet holds no sidecar rows
                     let sidecar_candidate = crate::inference::vision_sidecar::find_candidate(
                         &sidecar_rows,
                         Some(desired.as_str()),
@@ -506,7 +506,7 @@ impl ServingDaemonModule {
                     // its projector: /props said vision=true, readiness said no). The
                     // grow-check in `ensure` already trusts /props for an adopted lane;
                     // readiness now reads the same truth.
-                    let main_lane_wears = server.mmproj_on_lane().unwrap_or_else(|| {
+                    let main_lane_wears = server.mmproj_on_lane().unwrap_or_else(|| { // unwrap_or_else: unknown reads the readiness truth below
                         props.as_ref().is_some_and(|m| m.vision) // an adopted lane's fact is what it reports
                     });
                     let main_sees = match crate::inference::llama_server::vision_lane_ready(
@@ -670,7 +670,7 @@ impl ServingDaemonModule {
                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
                 desired = desired.as_str(),
                 ready = snapshot.ready,
-                active = snapshot.active_model.as_deref().unwrap_or("<none>"),
+                active = snapshot.active_model.as_deref().unwrap_or("<none>"), // probe field: no active model
                 served_window = snapshot.served_context_window,
                 "serving reconcile complete",
             );

@@ -192,7 +192,7 @@ impl LaneAdmission {
         let _guard = self
             .resize_lock
             .lock()
-            .expect("lane-resize lock never poisoned");
+            .expect("lane-resize lock never poisoned"); // JUSTIFIED: held only across permit arithmetic, which cannot panic: never poisoned
         let target = match budget {
             LaneBudget::Physical => self.lane_count(),
             LaneBudget::NonDirected => self.nondirected_budget(),
@@ -241,7 +241,7 @@ impl LaneAdmission {
                 .clone()
                 .acquire_owned()
                 .await
-                .expect("lane semaphore never closed");
+                .expect("lane semaphore never closed"); // JUSTIFIED: these semaphores are never closed (nothing calls close)
             if let Some(permit) = self.permit_or_retire(permit, installed, budget) {
                 return permit;
             }
@@ -284,7 +284,7 @@ impl LaneAdmission {
         let _guard = self
             .resize_lock
             .lock()
-            .expect("lane-resize lock never poisoned");
+            .expect("lane-resize lock never poisoned"); // JUSTIFIED: held only across permit arithmetic, which cannot panic: never poisoned
         let before = (
             self.served.load(Ordering::Acquire),
             self.serving_installed.load(Ordering::Acquire),
