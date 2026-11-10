@@ -322,13 +322,6 @@ impl ResourceDaemon {
         g.reserve(consumer_id, kind, min_bytes);
     }
 
-    /// The most one process may hold of `kind` (`CapacitySource::per_process_cap`): what a planner
-    /// sizing ONE process (the engine) stays under beside what the pool has left. `None`: the pool
-    /// is the only bound. A cached source read, non-blocking.
-    pub fn per_process_cap(&self, kind: ResourceKind) -> Option<u64> {
-        self.sources.iter().filter(|source| source.kind() == kind).find_map(|source| source.per_process_cap())
-    }
-
     /// This consumer's plannable headroom: global available minus every OTHER
     /// consumer's unmet reservation floor — the same math `acquire` enforces,
     /// exposed for BUDGETING so a planner sizes itself only into bytes it could

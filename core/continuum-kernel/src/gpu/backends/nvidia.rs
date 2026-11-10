@@ -120,12 +120,6 @@ impl GpuDeviceProbe for NvidiaProbe {
         self.total_bytes
     }
 
-    /// nvidia-smi reports the card's own framebuffer (`memory.total`), memory the host does not
-    /// share: a dedicated pool.
-    fn memory_mode(&self) -> Option<crate::gpu::monitor::MemoryMode> {
-        Some(crate::gpu::monitor::MemoryMode::Discrete)
-    }
-
     /// Two `nvidia-smi` child processes, awaited off the reactor
     /// (`tokio::process`), so this never blocks a runtime thread.
     ///

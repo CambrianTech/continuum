@@ -170,12 +170,7 @@ pub(super) fn governed_pool_ceiling(
         // it abandoned the 27B it was ALREADY RUNNING for a 7B, then a 0.5B. `acquire`
         // still uses available_for — a lease must never be granted against bytes not yet
         // released; only the replace-myself DECISION gets the add-back.
-        // The engine is ONE process: where the device bounds a process (Metal's working-set hint on
-        // unified memory), the plan stays under that bound as well as under what the pool has left.
-        .map(|_| {
-            let pool = resource_daemon.budget_for_replacing(SERVING_CONSUMER_ID, kind);
-            resource_daemon.per_process_cap(kind).map_or(pool, |cap| pool.min(cap)) // map_or: no per-process bound, the pool's own
-        })
+        .map(|_| resource_daemon.budget_for_replacing(SERVING_CONSUMER_ID, kind))
 }
 
 /// The governed VRAM ceiling for a planner that has no way to represent "unknown",

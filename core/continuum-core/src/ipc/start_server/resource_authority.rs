@@ -109,25 +109,13 @@ pub(super) fn build_model_catalog_and_resource_daemon(
                     // responsible for not double-counting") — measured live as VRAM
                     // advertising 16.9 GB while RAM correctly reported 0. Both axes come
                     // from UnifiedMemoryPool below instead.
-                    Some(crate::gpu::monitor::MemoryMode::Unified) => Some(monitor.total_bytes()),
+                    crate::gpu::monitor::MemoryMode::Unified => Some(monitor.total_bytes()),
                     // Discrete: the axes really are separate pools. Unchanged.
-                    Some(crate::gpu::monitor::MemoryMode::Discrete) => {
+                    crate::gpu::monitor::MemoryMode::Discrete => {
                         capacity_sources.push(Arc::new(crate::resources::GpuCapacitySource::new(
                             monitor,
                             GPU_SAFETY_RESERVE_BYTES,
                         )));
-                        None
-                    }
-                    // The backend did not report its memory mode: whether VRAM and RAM are one pool
-                    // or two is unknown, so VRAM stays UNGOVERNED (serving fails closed), named at
-                    // every boot. Never a guessed topology (card 13c81ced).
-                    None => {
-                        continuum_base::probe!(
-                            class = "resources.memory_mode_unknown",
-                            platform = monitor.platform(),
-                            device = monitor.device_name(),
-                            "the GPU backend reports no memory mode: VRAM is ungoverned until its adapter reports one"
-                        );
                         None
                     }
                 };

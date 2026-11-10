@@ -587,42 +587,6 @@ fn downshift_gate_classifies_the_transient_lobotomy() {
     );
 }
 
-// what this catches (the M5, 2026-11-10: VRAM read 0 available while RAM read 3,165 MiB of the
-// same unified memory, because the GPU working-set hint was the pool's ceiling): the engine's plan
-// reading the pool's free memory, and staying under the hint because the engine is ONE GPU
-// process. The hosts are SIMULATIONS (a 32 GiB unified host), not measurements.
-#[tokio::test]
-async fn the_engine_plan_reads_the_pool_and_stays_under_its_gpu_process_cap() {
-    use crate::resources::{DaemonConfig, GovernorConfig, HostMemoryReader, ResourceDaemon, ResourceKind, UnifiedMemoryPool};
-    const GIB: u64 = 1 << 30;
-    struct Host(u64, u64);
-    impl HostMemoryReader for Host {
-        fn total_bytes(&self) -> u64 {
-            self.0
-        }
-        fn available_bytes(&self) -> Option<u64> {
-            Some(self.1)
-        }
-    }
-    let plan = |hint: u64| {
-        let pool = Arc::new(UnifiedMemoryPool::new(Host(32 * GIB, 20 * GIB), hint, 4 * GIB));
-        let daemon = ResourceDaemon::start(
-            pool.views(),
-            vec![],
-            DaemonConfig {
-                tick_interval: std::time::Duration::from_millis(20),
-                min_reclaim_budget: std::time::Duration::from_millis(100),
-                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
-            },
-        );
-        (governed_pool_ceiling(&daemon, ResourceKind::Vram), governed_pool_ceiling(&daemon, ResourceKind::Ram))
-    };
-    // 28 GiB pool, 12 GiB used: 16 GiB free on both rows; a 21 GiB hint does not bind.
-    assert_eq!(plan(21 * GIB), (Some(16 * GIB), Some(16 * GIB)), "one pool, one free");
-    // A 10 GiB hint binds the engine (one GPU process), never the RAM row.
-    assert_eq!(plan(10 * GIB), (Some(10 * GIB), Some(16 * GIB)), "the hint caps the engine only");
-}
-
 // what this catches (#225, Joel 2026-08-08 "the budgeter just has all its
 // parts figure it out"): serving's plan budget (`governed_vram_ceiling`)
 // reads serving's OWN view of the board — global available minus every

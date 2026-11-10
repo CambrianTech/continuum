@@ -67,16 +67,15 @@ pub trait GpuMonitor: Send + Sync {
     /// Platform identifier — "metal" | "cuda" | "vulkan" | "cpu" | "mock".
     fn platform(&self) -> &'static str;
 
-    /// Whether this device shares the host's physical memory, as the BACKEND reports it.
+    /// Whether this device shares the host's physical memory.
     ///
-    /// `None` (the default) is UNKNOWN, never a guess: a backend that does not report its mode
-    /// gets no governed VRAM at all, named at boot, so nothing is planned on an assumed topology
-    /// (Codex on card 13c81ced: "unknown mode must remain explicit, no guessed Apple/APU
-    /// defaults"). It used to default to `Discrete`, which on a shared-memory device (an AMD APU,
-    /// an ARM iGPU) silently built two ledgers over one pool. Metal reports `hasUnifiedMemory`;
-    /// NVIDIA reports its card's dedicated memory; every other backend MUST report its own.
-    fn memory_mode(&self) -> Option<MemoryMode> {
-        None
+    /// Defaults to [`MemoryMode::Discrete`] — the correct answer for every discrete
+    /// card, and the behavior the governor had before unified memory was modeled at
+    /// all, so an adapter that does not override this is unchanged rather than
+    /// silently wrong. Metal overrides it with the real `hasUnifiedMemory` answer.
+    /// A future UMA backend (an ARM iGPU via Vulkan) MUST override it.
+    fn memory_mode(&self) -> MemoryMode {
+        MemoryMode::Discrete
     }
 
     /// Human-readable device name (e.g. "Apple M5 Pro", "NVIDIA RTX 5090",
@@ -250,10 +249,6 @@ impl MockMonitor {
 impl GpuMonitor for MockMonitor {
     fn platform(&self) -> &'static str {
         "mock"
-    }
-    /// A scripted dedicated card: the scenarios that use this mock model one.
-    fn memory_mode(&self) -> Option<MemoryMode> {
-        Some(MemoryMode::Discrete)
     }
     fn device_name(&self) -> &str {
         &self.device_name

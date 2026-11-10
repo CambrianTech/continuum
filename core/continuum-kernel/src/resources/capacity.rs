@@ -59,14 +59,6 @@ pub trait CapacitySource: Send + Sync {
     fn used_bytes(&self) -> u64 {
         0
     }
-
-    /// The most ONE process may hold of this kind, when the device bounds a process rather than
-    /// the pool: Metal's working-set hint on unified memory bounds each GPU process's own
-    /// resident bytes (the engine's, the embedder's), never what the pool has left. `None`: no
-    /// per-process bound beyond the pool (a dedicated card, host RAM).
-    fn per_process_cap(&self) -> Option<u64> {
-        None
-    }
 }
 
 /// VRAM source from a [`GpuMonitor`]. Reports the device's fixed usable total
@@ -334,12 +326,8 @@ impl<R: HostMemoryReader> CapacitySource for HostRamCapacitySource<R> {
 ///
 /// - **Pool ceiling** = host physical RAM − reserve. NOT `recommendedMaxWorkingSetSize`,
 ///   which is a Metal *hint* about GPU working sets and is smaller than physical memory.
-/// - **VRAM view ceiling** = the pool ceiling, the same as RAM's: one pool, one available.
-/// - **The GPU working-set hint** bounds each GPU process's own residency
-///   ([`CapacitySource::per_process_cap`]), never the pool. As a pool ceiling it was netted
-///   against the WHOLE system's usage, CPU-only processes included, and read 0 available while
-///   RAM read 3,165 MiB of the same memory (the M5, 2026-11-10: 53,084 MiB hint, 54,179 MiB
-///   used system-wide), so a 4 MB learning step waited and every VRAM lease beyond a floor did.
+/// - **VRAM view ceiling** = `min(pool ceiling, GPU working-set hint)`. The hint keeps its
+///   meaning as a cap on GPU-side allocation without becoming a second pool.
 /// - **Both views' used** = the one host measurement (`total − available`). On Apple
 ///   Silicon the host VM free count already includes GPU buffers — `metal_monitor`'s
 ///   Unified arm reads exactly this number for `free_bytes`, so using it here is agreeing
@@ -421,12 +409,12 @@ impl<R: HostMemoryReader> CapacitySource for UnifiedPoolView<R> {
     }
 
     fn ceiling_bytes(&self) -> u64 {
-        self.pool.pool_ceiling()
-    }
-
-    fn per_process_cap(&self) -> Option<u64> {
-        // The GPU hint bounds one GPU process, never the pool (module doc).
-        (self.kind == ResourceKind::Vram).then_some(self.pool.gpu_working_set_hint)
+        let pool = self.pool.pool_ceiling();
+        match self.kind {
+            // The GPU hint caps GPU-side allocation without minting a second pool.
+            ResourceKind::Vram => pool.min(self.pool.gpu_working_set_hint),
+            _ => pool,
+        }
     }
 
     fn used_bytes(&self) -> u64 {
@@ -694,40 +682,22 @@ mod tests {
             }
 
             // what this catches: the pool ceiling silently becoming the GPU's working-set
-            // hint (VRAM read 0 available while RAM read 3,165 MiB of the same memory on the
-            // M5, 2026-11-10), or the hint ignored (a GPU process growing past what Metal
-            // recommends). Both views carry the pool's ceiling; the hint is VRAM's per-process cap.
+            // hint. That hint is smaller than physical memory, so adopting it pool-wide would
+            // shrink RAM for no reason; ignoring it entirely would let a GPU allocation blow
+            // past what Metal recommends. It caps VRAM only.
             #[test]
-            fn the_gpu_hint_caps_a_gpu_process_never_the_pool() {
+            fn the_gpu_hint_caps_vram_without_shrinking_the_pool() {
                 let views = m5_pool().views();
-                let ram = view_of(&views, ResourceKind::Ram);
-                let vram = view_of(&views, ResourceKind::Vram);
                 // 64 GiB − 8 GiB reserve. Matches the board's reported ram capacity exactly.
-                assert_eq!(ram.ceiling_bytes(), 60_129_542_144);
-                assert_eq!(vram.ceiling_bytes(), ram.ceiling_bytes(), "one pool, one ceiling");
-                assert_eq!(vram.per_process_cap(), Some(M5_GPU_HINT), "the hint bounds a GPU process");
-                assert_eq!(ram.per_process_cap(), None);
-            }
-
-            // what this catches (the M5, 2026-11-10, resources/board): the two rows of one
-            // unified pool disagreeing. 64 GiB, 54,179 MiB used system-wide, a 53,084 MiB hint:
-            // VRAM read 0 available while RAM read 3,165 MiB, and a 4,096,000-byte learning step
-            // waited. Both rows must offer the same free memory.
-            #[test]
-            fn both_rows_of_a_unified_pool_offer_the_same_free_memory() {
-                const MIB: u64 = 1024 * 1024;
-                let pool = Arc::new(UnifiedMemoryPool::new(
-                    FakeHost { total: M5_TOTAL, available: Some(M5_TOTAL - 54_179 * MIB) },
-                    53_084 * MIB,
-                    8 * GIB,
-                ));
-                let views = pool.views();
-                let free = |kind| {
-                    let view = view_of(&views, kind);
-                    view.ceiling_bytes().saturating_sub(view.used_bytes())
-                };
-                assert_eq!(free(ResourceKind::Ram), 3_165 * MIB);
-                assert_eq!(free(ResourceKind::Vram), free(ResourceKind::Ram));
+                assert_eq!(
+                    view_of(&views, ResourceKind::Ram).ceiling_bytes(),
+                    60_129_542_144
+                );
+                // min(pool, hint) — and on this box the hint binds, matching the board's vram.
+                assert_eq!(
+                    view_of(&views, ResourceKind::Vram).ceiling_bytes(),
+                    M5_GPU_HINT
+                );
             }
 
             // what this catches: a GPU whose hint EXCEEDS the pool handing out bytes the host

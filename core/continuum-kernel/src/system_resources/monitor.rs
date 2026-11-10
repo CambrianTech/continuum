@@ -228,7 +228,7 @@ impl SystemResourceMonitor {
         self.inner
             .lock()
             .ok()
-            .and_then(|inner| inner.gpu.as_ref().and_then(|g| g.memory_mode()))
+            .and_then(|inner| inner.gpu.as_ref().map(|g| g.memory_mode()))
     }
 
     /// Refresh all readings. Call this from the TypeScript watcher on each poll.
