@@ -150,16 +150,7 @@ fn hydrate_sensory_caps_from_mmproj(model: &mut Model) -> Result<(), String> {
     Ok(())
 }
 
-/// Which raw-input encoders a multimodal projector carries. Each maps to the
-/// [`Capability`] the model gains: a vision encoder ⇒ [`Capability::Vision`],
-/// an audio encoder ⇒ [`Capability::AudioInput`]. Output modalities
-/// ([`Capability::AudioOutput`]) are NOT a projector fact — a projector is an
-/// input adapter — so they stay catalog-authored until validated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ProjectorEncoders {
-    has_vision: bool,
-    has_audio: bool,
-}
+use crate::inference_capability::gguf_keys::ProjectorEncoders;
 
 /// Fold a projector's declared encoders into the model's capability set.
 /// Pure and additive — the single place the projector's input modalities
@@ -182,18 +173,7 @@ fn read_projector_encoders(path: &Path) -> Result<ProjectorEncoders, String> {
     let mut file = std::fs::File::open(path).map_err(|e| format!("open projector: {e}"))?;
     let content = gguf_keys::read_bounded_header(&mut file, &|| false)
         .map_err(|e| format!("read projector: {e}"))?;
-    let flag = |key: &str| -> Result<bool, String> {
-        match content.metadata.get(key) {
-            None => Ok(false), // The projector schema omits flags for absent encoders.
-            Some(value) => value
-                .to_bool()
-                .map_err(|error| format!("projector flag {key}: {error}")),
-        }
-    };
-    Ok(ProjectorEncoders {
-        has_vision: flag("clip.has_vision_encoder")?,
-        has_audio: flag("clip.has_audio_encoder")?,
-    })
+    gguf_keys::projector_encoders(&content)
 }
 
 /// Translate a GGUF `general.architecture` string into the registry's
