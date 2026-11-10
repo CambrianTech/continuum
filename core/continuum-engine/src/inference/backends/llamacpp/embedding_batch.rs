@@ -7,7 +7,9 @@ use llama::Model;
 /// Qwen3-Embedding-0.6B Q8_0, flash attention on, 2026-11-10; n_ctx = n_batch = n_ubatch at 256,
 /// 512, 1,024 and 2,048, linear within 0.1%): Metal KV 112 KiB, Metal compute 601 KiB at its
 /// largest per-token reading (256), CPU compute 12 KiB at its largest (2,048). The fork reports no
-/// context's memory before it exists (card: a context-measure API in the fork owns this number).
+/// context's memory before it exists (card 9bddda93: a context-measure API in the fork owns this
+/// number). It is the rate of a context on the Metal device; a context in host memory
+/// (`LlamaCppBackend::context_pool`) or on another backend has its own, measured there.
 const CONTEXT_BYTES_PER_TOKEN: u64 = 114_688 + 615_424 + 12_314;
 
 /// The context's fixed allocation beside its tokens: the CPU output buffer (0.58 MiB, measured with

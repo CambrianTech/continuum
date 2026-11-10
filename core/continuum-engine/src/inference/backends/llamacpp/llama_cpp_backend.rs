@@ -51,6 +51,15 @@ impl LlamaCppBackend {
     }
 
     /// The model's real capability facts (read once at load).
+    /// The pool a context of this backend resides in: device memory when llama offloads to a GPU
+    /// and this backend offloads any layer, else host memory, whatever the machine's kind.
+    pub(crate) fn context_pool(&self) -> crate::resources::ResourceKind {
+        match self.config.n_gpu_layers != 0 && llama::supports_gpu_offload() {
+            true => crate::resources::ResourceKind::Vram,
+            false => crate::resources::ResourceKind::Ram,
+        }
+    }
+
     pub fn capabilities(&self) -> &ModelCapabilities {
         &self.caps
     }
