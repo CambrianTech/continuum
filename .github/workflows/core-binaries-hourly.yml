@@ -3,7 +3,7 @@
 name: core-binaries-hourly
 on:
   workflow_run:
-    workflows: ['Continuum Rust Tests']
+    workflows: ['Continuum Rust Tests', 'core-binaries']
     types: [completed]
     branches: [canary]
   schedule:
@@ -38,17 +38,20 @@ jobs:
       - run: node --test tools/scripts/tests/core-binaries-hourly.test.mjs tools/scripts/tests/publication-build-key.test.mjs
   dispatch:
     needs: fixtures
-    # Successful canary push checks wake the same enabled dispatcher as cron.
-    # PR/fork runs, failed checks and manual upstream runs cannot publish.
+    # Successful checks and completed publication wake the same admission as cron.
+    # Failed publication does not create an immediate automatic retry loop.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (vars.CORE_BINARIES_HOURLY_ENABLED == 'true' &&
        (github.event_name == 'schedule' ||
         (github.event_name == 'workflow_run' &&
          github.event.workflow_run.conclusion == 'success' &&
-         github.event.workflow_run.event == 'push' &&
          github.event.workflow_run.head_branch == 'canary' &&
-         github.event.workflow_run.head_repository.full_name == github.repository)))
+         github.event.workflow_run.head_repository.full_name == github.repository &&
+         ((github.event.workflow_run.name == 'Continuum Rust Tests' &&
+           github.event.workflow_run.event == 'push') ||
+          (github.event.workflow_run.name == 'core-binaries' &&
+           github.event.workflow_run.event == 'workflow_dispatch')))))
     runs-on: ubuntu-latest
     permissions:
       contents: read
