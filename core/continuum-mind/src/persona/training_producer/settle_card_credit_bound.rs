@@ -163,7 +163,7 @@ pub fn staged_credit_from_list(listed: serde_json::Value) -> Result<Vec<StagedCr
         .into_iter()
         .map(|item| {
             let record: crate::orm::types::DataRecord = serde_json::from_value(item)?; // Decode the persisted ORM envelope; move its entity payload without cloning it.
-            Ok(serde_json::from_value(record.data)?) // Decode one staged-credit entity from its typed storage envelope.
+            Ok(record.decode()?) // Decode one staged-credit entity from its typed storage envelope.
         })
         .collect()
 }
@@ -285,16 +285,15 @@ pub(super) fn lived_examples(
     }
     kept
         .into_iter()
-        .map(|call| TrainingExample {
-            prompt: call
-                .request
-                .messages
-                .last()
-                .map(|m| m.content_text())
-                .unwrap_or_default(),
-            completion: call.response.text.clone(),
-            metadata: Some(metadata.clone()),
-            lived: Some(call.clone()),
+        // A call with no message has no prompt to learn from: it yields no example, never an empty one.
+        .filter_map(|call| {
+            let prompt = call.request.messages.last()?.content_text();
+            Some(TrainingExample {
+                prompt,
+                completion: call.response.text.clone(),
+                metadata: Some(metadata.clone()),
+                lived: Some(call.clone()),
+            })
         })
         .collect()
 }
