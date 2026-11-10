@@ -88,6 +88,47 @@ async fn a_shadow_is_seated_on_exactly_the_measured_lease() {
     server.abort();
 }
 
+// what this catches (Codex on #5905): a seat short of memory waiting inside the owner, so a learner
+// holding her serving resources (her act gate, a lane, her slot) parked her act behind a capacity
+// wait. Short, the seat answers at once holding nothing; after a real capacity change on the same
+// authority the same seat is granted. Nothing bypasses the authority.
+#[tokio::test]
+async fn a_seat_short_of_memory_answers_at_once_holding_nothing_and_seats_once_capacity_returns() {
+    use crate::inference::training_admission::{await_training_change, TrainingWait};
+    let source = Arc::new(crate::resources::MockCapacitySource::new(crate::resources::ResourceKind::Vram, WEIGHTS - 1));
+    let resources = crate::resources::ResourceDaemon::start(vec![Arc::clone(&source) as Arc<dyn crate::resources::CapacitySource>], vec![], crate::resources::DaemonConfig::default());
+    let authority = Authority { resources, serving: crate::inference::serving_lifecycle::LifecycleGate::unowned(true), custody: crate::genome::learner::custody::Custody::isolated() };
+    let (engine, _seen, server) = engine("none").await;
+    let mut changes = authority.resources.subscribe();
+    changes.borrow_and_update();
+    let short = tokio::time::timeout(std::time::Duration::from_secs(5), seat(&authority, engine.clone(), "learning:her", shadow()))
+        .await
+        .expect("test: a short seat answers, it never waits")
+        .err()
+        .expect("test: short of memory");
+    let SeatRefusal::AwaitingMemory(wait) = short else { panic!("test: awaiting memory, got {short}") };
+    assert!(matches!(wait, TrainingWait::Capacity { needed: WEIGHTS, .. }), "{wait}");
+    let free = || authority.resources.available_for("an observer", crate::resources::ResourceKind::Vram);
+    assert_eq!(free(), WEIGHTS - 1, "nothing is held while it waits");
+    source.set_ceiling(10_000_000);
+    // as the learner does: wait for the authority's next change holding nothing, then try again
+    let seated = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut wait = wait;
+        loop {
+            await_training_change(&authority.resources, &mut changes, &wait).await.expect("test: the authority is open");
+            match seat(&authority, engine.clone(), "learning:her", shadow()).await {
+                Ok(seated) => return seated,
+                Err(SeatRefusal::AwaitingMemory(again)) => wait = again,
+                Err(other) => panic!("test: only memory may keep it waiting, got {other}"),
+            }
+        }
+    })
+    .await
+    .expect("test: seated once capacity returned");
+    assert_eq!((seated.shadow.id, 10_000_000 - free()), (3, WEIGHTS), "exactly the measured bytes, once capacity returned");
+    server.abort();
+}
+
 // what this catches: a refused residency leaving its lease held (memory charged for a shadow that
 // never loads). The refusal is typed and the board is back where it was.
 #[tokio::test]

@@ -3082,6 +3082,7 @@ dependencies = [
  "continuum-mind",
  "csv",
  "dashmap",
+ "futures",
  "inventory",
  "schemars",
  "serde",

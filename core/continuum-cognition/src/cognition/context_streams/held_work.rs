@@ -16,7 +16,7 @@ use continuum_context::source::{Item, Source};
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::card_facts::state_str;
 use crate::cognition::work_preconditions::{CardRole, Held, NextMove};
-use crate::cognition::workspace::{EndedClaim, HeldWork};
+use crate::cognition::workspace::{AwaitingResubmission, EndedClaim, HeldWork};
 
 /// The occurrence of a held card's rendering: its card, the state entry it belongs to, and the
 /// rendered projection itself (`whole`).
@@ -74,6 +74,45 @@ impl HeldWorkStream {
             .with_pointer(ContextMessage::user(format!("[my work] claim on card {id} ended: work/list")))
     }
 
+    /// A card she sent back (card 7f8c248e): nothing to do on it until its author resubmits, and,
+    /// once they have, the review card the board opened for it, offered to her first. Keyed by the
+    /// card, so the resubmission supersedes the wait in place; told, never imposed.
+    fn awaiting(&self, item: &AwaitingResubmission) -> Item<ContextMessage> {
+        let id = shown_form(item.card.as_uuid());
+        let reviewed = shown_form(item.reviewed.as_uuid());
+        let (whole, pointer) = match item.resubmitted {
+            None => (
+                format!(
+                    "[my work] You sent back card {id} \"{}\" (submission {reviewed}). There is nothing to do on it until its author \
+                     resubmits: the board then opens a review card for the new submission, and it is shown to you here first. \
+                     No card is needed to wait for it; your other work is yours to choose meanwhile.",
+                    item.title
+                ),
+                format!("[my work] card {id} awaits its author's resubmission"),
+            ),
+            Some(review) => {
+                let review = shown_form(review.as_uuid());
+                (
+                    format!(
+                        "[my work] Card {id} \"{}\", which you sent back, was resubmitted: its review card {review} is open and \
+                         offered to you first. To re-review it, claim {review} (work/claim), read the new submission \
+                         (work/submission) and give your verdict (work/review).",
+                        item.title
+                    ),
+                    format!("[my work] card {id} was resubmitted: review card {review} is open for you"),
+                )
+            }
+        };
+        let resubmitted = item.resubmitted.map(|review| review.as_uuid()).unwrap_or_default(); // unwrap_or_default: still waiting = the nil review card in the occurrence key
+        let occurrence = element(
+            self.persona,
+            Producer::Work,
+            &[b"awaiting".as_slice(), item.card.as_uuid().as_bytes(), item.reviewed.as_uuid().as_bytes(), resubmitted.as_bytes()].concat(),
+        );
+        Item::whole(occurrence, Cause::Root(Origin::External), format!("awaiting:{}", item.card.as_uuid()), ContextMessage::user(whole))
+            .with_pointer(ContextMessage::user(pointer))
+    }
+
     fn rejected(&self, line: &str) -> Item<ContextMessage> {
         let occurrence = element(self.persona, Producer::Work, &[b"rejected".as_slice(), line.as_bytes()].concat());
         Item::whole(occurrence, Cause::Root(Origin::External), format!("rejected:{:032x}", occurrence.as_u128()), ContextMessage::user(line.to_owned()))
@@ -129,6 +168,7 @@ impl Source<ContextMessage> for HeldWorkStream {
         let mut items: Vec<_> = work.ended.iter().map(|ended| self.ended(ended)).collect();
         items.extend(work.rejections.iter().map(|line| self.rejected(line)));
         items.extend(work.holds.iter().map(|held| self.card(held)));
+        items.extend(work.awaiting.iter().map(|item| self.awaiting(item)));
         items
     }
 

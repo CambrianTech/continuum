@@ -148,7 +148,11 @@ impl crate::persona::held_work::AircWorkReader for AircHandleAdapter {
             .into_iter()
             .find(|r| r.peer == me)
             .map(|r| r.active_claims)
-            .unwrap_or_default())
+            .unwrap_or_default()) // the roster has no row for her: she holds no claims, the fact rather than a guess
+    }
+
+    async fn boards(&self) -> Result<Vec<std::sync::Arc<airc_work::BoardSnapshot>>, AircError> {
+        crate::persona::work_board::board_index::boards(self.inner.as_ref()).await
     }
 }
 

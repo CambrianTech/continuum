@@ -301,6 +301,11 @@ impl crate::persona::held_work::AircWorkReader for PersonaAircRuntime {
 
     /// The board's own row for one card, from every room she is in, through her board
     /// index: a wake's "what became of my card" reads the truth the renewal loop reads.
+    /// Every board of her subscribed rooms, through her board index (card 7f8c248e).
+    async fn boards(&self) -> Result<Vec<std::sync::Arc<airc_work::BoardSnapshot>>, AircError> {
+        crate::persona::work_board::board_index::boards(self.airc.as_ref()).await
+    }
+
     async fn card(&self, card_id: uuid::Uuid) -> Option<airc_lib::WorkCard> {
         crate::persona::work_board::board_index::card(
             self.airc(),

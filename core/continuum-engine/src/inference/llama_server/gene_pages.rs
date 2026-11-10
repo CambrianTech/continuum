@@ -41,16 +41,12 @@ pub enum GenePageError {
     Unreachable(String),
 }
 
-fn client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
-}
 
 /// The engine's loaded genes with where each is and its bytes. An engine that predates
 /// residency reporting lists its genes as on the device (where it keeps every one).
 pub async fn gene_seats() -> Result<Vec<GeneSeat>, GenePageError> {
     let url = format!("{}/lora-adapters", serving_root());
-    let resp = client()
+    let resp = crate::inference::engine_client()
         .get(&url)
         .timeout(PROBE_TIMEOUT)
         .send()
@@ -79,7 +75,7 @@ pub async fn page_gene(id: i64, to_device: bool) -> Result<GeneMove, GenePageErr
     let url = format!("{}/lora-adapters/{verb}", serving_root());
     // PROBE_TIMEOUT (4 s): a page measured 2-5 ms for 50 MB on the M5 (fork #72), three
     // orders under it; a page that takes seconds is a fault to surface, not to wait on.
-    let resp = client()
+    let resp = crate::inference::engine_client()
         .post(&url)
         .json(&serde_json::json!({ "id": id }))
         .timeout(PROBE_TIMEOUT)

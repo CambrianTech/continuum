@@ -337,6 +337,8 @@ pub struct StubAircCitizen {
     /// held work (the held-work gate fires only on a Claimed/InProgress card).
     held: Vec<airc_lib::WorkCard>,
     boards: std::collections::HashMap<Uuid, Vec<airc_lib::WorkCard>>,
+    /// Whole boards for her held-work read (`AircWorkReader::boards`): none by default.
+    board_snapshots: Vec<std::sync::Arc<airc_work::BoardSnapshot>>,
     /// Records every `advance_card_to` call so a test can assert the held-work
     /// completion edge concluded the right card with the right state — the
     /// WRITE half the read supertraits can't observe. Shared `Arc` so the test
@@ -354,6 +356,7 @@ impl StubAircCitizen {
             rooms: Vec::new(),
             held: Vec::new(),
             boards: std::collections::HashMap::new(),
+            board_snapshots: Vec::new(),
             advanced: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
@@ -362,6 +365,12 @@ impl StubAircCitizen {
     /// gate sees held work.
     pub fn with_claims(mut self, cards: Vec<airc_lib::WorkCard>) -> Self {
         self.held = cards;
+        self
+    }
+
+    /// Seed the whole boards her held-work read sees (her send-backs, card 7f8c248e).
+    pub fn with_board_snapshots(mut self, boards: Vec<airc_work::BoardSnapshot>) -> Self {
+        self.board_snapshots = boards.into_iter().map(std::sync::Arc::new).collect();
         self
     }
 
@@ -444,6 +453,10 @@ impl crate::persona::held_work::AircWorkReader for StubAircCitizen {
         // Default: no daemon → no claimed work. A test may seed `with_claims` to
         // exercise the held-work path.
         Ok(self.held.clone())
+    }
+
+    async fn boards(&self) -> Result<Vec<std::sync::Arc<airc_work::BoardSnapshot>>, AircError> {
+        Ok(self.board_snapshots.clone())
     }
 }
 
@@ -542,7 +555,7 @@ impl AircCitizen for StubAircCitizen {
     ) -> Result<(), String> {
         self.advanced
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(|p| p.into_inner()) // a stub's record of calls: a panicked test's poison still holds every call it made
             .push((card_id, state));
         Ok(())
     }

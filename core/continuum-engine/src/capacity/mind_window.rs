@@ -188,7 +188,9 @@ where
                         reason = %why,
                         "her turn waits for a later grants evaluation"
                     ),
-                    None => {}
+                    // Her grant is listed but she is ungranted: it is yielding to a waiter (yield_after).
+                    // The handoff needs her turn to end, so the turn ends; never waited inside it.
+                    None => return Err(WindowRefused::Ungranted(super::window_grant::Ungranted::Waiting(super::window_grant::Waiting::Reclaiming))),
                 }
             }
         }

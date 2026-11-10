@@ -47,11 +47,16 @@ mod page_key;
 pub use page_key::*;
 mod mind_gate;
 pub(crate) use mind_gate::MindTurn;
+pub use mind_gate::her_acts_done;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use mind_gate::{begin_act_for_test, ActForTest};
 pub(crate) mod grant_handoff;
 pub use grant_handoff::reclaim_grant;
 mod learn_slot;
 pub use learn_slot::{learn_slot, LearnSlot, LearnSlotRefusal};
 mod kv_slot_pool;
+mod endpoint_concurrency;
+pub use endpoint_concurrency::{DecodeBound, DecodePermit, EndpointConcurrency};
 pub use kv_slot_pool::*;
 mod live_sequences;
 pub use live_sequences::SequenceBasis;

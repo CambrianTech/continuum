@@ -23,6 +23,23 @@ pub struct HeldWork {
     /// Her rejected claim attempts still worth knowing, worded by the ring that records them
     /// (`persona::claim_rejections`).
     pub rejections: Vec<String>,
+    /// Cards she sent back whose author has not been answered (card 7f8c248e), read from the
+    /// board's typed reviews, submissions and review cards. Informational: never a tool
+    /// restriction, never an assignment.
+    pub awaiting: Vec<AwaitingResubmission>,
+}
+
+/// A card whose newest submission she failed. Until its author resubmits there is nothing for her
+/// to do on it; when they do, the board opens a review card for that exact submission, offered to
+/// her first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AwaitingResubmission {
+    pub card: WorkCardId,
+    pub title: String,
+    /// The submission her send-back judged.
+    pub reviewed: airc_work::SubmissionId,
+    /// The review card of the author's newer submission, open and nobody else's.
+    pub resubmitted: Option<WorkCardId>,
 }
 
 /// A claim that ended: which card, and what it was called, so she can tell which one.

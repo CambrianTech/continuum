@@ -411,6 +411,11 @@ impl crate::persona::held_work::AircWorkReader for Holds {
         }
         Ok(self.0.lock().expect("holds lock").clone())
     }
+
+    /// This fixture stages claims only: it shows her no boards.
+    async fn boards(&self) -> Result<Vec<std::sync::Arc<airc_work::BoardSnapshot>>, airc_lib::AircError> {
+        Ok(Vec::new())
+    }
 }
 
 fn opener_for(executor: Arc<CommandExecutor>, persona: Uuid, name: &'static str) -> OpenCapture {
