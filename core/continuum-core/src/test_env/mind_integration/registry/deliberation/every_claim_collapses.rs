@@ -86,6 +86,7 @@ fn as_canary_priced(view: &DeliberationPromptView) -> ActClaims {
             whole => continuum_context::allocation::Newest::Pageable { whole, least: floor(id::NEWEST) },
         },
         tools: Head::free(whole(id::TOOLS)),
+        grounding: Rungs::new([want(id::GROUNDING), 0]).map_or_else(Leveled::default, Leveled::one), // map_or_else: no grounding offered
         last_move: whole(id::LAST_MOVE),
         history: Span { floor: 0, min: 0, want: want(id::HISTORY) },
         reply: continuum_context::flex::FlexClaim { source_id: id::REPLY.into(), priority: reply.priority, floor_tokens: reply.floor, min_tokens: reply.floor, max_tokens: reply.want, required: true },
@@ -139,20 +140,20 @@ fn aikos_act_fits_her_window_by_collapsing_her_hands_and_grounding_instead_of_re
     let receipt = view.allocation.as_ref().expect("test: the view names its allocation"); // JUSTIFIED: test fixture
     let grant = |source: &str| receipt.claims.iter().filter(|c| c.source == source).map(|c| c.grant).sum::<u32>();
     let before = allocate(AIKO_WINDOW, as_canary_priced(&roomy));
-    let row = |label: &str, framing: u32, tools: u32, newest: u32, history: u32, view: u32, reply: u32, short: &str| {
-        println!("{label:<8} | {framing:>7} | {tools:>6} | {newest:>6} | {history:>7} | {view:>6} | {reply:>5} | {short}");
+    let row = |label: &str, framing: u32, tools: u32, newest: u32, history: u32, grounding: u32, view: u32, reply: u32, short: &str| {
+        println!("{label:<8} | {framing:>7} | {tools:>6} | {newest:>6} | {history:>7} | {grounding:>9} | {view:>6} | {reply:>5} | {short}");
     };
     println!(
         "window {AIKO_WINDOW}; her hands whole {whole_tools} tokens, at their pointers {tools_limit} ({} verbs, the live registry's schemas); her act's reply need {}",
         faculty.tool_surface().names_of(&roomy.tools).len(),
         sum(&roomy, |s| s == "reply", |c| c.floor)
     );
-    println!("          | framing |  tools | newest | history |   view | reply | refused");
+    println!("          | framing |  tools | newest | history | grounding |   view | reply | refused");
     let short_before = before.irreducible_shortfall().map_or_else(String::new, |s| format!("{} of {} needed (binding {})", s.needed, s.window, s.binding)); // map_or_else: nothing short
-    row("canary", before.granted(id::FRAMING), before.granted(id::TOOLS), before.granted(id::NEWEST), before.granted(id::HISTORY) + before.granted(id::LAST_MOVE), before.view_granted(), before.granted(id::REPLY), &short_before);
+    row("canary", before.granted(id::FRAMING), before.granted(id::TOOLS), before.granted(id::NEWEST), before.granted(id::HISTORY) + before.granted(id::LAST_MOVE), before.granted(id::GROUNDING), before.view_granted(), before.granted(id::REPLY), &short_before);
     let view_grant: u32 = receipt.claims.iter().filter(|c| c.source.starts_with(id::VIEW)).map(|c| c.grant).sum();
     let short_after = view.capacity_error.as_ref().map_or_else(String::new, |e| format!("{e:?}")); // map_or_else: nothing refused
-    row("collapse", grant(id::FRAMING), grant(id::TOOLS), grant(id::NEWEST), grant(id::HISTORY) + grant(id::LAST_MOVE), view_grant, grant(id::REPLY), &short_after);
+    row("collapse", grant(id::FRAMING), grant(id::TOOLS), grant(id::NEWEST), grant(id::HISTORY) + grant(id::LAST_MOVE), grant(id::GROUNDING), view_grant, grant(id::REPLY), &short_after);
 
     assert!(whole_tools > AIKO_WINDOW as usize / 4, "precondition: her hands whole are a large share of her window ({whole_tools})");
     assert!(
@@ -162,6 +163,7 @@ fn aikos_act_fits_her_window_by_collapsing_her_hands_and_grounding_instead_of_re
     assert!(view.capacity_error.is_none() && view.budget_fault.is_none(), "nothing refuses: {:?} {:?}", view.capacity_error, view.budget_fault);
     assert!(view.output_shortfall.is_none(), "her act's need fits beside her collapsed parts: {:?}", view.output_shortfall);
     assert!(view.tools.tokens < whole_tools, "her hands collapsed: {} of {whole_tools}", view.tools.tokens);
+    assert!(grant(id::GROUNDING) > 0, "her grounding arrives at a level, never suppressed");
     assert!(grant(id::HISTORY) + grant(id::LAST_MOVE) + view_grant > 0, "her history is granted");
     assert!(!view.newest_result_reduced, "her newest result whole");
     // Every verb still in her hands, each whole, at its summary (callable with every parameter) or

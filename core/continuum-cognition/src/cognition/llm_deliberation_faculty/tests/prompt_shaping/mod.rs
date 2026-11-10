@@ -9,6 +9,7 @@ mod turn_window;
 mod an_action_result_cannot_mute_a_citizen;
 
 /// A citizen must never be silenced by her ENRICHMENT not fitting.
+mod grounding_never_mutes;
 
 mod reply_reserve;
 

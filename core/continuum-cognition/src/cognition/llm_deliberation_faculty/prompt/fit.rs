@@ -6,6 +6,12 @@ impl LlmDeliberationFaculty {
         (faculty.len() + body_bytes + "\n[]\n\n".len()).div_ceil(GUARD_CHARS_PER_TOKEN)
     }
 
+    /// What wrapping a non-empty assembled context costs: its header (it rides the tail after her
+    /// view, never the system message; `deliberation_prompt::working_context_message`).
+    pub fn working_context_header_cost() -> usize {
+        deliberation_prompt::WORKING_CONTEXT_HEADER.len().div_ceil(GUARD_CHARS_PER_TOKEN)
+    }
+
     /// The system message's estimate: its text. The chat template's own tokens around each message
     /// are no constant here: they are in the engine's count of every prompt, so her measured
     /// density prices them (`Density`, `delib.prompt.density`); unmeasured, the estimate stands
@@ -306,3 +312,15 @@ impl LlmDeliberationFaculty {
     }
 }
 
+#[derive(Default)]
+pub(in super::super) struct ContextComposition {
+    pub(in super::super) context_window: u32,
+    pub(in super::super) framing_tokens: usize,
+    pub(in super::super) conversation_tokens: usize,
+    pub(in super::super) ctx_floor: usize,
+    pub(in super::super) after_framing: usize,
+    pub(in super::super) tool_tokens: usize,
+    /// WHY the surface priced in `tool_tokens` is the one sent: the receipt that says which
+    /// arm put a 38-tool surface on a CPU lane (card 3026b83e).
+    pub(in super::super) surface_reason: SurfaceReason,
+}

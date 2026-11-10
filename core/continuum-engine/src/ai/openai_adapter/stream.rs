@@ -98,8 +98,9 @@ impl OpenAICompatibleAdapter {
                 // call; cache_prompt=true → 36s cold then 0.48s warm (75×), because
                 // warm calls prefill only the NEW tail tokens and reuse the matched
                 // prefix from the slot's KV cache. The win is only as large as the
-                // STABLE prefix: her view only appends within an epoch (`continuum_context::view`),
-                // so the cached prefix is maximal. Same typed capability gate as repeat_penalty/lora: cloud
+                // STABLE prefix — see render_assembled_context_within, which orders
+                // static grounding before volatile recall so the cached prefix is
+                // maximal. Same typed capability gate as repeat_penalty/lora: cloud
                 // OpenAI-compat providers reject the non-standard field.
                 obj.insert("cache_prompt".to_string(), json!(true));
                 // PREFILL VISIBILITY — the llama.cpp `return_progress` extension.

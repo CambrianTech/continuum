@@ -1,6 +1,83 @@
 use super::*;
+use super::grounding::{Body, GroundingOffer, GroundingPiece};
 
 impl LlmDeliberationFaculty {
+    /// What ALL the grounding offered this turn would cost if every contribution were shown whole:
+    /// the grounding half of a turn's demand ([`super::super::super::working_set`]). Measured
+    /// 2026-08-06 this is the dominant term: the work board alone offered a median 5,364 tokens
+    /// into a context budget with a median of 55.
+    pub(in super::super) fn assembled_context_cost(ws: &Workspace) -> usize {
+        ws.broadcast
+            .iter()
+            .filter(|c| c.decision.is_none() && !c.trailing)
+            .map(|c| GroundingPiece::whole(c).tokens)
+            .sum()
+    }
+
+    /// The assembled context within `budget_tokens` for its pieces (its header and message wrapper
+    /// beside them): each contribution at the most detail the budget holds, the most important
+    /// first (`grounding.rs`). What the act's one allocation does with its grounding claim, for a
+    /// caller holding only a budget.
+    #[cfg(test)]
+    pub(in super::super) fn render_assembled_context_within(&self, ws: &Workspace, budget_tokens: usize, composition: ContextComposition) -> String {
+        let offer = GroundingOffer::of(ws, &|tokens| tokens as u32);
+        let budget = (budget_tokens + Self::working_context_header_cost()) as u32;
+        let choice = offer.leveled.reduce(budget);
+        let rungs = if choice.cost <= budget { choice.rungs } else { Vec::new() };
+        self.render_grounding(ws, offer, &rungs, ContextComposition { ctx_floor: budget_tokens, ..composition })
+    }
+
+    /// Render the assembled context (the phase-1 winners that hold the workspace and did not ride
+    /// her view) at the levels the act's one allocation chose (`rungs`, one per contribution in
+    /// the offer's order; none when the grounding left the turn), into the body of the
+    /// working-context message, which rides the fresh tail after her view, never the system
+    /// message.
+    pub(in super::super) fn render_grounding(&self, ws: &Workspace, offer: GroundingOffer<'_>, rungs: &[usize], composition: ContextComposition) -> String {
+        let ContextComposition { context_window, framing_tokens, conversation_tokens, ctx_floor, after_framing, tool_tokens, surface_reason } = composition;
+        // Offered trailing content before fitting, not an additional claimant: its retained
+        // portion is already in conversation_tokens.
+        let offered_trailing_tokens: usize = ws.broadcast.iter().filter(|c| c.decision.is_none() && c.trailing).map(|c| estimate_guard_tokens(&c.content)).sum();
+        let received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count();
+        let pieces = offer.rendered(rungs);
+        let level = |piece: &GroundingPiece<'_>| match &piece.body {
+            Body::Whole => "whole".to_string(),
+            Body::Units(units) => format!("{units}/{} units", piece.contribution.parts.len()),
+            Body::Summary(_) => "summary".to_string(),
+            Body::Handle => "handle".to_string(),
+        };
+        // Received-vs-rendered receipt at the ONE seam where a surfaced contribution's detail is
+        // decided (#130): every contribution at its level, and what left the turn.
+        continuum_base::probe!(
+            class = "delib.context.render",
+            persona = %self.persona_name,
+            budget_tokens = ctx_floor,
+            context_window,
+            framing_tokens,
+            conversation_tokens,
+            offered_trailing_tokens,
+            after_framing,
+            // Actual selected schemas, not the full registry's withheld cost.
+            tool_tokens,
+            registry_tool_tokens = self.describe_tool_tokens(),
+            surface_reason = ?surface_reason,
+            used_tokens = pieces.iter().map(|p| p.tokens).sum::<usize>(),
+            received,
+            rendered = pieces.len(),
+            kept = %pieces.iter().map(|p| format!("{}({}, sal={:.2})", p.contribution.faculty.as_str(), level(p), p.contribution.salience)).collect::<Vec<_>>().join(","),
+            "assembled context: {}/{} contributions, each at the level the allocation chose", pieces.len(), received
+        );
+        let mut block = String::new();
+        for piece in pieces {
+            let c = piece.contribution;
+            block.push_str("\n[");
+            block.push_str(c.faculty.as_str());
+            block.push_str("]\n");
+            piece.append_body(&mut block);
+            block.push('\n');
+        }
+        block
+    }
+
     /// Assemble the system prompt for this turn. Thin adapter over
     /// [`deliberation_prompt::compose_split`]: the faculty owns the *inputs* (its identity,
     /// tools, the turn's structural flags); the framing prose + block ordering live in

@@ -27,6 +27,7 @@ pub(in super::super) struct BudgetLedger<'a> {
     pub framing_grant: u32,
     pub required_grant: u32,
     pub history_grant: u32,
+    pub grounding_grant: u32,
     /// Her view's sources' grants plus the room no claim took that she may append into.
     pub view_grant: u32,
 }
@@ -58,6 +59,7 @@ impl LlmDeliberationFaculty {
             framing_cost,
             view_grant = ledger.view_grant,
             view_cost,
+            grounding_grant = ledger.grounding_grant,
             grounding_cost,
             tail_grant = ledger.required_grant.saturating_add(ledger.history_grant),
             tail_cost,

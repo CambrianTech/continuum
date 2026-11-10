@@ -47,6 +47,7 @@ fn act(newest: Newest, price: ContextPrice) -> ActClaims {
         required: Leveled::one(Rungs::whole(500)),
         newest,
         tools: Head { consumer: Consumer::Actionable, ..Head::free(Leveled::new((0..VERBS).map(|_| item(&VERB)).collect())) },
+        grounding: Leveled::one(item(&[3_000, 400])),
         last_move: Leveled::one(Rungs::whole(1_200)),
         history: Span { floor: 0, min: 0, want: 8_000 },
         reply: FlexClaim { source_id: id::REPLY.to_owned(), priority: 10, floor_tokens: 2_000, min_tokens: 2_000, max_tokens: 8_000, required: true },

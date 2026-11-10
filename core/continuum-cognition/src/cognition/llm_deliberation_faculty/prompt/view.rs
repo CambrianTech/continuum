@@ -251,12 +251,12 @@ impl LlmDeliberationFaculty {
         use continuum_context::ladder::{Leveled, Rungs};
         // Her newest result whole and at its least page, in the allocation's unit (`newest_result.rs`).
         let newest = self.newest_result_claim(&all_messages);
-        // Her hands and her framing (the head of her prompt): each a consumer whose levels come
-        // from its items' shapes and whose hard limit is derived from them. Grounding is no part:
-        // every grounding source is a block of her view (`context_streams::blocks`).
+        // Her hands and her framing (the head of her prompt), and her grounding: each a consumer
+        // whose levels come from its items' shapes and whose hard limit is derived from them.
         let tools_offer = self.tools_offer(ws, &claim);
         let held_menu = self.tools_epoch.lock().as_ref().map(|held| held.menu().clone());
         let framing_offer = self.framing_offer(ws, holds_live_work, tools_offer.names(), held_menu.as_ref(), &claim);
+        let grounding_offer = super::grounding::GroundingOffer::of(ws, &claim);
         // Her own last move and its result are a REQUIRED claim of their own (`last_move`, goal 7:
         // the newest complete interaction is whole): clipping them costs a WHOLE EXTRA TURN when
         // she re-issues the act. The rest of this act's fresh tail (older acts, facts, the clock,
@@ -300,6 +300,7 @@ impl LlmDeliberationFaculty {
                 required: Leveled::one(Rungs::whole(claim(required_tokens))),
                 newest: newest.charged(&claim),
                 tools: tools_offer.head(),
+                grounding: grounding_offer.leveled.clone(),
                 // The newest complete interaction is whole (goal 7): its whole is its hard limit.
                 last_move: Leveled::one(Rungs::whole(claim(history_floor))),
                 history: continuum_context::allocation::Span { floor: 0, min: 0, want: claim(optional_history.saturating_sub(history_floor)) },
@@ -340,6 +341,11 @@ impl LlmDeliberationFaculty {
             continuum_context::allocation::NewestShown::Page { tokens } => Some(calibration.prompt_budget(tokens as usize)),
             continuum_context::allocation::NewestShown::Whole | continuum_context::allocation::NewestShown::Absent => None,
         };
+        // The grounding at the levels the allocation chose: less of each under pressure, then
+        // handles, never refusing the turn (`grounding.rs`).
+        let grounding_rungs = act.chosen(claim_id::GROUNDING).map(|choice| choice.rungs.clone()).unwrap_or_default(); // unwrap_or_default: an unchosen grounding left the turn
+        let grounding_grant = calibration.prompt_budget(act.granted(claim_id::GROUNDING) as usize);
+        let ctx_floor = grounding_grant;
 
         // The smallest window this turn can be sent in: what cannot be shed (the required claims'
         // floors, her newest result at its chosen level) plus her reply's MEASURED need, uncapped
@@ -404,6 +410,7 @@ impl LlmDeliberationFaculty {
             framing_tokens = act.granted(claim_id::FRAMING),
             required_tokens = act.granted(claim_id::REQUIRED),
             newest_granted = act.granted(claim_id::NEWEST),
+            grounding_granted = act.granted(claim_id::GROUNDING),
             last_move_granted = act.granted(claim_id::LAST_MOVE),
             history_granted = act.granted(claim_id::HISTORY),
             tools_granted = act.granted(claim_id::TOOLS),
@@ -430,7 +437,7 @@ impl LlmDeliberationFaculty {
             .prompt_budget((context_window as usize).saturating_sub(completion_reserve))
             .saturating_sub(tools_choice.sent.tokens)
             .saturating_sub(framing_tokens);
-        let window_msg_budget = after_framing;
+        let window_msg_budget = after_framing.saturating_sub(ctx_floor);
         let view_granted = act.view_granted();
         let view_room = act.room();
         // History and her view get their grants; the required input is never part of the trade.
@@ -485,6 +492,8 @@ impl LlmDeliberationFaculty {
             .charge(
                 framing_tokens
                     .saturating_add(unfitted_message_tokens)
+                    .saturating_add(Self::assembled_context_cost(ws))
+                    .saturating_add(Self::working_context_header_cost())
                     // Demand includes her whole hands only when the window withheld the extended ones.
                     .saturating_add(selected.demand_tokens()),
             )
@@ -507,6 +516,7 @@ impl LlmDeliberationFaculty {
             context_window,
             framing_tokens,
             conversation_tokens = unfitted_message_tokens,
+            grounding_tokens = Self::assembled_context_cost(ws),
             completion_reserve,
             // The honest headline: >1.0 means this turn wanted more window than it had,
             // and by how much. This is the number that decides whether the served
@@ -668,8 +678,37 @@ impl LlmDeliberationFaculty {
             }
         }
         fitted.refit.grounding_len = 0;
-        let FittedMessages { refit, messages, grounding_at, .. } = fitted;
+        let FittedMessages { mut refit, mut messages, grounding_at, .. } = fitted;
 
+        // The assembled context at the levels the one allocation chose; its header and message
+        // wrapper are priced in its most important item (`grounding.rs`).
+        let used_msg_tokens = calibration.estimate_all(&messages);
+        let context = self.render_grounding(
+            ws,
+            grounding_offer,
+            &grounding_rungs,
+            ContextComposition {
+                context_window,
+                framing_tokens,
+                conversation_tokens: used_msg_tokens,
+                ctx_floor,
+                after_framing,
+                tool_tokens: selected.tokens,
+                surface_reason: selected.reason,
+            },
+        );
+        // A ROOM'S CONTEXT NEVER ENTERS THE SYSTEM MESSAGE (2026-10-23). It rendered
+        // there, after her identity and tools, so every room switch rewrote the end of
+        // the system message and the engine re-prefilled her whole view behind it
+        // (pages keyed per room restored ~7.4k tokens across a switch on the M5). It is
+        // a room's, so it rides the fresh tail after her view, with the grounding the
+        // refit keeps frozen; grounding sources themselves are her view's blocks.
+        if let Some(block) = deliberation_prompt::working_context_message(&context).map(|block| ChatMessage::text("user", block)) {
+            if !self.view_holds_sent(&block) {
+                messages.insert(grounding_at + refit.grounding_len, block);
+                refit.grounding_len += 1;
+            }
+        }
 
         // #266 KV-cache fix, THE SPLIT ACTUALLY APPLIED. The split composer
         // existed and its own docs called it "the live path" — but this view
@@ -717,6 +756,7 @@ impl LlmDeliberationFaculty {
                 framing_grant: act.granted(claim_id::FRAMING).saturating_add(act.granted(claim_id::TOOLS)),
                 required_grant: act.granted(claim_id::REQUIRED).saturating_add(act.granted(claim_id::NEWEST)),
                 history_grant: act.granted(claim_id::LAST_MOVE).saturating_add(act.granted(claim_id::HISTORY)),
+                grounding_grant: act.granted(claim_id::GROUNDING),
                 view_grant: view_granted.saturating_add(view_room),
             })
         } else {

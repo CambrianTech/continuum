@@ -13,7 +13,7 @@
 //! - tools: each schema whole, at name and description, at its name; actionable;
 //! - her view: the messages before her act loop, cut into sources as the view replay cuts them
 //!   (`cut`), each source's floor its items' pointers and its want their wholes; the held-work
-//!   block actionable; `[recall]` a source like any other (grounding is her view's);
+//!   block actionable; `[recall]` is the grounding, each bullet whole or at its first line;
 //! - the act loop (from her first assistant message): the ask before it is the required input,
 //!   its last tool result her newest (whole, or a page no smaller than its first line), the assistant message before
 //!   that her last move, the rest optional history;
@@ -130,8 +130,13 @@ fn claims(act: &Act, reply_need: u32, price: ContextPrice) -> ActClaims {
     before["messages"] = Value::Array(request["messages"].as_array().map_or_else(Vec::new, |all| all[..ask_at.unwrap_or(0)].to_vec())); // map_or_else / unwrap_or: no messages, no view
     let cut = crate::cut(&before, "", false);
     let acting = act.purpose.ends_with("act");
+    let mut grounding = Vec::new();
     let mut view = Vec::new();
     for (name, items) in &cut.sources {
+        if name == "recall" {
+            grounding.extend(items.iter().filter_map(|item| Rungs::new([tok(item.full().chars().count()), tok(first_line(item.full()))])));
+            continue;
+        }
         let full: usize = items.iter().map(|item| item.full().chars().count()).sum();
         let floor: usize = items.iter().map(|item| item.pointer().map_or_else(|| item.full().chars().count(), |p| p.chars().count())).sum(); // map_or_else: an item with no pointer is its own floor
         let claim = FlexClaim { source_id: format!("{}{name}", id::VIEW), priority: crate::priority(name), floor_tokens: tok(floor), min_tokens: tok(floor), max_tokens: tok(full).max(tok(floor)), required: acting };
@@ -144,6 +149,7 @@ fn claims(act: &Act, reply_need: u32, price: ContextPrice) -> ActClaims {
         required,
         newest,
         tools: Head { consumer: Consumer::Actionable, ..Head::free(Leveled::new(verbs)) },
+        grounding: Leveled::new(grounding),
         last_move,
         history: Span { floor: 0, min: 0, want: tok(history) },
         reply: FlexClaim { source_id: id::REPLY.into(), priority: if acting { 10 } else { 4 }, floor_tokens: reply_need, min_tokens: reply_need, max_tokens: want.max(reply_need), required: true },
@@ -250,7 +256,7 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
                     println!("    {:<28} p{:>2} floor {:>6} want {:>7} | priced {:>6} | unpriced {:>6}", claim.source_id, claim.priority, claim.floor_tokens, claim.max_tokens, priced.granted(&claim.source_id), unpriced.granted(&claim.source_id));
                 }
                 println!("    newest: priced {:?} unpriced {:?} least {:?}", priced.newest_shown(), unpriced.newest_shown(), priced.hard_limit(id::NEWEST));
-                for part in [id::FRAMING, id::TOOLS] {
+                for part in [id::FRAMING, id::TOOLS, id::GROUNDING] {
                     println!("    chosen {part}: priced {:?} unpriced {:?} hard limit {:?}", priced.chosen(part).map(|c| c.cost), unpriced.chosen(part).map(|c| c.cost), priced.hard_limit(part));
                 }
             }

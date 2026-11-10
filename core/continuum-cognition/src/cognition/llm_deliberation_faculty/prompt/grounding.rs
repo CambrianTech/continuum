@@ -183,6 +183,77 @@ impl<'a> GroundingPiece<'a> {
     }
 }
 
+/// This act's grounding as the allocation's consumer: its contributions, least important first,
+/// each at its levels.
+pub(in super::super) struct GroundingOffer<'a> {
+    /// Per contribution (importance order), its levels.
+    pieces: Vec<Vec<GroundingPiece<'a>>>,
+    /// Per item, the piece level of each rung, exactly one per rung (`None`: it left the turn);
+    /// charged costs no smaller than the rung above are not rungs (`Rungs::kept`).
+    rung_levels: Vec<Vec<Option<usize>>>,
+    pub(in super::super) leveled: Leveled,
+}
+
+impl<'a> GroundingOffer<'a> {
+    /// Every contribution that renders in the assembled-context message (not a view block, not
+    /// the verdict), each at its levels.
+    pub(in super::super) fn of(ws: &'a Workspace, charge: &dyn Fn(usize) -> u32) -> Self {
+        let mut offered: Vec<&Contribution> = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).collect();
+        offered.sort_by(|a, b| a.standing_grounding.cmp(&b.standing_grounding).then(a.salience.total_cmp(&b.salience)));
+        let header = LlmDeliberationFaculty::working_context_header_cost();
+        let count = offered.len();
+        let mut pieces = Vec::with_capacity(count);
+        let mut rung_levels = Vec::with_capacity(count);
+        let mut items = Vec::with_capacity(count);
+        for (index, c) in offered.into_iter().enumerate() {
+            let levels = GroundingPiece::levels(c);
+            // The header renders with the block, so the most important item carries it.
+            let with_header = |tokens: usize| if index + 1 == count { tokens + header } else { tokens };
+            // Below its last level it leaves the turn, unless that level is its handle or it is
+            // standing grounding, whose last level is its minimum: a greedier, more important item
+            // taking one more unit must never drop the activity's wall (the M5 work-tools change:
+            // two schemas fewer in her hands let the roster take a unit and the wall left).
+            let leaves = (!c.standing_grounding && levels.last().is_some_and(|last| last.body != Body::Handle)).then_some((0, None));
+            let smaller = levels.iter().enumerate().skip(1).map(|(level, piece)| (charge(with_header(piece.tokens)), Some(level))).chain(leaves);
+            let (rungs, map) = Rungs::kept(charge(with_header(levels[0].tokens)), Some(0), smaller);
+            items.push(rungs);
+            pieces.push(levels);
+            rung_levels.push(map);
+        }
+        Self { pieces, rung_levels, leveled: Leveled::new(items) }
+    }
+
+    /// The pieces `rungs` (one per item, or none: the grounding left the turn) render, in the
+    /// block's canonical order. Nothing renders when the most important item left.
+    pub(in super::super) fn rendered(self, rungs: &[usize]) -> Vec<GroundingPiece<'a>> {
+        if rungs.len() != self.pieces.len() {
+            return Vec::new();
+        }
+        let chosen: Vec<Option<usize>> = self.rung_levels.iter().zip(rungs).map(|(map, &rung)| map[rung]).collect();
+        if chosen.last().is_some_and(Option::is_none) {
+            return Vec::new();
+        }
+        let mut out: Vec<GroundingPiece<'a>> = self
+            .pieces
+            .into_iter()
+            .zip(chosen)
+            .filter_map(|(levels, level)| level.and_then(|level| levels.into_iter().nth(level)))
+            .collect();
+        // SERIALIZATION (by volatility, then CANONICALLY within the stable tier): stable standing
+        // framing FIRST, so it lands in the cacheable prefix region; volatile grounding LAST,
+        // nearest the generation point, most salient last (the KV-prefix rule of #266: salience
+        // decides how much of each is shown, never where the survivors sit).
+        out.sort_by(|a, b| {
+            let (a, b) = (a.contribution, b.contribution);
+            u8::from(!a.stable).cmp(&u8::from(!b.stable)).then_with(|| match (a.stable, b.stable) {
+                (true, true) => deliberation_prompt::stable_prefix_order(a.faculty.as_str(), b.faculty.as_str()),
+                _ => a.salience.total_cmp(&b.salience).reverse(),
+            })
+        });
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +280,29 @@ mod tests {
         let mut text = String::new();
         handle.append_body(&mut text);
         assert!(text.contains("work/list"), "{text}");
+    }
+
+    // what this catches: the inversion the salience sensor reported (a top-salience block dropped
+    // whole while a cheaper lesser one kept its slot): within any budget the more salient block is
+    // shown at least as whole as a less salient one, and below every handle nothing renders.
+    #[test]
+    fn a_more_salient_block_is_never_shown_less_whole_than_a_lesser_one() {
+        let top = board();
+        // A lesser block with levels of its own (an atomic one is its own summary and may stay
+        // whole beside a summarized top block, the view's rule).
+        let notes: Vec<String> = (0..12).map(|i| format!("note {i}: a feeling about the work, said at some length")).collect();
+        let lesser = Contribution::context(FacultyId::Custom("affect".to_string()), notes.join("\n"), 0.3, "a feeling").with_parts(notes);
+        let mut ws = Workspace::new("what is on the board?");
+        ws.broadcast.push(lesser);
+        ws.broadcast.push(top);
+        let offer = GroundingOffer::of(&ws, &|tokens| tokens as u32);
+        let whole_top = GroundingPiece::whole(&ws.broadcast[1]).tokens as u32;
+        let choice = offer.leveled.reduce(whole_top);
+        let rendered = offer.rendered(&choice.rungs);
+        let top_piece = rendered.iter().find(|p| p.contribution.faculty.as_str() == "room-kanban").expect("the top block renders"); // JUSTIFIED: test fixture
+        let lesser_whole = rendered.iter().any(|p| p.contribution.faculty.as_str() == "affect" && p.body == Body::Whole);
+        assert!(top_piece.body == Body::Whole || !lesser_whole, "a lesser block whole beside a collapsed top one");
+        let none = GroundingOffer::of(&ws, &|tokens| tokens as u32);
+        assert!(none.rendered(&[]).is_empty(), "grounding that left the turn renders nothing");
     }
 }
