@@ -267,6 +267,10 @@ impl From<std::time::Duration> for AdmissionPatience {
 /// itself. On a single-slot server the pool saves and detaches the resident before
 /// transient traffic borrows that slot; `slot()` then returns its index.
 ///
+/// A keyed dream's refusal when her act is running or queued: her act comes first, and the
+/// dream (her learning step) is tried again later, having held nothing.
+pub const HER_ACT_FIRST: &str = "her act comes first: her own background work yields to it";
+
 /// `patience` is how long the turn holds through a CLOSED endpoint (an engine still
 /// loading, a transition in flight) before it is refused — the caller's bound, since
 /// only the caller knows what its request can afford: the persona adapter passes
@@ -358,10 +362,16 @@ async fn admit(
         crate::inference::resource_admission::take_serving_lane()?
     };
     let reacquire = caller_lane.as_ref().map(ServingLanePermit::reacquisition);
+    // A KEYED DREAM (her own background work on her page: a learning step) never waits holding her
+    // mind gate: it queues for its ambient lane, the permit and her slot holding nothing, and takes
+    // her gate only once her slot is pinned and permitted, without waiting (`HER_ACT_FIRST`).
+    // Queued at step 0 like a turn, it held the gate through every wait below and her own act
+    // queued behind her learning (Codex on card 23069702).
+    let keyed_dream = class == SlotClass::Dream && key.is_some();
     // 0. ONE ACT AT A TIME PER MIND — queued here, before the lane, holding nothing
     //    (`slots::mind_gate`). Warm-ahead took its gate itself, without waiting.
     let mut mind = match key {
-        Some(k) if !warm_only => {
+        Some(k) if !warm_only && !keyed_dream => {
             let begin = MindTurn::begin(k);
             tokio::pin!(begin);
             Some(match futures::poll!(&mut begin) {
@@ -440,7 +450,9 @@ async fn admit(
         // it). Where it borrows a citizen slot (no scratch slot) it holds an ambient lane, so a
         // waiting turn still wins, and takes it holding nothing; with a scratch slot that slot is
         // its admission and it holds no lane.
-        if class == SlotClass::Dream && pool.as_ref().is_some_and(|pool| pool.scratch_slot().is_none()) {
+        // A keyed dream always borrows a citizen slot (her page), scratch or not, so it always
+        // holds the ambient lane: on a node with a scratch slot it would otherwise outrank residents.
+        if class == SlotClass::Dream && (keyed_dream || pool.as_ref().is_some_and(|pool| pool.scratch_slot().is_none())) {
             if lane.is_none() {
                 drop(admission);
                 lane = Some(crate::inference::resource_admission::acquire_serving_lane(None, LanePriority::Ambient, None).await);
@@ -516,6 +528,11 @@ async fn admit(
                 admission.released = Some(pool.released());
                 admission._slot_permit = Some(pool.acquire_slot(slot).await?);
                 admission._endpoint.check_ready()?;
+                if keyed_dream {
+                    // Her gate, without waiting: her act running or queued comes first. Returning
+                    // drops this admission, releasing the pin, the slot permit and the lane.
+                    mind = Some(MindTurn::try_begin(k).ok_or_else(|| HER_ACT_FIRST.to_owned())?);
+                }
                 // Before the plan moves the slot's attribution: once a stop has closed page IO,
                 // nothing pages a resident out (card 47151d36, `slots::page_io`).
                 let page_io = crate::inference::slots::admit_page_io(crate::inference::slots::page_io::gate())

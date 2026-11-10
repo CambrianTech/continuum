@@ -83,4 +83,56 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
         .await
         .expect("test: background traffic borrows a free citizen slot");
     assert!(summary._lane.is_none(), "other background traffic takes no lane");
+    drop(summary);
+
+    // A KEYED dream (her learning step, card 23069702; Codex's two hazards). Here, not in a test of
+    // its own, so the process-wide lane count above is read with nothing else of ours on it.
+    // (1) Her act holds her gate: the dream is refused at once, having held nothing.
+    let her = PageKey::mind(Uuid::new_v4()).expect("test: a mind key");
+    let act = crate::inference::slots::MindTurn::begin(her).await.expect("test: her act takes her gate");
+    // Bounded: a keyed dream that queues for her gate (the regression) would wait here forever.
+    let refused = tokio::time::timeout(std::time::Duration::from_secs(5), admit_turn(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO))
+        .await
+        .expect("a keyed dream is refused at once while her act holds her gate, never queued behind it");
+    assert_eq!(refused.err().as_deref(), Some(HER_ACT_FIRST), "her act comes first");
+    assert_eq!(sem.available_permits(), 2, "the refused dream holds no adapter permit");
+    assert_eq!(lanes_free(), before, "and no serving lane");
+    drop(act);
+    // (1b) FIFO (Codex): an act already QUEUED for her gate is not overtaken by the dream's try.
+    // When the holder releases, the gate passes to the queued act, never to a try that arrives.
+    let holder = crate::inference::slots::MindTurn::begin(her).await.expect("test: one act holds her gate");
+    let queued_act = crate::inference::slots::MindTurn::begin(her);
+    tokio::pin!(queued_act);
+    assert!(futures::poll!(&mut queued_act).is_pending(), "her next act queues for the gate");
+    drop(holder);
+    let refused = tokio::time::timeout(std::time::Duration::from_secs(5), admit_turn(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO))
+        .await
+        .expect("a keyed dream behind a queued act is refused at once, never queued behind it");
+    assert_eq!(refused.err().as_deref(), Some(HER_ACT_FIRST), "the queued act, not the dream, takes the released gate");
+    let next_act = queued_act.await.expect("test: the queued act gets her gate");
+    drop(next_act);
+    assert_eq!(lanes_free(), before, "the refused dream gave back its ambient lane");
+    // (2) Waiting for her slot, it holds no gate, so her act is never queued behind it.
+    let busy_a = pool.acquire_slot(0).await.expect("test: a decode holds slot 0");
+    let busy_b = pool.acquire_slot(1).await.expect("test: a decode holds slot 1");
+    let queued = admit_turn(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
+    tokio::pin!(queued);
+    assert!(futures::poll!(&mut queued).is_pending(), "the keyed dream waits for her slot");
+    assert!(crate::inference::slots::MindTurn::try_begin(her).is_some(), "a waiting keyed dream holds no gate: her act would take it now");
+    drop((busy_a, busy_b));
+    let learning = queued.await.expect("test: admitted once a slot frees");
+    assert!(learning._lane.is_some(), "a keyed dream runs holding an ambient lane");
+    assert!(crate::inference::slots::MindTurn::try_begin(her).is_none(), "admitted, it holds her gate for the step");
+    drop(learning);
+    assert_eq!(lanes_free(), before, "and gives the lane back");
+    // (3) A scratch slot does not exempt it: her page is a citizen page, so it still yields to
+    // residents through the ambient lane (a keyless dream on scratch takes none, test above).
+    let roomy = Arc::new(KvSlotPool::new("test://keyed-dream-scratch", 3));
+    assert!(roomy.scratch_slot().is_some(), "three lanes reserve a scratch slot");
+    let on_scratch_node = admit_turn(&Arc::new(Semaphore::new(3)), SlotClass::Dream, Some(her), Some(roomy), &client, "test://keyed-dream-scratch", 0, std::time::Duration::ZERO)
+        .await
+        .expect("test: admitted on her page");
+    assert!(on_scratch_node._lane.is_some(), "a keyed dream holds the ambient lane even where a scratch slot exists");
+    drop(on_scratch_node);
+    assert_eq!(lanes_free(), before, "and gives it back");
 }
