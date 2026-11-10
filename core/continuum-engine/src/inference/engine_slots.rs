@@ -95,7 +95,7 @@ impl MaintenanceEngines {
     }
 
     pub fn capture(home: &Path) -> Result<Self, String> {
-        Self::capture_at(root(home)?, super::llama_server::engine_install::engine_override(), live_lane_engines()?)
+        Self::capture_at(root(home)?, super::llama_server::engine_override(), live_lane_engines()?)
     }
 
     pub(crate) fn capture_at(root: PathBuf, override_bin: Option<String>, live_engines: Vec<Option<PathBuf>>) -> Result<Self, String> {
@@ -171,7 +171,7 @@ impl MaintenanceEngines {
         // Their retained pins prevent mutation; namespace checks remain necessary
         // because pinning a directory does not prevent every child addition.
         continuum_cli_lifecycle::installed_release::unredirected(&self.root)?;
-        if super::llama_server::engine_install::engine_override() != self.override_bin {
+        if super::llama_server::engine_override() != self.override_bin {
             return Err("engine override changed during maintenance".into());
         }
         for (path, expected) in &self.selectors {
