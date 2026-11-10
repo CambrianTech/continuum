@@ -65,6 +65,11 @@ pub(crate) struct TrainingAttempt {
     #[serde(default)]
     #[entity(json)]
     returned: Option<RecordedArtifact>,
+    /// The handle of a job created by `genome/job-create` that may still be running even
+    /// after the attempt settles as Failed/Closed.  Survives state transitions so
+    /// reconciliation and reattach can find it (card 0ace2453).
+    #[serde(default)]
+    pub(crate) intended_job_handle: Option<JobHandle>,
 }
 
 /// Where an attempt stands. Only `Created` names a job; `Admitted` alone proves nothing.
@@ -239,11 +244,12 @@ impl AttemptLedger {
                     origin: None,
                     request_digest: None,
                     base_model: None,
-                    returned: None,
-                    state: AttemptState::Admitted,
-                };
-                store
-                    .save(attempt, &row)
+                            returned: None,
+                            intended_job_handle: None,
+                            state: AttemptState::Admitted,
+                        };
+                        store
+                            .save(attempt, &row)
                     .await
                     .map_err(|e| AdmitError::Unrecorded(e.to_string()))?;
                 Ok(Admission::Fresh)
@@ -282,6 +288,7 @@ impl AttemptLedger {
                     request_digest: Some(request_digest.to_string()),
                     base_model: Some(base_model.to_string()),
                     returned: None,
+                    intended_job_handle: None,
                     state: AttemptState::Admitted,
                 };
                 store
@@ -414,6 +421,7 @@ impl AttemptLedger {
                     request_digest: None,
                     base_model: None,
                     returned: None,
+                    intended_job_handle: None,
                     state: AttemptState::Closed,
                 };
                 match store.save(attempt, &row).await {
@@ -423,8 +431,33 @@ impl AttemptLedger {
             }
         }
     }
+    /// Store a job handle as the intended target for this attempt. Survives state changes so
+    /// reconciliation and recovery can still find it later.
+    pub(crate) async fn set_intended_job(&self, key: Uuid, handle: JobHandle) -> Result<(), String> {
+        self.store.update_fields(
+            key,
+            &serde_json::json!({ "intended_job_handle": serde_json::to_value(handle).map_err(|e| e.to_string())? }),
+        )
+        .await
+    }
+
+    /// Clear the intended job handle for an attempt.
+    pub(crate) async fn clear_intended_job(&self, key: Uuid) -> Result<(), String> {
+        self.store.update_fields(
+            key,
+            &serde_json::json!({ "intended_job_handle": null }),
+        )
+        .await
+    }
+
+    /// Read back the intended job handle for an attempt, if it exists.
+    pub(crate) async fn intended_job_of(&self, key: Uuid) -> Result<Option<JobHandle>, String> {
+        let row = self.store.peek(key).await.map_err(|e| e.to_string())?;
+        Ok(row.and_then(|r| r.intended_job_handle))
+    }
 }
 
+#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::*;
