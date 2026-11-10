@@ -190,7 +190,10 @@ where
                     ),
                     // Her grant is listed but she is ungranted: it is yielding to a waiter (yield_after).
                     // The handoff needs her turn to end, so the turn ends; never waited inside it.
-                    None => return Err(WindowRefused::Ungranted(super::window_grant::Ungranted::Waiting(super::window_grant::Waiting::Reclaiming))),
+                    None => match decide() {
+                        MindWindow::Decided(decided) => return Ok(decided),
+                        MindWindow::Ungranted => return Err(WindowRefused::Ungranted(super::window_grant::Ungranted::Waiting(super::window_grant::Waiting::Reclaiming))),
+                    },
                 }
             }
         }
