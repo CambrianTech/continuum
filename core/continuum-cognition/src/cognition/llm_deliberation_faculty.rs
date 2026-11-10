@@ -353,15 +353,16 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    /// Is this turn an ACT with her hands (a deliverable, her own initiative, or a card she is
-    /// working) rather than a message turn? Asked by the ACT output cap and the lane priority, so
-    /// it lives in one place. Never by the tool surface: that is the same on every kind of turn,
-    /// which is why a card she holds makes it work. A message arriving while she worked a card
-    /// was a pass capped at a short reply's ~400 tokens, so the write she was composing hit the
-    /// cap before its call committed and the whole act was discarded: 394 of Atlas's acts and
-    /// 277 of Aiko's (the M5, 2026-11-09, `tools/<cut at the output limit>`).
-    fn is_work_turn(&self, ws: &Workspace) -> bool {
-        (ws.workspace_deliverable || ws.initiative || ws.held.holds_a_working_card()) && !self.surface.hands().is_empty()
+    /// Every turn she has hands for is an ACT: a mind is for thinking and doing (Joel,
+    /// 2026-11-09: "Minds aren't for cards, they're for thinking and doing, period"), so what she
+    /// may produce is bounded by her measured need and her window, never by a class the system
+    /// picks from a card, a deliverable or who spoke. A message turn was a PASS capped at a short
+    /// reply's ~400 tokens while her hands were the same, so a write she began there hit the cap
+    /// before its call committed and the act was discarded: 394 of Atlas's acts and 277 of
+    /// Aiko's (the M5, 2026-11-09, `tools/<cut at the output limit>`). A mind with no hands
+    /// can only speak: that turn is a pass. Asked by the output cap and the lane priority.
+    fn is_work_turn(&self, _ws: &Workspace) -> bool {
+        !self.surface.hands().is_empty()
     }
 
     /// What kind of turn this is, for its allowance: a work turn is an ACT; anything
@@ -522,10 +523,6 @@ impl LlmDeliberationFaculty {
             );
         }
         bound
-    }
-
-    fn holds_work_card(ws: &Workspace) -> bool {
-        ws.held.holds_a_working_card()
     }
 }
 
