@@ -294,7 +294,7 @@ mod tests {
     async fn a_queued_mind_waits_her_turn_measured_once_then_runs() {
         use super::super::window_grant::{Ungranted, Waiting};
         let her = uuid::Uuid::from_u128(4);
-        let queued_at = |position| {
+        let queued_at = move |position| {
             let mut queued = evaluation(std::time::Instant::now() + std::time::Duration::from_millis(1), grants(&[]), None).expect("evaluation");
             queued.waiting.insert(her, Waiting::Queued { position, of: 3 });
             queued
