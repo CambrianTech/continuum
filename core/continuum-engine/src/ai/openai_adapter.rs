@@ -117,11 +117,6 @@ enum LoraSupport {
 pub struct OpenAICompatibleAdapter {
     config: OpenAICompatibleConfig,
     api_key: Option<String>,
-    /// Runtime base URL set via `with_runtime_base_url` — overrides
-    /// `config.base_url` without mutating the registry-sourced config.
-    /// Used when DMR reaches us at `model-runner.docker.internal` instead
-    /// of `localhost:12434` (detected by `probe_dmr`).
-    runtime_base_url: Option<String>,
     /// This adapter OWNS a dedicated, single-purpose serving lane (an
     /// `EphemeralServingLane` the eval spawned) rather than sharing the global
     /// gateway. Set via [`with_dedicated_lane`]. When true, the single-resident
@@ -142,13 +137,13 @@ pub struct OpenAICompatibleAdapter {
     /// available. Without this, supports_model falls back to static
     /// `supported_model_prefixes()` which for docker-model-runner returned
     /// `[]` → DMR never won routing → every user silently landed on Candle.
-    runtime_models: std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<String>>>>,
+    runtime_models: std::sync::Arc<parking_lot::RwLock<Option<std::collections::HashSet<String>>>>,
     /// Discovered LoRA page-in capability + catalog, populated by probing the
     /// serving backend's `GET /lora-adapters` (see [`LoraSupport`]). Starts
     /// `Unknown`; the first generation that carries `active_adapters` triggers
     /// the probe. This is the self-organizing alternative to a hardcoded
     /// "which provider supports LoRA" table — the endpoint describes itself.
-    lora_support: std::sync::Arc<std::sync::RwLock<LoraSupport>>,
+    lora_support: std::sync::Arc<parking_lot::RwLock<LoraSupport>>,
     /// Throttle for concurrent POSTs to this provider's endpoint.
     /// llama.cpp-backed providers (DMR) are single-slot in practice:
     /// one prompt at a time gets the full GPU. Letting N personas
@@ -162,12 +157,9 @@ pub struct OpenAICompatibleAdapter {
     ///
     /// DMR → 1 slot (single-slot llama.cpp backend).
     /// Cloud providers (OpenAI / Groq / etc.) → high slot count (no throttle).
+    /// Only for an endpoint with no slot pool (cloud): a pooled endpoint's admissions take ITS
+    /// permits, shared by every adapter and the learner (`slots::EndpointConcurrency`, card 23069702).
     concurrency: std::sync::Arc<tokio::sync::Semaphore>,
-    /// How many permits `concurrency` currently represents — the reconciler's
-    /// bookkeeping for tracking the served slot count both directions.
-    permit_target: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    /// One reconciler per adapter instance (spawned on first `initialize`).
-    permit_reconciler_started: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 // Serving-guard predicates live in `crate::inference::serving_guard` (S3b decompose).
@@ -197,10 +189,9 @@ fn apply_llamacpp_sampling_knobs(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     request: &TextGenerationRequest,
 ) {
-    obj.insert(
-        "repeat_penalty".to_string(),
-        json!(request.repeat_penalty.unwrap_or(1.1)),
-    );
+    let floor = || crate::model_registry::types::ModelSampling::default().repeat_penalty;
+    let repeat_penalty = request.repeat_penalty.unwrap_or_else(floor); // omitted: the substrate floor's one owner (#181), since a gateway at 1.0 loops
+    obj.insert("repeat_penalty".to_string(), json!(repeat_penalty));
     if let Some(rln) = request.repeat_last_n {
         obj.insert("repeat_last_n".to_string(), json!(rln));
     }

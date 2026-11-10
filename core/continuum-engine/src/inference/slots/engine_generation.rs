@@ -599,6 +599,7 @@ impl EndpointTransition {
         // A fresh assignment ledger prevents old Arc holders/pins from affecting
         // the new engine. Copy ONLY saved-page eligibility under an exact contract.
         let pool = Arc::new(KvSlotPool::new(root, contract.slots));
+        self.endpoint.concurrency.retarget(contract.slots as usize);
         let mut carried = false;
         // Same page format, not the same launch: a relaunch at another window or slot count
         // keeps every page it can restore (the engine refuses, loudly, one that no longer fits).
@@ -659,6 +660,7 @@ impl SlotDirectory {
                     paging_tasks: Mutex::new(tokio::task::JoinSet::new()),
                     ready_rx,
                     discarded: Mutex::new(DiscardLog::default()),
+                    concurrency: Arc::new(super::EndpointConcurrency::new()),
                     state: Mutex::new(EndpointState {
                         ready,
                         paging_uncertain: false,
@@ -695,8 +697,10 @@ impl SlotDirectory {
     }
 
     pub(crate) fn page_admission_path(&self, root: &str) -> Result<Option<std::path::PathBuf>, String> {
-        self.endpoint(root).state.lock().page_admission.clone()
-            .unwrap_or_else(|| Err("page-write capability has not been negotiated".into()))
+        match self.endpoint(root).state.lock().page_admission.clone() {
+            Some(negotiated) => negotiated,
+            None => Err("page-write capability has not been negotiated".into()),
+        }
     }
 
     /// Cold discovery shared by spawned and adopted pools. Only the admission
@@ -762,6 +766,12 @@ impl SlotDirectory {
     /// First writer wins — the probe race resolves to ONE pool per root.
     pub fn ensure_pool(&self, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
         let endpoint = self.endpoint(root);
+        let pool = self.ensure_pool_in(&endpoint, root, n_slots);
+        endpoint.concurrency.retarget(pool.n_slots() as usize);
+        pool
+    }
+
+    fn ensure_pool_in(&self, endpoint: &EndpointSlots, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
         let mut state = endpoint.state.lock();
         let pool = match &mut state.engine {
             Engine::Owned { serving: Serving::Install(install), .. } => return Arc::clone(&install.pool),
