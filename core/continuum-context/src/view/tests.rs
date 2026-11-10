@@ -988,3 +988,27 @@ mod absent_source;
 mod depth;
 /// A source a start shed waits for a start that funds it.
 mod shed;
+
+// what this catches: her sources splitting the window by flat constants, so her acts (whose reads
+// she keeps asking for again) got the same share as a 300k-token conversation she does not (the
+// M5, 2026-11-09: 70-90% of her file reads re-read one 3-5 acts old). A source's weight is its
+// priority scaled by her measured re-reads of what it would collapse; unmeasured, its priority.
+#[test]
+fn a_source_she_re_reads_from_weighs_more_and_an_unmeasured_one_keeps_its_priority() {
+    use crate::depth::Collapsible;
+    use crate::rereads::{Hazard, Tally};
+    let claim = |hazard: Hazard| Claim {
+        source: "actions".into(),
+        priority: 5,
+        floor: 100,
+        full: 10_000,
+        newest: 500,
+        logged: 0,
+        instrumented: true,
+        collapsible: (0..4).map(|age| Collapsible { whole: 2_000, saves: 1_900, age, hazard }).collect(),
+    };
+    assert_eq!(claim(Hazard::Unmeasured).weight(), 5, "unmeasured: its priority, never a guessed rate");
+    // each of four items asked for again (1 + 1) / (3 + 1) = 0.5 of acts: two re-reads per act
+    let measured = claim(Hazard::Measured(Tally { exposure: 3.0, events: 1.0 }));
+    assert_eq!(measured.weight(), 15, "priority x (1 + 2 re-reads per act)");
+}

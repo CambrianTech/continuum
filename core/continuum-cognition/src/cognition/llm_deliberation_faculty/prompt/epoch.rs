@@ -74,13 +74,18 @@ impl LlmDeliberationFaculty {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
-        continuum_context::view::claims(&cost, &sources)
+        // Her live view knows her re-read rates; before her first view there are none.
+        let claims = match self.context_view.lock().as_ref() {
+            Some(view) => view.claims(&cost, &sources),
+            None => continuum_context::view::claims(&cost, &sources),
+        };
+        claims
             .into_iter()
             .zip(&sources)
             .map(|(claim, source)| continuum_context::allocation::ViewClaim {
                 claim: continuum_context::flex::FlexClaim {
                     source_id: format!("{VIEW_CLAIM}{}", claim.source),
-                    priority: claim.priority,
+                    priority: claim.weight(),
                     floor_tokens: Self::clamp_u32(claim.floor),
                     min_tokens: Self::clamp_u32(claim.floor),
                     max_tokens: Self::clamp_u32(claim.full),

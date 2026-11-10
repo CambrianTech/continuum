@@ -215,6 +215,19 @@ fn claim<T: Block>(cost: &dyn Estimate<T>, source: &dyn Source<T>, items: &[Item
     }
 }
 
+impl Claim {
+    /// Its weight in the window's one allocation: its source's priority scaled by how often she
+    /// asks again for what it would collapse, `priority x (1 + re-reads per act)`, the sum of her
+    /// measured re-read rate over its collapsible items. A source she keeps re-reading from wins
+    /// room from one she does not (the M5, 2026-11-09: her acts and her 300k-token conversation
+    /// split the room evenly at priority 5 while 70-90% of her file reads re-read one 3-5 acts
+    /// old). Unmeasured ages add nothing, so an unmeasured source keeps its priority.
+    pub fn weight(&self) -> u8 {
+        let rereads: f64 = self.collapsible.iter().filter_map(|item| item.hazard.per_act()).sum();
+        (f64::from(self.priority) * (1.0 + rereads)).round().min(f64::from(u8::MAX)) as u8
+    }
+}
+
 /// What each source would claim at an epoch start, without starting one, priced by `cost`: the
 /// caller's one allocation weighs these beside its own claims and hands its grants back to
 /// [`View::start`] / [`View::turn_over`]. With no view there is no measured re-read: a fresh
@@ -225,6 +238,13 @@ pub fn claims<T: Block>(cost: &dyn Estimate<T>, sources: &[&dyn Source<T>]) -> V
 }
 
 impl<T: Block> View<T> {
+    /// What each source would claim at a start, priced by `cost`, with HER measured re-read rate
+    /// on each collapsible item (`Claim::collapsible`); [`claims`] has no view and so no measured
+    /// re-read.
+    pub fn claims(&self, cost: &dyn Estimate<T>, sources: &[&dyn Source<T>]) -> Vec<Claim> {
+        sources.iter().map(|source| claim(cost, *source, &source.items(), self.motion.rereads())).collect()
+    }
+
     /// The first epoch. `allocate` answers each claim with a grant in `cost`, the caller's price
     /// of a block (the one it charges the final prompt with): the start keeps within each grant
     /// as `cost` prices what it renders, never through a converted unit.
