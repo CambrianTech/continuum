@@ -37,6 +37,22 @@ Each machine's capacity is then a measured throughput of operations per second, 
 parked claims. Where a consumer needs a guarantee (recall must always be able to embed), it is a
 priority on its next turn in the flow, never bytes held between turns.
 
+## Every decision is a price
+
+Joel, 2026-11-10: "It's all about cost. Some stuff loads so fast, especially if cached properly,
+it is trivial time, especially compared to massive queue locks." Hold or release, keep or demote,
+wait or proceed: each is decided by comparing measured costs, never by habit or by a fear of
+reloading.
+- **The cost of releasing** is the measured time to bring the thing back from where it goes:
+  milliseconds for a context rebuilt or a page promoted from RAM, more from flash, and the
+  prefill time when it must be recomputed.
+- **The cost of holding** is what every other consumer waits behind it. On 2026-11-10 that was
+  ten minutes for two residents queued behind idle seats, and an hour for all four behind a
+  stuck growth hold.
+- Release wins whenever bringing it back costs less than the expected wait it causes, which,
+  with pages cached in a fast tier, is nearly always. Fast tiers make releasing cheap, and that
+  is what lets everything flow.
+
 ## What the users are
 
 Continuum's users mostly work in Python or Node, usually on web projects. Few work in Rust. Much
