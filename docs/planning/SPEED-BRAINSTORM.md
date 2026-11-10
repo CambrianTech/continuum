@@ -184,6 +184,39 @@ halved residents' decode (13.2 -> 6.9 tok/s, inference: shared unified-memory ba
   agents, own worktrees and target dirs, cheap models for mechanical moves, Codex owns order.
 - **Idle machines** (IntelMac, MacBook Pro, the 5090 when free) run agents' checks.
 
+## The pipelined cache: compute only what is new (Joel, 2026-11-10)
+
+Joel: "computed once, phased out as it is no longer needed"; "cache levels everywhere"; "disk is
+cheap"; "only one needs to have computed it"; "like a high end graphics engine: light maps,
+texture computations"; "it's gotta work under the governor too".
+
+Measured on the M5 the same day (205 landed act pairs): 1.28M tokens prefilled, 19% new; 65% of
+the recompute was view turnovers; prefill 54% of act time, decode 39%, queue 8%; the median gap
+between acts 2.0 s (so prefill-ahead per mind has little to hide in; the cache is the lever).
+
+- **Keep what is computed** (live 1ee16e3b4): her sent view is resident, so the price never holds
+  less than it (`least`). After a cold first act Aiko's acts prefilled 554-1,478 fresh tokens on
+  27-30k cached, against 5,527 fresh at the day's median.
+- **Tiers, texture-streamed:** GPU KV <-> RAM <-> disk per mind, confirmed saves on every switch,
+  prefetch ahead of her predicted turn, write-behind during decode, restore at boot and on
+  shutdown. The engine's RAM prompt cache (`--cache-ram`, 5.2 GB) evicts by age at 0.3-1 GB per
+  entry and never spills to disk: size it from free memory, evict by value, spill to disk.
+- **The disk tier governed:** `kv-pages` was a deferred eviction class; 30 GB on disk, 3.1 GB
+  restorable (19.4 GB unconfirmed pages, 7.4 GB an unserved model). A broker pool evicts unserved
+  models, then unconfirmed pages, then the coldest non-resident confirmed pages.
+- **Shared between minds:** exact KV reuse needs an identical prefix. The four minds' system
+  prompts already share their first 5,912 chars (verbs, doctrine; identity after); the engine
+  copies a shared trunk to each sequence (`seq_cp`) instead of prefilling it per slot. Next: a
+  shared-corpus layer after the head (files several minds read, ordered by measured reuse), so
+  the first mind to read a file pays for it. Position-independent reuse (CacheBlend-style) works
+  on attention layers only; this hybrid model's recurrent layers rule it out.
+- **Her output is free input:** what she decoded is already in KV; render her turn in the bytes
+  she generated (her reasoning stripped by the template costs 160-280 tokens per act).
+- **Graphics-engine extras:** batched decode across minds (many draws, one submit), shadow
+  sequences building her next epoch in idle device time, predicted prefetch.
+- **Never a miss for a file read once:** a whole file read inline names its handle, so she reopens
+  it instead of re-reading (20 identical re-reads, 2,876 s in 6 h).
+
 ## Ideas from anyone (append below)
 
 - 
