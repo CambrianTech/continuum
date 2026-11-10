@@ -34,7 +34,7 @@ use safetensors::Dtype as StDtype;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    let input_path = get_arg(&args, "--input").unwrap_or_else(|| {
+    let Some(input_path) = get_arg(&args, "--input") else {
         eprintln!("Usage: dequantize_gguf --input <path.gguf> --output <dir/>");
         eprintln!("Example:");
         eprintln!(
@@ -44,12 +44,12 @@ fn main() {
             "                  --output ~/.continuum/genome/models/qwen14b-compacted-v1/bf16/"
         );
         std::process::exit(1);
-    });
+    };
 
-    let output_dir = get_arg(&args, "--output").unwrap_or_else(|| {
+    let Some(output_dir) = get_arg(&args, "--output") else {
         eprintln!("--output <dir/> required");
         std::process::exit(1);
-    });
+    };
 
     let input = PathBuf::from(&input_path);
     let output = PathBuf::from(&output_dir);
@@ -187,7 +187,9 @@ fn dequantize(gguf_path: &Path, output_dir: &Path) -> Result<(), String> {
     // Phase 4: Copy supporting files so the safetensors backend can load the model.
     // head_topology.json (or compacted_model.topology.json) is required for CompactLlama
     // to load the pruned per-layer head counts correctly.
-    let gguf_dir = gguf_path.parent().unwrap_or(Path::new("."));
+    let gguf_dir = gguf_path
+        .parent()
+        .ok_or_else(|| format!("{gguf_path:?} names no file inside a directory"))?;
     for filename in &[
         "config.json",
         "tokenizer.json",
