@@ -71,13 +71,27 @@ test('API uncertainty fails instead of dispatching expensive work', async () => 
   assert.equal(calls.filter(call => call.options.method === 'POST').length, 0);
 });
 
-test('cron and successful canary checks share admission and protect active builds', async () => {
+test('a completion wake drains a newer key skipped behind a build, then stops at its published manifests', async () => {
+  const busy = source({ running: true });
+  assert.equal((await runPublication(busy.api, 'Example/repo', false, async () => sha)).dispatched, false);
+  assert.equal(busy.calls.filter(call => call.options.method === 'POST').length, 0);
+  const finished = source();
+  assert.equal((await runPublication(finished.api, 'Example/repo', false, async () => sha)).dispatched, true);
+  assert.equal(finished.calls.filter(call => call.options.method === 'POST').length, 1);
+  const published = source({ complete: true });
+  assert.equal((await runPublication(published.api, 'Example/repo', false, async () => sha)).dispatched, false);
+  assert.equal(published.calls.filter(call => call.options.method === 'POST').length, 0);
+});
+
+test('cron, successful canary checks and publication completion share admission and protect active builds', async () => {
   const workflow = await readFile(new URL('../../../.github/workflows/core-binaries-hourly.yml', import.meta.url), 'utf8');
   const publisher = await readFile(new URL('../../../.github/workflows/core-binaries.yml', import.meta.url), 'utf8');
   assert.match(workflow, /cron: '23 \* \* \* \*'/);
-  assert.match(workflow, /workflow_run:\r?\n    workflows: \['Continuum Rust Tests'\]\r?\n    types: \[completed\]\r?\n    branches: \[canary\]/);
+  assert.match(workflow, /workflow_run:\r?\n    workflows: \['Continuum Rust Tests', 'core-binaries'\]\r?\n    types: \[completed\]\r?\n    branches: \[canary\]/);
   assert.match(workflow, /workflow_run\.conclusion == 'success'/);
   assert.match(workflow, /workflow_run\.event == 'push'/);
+  assert.match(workflow, /workflow_run\.name == 'Continuum Rust Tests' &&\s+github\.event\.workflow_run\.event == 'push'/);
+  assert.match(workflow, /workflow_run\.name == 'core-binaries' &&\s+github\.event\.workflow_run\.event == 'workflow_dispatch'/);
   assert.match(workflow, /workflow_run\.head_branch == 'canary'/);
   assert.match(workflow, /workflow_run\.head_repository\.full_name == github\.repository/);
 

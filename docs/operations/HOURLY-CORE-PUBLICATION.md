@@ -1,9 +1,13 @@
 # Hourly canary publication: staged activation
 
 The enabled dispatcher runs after successful `Continuum Rust Tests` push runs on
-canary, as well as hourly, for the latest unpublished canary revision. Both events
-use the same admission script and concurrency group. PR/fork runs, failures and
-manual upstream runs do not trigger publication. Both automatic events obey
+canary, after successful `core-binaries` publication dispatches, and hourly, for
+the latest unpublished canary revision. These events use the same admission script
+and concurrency group. Publication completion rechecks the latest key when its
+earlier wake skipped behind an active build; complete manifests make that recheck
+a no-op. PR/fork runs, failures and manually started test runs do not trigger
+publication. Failed publication waits for the next ordinary wake rather than
+creating an immediate retry loop. All automatic events obey
 `CORE_BINARIES_HOURLY_ENABLED`; disabling it retains manual dry-run/dispatch.
 `workflow_run`, like cron, requires this workflow on the repository default branch.
 The hourly event still recovers missed completions; a delayed cron no longer holds
