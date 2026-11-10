@@ -285,16 +285,15 @@ pub(super) fn lived_examples(
     }
     kept
         .into_iter()
-        .map(|call| TrainingExample {
-            prompt: call
-                .request
-                .messages
-                .last()
-                .map(|m| m.content_text())
-                .unwrap_or_default(),
-            completion: call.response.text.clone(),
-            metadata: Some(metadata.clone()),
-            lived: Some(call.clone()),
+        // A call with no message has no prompt to learn from: it yields no example, never an empty one.
+        .filter_map(|call| {
+            let prompt = call.request.messages.last()?.content_text();
+            Some(TrainingExample {
+                prompt,
+                completion: call.response.text.clone(),
+                metadata: Some(metadata.clone()),
+                lived: Some(call.clone()),
+            })
         })
         .collect()
 }
