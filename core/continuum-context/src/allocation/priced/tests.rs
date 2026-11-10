@@ -237,3 +237,19 @@ fn a_need_past_the_trained_context_is_a_defect_and_an_unmeasured_price_records_n
     assert!(matches!(binds.need, ActNeed::BeyondTrained(beyond) if beyond.needed > 12_000), "{:?}", binds.need);
     assert_eq!(allocate(262_144, overflowing(900_000, ContextPrice::Unmeasured)).need, ActNeed::Unpriced);
 }
+
+// what this catches (the M5, 2026-11-10): the price holding a window below what her live view
+// already sent, so her epoch turned over every second act and re-prefilled what the engine held.
+// A view source whose flex basis (what the engine received) sits above its floor is part of what
+// she must hold: the priced window never drops below it.
+#[test]
+fn the_price_never_holds_less_than_her_view_already_sent() {
+    let window = 755_456;
+    let free = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
+    let Priced::Held { held: free_held, .. } = free.priced else { panic!("fixture: priced {:?}", free.priced) };
+    let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, m5());
+    let sent = free_held + 20_000;
+    claims.view[1].claim.min_tokens = sent; // her conversation: what the engine already holds
+    let plan = allocate(window, claims);
+    assert!(held(&plan) >= sent, "the price holds what she sent: {} < {sent}", held(&plan));
+}

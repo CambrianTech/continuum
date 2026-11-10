@@ -26,8 +26,8 @@
 //! - show what she acts through below its summary ([`Consumer::Actionable`]: her tools, her held
 //!   card whole); a pointer stays reachable only through the hard-limit path, a window too small;
 //! - price out what she must hold ([`least`]): every hard limit, her held head levels (a head
-//!   changed mid-epoch re-prefills her whole prompt), her newest result WHOLE (goal 7) and her
-//!   reply's measured need. A window no larger than that is the window as before
+//!   changed mid-epoch re-prefills her whole prompt), her newest result WHOLE (goal 7), her
+//!   reply's measured need, and what her live view already sent (resident: it costs no prefill). A window no larger than that is the window as before
 //!   ([`Priced::WindowBinds`]); an unmeasured act time prices nothing ([`Priced::Unmeasured`]).
 //!
 //! How it searches: ternary on the held window over the measured part of `[least, window]`, to the
@@ -94,11 +94,25 @@ fn choosable(claims: &ActClaims) -> ActClaims {
 /// measured need.
 fn least(claims: &ActClaims) -> u32 {
     let held_above = |head: &Head| head.holding().map_or(0, |held| held.cost.saturating_sub(head.leveled.hard_limit())); // map_or: a head no epoch holds adds nothing above its hard limit
+    // Her live view's sent content (each source's flex basis above its floor): computed once and
+    // resident, so it adds no prefill to her act; a price that held less turned her epoch over and
+    // re-prefilled all of it (the M5, 2026-11-10: views granted 7.5k-13.5k of 41k-49k windows, an
+    // epoch every second act, her act time measured on those re-prefills priced the window down).
+    let view_held: u32 = claims
+        .view
+        .iter()
+        .map(|view| {
+            let claim = &view.claim;
+            let counted = if claim.required { claim.floor_tokens } else { 0 };
+            if claim.min_tokens > claim.floor_tokens { claim.min_tokens.saturating_sub(counted) } else { 0 }
+        })
+        .fold(0u32, u32::saturating_add);
     hard_limits(claims)
         .saturating_add(held_above(&claims.framing))
         .saturating_add(held_above(&claims.tools))
         .saturating_add(claims.newest.whole())
         .saturating_add(claims.reply.floor_tokens)
+        .saturating_add(view_held)
 }
 
 /// The context `plan` holds: its window less her reply's grant.
