@@ -17,3 +17,6 @@ pub use expert_eval_cb::*;
 // ─── Tests ───────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests;
+
+mod context_memory;
+pub use context_memory::*;

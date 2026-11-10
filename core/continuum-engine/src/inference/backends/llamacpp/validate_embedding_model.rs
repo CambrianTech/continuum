@@ -37,7 +37,9 @@ pub(super) fn embed_model(model: &Model, texts: &[String]) -> Result<Vec<Vec<f32
     if texts.is_empty() {
         return Ok(Vec::new());
     }
-    EmbeddingBatch::tokenize(model, texts)?.embed(model)
+    let batch = EmbeddingBatch::tokenize(model, texts)?;
+    let plan = batch.memory_plan(model)?;
+    batch.embed(model, &plan)
 }
 
 /// A caller-issued nonzero generation window; model metadata cannot create one.

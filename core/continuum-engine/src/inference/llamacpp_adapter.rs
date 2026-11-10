@@ -56,16 +56,7 @@ use std::time::Instant;
 /// "local" → device-filtered local-GPU selection logic).
 pub const LLAMACPP_PROVIDER_ID: &str = "llamacpp-local";
 
-/// The embed lane's identity on the resource board — the `consumer_id` on both
-/// its per-call VRAM leases and its standing reservation floor.
-pub const EMBED_LANE_CONSUMER_ID: &str = "embed";
-
-/// The embed lane's standing VRAM FLOOR on the board, reserved at resolve so serving's plan can
-/// never grow into the slice cognition embeds in (#225, measured 2026-08-08: the grown window left
-/// 604 MiB governed-available and embedding went fully dead): a 2,048-token context (1,450 MiB
-/// measured 2026-11-10) plus headroom. Each call leases only what its own context allocates
-/// (`EmbeddingBatch::context_bytes`), so a short text fits inside this floor many times over.
-pub const EMBED_LANE_VRAM_BYTES: u64 = 1792 * 1024 * 1024;
+pub use super::embed_lane_memory::EMBED_LANE_CONSUMER_ID;
 
 /// Overlay live runtime metadata (throughput) on top of the registry's
 /// declared ModelInfo. Context-window still flows from `backend.n_ctx_train()`
@@ -755,95 +746,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // Wait without a memory claim. The admitted worker owns both through context teardown,
         // even when the request future is cancelled after spawn_blocking starts.
         let embedding = backend.admit_embedding().await?;
-        // Tokenized first, so the context's memory is known before it exists. The embedding forward
-        // pass allocates a Metal context sized to the longest text (measured per token in
-        // `EmbeddingBatch`). UNGOVERNED, it grabbed that context behind the governor's back and
-        // competed with the serving lane for VRAM; under pressure the Metal command buffer OOM'd and
-        // the decode returned an ALL-ZERO vector, the "degenerate embedding" that silently broke
-        // semantic recall. So the VRAM is leased FIRST: granted, the bytes are reserved for the life
-        // of the guard; refused, it fails LOUD instead of allocating a doomed context. The lease is
-        // what THIS request allocates: a fixed 1,792 MiB bound for the longest text refused 91% of
-        // short ones on the M5 (26960c09d, 758 of 834 in 3 h, with 1.5-1.7 GiB free).
-        //
-        // The embed lane's standing FLOOR on the board (so serving can never grow into this slice,
-        // Joel 2026-08-08: "the budgeter just has all its parts figure it out") is claimed at
-        // embedder resolve via [`crate::resources::ResourceDaemon::reserve`].
-        let batch = embedding.tokenize(&texts)?;
-        let lease_bytes = batch.context_bytes();
-        // derived-or-floor: a SIGKILL backstop only; the RAII guard frees the bytes on drop, and an
-        // embedding finishes in under a second, so the TTL never decides a live lease.
-        const EMBED_LANE_LEASE_TTL_MS: u64 = 60_000;
-        let _vram_lease = {
-            use crate::resources::{
-                LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind,
-            };
-            match ResourceDaemon::global() {
-                Some(daemon) => {
-                    let req = LeaseRequest {
-                        consumer_id: EMBED_LANE_CONSUMER_ID.to_string(),
-                        kind: ResourceKind::Vram,
-                        bytes: lease_bytes,
-                        // A bounded, sub-second forward pass is not yanked mid-embed;
-                        // the guard returns the bytes the instant it finishes.
-                        ttl_ms: EMBED_LANE_LEASE_TTL_MS,
-                        reclaim_policy: ReclaimPolicy::Pinned,
-                    };
-                    // ONE bounded retry on a capacity refusal (never a loop,
-                    // [[brittleness-is-the-highest-priority-work-there-is]]): with the standing
-                    // floor reserved at resolve, a refusal here means a TRANSIENT over-commit (a
-                    // lane mid-relaunch, a burst), and relief lands within a governor tick. The
-                    // second refusal is the honest failure, with the availability it measured.
-                    let attempt = |attempt: u8| match daemon.acquire_guarded(&req) {
-                        Ok(guard) => {
-                            continuum_base::probe!(
-                                class = "embed.vram.leased",
-                                consumer = EMBED_LANE_CONSUMER_ID,
-                                bytes = lease_bytes,
-                                texts = texts.len(),
-                                retried = (attempt > 0),
-                                "embedding lane acquired a governed VRAM lease"
-                            );
-                            Ok(Ok(guard))
-                        }
-                        Err(LeaseError::InsufficientCapacity { available, .. }) => {
-                            continuum_base::probe!(
-                                class = "embed.vram.refused",
-                                requested = lease_bytes,
-                                available = available,
-                                attempt = attempt,
-                                "embedding VRAM lease refused — failing loud, NOT emitting degenerate zeros"
-                            );
-                            Ok(Err(available))
-                        }
-                        Err(e) => Err(format!("embed: VRAM lease error ({e:?}) — refusing to embed ungoverned")),
-                    };
-                    let leased = match attempt(0)? {
-                        Ok(guard) => Ok(guard),
-                        Err(_) => {
-                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                            attempt(1)?
-                        }
-                    };
-                    match leased {
-                        Ok(guard) => Some(guard),
-                        Err(available) => {
-                            return Err(format!(
-                                "embed: VRAM lease refused twice — {} MiB requested, {} MiB governed-available. \
-                                 Refusing to allocate an OOM-doomed embedding context (it would decode to \
-                                 degenerate zeros). Free VRAM (tier down serving) and retry.",
-                                lease_bytes / (1024 * 1024),
-                                available / (1024 * 1024),
-                            ));
-                        }
-                    }
-                }
-                // Ungoverned node (no ResourceDaemon::global()): behavior unchanged —
-                // the backend's own new_context allocation is the only gate, as before.
-                None => None,
-            }
-        };
-
-        let embeddings = embedding.run(batch, _vram_lease).await?;
+        let count = texts.len();
+        let prepared = embedding.prepare(texts).await?;
+        let lease = super::embed_lane_memory::lease(prepared.memory_plan(), count).await?;
+        let embeddings = prepared.run(lease).await?;
         Ok(EmbeddingResponse {
             embeddings,
             model: model_id,

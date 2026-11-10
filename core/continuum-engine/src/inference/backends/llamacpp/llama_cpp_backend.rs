@@ -14,7 +14,7 @@ impl LlamaCppBackend {
             .model_path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".into());
+            .unwrap_or_else(|| "unknown".into()); // Diagnostic label only; model loading still uses the original path.
 
         let load_start = Instant::now();
         let model = Model::load(
@@ -50,7 +50,6 @@ impl LlamaCppBackend {
         })
     }
 
-    /// The model's real capability facts (read once at load).
     pub fn capabilities(&self) -> &ModelCapabilities {
         &self.caps
     }
