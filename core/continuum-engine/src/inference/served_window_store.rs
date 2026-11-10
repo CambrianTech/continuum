@@ -16,6 +16,11 @@ use serde::{Deserialize, Serialize};
 
 const FILE: &str = "served-window.json";
 
+/// How long a candidate must sit on disk before it can be promoted to observed.
+/// A transient boot may serve prompts and look stable for a few reconcile ticks,
+/// but only geometry that survives the full steady-state window earns promotion.
+const CANDIDATE_STABILIZATION_MS: u64 = 30_000;
+
 /// Geometry observed under the endpoint owner's generation lease, not a planner proposal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServedGeometry {
@@ -42,10 +47,12 @@ pub struct StoredServedWindow {
     #[serde(default)]
     pub observed_prompt_tokens: Option<u32>,
     pub set_at_ms: u64,
-    /// Current settled launch. It does not replace the last observed geometry
-    /// until successful usage from this exact generation observes it.
     #[serde(default)]
     pub candidate: Option<ServedGeometry>,
+    /// Epoch milliseconds when the current candidate was first recorded.
+    /// `observe_to` only promotes to observed after this exceeds CANDIDATE_STABILIZATION_MS.
+    #[serde(default)]
+    pub candidate_set_at_ms: u64,
 }
 
 impl StoredServedWindow {
@@ -139,6 +146,7 @@ fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
         observed_prompt_tokens: None,
         set_at_ms: continuum_base::time::EpochMs::now().millis(),
         candidate: None,
+        candidate_set_at_ms: 0,
     });
     let candidate = geometry;
     // Settlement repeats; a later tick cannot rewrite an owned generation's shape.
@@ -147,6 +155,7 @@ fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
     }
     if stored.candidate.as_ref() != Some(&candidate) {
         stored.candidate = Some(candidate);
+        stored.candidate_set_at_ms = continuum_base::time::EpochMs::now().millis();
         write_record(path, &stored);
     }
 }
