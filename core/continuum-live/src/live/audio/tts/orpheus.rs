@@ -38,58 +38,11 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use tokenizers::Tokenizer;
 
-// ─── Orpheus Token Constants (verified against the GGUF's own metadata,
-// 2026-09-02: vocab 156,940 = 128,256 Llama + <custom_token_0..28682> + <|audio|>).
-// The first cut of this adapter invented `<|text_start|>`/`<|audio_end|>` tokens
-// that DO NOT EXIST in the model — it could never have produced speech. The
-// real canopylabs protocol, id-level:
-//   prompt  = [SOH] ++ encode("{voice}: {text}") ++ [EOT, EOH]
-//   output  = … SOA, <audio tokens>, EOA
-// Each audio token encodes (position-band, code): id − OFFSET − (pos%7)·4096,
-// seven tokens per SNAC frame → the audio span is 7 bands × 4096, NOT 3×4096.
-const AUDIO_TOKEN_OFFSET: u32 = 128266; // <custom_token_10>
-const CODEBOOK_SIZE: u32 = 4096;
-const NUM_CODEBOOKS: usize = 3;
-// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
-// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
-const TOKENS_PER_FRAME: usize = 7;
-/// Full audio-token span: one 4096 band per frame position.
-const AUDIO_TOKEN_SPAN: u32 = TOKENS_PER_FRAME as u32 * CODEBOOK_SIZE; // 28672
-/// `<custom_token_3>` — start of the human turn.
-// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
-// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
-const SOH_TOKEN: u32 = 128259;
-/// Llama-3 `<|eot_id|>` — closes the text.
-// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
-// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
-const EOT_TOKEN: u32 = 128009;
-/// `<custom_token_4>` — end of human turn.
-// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
-// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
-const EOH_TOKEN: u32 = 128260;
-/// `<custom_token_5>` — the reference's 3rd end token.
-// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
-// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
-const END3_TOKEN: u32 = 128261;
-/// `<custom_token_1>` — START OF AUDIO: tells the model to speak THIS text.
-/// Missing it (measured 2026-09-02 via continuum web/fetch of engine_class.py)
-/// made the model free-generate filler ("and again") instead of the prompt.
-// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
-// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
-const SOA_TOKEN: u32 = 128257;
-/// `<custom_token_2>` — end of audio: the generation stop token.
-// context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
-// audio protocol, fixed by the model's tokenizer — not a prompt or context size.
-const EOA_TOKEN: u32 = 128258;
+mod protocol;
+use protocol::{Protocol, FRAME_LAYOUT, NUM_CODEBOOKS};
 
 /// SNAC native sample rate — Orpheus generates 24kHz audio
 const SNAC_SAMPLE_RATE: u32 = 24000;
-
-/// Max audio tokens to generate (prevents runaway generation).
-/// 7 tokens/frame × ~10 frames/sec = ~70 tokens/sec of audio.
-/// 2100 tokens ≈ 30 seconds max.
-// context-budget-exempt: the TTS model's own audio-token architecture limit, not a text-context bound
-const MAX_AUDIO_TOKENS: usize = 2100;
 
 /// Sampling params — the canonical canopylabs values (verified 2026-09-02 via
 /// continuum web/fetch of the reference impl: temperature=0.4, top_p=0.9,
@@ -127,8 +80,10 @@ struct OrpheusModel {
     tokenizer: Tokenizer,
     snac_decoder: Session,
     device: Device,
-    /// Token ID for `<|audio_end|>` (EOS for audio generation)
-    audio_end_token_id: u32,
+    protocol: Protocol,
+    /// Frames per SNAC decode, read from the decoder's own coarse input: `None`
+    /// for a dynamic-axis export, which decodes the whole utterance at once.
+    snac_window: Option<usize>,
 }
 
 /// Orpheus TTS Adapter — Llama-3B speech synthesis with emotion tags
@@ -161,7 +116,9 @@ impl OrpheusTts {
     /// own vocabulary. Byte-level BPE per `tokenizer.ggml.pre = "llama-bpe"`;
     /// special tokens never pass through encode (prompt framing is id-level),
     /// so only plain text takes this path.
-    fn tokenizer_from_gguf(content: &gguf_file::Content) -> Result<Tokenizer, TTSError> {
+    fn tokenizer_from_gguf(
+        content: &gguf_file::Content,
+    ) -> Result<(Tokenizer, Protocol), TTSError> {
         use gguf_file::Value as V;
         let meta_arr = |key: &str| -> Result<&Vec<V>, TTSError> {
             match content.metadata.get(key) {
@@ -180,18 +137,9 @@ impl OrpheusTts {
             })?;
             vocab.insert(s.clone(), i as u32);
         }
-        // SCHEME VERIFICATION, fail-loud: the constants above are only valid
-        // for the real canopylabs layout. A different fine-tune fails here
-        // with a message, never with garbage audio.
-        match vocab.get("<custom_token_10>") {
-            Some(&id) if id == AUDIO_TOKEN_OFFSET => {}
-            other => {
-                return Err(TTSError::ModelNotLoaded(format!(
-                    "GGUF token scheme mismatch: <custom_token_10> = {other:?}, \
-                     expected {AUDIO_TOKEN_OFFSET} — not a canopylabs Orpheus layout"
-                )))
-            }
-        }
+        // SCHEME VERIFICATION, fail-loud: every framing id comes from this
+        // vocabulary by name, so a different fine-tune fails here.
+        let protocol = Protocol::resolve(|name| vocab.get(name).copied(), &protocol::SNAC_24KHZ)?;
         let merge_pairs: Vec<(String, String)> = merges
             .iter()
             .filter_map(|m| {
@@ -214,7 +162,7 @@ impl OrpheusTts {
         tk.with_decoder(Some(tokenizers::decoders::byte_level::ByteLevel::new(
             false, true, true,
         )));
-        Ok(tk)
+        Ok((tk, protocol))
     }
 
     /// Search directories for model files
@@ -326,11 +274,25 @@ impl OrpheusTts {
             .map_err(|e| TTSError::ModelNotLoaded(format!("SNAC model load {model_path:?}: {e}")))
     }
 
+    /// Frames per decode call, from the decoder's own input shapes (the export
+    /// we ship fixes 12, measured 2026-09-02 from its dimension error:
+    /// `codes0 … Expected: 12`; see [`protocol::snac_window`]).
+    fn snac_window(session: &Session) -> Result<Option<usize>, TTSError> {
+        let shapes = session
+            .inputs()
+            .iter()
+            .map(|input| input.dtype().tensor_shape().map(|shape| shape.to_vec()))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| TTSError::ModelNotLoaded("SNAC decoder input is not a tensor".into()))?;
+        protocol::snac_window(&shapes).map_err(TTSError::ModelNotLoaded)
+    }
+
     /// Build the id-level Orpheus prompt: `[SOH] ++ encode("{voice}: {text}")
     /// ++ [EOT, EOH]`. Special tokens go in AS IDS — never as strings through
     /// the encoder (the byte-level BPE would shred them into text bytes).
     fn build_prompt_ids(
         tokenizer: &Tokenizer,
+        protocol: &Protocol,
         text: &str,
         voice: &str,
     ) -> Result<Vec<u32>, TTSError> {
@@ -338,10 +300,14 @@ impl OrpheusTts {
             .encode(format!("{voice}: {text}"), false)
             .map_err(|e| TTSError::SynthesisFailed(format!("Tokenization failed: {e}")))?;
         let mut ids = Vec::with_capacity(enc.get_ids().len() + 3);
-        ids.push(SOH_TOKEN);
+        ids.push(protocol.human_start);
         ids.extend_from_slice(enc.get_ids());
-        // Reference framing: [SOH] ++ text ++ [EOT, EOH, END3, SOA].
-        ids.extend_from_slice(&[EOT_TOKEN, EOH_TOKEN, END3_TOKEN, SOA_TOKEN]);
+        ids.extend_from_slice(&[
+            protocol.text_end,
+            protocol.human_end,
+            protocol.third_end,
+            protocol.audio_start,
+        ]);
         Ok(ids)
     }
 
@@ -356,7 +322,7 @@ impl OrpheusTts {
         }
 
         // ── Step 1: Build the id-level prompt (real canopylabs framing) ───
-        let prompt_tokens: Vec<u32> = Self::build_prompt_ids(&model.tokenizer, text, voice)?;
+        let prompt_tokens: Vec<u32> = Self::build_prompt_ids(&model.tokenizer, &model.protocol, text, voice)?;
         let prompt_len = prompt_tokens.len();
         clog_info!(
             "Orpheus: Prompt tokenized to {} tokens for voice '{}'",
@@ -376,14 +342,14 @@ impl OrpheusTts {
         clog_info!(
             "Orpheus: Generated {} audio tokens ({} frames)",
             audio_tokens.len(),
-            audio_tokens.len() / TOKENS_PER_FRAME
+            audio_tokens.len() / FRAME_LAYOUT.len()
         );
 
         // ── Step 3: Redistribute into SNAC codebook layers ────────────────
-        let layers = Self::redistribute_codes(&audio_tokens)?;
+        let layers = Self::redistribute_codes(&model.protocol, &audio_tokens)?;
 
         // ── Step 4: SNAC decode → 24kHz PCM ───────────────────────────────
-        let pcm_24k = Self::snac_decode(&mut model.snac_decoder, &layers)?;
+        let pcm_24k = Self::snac_decode(&mut model.snac_decoder, model.snac_window, &layers)?;
 
         clog_info!(
             "Orpheus: SNAC decoded {} samples ({:.2}s at 24kHz)",
@@ -412,8 +378,18 @@ impl OrpheusTts {
         let mut logits_processor =
             LogitsProcessor::new(seed, Some(DEFAULT_TEMPERATURE), Some(DEFAULT_TOP_P));
 
+        // The model's own trained window bounds a runaway generation: its rope
+        // table ends there (ModelWeights::context_length, from the GGUF).
+        let room = model.llm.context_length.saturating_sub(prompt_tokens.len());
+        if room == 0 {
+            return Err(TTSError::InvalidText(format!(
+                "prompt of {} tokens fills the model's {}-token window",
+                prompt_tokens.len(),
+                model.llm.context_length
+            )));
+        }
         let mut all_tokens: Vec<u32> = prompt_tokens.to_vec();
-        let mut audio_tokens: Vec<u32> = Vec::with_capacity(MAX_AUDIO_TOKENS);
+        let mut audio_tokens: Vec<u32> = Vec::new();
 
         // Prefill: process entire prompt in one forward pass
         let input = Tensor::new(prompt_tokens, &model.device)
@@ -437,13 +413,13 @@ impl OrpheusTts {
             .map_err(|e| TTSError::SynthesisFailed(format!("Sampling: {e}")))?;
 
         all_tokens.push(next_token);
-        if Self::is_audio_token(next_token) {
+        if model.protocol.is_audio(next_token) {
             audio_tokens.push(next_token);
         }
 
         // Token-by-token generation
-        for step in 1..MAX_AUDIO_TOKENS {
-            if next_token == model.audio_end_token_id {
+        for step in 1..room {
+            if next_token == model.protocol.audio_end {
                 break;
             }
 
@@ -471,7 +447,7 @@ impl OrpheusTts {
                 .map_err(|e| TTSError::SynthesisFailed(format!("Sampling: {e}")))?;
 
             all_tokens.push(next_token);
-            if Self::is_audio_token(next_token) {
+            if model.protocol.is_audio(next_token) {
                 audio_tokens.push(next_token);
             }
         }
@@ -519,66 +495,37 @@ impl OrpheusTts {
         result.map_err(|e| TTSError::SynthesisFailed(format!("Extract logits: {e}")))
     }
 
-    /// Check if a token ID is in the audio token range — the FULL 7-band span
-    /// (the 3×4096 first cut rejected every token above band 2, discarding
-    /// most of the audio stream).
-    fn is_audio_token(token_id: u32) -> bool {
-        token_id >= AUDIO_TOKEN_OFFSET && token_id < AUDIO_TOKEN_OFFSET + AUDIO_TOKEN_SPAN
-    }
-
     /// Redistribute flat audio token sequence into 3 SNAC codebook layers.
     ///
     /// Orpheus outputs audio tokens in the pattern: [c1, c2a, c2b, c3a, c3b, c3c, c3d]
     /// repeating for each audio frame. This splits them into 3 separate codebook streams.
-    fn redistribute_codes(audio_tokens: &[u32]) -> Result<[Vec<i64>; NUM_CODEBOOKS], TTSError> {
-        // Must be a multiple of TOKENS_PER_FRAME (7)
-        let usable_len = (audio_tokens.len() / TOKENS_PER_FRAME) * TOKENS_PER_FRAME;
-        if usable_len == 0 {
+    fn redistribute_codes(
+        protocol: &Protocol,
+        audio_tokens: &[u32],
+    ) -> Result<[Vec<i64>; NUM_CODEBOOKS], TTSError> {
+        // Only whole frames decode; a partial last frame is dropped.
+        let frames = audio_tokens.chunks_exact(FRAME_LAYOUT.len());
+        if frames.len() == 0 {
             return Err(TTSError::SynthesisFailed(format!(
                 "Too few audio tokens for a complete frame (got {}, need at least {})",
                 audio_tokens.len(),
-                TOKENS_PER_FRAME
+                FRAME_LAYOUT.len()
             )));
         }
-
-        let num_frames = usable_len / TOKENS_PER_FRAME;
-        let mut layer0: Vec<i64> = Vec::with_capacity(num_frames);
-        let mut layer1: Vec<i64> = Vec::with_capacity(num_frames * 2);
-        let mut layer2: Vec<i64> = Vec::with_capacity(num_frames * 4);
-
-        for frame_idx in 0..num_frames {
-            let base = frame_idx * TOKENS_PER_FRAME;
-            let tokens = &audio_tokens[base..base + TOKENS_PER_FRAME];
-
-            // Extract codebook values (strip offset, mod codebook size)
-            let code = |t: u32| -> i64 { ((t - AUDIO_TOKEN_OFFSET) % CODEBOOK_SIZE) as i64 };
-
-            // Canonical canopylabs interleave (their decoder, verbatim):
-            // frame = [L0, L1, L2, L2, L1, L2, L2] — layer1 takes positions
-            // 1 AND 4; layer2 takes 2,3,5,6. The first cut had [0,1,1,2,2,2,2],
-            // which scrambles mid/fine codebooks into noise.
-            layer0.push(code(tokens[0]));
-            layer1.push(code(tokens[1]));
-            layer2.push(code(tokens[2]));
-            layer2.push(code(tokens[3]));
-            layer1.push(code(tokens[4]));
-            layer2.push(code(tokens[5]));
-            layer2.push(code(tokens[6]));
+        let mut layers: [Vec<i64>; NUM_CODEBOOKS] = Default::default();
+        for frame in frames {
+            for (token, layer) in frame.iter().zip(FRAME_LAYOUT) {
+                layers[layer].push(protocol.code(*token));
+            }
         }
-
-        Ok([layer0, layer1, layer2])
+        Ok(layers)
     }
 
-    /// Decode SNAC codebook layers → 24kHz PCM audio using ONNX decoder
-    /// The SNAC ONNX export's FIXED frame window for the coarse codebook
-    /// (measured 2026-09-02 from the model's own dimension error: `codes0 …
-    /// Expected: 12`). Layers scale 1×/2×/4× per SNAC's hierarchy.
-    // context-budget-exempt: a vocabulary token id / codec frame geometry of the Orpheus
-    // audio protocol, fixed by the model's tokenizer — not a prompt or context size.
-    const SNAC_WINDOW_FRAMES: usize = 12;
-
+    /// Decode SNAC codebook layers → 24kHz PCM audio using the ONNX decoder,
+    /// `window` frames per call (layers scale 1×/2×/4× per SNAC's hierarchy).
     fn snac_decode(
         session: &mut Session,
+        window: Option<usize>,
         layers: &[Vec<i64>; NUM_CODEBOOKS],
     ) -> Result<Vec<f32>, TTSError> {
         // CHUNKED decode: the ONNX export takes a fixed 12-frame window (the
@@ -599,9 +546,13 @@ impl OrpheusTts {
         // zero-codes which click. The output PCM is TRIMMED back to the true
         // frame count below, so short utterances (a 3-frame selftest phrase,
         // measured 2026-09-02) and clip tails both survive losslessly.
+        let frames_per_call = match window {
+            Some(frames) => frames,
+            None => total_frames,
+        };
         let mut padded: [Vec<i64>; NUM_CODEBOOKS] = layers.clone();
-        let windows = total_frames.div_ceil(Self::SNAC_WINDOW_FRAMES);
-        let padded_frames = windows * Self::SNAC_WINDOW_FRAMES;
+        let windows = total_frames.div_ceil(frames_per_call);
+        let padded_frames = windows * frames_per_call;
         for (i, layer) in padded.iter_mut().enumerate() {
             let per_frame = 1usize << i;
             let last = layer[layer.len() - per_frame..].to_vec();
@@ -616,8 +567,8 @@ impl OrpheusTts {
             for (i, layer) in layers.iter().enumerate() {
                 // Layer i carries 2^i codes per frame (1/2/4 — SNAC hierarchy).
                 let per_frame = 1usize << i;
-                let start = w * Self::SNAC_WINDOW_FRAMES * per_frame;
-                let len = Self::SNAC_WINDOW_FRAMES * per_frame;
+                let start = w * frames_per_call * per_frame;
+                let len = frames_per_call * per_frame;
                 let chunk = layer[start..start + len].to_vec();
                 let array = Array2::from_shape_vec((1, len), chunk).map_err(|e| {
                     TTSError::SynthesisFailed(format!("SNAC input layer {i} reshape: {e}"))
@@ -645,7 +596,7 @@ impl OrpheusTts {
         clog_info!(
             "Orpheus: SNAC decoded {} windows × {} frames → {} samples ({} true frames)",
             windows,
-            Self::SNAC_WINDOW_FRAMES,
+            frames_per_call,
             pcm.len(),
             total_frames
         );
@@ -716,12 +667,11 @@ impl TextToSpeech for OrpheusTts {
         )
         .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to read GGUF content: {e}")))?;
 
-        let tokenizer = Self::tokenizer_from_gguf(&gguf_content)?;
+        let (tokenizer, protocol) = Self::tokenizer_from_gguf(&gguf_content)?;
         clog_info!(
             "Orpheus: tokenizer built from GGUF metadata ({} tokens, scheme verified)",
             tokenizer.get_vocab_size(true)
         );
-        let audio_end_token_id = EOA_TOKEN;
 
         let mut reader =
             BufReader::new(std::fs::File::open(&gguf_path).map_err(|e| {
@@ -743,6 +693,7 @@ impl TextToSpeech for OrpheusTts {
         // Load SNAC decoder
         let snac_path = model_dir.join("snac_decoder.onnx");
         let snac_decoder = Self::build_snac_session(&snac_path)?;
+        let snac_window = Self::snac_window(&snac_decoder)?;
         clog_info!(
             "Orpheus: SNAC decoder loaded ({} inputs, {} outputs)",
             snac_decoder.inputs().len(),
@@ -762,7 +713,8 @@ impl TextToSpeech for OrpheusTts {
             tokenizer,
             snac_decoder,
             device,
-            audio_end_token_id,
+            protocol,
+            snac_window,
         };
 
         let _ = ORPHEUS_MODEL.load_with(|| Ok::<_, TTSError>(Mutex::new(model)));
@@ -852,40 +804,21 @@ mod tests {
     }
 
     #[test]
-    fn test_is_audio_token() {
-        // Below range
-        assert!(!OrpheusTts::is_audio_token(128265));
-        // Start of range
-        assert!(OrpheusTts::is_audio_token(AUDIO_TOKEN_OFFSET));
-        // Middle of range
-        assert!(OrpheusTts::is_audio_token(AUDIO_TOKEN_OFFSET + 6000));
-        // End of range: the FULL 7-band span (a 3-band bound rejected most
-        // of the real audio stream — what this catches).
-        assert!(OrpheusTts::is_audio_token(
-            AUDIO_TOKEN_OFFSET + AUDIO_TOKEN_SPAN - 1
-        ));
-        // Above range
-        assert!(!OrpheusTts::is_audio_token(
-            AUDIO_TOKEN_OFFSET + AUDIO_TOKEN_SPAN
-        ));
-    }
-
-    #[test]
-    fn test_redistribute_codes_canonical_interleave() {
+    fn test_redistribute_codes_canonical_interleave() -> Result<(), TTSError> {
         // what this catches: the canopylabs frame layout is [L0,L1,L2,L2,L1,L2,L2]
         // — layer1 takes positions 1 AND 4. The first cut used [0,1,1,2,2,2,2],
         // which scrambled mid/fine codebooks into noise. Each position sits in
-        // its own 4096 band (id = OFFSET + band*4096 + code), per the model's
-        // real token scheme read from the GGUF.
+        // its own band (id = base + position*band + code).
+        let p = protocol::canopylabs()?;
         let mut audio_tokens = Vec::new();
         for frame in 0..2u32 {
             for pos in 0..7u32 {
                 // code value = frame*10 + pos, in position-band `pos`
-                audio_tokens.push(AUDIO_TOKEN_OFFSET + pos * CODEBOOK_SIZE + frame * 10 + pos);
+                audio_tokens.push(p.audio_base + pos * p.band + frame * 10 + pos);
             }
         }
 
-        let layers = OrpheusTts::redistribute_codes(&audio_tokens).unwrap();
+        let layers = OrpheusTts::redistribute_codes(&p, &audio_tokens)?;
         assert_eq!(layers[0].len(), 2); // 1/frame
         assert_eq!(layers[1].len(), 4); // 2/frame (positions 1 and 4)
         assert_eq!(layers[2].len(), 8); // 4/frame (positions 2,3,5,6)
@@ -898,35 +831,26 @@ mod tests {
         assert_eq!(layers[2][1], 3); // pos 3
         assert_eq!(layers[2][2], 5); // pos 5
         assert_eq!(layers[2][3], 6); // pos 6
+        assert_eq!(layers[0][1], 10); // frame 1, pos 0
+        Ok(())
     }
 
     #[test]
-    fn test_redistribute_codes_too_few_tokens() {
-        let tokens = vec![AUDIO_TOKEN_OFFSET; 5]; // Less than 7
-        let result = OrpheusTts::redistribute_codes(&tokens);
-        assert!(result.is_err());
+    fn test_redistribute_codes_too_few_tokens() -> Result<(), TTSError> {
+        let p = protocol::canopylabs()?;
+        let tokens = vec![p.audio_base; 5]; // Less than one frame
+        assert!(OrpheusTts::redistribute_codes(&p, &tokens).is_err());
+        Ok(())
     }
 
     #[test]
-    fn test_redistribute_codes_truncates_partial_frame() {
+    fn test_redistribute_codes_truncates_partial_frame() -> Result<(), TTSError> {
         // 10 tokens: 1 complete frame (7) + 3 leftover (discarded)
-        let tokens: Vec<u32> = (0..10).map(|i| AUDIO_TOKEN_OFFSET + i).collect();
-        let layers = OrpheusTts::redistribute_codes(&tokens).unwrap();
+        let p = protocol::canopylabs()?;
+        let tokens: Vec<u32> = (0..10).map(|i| p.audio_base + i).collect();
+        let layers = OrpheusTts::redistribute_codes(&p, &tokens)?;
         assert_eq!(layers[0].len(), 1); // Only 1 complete frame
-    }
-
-    #[test]
-    fn prompt_framing_constants_match_the_gguf_scheme() {
-        // what this catches: drift in the id-level framing. These ids are the
-        // canopylabs scheme verified against the GGUF's own token table
-        // (2026-09-02); tokenizer_from_gguf re-verifies at every init and
-        // fails loud on a different fine-tune.
-        assert_eq!(SOH_TOKEN, 128259);
-        assert_eq!(EOT_TOKEN, 128009);
-        assert_eq!(EOH_TOKEN, 128260);
-        assert_eq!(EOA_TOKEN, 128258);
-        assert_eq!(AUDIO_TOKEN_OFFSET, 128266);
-        assert_eq!(AUDIO_TOKEN_SPAN, 28672);
+        Ok(())
     }
 
     #[test]
