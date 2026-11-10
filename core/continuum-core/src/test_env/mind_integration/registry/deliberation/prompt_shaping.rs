@@ -501,7 +501,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     assert!(
         faculty.describe_tool_tokens()
             + faculty.framing_floor_tokens() as usize
-            + LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS as usize // the reply's flex floor — the smallest grant production gives a reply
+            + 1 // the engine's one free cell, the least room a reply needs to begin
             <= needed as usize,
         "min_window_for_agentic_surface({needed}) must clear its own arithmetic"
     );

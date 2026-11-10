@@ -176,7 +176,6 @@ impl LlmDeliberationFaculty {
             needed = needed,
             tool_tokens = tools,
             framing_tokens = self.framing_floor_tokens(),
-            reply_floor_tokens = Self::COMPLETION_FLOOR_TOKENS,
             "served window is too small to hold framing + tools + a reply — this citizen \
              will struggle to ACT (she can still speak). Raise the window to at least \
              `needed`, or serve a model with a larger context."

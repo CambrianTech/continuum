@@ -636,7 +636,7 @@ async fn a_prompt_denser_than_her_measured_density_is_refit_before_generation() 
     let charged = (cost(resent) as u64 * u64::from(requested)).div_ceil(cost(refused).max(1) as u64).max(cost(resent) as u64);
     let allowance = resent.max_tokens.expect("test: the refit names its reply allowance"); // JUSTIFIED: test fixture
     assert!(charged + u64::from(allowance) <= u64::from(window), "{charged} + {allowance} > {window}");
-    assert!(allowance >= LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS, "her reply's allowance survives: {allowance}");
+    assert!(allowance >= 1, "her reply's allowance survives: {allowance}");
 }
 
 // The fitted view observed 4k; the same adapter grows before refusal is

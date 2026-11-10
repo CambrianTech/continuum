@@ -636,15 +636,16 @@ fn prompt_view_stays_within_the_served_window() {
 #[test]
 fn the_reply_claims_her_measured_need_and_no_cap() {
     use crate::cognition::working_set::OutputNeed;
-    let floor = LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS;
-    let prior = LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS;
+    // Nothing measured on this node: nothing reserved, nothing wanted (never a guessed size).
+    let floor = 0;
+    let prior = 0;
     // (floor, wanted, priority)
     let shape = |c: continuum_context::flex::FlexClaim| {
         assert_eq!(c.min_tokens, c.floor_tokens, "above its floor the reply grows by priority");
         assert!(c.required, "the reply always gets its floor");
         (c.floor_tokens, c.max_tokens, c.priority)
     };
-    // Unmeasured: a reply-sized prior, never a window fraction.
+    // Unmeasured on this node: nothing reserved or wanted, never a window fraction.
     assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, false, None)), (floor, prior, 4));
     assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, true, None)), (floor, prior, 6));
     assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, false, false, None)), (0, prior, 8), "an unmeasured act reserves nothing");
@@ -731,7 +732,7 @@ async fn an_unmeasured_turn_carries_its_measured_grant_and_no_cap() {
     .with_context_window(window);
     let ws = Workspace::new("act on the card");
     let view = faculty.prompt_view(&ws);
-    assert_eq!(view.completion_reserve, LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS, "an unmeasured reply claims the prior, no cap");
+    assert_eq!(view.completion_reserve, 0, "an unmeasured reply on a node with nothing measured claims nothing");
     let binding = faculty.binding.load_full();
     for (kind, purpose) in [
         (TurnKind::Act, "cognition/act"),

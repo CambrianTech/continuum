@@ -78,7 +78,9 @@ fn an_unmeasured_mind_reserves_a_reply_not_a_fraction_of_her_window() {
     // Deliberately a SPREAD, not our fleet's windows: an unmeasured reply costs what
     // a reply costs on ANY lane — a phone-sized 4k, a laptop 32k, a 5090's 101k, a
     // 1M frontier seat.
-    let prior = LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS;
+    // Nothing measured on this node: the reply wants nothing in the allocation (its request
+    // carries the room its prompt leaves, once), never a share of the window, at any size.
+    let prior = 0;
     for window in [
         crate::inference::planning::MIN_SERVE_CTX,
         4_096,
@@ -167,7 +169,7 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     };
 
     let cold = wanted(persona, 0);
-    assert_eq!(cold, LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS);
+    assert_eq!(cold, 0, "nothing measured on this node: wants nothing, never a guessed size");
     // (a) one landed turn is measured: its p90 is that turn, and it replaces the prior
     reg.record_emission_in_memory(persona, 2_500, 0, EmissionStop::Landed, 1);
     assert_eq!(wanted(persona, 0), 2_500);
@@ -183,7 +185,7 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     for t in 1..=3 {
         reg.record_emission_in_memory(quiet, 40, 0, EmissionStop::Landed, t);
     }
-    assert_eq!(wanted(quiet, 0), LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS);
+    assert_eq!(wanted(quiet, 0), 40, "her measured answer, never a constant floor");
     // (d) a turn cut mid-answer at 5,000 is a bound of 5,000: her answer's room is the
     // median past it, 10,000 — a citizen who needs the room has it on the next turn.
     reg.record_emission_in_memory(persona, 5_000, 0, EmissionStop::CutMidAnswer, 4);

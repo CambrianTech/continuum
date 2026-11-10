@@ -122,8 +122,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         // its measured need (the cold prior here). What the fixture must still prove is that
         // the oversized result rides the wire inside the window (asserted below).
         assert!(
-            (LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS..=LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS)
-                .contains(&view.completion_reserve),
+            view.completion_reserve == 0,
             "the reply keeps its floor and claims no more than its need: {}",
             view.completion_reserve
         );
@@ -187,7 +186,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         // reserve the plan sized her view beside.
         assert_eq!(
             request.max_tokens,
-            request_allowance(TurnKind::Act, view.completion_reserve, window, prompt_tokens).ok(),
+            request_allowance(TurnKind::Act, true, view.completion_reserve, window, prompt_tokens).ok(),
             "the act's cap is the window's room after its prompt"
         );
         assert!(request.max_tokens.unwrap() >= view.completion_reserve);
@@ -643,10 +642,11 @@ async fn an_allocator_answering_for_the_wrong_sources_refuses_the_turn_before_di
 #[test]
 fn an_acts_cap_is_its_windows_room_and_a_pass_keeps_its_grant() {
     let (window, prompt, reserve) = (40_960u32, 25_000usize, 700u32);
-    assert_eq!(request_allowance(TurnKind::Act, reserve, window, prompt), Ok(window - prompt as u32 - 1));
-    assert_eq!(request_allowance(TurnKind::Pass, reserve, window, prompt), Ok(reserve), "a pass carries its grant");
+    assert_eq!(request_allowance(TurnKind::Act, true, reserve, window, prompt), Ok(window - prompt as u32 - 1));
+    assert_eq!(request_allowance(TurnKind::Pass, true, reserve, window, prompt), Ok(reserve), "a measured pass carries its grant");
+    assert_eq!(request_allowance(TurnKind::Pass, false, reserve, window, prompt), Ok(window - prompt as u32 - 1), "an unmeasured pass carries the room its prompt leaves, once");
     assert!(
-        request_allowance(TurnKind::Act, reserve, window, window as usize).is_err(),
+        request_allowance(TurnKind::Act, true, reserve, window, window as usize).is_err(),
         "a prompt that leaves less than the reserve is refused, never a cap past the window"
     );
 }

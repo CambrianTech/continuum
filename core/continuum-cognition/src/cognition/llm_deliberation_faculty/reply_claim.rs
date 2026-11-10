@@ -18,16 +18,17 @@ use super::*;
 ///
 /// - floor = min: an act's measured output need as ONE claim, think plus answer
 ///   ([`OutputNeed::act_room`], raised by a recent cut), never the answer alone; an unmeasured
-///   act reserves nothing ([`ActRoom::Unmeasured`], a state, not a number). A pass's floor is the
-///   smallest usable reply ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`]). The allocation
+///   act reserves nothing ([`ActRoom::Unmeasured`], a state, not a number). A pass's floor is its
+///   measured answer (hers, or the node's pooled one before her first turn). The allocation
 ///   caps it so required input always fits; an act whose need is capped is refused as the typed
 ///   `IrreducibleShortfall`, never sent with less (the M5, 2026-11-04: an answer-only floor left
 ///   caps of 72-89 tokens and 302 of 414 acts were cut mid-thought).
 ///
 /// [`OutputNeed::act_room`]: super::super::working_set::OutputNeed::act_room
 /// [`ActRoom::Unmeasured`]: super::super::working_set::ActRoom::Unmeasured
-/// - max: her measured need (reasoning + answer), or the reply-sized cold prior until it is
-///   measured; at least a pending cut's measured peak, retained until that concern settles
+/// - max: her measured need (reasoning + answer), or the node's pooled need before her first
+///   landed turn; on a node where nothing is measured at all, nothing (the request then carries
+///   the room its prompt leaves, once: `request_allowance`). Never a guessed size; at least a pending cut's measured peak, retained until that concern settles
 ///   (the ordinary need decays through the short reads between, and the retried write would
 ///   be claimed small and cut again). The peak is evidence the registry already recorded
 ///   (the sum of the channels as measured); it is demand, never doubled here: what she is
@@ -53,7 +54,7 @@ pub fn reply_claim(
 ) -> continuum_context::flex::FlexClaim {
     let floor = match kind {
         TurnKind::Act => super::super::working_set::ActRoom::of(need).needed().map_or(0, |room| room), // map_or: unmeasured reserves nothing in her name
-        TurnKind::Pass => LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS,
+        TurnKind::Pass => need.map_or(0, |n| n.answer_room()), // map_or: nothing measured on this node reserves nothing
     };
     // A recent cut think raises the want toward its lower bound (`reasoning_at_least`, censored
     // and corrected), only under the measured time term: a thinking model fills whatever room it
@@ -71,7 +72,7 @@ pub fn reply_claim(
         _ => 0,
     };
     let wanted = need
-        .map_or(LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS, |n| n.total()) // map_or: unmeasured = a REPLY-sized prior, never a window fraction
+        .map_or(0, |n| n.total()) // map_or: nothing measured on this node wants nothing; its request carries the room its prompt leaves
         .max(tested)
         .max(pending_peak)
         .max(floor);

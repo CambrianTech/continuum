@@ -41,11 +41,13 @@ use crate::cognition::working_set::ActRoom;
 /// the room is below it the act is refused typed ([`ShortRoom`]) and re-rendered, never sent with
 /// a cap past either bound (the old `.max(reserve)` sent 80 tokens past a prompt that already
 /// overflowed, the M5 2026-11-04).
-pub(super) fn request_allowance(kind: TurnKind, reserve: u32, window: u32, charged_prompt: usize) -> Result<u32, ShortRoom> {
+/// A pass with a measured need carries its grant; one on a node where nothing is measured yet
+/// carries the room its prompt leaves, as an act does, once: its landing is the first measurement.
+pub(super) fn request_allowance(kind: TurnKind, measured: bool, reserve: u32, window: u32, charged_prompt: usize) -> Result<u32, ShortRoom> {
     let reserve = reserve.max(1);
-    match kind {
-        TurnKind::Pass => Ok(reserve),
-        TurnKind::Act => {
+    match (kind, measured) {
+        (TurnKind::Pass, true) => Ok(reserve),
+        (TurnKind::Act, _) | (TurnKind::Pass, false) => {
             // The prompt is clamped to the window before the cast, so the cast cannot truncate.
             let prompt = charged_prompt.min(window as usize) as u32;
             let room = window.saturating_sub(prompt).saturating_sub(1); // the fork's one free cell (above)

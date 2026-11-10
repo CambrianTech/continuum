@@ -36,15 +36,15 @@ fn the_live_cut_caps_become_her_measured_room_behind_the_engines_count() {
         .expect("a measured reply");
     // The old path sent `.max(reserve)`, 80 tokens past a prompt priced over the window: now that
     // is a typed refusal (re-render), never a cap past the bound.
-    let old = request_allowance(TurnKind::Act, clipped_grant, window, price.charge(estimate));
+    let old = request_allowance(TurnKind::Act, true, clipped_grant, window, price.charge(estimate));
     assert!(old.is_err(), "at the raw estimate the room is below her grant: refused, not 80 tokens past it");
     let counted_price = price.behind(PromptAdmission::EngineCounted);
-    let new = request_allowance(TurnKind::Act, clipped_grant, window, counted_price.charge(estimate)).expect("room");
+    let new = request_allowance(TurnKind::Act, true, clipped_grant, window, counted_price.charge(estimate)).expect("room");
     assert_eq!(new, window - counted - 1, "the engine's count leaves the room");
     // A grant smaller than the slot (Atlas: leased 40,282 on a 148,822 slot): her window is the
     // smaller of the two, so the cap is bounded by the grant, never by the slot.
     let (leased, slot, prompt) = (40_282u32, 148_822u32, 30_000usize);
-    let bounded = request_allowance(TurnKind::Act, 434, leased.min(slot), prompt).expect("room");
+    let bounded = request_allowance(TurnKind::Act, true, 434, leased.min(slot), prompt).expect("room");
     assert_eq!(bounded, leased - prompt as u32 - 1);
     assert!(prompt as u32 + bounded < leased, "prompt plus cap strictly inside her grant");
     let need = crate::cognition::working_set::OutputNeed { reasoning: 338, answer: 96, turns: 3, reasoning_at_least: None, answer_at_least: None };

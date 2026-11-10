@@ -182,7 +182,7 @@ impl LlmDeliberationFaculty {
             .map_or(0, |wm| wm.pending_emission_peak(ws.activity_room_id));
         let kind = self.turn_kind(ws);
         let time_term = kind.time_term(crate::inference::decode_knee::rate_for(self.binding.load().requested_model()).tps);
-        let need = self.working_set.as_ref().and_then(|reg| reg.need_of(self.persona_id));
+        let need = self.working_set.as_ref().and_then(|reg| reg.need_or_pooled(self.persona_id));
         let act_room = crate::cognition::working_set::ActRoom::of(need);
         let reply = reply_claim(
             kind,
