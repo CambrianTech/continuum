@@ -107,7 +107,11 @@ impl LlamaServerProcess {
         // residents' slots unsaved and their next acts re-prefilled 70k-115k tokens. The
         // transition has drained every reader, so no turn is decoding. A failed save
         // defers replacement rather than destroying the only fresh resident state.
-        if had_own_child && !restoring {
+        // An engine that has already exited holds no KV: its slots died with it, so there is
+        // nothing to save, and a save to it is refused every time (the M5, 2026-11-10 20:27Z: the
+        // engine exited, every relaunch deferred on a rejected checkpoint, no engine for minutes).
+        let child_running = self.child.lock().unwrap().as_mut().is_some_and(|owned| matches!(owned.child.try_wait(), Ok(None))); // JUSTIFIED: poison means a prior panic mutating the owned child.
+        if had_own_child && child_running && !restoring {
             let started = std::time::Instant::now();
             let outcome = transition.checkpoint_before_replacement(&self.client, &self.root, current).await;
             continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "inference.kv_page.relaunch_checkpoint",
