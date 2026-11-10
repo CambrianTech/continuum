@@ -13,7 +13,6 @@
 //! no think budget at all: she thinks until she is done, inside her room).
 
 use super::*;
-use crate::cognition::working_set::ActRoom;
 
 /// The `max_tokens` a turn's request carries, for the view it is sent with. Pure.
 ///

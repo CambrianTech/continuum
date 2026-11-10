@@ -254,7 +254,7 @@ impl LlmDeliberationFaculty {
             // `with_model_binding` (so a `serving/pin` re-home is seen here), and
             // `with_model`/`with_context_window` mutate it for tests. Mirrors how
             // `new` builds an `empty_genome()` that `with_genome` then shares in.
-            binding: model_binding(Arc::clone(&adapter), None, adapter.capabilities().max_context_window.unwrap_or(0)), // unwrap_or: no reported window binds 0, the "none yet" this private binding is documented to hold until the spawn replaces it
+            binding: model_binding(Arc::clone(&adapter), None, adapter.capabilities().max_context_window.unwrap_or(crate::inference::planning::MIN_SERVE_CTX)), // unwrap_or: an adapter that reports no window binds the minimum serving window, as this private binding did before it read the adapter; the spawn replaces it
             prompt_feedback: ArcSwapOption::empty(),
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
