@@ -311,4 +311,48 @@ mod tests {
         std::fs::write(&path, "broken").unwrap();
         assert!(load_from(&path).is_none());
     }
+
+    /// A transient one-lane launch settles first and gets observed, then a steady two-lane
+    /// settlement on the same model replaces it.  The stored cache must reflect lanes=2,
+    /// proving that state-based promotion (generation change + higher lane count) overrides
+    /// any earlier transient observation.
+    #[test]
+    fn steady_settlement_overrides_transient_observation() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("window.json");
+        let model_id = "llama-3b".to_string();
+
+        // --- transient one-lane launch settles (generation A) ---
+        let gen_a = ServedGeometry {
+            model_id: model_id.clone(),
+            generation: uuid::Uuid::new_v4(),
+            per_slot_window: 8_000,
+            lanes: 1,
+        };
+        record_reconciled_to(&path, gen_a.clone(), true, None);
+
+        // --- usage from the transient launch arrives → promotes to observed (lanes=1) ---
+        let tokens = 5_000u32;
+        record_reconciled_to(&path, gen_a.clone(), false, Some(tokens));
+        assert_eq!(load_from(&path).unwrap().cache_geometry(), Some((8_000, 1)));
+
+        // --- steady two-lane launch settles on the same model (generation B) ---
+        let gen_b = ServedGeometry {
+            model_id: model_id.clone(),
+            generation: uuid::Uuid::new_v4(),
+            per_slot_window: 8_000,
+            lanes: 2,
+        };
+        record_reconciled_to(&path, gen_b.clone(), true, None);
+
+        // State-based promotion: the new settlement has more lanes than what we observed,
+        // so `save_candidate_to` pushes it into the cache fields.
+        let restarted = load_from(&path).unwrap();
+        assert_eq!(restarted.lanes, 2, "steady settlement should promote observed lanes to 2");
+        assert_eq!(
+            restarted.cache_geometry(),
+            Some((8_000, 2)),
+            "restart cache must remember the steady two-lane geometry"
+        );
+    }
 }
