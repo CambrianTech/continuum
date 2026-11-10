@@ -24,7 +24,7 @@ fn directedness_flip_keeps_the_grounding_inside_the_reusable_prefix() {
         .with_context_window(8192);
 
     // Same room content + the same standing grounding (a session-stable roster
-    // contribution renders the [What you are working with] block); only the
+    // contribution, a block of her view); only the
     // directedness dimension flips.
     let with_grounding = |directed: bool| {
         let mut ws = Workspace::new("the team is chatting about the plan");

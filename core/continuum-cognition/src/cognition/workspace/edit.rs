@@ -417,7 +417,9 @@ impl Contribution {
             capacity_refusal: None,
             receipts: Vec::new(),
             raw_generation: None,
-            trailing: false,
+            // Every grounding contribution is a block of her view, never the system message nor a
+            // second assembled-context message (deleted 2026-11-10: no live act carried one).
+            trailing: true,
         }
     }
 

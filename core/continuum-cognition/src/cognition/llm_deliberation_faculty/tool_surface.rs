@@ -193,7 +193,7 @@ impl LlmDeliberationFaculty {
     /// It read "a single tiny schema, so this is a handful of tokens, not the old
     /// full-registry dump" — true when the surface WAS the two-tool discovery pair,
     /// false since #206 deliberately restored the full native set. The probe site in
-    /// `render_assembled_context_within` has carried a comment calling this sentence
+    /// the (since deleted) assembled-context renderer carried a comment calling this sentence
     /// out as stale since 2026-08-06 ("reading that stale sentence is exactly why the
     /// right suspect got dismissed") — 700 lines from the function it describes, so
     /// anyone reading the function itself still got the lie. Deleting it here is the

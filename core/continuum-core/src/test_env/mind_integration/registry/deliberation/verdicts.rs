@@ -381,8 +381,7 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
             // minimum fits its window, so it wants the plan itself, not a
             // budget-shed one.
             let standing: Vec<_> = ws.broadcast.iter().filter(|c| c.decision.is_none() && c.standing_grounding && !c.trailing).collect();
-            let minimum = standing.iter().map(|c| GroundingPiece::minimum(c).tokens).sum::<usize>()
-                + if standing.is_empty() { 0 } else { LlmDeliberationFaculty::working_context_header_cost() };
+            let minimum = standing.iter().map(|c| GroundingPiece::minimum(c).tokens).sum::<usize>();
             let fixed = LlmDeliberationFaculty::framing_cost(&framing.stable)
                 + faculty.prompt_view(&ws).tools.tokens
                 + minimum
@@ -467,19 +466,9 @@ async fn standing_activity_grounding_survives_history_on_the_wire() {
             );
         }
         // A room's grounding never enters the system message, whichever placement its
-        // source declared (2026-10-23): the system message is hers in every room. A roster
-        // its source did not mark as a view block rides the assembled-context message
-        // after her view.
+        // source declared (2026-10-23): the system message is hers in every room; every grounding
+        // contribution is a block of her view.
         assert!(!system.contains("[room-roster]"), "the roster is the room's, never the system message's: {case}");
-        if !trailing {
-            assert!(
-                request.messages.iter().any(|m| {
-                    let t = m.content_text();
-                    t.starts_with("[What you are working with right now]") && t.contains("[room-roster]")
-                }),
-                "an unmarked standing roster renders in the assembled-context message: {case}"
-            );
-        }
         if trailing {
             let position = request
                 .messages
