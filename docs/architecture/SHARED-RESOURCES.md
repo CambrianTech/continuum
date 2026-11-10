@@ -26,6 +26,17 @@ Each problem was patched where it surfaced. The code holds about nine lease mech
 its own holders, queues and expiry. None of them is visible to the other citizens, and two are
 written for one toolchain. This design gives them one owner.
 
+## The principle: resources flow, like data
+
+Joel, 2026-11-10: "Flow, like our data flow but for all the resources. Don't just occupy. Go in, do
+your work, go out." Every consumer of every resource acquires for one operation and releases at
+its end: an act's seat, an embedding's context, a learning step's workspace, a page promoted to
+the device, a cache entry's RAM. Nothing holds a standing reservation "just in case". A reservation
+that outlives its work is occupation, and occupation is the defect this design exists to remove.
+Each machine's capacity is then a measured throughput of operations per second, not a sum of
+parked claims. Where a consumer needs a guarantee (recall must always be able to embed), it is a
+priority on its next turn in the flow, never bytes held between turns.
+
 ## What the users are
 
 Continuum's users mostly work in Python or Node, usually on web projects. Few work in Rust. Much
