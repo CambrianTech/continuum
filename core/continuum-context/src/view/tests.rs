@@ -1009,6 +1009,6 @@ fn a_source_she_re_reads_from_weighs_more_and_an_unmeasured_one_keeps_its_priori
     };
     assert_eq!(claim(Hazard::Unmeasured).weight(), 5, "unmeasured: its priority, never a guessed rate");
     // each of four items asked for again (1 + 1) / (3 + 1) = 0.5 of acts: two re-reads per act
-    let measured = claim(Hazard::Measured(Tally { exposure: 3.0, events: 1.0 }));
+    let measured = claim(Hazard::Measured { tally: Tally { exposure: 3.0, events: 1.0 }, prior: 1.0 });
     assert_eq!(measured.weight(), 15, "priority x (1 + 2 re-reads per act)");
 }

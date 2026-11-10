@@ -181,7 +181,7 @@ mod tests {
     }
 
     fn item(age: u64, whole: usize, events: f64, exposure: f64) -> Collapsible {
-        Collapsible { whole, saves: whole - 100, age, hazard: Hazard::Measured(Tally { exposure, events }) }
+        Collapsible { whole, saves: whole - 100, age, hazard: Hazard::Measured { tally: Tally { exposure, events }, prior: 1.0 } }
     }
 
     fn room() -> Room {
