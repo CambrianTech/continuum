@@ -9,7 +9,7 @@
 //! ## Event-driven, no timeout (the restore-into-busy-slot fix)
 //!
 //! The order is load-bearing:
-//! 1. **Permit first.** Take the concurrency permit (`Semaphore(lanes)`) BEFORE
+//! 1. **Permit first.** Take the concurrency permit (the endpoint's `DecodeBound`) BEFORE
 //!    leasing a slot. Holding a permit means a lane is genuinely free — an
 //!    event-driven wait that wakes when another turn releases, never a timer.
 //! 2. **Pin the leased slot** (synchronously, before any save/restore await) so
@@ -26,10 +26,9 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::inference::resource_admission::{LanePriority, ServingLanePermit};
-use crate::inference::slots::{KvSlotPool, MindTurn, PageKey, SlotClass, SlotPermit, SlotPin};
+use crate::inference::slots::{DecodeBound, DecodePermit, KvSlotPool, MindTurn, PageKey, SlotClass, SlotPermit, SlotPin};
 
 mod page_liveness;
 mod page_quote;
@@ -99,7 +98,7 @@ pub struct TurnAdmission {
     /// Released after the pin so the next permit holder can lease the free slot.
     /// `None` only for [`admit_transient`], which holds its slot's operation permit
     /// instead of a lane (it serves no page, so it takes no lane from one).
-    _permit: Option<OwnedSemaphorePermit>,
+    _permit: Option<DecodePermit>,
     /// A lease is provisional until the adapter observes successful generation.
     /// Cancellation during paging or generation must not save foreign KV later.
     uncommitted: Option<(Arc<KvSlotPool>, PageKey, u32)>,
@@ -280,7 +279,7 @@ pub const HER_ACT_FIRST: &str = "her act comes first: her own background work yi
 /// A test that asserts immediate readiness refusal passes zero. See `EndpointSlots::admit_when_ready`
 /// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(
-    concurrency: &Arc<Semaphore>,
+    concurrency: impl Into<DecodeBound>,
     class: SlotClass,
     key: Option<PageKey>,
     pool: Option<Arc<KvSlotPool>>,
@@ -290,7 +289,8 @@ pub async fn admit_turn(
     patience: impl Into<AdmissionPatience>,
 ) -> Result<TurnAdmission, String> {
     let patience = patience.into();
-    let admission = admit(concurrency, class, key, pool, client, root, approx_tokens, false, patience.readiness);
+    let concurrency = concurrency.into();
+    let admission = admit(&concurrency, class, key, pool, client, root, approx_tokens, false, patience.readiness);
     match patience.deadline {
         Some(deadline) => {
             if deadline <= tokio::time::Instant::now() {
@@ -306,7 +306,7 @@ pub async fn admit_turn(
 /// Best-effort warm-ahead uses the same paging and provisional-attribution owner
 /// as a turn. No generation follows, so only proven physical warmth is committed.
 pub(crate) async fn warm_ahead(
-    concurrency: &Arc<Semaphore>,
+    concurrency: impl Into<DecodeBound>,
     key: PageKey,
     pool: Arc<KvSlotPool>,
     client: &reqwest::Client,
@@ -326,7 +326,8 @@ pub(crate) async fn warm_ahead(
     };
     // Best-effort: a closed endpoint is an instant no, never a held permit.
     // No generation follows: its drop keeps only the warmth paging confirmed (`Dispatch::Unsent`).
-    let admission = admit(concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
+    let concurrency = concurrency.into();
+    let admission = admit(&concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
     if let Some(slot) = admission.slot {
         continuum_base::probe!(
             class = "inference.kv_warm_ahead",
@@ -343,7 +344,7 @@ pub(crate) async fn warm_ahead(
 }
 
 async fn admit(
-    concurrency: &Arc<Semaphore>,
+    concurrency: &DecodeBound,
     class: SlotClass,
     key: Option<PageKey>,
     pool: Option<Arc<KvSlotPool>>,
@@ -398,19 +399,15 @@ async fn admit(
         //    semaphore is never closed over the adapter's lifetime. A dream holding its lane
         //    only TRIES: when the adapter is full it lets the lane go, waits for a permit
         //    holding nothing, and takes both again (Codex on #5786).
-        let _permit = match lane.as_ref().or(caller_lane.as_ref()).map(|_| concurrency.clone().try_acquire_owned()) {
+        let _permit = match lane.as_ref().or(caller_lane.as_ref()).map(|_| concurrency.try_acquire()) {
             Some(Ok(permit)) => permit,
             Some(Err(_)) => {
                 lane = None;
                 caller_lane = None;
-                drop(concurrency.clone().acquire_owned().await.expect("adapter semaphore never closed")); // expect: the semaphore lives as long as the adapter, never closed
+                drop(concurrency.acquire().await);
                 continue 'admit;
             }
-            None => concurrency
-                .clone()
-                .acquire_owned()
-                .await
-                .expect("adapter semaphore never closed"), // expect: the semaphore lives as long as the adapter, never closed
+            None => concurrency.acquire().await,
         };
 
         // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,

@@ -53,7 +53,7 @@ mod learn_slot;
 pub use learn_slot::{learn_slot, LearnSlot, LearnSlotRefusal};
 mod kv_slot_pool;
 mod endpoint_concurrency;
-pub use endpoint_concurrency::EndpointConcurrency;
+pub use endpoint_concurrency::{DecodeBound, DecodePermit, EndpointConcurrency};
 pub use kv_slot_pool::*;
 mod live_sequences;
 pub use live_sequences::SequenceBasis;

@@ -764,37 +764,40 @@ impl SlotDirectory {
 
     /// Install (or return the already-installed) pool for a probed server.
     /// First writer wins — the probe race resolves to ONE pool per root.
+    /// The endpoint's permits are sized to the pool this returns while the state lock still
+    /// holds it, so a stale discovery can never resize them after a newer generation installs.
     pub fn ensure_pool(&self, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
         let endpoint = self.endpoint(root);
-        let pool = self.ensure_pool_in(&endpoint, root, n_slots);
+        let mut state = endpoint.state.lock();
+        let pool = installed_pool(&mut state, root, n_slots);
         endpoint.concurrency.retarget(pool.n_slots() as usize);
         pool
     }
+}
 
-    fn ensure_pool_in(&self, endpoint: &EndpointSlots, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
-        let mut state = endpoint.state.lock();
-        let pool = match &mut state.engine {
-            Engine::Owned { serving: Serving::Install(install), .. } => return Arc::clone(&install.pool),
-            Engine::Owned { serving: Serving::Before(entry), .. } => {
-                entry.get_or_insert_with(|| Some(Arc::new(KvSlotPool::new(root, n_slots)))).clone()
-            }
-            Engine::Adopted(pool) => return Arc::clone(pool),
-            Engine::Unsupported => None,
-            unprobed @ Engine::Unprobed => {
-                let pool = Arc::new(KvSlotPool::new(root, n_slots));
-                *unprobed = Engine::Adopted(Arc::clone(&pool));
-                Some(pool)
-            }
-        };
-        match pool {
-            Some(pool) => pool,
-            None => {
-                // A racing latch_unsupported won — honor it by returning a
-                // zero-slot pool that never leases (callers treat None lease
-                // as unpinned). Practically unreachable: latch and ensure are
-                // driven by the same probe outcome.
-                Arc::new(KvSlotPool::new(root, 0))
-            }
+/// The pool serving `root`: the installed one, or a first writer's.
+fn installed_pool(state: &mut super::kv_slot_pool::EndpointState, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
+    let pool = match &mut state.engine {
+        Engine::Owned { serving: Serving::Install(install), .. } => return Arc::clone(&install.pool),
+        Engine::Owned { serving: Serving::Before(entry), .. } => {
+            entry.get_or_insert_with(|| Some(Arc::new(KvSlotPool::new(root, n_slots)))).clone()
+        }
+        Engine::Adopted(pool) => return Arc::clone(pool),
+        Engine::Unsupported => None,
+        unprobed @ Engine::Unprobed => {
+            let pool = Arc::new(KvSlotPool::new(root, n_slots));
+            *unprobed = Engine::Adopted(Arc::clone(&pool));
+            Some(pool)
+        }
+    };
+    match pool {
+        Some(pool) => pool,
+        None => {
+            // A racing latch_unsupported won — honor it by returning a
+            // zero-slot pool that never leases (callers treat None lease
+            // as unpinned). Practically unreachable: latch and ensure are
+            // driven by the same probe outcome.
+            Arc::new(KvSlotPool::new(root, 0))
         }
     }
 }

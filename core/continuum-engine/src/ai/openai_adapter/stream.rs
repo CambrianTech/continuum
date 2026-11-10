@@ -211,9 +211,9 @@ impl OpenAICompatibleAdapter {
                 ))
             })?;
             // The endpoint's own permits, shared by every adapter and the learner (card 23069702).
-            let endpoint_permits = crate::inference::slots::directory().endpoint(root).concurrency().permits();
+            let endpoint_permits = crate::inference::slots::directory().endpoint(root).concurrency().bound();
             let adm = crate::inference::turn_admission::admit_turn(
-                &endpoint_permits,
+                endpoint_permits,
                 class,
                 turn_key,
                 Some(pool),
