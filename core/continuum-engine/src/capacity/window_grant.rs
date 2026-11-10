@@ -252,6 +252,15 @@ pub enum Ungranted {
     NotADemand,
 }
 
+impl Ungranted {
+    /// Her turn comes once room opens: she is queued behind others, her grant is being reclaimed, or
+    /// the engine is relaunching. She waits for a later evaluation, never fails her turn (Joel,
+    /// 2026-11-09: "get what it needs and wait its turn"). Every other reason names a defect.
+    pub fn awaits_room(&self) -> bool {
+        matches!(self, Self::Waiting(Waiting::Queued { .. } | Waiting::Reclaiming) | Self::Nobody(NoGrants::NotReady))
+    }
+}
+
 impl std::fmt::Display for Ungranted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

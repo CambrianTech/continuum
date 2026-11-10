@@ -155,12 +155,14 @@ fn next_evaluation(
     }
 }
 
-/// Decide her window. An ungranted mind is MEASURED first (`measure` builds her view, which records
+/// Decide her window. An ungranted mind is MEASURED once (`measure` builds her view, which records
 /// her wish, so the next grants evaluation can grant her), then waits for the first evaluation that
-/// began after her measure (Cormac on #5752). Granted there, she decides again; not granted, her turn
-/// is refused with the evaluation's own reason, so the wait is one publisher cadence, never the act
-/// floor (card 5e79e1c1: the grants watch fires only on CHANGE, so a mind never granted parked 25 min).
-/// No evaluations are a refusal only when she is ungranted: a decided window needs none.
+/// began after her measure (Cormac on #5752). Granted there, she decides again. Waiting for room
+/// ([`Ungranted::awaits_room`]: queued, reclaiming, the engine relaunching), she waits for the next
+/// evaluation with her demand standing: on the M5 (26960c09d) each queued turn was refused and
+/// re-measured instead, 186 failed turns an hour. Any other reason refuses her turn with the
+/// evaluation's own words, so a defect is named within one publisher cadence, never parked (card
+/// 5e79e1c1). No evaluations are a refusal only when she is ungranted: a decided window needs none.
 pub async fn decide_window<D, M, E, F>(persona: uuid::Uuid, decide: D, mut measure: M, evaluation_after: E) -> Result<Decided, WindowRefused>
 where
     D: Fn() -> MindWindow,
@@ -168,14 +170,19 @@ where
     E: Fn(std::time::Instant) -> Result<F, GrantsUnavailable>,
     F: std::future::Future<Output = Result<super::window_grant::GrantEvaluation, WindowRefused>>,
 {
+    let mut measured = false;
     loop {
         match decide() {
             MindWindow::Decided(decided) => return Ok(decided),
             MindWindow::Ungranted => {
-                measure();
+                if !measured {
+                    measure();
+                    measured = true;
+                }
                 let evaluation = evaluation_after(std::time::Instant::now())?.await?;
-                if let Some(why) = evaluation.ungranted(persona) {
-                    return Err(WindowRefused::Ungranted(why));
+                match evaluation.ungranted(persona) {
+                    Some(why) if !why.awaits_room() => return Err(WindowRefused::Ungranted(why)),
+                    _ => {}
                 }
             }
         }
@@ -280,19 +287,54 @@ mod tests {
         assert_eq!(refused, Err(WindowRefused::Ungranted(Ungranted::Nobody(NoGrants::PoolKindUnknown))), "the newer evaluation's reason, not the stale one's");
     }
 
-    // what this catches (Codex on #5890): a demand that reached the publisher and waits for room
-    // reported as one that never arrived (NotADemand). Her evaluation names her queue place.
+    // what this catches (Codex on #5890; the M5 on 26960c09d, 186 failed turns an hour): a demand
+    // queued for room refused as a failed turn, or reported as one that never arrived. She waits with
+    // her demand standing, measured once, and runs when a later evaluation grants her.
     #[tokio::test]
-    async fn a_demand_waiting_for_room_says_so_not_that_it_never_arrived() {
+    async fn a_queued_mind_waits_her_turn_measured_once_then_runs() {
         use super::super::window_grant::{Ungranted, Waiting};
         let her = uuid::Uuid::from_u128(4);
-        let after = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        let mut queued = evaluation(after, grants(&[]), None).expect("evaluation");
-        queued.waiting.insert(her, Waiting::Queued { position: 2, of: 3 });
-        let (_sender, installed) = tokio::sync::watch::channel(Some(queued));
-        let refused = decide_window(her, || MindWindow::Ungranted, || {}, |at| Ok(next_evaluation(installed.clone(), at))).await;
-        assert_eq!(refused, Err(WindowRefused::Ungranted(Ungranted::Waiting(Waiting::Queued { position: 2, of: 3 }))));
-        let absent = evaluation(after, grants(&[]), None).expect("evaluation");
+        let queued_at = move |position| {
+            let mut queued = evaluation(std::time::Instant::now() + std::time::Duration::from_millis(1), grants(&[]), None).expect("evaluation");
+            queued.waiting.insert(her, Waiting::Queued { position, of: 3 });
+            queued
+        };
+        let (sender, installed) = tokio::sync::watch::channel(Some(queued_at(2)));
+        let measured = Cell::new(0);
+        let granted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let publisher = {
+            let granted = granted.clone();
+            tokio::spawn(async move {
+                for position in [2, 1] {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    sender.send(Some(queued_at(position))).expect("the waiter holds a receiver");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                granted.store(true, std::sync::atomic::Ordering::SeqCst);
+                let after = std::time::Instant::now() + std::time::Duration::from_millis(1);
+                sender.send(evaluation(after, grants(&[(her, 14_860)]), None)).expect("the waiter holds a receiver");
+            })
+        };
+        let decided = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            decide_window(
+                her,
+                || match granted.load(std::sync::atomic::Ordering::SeqCst) {
+                    false => MindWindow::Ungranted,
+                    true => MindWindow::Decided(Decided::Granted(t(14_860))),
+                },
+                || measured.set(measured.get() + 1),
+                |at| Ok(next_evaluation(installed.clone(), at)),
+            ),
+        )
+        .await
+        .expect("granted within the publisher's beats");
+        publisher.await.expect("publisher");
+        assert_eq!(decided, Ok(Decided::Granted(t(14_860))), "she waited her turn and ran");
+        assert_eq!(measured.get(), 1, "her demand stood while she waited: measured once");
+        assert!(Ungranted::Waiting(Waiting::Queued { position: 2, of: 3 }).awaits_room());
+        assert!(!Ungranted::Waiting(Waiting::NeedAbovePool { need: 9, pool: 8 }).awaits_room(), "a need above the pool is a defect, named");
+        let absent = evaluation(std::time::Instant::now(), grants(&[]), None).expect("evaluation");
         assert_eq!(absent.ungranted(her), Some(Ungranted::NotADemand), "no demand of hers reached it");
     }
 
