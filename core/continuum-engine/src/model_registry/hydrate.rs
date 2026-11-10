@@ -182,16 +182,17 @@ fn read_projector_encoders(path: &Path) -> Result<ProjectorEncoders, String> {
     let mut file = std::fs::File::open(path).map_err(|e| format!("open projector: {e}"))?;
     let content = gguf_keys::read_bounded_header(&mut file, &|| false)
         .map_err(|e| format!("read projector: {e}"))?;
-    let flag = |key: &str| {
-        content
-            .metadata
-            .get(key)
-            .and_then(|v| v.to_bool().ok())
-            .unwrap_or(false)
+    let flag = |key: &str| -> Result<bool, String> {
+        match content.metadata.get(key) {
+            None => Ok(false), // The projector schema omits flags for absent encoders.
+            Some(value) => value
+                .to_bool()
+                .map_err(|error| format!("projector flag {key}: {error}")),
+        }
     };
     Ok(ProjectorEncoders {
-        has_vision: flag("clip.has_vision_encoder"),
-        has_audio: flag("clip.has_audio_encoder"),
+        has_vision: flag("clip.has_vision_encoder")?,
+        has_audio: flag("clip.has_audio_encoder")?,
     })
 }
 
@@ -246,6 +247,30 @@ mod tests {
     use crate::model_registry::types::Capability;
     use std::collections::BTreeSet;
     use std::path::PathBuf;
+
+    #[test]
+    fn projector_rejects_wrong_typed_encoder_flags() -> Result<(), Box<dyn std::error::Error>> {
+        use candle_core::quantized::gguf_file::{self, Value};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("projector.gguf");
+        let invalid = Value::String("true".into());
+        let mut output = std::fs::File::create(&path)?;
+        gguf_file::write(&mut output, &[("clip.has_vision_encoder", &invalid)], &[])?;
+        drop(output);
+        assert!(read_projector_encoders(&path)
+            .is_err_and(|error| error.contains("clip.has_vision_encoder")));
+        let mut output = std::fs::File::create(&path)?;
+        gguf_file::write(&mut output, &[], &[])?;
+        drop(output);
+        assert_eq!(
+            read_projector_encoders(&path)?,
+            ProjectorEncoders {
+                has_vision: false,
+                has_audio: false,
+            }
+        );
+        Ok(())
+    }
 
     fn model_with(arch: Arch, context_window: u32, chat_template: Option<&str>) -> Model {
         Model {
