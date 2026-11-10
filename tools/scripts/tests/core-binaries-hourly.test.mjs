@@ -4,6 +4,22 @@ import { readFile } from 'node:fs/promises';
 import { platforms, runPublication } from '../core-binaries-hourly.mjs';
 
 const sha = '0123456789abcdef0123456789abcdef01234567';
+test('docs-only tip publishes its build key and resolution failure cannot dispatch', async () => {
+  const key = 'a'.repeat(40);
+  const { api, calls } = source();
+  const plan = await runPublication(api, 'Example/repo', false, async tip => {
+    assert.equal(tip, sha);
+    return key;
+  });
+  assert.equal(plan.sha, key);
+  assert.ok(calls.some(call => call.path.endsWith(`/releases/tags/canary-${key.slice(0, 12)}`)));
+  assert.deepEqual(calls.find(call => call.options.method === 'POST').options.body,
+    { ref: 'canary', inputs: { build_key: key } });
+  const refused = source();
+  await assert.rejects(runPublication(refused.api, 'Example/repo', false,
+    async () => { throw new Error('unreadable history'); }), /unreadable history/);
+  assert.equal(refused.calls.filter(call => call.options.method === 'POST').length, 0);
+});
 function source({ complete = false, running = false, badManifest = false, fail = false } = {}) {
   const calls = [];
   const manifests = new Map();
@@ -30,12 +46,12 @@ function source({ complete = false, running = false, badManifest = false, fail =
 test('unpublished canary dispatches explicit canary; dry run never dispatches', async () => {
   for (const dryRun of [true, false]) {
     const { api, calls } = source();
-    const plan = await runPublication(api, 'Example/repo', dryRun);
+    const plan = await runPublication(api, 'Example/repo', dryRun, async () => sha);
     assert.equal(plan.sha, sha);
     assert.equal(plan.dispatched, !dryRun);
     const writes = calls.filter(call => call.options.method === 'POST');
     assert.equal(writes.length, dryRun ? 0 : 1);
-    if (!dryRun) assert.deepEqual(writes[0].options.body, { ref: 'canary' });
+    if (!dryRun) assert.deepEqual(writes[0].options.body, { ref: 'canary', inputs: { build_key: sha } });
   }
 });
 
@@ -43,7 +59,7 @@ test('complete matching publication and active publication skip; stale manifests
   for (const [options, action] of [[{ complete: true }, 'skip'], [{ running: true }, 'skip'],
     [{ complete: true, badManifest: true }, 'dispatch']]) {
     const { api, calls } = source(options);
-    const plan = await runPublication(api, 'Example/repo', false);
+    const plan = await runPublication(api, 'Example/repo', false, async () => sha);
     assert.equal(plan.action, action);
     assert.equal(calls.filter(call => call.options.method === 'POST').length, action === 'dispatch' ? 1 : 0);
   }
@@ -51,7 +67,7 @@ test('complete matching publication and active publication skip; stale manifests
 
 test('API uncertainty fails instead of dispatching expensive work', async () => {
   const { api, calls } = source({ fail: true });
-  await assert.rejects(runPublication(api, 'Example/repo', false), /HTTP 503/);
+  await assert.rejects(runPublication(api, 'Example/repo', false, async () => sha), /HTTP 503/);
   assert.equal(calls.filter(call => call.options.method === 'POST').length, 0);
 });
 
@@ -72,4 +88,7 @@ test('cron and successful canary checks share admission and protect active build
   assert.doesNotMatch(publisher, /^  push:/m);
   assert.match(publisher, /cancel-in-progress: \$\{\{ github.event_name == 'pull_request' \}\}/);
   assert.match(publisher, /workflow_dispatch:/);
+  assert.match(publisher, /git checkout --detach "\$BUILD_KEY"/);
+  assert.match(publisher, /GITHUB_SHA="\$BUILD_SHA" bash/);
+  assert.match(publisher, /GITHUB_SHA="\$BUILD_KEY" bash/);
 });
