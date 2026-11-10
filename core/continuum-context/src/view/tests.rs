@@ -35,15 +35,18 @@ fn every_act_of_an_epoch_only_appends() -> Result<(), GrantMismatch> {
 // what this catches: an act's allocation granting a live epoch's source less than the epoch
 // already renders for it, so the epoch turns over and the engine re-prefills every token behind
 // it (the M5, 2026-11-10: 65% of re-prefilled tokens, an epoch every second act). A live view's
-// claim holds what its epoch renders, superseded versions included (they are resident too); a
-// start's claim holds nothing.
+// claim holds what its last sent prompt carried, superseded versions included (resident too); an
+// epoch never sent, or a start's claim, holds nothing (a whole unsent receipt took the newest
+// room update's room otherwise).
 #[test]
 fn a_live_claim_holds_what_its_epoch_already_renders() -> Result<(), GrantMismatch> {
     let mut views = Fake::new("open-views", 4);
     views.push("a.rs", &"a".repeat(5_000));
     let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&views], all_full)?;
+    assert_eq!(view.claims(&crate::cost::Chars, &[&views])[0].held, 0, "an epoch the engine has not received holds nothing");
     views.push("a.rs", "a.rs lines 1-40");
     view.advance(&[&views]);
+    view.sent();
     let rendered: usize = view.render().map(|block| block.chars()).sum();
     let live = view.claims(&crate::cost::Chars, &[&views]);
     assert_eq!(live[0].held, rendered, "the epoch's whole rendering of the source, both versions");

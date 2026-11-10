@@ -515,15 +515,18 @@ async fn directed_turn_withholds_the_silence_escape() {
                 "human opportunity retains the foreground lane: {text}",
             );
             let delivered = whole(&faculty.prompt_view(&ws));
+            // Contracts are standing blocks of her view, once per epoch: an earlier turn's stays as
+            // history, and the live framing names the one in force now.
+            let in_force = delivered.lines().rev().find(|line| line.starts_with("[In force this turn:")).expect("test: a turn names its contracts in force");
             assert_eq!(
-                delivered.contains("This message names you"),
+                in_force.contains("Directed Presence"),
                 expected_attention == TurnAttention::Addressed,
-                "the actual prompt must not turn admission priority into addressing: {text}",
+                "the actual prompt must not turn admission priority into addressing: {text}: {in_force}",
             );
             assert_eq!(
-                delivered.contains("do not need to be addressed by name"),
+                in_force.contains("Conversational Presence"),
                 expected_attention != TurnAttention::Addressed,
-                "unmentioned messages keep ordinary participation: {text}",
+                "unmentioned messages keep ordinary participation: {text}: {in_force}",
             );
         }
     }

@@ -45,8 +45,8 @@ pub struct Claim {
     pub newest: usize,
     /// What of its floor her collapsed log already lays down byte for byte.
     pub logged: usize,
-    /// What the live epoch already renders for it, every version it superseded included: computed
-    /// once and resident in the engine. An act granting less turns the epoch over and re-prefills
+    /// What the engine holds of it from the live epoch (the events its last sent prompt carried,
+    /// every version it superseded included): computed once and resident. An act granting less turns the epoch over and re-prefills
     /// the whole view behind it (on the M5, 2026-11-10, 65% of all re-prefilled tokens, an epoch
     /// every second act: the act's other claims took back the reserve a start had left). 0 at a
     /// start, which recomputes anyway.
@@ -194,6 +194,11 @@ pub struct View<T: Block> {
     /// receipted. Never saved: a restored view has nothing in flight.
     #[serde(skip)]
     submitted: Option<Receipt>,
+    /// How many of this epoch's events the last sent prompt carried: what the engine holds of it.
+    /// 0 from a start until its first send, and in a restored view until its next: an epoch the
+    /// engine has not received holds nothing a claim must keep ([`Claim::held`]).
+    #[serde(default)]
+    sent_events: usize,
     /// What the last append added, per source, in order: which source appended how many items and
     /// characters, so a re-append of a whole history names its source (card ef0b04e4: 2,195 items,
     /// 57.9M chars on one advance after a restart). Never saved: it describes one act.
@@ -260,10 +265,15 @@ impl<T: Block> View<T> {
             .collect()
     }
 
-    /// What this epoch renders for `source`, every version it superseded included, priced by `cost`.
+    /// What the engine holds of `source` from this epoch: its events the last sent prompt carried,
+    /// every superseded version included, priced by `cost`. An unsent epoch holds nothing.
     fn held(&self, cost: &dyn Estimate<T>, source: &str) -> usize {
         let prefix = format!("{source}/");
-        self.epoch.events().iter().filter(|event| event.source.0.starts_with(&prefix)).map(|event| cost.block(&event.text)).sum()
+        self.epoch.events()[..self.sent_events.min(self.epoch.events().len())]
+            .iter()
+            .filter(|event| event.source.0.starts_with(&prefix))
+            .map(|event| cost.block(&event.text))
+            .sum()
     }
 
     /// The first epoch. `allocate` answers each claim with a grant in `cost`, the caller's price
@@ -412,6 +422,7 @@ impl<T: Block> View<T> {
             fold_edges: std::collections::BTreeMap::new(),
             act: None,
             submitted: None,
+            sent_events: 0,
             last_by_source: Vec::new(),
         };
         for entry in &log {
@@ -680,6 +691,7 @@ impl<T: Block> View<T> {
     /// The prompt rendered from this act was sent: the engine may now hold every token of it,
     /// so nothing may rewind past it and [`View::readmit`] answers `None` until the next act.
     pub fn sent(&mut self) {
+        self.sent_events = self.epoch.events().len();
         self.act = None;
         self.submitted = Some(self.receipt());
     }
