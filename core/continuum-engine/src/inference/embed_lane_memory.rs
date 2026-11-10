@@ -39,23 +39,36 @@ pub(crate) async fn lease(
             daemon.reserve(EMBED_LANE_CONSUMER_ID, *pool, *floor);
         }
     }
-    let attempt = || {
+    let attempt = |attempt: u8| {
         acquire_all(charges.iter().filter(|(_, n)| *n != 0), |&(kind, bytes)| {
-            daemon.acquire_guarded(&LeaseRequest {
+            let result = daemon.acquire_guarded(&LeaseRequest {
                 consumer_id: EMBED_LANE_CONSUMER_ID.into(),
                 kind,
                 bytes,
-                // Process-death backstop; live custody is held by the worker's RAII guards.
+                // derived-or-floor: inherited 60s process-death backstop; RAII owns normal release.
                 ttl_ms: 60_000,
                 reclaim_policy: ReclaimPolicy::Pinned,
-            })
+            });
+            if let Err(ref error) = result {
+                continuum_base::probe!(
+                    class = "embed.memory.refused",
+                    consumer = EMBED_LANE_CONSUMER_ID,
+                    pool = ?kind,
+                    requested = bytes,
+                    attempt = attempt,
+                    error = ?error,
+                    "measured embedding allocation refused; no context is allocated"
+                );
+            }
+            result
         })
     };
-    let guards = match attempt() {
+    let guards = match attempt(0) {
         Ok(guards) => guards,
         Err(LeaseError::InsufficientCapacity { .. }) => {
+            // derived-or-floor: retain the existing one-governor-tick retry, with no partial grants.
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            attempt().map_err(|e| format!("embed: measured allocation refused: {e:?}"))?
+            attempt(1).map_err(|e| format!("embed: measured allocation refused: {e:?}"))?
         }
         Err(e) => return Err(format!("embed: measured allocation refused: {e:?}")),
     };
