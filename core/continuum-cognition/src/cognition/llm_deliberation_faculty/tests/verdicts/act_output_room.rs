@@ -136,8 +136,15 @@ async fn a_need_past_her_window_is_refused_recorded_and_waits_for_the_governor()
         assert_eq!(adapter.call_count(), 0, "attempt {attempt}: no request on an insufficient window");
         assert_eq!(faculty.turn_window(), window, "recording a need grants nothing by itself");
     }
+    // A pass between her acts holds no required view and so measures a smaller floor; it must
+    // never replace what her act needs, or the governor grants the pass's window and her parked
+    // act never fits (Benchy, the M5, 2026-11-09: passes recorded a floor of 8,631 over her acts'
+    // 88,278, her grant stayed 26,378 with 526k of the pool free, and every act was refused).
+    let pass = writing_workspace(crate::identity::ActivityRoom::mint(), 4, false);
+    assert_eq!(faculty.turn_kind(&pass), TurnKind::Pass, "precondition: a pass");
+    let _pass_view = faculty.prompt_view(&pass);
     let floor = reg.demand_of(persona).and_then(|d| d.floor_tokens).expect("her floor recorded");
-    assert!(floor >= 32_000, "required floors plus her measured think and answer: {floor}");
+    assert!(floor >= 32_000, "required floors plus her measured think and answer, never a pass's: {floor}");
     let requirement = crate::cognition::working_set::requirements_for(&[persona], &reg).remove(0);
     let need = requirement.measure.observed_need().expect("the governor reads her need").value().get();
     assert!(need >= 32_000, "the governor's input carries her measured need: {need}");

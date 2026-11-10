@@ -349,7 +349,11 @@ impl LlmDeliberationFaculty {
         // her need by them. A record, never a grant: the governor sizes residency from it
         // (`requirements_for`) or she waits.
         // Past the model's trained context it is a measurement defect, never a floor.
-        if let Some(reg) = &self.working_set {
+        // Only an ACT records it: a pass holds no required view, so its floor is smaller, and
+        // recorded it replaced the floor her act needs (Benchy, the M5, 2026-11-09: 8,631 over
+        // 88,278, her grant held at 26,378 and every parked act refused). She waits for the window
+        // her work needs, never for the one a pass would fit.
+        if let (Some(reg), TurnKind::Act) = (&self.working_set, kind) {
             match continuum_context::allocation::NeedWindow::within(act.irreducible().saturating_add(reply_need), trained) {
                 Ok(irreducible_window) => reg.record_floor(
                     self.persona_id,
