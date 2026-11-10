@@ -30,32 +30,44 @@
 
 use candle_core::quantized::gguf_file::{Content, Value};
 
-/// Split metadata is typed by the pinned engine: u16 count/index, i32 tensor
-/// total. Absence of count means an ordinary single-file GGUF.
-pub fn split_count(ct: &Content) -> Result<u16, String> {
-    ct.metadata
-        .get("split.count")
-        .map(|v| v.to_u16().map_err(|e| e.to_string()))
-        .transpose()
-        .map(|n| n.unwrap_or(0)) // GGUF split.count is omitted for an unsplit artifact; malformed present values already return Err.
+/// Validated split declaration. An absent declaration is an ordinary GGUF;
+/// a present declaration must carry every field with consistent geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GgufSplit {
+    pub count: u16,
+    pub index: u16,
+    pub tensors: u64,
 }
 
-pub fn split_index(ct: &Content) -> Result<u16, String> {
-    ct.metadata
+pub fn split(ct: &Content) -> Result<Option<GgufSplit>, String> {
+    let Some(count) = ct.metadata.get("split.count") else {
+        if ct.metadata.contains_key("split.no") || ct.metadata.contains_key("split.tensors.count") {
+            return Err("GGUF split fields without split.count".into());
+        }
+        return Ok(None);
+    };
+    let count = count.to_u16().map_err(|e| e.to_string())?;
+    let index = ct
+        .metadata
         .get("split.no")
         .ok_or("missing split.no")?
         .to_u16()
-        .map_err(|e| e.to_string())
-}
-
-pub fn split_tensor_count(ct: &Content) -> Result<u64, String> {
-    let count = ct
+        .map_err(|e| e.to_string())?;
+    let tensors = ct
         .metadata
         .get("split.tensors.count")
         .ok_or("missing split.tensors.count")?
         .to_i32()
         .map_err(|e| e.to_string())?;
-    u64::try_from(count).map_err(|_| "negative split.tensors.count".into())
+    let tensors = u64::try_from(tensors).map_err(|_| "negative split.tensors.count")?;
+    if count == 0 || index >= count {
+        return Err("invalid GGUF split index/count".into());
+    }
+    Ok(Some(GgufSplit {
+        count,
+        index,
+        tensors,
+    }))
 }
 
 /// Artifact readers use Candle's canonical decoder only after a bounded
@@ -588,6 +600,43 @@ mod tests {
             direct.reads
         );
         Ok(())
+    }
+
+    #[test]
+    fn split_declaration_is_complete_and_consistent() {
+        assert_eq!(split(&content_with(vec![])), Ok(None));
+        let fields = vec![
+            ("split.count", Value::U16(2)),
+            ("split.no", Value::U16(0)),
+            ("split.tensors.count", Value::I32(9)),
+        ];
+        assert_eq!(
+            split(&content_with(fields.clone())),
+            Ok(Some(GgufSplit {
+                count: 2,
+                index: 0,
+                tensors: 9
+            }))
+        );
+        for missing in 0..fields.len() {
+            let mut malformed = fields.clone();
+            malformed.remove(missing);
+            assert!(split(&content_with(malformed)).is_err());
+        }
+        for (key, value) in [
+            ("split.count", Value::U16(0)),
+            ("split.no", Value::U16(2)),
+            ("split.tensors.count", Value::I32(-1)),
+            ("split.no", Value::String("0".into())),
+        ] {
+            let mut malformed = fields.clone();
+            for field in &mut malformed {
+                if field.0 == key {
+                    field.1 = value.clone();
+                }
+            }
+            assert!(split(&content_with(malformed)).is_err());
+        }
     }
 
     /// Assemble an in-memory GGUF from a metadata list and read it back into a

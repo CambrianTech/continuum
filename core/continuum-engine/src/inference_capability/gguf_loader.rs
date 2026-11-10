@@ -151,7 +151,7 @@ fn artifact_parameter_count(content: &gguf_file::Content) -> Result<u64, String>
         let count = value.to_u64().map_err(|e| format!("invalid parameter count: {e}"))?;
         return if count > 0 { Ok(count) } else { Err("zero parameter count".into()) };
     }
-    if crate::inference_capability::gguf_keys::split_count(content)? > 1 {
+    if crate::inference_capability::gguf_keys::split(content)?.is_some_and(|split| split.count > 1) {
         return Err("partial GGUF shard cannot establish the model parameter total".into());
     }
     let mut count = 0_u64;
