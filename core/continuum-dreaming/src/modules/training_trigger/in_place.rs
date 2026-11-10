@@ -655,9 +655,38 @@ impl TrainingTriggerState {
         let store = self.durable.require()?;
         self.in_place.authority.custody.settle_orphans().await;
         let buckets = eligible_buckets(&store, served_model).await?;
-        self.learn_each(buckets, move |state, key, rows| async move { state.learn_bucket(key, rows, engine).await }).await?;
-        // every bucket's newest generation is candidate work of its own, retried until taken: a
-        // candidate interrupted after its generation, or a bucket with nothing pending, is not lost
+        // learning and candidates progress together: a bucket waiting (for her act, her memory, her
+        // slot) never holds a ready candidate from its trial (Codex on #5905). Both are joined here,
+        // in this pass; each candidate is taken under its own bucket's gate.
+        let served = served_model.to_owned();
+        let learning = self.learn_each(buckets, move |state, key, rows| {
+            let served = served.clone();
+            async move {
+                let pass = state.learn_bucket(key.clone(), rows, engine).await?;
+                if pass.checkpointed {
+                    // a generation published in this pass is offered as a candidate now, not a pass later
+                    state.sweep_bucket(&key, &served).await?;
+                }
+                Ok(pass)
+            }
+        });
+        let (learned, swept) = tokio::join!(learning, self.sweep_all(&store, served_model));
+        learned?;
+        swept
+    }
+
+    /// `key`'s newest generation, offered as a candidate the way the sweep offers every bucket's.
+    async fn sweep_bucket(self: &Arc<Self>, key: &BucketKey, served_model: &str) -> Result<(), String> {
+        let store = self.durable.require()?;
+        match store.checkpoint_of(key).await? {
+            Some(current) => self.sweep_candidates(vec![current], served_model).await,
+            None => Ok(()),
+        }
+    }
+
+    /// Every bucket's newest generation is candidate work of its own, retried until taken: a
+    /// candidate interrupted after its generation, or a bucket with nothing pending, is not lost.
+    async fn sweep_all(self: &Arc<Self>, store: &super::durable::DurableStore, served_model: &str) -> Result<(), String> {
         const PAGE: usize = 64;
         let mut after: Option<String> = None;
         loop {
@@ -666,10 +695,9 @@ impl TrainingTriggerState {
             after = page.last().map(|row| row.cursor().to_owned());
             self.sweep_candidates(page, served_model).await?;
             if !full {
-                break;
+                return Ok(());
             }
         }
-        Ok(())
     }
 
     /// Run `step` on each bucket under its owned gate, in order. The owner refusing (shutdown) ends

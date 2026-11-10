@@ -103,6 +103,55 @@ async fn a_waiting_bucket_never_holds_another_buckets_pass() {
     }
 }
 
+// what this catches (Codex on #5905 at 0e7e4f4f5): the candidate sweep ran only after every bucket's
+// pass, so one bucket waiting (for her act, her memory, her slot) kept every ready candidate from its
+// trial. Mind A's due checkpoint opens its trial while mind B's pass still waits for her act.
+#[tokio::test]
+async fn a_due_candidate_reaches_its_trial_while_another_bucket_waits() {
+    use crate::commands::training_trigger::test_support::{build_runtime_trigger_only, ex, submit_params};
+    let (trigger, executor, _dir) = build_runtime_trigger_only().await;
+    let state = trigger.state.clone();
+    let competence = crate::genome::competence::MIN_EXAMPLES;
+    let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+    let examples = |n: usize| (0..n).map(|i| ex(&format!("p{i}"), "c")).collect::<Vec<_>>();
+    executor.execute_json("genome/training-trigger/submit", submit_params(a, "code", examples(competence))).await.expect("test: A submitted");
+    executor.execute_json("genome/training-trigger/submit", submit_params(b, "code", examples(1))).await.expect("test: B submitted");
+    let store = state.durable.require().expect("test: the store");
+    let arrivals = store.arrivals(0, 16).await.expect("test: arrivals");
+    let a_row = arrivals.iter().find(|row| row.key.persona_id == a).expect("test: A's row");
+    let a_key = a_row.key.clone();
+    // A's learner learned every example: its generation holds an adapter and retires A's row
+    let generation_dir = tempfile::tempdir().expect("test: a generation dir");
+    std::fs::write(generation_dir.path().join("adapter.gguf"), b"adapter bytes").expect("test: the adapter");
+    let generation = super::super::durable::Generation {
+        name: "a-generation-1.gguf".into(),
+        path: generation_dir.path().display().to_string(),
+        binding: "binding".into(),
+        steps: competence as i64,
+        provenance: serde_json::json!({}),
+        persona_name: "test-p".into(),
+        signature: None,
+    };
+    store.commit_checkpoint(&a_key, generation, &[Position { submission: a_row.id, learned: competence as u32 }]).await.expect("test: A's generation");
+    let _b_acting = crate::inference::slots::begin_act_for_test(b).await;
+    let pass = state.learn_in_place(engine(9), "synthetic");
+    tokio::pin!(pass);
+    let opened = async {
+        loop {
+            let row = store.checkpoint_of(&a_key).await.expect("test: A's checkpoint").expect("test: present");
+            if row.candidate_trial.is_some() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    };
+    tokio::select! {
+        _ = opened => {}
+        ended = &mut pass => panic!("B's pass cannot end while her act runs: {ended:?}"),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("A's candidate was held behind B's waiting pass"),
+    }
+}
+
 // what this catches: a restored learner re-teaching examples its generation already holds, when the
 // journal row was read before the generation's positions were projected onto it (Codex on 76f829e2b).
 #[test]
