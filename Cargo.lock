@@ -3356,6 +3356,7 @@ name = "continuum-host"
 version = "0.1.0"
 dependencies = [
  "cap-std",
+ "landlock",
  "libc",
  "tempfile",
  "tokio",
@@ -3390,7 +3391,6 @@ dependencies = [
  "futures",
  "futures-util",
  "inventory",
- "landlock",
  "libc",
  "metal 0.32.0",
  "notify",

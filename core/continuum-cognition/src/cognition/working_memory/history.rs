@@ -38,10 +38,16 @@ impl WorkingMemory {
         let Some(edge) = view.fold_edge(actions_source).and_then(|key| key.parse::<u64>().ok()) else {
             return;
         };
-        let drained = self.release_through(edge);
-        if drained > 0 {
+        let edge = self.release_edge(edge);
+        if self.release_through(edge) > 0 {
             view.release(actions_source, |key| key.parse::<u64>().is_ok_and(|seq| seq <= edge));
         }
+    }
+
+    /// `edge`, never at or past the act in flight: it is newer than anything her view folded.
+    fn release_edge(&self, edge: u64) -> u64 {
+        let in_flight = self.last_action.lock().as_ref().map(|(seq, _)| *seq);
+        in_flight.map_or(edge, |seq| edge.min(seq.saturating_sub(1))) // map_or: nothing in flight leaves the edge as measured
     }
 
     /// Move every resident act up to `edge` into her archive's outbox (written by the next
@@ -52,8 +58,7 @@ impl WorkingMemory {
         if !archive.is_bound() {
             return 0;
         }
-        let in_flight = self.last_action.lock().as_ref().map(|(seq, _)| *seq);
-        let edge = in_flight.map_or(edge, |seq| edge.min(seq.saturating_sub(1))); // map_or: nothing in flight leaves the edge as measured
+        let edge = self.release_edge(edge);
         let drained = self.actions.lock().drain_through(edge);
         let count = drained.len();
         if count == 0 {
