@@ -60,12 +60,11 @@ pub const LLAMACPP_PROVIDER_ID: &str = "llamacpp-local";
 /// its per-call VRAM leases and its standing reservation floor.
 pub const EMBED_LANE_CONSUMER_ID: &str = "embed";
 
-/// The embed lane's working VRAM: the bounded Metal embedding context (~1.2 GiB
-/// compute buffer + ~224 MiB KV) plus headroom. ONE constant, two uses: the
-/// per-call lease in [`create_embedding`], and the standing FLOOR the embedder
-/// reserves on the board at resolve so serving's plan can never grow into it
-/// (#225 — measured 2026-08-08: the grown window left 604 MiB governed-available
-/// against this 1792 MiB need, and embedding went fully dead on the box).
+/// The embed lane's standing VRAM FLOOR on the board, reserved at resolve so serving's plan can
+/// never grow into the slice cognition embeds in (#225, measured 2026-08-08: the grown window left
+/// 604 MiB governed-available and embedding went fully dead): a 2,048-token context (1,450 MiB
+/// measured 2026-11-10) plus headroom. Each call leases only what its own context allocates
+/// (`EmbeddingBatch::context_bytes`), so a short text fits inside this floor many times over.
 pub const EMBED_LANE_VRAM_BYTES: u64 = 1792 * 1024 * 1024;
 
 /// Overlay live runtime metadata (throughput) on top of the registry's
@@ -763,26 +762,21 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // Wait without a memory claim. The admitted worker owns both through context teardown,
         // even when the request future is cancelled after spawn_blocking starts.
         let embedding = backend.admit_embedding().await?;
-        // The embedding forward pass allocates a bounded Metal context (a 2048-token
-        // embedding context: ~1.2 GiB compute buffer — quadratic in n_ubatch=2048 —
-        // plus ~224 MiB KV). UNGOVERNED, it grabbed that context behind the governor's
-        // back and competed with the serving lane for VRAM; under pressure the Metal
-        // command buffer OOM'd and the decode returned an ALL-ZERO vector — the
-        // "degenerate embedding" that silently broke semantic recall. Lease the VRAM
-        // from the ResourceGovernor FIRST: granted ⇒ the bytes are reserved for the
-        // life of the guard and the decode has room to succeed; refused ⇒ fail LOUD
-        // here instead of allocating a doomed context that emits garbage. Embeddings
-        // are GPU-only ([[gpu-is-non-negotiable-every-component-no-cpu-fallback]]), so
-        // unlike the eval lane there is NO CPU spill — the honest degrade is a named
-        // refusal the caller ([`NeuralEmbeddingProvider::embed`]) already surfaces as
-        // "no signal", never a zero vector.
+        // Tokenized first, so the context's memory is known before it exists. The embedding forward
+        // pass allocates a Metal context sized to the longest text (measured per token in
+        // `EmbeddingBatch`). UNGOVERNED, it grabbed that context behind the governor's back and
+        // competed with the serving lane for VRAM; under pressure the Metal command buffer OOM'd and
+        // the decode returned an ALL-ZERO vector, the "degenerate embedding" that silently broke
+        // semantic recall. So the VRAM is leased FIRST: granted, the bytes are reserved for the life
+        // of the guard; refused, it fails LOUD instead of allocating a doomed context. The lease is
+        // what THIS request allocates: a fixed 1,792 MiB bound for the longest text refused 91% of
+        // short ones on the M5 (26960c09d, 758 of 834 in 3 h, with 1.5-1.7 GiB free).
         //
-        // Const, not env-tunable — substrate policy lives in code (concurrency guide).
-        // Only the per-call CONTEXT is leased here; the embed lane's standing FLOOR on
-        // the board (so serving can never grow into this slice — Joel 2026-08-08: "the
-        // budgeter just has all its parts figure it out") is claimed at embedder
-        // resolve via [`crate::resources::ResourceDaemon::reserve`], from the same
-        // module-level constants below.
+        // The embed lane's standing FLOOR on the board (so serving can never grow into this slice,
+        // Joel 2026-08-08: "the budgeter just has all its parts figure it out") is claimed at
+        // embedder resolve via [`crate::resources::ResourceDaemon::reserve`].
+        let batch = embedding.tokenize(&texts)?;
+        let lease_bytes = batch.context_bytes();
         const EMBED_LANE_LEASE_TTL_MS: u64 = 60_000; // SIGKILL backstop; the RAII guard frees on drop
         let _vram_lease = {
             use crate::resources::{
@@ -793,7 +787,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     let req = LeaseRequest {
                         consumer_id: EMBED_LANE_CONSUMER_ID.to_string(),
                         kind: ResourceKind::Vram,
-                        bytes: EMBED_LANE_VRAM_BYTES,
+                        bytes: lease_bytes,
                         // A bounded, sub-second forward pass is not yanked mid-embed;
                         // the guard returns the bytes the instant it finishes.
                         ttl_ms: EMBED_LANE_LEASE_TTL_MS,
@@ -813,7 +807,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                                 continuum_base::probe!(
                                     class = "embed.vram.leased",
                                     consumer = EMBED_LANE_CONSUMER_ID,
-                                    bytes = EMBED_LANE_VRAM_BYTES,
+                                    bytes = lease_bytes,
                                     texts = texts.len(),
                                     retried = (attempt > 0),
                                     "embedding lane acquired a governed VRAM lease"
@@ -824,7 +818,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                             Err(LeaseError::InsufficientCapacity { available, .. }) => {
                                 continuum_base::probe!(
                                     class = "embed.vram.refused",
-                                    requested = EMBED_LANE_VRAM_BYTES,
+                                    requested = lease_bytes,
                                     available = available,
                                     attempt = attempt,
                                     "embedding VRAM lease refused — failing loud, NOT emitting degenerate zeros"
@@ -849,7 +843,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                                 "embed: VRAM lease refused twice — {} MiB requested, {} MiB governed-available. \
                                  Refusing to allocate an OOM-doomed embedding context (it would decode to \
                                  degenerate zeros). Free VRAM (tier down serving) and retry.",
-                                EMBED_LANE_VRAM_BYTES / (1024 * 1024),
+                                lease_bytes / (1024 * 1024),
                                 available / (1024 * 1024),
                             ));
                         }
@@ -861,7 +855,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             }
         };
 
-        let embeddings = embedding.run(texts, _vram_lease).await?;
+        let embeddings = embedding.run(batch, _vram_lease).await?;
         Ok(EmbeddingResponse {
             embeddings,
             model: model_id,
