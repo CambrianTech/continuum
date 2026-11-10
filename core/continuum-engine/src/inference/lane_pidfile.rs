@@ -63,7 +63,10 @@ const PORT_RELEASE_BUDGET: Duration = Duration::from_secs(5);
 /// (not `/tmp`, which other users and other tools share). `None` only if there is
 /// no home directory — a degenerate environment where reclaim is simply disarmed.
 pub fn pidfile_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("run").join("llama-lane.pid"))
+    // Through the one home owner, never `dirs::home_dir()`: on Windows that reads the profile
+    // folder from the OS and ignores a test's pinned home, so a live fixture wrote BigMama's real
+    // pidfile and her resident engine read as no lane at all (card e3082752).
+    crate::paths::continuum_home().ok().map(|home| home.join("run").join("llama-lane.pid"))
 }
 
 /// Record the live lane's `llama-server` child pid at the canonical path so a
@@ -119,7 +122,8 @@ fn write_at(path: &Path, pid: u32) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, pid.to_string())
+    // Staged and renamed into place: a reader sees the old pid or the new one, never a torn file.
+    continuum_host::durable::write_replace(path, pid.to_string().as_bytes())
 }
 
 /// The pid this machine's CANONICAL live lane was last recorded at, if any.
@@ -182,7 +186,7 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
             clear_at(path);
             ReclaimOutcome::NotOurProcess {
                 pid,
-                comm: other.unwrap_or_default(),
+                comm: other.unwrap_or_default(), // unwrap_or_default: an unreadable comm names no process; the outcome is still NotOurProcess
             }
         }
     }
@@ -196,6 +200,19 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card e3082752, BigMama 2026-11-09): the canonical pidfile and lane records
+    // resolving outside the one home owner. `dirs::home_dir()` ignores a test's pinned home on
+    // Windows, so the in_place live fixture wrote BigMama's real llama-lane.pid: her resident engine
+    // read as no live lane, no grant was ever published, and her minds parked 25 min per tick.
+    #[test]
+    fn the_pidfile_and_lane_records_resolve_under_the_one_home_owner() {
+        let _home = crate::paths::test_home::HomeGuard::preserve_blocking();
+        let home = crate::paths::continuum_home().expect("test: a test build has a home");
+        assert_eq!(pidfile_path(), Some(home.join("run").join("llama-lane.pid")));
+        assert_eq!(crate::inference::lane_registry::lanes_dir(), Some(home.join("run").join("lanes")));
+        assert_ne!(dirs::home_dir().map(|h| h.join(".continuum")), Some(home), "a test build never resolves the node's own home");
+    }
 
     /// A unique temp pidfile path per test, under the system temp dir — NEVER the
     /// real `~/.continuum/run/llama-lane.pid`, so a live core's reclaim is
