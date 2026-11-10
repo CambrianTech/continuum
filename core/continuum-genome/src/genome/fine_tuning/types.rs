@@ -96,6 +96,14 @@ pub struct TrainingJobRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub parent: Option<crate::genome::competence::GeneRef>,
+    /// The intended job UUID for this request — the stable identity that survives
+    /// core restarts and is returned by `job-reattach` so boot recovery can match
+    /// an orphan back to its original dispatch intent. When set, it overrides the
+    /// ephemeral local_id used during creation; adapters treat it as the canonical
+    /// identifier for this job across incarnations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub intended_job: Option<Uuid>,
 }
 
 // ─── Dataset ─────────────────────────────────────────────────────────
