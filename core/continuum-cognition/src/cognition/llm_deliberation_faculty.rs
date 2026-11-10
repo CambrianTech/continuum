@@ -485,6 +485,7 @@ impl LlmDeliberationFaculty {
     }
 }
 
+pub(crate) use super::tool_surface::SurfaceReason;
 
 #[async_trait]
 impl Faculty for LlmDeliberationFaculty {

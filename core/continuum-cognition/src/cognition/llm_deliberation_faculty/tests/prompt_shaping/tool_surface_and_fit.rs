@@ -414,6 +414,7 @@ fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window:
             required: Leveled::default(),
             newest: continuum_context::allocation::Newest::Absent,
             tools: offer.head(),
+            grounding: Leveled::default(),
             last_move: Leveled::default(),
             history: Span::default(),
             reply,

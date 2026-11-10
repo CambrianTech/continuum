@@ -18,6 +18,7 @@
 //! its place to a cheaper lesser one (the inversion `delib.context.salience_inversion` reported).
 //! The block's header rides the most important item's levels: nothing renders when it leaves.
 
+use continuum_context::ladder::{Leveled, Rungs};
 
 use super::*;
 
