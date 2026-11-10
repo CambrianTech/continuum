@@ -217,6 +217,17 @@ between acts 2.0 s (so prefill-ahead per mind has little to hide in; the cache i
 - **Never a miss for a file read once:** a whole file read inline names its handle, so she reopens
   it instead of re-reading (20 identical re-reads, 2,876 s in 6 h).
 
+## Open: newer input is never paged out (found 2026-11-10, capacity_and_wire)
+
+A room message that arrives during her act is newer than her newest result, but it rides her view's
+conversation as an optional item. On a fresh view the allocation granted the result's page every
+token left (11,466 beside an unmeasured act's reply want of 0) and the conversation only its floor
+(30 of 620): the update was cut to a count. On canary the unmeasured act's 2,048-token reply want
+left that room by accident. Fix: in-turn room updates are required input like the stimulus (a hard
+limit, so no page takes their room), the conversation's floor counting them whole. Separately, the
+pager shows whole lines only: a result whose second line is 65k chars got a 392-char page of an
+11,466-token grant; fill the granted page with a byte cut of the next line.
+
 ## Ideas from anyone (append below)
 
 - 
