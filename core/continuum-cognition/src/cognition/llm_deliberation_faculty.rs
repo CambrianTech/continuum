@@ -353,11 +353,15 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    /// Is this turn an ACT with her hands (a deliverable, or her own initiative) rather
-    /// than a message turn? Asked by the ACT output cap and the lane priority, so it lives
-    /// in one place. Never by the tool surface: that is the same on every kind of turn.
+    /// Is this turn an ACT with her hands (a deliverable, her own initiative, or a card she is
+    /// working) rather than a message turn? Asked by the ACT output cap and the lane priority, so
+    /// it lives in one place. Never by the tool surface: that is the same on every kind of turn,
+    /// which is why a card she holds makes it work. A message arriving while she worked a card
+    /// was a pass capped at a short reply's ~400 tokens, so the write she was composing hit the
+    /// cap before its call committed and the whole act was discarded: 394 of Atlas's acts and
+    /// 277 of Aiko's (the M5, 2026-11-09, `tools/<cut at the output limit>`).
     fn is_work_turn(&self, ws: &Workspace) -> bool {
-        (ws.workspace_deliverable || ws.initiative) && !self.surface.hands().is_empty()
+        (ws.workspace_deliverable || ws.initiative || ws.held.holds_a_working_card()) && !self.surface.hands().is_empty()
     }
 
     /// What kind of turn this is, for its allowance: a work turn is an ACT; anything
@@ -489,9 +493,6 @@ impl LlmDeliberationFaculty {
         ws.held.holds_in_progress()
     }
 
-    /// Does this workspace name a card she HOLDS (Claimed or InProgress)? The lane
-    /// gate's key for `LanePriority::Work` — wider than `holds_live_work`, which keys
-    /// the working-presence contract on InProgress only.
     /// This mind's next call's bound on the lane: prefill of the prompt she did not have
     /// cached last turn at this box's measured prefill rate, plus her last output at its
     /// measured decode rate. Read from her LAST turn's shape (`LAST_TURN_SHAPE`) — the

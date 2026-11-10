@@ -298,3 +298,24 @@ async fn a_prompt_that_eats_the_reserve_is_re_rendered_or_refused_never_sent_pas
         );
     }
 }
+
+// what this catches: a message arriving while she worked a card was a PASS, capped at a short
+// reply's ~400 tokens, though her hands are the same on every turn, so the write she was composing
+// hit the cap before its call committed and the whole act was discarded (the M5, 2026-11-09:
+// 394 of Atlas's acts and 277 of Aiko's, `tools/<cut at the output limit>`). A card she works
+// makes the turn work, with an act's cap.
+#[test]
+fn a_turn_while_she_works_a_card_is_an_act_never_a_short_reply() {
+    use crate::cognition::work_preconditions::{fixture_card, Held, FIXTURE_NOW_MS};
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Atlas", "You are Atlas.", Arc::new(HeuristicInferenceAdapter::new()))
+        .with_context_window(65_536)
+        .with_tools(vec![read_tool()]);
+    let mut ws = writing_workspace(crate::identity::ActivityRoom::mint(), 4, false);
+    assert_eq!(faculty.turn_kind(&ws), TurnKind::Pass, "precondition: a message turn with no card is a pass");
+    let her = airc_core::PeerId::from_uuid(Uuid::from_u128(1));
+    let Some(held) = Held::of(fixture_card(airc_work::CardState::InProgress, Some(her), None, "fix the thing"), her, FIXTURE_NOW_MS, 1) else {
+        panic!("test: she holds the card");
+    };
+    ws.held = Arc::new(crate::cognition::workspace::HeldWork { holds: vec![held], ..Default::default() });
+    assert_eq!(faculty.turn_kind(&ws), TurnKind::Act, "a card she works makes the turn work");
+}
