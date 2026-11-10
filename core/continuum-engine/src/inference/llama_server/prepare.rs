@@ -215,7 +215,8 @@ impl LlamaServerProcess {
         // the sidecar); none → the main lane wears the projector and pays the reuse
         // cost, named in the probe. A citizen is never blind because of a cache knob
         // (CLAUDE.md, Sensory Architecture).
-        let decision = main_lane_mmproj_decision_for(&target.model, target.vision_sidecar);
+        let decision = main_lane_mmproj_decision_for(&target.model, target.vision_sidecar)
+            .map_err(LlamaServerError::Spawn)?;
         let mmproj: Option<std::path::PathBuf> = if decision.wears() {
             resolved_mmproj.clone()
         } else {
