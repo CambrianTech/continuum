@@ -18,5 +18,6 @@ pub mod process_class;
 pub mod process_exit;
 pub mod process_usage;
 pub mod read_pin;
+pub mod sandbox;
 pub mod shutdown_signal;
 pub mod stack_sample;

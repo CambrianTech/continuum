@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{AllowList, Confinement, Enforcement};
+use super::{AllowList, Enforcement};
 
-pub(super) fn confined_command_with(
-    _confinement: &Confinement,
+pub(super) fn confine(
+    _home: &Path,
     list: &AllowList,
     program: &Path,
     args: &[std::ffi::OsString],
