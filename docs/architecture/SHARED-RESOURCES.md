@@ -98,6 +98,37 @@ tool adapter holds only its difference from its base.
 A new tool is its difference from the nearest base. A new domain is a new base on the same
 resource-kind adapters. The core never changes for either.
 
+## Residency over time: resident, transient, pageable
+
+Joel, 2026-11-10: "Are there ways to stage some things in RAM, then into VRAM, only briefly for the
+operation?" A memory lease also carries how long its bytes must stay resident, as a graphics engine
+treats a frame's memory:
+
+- **Resident:** must stay where it is while its holder runs. The base model's weights, and a mind's
+  KV while she acts.
+- **Transient:** needed only for one bounded operation of a second or less, never at the same time
+  as other transient work in the same arena. Examples are an embedding context, a vision encoder
+  pass, a learning step's gradients and a draft model's buffers. Transient leases alias one arena
+  that is reserved once and reused one after another, like a frame graph's transient attachments.
+  The arena is sized to the largest transient need, not to the sum of every consumer's standing
+  floor. Today each side consumer holds its own floor (the embedder alone held 1,792 MiB), so the
+  serving plan budgets around their sum.
+- **Pageable:** may leave the fast tier between uses and come back: KV pages to RAM or disk,
+  LoRA adapters, MoE experts, a small model's weights. Each page has a measured cost to read back,
+  and the placement decides by value (how soon it is needed against what it costs to bring back).
+
+The memory adapter differs by topology:
+
+- **Dedicated VRAM (CUDA):** a transient operation stages its data in pinned host memory, uploads
+  it, runs, and frees the device memory. PCIe moves about 25 GB/s, so 600 MB takes about 25 ms,
+  well inside a sub-second operation.
+- **Unified memory (Apple, AMD APUs):** nothing is copied. Transience matters for the working set
+  and for wired pages, so the arena time-shares one region instead of holding several floors.
+
+The core schedules transient operations into the gaps between the engine's decode steps, the same
+slot learning in place uses (training shaped like inference). Where it can, the core then reports
+the arena and the pages to the serving plan as reclaimable memory rather than permanently taken.
+
 ## The test that proves the interface
 
 Two domain bases as far apart as they come must both fit without bending the core:
