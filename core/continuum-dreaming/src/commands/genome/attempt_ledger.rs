@@ -469,11 +469,10 @@ impl AttemptLedger {
             .find_by_id(key)
             .await
             .map_err(|e| e.to_string())?
-            .map(|r| r.intended_job_handle))
+            .and_then(|r| r.intended_job_handle))
     }
 }
 
-#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::*;
