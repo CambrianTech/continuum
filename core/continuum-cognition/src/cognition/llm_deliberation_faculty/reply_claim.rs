@@ -18,8 +18,8 @@ use super::*;
 ///
 /// - floor = min: an act's measured output need as ONE claim, think plus answer
 ///   ([`OutputNeed::act_room`], raised by a recent cut), never the answer alone; an unmeasured
-///   act reserves nothing ([`ActRoom::Unmeasured`], a state, not a number). A pass's floor is its
-///   measured answer (hers, or the node's pooled one before her first turn). The allocation
+///   act reserves nothing ([`ActRoom::Unmeasured`], a state, not a number). A pass's floor is the
+///   engine's one free cell, the least room a reply begins in. The allocation
 ///   caps it so required input always fits; an act whose need is capped is refused as the typed
 ///   `IrreducibleShortfall`, never sent with less (the M5, 2026-11-04: an answer-only floor left
 ///   caps of 72-89 tokens and 302 of 414 acts were cut mid-thought).
@@ -54,7 +54,10 @@ pub fn reply_claim(
 ) -> continuum_context::flex::FlexClaim {
     let floor = match kind {
         TurnKind::Act => super::super::working_set::ActRoom::of(need).needed().map_or(0, |room| room), // map_or: unmeasured reserves nothing in her name
-        TurnKind::Pass => need.map_or(0, |n| n.answer_room()), // map_or: nothing measured on this node reserves nothing
+        // The least room a reply begins in, the engine's one free cell: her measured need is her
+        // want, which the allocation grows toward by priority, so a seat smaller than her answer
+        // still serves the part it holds (a floor of her whole answer refused it outright).
+        TurnKind::Pass => 1,
     };
     // A recent cut think raises the want toward its lower bound (`reasoning_at_least`, censored
     // and corrected), only under the measured time term: a thinking model fills whatever room it

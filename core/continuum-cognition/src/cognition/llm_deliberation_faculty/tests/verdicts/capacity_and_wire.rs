@@ -122,7 +122,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         // its measured need (the cold prior here). What the fixture must still prove is that
         // the oversized result rides the wire inside the window (asserted below).
         assert!(
-            view.completion_reserve == 0,
+            view.completion_reserve == 1,
             "the reply keeps its floor and claims no more than its need: {}",
             view.completion_reserve
         );

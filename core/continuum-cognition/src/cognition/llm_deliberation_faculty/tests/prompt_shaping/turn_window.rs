@@ -637,8 +637,8 @@ fn prompt_view_stays_within_the_served_window() {
 fn the_reply_claims_her_measured_need_and_no_cap() {
     use crate::cognition::working_set::OutputNeed;
     // Nothing measured on this node: nothing reserved, nothing wanted (never a guessed size).
-    let floor = 0;
-    let prior = 0;
+    let floor = 1; // a pass begins in the engine's one free cell
+    let prior = 1;
     // (floor, wanted, priority)
     let shape = |c: continuum_context::flex::FlexClaim| {
         assert_eq!(c.min_tokens, c.floor_tokens, "above its floor the reply grows by priority");
@@ -648,7 +648,7 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     // Unmeasured on this node: nothing reserved or wanted, never a window fraction.
     assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, false, None)), (floor, prior, 4));
     assert_eq!(shape(reply_claim(TurnKind::Pass, None, 0, false, true, None)), (floor, prior, 6));
-    assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, false, false, None)), (0, prior, 8), "an unmeasured act reserves nothing");
+    assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, false, false, None)), (0, 0, 8), "an unmeasured act reserves nothing");
     assert_eq!(shape(reply_claim(TurnKind::Act, None, 0, true, false, None)).2, 10, "live held work");
     assert_eq!(shape(reply_claim(TurnKind::Act, None, 1, false, false, None)).2, 10, "a pending cut");
     // Measured: her think + answer, whole; an act floors at both, one claim (never her answer alone).
@@ -732,7 +732,7 @@ async fn an_unmeasured_turn_carries_its_measured_grant_and_no_cap() {
     .with_context_window(window);
     let ws = Workspace::new("act on the card");
     let view = faculty.prompt_view(&ws);
-    assert_eq!(view.completion_reserve, 0, "an unmeasured reply on a node with nothing measured claims nothing");
+    assert_eq!(view.completion_reserve, 1, "an unmeasured reply on a node with nothing measured claims only the cell it begins in");
     let binding = faculty.binding.load_full();
     for (kind, purpose) in [
         (TurnKind::Act, "cognition/act"),

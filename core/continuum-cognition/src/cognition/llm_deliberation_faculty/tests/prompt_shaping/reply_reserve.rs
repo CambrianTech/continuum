@@ -80,7 +80,7 @@ fn an_unmeasured_mind_reserves_a_reply_not_a_fraction_of_her_window() {
     // 1M frontier seat.
     // Nothing measured on this node: the reply wants nothing in the allocation (its request
     // carries the room its prompt leaves, once), never a share of the window, at any size.
-    let prior = 0;
+    let prior = 1; // the cell a reply begins in
     for window in [
         4_096,
         8_192,
@@ -168,7 +168,7 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     };
 
     let cold = wanted(persona, 0);
-    assert_eq!(cold, 0, "nothing measured on this node: wants nothing, never a guessed size");
+    assert_eq!(cold, 1, "nothing measured on this node: only the cell a reply begins in, never a guessed size");
     // (a) one landed turn is measured: its p90 is that turn, and it replaces the prior
     reg.record_emission_in_memory(persona, 2_500, 0, EmissionStop::Landed, 1);
     assert_eq!(wanted(persona, 0), 2_500);

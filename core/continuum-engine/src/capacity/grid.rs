@@ -258,7 +258,7 @@ impl<P: GridPlacementPolicy> StickyPlacementPolicy<P> {
 
 impl<P: GridPlacementPolicy> GridPlacementPolicy for StickyPlacementPolicy<P> {
     fn place(&self, grid: &GridSnapshot, req: &LeaseRequest) -> Placement {
-        let mut cached = self.cached.lock().expect("sim-only lock");
+        let mut cached = self.cached.lock().expect("sim-only lock"); // JUSTIFIED: the dyno simulator's own cache; a poisoned lock means a panicked simulation, which fails the replay
         cached
             .get_or_insert_with(|| self.inner.place(grid, req))
             .clone()
@@ -524,7 +524,7 @@ impl GridSimulator {
                 .iter()
                 .find(|(p, _)| p == peer)
                 .map(|(_, n)| *n)
-                .unwrap_or(0)
+                .unwrap_or(0) // unwrap_or: a peer with no entry holds no seats
         };
         let mut verdicts = vec![NodeVerdict {
             node: NodePick::Local,
