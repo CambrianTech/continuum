@@ -245,15 +245,26 @@ impl ModelArchConfig {
 
         // Absent `num_key_value_heads` MEANS multi-head attention (kv == q) in
         // the HF config spec — a defined semantic, not a guess.
-        let num_kv_heads = json
-            .get("num_key_value_heads")
-            .and_then(|x| x.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(num_attention_heads);
+        let optional_dimension = |key: &str| -> Result<Option<usize>, String> {
+            json.get(key)
+                .map(|value| {
+                    let number = value.as_u64().ok_or_else(|| {
+                        format!("config.json {} has non-integer `{key}`", path.display())
+                    })?;
+                    usize::try_from(number).map_err(|error| {
+                        format!("config.json {} dimension `{key}`: {error}", path.display())
+                    })
+                })
+                .transpose()
+        };
+        let num_kv_heads = match optional_dimension("num_key_value_heads")? {
+            Some(heads) => heads,
+            None => num_attention_heads,
+        };
 
         // Absent `head_dim` MEANS hidden_size / num_attention_heads (HF spec).
-        let head_dim = match json.get("head_dim").and_then(|x| x.as_u64()) {
-            Some(n) => n as usize,
+        let head_dim = match optional_dimension("head_dim")? {
+            Some(n) => n,
             None => {
                 if num_attention_heads == 0 {
                     return Err(format!(
@@ -404,6 +415,24 @@ mod tests {
         assert_eq!(cfg.context_length, 4096);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn malformed_optional_dimensions_are_not_spec_defaults(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        for key in ["num_key_value_heads", "head_dim"] {
+            let mut config = serde_json::json!({
+                "hidden_size": 2048, "intermediate_size": 5632,
+                "num_attention_heads": 16, "num_hidden_layers": 24,
+                "vocab_size": 32000, "max_position_embeddings": 4096
+            });
+            config[key] = serde_json::json!("invalid");
+            std::fs::write(dir.path().join("config.json"), serde_json::to_vec(&config)?)?;
+            assert!(ModelArchConfig::from_config_json(dir.path())
+                .is_err_and(|error| error.contains(key)));
+        }
+        Ok(())
     }
 
     // what this catches: a config.json missing a required field fails loud
