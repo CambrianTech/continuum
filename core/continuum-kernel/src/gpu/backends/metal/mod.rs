@@ -167,8 +167,8 @@ impl GpuDeviceProbe for MetalProbe {
     /// signal that tells the ResourceGovernor whether its VRAM and RAM ledgers
     /// describe one physical pool or two — never inferred from `target_os`, since
     /// an Intel Mac with a discrete AMD card also runs macOS and is NOT unified.
-    fn memory_mode(&self) -> MemoryMode {
-        self.memory_mode
+    fn memory_mode(&self) -> Option<MemoryMode> {
+        Some(self.memory_mode)
     }
 
     /// Two Mach syscalls (Unified) or one Metal property read (Discrete). In-process
@@ -386,7 +386,7 @@ mod tests {
         };
         assert_eq!(
             monitor.memory_mode(),
-            expected,
+            Some(expected),
             "MetalMonitor memory_mode must agree with the device's hasUnifiedMemory at construction time"
         );
     }
