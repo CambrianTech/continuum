@@ -132,6 +132,72 @@ mod the_newest_result_over_her_window {
             .collect()
     }
 
+    /// Her working memory after recording `content` as her newest result in `scope` (her acting root).
+    fn memory_after(content: &str, scope: Option<&str>) -> Arc<WorkingMemory> {
+        let wm = Arc::new(WorkingMemory::new(8));
+        wm.set_scope(scope.map(str::to_owned));
+        let room = Uuid::new_v4();
+        let call = ToolCall { id: "call-aris".into(), name: "work/submission".into(), input: json!({ "include_staged_evidence": true }) };
+        wm.record_native_action_statement("Reading the staged evidence for my submission.", room, std::slice::from_ref(&call));
+        let observation = Observation {
+            call,
+            output: ToolOutput {
+                image: None,
+                additional_images: None,
+                result: crate::ai::types::ToolResult { tool_use_id: "call-aris".into(), content: content.into(), is_error: None, custody: ResultCustody::Whole { handle: HANDLE.into() } },
+                verb: ToolVerb::classify("work/submission"),
+                paths: Vec::new(),
+                verdict: Default::default(),
+            },
+            status: ActStatus::Executed,
+        };
+        let rendered = observation.render_recency();
+        wm.record_receipt_typed(&[observation], &rendered, Some(room), ResultCustody::Whole { handle: HANDLE.into() });
+        wm
+    }
+
+    fn faculty_with(wm: Arc<WorkingMemory>) -> LlmDeliberationFaculty {
+        LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", Arc::new(HeuristicInferenceAdapter::new()))
+            .with_context_window(ARIS_WINDOW)
+            .with_working_memory(wm)
+    }
+
+    /// Her prompt fits her window, and any copy of her newest result it carries is its first page.
+    fn assert_fits_paged(faculty: &LlmDeliberationFaculty, whole: &str) {
+        let ws = Workspace::new("what does the evidence say?");
+        let view = faculty.prompt_view_with_visual_feedback(&ws, ARIS_WINDOW, aris_calibration(), None);
+        assert!(view.capacity_error.is_none() && view.budget_fault.is_none(), "{:?} {:?}", view.capacity_error, view.budget_fault);
+        let sent = aris_calibration().charge(view.estimated_prompt_tokens) + view.completion_reserve as usize;
+        assert!(sent <= ARIS_WINDOW as usize, "{sent} tokens charged against her {ARIS_WINDOW} window");
+        for (_, shown) in tool_results(&view) {
+            assert_first_page(&shown, whole);
+        }
+    }
+
+    // what this catches (Aiko on the M5, 2026-11-10 16:07Z): after a restart her 197,627-token newest
+    // result was charged whole as her least (delib.payload.over_window binding newest_result), her
+    // need rose to 208k and she was granted 215,720 of the pool, when before the restart it paged to
+    // 4,187 tokens with its handle. Restored from her checkpoint, it still pages.
+    #[test]
+    fn a_restored_newest_result_still_pages_under_her_window() {
+        let whole = evidence_answer(578);
+        let before = memory_after(&whole, None);
+        let restored = Arc::new(WorkingMemory::new(8));
+        restored.restore(before.snapshot());
+        assert_fits_paged(&faculty_with(restored), &whole);
+    }
+
+    // what this catches: two owners deciding differently whether a result is her current one. Her
+    // newest result recorded while rooted at one checkout, read while she stands at another, must
+    // never be charged whole: either it is not in her prompt, or it is its first page.
+    #[test]
+    fn a_newest_result_from_another_root_is_never_charged_whole() {
+        let whole = evidence_answer(578);
+        let memory = memory_after(&whole, Some("/worktrees/card-a"));
+        memory.set_scope(Some("/worktrees/card-b".to_owned()));
+        assert_fits_paged(&faculty_with(memory), &whole);
+    }
+
     // what this catches: Aris's stall. A newest result larger than her window was required whole,
     // so every request overflowed and she never acted again. It must render under her window as
     // its first page, with the call that reads on, never dropped.
