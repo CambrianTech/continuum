@@ -92,7 +92,6 @@ pub struct LaneAdmission {
     pub(super) work_waiting: AtomicUsize,
     /// Fires on every permit release so a parked ambient caller re-checks.
     pub(super) released: tokio::sync::Notify,
-    /// Held while the engine relaunches: every request enters it before either semaphore.
 }
 
 #[derive(Clone, Copy, Debug)]

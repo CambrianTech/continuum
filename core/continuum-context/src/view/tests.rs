@@ -44,7 +44,7 @@ fn a_live_claim_holds_what_its_epoch_already_renders() -> Result<(), GrantMismat
     let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&views], all_full)?;
     views.push("a.rs", "a.rs lines 1-40");
     view.advance(&[&views]);
-    let rendered: usize = view.render().map(|block| block.chars().count()).sum();
+    let rendered: usize = view.render().map(|block| block.chars()).sum();
     let live = view.claims(&crate::cost::Chars, &[&views]);
     assert_eq!(live[0].held, rendered, "the epoch's whole rendering of the source, both versions");
     assert!(live[0].held > live[0].full, "held counts the superseded version no want counts");
