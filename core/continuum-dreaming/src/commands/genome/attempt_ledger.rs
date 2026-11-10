@@ -434,26 +434,42 @@ impl AttemptLedger {
     /// Store a job handle as the intended target for this attempt. Survives state changes so
     /// reconciliation and recovery can still find it later.
     pub(crate) async fn set_intended_job(&self, key: Uuid, handle: JobHandle) -> Result<(), String> {
-        self.store.update_fields(
-            key,
-            &serde_json::json!({ "intended_job_handle": serde_json::to_value(handle).map_err(|e| e.to_string())? }),
-        )
-        .await
+        let lock = self.lock(key);
+        let _held = lock.lock().await;
+        let store = self.store.require()?;
+        let mut row = store
+            .find_by_id(key)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("attempt {key} was never admitted"))?;
+        row.intended_job_handle = Some(handle);
+        store.update(key, &row).await.map_err(|e| e.to_string())
     }
 
     /// Clear the intended job handle for an attempt.
     pub(crate) async fn clear_intended_job(&self, key: Uuid) -> Result<(), String> {
-        self.store.update_fields(
-            key,
-            &serde_json::json!({ "intended_job_handle": null }),
-        )
-        .await
+        let lock = self.lock(key);
+        let _held = lock.lock().await;
+        let store = self.store.require()?;
+        let mut row = store
+            .find_by_id(key)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("attempt {key} was never admitted"))?;
+        row.intended_job_handle = None;
+        store.update(key, &row).await.map_err(|e| e.to_string())
     }
 
     /// Read back the intended job handle for an attempt, if it exists.
     pub(crate) async fn intended_job_of(&self, key: Uuid) -> Result<Option<JobHandle>, String> {
-        let row = self.store.peek(key).await.map_err(|e| e.to_string())?;
-        Ok(row.and_then(|r| r.intended_job_handle))
+        let lock = self.lock(key);
+        let _held = lock.lock().await;
+        let store = self.store.require()?;
+        Ok(store
+            .find_by_id(key)
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|r| r.intended_job_handle))
     }
 }
 
