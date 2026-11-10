@@ -53,6 +53,33 @@ reloading.
   with pages cached in a fast tier, is nearly always. Fast tiers make releasing cheap, and that
   is what lets everything flow.
 
+## Cache levels everywhere
+
+Joel, 2026-11-10: "Its cache levels everywhere. Good graphics engines do this everywhere." Every
+derived value has a cache keyed by what derived it: a content hash or generation of its inputs.
+It sits on the same tiers as everything else and is recomputed only when those inputs change.
+Recomputing a pure function of unchanged inputs is a defect, because recomputing is the
+difference between milliseconds and minutes.
+
+| Derived value | Key | Seen recomputing on the M5, 2026-11-10 |
+|---|---|---|
+| A mind's KV (prefill) | Her prompt's prefix, by position | Relaunches discarded it (13 in 4 minutes); evictions drop instead of demote |
+| Prompt render and tokenization | Each view item's id and revision | Most of each prompt re-rendered and re-estimated every act |
+| A file read | Path plus content hash | Re-read while still held, 32-90% of file reads |
+| A board read | Room plus board revision | Re-read on a timer: 172 reads in 2 h for one resident |
+| A checkpoint | Each resident record's generation | Whole state re-serialized every 15 s (12-46 MB) |
+| Embeddings | Content hash (already cached) | The model reloaded per resolve before its memo; keep it one |
+| A tool result's rendering | Handle plus requested range | Re-rendered on every page |
+
+The rule for every one of them:
+- A **key**, from inputs only.
+- A **tier placement**, priced like any page.
+- **Invalidation** by the input's revision, never by time. A timer re-read is a recomputation
+  waiting to happen.
+
+A probe reports hit and miss counts per site, and a miss from unchanged inputs is named. A
+ratchet keeps the count of uncached derivations from rising.
+
 ## What the users are
 
 Continuum's users mostly work in Python or Node, usually on web projects. Few work in Rust. Much
