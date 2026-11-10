@@ -15,22 +15,36 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::inference::backends::llamacpp::ContextBytes;
 use crate::resources::{LeaseError, LeaseGuard, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind};
 
-/// The embed lane's identity on the resource board: the consumer of its leases and its floor.
+/// The embed lane's identity on the resource board: the consumer of its leases and its floors.
 pub const EMBED_LANE_CONSUMER_ID: &str = "embed";
 
-/// The largest context this process's embed lane has leased: its standing floor.
-static FLOOR_BYTES: AtomicU64 = AtomicU64::new(0);
+/// The largest context part this process's embed lane has leased, per pool: its standing floors.
+static DEVICE_FLOOR: AtomicU64 = AtomicU64::new(0);
+static HOST_FLOOR: AtomicU64 = AtomicU64::new(0);
 
-/// Lease `bytes` of `pool` for one embedding context of `texts` texts, after raising the lane's
-/// floor to it. `None` on a node with no resource authority (the backend's own allocation is the
-/// only gate there). A refusal is retried once after a governor tick, then refused with the
-/// availability it measured, never an allocation that would decode to degenerate zeros.
-pub(crate) async fn lease(pool: ResourceKind, bytes: u64, texts: usize) -> Result<Option<LeaseGuard>, String> {
-    let Some(daemon) = ResourceDaemon::global() else { return Ok(None) };
-    let floor = FLOOR_BYTES.fetch_max(bytes, Ordering::Relaxed).max(bytes);
-    daemon.reserve(EMBED_LANE_CONSUMER_ID, pool, floor);
+/// Lease each pool's part of one embedding context of `texts` texts, after raising that pool's
+/// floor to it. Empty on a node with no resource authority (the backend's own allocation is the
+/// only gate there). The guards hold the bytes until the context is gone.
+pub(crate) async fn lease(bytes: ContextBytes, texts: usize) -> Result<Vec<LeaseGuard>, String> {
+    let Some(daemon) = ResourceDaemon::global() else { return Ok(Vec::new()) };
+    let mut guards = Vec::with_capacity(2);
+    for (pool, part, floor) in [(ResourceKind::Vram, bytes.device, &DEVICE_FLOOR), (ResourceKind::Ram, bytes.host, &HOST_FLOOR)] {
+        if part == 0 {
+            continue;
+        }
+        let floor = floor.fetch_max(part, Ordering::Relaxed).max(part);
+        daemon.reserve(EMBED_LANE_CONSUMER_ID, pool, floor);
+        guards.push(lease_part(&daemon, pool, part, floor, texts).await?);
+    }
+    Ok(guards)
+}
+
+/// One pool's lease, retried once after a governor tick, then refused with the availability it
+/// measured, never an allocation that would decode to degenerate zeros.
+async fn lease_part(daemon: &std::sync::Arc<ResourceDaemon>, pool: ResourceKind, bytes: u64, floor: u64, texts: usize) -> Result<LeaseGuard, String> {
     // derived-or-floor: a SIGKILL backstop only; the RAII guard frees the bytes on drop, and an
     // embedding finishes in under a second, so the TTL never decides a live lease.
     const LEASE_TTL_MS: u64 = 60_000;
@@ -76,7 +90,7 @@ pub(crate) async fn lease(pool: ResourceKind, bytes: u64, texts: usize) -> Resul
             attempt(1)?
         }
     };
-    leased.map(Some).map_err(|available| {
+    leased.map_err(|available| {
         format!(
             "embed: {pool:?} lease refused twice: {} MiB requested, {} MiB governed-available. Refusing to \
              allocate an embedding context that would decode to degenerate zeros.",

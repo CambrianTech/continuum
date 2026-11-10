@@ -752,7 +752,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // all-zero vector that silently broke recall; a fixed 1,792 MiB bound refused 91% of short
         // texts on the M5 (26960c09d, 758 of 834 in 3 h).
         let batch = embedding.tokenize(&texts)?;
-        let lease = super::embed_lane_memory::lease(backend.context_pool(), batch.context_bytes(), texts.len()).await?;
+        let lease = super::embed_lane_memory::lease(batch.context_bytes(backend.placement()), texts.len()).await?;
         let embeddings = embedding.run(batch, lease).await?;
         Ok(EmbeddingResponse {
             embeddings,

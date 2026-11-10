@@ -51,12 +51,16 @@ impl LlamaCppBackend {
     }
 
     /// The model's real capability facts (read once at load).
-    /// The pool a context of this backend resides in: device memory when llama offloads to a GPU
-    /// and this backend offloads any layer, else host memory, whatever the machine's kind.
-    pub(crate) fn context_pool(&self) -> crate::resources::ResourceKind {
-        match self.config.n_gpu_layers != 0 && llama::supports_gpu_offload() {
-            true => crate::resources::ResourceKind::Vram,
-            false => crate::resources::ResourceKind::Ram,
+    /// Where this backend's layers are, as configured: on the GPU when llama offloads to one and
+    /// every layer is offloaded, on the host when none is, split otherwise (never measured: see
+    /// [`super::Placement`]).
+    pub(crate) fn placement(&self) -> super::Placement {
+        let offloads = llama::supports_gpu_offload();
+        match self.config.n_gpu_layers {
+            0 => super::Placement::Host,
+            _ if !offloads => super::Placement::Host,
+            n if n < 0 || u32::try_from(n).is_ok_and(|n| n >= self.model.n_layer()) => super::Placement::Device,
+            _ => super::Placement::Split,
         }
     }
 
