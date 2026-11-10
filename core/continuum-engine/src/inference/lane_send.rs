@@ -23,6 +23,7 @@ use crate::ai::openai_adapter::OpenAICompatibleConfig;
 /// On a local lane this is a CHECKPOINT interval, not a deadline (card 6f3218ed): the
 /// wait continues while the engine's `/slots` work moves, so the bound decides how often
 /// the engine is asked, and only an engine that stops moving is released.
+// derived-or-floor: a floor under the request's own measured turn_bound (max of the two), and on a local lane only how often /slots progress is checked
 pub const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
 
 /// A local single-resident lane can be RELAUNCHED out from under an in-flight POST —
@@ -56,14 +57,9 @@ fn engine_root(cfg: &OpenAICompatibleConfig) -> Option<String> {
         return None;
     }
     let trimmed = cfg.base_url.trim_end_matches('/');
-    Some(trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string())
+    Some(trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string()) // a base without /v1 is already the engine root: a form, not a missing value
 }
 
-/// One client for the header wait's engine probes, built once per process.
-fn probe_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
-}
 
 /// What one send carried, for the receipt a tripped wait leaves behind: the model the
 /// lane was asked for and the prompt it was asked to prefill (chars/4 —
@@ -240,7 +236,7 @@ pub(crate) async fn send_with_lane_retry(
                 // processing and unmoved is judged over the measured batch window, as every engine wait is
                 crate::inference::llama_server::WaitBounds::for_model(header_bound, Some(fill.model)),
                 HEADER_WAIT_QUIET_CHECKPOINTS,
-                || crate::inference::llama_server::engine_probe(&root, probe_client()),
+                || crate::inference::llama_server::engine_probe(&root, crate::inference::engine_client()),
                 |checkpoints| {
                     continuum_base::probe!(
                         class = "inference.header_wait.busy_not_dead",
@@ -359,7 +355,10 @@ pub(crate) async fn send_with_lane_retry(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = match response.text().await {
+            Ok(body) => body,
+            Err(read) => format!("<error body unreadable: {read}>"),
+        };
         // Classify ONCE, here, where the status code and the raw body still
         // exist. Preserve the same classification for the caller's admission
         // decision; prose is only an operator-facing representation.

@@ -16,6 +16,22 @@ impl TrainingTriggerState {
         Fut: std::future::Future<Output = T> + Send + 'static,
     {
         let lease = self.submit_gates.acquire(&key).await;
+        self.run_leased(lease, key, operation).await
+    }
+
+    /// [`Self::run_owned`] for a caller that already holds the bucket's lease (taken by
+    /// `try_acquire` while it held serving resources it would not wait holding).
+    pub(crate) async fn run_leased<T, F, Fut>(
+        self: &Arc<Self>,
+        lease: crate::runtime::Lease<BucketKey>,
+        key: BucketKey,
+        operation: F,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<Self>, BucketKey) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = T> + Send + 'static,
+    {
         let mut operations = self.operations.lock().await;
         self.require_ready()?;
         while let Some(joined) = operations.try_join_next() {
@@ -161,7 +177,7 @@ impl TrainingTriggerState {
             .durable
             .require()
             .map_err(|e| ("PersistenceUnavailable", e))?;
-        let id = submission_id.unwrap_or_else(Uuid::new_v4);
+        let id = submission_id.unwrap_or_else(Uuid::new_v4); // a submission with no id is minted one here: an identity, never a quantity
         let _lease = self.acceptance_gates.acquire(&id).await;
         if let Some(existing) = store
             .submissions

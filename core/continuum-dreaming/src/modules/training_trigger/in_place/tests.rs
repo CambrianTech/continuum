@@ -51,25 +51,105 @@ fn engine(port: u16) -> EngineIncarnation {
     EngineIncarnation::of(std::process::id(), port).expect("test: this process's start time is readable")
 }
 
-// what this catches: one engine's step or fence (a wedged, unproven-dead engine) holding every other
-// engine's buckets (Codex on d177df17f). A busy engine defers its own bucket at once; another engine
-// is not waited on.
+// what this catches (Codex on B, card 23069702): her learner waiting for her act while holding her
+// bucket's gate, so her own submit stalled behind her background work. The learner waits for her
+// acts first, holding nothing of the trigger; the gate stays free, and once her act ends the pass
+// moves on (here to the trigger's own refusal: this bare trigger never recovered durable state).
 #[tokio::test]
-async fn a_busy_engine_defers_its_bucket_and_never_holds_another() {
+async fn her_waiting_learner_never_holds_her_bucket_gate() {
     let state = Arc::new(TrainingTriggerState::new(authority()));
-    let key = BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() };
-    let (wedged, free) = (engine(1), engine(2));
-    let _held = state.in_place.engine(wedged).lock_owned().await;
-    let pass = tokio::time::timeout(std::time::Duration::from_secs(1), state.in_place.learn_bucket(&state, &key, vec![], wedged))
-        .await
-        .expect("test: a busy engine answers at once")
-        .expect("test: deferred, not failed");
-    assert_eq!(pass, BucketPass { deferred: true, ..Default::default() });
-    let other = tokio::time::timeout(std::time::Duration::from_secs(1), state.in_place.learn_bucket(&state, &key, vec![], free))
-        .await
-        .expect("test: another engine is not held by the wedged one")
-        .expect("test: nothing to learn");
-    assert_eq!(other, BucketPass::default());
+    let persona = Uuid::new_v4();
+    let key = BucketKey { persona_id: persona, trait_kind: "code".into(), base_model: "qwen".into() };
+    let example = crate::genome::fine_tuning::types::TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None, lived: None };
+    let row = Arrival { id: Uuid::new_v4(), sequence: 1, key: key.clone(), persona_name: "her".into(), examples: vec![example], learned: 0, lora: None, schedule: None };
+    let acting = crate::inference::slots::begin_act_for_test(persona).await;
+    let mut pass = Box::pin(state.learn_bucket(key.clone(), vec![row], engine(9)));
+    assert!(futures::poll!(&mut pass).is_pending(), "her act comes first: the learner waits");
+    assert!(state.submit_gates.try_acquire(&key).is_some(), "her bucket's gate is free while her learner waits");
+    assert!(state.in_place.engine(engine(9)).try_lock_owned().is_ok(), "and so is the engine");
+    drop(acting);
+    let moved_on = tokio::time::timeout(std::time::Duration::from_secs(5), pass).await.expect("test: the pass moves on once her act ends");
+    assert!(moved_on.is_err_and(|why| why.contains("has not recovered")), "past her act, the trigger's own refusal");
+}
+
+// what this catches (Codex on B): one mind's pass waiting (for her act, her slot, an engine) holding
+// every other bucket's pass behind it. Passes run together; a bucket that never finishes does not
+// stop another from running and finishing.
+#[tokio::test]
+async fn a_waiting_bucket_never_holds_another_buckets_pass() {
+    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let (waiting, other) = (
+        BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() },
+        BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() },
+    );
+    let finished = Arc::new(tokio::sync::Notify::new());
+    let seen = Arc::clone(&finished);
+    let stuck = waiting.clone();
+    let passes = state.learn_each(vec![(waiting, vec![]), (other, vec![])], move |_state, key, _rows| {
+        let (seen, stuck) = (Arc::clone(&seen), stuck.clone());
+        async move {
+            if key == stuck {
+                std::future::pending::<()>().await;
+            }
+            seen.notify_one();
+            Ok(BucketPass { learned: 1, ..Default::default() })
+        }
+    });
+    tokio::pin!(passes);
+    tokio::select! {
+        _ = finished.notified() => {}
+        _ = &mut passes => panic!("the waiting bucket's pass never ends"),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("the other bucket was held behind the waiting one"),
+    }
+}
+
+// what this catches (Codex on #5905 at 0e7e4f4f5): the candidate sweep ran only after every bucket's
+// pass, so one bucket waiting (for her act, her memory, her slot) kept every ready candidate from its
+// trial. Mind A's due checkpoint opens its trial while mind B's pass still waits for her act.
+#[tokio::test]
+async fn a_due_candidate_reaches_its_trial_while_another_bucket_waits() {
+    use crate::commands::training_trigger::test_support::{build_runtime_trigger_only, ex, submit_params};
+    let (trigger, executor, _dir) = build_runtime_trigger_only().await;
+    let state = trigger.state.clone();
+    let competence = crate::genome::competence::MIN_EXAMPLES;
+    let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+    let examples = |n: usize| (0..n).map(|i| ex(&format!("p{i}"), "c")).collect::<Vec<_>>();
+    executor.execute_json("genome/training-trigger/submit", submit_params(a, "code", examples(competence))).await.expect("test: A submitted");
+    executor.execute_json("genome/training-trigger/submit", submit_params(b, "code", examples(1))).await.expect("test: B submitted");
+    let store = state.durable.require().expect("test: the store");
+    let arrivals = store.arrivals(0, 16).await.expect("test: arrivals");
+    let a_row = arrivals.iter().find(|row| row.key.persona_id == a).expect("test: A's row");
+    let a_key = a_row.key.clone();
+    // A's learner learned every example: its generation holds an adapter and retires A's row
+    let generation_dir = tempfile::tempdir().expect("test: a generation dir");
+    std::fs::write(generation_dir.path().join("adapter.gguf"), b"adapter bytes").expect("test: the adapter");
+    let generation = super::super::durable::Generation {
+        name: "a-generation-1.gguf".into(),
+        path: generation_dir.path().display().to_string(),
+        binding: "binding".into(),
+        steps: competence as i64,
+        provenance: serde_json::json!({}),
+        persona_name: "test-p".into(),
+        signature: None,
+    };
+    store.commit_checkpoint(&a_key, generation, &[Position { submission: a_row.id, learned: competence as u32 }]).await.expect("test: A's generation");
+    let _b_acting = crate::inference::slots::begin_act_for_test(b).await;
+    let pass = state.learn_in_place(engine(9), "synthetic");
+    tokio::pin!(pass);
+    let opened = async {
+        loop {
+            let row = store.checkpoint_of(&a_key).await.expect("test: A's checkpoint").expect("test: present");
+            if row.candidate_trial.is_some() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    };
+    tokio::select! {
+        _ = opened => {}
+        ended = &mut pass => panic!("B's pass cannot end while her act runs: {ended:?}"),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("A's candidate was held behind B's waiting pass"),
+    }
 }
 
 // what this catches: a restored learner re-teaching examples its generation already holds, when the

@@ -99,6 +99,16 @@ impl MindTurn {
     }
 }
 
+/// Wait, holding nothing, until `persona` has no act running or queued ahead of this call. Her
+/// background work (a learning step) waits here before it takes any serving resource, so her act
+/// always comes first and a waiting step holds no lane, permit or slot. An act that begins after
+/// this returns is still first: admission refuses the step with `HER_ACT_FIRST`.
+pub async fn her_acts_done(persona: uuid::Uuid) -> Result<(), String> {
+    let key = PageKey::mind(persona).ok_or_else(|| "no resident identity".to_owned())?;
+    drop(MindTurn::begin(key).await?);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,4 +151,17 @@ mod tests {
         drop(reclaimed);
         assert!(MindTurn::try_begin(fork).is_some());
     }
+}
+
+/// Her act, held for a test in another crate (her running act is crate-private).
+#[cfg(any(test, feature = "test-fixtures"))]
+pub struct ActForTest {
+    _act: MindTurn,
+}
+
+/// Begin `persona`'s act and hold it until the returned value drops.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub async fn begin_act_for_test(persona: uuid::Uuid) -> ActForTest {
+    let key = PageKey::mind(persona).expect("test: a mind"); // test fixture: a fresh persona id is never nil
+    ActForTest { _act: MindTurn::begin(key).await.expect("test: her act begins") } // test fixture
 }
