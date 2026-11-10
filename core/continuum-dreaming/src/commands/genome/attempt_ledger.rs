@@ -405,10 +405,19 @@ impl AttemptLedger {
             Ok(Some(row)) => match row.state {
                 AttemptState::Created { handle } => Reconciled::Created(handle),
                 AttemptState::Closed | AttemptState::Failed { .. } => Reconciled::NotCreated,
-                AttemptState::Admitted => Reconciled::Unknown(format!(
-                    "attempt {attempt} was admitted to {} and never settled: a create may have started",
-                    row.provider
-                )),
+                AttemptState::Admitted => {
+                    if let Some(handle) = &row.intended_job_handle {
+                        // A handle was persisted before the crash — the create succeeded,
+                        // we just didn't get to settle. Return it as Created so recovery
+                        // continues instead of stalling at Unknown.
+                        Reconciled::Created(handle.clone())
+                    } else {
+                        Reconciled::Unknown(format!(
+                            "attempt {attempt} was admitted to {} and never settled: a create may have started",
+                            row.provider
+                        ))
+                    }
+                }
             },
             Ok(None) => {
                 let row = TrainingAttempt {
