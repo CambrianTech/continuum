@@ -64,13 +64,11 @@ pub fn read_qwen_model_metadata(path: &Path) -> Result<QwenModelMetadata, String
     let file_size_bytes = std::fs::metadata(path)
         .map(|m| m.len())
         .map_err(|e| format!("Failed to stat GGUF {}: {e}", path.display()))?;
-    let fallback_name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown")
-        .to_string();
+    // A display label names the actual artifact even for a non-UTF8 basename.
+    // It does not supply architecture, dimensions, or residency evidence.
+    let artifact_label = path.display().to_string();
 
-    parse_qwen_metadata_from_content(&content, fallback_name, file_size_bytes, path)
+    parse_qwen_metadata_from_content(&content, artifact_label, file_size_bytes, path)
 }
 
 /// Pure parser — extracts `QwenModelMetadata` from already-parsed
@@ -81,7 +79,7 @@ pub fn read_qwen_model_metadata(path: &Path) -> Result<QwenModelMetadata, String
 /// scope, by checking the helper-level behavior separately).
 fn parse_qwen_metadata_from_content(
     content: &gguf_file::Content,
-    fallback_name: String,
+    artifact_label: String,
     file_size_bytes: u64,
     path: &Path,
 ) -> Result<QwenModelMetadata, String> {
@@ -97,10 +95,10 @@ fn parse_qwen_metadata_from_content(
             )
         })?;
 
-    // model_name: optional; fall back to file stem (recoverable, doesn't
-    // affect gate correctness; only display).
+    // The display label comes from the artifact's declared name or its path.
     let model_name =
-        crate::inference_capability::gguf_keys::general_name(content).unwrap_or(fallback_name);
+        crate::inference_capability::gguf_keys::general_name(content)
+            .unwrap_or(artifact_label); // Optional display name only; the path identifies the actual artifact.
 
     // block_count: required. The {arch}.block_count key is the canonical
     // GGUF layer count. Without it, the residency gate's layer-count

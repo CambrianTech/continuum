@@ -37,7 +37,7 @@ pub fn split_count(ct: &Content) -> Result<u16, String> {
         .get("split.count")
         .map(|v| v.to_u16().map_err(|e| e.to_string()))
         .transpose()
-        .map(|n| n.unwrap_or(0))
+        .map(|n| n.unwrap_or(0)) // GGUF split.count is omitted for an unsplit artifact; malformed present values already return Err.
 }
 
 pub fn split_index(ct: &Content) -> Result<u16, String> {
