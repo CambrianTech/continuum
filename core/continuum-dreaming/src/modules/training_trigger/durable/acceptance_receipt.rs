@@ -173,7 +173,7 @@ impl DurableStore {
             .data
             .ok_or("training pending query omitted rows")?
             .into_iter()
-            .map(|row| serde_json::from_value(row.data).map_err(|error| error.to_string())) // Decode persisted ORM rows into the typed submission owner; no transcript re-encoding.
+            .map(|row| row.decode().map_err(|error| error.to_string())) // Decode persisted ORM rows into the typed submission owner; no transcript re-encoding.
             .collect()
     }
 
@@ -205,7 +205,7 @@ impl DurableStore {
             let rows = result.data.ok_or("training pending query omitted rows")?;
             let page = rows.len();
             for row in rows {
-                let row: Submission = serde_json::from_value(row.data).map_err(|error| error.to_string())?; // Decode persisted ORM rows into the typed submission owner; no transcript re-encoding.
+                let row: Submission = row.decode().map_err(|error| error.to_string())?; // Decode persisted ORM rows into the typed submission owner; no transcript re-encoding.
                 after = after.max(row.sequence);
                 let on_card = row.batch.examples.iter().any(|example| {
                     example

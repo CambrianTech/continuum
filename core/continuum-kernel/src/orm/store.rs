@@ -175,7 +175,7 @@ where
             .map(|r| -> Result<(Uuid, T), OrmStoreError> {
                 let id = Uuid::parse_str(&r.id).map_err(OrmStoreError::InvalidUuid)?;
                 let entity: T =
-                    serde_json::from_value(r.data).map_err(OrmStoreError::DeserializeFailed)?;
+                    r.decode().map_err(OrmStoreError::DeserializeFailed)?;
                 Ok((id, entity))
             })
             .collect()
@@ -208,7 +208,7 @@ where
         let mut records = unwrap_adapter(result, "query", T::COLLECTION)?;
         match records.pop() {
             Some(r) => Ok(Some(
-                serde_json::from_value(r.data).map_err(OrmStoreError::DeserializeFailed)?,
+                r.decode().map_err(OrmStoreError::DeserializeFailed)?,
             )),
             None => Ok(None),
         }

@@ -163,7 +163,7 @@ pub fn staged_credit_from_list(listed: serde_json::Value) -> Result<Vec<StagedCr
         .into_iter()
         .map(|item| {
             let record: crate::orm::types::DataRecord = serde_json::from_value(item)?; // Decode the persisted ORM envelope; move its entity payload without cloning it.
-            Ok(serde_json::from_value(record.data)?) // Decode one staged-credit entity from its typed storage envelope.
+            Ok(record.decode()?) // Decode one staged-credit entity from its typed storage envelope.
         })
         .collect()
 }
