@@ -51,7 +51,15 @@
 use super::types::{Arch, Capability, Model};
 use crate::inference_capability::gguf_keys;
 use candle_core::quantized::gguf_file;
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
+
+/// GGUF metadata contains many small scalar/string reads (notably tokenizer
+/// arrays). Coalesce those reads before they reach the filesystem. This uses
+/// a bounded read-ahead buffer and does not materialize tensors.
+fn read_header(reader: impl Read + Seek) -> candle_core::Result<gguf_file::Content> {
+    gguf_file::Content::read(&mut BufReader::new(reader))
+}
 
 /// The subset of GGUF header facts the registry hydrates from. Each is
 /// independent — a missing single key leaves that field `None` rather
@@ -180,9 +188,8 @@ fn apply_projector_encoders(model: &mut Model, encoders: ProjectorEncoders) {
 /// encoder is present, so its absence is a real "no such encoder", not an
 /// unknown to guess around.
 fn read_projector_encoders(path: &Path) -> Result<ProjectorEncoders, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("open projector: {e}"))?;
-    let content =
-        gguf_file::Content::read(&mut file).map_err(|e| format!("read projector: {e}"))?;
+    let file = std::fs::File::open(path).map_err(|e| format!("open projector: {e}"))?;
+    let content = read_header(file).map_err(|e| format!("read projector: {e}"))?;
     let flag = |key: &str| {
         content
             .metadata
@@ -217,8 +224,8 @@ pub fn arch_from_gguf_string(arch: &str) -> Arch {
 /// Opening/parsing failure is an error (broken artifact); a missing
 /// individual key is just `None` (the catalog field, if set, stands).
 fn read_gguf_facts(path: &Path) -> Result<GgufFacts, String> {
-    let mut file = std::fs::File::open(path).map_err(|e| format!("open GGUF: {e}"))?;
-    let content = gguf_file::Content::read(&mut file).map_err(|e| format!("read GGUF: {e}"))?;
+    let file = std::fs::File::open(path).map_err(|e| format!("open GGUF: {e}"))?;
+    let content = read_header(file).map_err(|e| format!("read GGUF: {e}"))?;
 
     // Every canonical key is read through the ONE shared reader
     // ([`gguf_keys`]) so the coercion + the `context_length` fallback policy
@@ -246,6 +253,80 @@ mod tests {
     use crate::model_registry::types::Capability;
     use std::collections::BTreeSet;
     use std::path::PathBuf;
+
+    #[test]
+    fn tokenizer_metadata_reads_are_coalesced_without_changing_facts(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::{Cursor, Read, Seek, SeekFrom};
+        struct Counted {
+            bytes: Cursor<Vec<u8>>,
+            reads: usize,
+        }
+        impl Read for Counted {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.reads += 1;
+                self.bytes.read(buf)
+            }
+        }
+        impl Seek for Counted {
+            fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                self.bytes.seek(position)
+            }
+        }
+        fn string(bytes: &mut Vec<u8>, value: &str) {
+            bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(value.as_bytes());
+        }
+        // A synthetic metadata-only GGUF with a tokenizer array. No model or
+        // resident files are opened, and no tensor payload is needed.
+        let mut bytes = b"GGUF".to_vec();
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes()); // tensors
+        bytes.extend_from_slice(&2_u64.to_le_bytes()); // metadata entries
+        string(&mut bytes, "general.architecture");
+        bytes.extend_from_slice(&8_u32.to_le_bytes()); // string
+        string(&mut bytes, "qwen3");
+        string(&mut bytes, "tokenizer.ggml.tokens");
+        bytes.extend_from_slice(&9_u32.to_le_bytes()); // array
+        bytes.extend_from_slice(&8_u32.to_le_bytes()); // string elements
+        bytes.extend_from_slice(&4096_u64.to_le_bytes());
+        for _ in 0..4096 {
+            string(&mut bytes, "token");
+        }
+        let mut direct = Counted {
+            bytes: Cursor::new(bytes.clone()),
+            reads: 0,
+        };
+        let mut buffered = Counted {
+            bytes: Cursor::new(bytes),
+            reads: 0,
+        };
+        let original = gguf_file::Content::read(&mut direct)?;
+        let actual = read_header(&mut buffered)?;
+        assert_eq!(
+            gguf_keys::architecture(&actual),
+            gguf_keys::architecture(&original)
+        );
+        assert_eq!(
+            actual.metadata["tokenizer.ggml.tokens"].to_vec()?.len(),
+            4096
+        );
+        for (actual, original) in actual.metadata["tokenizer.ggml.tokens"]
+            .to_vec()?
+            .iter()
+            .zip(original.metadata["tokenizer.ggml.tokens"].to_vec()?)
+        {
+            assert_eq!(actual.to_string()?, original.to_string()?);
+        }
+        assert_eq!(actual.tensor_data_offset, original.tensor_data_offset);
+        assert!(
+            buffered.reads * 100 < direct.reads,
+            "metadata must not issue one filesystem read per scalar: {} vs {}",
+            buffered.reads,
+            direct.reads
+        );
+        Ok(())
+    }
 
     fn model_with(arch: Arch, context_window: u32, chat_template: Option<&str>) -> Model {
         Model {
