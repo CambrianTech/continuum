@@ -155,7 +155,8 @@ impl WorkingMemory {
             if let Some(record) = actions.get(seq) {
                 return record.handle.clone().ok_or(ActOutputRefusal::Unsaved { act: seq });
             }
-            actions.records().rev().find(|record| record.handle.is_some()).map(|record| record.seq)
+            let newest_saved = actions.records().rev().find(|record| record.handle.is_some()).map(|record| record.seq);
+            newest_saved
         };
         // Off her resident log: her archive, read with no lock of the log held.
         if let Some(archived) = self.archived_handle(seq) {
