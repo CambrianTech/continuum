@@ -22,11 +22,10 @@ pub fn kv_page_dir(model_id: &str) -> PathBuf {
 
 /// The root every page dir lives under — the ONE path the disk reporter tracks.
 pub fn kv_pages_root() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(std::env::temp_dir) // JUSTIFIED unwrap_or_else: no home dir = containerized oddity; pages in tmp still work, and the lane must not fail to spawn over cache placement
-        .join(".continuum")
-        .join("cache")
-        .join("kv-pages")
+    // The registered `kv-pages` disk class's root (standard_tracked_dirs: <continuum home>/cache/
+    // kv-pages), resolved through the one home owner: a test build's pages land in its own home,
+    // never the node's (card 70da28bf; Windows dirs::home_dir ignores a test's pinned home).
+    crate::paths::continuum_root().join("cache").join("kv-pages")
 }
 
 
@@ -395,4 +394,25 @@ pub fn page_dirs_of(
         }
     }
     (dirs, complete)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (card 70da28bf): the kv-pages root resolving outside the one home owner
+    // (Windows `dirs::home_dir()` ignores a test's pinned home, so a test wrote the node's pages),
+    // or drifting from the `kv-pages` disk class that measures and evicts that directory.
+    #[test]
+    fn kv_pages_root_is_the_registered_kv_pages_class_under_the_one_home() {
+        let _home = crate::paths::test_home::HomeGuard::preserve_blocking();
+        let continuum = crate::paths::continuum_root();
+        let home = continuum.parent().expect("test: the continuum home has a parent");
+        let class = crate::system_resources::disk_reporters::standard_tracked_dirs(home, &continuum)
+            .into_iter()
+            .find(|dir| dir.class() == "kv-pages")
+            .expect("test: kv-pages is a registered disk class");
+        assert_eq!(kv_pages_root(), class.path());
+        assert_ne!(dirs::home_dir().map(|h| h.join(".continuum")), Some(continuum), "a test build never resolves the node's own home");
+    }
 }
