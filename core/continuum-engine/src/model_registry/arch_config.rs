@@ -34,6 +34,29 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Disk-format boundary: required HF dimensions must deserialize before any
+/// consumer receives a model architecture. Unknown HF extension fields are allowed.
+#[derive(Deserialize)]
+struct HfArchConfig {
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_attention_heads: usize,
+    num_hidden_layers: usize,
+    vocab_size: usize,
+    max_position_embeddings: usize,
+    // Only absence has HF's derivation semantics. Explicit null is malformed.
+    #[serde(default, deserialize_with = "present_dimension")]
+    num_key_value_heads: Option<usize>,
+    #[serde(default, deserialize_with = "present_dimension")]
+    head_dim: Option<usize>,
+}
+
+fn present_dimension<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error> {
+    usize::deserialize(deserializer).map(Some)
+}
+
 /// A model's architecture dimensions — the canonical, artifact-sourced
 /// model-specific struct. Constructed only via [`from_gguf`] /
 /// [`from_config_json`] (authoritative) or [`new`] (from already-validated
@@ -226,44 +249,27 @@ impl ModelArchConfig {
         let path = dir.join("config.json");
         let text =
             std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        let json: serde_json::Value =
+        let config: HfArchConfig =
             serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let HfArchConfig {
+            hidden_size,
+            intermediate_size,
+            num_attention_heads,
+            num_hidden_layers: num_layers,
+            vocab_size,
+            max_position_embeddings: context_length,
+            num_key_value_heads,
+            head_dim,
+        } = config;
 
-        let req = |key: &str| -> Result<usize, String> {
-            json.get(key)
-                .and_then(|x| x.as_u64())
-                .map(|n| n as usize)
-                .ok_or_else(|| format!("config.json {} missing required `{key}`", path.display()))
-        };
-
-        let hidden_size = req("hidden_size")?;
-        let intermediate_size = req("intermediate_size")?;
-        let num_attention_heads = req("num_attention_heads")?;
-        let num_layers = req("num_hidden_layers")?;
-        let vocab_size = req("vocab_size")?;
-        let context_length = req("max_position_embeddings")?;
-
-        // Absent `num_key_value_heads` MEANS multi-head attention (kv == q) in
-        // the HF config spec — a defined semantic, not a guess.
-        let optional_dimension = |key: &str| -> Result<Option<usize>, String> {
-            json.get(key)
-                .map(|value| {
-                    let number = value.as_u64().ok_or_else(|| {
-                        format!("config.json {} has non-integer `{key}`", path.display())
-                    })?;
-                    usize::try_from(number).map_err(|error| {
-                        format!("config.json {} dimension `{key}`: {error}", path.display())
-                    })
-                })
-                .transpose()
-        };
-        let num_kv_heads = match optional_dimension("num_key_value_heads")? {
+        // Absent KV heads specify MHA in the HF disk format.
+        let num_kv_heads = match num_key_value_heads {
             Some(heads) => heads,
             None => num_attention_heads,
         };
 
         // Absent `head_dim` MEANS hidden_size / num_attention_heads (HF spec).
-        let head_dim = match optional_dimension("head_dim")? {
+        let head_dim = match head_dim {
             Some(n) => n,
             None => {
                 if num_attention_heads == 0 {
@@ -429,10 +435,44 @@ mod tests {
             });
             config[key] = serde_json::json!("invalid");
             std::fs::write(dir.path().join("config.json"), serde_json::to_vec(&config)?)?;
-            assert!(ModelArchConfig::from_config_json(dir.path())
-                .is_err_and(|error| error.contains(key)));
+            assert!(ModelArchConfig::from_config_json(dir.path()).is_err());
         }
         Ok(())
+    }
+
+    #[test]
+    fn hf_schema_rejects_invalid_required_and_present_optional_dimensions() {
+        let valid = serde_json::json!({
+            "hidden_size": 2048, "intermediate_size": 5632,
+            "num_attention_heads": 16, "num_hidden_layers": 24,
+            "vocab_size": 32000, "max_position_embeddings": 4096
+        });
+        for key in [
+            "hidden_size",
+            "intermediate_size",
+            "num_attention_heads",
+            "num_hidden_layers",
+            "vocab_size",
+            "max_position_embeddings",
+        ] {
+            let mut absent = valid.clone();
+            if let Some(fields) = absent.as_object_mut() {
+                fields.remove(key);
+            }
+            assert!(serde_json::from_value::<HfArchConfig>(absent).is_err());
+        }
+        for key in ["hidden_size", "num_key_value_heads", "head_dim"] {
+            for invalid in [
+                serde_json::Value::Null,
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+                serde_json::json!("128"),
+            ] {
+                let mut config = valid.clone();
+                config[key] = invalid;
+                assert!(serde_json::from_value::<HfArchConfig>(config).is_err());
+            }
+        }
     }
 
     // what this catches: a config.json missing a required field fails loud
@@ -448,7 +488,7 @@ mod tests {
 
         let err = ModelArchConfig::from_config_json(&dir).unwrap_err();
         assert!(
-            err.contains("missing required") && err.contains("intermediate_size"),
+            err.contains("missing field") && err.contains("intermediate_size"),
             "should name the first missing required field: {err}"
         );
 
