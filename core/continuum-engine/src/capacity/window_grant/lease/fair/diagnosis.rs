@@ -13,6 +13,7 @@ struct Holder {
     unresolved: usize,
     terminal_revision: Option<u64>,
     baseline: Option<u64>,
+    armed_yield: Option<u64>,
     retiring: bool,
     reclaimed: bool,
     refused: bool,
@@ -29,6 +30,7 @@ impl QueueDiagnosis {
             .chain(state.retiring.keys())
             .chain(state.reclaimed.keys())
             .chain(state.refused.keys())
+            .chain(state.yield_after.keys())
             .copied()
             .collect();
         let holders = minds
@@ -49,6 +51,7 @@ impl QueueDiagnosis {
                         unresolved,
                         terminal_revision: state.receipts.get(&mind).map(|(_, revision)| *revision),
                         baseline: fair.baseline.get(&mind).copied(),
+                        armed_yield: state.yield_after.get(&mind).map(|(_, baseline)| *baseline),
                         retiring: state.retiring.contains_key(&mind),
                         reclaimed: state.reclaimed.contains_key(&mind),
                         refused: state.refused.contains_key(&mind),
@@ -114,6 +117,9 @@ mod tests {
             ],
         );
         state.receipts.insert(holder, (None, 8));
+        let armed = uuid::Uuid::from_u128(3);
+        let lease = GrantHandoff::for_test(armed).lease();
+        state.yield_after.insert(armed, (lease, 9));
         let next = PoolGrants {
             pool_tokens: 100,
             per_sequence_cap: 100,
@@ -126,6 +132,12 @@ mod tests {
         let held = &snapshot.holders[&holder];
         assert_eq!((held.live, held.unresolved), (1, 1));
         assert_eq!((held.terminal_revision, held.baseline), (Some(8), Some(7)));
+        assert_eq!(held.armed_yield, None);
+        assert_eq!(snapshot.holders[&armed].armed_yield, Some(9));
+        assert_eq!(snapshot.holders[&armed].published_tokens, None);
+        state.yield_after.insert(armed, (lease, 10));
+        assert_ne!(snapshot, QueueDiagnosis::capture(&fair, &state, &next));
+        assert_eq!(state.yield_after[&armed], (lease, 10));
         assert_eq!(
             state.entries[&holder].len(),
             2,
