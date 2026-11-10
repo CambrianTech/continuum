@@ -131,6 +131,12 @@ impl Source<ContextMessage> for HeldWorkStream {
         items.extend(work.holds.iter().map(|held| self.card(held)));
         items
     }
+
+    /// No fold: one line per card she holds, superseded by its key; an ended or rejected claim is
+    /// one line until the next start.
+    fn fold(&self, _folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        None
+    }
 }
 
 #[cfg(test)]

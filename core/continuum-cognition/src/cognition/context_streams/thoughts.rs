@@ -94,6 +94,25 @@ impl Source<ContextMessage> for Thoughts<'_> {
         items
     }
 
+    /// Her oldest thoughts as ONE line: the first and last `#n`, how many, and how to reopen the
+    /// newest of them (each was saved whole when shed), so her floor is one line however many
+    /// thoughts she has had. Without it every shed thought floored at its own pointer, forever:
+    /// Benchy's 2,536 pointers were 78,755 tokens against a 27,333 window, so every act was
+    /// refused before it reached the model; Aris's and Aiko's bound the same way (the M5,
+    /// 2026-11-09, `delib.payload.over_window` binding `view/thoughts`). Reads only the run's
+    /// ends. `None` for a run with nothing saved in it: resident thoughts leave when collapsed.
+    fn fold(&self, folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        let occurrence = |item: &Item<ContextMessage>| item.key().strip_prefix("thought#").and_then(|n| n.parse::<u64>().ok());
+        let first = folded.iter().find_map(occurrence)?;
+        let last = folded.iter().rev().find_map(occurrence)?;
+        let saved = folded.iter().rev().find_map(|item| item.stored())?;
+        Some(ContextMessage::user(format!(
+            "- [thoughts #{first}-#{last}: {} earlier thoughts folded; the newest of them reopens with {}]",
+            folded.len(),
+            Reopen::Output(&saved.handle)
+        )))
+    }
+
     /// A thought her working memory shed from RAM (storage, never visibility: FOCUS-CONTRACT rule
     /// 7), read back from its saved whole when her view grants it whole, rendered exactly as it
     /// read resident. `None` (its resident level renders) when the file is gone or unreadable.
@@ -101,5 +120,41 @@ impl Source<ContextMessage> for Thoughts<'_> {
         let stored = item.stored()?;
         let body = crate::cognition::tool_executor::spill::saved_whole(self.persona, &stored.handle).ok()?;
         Some(ContextMessage::user(format!("- {body}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use continuum_context::cost::{Chars, Estimate};
+    use continuum_context::epoch::Block;
+
+    /// A shed thought as `items` builds it: resident is its pointer, its whole stored by handle.
+    fn shed(persona: uuid::Uuid, occurrence: u64) -> Item<ContextMessage> {
+        let id = element(persona, Producer::Thought, &occurrence.to_be_bytes());
+        let handle = format!("thought-{occurrence:08}");
+        let pointer = ContextMessage::user(format!("- (thought #{occurrence}, saved: {})", Reopen::Output(&handle)));
+        Item::whole(id, Cause::Root(Origin::ActivityStart), format!("thought#{occurrence}"), pointer.clone())
+            .with_pointer(Some(pointer))
+            .with_stored(Some(StoredWhole { chars: 2_000, handle, content: Content::Absent }))
+    }
+
+    // what this catches: a thoughts source with no fold floors every shed thought at its own
+    // pointer, so her required floor grows with every thought she ever had and outgrows her window
+    // (Benchy, the M5, 2026-11-09: 2,536 thought pointers, 78,755 tokens against 27,333, every act
+    // refused before it reached the model). Ten times the thoughts must not cost more at the floor.
+    #[test]
+    fn her_thoughts_floor_at_one_fold_line_however_many_she_has() {
+        let memory = WorkingMemory::new(8);
+        let persona = uuid::Uuid::from_u128(7);
+        let source = Thoughts { memory: &memory, persona };
+        let run = |n: u64| (1..=n).map(|occurrence| shed(persona, occurrence)).collect::<Vec<_>>();
+        let few = continuum_context::view::floor(&Chars, &source, &run(100));
+        let many = continuum_context::view::floor(&Chars, &source, &run(1_000));
+        let one_pointer = Chars.block(&shed(persona, 1).pointer().cloned().unwrap_or_else(|| ContextMessage::user(String::new()))); // unwrap_or_else: shed() always sets a pointer
+        assert!(few < 2 * one_pointer, "100 thoughts floor at {few} chars, more than one line");
+        assert!(many <= few + 8, "1,000 thoughts floor at {many} chars against {few} for 100: the floor grows with her log");
+        let folded = source.fold(&run(1_000)).map(|m| m.text().to_owned()).unwrap_or_default(); // unwrap_or_default: an empty line fails below
+        assert!(folded.contains("#1-#1000") && folded.contains("1000 earlier thoughts") && folded.contains("thought-00001000"), "{folded}");
     }
 }

@@ -201,10 +201,11 @@ pub trait Source<T: Block> {
     /// (never a list of ids). It reads only the run's ends, O(1) in the run: a start asks once
     /// per item it raises. The view folds the run only when this block is smaller than the
     /// run's pointers, so a source's floor stops growing with every item it ever held. Fixed
-    /// for the epoch it starts. The default cannot fold: its items floor at their pointers.
-    fn fold(&self, _folded: &[Item<T>]) -> Option<T> {
-        None
-    }
+    /// for the epoch it starts. REQUIRED, never defaulted: a source that does not decide floors
+    /// every item it ever held at its pointer, and a growing one then outgrows any window (her
+    /// thoughts had no fold: Benchy's floor was 2,536 thought pointers, 78,755 tokens, and every
+    /// act was refused, the M5, 2026-11-09). `None` is a decision a source states and justifies.
+    fn fold(&self, folded: &[Item<T>]) -> Option<T>;
 
     /// The block `item` renders as when the view finds it repeats `ancestor` (MIND-CONTEXT
     /// invariant 4: the same request to a tool that only observes, with the same outcome). The

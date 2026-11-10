@@ -55,4 +55,11 @@ impl Source<ContextMessage> for Conversation {
             })
             .collect()
     }
+
+    /// No fold: an ordinary turn has no pointer and leaves her view when collapsed (the room's
+    /// history keeps it, `chat/history`); only a room-update index keeps itself, so the run's
+    /// pointers are only those indexes.
+    fn fold(&self, _folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        None
+    }
 }

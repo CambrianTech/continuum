@@ -160,6 +160,10 @@ fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
         fn items(&self) -> Vec<Item<String>> {
             self.0.iter().map(|t| item(*t, (*t).to_owned(), None, None)).collect()
         }
+
+        fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+            None // a fixture that does not exercise folding
+        }
     }
     let mut turns = Turns(vec!["one", "two", "three"]);
     let (mut view, start) = View::start(&crate::cost::Chars, vec![], &[&turns], |_| vec!["three".len()]).unwrap();
@@ -224,6 +228,10 @@ impl Source<String> for Leveled {
             .iter()
             .map(|(key, full, summary)| item(*key, full.clone(), summary.clone(), Some(format!("[{key}]"))))
             .collect()
+    }
+
+    fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+        None // a fixture that does not exercise folding
     }
 }
 
@@ -369,6 +377,10 @@ impl Source<String> for Spilled {
     }
     fn load(&self, item: &Item<String>) -> Option<String> {
         (item.stored.as_ref()?.handle == "spill/3341").then(|| self.body.clone())
+    }
+
+    fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+        None // a fixture that does not exercise folding
     }
 }
 
@@ -613,6 +625,10 @@ mod repeats {
                 ancestor.key(),
                 ancestor.key()
             ))
+        }
+
+        fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+            None // a fixture that does not exercise folding
         }
     }
 
