@@ -746,14 +746,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // Wait without a memory claim. The admitted worker owns both through context teardown,
         // even when the request future is cancelled after spawn_blocking starts.
         let embedding = backend.admit_embedding().await?;
-        // Tokenized first, so the context's memory is known before it exists: the lease is what THIS
-        // request allocates, in the pool the context resides in (`embed_lane_memory`). Ungoverned, a
-        // context grabbed memory behind the governor's back and, under pressure, decoded to an
-        // all-zero vector that silently broke recall; a fixed 1,792 MiB bound refused 91% of short
-        // texts on the M5 (26960c09d, 758 of 834 in 3 h).
-        let batch = embedding.tokenize(&texts)?;
-        let lease = super::embed_lane_memory::lease(backend.context_pool(), batch.context_bytes(), texts.len()).await?;
-        let embeddings = embedding.run(batch, lease).await?;
+        let count = texts.len();
+        let prepared = embedding.prepare(texts).await?;
+        let lease = super::embed_lane_memory::lease(prepared.memory_plan(), count).await?;
+        let embeddings = prepared.run(lease).await?;
         Ok(EmbeddingResponse {
             embeddings,
             model: model_id,

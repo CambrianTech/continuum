@@ -55,12 +55,37 @@ impl EmbeddingCall {
         super::EmbeddingBatch::tokenize(&self.model, texts)
     }
 
-    pub(crate) async fn run<C: Send + 'static>(
-        self,
-        batch: super::EmbeddingBatch,
-        custody: C,
-    ) -> Result<Vec<Vec<f32>>, String> {
-        self.permit.run(custody, move || batch.embed(&self.model)).await
+    pub(crate) async fn prepare(self, texts: Vec<String>) -> Result<PreparedEmbedding, String> {
+        tokio::task::spawn_blocking(move || {
+            let batch = self.tokenize(&texts)?;
+            let plan = batch.memory_plan(&self.model)?;
+            Ok(PreparedEmbedding {
+                call: self,
+                batch,
+                plan,
+            })
+        })
+        .await
+        .map_err(|e| format!("embedding planner failed: {e}"))?
+    }
+}
+
+pub(crate) struct PreparedEmbedding {
+    call: EmbeddingCall,
+    batch: super::EmbeddingBatch,
+    plan: llama::ContextMemoryPlan,
+}
+
+impl PreparedEmbedding {
+    pub(crate) fn memory_plan(&self) -> &llama::ContextMemoryPlan {
+        &self.plan
+    }
+
+    pub(crate) async fn run<C: Send + 'static>(self, custody: C) -> Result<Vec<Vec<f32>>, String> {
+        let Self { call, batch, plan } = self;
+        call.permit
+            .run(custody, move || batch.embed(&call.model, &plan))
+            .await
     }
 }
 
@@ -70,8 +95,7 @@ mod tests {
 
     impl EmbeddingCall {
         async fn run_texts(self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
-            let batch = self.tokenize(&texts)?;
-            self.run(batch, ()).await
+            self.prepare(texts).await?.run(()).await
         }
     }
 
@@ -90,7 +114,9 @@ mod tests {
                 .admit_embedding()
                 .await
                 .expect("admission")
-                .run_texts(vec!["The resident preserves her work across restart.".into()])
+                .run_texts(vec![
+                    "The resident preserves her work across restart.".into()
+                ])
                 .await
                 .expect("embedding")
         }))

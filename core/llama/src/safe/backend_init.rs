@@ -21,13 +21,6 @@ pub(super) static BACKEND_INIT: Once = Once::new();
 /// linker can't strip, forcing the Metal backend to load and register
 /// before the first model is read. Same defensive pattern for CUDA on
 /// Linux + Vulkan on Linux when those features are enabled.
-/// Whether this build of llama offloads to any GPU backend (Metal, CUDA, Vulkan, ROCm): a context
-/// whose model offloads no layer, or a build with none, resides in host memory.
-pub fn supports_gpu_offload() -> bool {
-    backend_init();
-    unsafe { sys::llama_supports_gpu_offload() }
-}
-
 pub fn backend_init() {
     BACKEND_INIT.call_once(|| {
         unsafe {
@@ -403,33 +396,7 @@ impl Model {
 
     /// Create an inference context.
     pub fn new_context(&self, params: ContextParams) -> Result<Context<'_>, String> {
-        let mut ffi = unsafe { sys::llama_context_default_params() };
-        ffi.n_ctx = params.n_ctx;
-        ffi.n_batch = params.n_batch;
-        ffi.n_ubatch = params.n_ubatch;
-        ffi.n_seq_max = params.n_seq_max;
-        ffi.flash_attn_type = match params.flash_attn {
-            FlashAttn::Auto => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_AUTO,
-            FlashAttn::Enabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_ENABLED,
-            FlashAttn::Disabled => sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_DISABLED,
-        };
-        ffi.fused_gdn_ar = params.fused_gdn_ar;
-        ffi.fused_gdn_ch = params.fused_gdn_ch;
-        ffi.type_k = match params.type_k {
-            KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
-            KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
-        };
-        ffi.type_v = match params.type_v {
-            KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
-            KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
-        };
-        ffi.embeddings = params.embeddings;
-        ffi.pooling_type = match params.pooling_type {
-            PoolingType::None => sys::llama_pooling_type_LLAMA_POOLING_TYPE_NONE,
-            PoolingType::Mean => sys::llama_pooling_type_LLAMA_POOLING_TYPE_MEAN,
-            PoolingType::Cls => sys::llama_pooling_type_LLAMA_POOLING_TYPE_CLS,
-            PoolingType::Last => sys::llama_pooling_type_LLAMA_POOLING_TYPE_LAST,
-        };
+        let mut ffi = params.to_ffi();
 
         // OBSERVE seam: if an expert observer is set, register the ggml eval-callback that
         // taps ffn_moe_topk. The bridge is boxed and owned by the returned Context, so its
@@ -587,7 +554,11 @@ impl Model {
         up: &[u8],
         down: &[u8],
     ) -> Result<(), String> {
-        for (proj, bytes) in [("ffn_gate_exps", gate), ("ffn_up_exps", up), ("ffn_down_exps", down)] {
+        for (proj, bytes) in [
+            ("ffn_gate_exps", gate),
+            ("ffn_up_exps", up),
+            ("ffn_down_exps", down),
+        ] {
             let name = std::ffi::CString::new(format!("blk.{layer}.{proj}"))
                 .map_err(|e| format!("upload_expert: bad tensor name: {e}"))?;
             // SAFETY: `as_ptr` is a live model for its lifetime; the fork's accessor returns a
