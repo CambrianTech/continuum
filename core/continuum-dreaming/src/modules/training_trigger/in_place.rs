@@ -826,7 +826,7 @@ impl TrainingTriggerState {
     async fn await_memory(&self, key: &BucketKey, changes: &mut tokio::sync::watch::Receiver<crate::resources::LeaseBoard>, wait: &crate::inference::training_admission::TrainingWait) -> Result<(), String> {
         continuum_base::probe!(class = "training.in_place.awaiting_memory", persona = %key.persona_id, wait = %wait,
             "her learning step waits for memory holding no serving resource; her acts run meanwhile");
-        crate::inference::training_admission::await_training_change(changes, wait).await
+        crate::inference::training_admission::await_training_change(&self.in_place.authority.resources, changes, wait).await
     }
 
     /// Take each due candidate in `page` whose base `served_model` serves, under its bucket's gate.
