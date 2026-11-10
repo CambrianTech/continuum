@@ -106,18 +106,44 @@ impl From<&Arc<Semaphore>> for DecodeBound {
 }
 
 impl DecodeBound {
+    /// A free permit within the endpoint's size, or `NoPermits`. A surplus one found on the way
+    /// (handed back raw by a cancelled waiter) is retired, never admitted.
     pub fn try_acquire(&self) -> Result<DecodePermit, TryAcquireError> {
-        Arc::clone(&self.permits).try_acquire_owned().map(|permit| self.held(permit))
+        loop {
+            let permit = Arc::clone(&self.permits).try_acquire_owned()?;
+            if let Some(admitted) = self.within_size(permit) {
+                return Ok(admitted);
+            }
+        }
     }
 
+    /// Waits for a permit within the endpoint's size. One assigned to this waiter before a shrink
+    /// is rechecked when it arrives: surplus, it retires and the wait goes on.
     pub async fn acquire(&self) -> DecodePermit {
-        let permit = Arc::clone(&self.permits).acquire_owned().await
-            .expect("decode semaphore never closed"); // expect: no path closes it; it lives as long as its endpoint or adapter
-        self.held(permit)
+        loop {
+            let permit = Arc::clone(&self.permits).acquire_owned().await
+                .expect("decode semaphore never closed"); // expect: no path closes it; it lives as long as its endpoint or adapter
+            if let Some(admitted) = self.within_size(permit) {
+                return admitted;
+            }
+        }
     }
 
-    fn held(&self, permit: OwnedSemaphorePermit) -> DecodePermit {
-        DecodePermit { permit: Some(permit), retire: self.retire.clone() }
+    /// Every endpoint permit is judged against the size on its way in, because one can reach the
+    /// semaphore without passing [`DecodePermit`]'s drop: Tokio hands a released permit to the
+    /// oldest waiter, and a waiter cancelled before it is polled returns it raw.
+    fn within_size(&self, permit: OwnedSemaphorePermit) -> Option<DecodePermit> {
+        if let Some(circulation) = &self.retire {
+            let mut counts = circulation.counts.lock();
+            if counts.issued > counts.target {
+                permit.forget();
+                counts.issued -= 1;
+                continuum_base::probe!(class = "inference.permits.retired_on_arrival", issued = counts.issued as u64, target = counts.target as u64,
+                    "a surplus decode permit reached an admission and retired instead of admitting it");
+                return None;
+            }
+        }
+        Some(DecodePermit { permit: Some(permit), retire: self.retire.clone() })
     }
 }
 
@@ -195,6 +221,42 @@ mod tests {
         assert_eq!(issued(&endpoint), 1, "the last held permit was the one slot, and it went to the waiter");
         drop(admitted);
         assert_eq!(available(&endpoint), 1);
+    }
+
+    // what this catches (Codex on #5902 at 2843d17d5): a permit Tokio assigned to a waiter before a
+    // shrink. Cancelled before it is polled, the waiter hands it back raw, past DecodePermit's drop;
+    // polled, it would have been admitted unchecked. Either way the surplus must retire on arrival.
+    #[tokio::test]
+    async fn a_permit_assigned_before_a_shrink_retires_whether_its_waiter_is_cancelled_or_polled() {
+        for cancelled in [true, false] {
+            let endpoint = EndpointConcurrency::new();
+            endpoint.retarget(3);
+            let bound = endpoint.bound();
+            let mut held: Vec<_> = (0..3).map(|_| bound.try_acquire().expect("test: a free permit")).collect();
+            let mut waiter = Box::pin(bound.acquire());
+            assert!(futures::poll!(&mut waiter).is_pending(), "queued behind three held permits");
+            drop(held.pop()); // within size: returned, and Tokio assigns it to the waiter
+            endpoint.retarget(1); // the assigned permit is neither free nor held: nothing to retire yet
+            assert_eq!(issued(&endpoint), 3);
+            if cancelled {
+                drop(waiter); // the assigned permit goes back raw
+                assert!(bound.try_acquire().is_err(), "the raw surplus retires on arrival, never admits");
+                assert_eq!(issued(&endpoint), 2, "cancelled: retired by the next admission");
+                drop(held.pop());
+                assert_eq!(issued(&endpoint), 1);
+                drop(held.pop());
+                assert_eq!(available(&endpoint), 1, "the last held permit is the one slot");
+            } else {
+                assert!(futures::poll!(&mut waiter).is_pending(), "polled: the assigned surplus retired, the wait goes on");
+                assert_eq!(issued(&endpoint), 2);
+                drop(held.pop());
+                assert!(futures::poll!(&mut waiter).is_pending(), "still over size: retired, not handed on");
+                drop(held.pop());
+                let admitted = waiter.await;
+                assert_eq!(issued(&endpoint), 1, "admitted only by the permit within the size");
+                drop(admitted);
+            }
+        }
     }
 
     // what this catches: growth that waits for something (an admission right after discovery would
