@@ -188,8 +188,10 @@ impl LlmDeliberationFaculty {
         let mut sent_reasoning_budget: Option<u32>;
         let kind = self.turn_kind(ws);
         // An act's cap follows its prompt's room, so a refusal its reserve would have passed is
-        // re-sent once at the engine's measured prompt, with the same view (never a refit of her view).
-        let mut room_resized = false;
+        // re-sent at the engine's measured prompt, with the same view (never a refit of her view),
+        // each time the engine's count rises: the count is bounded by the window, so this ends, and
+        // an act whose reply still fits is never given up after one try.
+        let mut room_resized_at: Option<u32> = None;
         // Re-rendered once against a grant that moved between render and dispatch.
         let mut grant_rerendered = false;
         // Correct only frozen admitted input, consuming a finite optional unit on
@@ -402,10 +404,10 @@ impl LlmDeliberationFaculty {
                     // the measured room (the calibration above now prices this prompt at the
                     // engine's count) and her view is sent unchanged.
                     if kind == TurnKind::Act
-                        && !room_resized
+                        && room_resized_at.is_none_or(|previous| requested > previous)
                         && requested.saturating_add(view.completion_reserve) < available
                     {
-                        room_resized = true;
+                        room_resized_at = Some(requested);
                         continue;
                     }
                     if newest_refit_sent {

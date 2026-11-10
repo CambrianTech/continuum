@@ -68,7 +68,8 @@ async fn live_window_reductions_bound_actual_requests_and_persist() {
             request.tools.as_ref().expect("native tools retained"),
         );
         assert_eq!(schemas, faculty.prompt_view(&ws).tools.tokens);
-        assert_eq!(request.max_tokens, Some(expected_view.completion_reserve));
+        // a turn she has hands for is an act: its cap is the room past its prompt, at least her reply's grant
+        assert!(request.max_tokens >= Some(expected_view.completion_reserve), "{:?}", request.max_tokens);
         let cost = LlmDeliberationFaculty::framing_cost(
             request.system_prompt.as_deref().expect("system framing"),
         ) + PromptCalibration::default().estimate_all(&request.messages)
@@ -149,10 +150,8 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
             let seen = old_adapter.seen.lock().expect("old route requests");
             assert_eq!(seen.len(), 1);
             assert_eq!(seen[0].model.as_deref(), Some("original-model"));
-            assert_eq!(
-                seen[0].max_tokens,
-                Some(faculty.prompt_view_within(&ws, 16_384).completion_reserve)
-            );
+            // an act's cap is the room past its prompt, at least her reply's grant
+            assert!(seen[0].max_tokens >= Some(faculty.prompt_view_within(&ws, 16_384).completion_reserve));
         }
         let verdict = faculty.contribute(&ws).await.expect("next verdict");
         assert!(verdict.fault.is_none());
@@ -162,9 +161,10 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
         assert_eq!(request.model, replacement.model);
         let next_window = if same_route { 16_384 } else { 24_576 };
         assert_eq!(binding.load().context_window, next_window);
-        assert_eq!(
-            request.max_tokens,
-            Some(
+        // an act's cap is the room past its prompt, at least her reply's grant
+        assert!(
+            request.max_tokens
+                >= Some(
                 faculty
                     .prompt_view_within(&ws, next_window)
                     .completion_reserve
@@ -307,10 +307,18 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                 let ask = pair[1].messages.iter().position(|m| m.content_text().contains(stimulus)).unwrap();
                 assert!(ground[0] < ask);
                 assert_eq!(pair[0].system_prompt, pair[1].system_prompt);
-                assert_eq!(pair[0].max_tokens, pair[1].max_tokens);
+                // each attempt is an act: its cap is that attempt's room past its own (refit) prompt
                 assert_eq!(serde_json::to_value(&pair[0].tools).unwrap(), serde_json::to_value(&pair[1].tools).unwrap());
-                assert!(PromptCalibration::default().estimate_all(&pair[1].messages)
-                    < PromptCalibration::default().estimate_all(&pair[0].messages));
+                // each retry of an act makes measured progress: her view refit smaller, or her view
+                // kept whole and the cap shrunk to the engine's measured room
+                let (before, after) = (
+                    PromptCalibration::default().estimate_all(&pair[0].messages),
+                    PromptCalibration::default().estimate_all(&pair[1].messages),
+                );
+                assert!(
+                    after < before || (after == before && pair[1].max_tokens < pair[0].max_tokens),
+                    "no progress: prompt {before} -> {after}, cap {:?} -> {:?}", pair[0].max_tokens, pair[1].max_tokens
+                );
             }
             assert_eq!(outcome.receipts.len(), seen.len());
             for (receipt, request) in outcome.receipts.iter().zip(seen.iter()) {
@@ -337,9 +345,14 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
             let first = &seen[0];
             let second = seen.last().unwrap();
             assert_ne!(first.request_id, second.request_id);
+            // measured progress: a smaller prompt, or her view kept and the cap shrunk
+            let (before, after) = (
+                PromptCalibration::default().estimate_all(&first.messages),
+                PromptCalibration::default().estimate_all(&second.messages),
+            );
             assert!(
-                PromptCalibration::default().estimate_all(&second.messages)
-                    < PromptCalibration::default().estimate_all(&first.messages)
+                after < before || (after == before && second.max_tokens < first.max_tokens),
+                "no progress: prompt {before} -> {after}, cap {:?} -> {:?}", first.max_tokens, second.max_tokens
             );
             assert!(second
                 .messages

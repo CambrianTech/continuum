@@ -654,7 +654,7 @@ fn an_acts_cap_is_its_windows_room_and_a_pass_keeps_its_grant() {
 // what this catches: the same M5 receipt (2026-11-04) end to end. On a 40,960 window a mind whose
 // measured need is read-sized (700 tokens; Aiko's acts carried 676-701) sends an act whose
 // max_tokens is the room past her prompt, while the reserve her view is sized beside stays her
-// measured need; a pass on the same window and need still sends its grant verbatim.
+// measured need; a mind with no hands (a pass) on the same window and need sends its grant verbatim.
 #[tokio::test]
 async fn an_act_on_a_large_window_with_a_small_need_sends_the_room() {
     use crate::cognition::working_set::{EmissionStop, WorkingSetRegistry};
@@ -666,14 +666,14 @@ async fn an_act_on_a_large_window_with_a_small_need_sends_the_room() {
     for tick in 1..=3 {
         reg.record_emission_in_memory(persona, 700, 400, EmissionStop::Landed, tick);
     }
-    for deliverable in [true, false] {
+    for hands in [true, false] {
         let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
         let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", adapter.clone())
             .with_context_window(window)
-            .with_tools(vec![read_tool()])
+            .with_tools(if hands { vec![read_tool()] } else { Vec::new() })
             .with_working_set(reg.clone());
-        let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 40, deliverable);
-        assert_eq!(faculty.turn_kind(&ws) == TurnKind::Act, deliverable, "precondition: the turn's kind");
+        let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 40, false);
+        assert_eq!(faculty.turn_kind(&ws) == TurnKind::Act, hands, "precondition: a mind with hands acts, one without passes");
         let view = faculty.prompt_view(&ws);
         assert!(view.completion_reserve <= 700, "precondition: a read-sized grant: {}", view.completion_reserve);
         let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
@@ -682,9 +682,9 @@ async fn an_act_on_a_large_window_with_a_small_need_sends_the_room() {
         let request = &seen[0];
         let prompt = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
             + PromptCalibration::default().estimate_all(&request.messages)
-            + crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
+            + request.tools.as_ref().map_or(0, |tools| crate::cognition::tool_surface::tool_surface_tokens_of(tools)); // map_or: a mind with no hands sends no schemas
         let cap = request.max_tokens.expect("the reply is bounded");
-        if deliverable {
+        if hands {
             assert!(cap as usize >= window as usize - prompt - 1, "an act's cap is the window's room: {cap}");
             assert!(cap > view.completion_reserve, "and larger than her read-sized grant");
             assert!(prompt + (cap as usize) < window as usize, "inside the window, under strict admission");
