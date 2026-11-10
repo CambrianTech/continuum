@@ -512,6 +512,7 @@ async fn admit(
                 // No pin or provisional page exists yet. Keep the registered notification,
                 // then rediscover the pool under the next admitted generation.
                 drop(admission);
+                lane = None; // a waiting dream holds no lane either (Codex on #5898); only dreams hold one
                 notified.await;
                 continue 'admit;
             };
@@ -526,7 +527,19 @@ async fn admit(
             if let Some((slot, pin)) = pinned {
                 admission._pin = Some(pin);
                 admission.released = Some(pool.released());
-                admission._slot_permit = Some(pool.acquire_slot(slot).await?);
+                admission._slot_permit = Some(match pool.try_acquire_slot(slot) {
+                    Some(permit) => permit,
+                    // A keyed dream waits for her busy slot holding nothing: no pin, no lane, no
+                    // gate (Codex on #5898). A turn keeps its pin through the wait (a same-page
+                    // returner must await the prior owner without permitting eviction).
+                    None if keyed_dream => {
+                        drop(admission);
+                        lane = None;
+                        wait_until_free(pool, slot).await?;
+                        continue 'admit;
+                    }
+                    None => pool.acquire_slot(slot).await?,
+                });
                 admission._endpoint.check_ready()?;
                 if keyed_dream {
                     // Her gate, without waiting: her act running or queued comes first. Returning

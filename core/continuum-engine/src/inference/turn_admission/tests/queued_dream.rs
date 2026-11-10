@@ -119,12 +119,32 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     tokio::pin!(queued);
     assert!(futures::poll!(&mut queued).is_pending(), "the keyed dream waits for her slot");
     assert!(crate::inference::slots::MindTurn::try_begin(her).is_some(), "a waiting keyed dream holds no gate: her act would take it now");
+    assert_eq!(lanes_free(), before, "nor a serving lane while it waits for a busy slot (Codex on #5898)");
     drop((busy_a, busy_b));
     let learning = queued.await.expect("test: admitted once a slot frees");
     assert!(learning._lane.is_some(), "a keyed dream runs holding an ambient lane");
     assert!(crate::inference::slots::MindTurn::try_begin(her).is_none(), "admitted, it holds her gate for the step");
     drop(learning);
     assert_eq!(lanes_free(), before, "and gives the lane back");
+    // (2b) Every slot PINNED by other minds' turns (the lease finds nothing): it waits holding no
+    // lane and no gate, then runs once a turn releases (Codex on #5898: the lane was held here).
+    let a = PageKey::mind(Uuid::new_v4()).expect("test: a mind key");
+    let b = PageKey::mind(Uuid::new_v4()).expect("test: a mind key");
+    let turn_a = admit_turn(&sem, SlotClass::Turn, Some(a), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO).await.expect("test: a's turn pins a slot");
+    let turn_b = admit_turn(&sem, SlotClass::Turn, Some(b), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO).await.expect("test: b's turn pins the other");
+    // Its own adapter semaphore: the two turns hold the shared one's permits, and this scenario is
+    // about pins, not the adapter.
+    let own_permits = Arc::new(Semaphore::new(2));
+    let behind_pins = admit_turn(&own_permits, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
+    tokio::pin!(behind_pins);
+    assert!(futures::poll!(&mut behind_pins).is_pending(), "every slot is pinned: the keyed dream waits");
+    assert_eq!(lanes_free(), before, "holding no serving lane");
+    assert!(crate::inference::slots::MindTurn::try_begin(her).is_some(), "and no gate");
+    drop((turn_a, turn_b));
+    let after_pins = tokio::time::timeout(std::time::Duration::from_secs(5), behind_pins).await.expect("test: a released pin wakes it").expect("test: admitted");
+    assert!(after_pins._lane.is_some(), "admitted, it holds its ambient lane");
+    drop(after_pins);
+    assert_eq!(lanes_free(), before, "and gives it back");
     // (3) A scratch slot does not exempt it: her page is a citizen page, so it still yields to
     // residents through the ambient lane (a keyless dream on scratch takes none, test above).
     let roomy = Arc::new(KvSlotPool::new("test://keyed-dream-scratch", 3));
