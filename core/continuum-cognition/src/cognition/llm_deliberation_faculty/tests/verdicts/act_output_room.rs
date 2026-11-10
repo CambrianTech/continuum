@@ -6,7 +6,6 @@
 
 use super::*;
 use crate::ai::provenance::PromptAdmission;
-use crate::ai::types::ThinkBudget;
 use crate::cognition::working_set::{EmissionStop, WorkingSetRegistry};
 
 /// A mind whose acts measured `reasoning` + `answer` (three landed acts).
@@ -52,12 +51,6 @@ fn the_live_cut_caps_become_her_measured_room_behind_the_engines_count() {
     let claim = reply_claim(TurnKind::Act, Some(need), 0, true, false, None);
     assert_eq!(claim.floor_tokens, 434, "her floor is think plus answer, never the answer alone");
     assert!(new >= claim.floor_tokens);
-    assert_eq!(act_reasoning_budget(crate::cognition::working_set::ActRoom::of(Some(need)), 434), ThinkBudget(338), "the answer keeps its measured room");
-    assert_eq!(act_reasoning_budget(crate::cognition::working_set::ActRoom::of(Some(need)), 96), ThinkBudget(0), "a grant that holds only her answer: zero, never unbounded");
-    // what this catches: her think bounded by her past thinks (her reply's grant), so it could
-    // never grow (the M5, 2026-11-09: median 536 tokens of thought per act). An act's cap is the
-    // room past her prompt, and she thinks into all of it but her answer's room.
-    assert_eq!(act_reasoning_budget(crate::cognition::working_set::ActRoom::of(Some(need)), new), ThinkBudget(new - 96), "she thinks as far as her room allows");
     assert_eq!(
         reply_claim(TurnKind::Act, None, 0, true, false, None).floor_tokens,
         0,
@@ -98,15 +91,16 @@ async fn an_act_carries_her_measured_room_the_guard_and_its_receipt() {
     assert!(cap >= 434, "her measured think plus answer: {cap}");
     assert!(cap >= view.completion_reserve, "never below the reply's grant");
     let terms = *adapter.terms_seen.lock().unwrap().last().expect("dispatched under terms"); // JUSTIFIED: test fixture lock, never poisoned
-    let budget = terms.think.budget().expect("an act's think is bounded by its cap").0;
-    // her think is the cap past her measured answer: as far as her room allows, the answer kept
-    assert_eq!(budget + 96, cap, "she thinks into all of her room but her answer's: {budget} of {cap}");
+    // what this catches: a think budget sized from her past thinks, which cut her thought and forced
+    // her to act mid-thought (the M5, 2026-11-09: median 536 tokens). No budget is sent: she thinks
+    // until she is done, inside her room.
+    assert_eq!(terms.think, crate::ai::types::Think::ModelDefault, "her thinking is never budgeted for her");
     let admission = terms.admission.expect("every request carries the admission it was rendered under");
     assert_eq!((admission.window, admission.priced), (window, PromptAdmission::EngineCounted), "priced below the estimate only behind the engine's count");
     let allocation = receipts.last().and_then(|r| r.allocation.as_ref()).expect("the receipt names its allocation");
     assert_eq!(allocation.revision, env!("CONTINUUM_BUILD_GIT_SHA"), "the build that sized it");
     let room = allocation.output_room.as_ref().expect("an act's output room rides its receipt");
-    assert_eq!((room.cap, room.need, room.reasoning_budget), (cap, Some(434), Some(budget)));
+    assert_eq!((room.cap, room.need, room.reasoning_budget), (cap, Some(434), None));
     assert_eq!(room.model, request.model.clone().unwrap_or_default()); // unwrap_or_default: test fixture, the model the request named
     assert_eq!(room.admission, PromptAdmission::EngineCounted);
     assert!(room.density_measured as u64 * 100 <= room.density_estimated * 84, "priced at her measured density: {room:?}");

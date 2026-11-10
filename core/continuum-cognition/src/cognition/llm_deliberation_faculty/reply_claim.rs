@@ -59,10 +59,8 @@ pub fn reply_claim(
     // and corrected), only under the measured time term: a thinking model fills whatever room it
     // gets (8k to 184k in 20 simulated turns), so growth stops at what her latency allows, and
     // with no measured rate it does not test upward at all (Cormac's design, card b726a311).
-    // An act's floor already holds that bound (`act_room`) and her think is closed at what her
-    // grant leaves past her answer (`act_reasoning_budget`), so a think censored there would read
-    // the same bound forever: her upward test is the doubled bound under the same measured time
-    // term (both ways, or it ratchets down). A cut ANSWER needs no test here: her floor already
+    // An act's floor already holds that bound (`act_room`); her upward test is the doubled bound
+    // under the same measured time term (both ways, or it ratchets down). A cut ANSWER needs no test here: her floor already
     // holds its estimate past the bound (`OutputNeed::answer_room`).
     let upward = |at_least: u32| match kind {
         TurnKind::Act => at_least.saturating_mul(2),

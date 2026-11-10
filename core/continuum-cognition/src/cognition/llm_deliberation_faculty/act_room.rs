@@ -9,17 +9,16 @@
 //! ([`PromptCalibration::charge`], now below the estimate only behind the engine's count); the
 //! reply's floor was her answer alone, clipped to what the other floors left ([`reply_claim`], now
 //! her think plus answer, refused as the typed `IrreducibleShortfall` when it does not fit); and the
-//! think shared `max_tokens` under a fixed 1,024 budget that never applied below a 1,024 cap
-//! ([`act_reasoning_budget`], now her room past her measured answer).
+//! think shared `max_tokens` under a fixed 1,024 budget that never applied below a 1,024 cap (now
+//! no think budget at all: she thinks until she is done, inside her room).
 
 use super::*;
 use crate::cognition::working_set::ActRoom;
 
 /// The `max_tokens` a turn's request carries, for the view it is sent with. Pure.
 ///
-/// The two output channels have opposite natures, so each has one owner. The THINK runs away (a
-/// thinking model fills whatever room it gets), so it is bounded by its reasoning budget on the
-/// wire ([`act_reasoning_budget`]), never by `max_tokens`. The ANSWER of an act is payload: a tool
+/// The two output channels share the room. Her THINK is hers: no budget is sent for it, so it is
+/// never cut or closed for her; it ends when she ends it, inside the room. The ANSWER of an act is payload: a tool
 /// call carrying a file ends by itself, and its size is the file's, not her past answers'. So an
 /// act's cap is the room this view's window physically leaves after its charged prompt, less the
 /// one token the strict `prompt + reply < window` admission needs (`serving_guard`, and the
@@ -67,23 +66,6 @@ pub(super) struct ShortRoom {
     pub(super) prompt: u32,
 }
 
-/// The think's bound inside a turn's `cap`: everything past her MEASURED answer (an act's call and
-/// its serialization, a pass's sentence), so the answer always keeps its measured room. For an act
-/// the cap is the room past her prompt, so she thinks as far as her window lets her; bounded by
-/// her past thinks instead (her reply's grant), a mind could never think further than she already
-/// had (the M5, 2026-11-09: median 536 tokens of thought per act, 302-2,445). Unmeasured, past the
-/// smallest usable reply
-/// ([`LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS`], the reply claim's own floor). Never a
-/// fixed count or a share of the cap, and never unbounded: a grant that leaves the think nothing
-/// is a budget of ZERO (no thinking: the template's `enable_thinking = false` on every pin, and the
-/// sampler's zero budget from the fork fix on, `request_body::apply_think`).
-pub(super) fn act_reasoning_budget(room: ActRoom, cap: u32) -> crate::ai::types::ThinkBudget {
-    crate::ai::types::ThinkBudget(
-        room.think_within(cap)
-            .unwrap_or_else(|| cap.saturating_sub(LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS)), // unwrap_or_else: unmeasured, past the smallest usable reply
-    )
-}
-
 impl LlmDeliberationFaculty {
     /// The terms a turn is dispatched under (`DispatchTerms`): the admission it was rendered under
     /// (its window, the grant it was priced against, how its prompt was priced: the engine enforces
@@ -99,11 +81,11 @@ impl LlmDeliberationFaculty {
     ) -> (crate::ai::types::DispatchTerms, Option<crate::ai::provenance::OutputRoom>) {
         let terms = crate::ai::types::DispatchTerms {
             admission: Some(crate::ai::types::RequestAdmission { window, lease, priced: calibration.admission }),
-            // an act thinks within its cap (the room past her prompt); a pass within its grant
-            think: crate::ai::types::Think::Budget(act_reasoning_budget(
-                view.act_room,
-                request.max_tokens.filter(|_| kind == TurnKind::Act).unwrap_or(view.completion_reserve), // unwrap_or: a pass's cap IS its grant
-            )),
+            // Her thinking is never cut and never closed for her: no think budget is sent, so she
+            // thinks until she decides she is done, inside the room her window has. A budget sized
+            // from her past thinks held her at a median 536 tokens and forced her to act mid-thought
+            // (the M5, 2026-11-09; Joel: "If you cut off thoughts it totally ruins their mind").
+            think: crate::ai::types::Think::ModelDefault,
         };
         let Some(cap) = request.max_tokens.filter(|_| kind == TurnKind::Act) else {
             return (terms, None);
