@@ -6,6 +6,7 @@ use std::collections::{BTreeSet, VecDeque};
 
 #[cfg(test)]
 mod tests;
+mod diagnosis;
 
 #[derive(Default)]
 pub struct FairGrantState {
@@ -15,6 +16,7 @@ pub struct FairGrantState {
     /// Each mind's receipt revision when her grant last changed: she is settled (her grant may
     /// shrink toward her share) once a receipt past it says she served on it.
     changed: BTreeMap<uuid::Uuid, u64>,
+    diagnosis: Option<diagnosis::QueueDiagnosis>,
 }
 
 impl FairGrantState {
@@ -248,6 +250,7 @@ impl Reservations {
                 state.yield_after.insert(mind, (lease, baseline));
             }
         }
+        diagnosis::observe(fair, &state, &next);
         (publish(next), tickets)
     }
 }
