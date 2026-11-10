@@ -120,7 +120,7 @@ impl WorkingMemory {
         let scope = self.scope.lock().clone();
         self.pending_emissions.lock().iter()
             .filter(|e| e.room == room && e.scope == scope)
-            .map(|e| e.peak_tokens).max().unwrap_or(0)
+            .map(|e| e.peak_tokens).max().unwrap_or(0) // JUSTIFIED: no pending emission retains no peak; 0 is the identity of the max the reply claim folds it into
     }
 
     /// Record a fingerprint (tool name + args) of the action the hands just took, and return
@@ -162,7 +162,7 @@ impl WorkingMemory {
         let fps = self.action_fps.lock();
         let mut tally: Vec<(String, usize)> = Vec::new();
         for fp in fps.iter() {
-            let name = fp.split('|').next().unwrap_or(fp).to_string();
+            let name = fp.split('|').next().unwrap_or(fp).to_string(); // JUSTIFIED: split always yields its first piece; the fallback is the whole fingerprint, never invented
             match tally.iter_mut().find(|(n, _)| *n == name) {
                 Some((_, c)) => *c += 1,
                 None => tally.push((name, 1)),
@@ -343,6 +343,7 @@ impl WorkingMemory {
                     result: Some(tail),
                     handle,
                     stored_chars: None,
+                    stored_content: None,
                     received_ms: Some(continuum_base::time::EpochMs::now().millis()),
                     act: act_identity(&acts),
                 },
@@ -366,7 +367,7 @@ impl WorkingMemory {
         // fault in assembly, never permission to reuse an older statement or infer aliases.
         let native_calls = e.iter_mut().rev()
             .find(|entry| entry.scope == scope && matches!(entry.kind, WmKind::ActionStatement { room: r } if Some(r) == room))
-            .map(|entry| std::mem::take(&mut entry.native_calls)).unwrap_or_default();
+            .map(|entry| std::mem::take(&mut entry.native_calls)).unwrap_or_default(); // JUSTIFIED: no statement for this room means none of its calls were native: the empty list is the fact
         self.push_entry(&mut e, WmEntry {
             disk_change,
             kind: WmKind::Receipt { n: seq },

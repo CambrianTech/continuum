@@ -159,6 +159,7 @@ fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_
         handle: None,
         summary: None,
         stored_chars: None,
+        stored_content: None,
         received_ms: Some(at),
         act: Some(continuum_context::cause::Act { fingerprint: continuum_context::cause::Fingerprint::of([("x", seq.to_be_bytes().as_slice())]), effect }),
     };
@@ -174,4 +175,33 @@ fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_
     changed.push(act(6, room, 140, ToolEffect::Changes));
     changed.push(act(7, room, 150, ToolEffect::Observes));
     assert_eq!(super::super::action_log::ActionLog::from_records(changed).acts_since_change(room, 100), 1, "a declared change resets it");
+}
+
+// what this catches: an evicted observation hashed as `Absent`, so it was no occurrence and a
+// re-read of it never matched: her view measured zero re-reads while Atlas re-read an identical
+// file 103 times in 300 acts (the M5, 2026-11-09), so collapse looked free and her reads
+// thrashed. Evicted, a read keeps the outcome hash it had resident, across a restart too.
+#[test]
+fn an_evicted_read_keeps_the_outcome_hash_it_had_resident() {
+    let wm = WorkingMemory::new(8);
+    let cap = 2 * BODY;
+    let body = format!("first\n{}", "a".repeat(cap / 2));
+    wm.record_receipt_typed(&[], &body, None, saved("first-handle"));
+    for act in 2..=5 {
+        record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
+    }
+    // read once later acts exist: her newest act is in flight and not yet rendered
+    let resident = wm.action_renderings().0.first().map(|act| act.content);
+    assert!(matches!(resident, Some(continuum_context::cause::Content::Hashed(_))), "precondition: resident, hashed: {resident:?}");
+    shed(&wm, cap / 2);
+    assert!(wm.actions.lock().records().next().is_some_and(|first| first.result.is_none()), "precondition: the first read was evicted");
+    let evicted = wm.action_renderings().0.first().map(|act| act.content);
+    assert_eq!(evicted, resident, "an evicted read is the same occurrence it was resident");
+    assert!(matches!(evicted, Some(continuum_context::cause::Content::Hashed(_))), "never Absent: {evicted:?}");
+    // through the checkpoint's disk form, as a restart reads it
+    let Ok(saved) = serde_json::to_string(&wm.snapshot()) else { panic!("test: the checkpoint serializes") };
+    let Ok(snapshot) = serde_json::from_str(&saved) else { panic!("test: the checkpoint reads back") };
+    let restored = WorkingMemory::new(8);
+    restored.restore(snapshot);
+    assert_eq!(restored.action_renderings().0.first().map(|act| act.content), resident, "and across a restart");
 }

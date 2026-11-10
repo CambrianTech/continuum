@@ -93,6 +93,14 @@ pub(crate) struct ActionRecord {
     /// before this was kept (their whole then has no price: they show at pointer level).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stored_chars: Option<usize>,
+    /// The whole result's hash, taken as its body leaves RAM and kept with its handle, so an
+    /// evicted observation is still the occurrence a re-read is matched against
+    /// (`continuum_context::rereads`). Without it an evicted read hashed as `Absent`, no re-read
+    /// ever matched, and her view measured zero re-reads while Atlas re-read an identical file
+    /// 103 times in 300 acts (the M5, 2026-11-09): collapse looked free and her reads thrashed.
+    /// `None` while resident (the body is hashed directly) and for records evicted before this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored_content: Option<continuum_context::cause::ContentHash>,
     /// When the result was received (ms since the Unix epoch): the one clock that orders every
     /// mind's resident results oldest-first when the memory owner sheds across minds. `None`
     /// for a record from a build before this was kept, which sheds first (it is older than any
@@ -153,6 +161,7 @@ impl super::residency::Resident for ActionRecord {
 
     fn shed_body(&mut self) {
         self.stored_chars = self.result.as_ref().map(|result| result.chars().count());
+        self.stored_content = self.result.as_deref().map(continuum_context::cause::ContentHash::of);
         self.result = None;
     }
 }

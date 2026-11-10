@@ -126,7 +126,7 @@ impl WorkingMemory {
         let scope = self.scope.lock().clone();
         self.entries.lock().iter().rev()
             .find(|entry| entry.scope == scope && matches!(entry.kind, WmKind::Receipt { n } if n == seq))
-            .map(|entry| entry.native_calls.clone()).unwrap_or_default()
+            .map(|entry| entry.native_calls.clone()).unwrap_or_default() // JUSTIFIED: no receipt entry for this act means it carried no native calls: the empty list is the fact
     }
 
     /// Render the complete active payload with its recorded provenance. The
@@ -288,11 +288,15 @@ impl WorkingMemory {
                     }
                     _ => None,
                 };
-                let full = whole.unwrap_or_else(|| pointer.clone());
+                let full = whole.unwrap_or_else(|| pointer.clone()); // JUSTIFIED: a body out of RAM renders its pointer; its whole is the stored one, loaded when granted
                 let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary] {summary}"));
-                let content = record.result.as_deref().map_or(continuum_context::cause::Content::Absent, |result| {
-                    continuum_context::cause::Content::Hashed(continuum_context::cause::ContentHash::of(result))
-                });
+                // Resident, its body's hash; evicted, the hash it kept as it left RAM: an evicted
+                // read is still the occurrence a re-read matches (`ActionRecord::stored_content`).
+                let content = match (record.result.as_deref(), record.stored_content) {
+                    (Some(result), _) => continuum_context::cause::Content::Hashed(continuum_context::cause::ContentHash::of(result)),
+                    (None, Some(hash)) => continuum_context::cause::Content::Hashed(hash),
+                    (None, None) => continuum_context::cause::Content::Absent,
+                };
                 ActRendering { seq: record.seq, room: record.room, full, summary, pointer, stored, content, act: record.act }
             })
             .collect();
