@@ -4,18 +4,66 @@
 //! what this request allocates, never a bound for the longest text.
 use llama::Model;
 
-/// What one context token of the embedding model allocates, measured on the M5's engine (engine-c,
-/// Qwen3-Embedding-0.6B Q8_0, flash attention on, 2026-11-10; n_ctx = n_batch = n_ubatch at 256,
-/// 512, 1,024 and 2,048, linear within 0.1%): Metal KV 112 KiB, Metal compute 601 KiB at its
-/// largest per-token reading (256), CPU compute 12 KiB at its largest (2,048). The fork reports no
-/// context's memory before it exists (card 9bddda93: a context-measure API in the fork owns this
-/// number). It is the rate of a context on the Metal device; a context in host memory
-/// (`LlamaCppBackend::context_pool`) or on another backend has its own, measured there.
-const CONTEXT_BYTES_PER_TOKEN: u64 = 114_688 + 615_424 + 12_314;
+/// Where a backend's layers are, as CONFIGURED (its offload setting and whether this build of
+/// llama offloads at all), never measured: llama reports no context's per-buffer placement
+/// before it exists (card 9bddda93). What is not known stays explicit as `Split`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Placement {
+    /// Every layer on the GPU: KV and compute in device memory, the CPU's share and the output
+    /// buffer in host memory.
+    Device,
+    /// No layer on a GPU: everything in host memory.
+    Host,
+    /// Some layers on the GPU: the split is not measured, so each pool is charged its upper bound.
+    Split,
+}
 
-/// The context's fixed allocation beside its tokens: the CPU output buffer (0.58 MiB, measured with
-/// the per-token costs above), rounded up to a MiB.
-const CONTEXT_FIXED_BYTES: u64 = 1024 * 1024;
+/// What a context allocates in each pool, in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ContextBytes {
+    pub device: u64,
+    pub host: u64,
+}
+
+/// A measured rate: `mib` MiB llama reported for a context of `tokens` tokens (the largest
+/// per-token reading of four sizes, 256 to 2,048, each linear within 3%). Qwen3-Embedding-0.6B
+/// Q8_0, engine-c, flash attention on, measured on the M5 on 2026-11-10; logs in
+/// `~/.continuum/evidence/replicate-2026-11-10/` (`metal-embed-ctx-*`, `cpu-embed-ctx-*`).
+#[derive(Debug, Clone, Copy)]
+struct Measured {
+    mib: f64,
+    tokens: u32,
+}
+
+impl Measured {
+    fn over(self, n_ctx: u32) -> u64 {
+        (self.mib * 1024.0 * 1024.0 / f64::from(self.tokens) * f64::from(n_ctx)).ceil() as u64
+    }
+}
+
+/// KV, wherever it resides (MTL0 and CPU report the same).
+const KV: Measured = Measured { mib: 28.0, tokens: 256 };
+/// The device's compute buffer with every layer offloaded (MTL0).
+const DEVICE_COMPUTE: Measured = Measured { mib: 150.25, tokens: 256 };
+/// The CPU's compute share beside a device context.
+const DEVICE_CPU_COMPUTE: Measured = Measured { mib: 24.05, tokens: 2_048 };
+/// The CPU's compute buffer with no layer offloaded.
+const HOST_COMPUTE: Measured = Measured { mib: 154.25, tokens: 256 };
+/// The output buffer, the same at every size (0.58 MiB), rounded up.
+const OUTPUT: u64 = 1024 * 1024;
+
+/// What a context of `n_ctx` tokens allocates in each pool, at `placement`. The rates are this
+/// model's on Metal and on the CPU; another backend's are measured there (REPLICATE.md).
+pub(crate) fn context_bytes(n_ctx: u32, placement: Placement) -> ContextBytes {
+    let n = llama::ContextParams::allocated_n_ctx(n_ctx);
+    let on_device = || KV.over(n) + DEVICE_COMPUTE.over(n);
+    let on_host = || KV.over(n) + HOST_COMPUTE.over(n) + OUTPUT;
+    match placement {
+        Placement::Device => ContextBytes { device: on_device(), host: DEVICE_CPU_COMPUTE.over(n) + OUTPUT },
+        Placement::Host => ContextBytes { device: 0, host: on_host() },
+        Placement::Split => ContextBytes { device: on_device(), host: on_host() },
+    }
+}
 
 /// One request's sequences, each one's plan, and the window that embeds the widest piece.
 pub(crate) struct EmbeddingBatch {
@@ -60,10 +108,10 @@ impl EmbeddingBatch {
         Ok(Self { sequences, prefix, plans, widest })
     }
 
-    /// What this batch's context allocates: the per-token cost over llama's padded window, plus its
-    /// fixed buffers. What the embed lane leases before it creates the context.
-    pub(crate) fn context_bytes(&self) -> u64 {
-        context_bytes(self.widest)
+    /// What this batch's context allocates in each pool at `placement`: what the embed lane leases
+    /// before it creates the context.
+    pub(crate) fn context_bytes(&self, placement: Placement) -> ContextBytes {
+        context_bytes(self.widest, placement)
     }
 
     /// Embed every piece in one context sized to the widest; KV is cleared between pieces.
@@ -83,10 +131,6 @@ impl EmbeddingBatch {
     }
 }
 
-/// What a context of `n_ctx` tokens allocates (see [`CONTEXT_BYTES_PER_TOKEN`]).
-pub(crate) fn context_bytes(n_ctx: u32) -> u64 {
-    u64::from(llama::ContextParams::allocated_n_ctx(n_ctx)) * CONTEXT_BYTES_PER_TOKEN + CONTEXT_FIXED_BYTES
-}
 
 /// How one tokenized text is embedded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,17 +229,23 @@ mod tests {
 
     const MIB: u64 = 1024 * 1024;
 
-    // what this catches (the M5 on 26960c09d, 758 failed embeddings in 3 h, 9% success): a lease
-    // sized for the longest text refused for every short one. A short text leases its own small
-    // context; the measured 2,048-token context (Metal KV 224 + compute 1,201 + CPU 24 + output 0.6
-    // MiB = 1,450 MiB) is covered within 1%, never under it.
+    // what this catches (the M5 on 26960c09d, 758 failed embeddings in 3 h, 9% success; Codex on
+    // #5910: one context's bytes are in two pools): a lease sized for the longest text, or charged
+    // all to one pool. A short text leases its own small context; each pool covers what llama
+    // reported for it at 2,048 tokens; an unmeasured split is charged in full to both.
     #[test]
-    fn a_context_leases_what_it_allocates_short_or_long() {
-        assert!(context_bytes(40) < 200 * MIB, "a short text: {} MiB", context_bytes(40) / MIB);
-        assert_eq!(context_bytes(40), context_bytes(256), "llama pads to 256 tokens");
-        let measured_2048 = (224 * MIB) + (1_201 * MIB) + (24 * MIB) + MIB / 2;
-        assert!(context_bytes(2_048) >= measured_2048, "{} < {}", context_bytes(2_048), measured_2048);
-        assert!(context_bytes(2_048) < measured_2048 + measured_2048 / 100, "within 1%: {}", context_bytes(2_048));
+    fn a_context_leases_what_it_allocates_in_each_pool() {
+        let short = context_bytes(40, Placement::Device);
+        assert!(short.device < 200 * MIB && short.host < 10 * MIB, "a short text: {short:?}");
+        assert_eq!(short, context_bytes(256, Placement::Device), "llama pads to 256 tokens");
+        let device = context_bytes(2_048, Placement::Device);
+        assert!(device.device >= (224 + 1_200) * MIB, "MTL0 KV 224 + compute 1,200.96 MiB: {device:?}");
+        assert!(device.host >= 24 * MIB, "CPU compute 24.05 + output 0.58 MiB: {device:?}");
+        let host = context_bytes(2_048, Placement::Host);
+        assert_eq!(host.device, 0);
+        assert!(host.host >= (224 + 1_200) * MIB, "CPU KV 224 + compute 1,200.97 MiB: {host:?}");
+        let split = context_bytes(2_048, Placement::Split);
+        assert_eq!((split.device, split.host), (device.device, host.host), "an unmeasured split: the upper bound in each pool");
     }
 
     // what this catches (card 57ef2a06): a text longer than the model's context clipped to its
