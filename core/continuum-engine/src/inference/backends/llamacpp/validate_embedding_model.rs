@@ -37,42 +37,95 @@ pub(super) fn embed_model(model: &Model, texts: &[String]) -> Result<Vec<Vec<f32
     if texts.is_empty() {
         return Ok(Vec::new());
     }
-    // Non-causal embedding needs the entire sequence in one batch. Size the
-    // graph from the actual request, never a private token ceiling or head clip.
+    // Non-causal embedding needs each piece in one batch. Size the graph from the actual request,
+    // never a private token ceiling or head clip.
     let sequences = texts
         .iter()
         .map(|text| model.tokenize(text, true, false))
         .collect::<Result<Vec<_>, _>>()?;
-    let requested = sequences
-        .iter()
-        .map(Vec::len)
-        .max()
-        .ok_or("empty embedding request")?;
     if sequences.iter().any(Vec::is_empty) {
         return Err("embedding tokenization produced an empty sequence".into());
     }
-    let requested = u32::try_from(requested)
-        .map_err(|_| "embedding sequence length exceeds native representation")?;
-    let model_limit = model.n_ctx_train();
-    if model_limit == 0 || requested > model_limit {
+    let model_limit = usize::try_from(model.n_ctx_train())
+        .map_err(|_| "embedding model context exceeds native representation")?;
+    // The prefix every sequence begins with (BOS): each window of a long text carries it, so every
+    // window is the same shape of input a short text is.
+    let prefix = model.tokenize("", true, false)?;
+    if let Some(tokens) = sequences.iter().find(|tokens| !tokens.starts_with(&prefix)) {
         return Err(format!(
-            "embedding sequence length {requested} exceeds model context {model_limit}"
+            "an embedding sequence does not begin with the model's {}-token prefix (begins {:?}): its windows would be built from the wrong tokens",
+            prefix.len(),
+            &tokens[..prefix.len().min(tokens.len())]
         ));
     }
+    let plans = sequences
+        .iter()
+        .map(|tokens| windows(tokens.len(), prefix.len(), model_limit))
+        .collect::<Result<Vec<_>, _>>()?;
+    let widest = plans
+        .iter()
+        .flatten()
+        .map(|w| prefix.len() + w.len())
+        .max()
+        .ok_or("empty embedding request")?;
+    let widest = u32::try_from(widest).map_err(|_| "embedding sequence length exceeds native representation")?;
     let mut ctx = model.new_context(llama::ContextParams {
         embeddings: true,
         pooling_type: llama::PoolingType::Last,
-        n_ctx: requested,
-        n_batch: requested,
-        n_ubatch: requested,
+        n_ctx: widest,
+        n_batch: widest,
+        n_ubatch: widest,
         ..Default::default()
     })?;
     let mut out = Vec::with_capacity(sequences.len());
-    for tokens in sequences {
-        ctx.memory_clear(true);
-        out.push(ctx.embed(&tokens)?);
+    for (tokens, plan) in sequences.iter().zip(plans) {
+        // A text longer than the model's context is every window of it, never its head
+        // (card 57ef2a06: BigMama's 38,603-token example errored the whole batch at 32,768).
+        let mut pieces = Vec::with_capacity(plan.len());
+        for window in plan {
+            let mut piece = Vec::with_capacity(prefix.len() + window.len());
+            piece.extend_from_slice(&tokens[..prefix.len()]);
+            piece.extend_from_slice(&tokens[window.clone()]);
+            ctx.memory_clear(true);
+            pieces.push((ctx.embed(&piece)?, window.len()));
+        }
+        out.push(weighted_mean(&pieces)?);
     }
     Ok(out)
+}
+
+/// The text-token windows of a `len`-token sequence whose first `prefix` tokens are the model's
+/// prefix, each fitting `limit` with the prefix carried: one window when it fits, else contiguous
+/// windows covering every text token once.
+fn windows(len: usize, prefix: usize, limit: usize) -> Result<Vec<std::ops::Range<usize>>, String> {
+    let span = limit.checked_sub(prefix).filter(|span| *span > 0).ok_or_else(|| {
+        format!("embedding model context {limit} cannot hold its own {prefix}-token prefix and any text")
+    })?;
+    let text = prefix..len;
+    if text.is_empty() {
+        return Err("embedding sequence holds no text after its prefix".into());
+    }
+    Ok(text.clone().step_by(span).map(|start| start..(start + span).min(len)).collect())
+}
+
+/// The vector a text's windows stand for together: their mean weighted by the text tokens each
+/// holds, L2-normalized like every window (`ctx.embed`), so a one-window text is its window.
+fn weighted_mean(pieces: &[(Vec<f32>, usize)]) -> Result<Vec<f32>, String> {
+    let (first, _) = pieces.first().ok_or("a text with no embedded window")?;
+    let mut sum = vec![0.0f32; first.len()];
+    for (vector, weight) in pieces {
+        if vector.len() != sum.len() {
+            return Err(format!("embedding windows disagree on dimension: {} vs {}", vector.len(), sum.len()));
+        }
+        for (s, x) in sum.iter_mut().zip(vector) {
+            *s += x * *weight as f32;
+        }
+    }
+    let norm = sum.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if !norm.is_finite() || norm == 0.0 {
+        return Err("embedding windows cancelled to a degenerate vector".into());
+    }
+    Ok(sum.into_iter().map(|x| x / norm).collect())
 }
 
 /// A caller-issued nonzero generation window; model metadata cannot create one.
@@ -310,3 +363,48 @@ pub struct LlamaCppBackend {
 unsafe impl Send for LlamaCppBackend {}
 
 unsafe impl Sync for LlamaCppBackend {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (card 57ef2a06): a text longer than the model's context clipped to its
+    // head, or rejected so the whole batch embeds nothing. Every text token lands in exactly one
+    // window, each window fits the context with the prefix carried, and a text that fits is one
+    // window.
+    #[test]
+    fn windows_cover_every_text_token_once_within_the_context() {
+        assert_eq!(windows(100, 1, 32_768).expect("test: fits"), vec![1..100]);
+        let long = windows(38_603, 1, 32_768).expect("test: plans");
+        assert_eq!(long, vec![1..32_768, 32_768..38_603], "the BigMama example: two windows, nothing dropped");
+        assert!(long.iter().all(|w| 1 + w.len() <= 32_768), "each window fits with its prefix");
+        assert_eq!(long.iter().map(|w| w.len()).sum::<usize>(), 38_603 - 1, "every text token once");
+        assert!(windows(10, 4, 4).is_err(), "a context that cannot hold its prefix and text refuses");
+        assert!(windows(1, 1, 8).is_err(), "a sequence of only its prefix holds no text");
+    }
+
+    // what this catches: windows combined unweighted (a short tail outweighs most of the text) or
+    // left unnormalized (cosine stops being a dot product); one window must be itself.
+    #[test]
+    fn windows_combine_by_their_token_share_into_a_unit_vector() {
+        let one = weighted_mean(&[(vec![0.6, 0.8], 7)]).expect("test: one window");
+        assert!((one[0] - 0.6).abs() < 1e-6 && (one[1] - 0.8).abs() < 1e-6, "{one:?}");
+        let two = weighted_mean(&[(vec![1.0, 0.0], 3), (vec![0.0, 1.0], 1)]).expect("test: two windows");
+        assert!(two[0] > two[1] * 2.9 && two[0] < two[1] * 3.1, "3:1 by tokens: {two:?}");
+        assert!(((two[0] * two[0] + two[1] * two[1]).sqrt() - 1.0).abs() < 1e-6, "unit length");
+        assert!(weighted_mean(&[(vec![1.0], 1), (vec![1.0, 0.0], 1)]).is_err(), "dimensions must agree");
+        assert!(weighted_mean(&[(vec![1.0, 0.0], 2), (vec![-1.0, 0.0], 2)]).is_err(), "windows that cancel are refused, never normalized to NaN");
+        assert!(weighted_mean(&[]).is_err(), "a text with no window has no vector");
+    }
+
+    // what this catches (Codex on 57ef2a06): the last, short window of a long text weighted like a
+    // full one, so a few hundred tail tokens pull the vector as hard as 32k head tokens.
+    #[test]
+    fn the_short_final_window_weighs_only_its_own_tokens() {
+        let plan = windows(38_603, 1, 32_768).expect("test: plans");
+        let weights: Vec<usize> = plan.iter().map(|w| w.len()).collect();
+        assert_eq!(weights, vec![32_767, 5_835], "each window weighs the text tokens it holds");
+        let mean = weighted_mean(&[(vec![1.0, 0.0], weights[0]), (vec![0.0, 1.0], weights[1])]).expect("test: combine");
+        assert!(mean[0] / mean[1] > 5.6 && mean[0] / mean[1] < 5.62, "the head dominates by its token share: {mean:?}");
+    }
+}
