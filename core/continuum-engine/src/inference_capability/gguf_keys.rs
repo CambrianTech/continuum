@@ -102,15 +102,16 @@ pub fn read_bounded_header<R: std::io::Read + std::io::Seek>(
                 .map_err(|e| format!("GGUF header read: {e}"))?;
             Ok(&self.bytes[start..end])
         }
+        fn scalar<const N: usize>(&mut self) -> Result<[u8; N], String> {
+            let mut encoded = [0; N];
+            encoded.copy_from_slice(self.take(N)?);
+            Ok(encoded)
+        }
         fn u32(&mut self) -> Result<u32, String> {
-            let b = self.take(4)?;
-            Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            Ok(u32::from_le_bytes(self.scalar()?))
         }
         fn u64(&mut self) -> Result<u64, String> {
-            let b = self.take(8)?;
-            Ok(u64::from_le_bytes([
-                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-            ]))
+            Ok(u64::from_le_bytes(self.scalar()?))
         }
         fn string(&mut self) -> Result<Vec<u8>, String> {
             let length = self.u64()?;
@@ -126,16 +127,16 @@ pub fn read_bounded_header<R: std::io::Read + std::io::Seek>(
             }
             match kind {
                 0 | 1 | 7 => {
-                    self.take(1)?;
+                    let _ = u8::from_le_bytes(self.scalar()?);
                 }
                 2 | 3 => {
-                    self.take(2)?;
+                    let _ = u16::from_le_bytes(self.scalar()?);
                 }
                 4..=6 => {
-                    self.take(4)?;
+                    self.u32()?;
                 }
                 10..=12 => {
-                    self.take(8)?;
+                    self.u64()?;
                 }
                 8 => {
                     self.string()?;
@@ -197,8 +198,11 @@ pub fn read_bounded_header<R: std::io::Read + std::io::Seek>(
         if dimensions > 4 {
             return Err("GGUF tensor dimensions exceed engine contract".into());
         }
-        header.take(dimensions as usize * 8)?;
-        header.take(12)?; // dtype and weight offset; no tensor data is loaded.
+        for _ in 0..dimensions {
+            header.u64()?;
+        }
+        header.u32()?; // dtype
+        header.u64()?; // weight offset; no tensor data is loaded.
     }
     if cancelled() {
         return Err("GGUF header verification cancelled".into());
@@ -465,6 +469,39 @@ mod tests {
     use super::*;
     use candle_core::quantized::gguf_file::{self, Value};
     use std::io::Cursor;
+
+    #[test]
+    fn bounded_header_consumes_scalar_encodings_at_their_wire_widths(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let values = vec![
+            ("u8", Value::U8(255)),
+            ("i8", Value::I8(-1)),
+            ("u16", Value::U16(65535)),
+            ("i16", Value::I16(-2)),
+            ("u32", Value::U32(u32::MAX)),
+            ("i32", Value::I32(-3)),
+            ("u64", Value::U64(u64::MAX)),
+            ("i64", Value::I64(-4)),
+            ("f32", Value::F32(1.25)),
+            ("f64", Value::F64(2.5)),
+            ("bool", Value::Bool(true)),
+            ("array", Value::Array(vec![Value::U16(1), Value::U16(2)])),
+        ];
+        let refs: Vec<_> = values.iter().map(|(key, value)| (*key, value)).collect();
+        let mut encoded = Cursor::new(Vec::new());
+        gguf_file::write(&mut encoded, &refs, &[])?;
+        let content = read_bounded_header(&mut encoded, &|| false)?;
+        for (key, expected) in values {
+            assert_eq!(
+                format!("{:?}", content.metadata[key]),
+                format!("{expected:?}")
+            );
+        }
+        let mut truncated = Cursor::new(encoded.into_inner());
+        truncated.get_mut().truncate(30);
+        assert!(read_bounded_header(&mut truncated, &|| false).is_err());
+        Ok(())
+    }
 
     #[test]
     fn buffered_header_preserves_cancellation_and_allocation_bounds() {
