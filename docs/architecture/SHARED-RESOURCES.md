@@ -129,6 +129,57 @@ The core schedules transient operations into the gaps between the engine's decod
 slot learning in place uses (training shaped like inference). Where it can, the core then reports
 the arena and the pages to the serving plan as reclaimable memory rather than permanently taken.
 
+## Built on what exists: the pipeline flows both ways and carries more
+
+Joel, 2026-11-10: "We already had this graphics pipeline. Just need it to flow both ways and for more
+things." Nothing here is a new engine. Three existing pieces become the memory-tier adapter:
+
+- **The paging engine:** `PagedResourcePool` (continuum-kernel `paging`, UNIFIED-PAGING.md). One
+  primitive with single-flight loads, pins, eviction by priority, and stats for the pressure
+  broker. It was designed for LoRA weights, KV pages, MoE experts, model weights, embedding vectors
+  and recall results. In production only KV slots construct it.
+- **The frame pipeline:** the engine as a cache, run like bgfx (ONE-ACT 5a and 5e). The core's
+  encoders record each mind's work as it arrives. The engine runs double-buffered frames ordered by
+  a sort key: warm decode, then temperature, then bounded cold-prefill chunks, then
+  prefetch/write-back. Handles are released at the frame fence.
+- **Grants as leases:** the window grant owner (`window_grant`, `yield_after`, handoff with
+  terminal and physical custody receipts).
+
+What changes:
+
+| Direction | Today | Flowing both ways |
+|---|---|---|
+| A page under pressure | Dropped (evicted), then re-prefilled at minutes per act | Demoted one tier (device to host to flash) at its measured transfer cost, and promoted back by predicted need (warm-ahead) |
+| Engine capacity | Sized at launch; grows only by relaunch, once per run; never gives memory back | `reconfigure` grows or shrinks live at a frame boundary (SERVING-ENGINE S2); a user's game or editor gets its memory back, and gets it again when it quits |
+| Seats | Change hands only when an evaluation catches an idle holder | A lease per act, re-decided each tick by temperature and aging (S3, #5914) |
+| Learning | A separate admission waiting on a multi-GB lease | Forward and backward share the frames: learning chunks run in the gaps between decode steps (fork #102), on the transient arena |
+
+And what it carries. Each concern becomes an implementer of the same pool, holding only its key,
+its loader and its tier costs:
+
+| Concern | Residency | Today | As an implementer |
+|---|---|---|---|
+| KV pages (per mind) | Pageable | Uses the pool; evicts by drop | Demote and promote across tiers |
+| LoRA adapters (genome) | Pageable | Its own registry | Pool implementer, with a flash tier |
+| MoE experts | Pageable | Its own host cache lease | Pool implementer |
+| Small-model weights (embedder, mmproj) | Pageable | Always resident | Promoted to the device for an operation, demoted after |
+| Embedding context, vision pass, draft buffers | Transient | Each holds its own floor or allocation | One transient arena, used one after another between decodes |
+| Learning gradients | Transient | A waiting lease of GBs | Chunks in the transient arena between decode steps |
+| Recall caches, embedding vectors | Pageable (host and flash) | Hand-rolled caches | Pool implementer |
+
+Build order (each slice proven by its validator first, then a live read):
+
+1. **S2, `reconfigure`** in the fork (SERVING-ENGINE §5): the model never reloads, and grow and
+   shrink are one path. This ends relaunches, the largest live harm (13 in four minutes on
+   2026-11-10).
+2. **Tiered demotion in `PagedResourcePool`:** evict means demote one tier, with the KV slots
+   first, since they already implement the pool.
+3. **The transient arena:** the embedder first. It is already per-request sized and charged per
+   pool (#5910), so it moves from a standing floor to arena turns.
+4. **Learning chunks in the frames:** fork #102 plus the arena.
+5. **S3 priority and aging,** with #5914 as its first policy.
+6. **LoRA, experts and small-model weights** migrate as pool implementers; each old copy is deleted.
+
 ## The test that proves the interface
 
 Two domain bases as far apart as they come must both fit without bending the core:
