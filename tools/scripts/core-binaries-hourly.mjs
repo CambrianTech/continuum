@@ -1,12 +1,14 @@
 // Hourly publication admission. No build, ledger, tag, or runtime mutation here.
 import { pathToFileURL } from 'node:url';
+import { resolveBuildKey } from './publication-build-key.mjs';
 
 export const platforms = ['macos-arm64', 'macos-x86_64', 'windows-x86_64'];
 
-export async function planPublication(api, repo) {
+export async function planPublication(api, repo, resolve = resolveBuildKey) {
   const prefix = `/repos/${repo}`;
-  const { sha } = await api(`${prefix}/commits/canary`);
-  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('canary did not resolve to a full SHA');
+  const { sha: tip } = await api(`${prefix}/commits/canary`);
+  if (!/^[0-9a-f]{40}$/.test(tip)) throw new Error('canary did not resolve to a full SHA');
+  const sha = await resolve(tip, process.cwd());
   const tag = `canary-${sha.slice(0, 12)}`;
   const release = await api(`${prefix}/releases/tags/${tag}`, { allow404: true });
   if (release !== null && !Array.isArray(release.assets)) throw new Error('release assets response is malformed');
@@ -28,21 +30,20 @@ export async function planPublication(api, repo) {
     }
   }
   if (complete) return { sha, action: 'skip', reason: 'all platform manifests published' };
-  const runs = await api(`${prefix}/actions/workflows/core-binaries.yml/runs?head_sha=${sha}&per_page=100`);
+  const runs = await api(`${prefix}/actions/workflows/core-binaries.yml/runs?event=workflow_dispatch&per_page=100`);
   if (!Array.isArray(runs.workflow_runs)) throw new Error('workflow runs response is malformed');
-  if (runs.workflow_runs.some(run => run.head_sha === sha && run.event !== 'pull_request' && run.status !== 'completed')) {
+  if (runs.workflow_runs.some(run => run.event === 'workflow_dispatch' && run.status !== 'completed')) {
     return { sha, action: 'skip', reason: 'publication already queued or running' };
   }
   return { sha, action: 'dispatch', reason: 'latest canary is not fully published' };
 }
 
-export async function runPublication(api, repo, dryRun) {
-  const plan = await planPublication(api, repo);
+export async function runPublication(api, repo, dryRun, resolve = resolveBuildKey) {
+  const plan = await planPublication(api, repo, resolve);
   if (plan.action === 'dispatch' && !dryRun) {
-    // GitHub resolves canary when accepting dispatch. A merge racing this read may
-    // advance it; do not misreport the inspected SHA as a pinned build revision.
+    // Keep the canary concurrency group while pinning the build's immutable identity.
     await api(`/repos/${repo}/actions/workflows/core-binaries.yml/dispatches`, {
-      method: 'POST', body: { ref: 'canary' },
+      method: 'POST', body: { ref: 'canary', inputs: { build_key: plan.sha } },
     });
   }
   return { ...plan, dryRun, dispatched: plan.action === 'dispatch' && !dryRun };

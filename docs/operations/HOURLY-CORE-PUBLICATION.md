@@ -20,7 +20,7 @@ No service or deployment ledger changes are involved.
    scheduler YAML **and its fixture/script dependencies** on the reported default
    branch before proceeding. Do not assume the default branch is `main`.
 3. Manually dispatch `core-binaries-hourly` on the default branch with `dry_run=true`.
-   Verify the receipt names canary's current full SHA and correct publication state.
+   Verify the receipt names canary's current full build key and correct publication state.
    This reads GitHub and starts no build. Keep `CORE_BINARIES_HOURLY_ENABLED` unset.
 4. Review the phase-2 removal of the canary `push` trigger from `core-binaries.yml`
    and the updated lifecycle workflow contract. Retain `workflow_dispatch` for urgent repairs
@@ -35,11 +35,17 @@ No service or deployment ledger changes are involved.
 The dispatcher checks all three platforms' manifest, archive and checksum assets,
 including full manifest git SHA, before declaring a revision published. Missing or
 partial publication is eligible; API errors fail visibly instead of launching a
-build on a guess. An existing queued/running publication for that SHA is skipped.
+build on a guess. Any queued/running publication prevents another dispatch.
 Manual `core-binaries` dispatch remains available independently for urgent repair.
-The dispatcher always targets ref `canary`; GitHub resolves it at dispatch time, so
-a racing merge may produce a newer SHA than the admission receipt. The build's own
-receipt is authoritative for its revision. Workflow concurrency preserves one
+It requires a full `build_key` selected from canary history. The dispatcher and
+consumer share `core/continuum-cli-lifecycle/build-inputs.txt`: the newest commit
+touching those paths is the key, so documentation-only tips do not rename binaries.
+The dispatcher targets ref `canary` to preserve serial workflow concurrency, and
+passes the immutable key as an input. Before building, every platform verifies
+that the key is a build-input commit in canary history, checks it out, and updates
+submodules. The binary stamp, package manifest, release tag and republish job all
+name that key. A racing merge cannot change the selected revision. Consumer checks
+continue to apply to the same build key. Workflow concurrency preserves one
 active publication and GitHub's newest pending run, without cancellation starvation.
 
 Verified prerequisite (2026-10-22): the repository default branch was `canary`.
