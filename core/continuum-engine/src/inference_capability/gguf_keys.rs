@@ -32,6 +32,10 @@ use candle_core::quantized::gguf_file::{Content, Value};
 #[path = "gguf_keys/architecture.rs"]
 mod architecture_schema;
 pub use architecture_schema::{decode as architecture_dimensions, GgufArchitecture};
+#[path = "gguf_keys/residency.rs"]
+mod residency_schema;
+pub use residency_schema::{decode as residency, GgufResidency};
+
 
 
 /// Validated split declaration. An absent declaration is an ordinary GGUF;
@@ -654,6 +658,28 @@ mod tests {
             buffered.reads,
             direct.reads
         );
+        Ok(())
+    }
+
+    #[test]
+    fn residency_schema_requires_complete_evidence() -> Result<(), String> {
+        let fields = vec![
+            ("general.architecture", Value::String("qwen2".into())),
+            ("qwen2.block_count", Value::U32(3)),
+            ("general.file_type", Value::U32(1)),
+            ("general.parameter_count", Value::U64(100)),
+        ];
+        let path = std::path::Path::new("synthetic.gguf");
+        let facts = residency(&content_with(fields.clone()), path)?;
+        assert_eq!((facts.layer_count, facts.file_type, facts.parameter_count), (3, 1, 100));
+        for index in 0..fields.len() {
+            let mut malformed = fields.clone();
+            malformed.remove(index);
+            assert!(residency(&content_with(malformed), path).is_err());
+        }
+        let mut malformed = fields;
+        malformed[2].1 = Value::String("1".into());
+        assert!(residency(&content_with(malformed), path).is_err());
         Ok(())
     }
 

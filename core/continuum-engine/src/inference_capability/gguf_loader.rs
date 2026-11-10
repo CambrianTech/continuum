@@ -77,50 +77,15 @@ fn parse_qwen_metadata_from_content(
     artifact_label: String,
     path: &Path,
 ) -> Result<QwenModelMetadata, String> {
-    // architecture: required (same posture as backends::read_gguf_metadata).
-    // Read through the ONE shared canonical-key reader; this consumer's
-    // policy is "refuse if absent".
-    let architecture =
-        crate::inference_capability::gguf_keys::architecture(content).ok_or_else(|| {
-            format!(
-                "GGUF {} is missing required 'general.architecture' — refuse rather than \
-                 guess. Same rule as backends::read_gguf_metadata (2026-04-23).",
-                path.display()
-            )
-        })?;
-
+    let facts = crate::inference_capability::gguf_keys::residency(content, path)?;
+    let architecture = facts.architecture;
+    let layer_count = facts.layer_count;
+    let file_type = facts.file_type;
     // The display label comes from the artifact's declared name or its path.
     let model_name =
         crate::inference_capability::gguf_keys::general_name(content)
             .unwrap_or(artifact_label); // Optional display name only; the path identifies the actual artifact.
 
-    // block_count: required. The {arch}.block_count key is the canonical
-    // GGUF layer count. Without it, the residency gate's layer-count
-    // evidence is missing — refuse rather than fake.
-    let layer_count = crate::inference_capability::gguf_keys::block_count(content, &architecture)
-        .ok_or_else(|| {
-        format!(
-            "GGUF {} (arch={architecture}) is missing required '{architecture}.block_count' \
-                 — residency gate cannot report gpu_layer_count without it. Refuse rather \
-                 than guess.",
-            path.display()
-        )
-    })?;
-
-    // file_type: required. Maps to bytes_per_parameter. Unknown enum
-    // value returns Err — better to refuse than guess wrong quantization
-    // (caller would over- or under-estimate VRAM).
-    let file_type = content
-        .metadata
-        .get("general.file_type")
-        .and_then(|v| v.to_u32().ok())
-        .ok_or_else(|| {
-            format!(
-                "GGUF {} is missing required 'general.file_type' — bytes-per-param mapping \
-                 needs the quantization tag to estimate VRAM.",
-                path.display()
-            )
-        })?;
     let bytes_per_parameter_quantized = file_type_to_bytes_per_param(file_type).map_err(|e| {
         format!(
             "GGUF {} has unsupported file_type={file_type}: {e}. Add the mapping or fix \
@@ -129,7 +94,7 @@ fn parse_qwen_metadata_from_content(
         )
     })?;
 
-    let parameter_count_billions = artifact_parameter_count(content)? as f64 / 1.0e9;
+    let parameter_count_billions = facts.parameter_count as f64 / 1.0e9;
 
     let layer_kinds_needing_check = layer_kinds_for_architecture(&architecture);
 
@@ -143,6 +108,7 @@ fn parse_qwen_metadata_from_content(
     })
 }
 
+#[cfg(test)]
 use super::gguf_keys::artifact_parameter_count;
 
 /// Map the GGUF `general.file_type` enum value to bytes-per-parameter
