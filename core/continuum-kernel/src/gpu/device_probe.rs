@@ -95,8 +95,9 @@ pub trait GpuDeviceProbe: Send + Sync + 'static {
     /// ARM iGPUs) or owns separate VRAM. The governor's VRAM and RAM ledgers are the
     /// same pool or two pools depending on this answer, so it is DETECTED by the
     /// backend, never inferred from `target_os`.
-    fn memory_mode(&self) -> MemoryMode {
-        MemoryMode::Discrete
+    /// `None`: not reported, so unknown (see [`super::monitor::GpuMonitor::memory_mode`]).
+    fn memory_mode(&self) -> Option<MemoryMode> {
+        None
     }
 
     /// How often to sample. See [`DEFAULT_TICK`].
@@ -240,7 +241,7 @@ impl<P: GpuDeviceProbe> GpuMonitor for MonitoredGpu<P> {
         self.probe.platform()
     }
 
-    fn memory_mode(&self) -> MemoryMode {
+    fn memory_mode(&self) -> Option<MemoryMode> {
         self.probe.memory_mode()
     }
 
