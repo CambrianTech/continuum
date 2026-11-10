@@ -250,7 +250,7 @@ async fn pending_on_card<T: Transport>(
         .into_iter()
         .map(|value| {
             let record: crate::orm::types::DataRecord = serde_json::from_value(value)?; // Decode the ORM envelope before its typed entity payload.
-            Ok(serde_json::from_value(record.data)?) // The entity payload crosses the Value-native storage boundary here.
+            Ok(record.decode()?) // The entity payload crosses the Value-native storage boundary here.
         })
         .collect()
 }

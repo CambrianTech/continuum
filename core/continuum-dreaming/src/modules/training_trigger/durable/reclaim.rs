@@ -26,7 +26,7 @@ impl DurableStore {
             return Ok(returned);
         }
         for row in rows {
-            let mut intent: DispatchIntent = serde_json::from_value(row.data).map_err(|e| e.to_string())?; // decode the persisted ORM row into its typed owner
+            let mut intent: DispatchIntent = row.decode().map_err(|e| e.to_string())?; // decode the persisted ORM row into its typed owner
             let id = entity_id(&intent.base)?;
             for submission in &intent.submission_ids {
                 let Some(mut row) = self.submissions.find_by_id(*submission).await.map_err(|e| e.to_string())? else {
