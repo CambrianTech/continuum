@@ -51,6 +51,16 @@ pub enum ActOutputRefusal {
     /// call is hers to make again with one. `act_output` is the act's own saved output, if any.
     #[error("outputId {output} and act #{act} name different outputs; name one")]
     Disagree { act: u64, output: String, act_output: Option<String> },
+    /// The act left RAM for her archive and its span was compacted past her reopen horizon: its
+    /// own line and output are gone, and the span's summary is what remains. The answer, typed.
+    #[error("act #{act} was compacted into its span, {span}: its own line and output are no longer kept, and this summary is what remains")]
+    Compacted { act: u64, span: super::archive::SpanSummary },
+    /// The act's archive segment was deleted by disk-pressure retention.
+    #[error("act #{act} was archived and its span has since been deleted under disk pressure: nothing of it remains to reopen")]
+    Retired { act: u64 },
+    /// The act's archive segment is there and cannot be read.
+    #[error("act #{act} is archived but its segment could not be read: {error}")]
+    Unreadable { act: u64, error: String },
 }
 
 /// Hers to read and act on: what she named reopens nothing, or names two things.
@@ -58,9 +68,12 @@ impl crate::sdk_codegen::RefusalCause for ActOutputRefusal {
     fn category(&self) -> crate::sdk_codegen::Category {
         match self {
             ActOutputRefusal::Disagree { .. } => crate::sdk_codegen::Category::Invalid,
-            ActOutputRefusal::Unknown { .. } | ActOutputRefusal::Unsaved { .. } | ActOutputRefusal::NothingSaved => {
-                crate::sdk_codegen::Category::NotFound
-            }
+            ActOutputRefusal::Unknown { .. }
+            | ActOutputRefusal::Unsaved { .. }
+            | ActOutputRefusal::NothingSaved
+            | ActOutputRefusal::Compacted { .. }
+            | ActOutputRefusal::Retired { .. }
+            | ActOutputRefusal::Unreadable { .. } => crate::sdk_codegen::Category::NotFound,
         }
     }
 }
@@ -82,6 +95,15 @@ pub(crate) struct ActionRecord {
     /// The saved whole; `None` when the save failed, and then the result never collapses
     /// (nothing else holds its bytes).
     pub handle: Option<String>,
+    /// Where exactly this record's resident body is saved, under the body's own content address:
+    /// what a shed moves it to and what her view loads back. Usually `handle` itself; for an act
+    /// that reopened a saved output, `handle` names that SOURCE (raw) while the body is her rendered
+    /// result, so the two never matched and every such body stayed resident as "the last copy"
+    /// (the M5, 2026-11-10: 480 `wm.results.last_copy_kept` mismatches in 90 min for one resident).
+    /// Set by the memory owner at shed time (`save_unsaved_bodies`), never on the act path. `None`
+    /// until then, and for a record from a build before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
     /// The result's summary level (`continuum_context::levels`): a numbered read's outline,
     /// else an output's head and tail; what her view gives it when it cannot keep it whole.
     /// Kept after the result collapses, so what she read stays addressable.
@@ -136,8 +158,8 @@ impl ActionRecord {
 
 }
 
-/// A shed moves its result body to its handle (`residency`); the line and the summary stay with
-/// the record for as long as her mind lives.
+/// A shed moves its result body to its saved copy (`residency`); the line and the summary stay with
+/// the record while her view shows it unfolded, then leave RAM for her archive (`archive`).
 impl super::residency::Resident for ActionRecord {
     fn id(&self) -> super::residency::RecordId {
         super::residency::RecordId::Act(self.seq)
@@ -147,8 +169,9 @@ impl super::residency::Resident for ActionRecord {
         self.result.as_deref()
     }
 
+    /// Its body's own saved copy once the memory owner named it, else its receipt's handle.
     fn handle(&self) -> Option<&str> {
-        self.handle.as_deref()
+        self.body.as_deref().or(self.handle.as_deref())
     }
 
     fn received_ms(&self) -> Option<u64> {
@@ -166,20 +189,39 @@ impl super::residency::Resident for ActionRecord {
     }
 }
 
+/// Her resident acts: a ring keyed by `seq`, pushed at the newest end, drained at the oldest by
+/// her view's measured fold edge (`drain_through`, `WorkingMemory::release_folded`). A record her
+/// view still shows unfolded stays; one it folded leaves RAM for her archive. Its bodies' RAM is
+/// the one memory owner's to shed (`residency`), never a character cap.
 #[derive(Debug, Default)]
 pub(super) struct ActionLog {
-    /// Ascending by `seq`.
+    /// Ascending by `seq`: `seq` is minted monotonically, so a push keeps the order and a reopen
+    /// finds its record by binary search.
     records: VecDeque<ActionRecord>,
 }
 
 impl ActionLog {
-    /// A log from records in any order. Nothing here bounds it: a record keeps its line and its
-    /// handle for as long as her mind lives, and its body's RAM is the one memory owner's to
-    /// shed (`residency`), never a character cap.
+    /// A log from records as a checkpoint carries them: already ascending (they were written
+    /// from this ring), so this is one O(n) check; only a checkpoint from before the ring is
+    /// sorted.
     pub fn from_records(mut records: Vec<ActionRecord>) -> Self {
-        records.sort_by_key(|record| record.seq);
-        records.dedup_by_key(|record| record.seq);
+        if !records.windows(2).all(|pair| pair[0].seq < pair[1].seq) {
+            records.sort_by_key(|record| record.seq);
+            records.dedup_by_key(|record| record.seq);
+        }
         Self { records: records.into() }
+    }
+
+    /// Every record up to and including `edge`, oldest first, out of the ring: O(drained). What her
+    /// view folded at its start leaves RAM here, never by a count.
+    pub fn drain_through(&mut self, edge: u64) -> Vec<ActionRecord> {
+        let keep = self.records.partition_point(|record| record.seq <= edge);
+        self.records.drain(..keep).collect()
+    }
+
+    /// How many of her acts are resident.
+    pub fn resident(&self) -> usize {
+        self.records.len()
     }
 
     pub fn push(&mut self, record: ActionRecord) {
@@ -233,15 +275,22 @@ impl ActionLog {
         pointers
     }
 
-    /// Every receipt whose dependencies must stay reachable: each retained result's key and
-    /// every handle a record names. A body moved to its handle exists only on disk, so its
-    /// handle is live for as long as its record is, however many pointers are newer.
+    /// Every receipt whose dependencies must stay reachable while its record is resident: each
+    /// retained result's key, every handle a record names, and each body's own saved copy. Bounded
+    /// by the ring, which her view's fold edge drains: a record that left for her archive is
+    /// counted by the archive's references instead (`archive::Archive`), so this never keeps
+    /// every handle she ever made live.
     pub fn receipt_keys(&self) -> HashSet<String> {
-        self.records
-            .iter()
-            .filter(|record| record.result.is_some() || record.handle.is_some())
-            .map(ActionRecord::receipt_key)
-            .collect()
+        let mut keys = HashSet::new();
+        for record in &self.records {
+            if record.result.is_some() || record.handle.is_some() {
+                keys.insert(record.receipt_key());
+            }
+            if let Some(body) = &record.body {
+                keys.insert(body.clone());
+            }
+        }
+        keys
     }
 
     /// The RAM every record holds, in bytes: bodies, lines and summaries.

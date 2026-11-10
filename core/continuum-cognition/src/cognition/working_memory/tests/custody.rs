@@ -240,6 +240,7 @@ fn a_restored_handleless_receipt_keeps_its_children_under_its_new_handle() {
         summary: None,
         stored_chars: None,
         stored_content: None,
+        body: None,
         received_ms: None,
         act: None,
     });

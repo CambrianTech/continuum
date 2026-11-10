@@ -27,7 +27,10 @@ pub(super) const OWNED: &[&str] = &[
         "eye-profiles",
         // Owner: the `tool-output-spill` FilesystemTierPool (pressure_broker_wiring), oldest
         // first, through `spill::evict_unless_live`: a handle a live mind or her persisted
-        // checkpoint names is never deleted.
+        // checkpoint names is never deleted. Each persona's `archive/` (her acts after they left
+        // RAM, `working_memory/archive.rs`) is in this class too: under disk pressure its oldest
+        // segments go first, which is her history's retention; it also drains itself (compaction
+        // past her measured reopen horizon, and bodies no archived line names deleted).
         "tool-output",
 ];
 

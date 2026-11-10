@@ -93,6 +93,8 @@ impl WorkingMemory {
             open_views: Mutex::new(Default::default()),
             act_times: Mutex::new(Default::default()),
             tool_head: Default::default(),
+            generation: AtomicU64::new(0),
+            archive: Mutex::new(Default::default()),
         }
     }
 
@@ -104,6 +106,7 @@ impl WorkingMemory {
     /// Keep the existing measured truncation peak across intermediate Act replies.
     /// Switching activity/root does not transfer this evidence to another concern.
     pub fn retain_truncated_emission(&self, room: Uuid, peak_tokens: u32) {
+        self.touch();
         let scope = self.scope.lock().clone();
         let mut pending = self.pending_emissions.lock();
         let peak_tokens = if let Some(index) = pending.iter().position(|e| e.room == room && e.scope == scope) {
@@ -132,6 +135,7 @@ impl WorkingMemory {
     /// DURABLE across the spawn (see `action_fp_counts`) so a loop that recurs amid other
     /// acts escalates honestly instead of pinning at the tiny recency-window size.
     pub fn note_action_fingerprint(&self, fingerprint: &str) -> usize {
+        self.touch();
         // Windowed push feeds `action_verb_tally` (the RECENT investigation shape) — that
         // one WANTS the rolling `capacity` window, so leave it bounded here.
         {
@@ -193,6 +197,7 @@ impl WorkingMemory {
     /// Record `entry` in her ring: stamped with the next occurrence (the one owner of entry
     /// identity), the oldest leaving past capacity.
     pub(super) fn push_entry(&self, entries: &mut VecDeque<WmEntry>, mut entry: WmEntry) {
+        self.touch();
         entry.occurrence = self.next_entry_seq.fetch_add(1, Ordering::Relaxed);
         entries.push_back(entry);
         while entries.len() > self.capacity {
@@ -209,6 +214,7 @@ impl WorkingMemory {
             return;
         }
         let occurrence = self.next_entry_seq.fetch_add(1, Ordering::Relaxed);
+        self.touch();
         self.thoughts.lock().push(thought_log::ThoughtRecord::new(occurrence, r.to_string(), continuum_base::time::EpochMs::now().millis()));
     }
 
@@ -259,6 +265,7 @@ impl WorkingMemory {
         let Some(seq) = self.next_action_seq.load(Ordering::Relaxed).checked_sub(1) else {
             return;
         };
+        self.touch();
         self.open_views.lock().annotate(seq, intent);
     }
 
@@ -344,6 +351,7 @@ impl WorkingMemory {
                     handle,
                     stored_chars: None,
                     stored_content: None,
+                    body: None,
                     received_ms: Some(continuum_base::time::EpochMs::now().millis()),
                     act: act_identity(&acts),
                 },

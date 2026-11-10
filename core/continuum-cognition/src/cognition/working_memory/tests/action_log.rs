@@ -160,6 +160,7 @@ fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_
         summary: None,
         stored_chars: None,
         stored_content: None,
+        body: None,
         received_ms: Some(at),
         act: Some(continuum_context::cause::Act { fingerprint: continuum_context::cause::Fingerprint::of([("x", seq.to_be_bytes().as_slice())]), effect }),
     };

@@ -240,15 +240,18 @@ impl WorkingMemory {
     /// produced. The persona decides what to do with that uncertainty.
     /// Keep her context view as this act left it, for the checkpoint.
     pub(crate) fn keep_view(&self, view: Option<ContextView>) {
+        self.touch();
         *self.view.lock() = view;
     }
 
     /// Her context view as a checkpoint restored it, taken once by the act that resumes it.
     pub fn take_view(&self) -> Option<ContextView> {
+        self.touch();
         self.view.lock().take()
     }
 
     pub fn restore(&self, mut snap: VolatileSnapshot) {
+        self.touch();
         // Read before any field moves out of the snapshot below.
         let records = snap.action_records();
         // A restored mind keeps only the newest concern evidence its existing
@@ -305,8 +308,10 @@ impl WorkingMemory {
                 e.pop_front();
             }
         }
-        // The log is restored whole: what of its bodies stays in RAM is the one memory owner's
-        // to shed (`residency`), never a share of this life's window.
+        // The checkpoint carries only her resident acts (what her view showed unfolded when it was
+        // written); older ones reopen from her archive by `#n` (`history`). What of their bodies
+        // stays in RAM is the one memory owner's to shed (`residency`), never a share of this
+        // life's window.
         *self.actions.lock() = action_log::ActionLog::from_records(records);
         *self.last_action.lock() = snap.last_action;
         *self.receipt_children.lock() = snap.receipt_children;

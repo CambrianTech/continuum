@@ -263,10 +263,12 @@ impl LlmDeliberationFaculty {
             let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
             match View::start(&AllocationEstimate::uncalibrated(), Vec::new(), &sources, whole) {
                 Ok((view, _)) => {
-                    *held = Some(view);
+                    let view = held.insert(view);
                     self.tool_head_turned_over();
                     if let Some(memory) = memory {
                         memory.reclaim_ended_notices();
+                        // What this start folded leaves RAM for her archive.
+                        memory.release_folded(view);
                     }
                 }
                 Err(mismatch) => continuum_base::probe!(
@@ -428,6 +430,11 @@ impl LlmDeliberationFaculty {
             Ok(start) => {
                 if let Some(view) = held.as_mut() {
                     view.withhold(&withheld);
+                    // What this start folded leaves RAM for her archive: her resident log is
+                    // bounded by her view's measured fold edge, once per start.
+                    if let Some(memory) = memory {
+                        memory.release_folded(view);
+                    }
                 }
                 continuum_base::probe!(
                     class = "delib.view.turnover",

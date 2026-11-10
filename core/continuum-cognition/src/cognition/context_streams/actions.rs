@@ -14,6 +14,10 @@ use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::working_memory::WorkingMemory;
 use crate::cognition::tool_executor::tool_output::Reopen;
 
+/// The source's name: her view's fold edge for it is what bounds her resident log
+/// (`WorkingMemory::release_folded`).
+pub(crate) const NAME: &str = "actions";
+
 pub(crate) struct Actions<'a> {
     pub memory: &'a WorkingMemory,
     /// Whose spill directory a stored whole is read from (`load`).
@@ -32,7 +36,7 @@ impl Actions<'_> {
 
 impl Source<ContextMessage> for Actions<'_> {
     fn name(&self) -> &str {
-        "actions"
+        NAME
     }
 
     fn priority(&self) -> u8 {
@@ -47,9 +51,20 @@ impl Source<ContextMessage> for Actions<'_> {
                 .to_owned(),
         );
         let (acts, in_flight) = self.memory.action_renderings();
-        if acts.is_empty() && in_flight {
-            // Her only act so far is the one she just took: it rides whole after her view.
-            return vec![banner];
+        // Her acts older than what her view shows unfolded live in her archive: one standing line,
+        // the same bytes however many there are, so it never churns her prefix.
+        let archived = self.memory.holds_archived_acts().then(|| {
+            self.standing(
+                "archived",
+                "[actions] My acts older than these are archived on disk, not in this view; each \
+                 still reopens by its #n."
+                    .to_owned(),
+            )
+        });
+        if acts.is_empty() && (in_flight || archived.is_some()) {
+            // Her only act in RAM is the one she just took (it rides whole after her view), or
+            // every earlier one is archived: never "nothing has executed".
+            return std::iter::once(banner).chain(archived).collect();
         }
         if acts.is_empty() {
             let taken = self.memory.actions_taken();
@@ -71,6 +86,7 @@ impl Source<ContextMessage> for Actions<'_> {
             return vec![banner, self.standing("none", none)];
         }
         let mut items = vec![banner];
+        items.extend(archived);
         // Her acts in one room are one chain: each follows the act before it there; the first is
         // where that activity's chain starts.
         let mut last_in_room: std::collections::HashMap<Option<uuid::Uuid>, u64> = std::collections::HashMap::new();

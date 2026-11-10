@@ -477,6 +477,30 @@ fn a_hundred_results_under_a_tight_grant_fold_into_one_block_and_the_newest_stay
     Ok(())
 }
 
+// what this catches: a mind's resident log keeping every act she ever took because nothing told
+// its owner which acts her view no longer shows (the M5, 2026-11-10: 4,522-5,686 records per
+// resident, whole, in RAM and in every checkpoint). A start names the newest item it folded; the
+// owner lets the run up to it leave, and `release` forgets their ids while the fold block's bytes,
+// and so the prefix, stay where they were.
+#[test]
+fn a_start_names_its_fold_edge_and_a_released_run_leaves_the_view_unmoved() -> Result<(), GrantMismatch> {
+    let mut actions = Folding::new(100, 1_000);
+    let grant = claims(&crate::cost::Chars, &[&actions])[0].floor + 3 * 1_000;
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&actions], |_| vec![grant])?;
+    assert_eq!(view.fold_edge("actions"), Some("97"), "the newest folded act is the start's measured edge");
+    assert_eq!(view.fold_edge("thoughts"), None, "a source that folded nothing names no edge");
+    let before: Vec<String> = view.render().cloned().collect();
+    actions.items.retain(|(seq, _, _)| *seq > 97);
+    view.release("actions", |key| key.parse::<u64>().is_ok_and(|seq| seq <= 97));
+    assert!(view.folded.is_empty(), "no id is held for an act that left");
+    assert!(view.log.iter().all(|entry| entry.covers.is_empty()), "the log's fold block covers nothing it must keep");
+    assert_eq!(view.advance(&[&actions]), Advance::default(), "the released run arrives as nothing");
+    assert_eq!(view.render().cloned().collect::<Vec<_>>(), before, "her view's bytes did not move");
+    view.turn_over(&crate::cost::Chars, Vec::new(), &[&actions], |_| vec![grant])?;
+    assert!(view.render().any(|block| block.starts_with("[actions #1-#97")), "the logged fold block still names the range");
+    Ok(())
+}
+
 // what this catches: an older item kept more detailed than a newer one under any grant (goal 7:
 // shrink oldest first), which with folding would leave a fold block AFTER a pointer or a whole.
 // Under every grant from the floor to the whole, the folded items are the oldest run and the

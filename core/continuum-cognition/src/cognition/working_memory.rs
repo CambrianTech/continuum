@@ -293,6 +293,12 @@ pub struct WorkingMemory {
     /// Her learned tool head: every call she makes is noted here, and the deliberation faculty
     /// reads and adopts the head at each epoch turnover ([`super::tool_head`]).
     tool_head: Arc<super::tool_head::ToolHead>,
+    /// Moves with every change her checkpoint carries ([`history`]): a periodic checkpoint that
+    /// finds it unmoved writes nothing and serializes nothing.
+    generation: AtomicU64,
+    /// Her acts after they left RAM ([`archive`]): the index of her on-disk history, the acts
+    /// waiting for the next tick, her measured reopen ages. Unbound (a fork, a test) keeps her log.
+    archive: Mutex<archive::Archive>,
 }
 
 /// The PROVENANCE of one working-memory entry — the type that makes receipts,
@@ -610,6 +616,8 @@ pub struct WmEntry {
 
 mod derived;
 mod action_log;
+mod archive;
+mod history;
 pub mod act_times;
 mod collapsed_receipt;
 pub(crate) use collapsed_receipt::CollapsedReceipt;
@@ -620,6 +628,7 @@ mod residency;
 mod thought_log;
 
 pub use action_log::{ActOutputRefusal, ActRef};
+pub use archive::{ArchiveTick, SpanSummary};
 // Its one caller outside the ledger is the spill tests: her newest result pages, it is never leveled
 // by summary (`prompt/newest_result.rs`).
 #[cfg(test)]

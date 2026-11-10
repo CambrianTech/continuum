@@ -183,7 +183,8 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         kept(continuum, "progress"),
         kept(continuum, "probes"),
         // Every tool result, saved whole under its content address, one directory per persona
-        // (`cognition::tool_executor::spill`), written through this class.
+        // (`cognition::tool_executor::spill`), written through this class; and each persona's
+        // archive of acts that left RAM (`<persona>/archive/`, `cognition::working_memory::archive`).
         kept(continuum, "tool-output"),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
         // (~31 GB logical each). RAII drop removes them on every in-process return

@@ -148,13 +148,20 @@ impl WorkingMemory {
     /// `act`): the one resolution of an act number to its saved output. A refusal when no
     /// record carries `seq`, or when its save failed: such a result has no other copy, so it
     /// is never shown as less than whole.
+    /// An act her view folded left RAM for her archive: it reopens from there, read for this call.
     pub fn saved_handle(&self, seq: u64) -> Result<String, ActOutputRefusal> {
-        let actions = self.actions.lock();
-        let Some(record) = actions.get(seq) else {
-            let newest_saved = actions.records().rev().find(|record| record.handle.is_some()).map(|record| record.seq);
-            return Err(ActOutputRefusal::Unknown { act: seq, newest_saved });
+        let newest_saved = {
+            let actions = self.actions.lock();
+            if let Some(record) = actions.get(seq) {
+                return record.handle.clone().ok_or(ActOutputRefusal::Unsaved { act: seq });
+            }
+            actions.records().rev().find(|record| record.handle.is_some()).map(|record| record.seq)
         };
-        record.handle.clone().ok_or(ActOutputRefusal::Unsaved { act: seq })
+        // Off her resident log: her archive, read with no lock of the log held.
+        if let Some(archived) = self.archived_handle(seq) {
+            return archived;
+        }
+        Err(ActOutputRefusal::Unknown { act: seq, newest_saved })
     }
 
     /// The saved output `act` names: [`Self::saved_handle`] for a number, her newest act with a
@@ -281,7 +288,8 @@ impl WorkingMemory {
                     // Unsaved and off the ledger: what it was, which never collapses anyway.
                     (None, None, None) => format!("[action #{}] {}", record.seq, record.operation),
                 };
-                let stored = match (&record.result, &record.handle, record.stored_chars) {
+                // Loaded back from the body's own saved copy when the memory owner named one.
+                let stored = match (&record.result, record.body.as_ref().or(record.handle.as_ref()), record.stored_chars) {
                     (None, Some(handle), Some(chars)) => {
                         let label = format!("[result {attribution}{workspace}] ").chars().count();
                         Some((label + chars, handle.clone()))
@@ -381,6 +389,7 @@ impl WorkingMemory {
         content: &str,
         status: DispatchStatus,
     ) {
+        self.touch();
         let seq = self.next_action_seq.fetch_add(1, Ordering::Relaxed);
         let mut m = self.dispatched.lock();
         let entry = m.entry(handle).or_insert_with(|| DispatchedAction {
@@ -429,6 +438,7 @@ impl WorkingMemory {
     /// collapsed pointers), so disk-pressure eviction never deletes one (card 9197cd01).
     /// The whole set, replaced, so nothing can drift.
     pub(super) fn publish_live_handles(&self) {
+        // Resident records only: one that left for her archive is the archive's reference.
         let receipts = self.actions.lock().receipt_keys();
         let mut children = self.receipt_children.lock();
         // Dependencies live exactly as long as their receipt: drop those of receipts that
@@ -509,6 +519,7 @@ impl WorkingMemory {
     /// act). The live heartbeat never calls this — there, concerns flow
     /// continuously and old traces age out naturally past `capacity`.
     pub fn clear(&self) {
+        self.touch();
         self.pending_emissions.lock().clear();
         self.entries.lock().clear();
         self.thoughts.lock().clear();

@@ -223,6 +223,9 @@ fn prove_candidates(minds: &Minds, proven: &Mutex<ProvenCopies>) {
     for (persona, memory) in minds {
         // A thought is saved only when a shed may need its copy, never by the act that thought it.
         memory.save_unsaved_thoughts(*persona);
+        // An act's body is proven against its OWN saved copy, named here once per record: never
+        // against a reopened act's raw source, which no rendered body reproduces.
+        memory.save_unsaved_bodies(*persona);
         for candidate in memory.resident_results().candidates {
             let key = (*persona, candidate.handle.clone());
             if !proven.lock().0.contains(&key) {

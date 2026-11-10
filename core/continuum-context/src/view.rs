@@ -174,6 +174,11 @@ pub struct View<T: Block> {
     /// restart, it orders the next start. Absent in a view saved before it existed.
     #[serde(default)]
     motion: Motion,
+    /// Per source, the key of the newest item this epoch's start folded ([`View::fold_edge`]):
+    /// every item of that source up to it renders only inside its fold block, so its owner may let
+    /// it leave RAM. Absent in a view saved before it, which names no edge.
+    #[serde(default)]
+    fold_edges: std::collections::BTreeMap<String, String>,
     /// Where this act's appends began, until its prompt is sent: what [`View::readmit`]
     /// redoes. Never saved: a restored view has no unsent act.
     #[serde(skip)]
@@ -388,6 +393,7 @@ impl<T: Block> View<T> {
             log: Vec::new(),
             appended: Vec::new(),
             motion: Motion::default(),
+            fold_edges: std::collections::BTreeMap::new(),
             act: None,
             submitted: None,
             last_by_source: Vec::new(),
@@ -412,6 +418,9 @@ impl<T: Block> View<T> {
             let grant = granted.get(name).copied().unwrap_or(0).saturating_sub(arranged.logged[index]); // unwrap_or: every arranged source was granted (the allocator answered for each)
             let allot::Allotment { levels, mut fold } = allot(&**source, &items, grant, cost);
             let fold_run: Vec<String> = items.iter().zip(&levels).filter(|(_, level)| **level == Level::Folded).map(|(item, _)| item.key.clone()).collect();
+            if let Some(newest) = fold_run.last() {
+                view.fold_edges.insert(name.to_owned(), newest.clone());
+            }
             let mut rendered: Vec<(u64, usize)> = log.iter().filter(|entry| entry.source == name).map(|entry| (fingerprint(&entry.id.0, &entry.text), entry.text.chars())).collect();
             let mut planned = Vec::new();
             // Her oldest collapsed run is logged, up to the first item this start keeps whole.
@@ -817,6 +826,27 @@ impl<T: Block> View<T> {
     /// How each source moved across this view's starts.
     pub fn motion(&self) -> &Motion {
         &self.motion
+    }
+
+    /// The key of `source`'s newest item this epoch's start folded, `None` when it folded none:
+    /// every item of `source` up to it (its items are oldest first, the fold run their contiguous
+    /// oldest) renders only inside a fold block until a later start, so its owner may let it leave
+    /// RAM. Measured by the start that allotted it, never a count. O(1).
+    pub fn fold_edge(&self, source: &str) -> Option<&str> {
+        self.fold_edges.get(source).map(String::as_str)
+    }
+
+    /// `source`'s items that `left` names have left their owner for good (archived): forget them as
+    /// folded and as covered by her log's fold blocks. The blocks' text stays as it was rendered, so
+    /// the prefix does not move; only the ids go, or the view would hold one id per item she ever
+    /// had. O(folded + covered), paid by the start whose fold edge released them.
+    pub fn release(&mut self, source: &str, left: impl Fn(&str) -> bool) {
+        let prefix = format!("{source}/");
+        let gone = |id: &SourceId| id.0.strip_prefix(&prefix).is_some_and(&left);
+        self.folded.retain(|id| !gone(id));
+        for entry in &mut self.log {
+            entry.covers.retain(|id| !gone(id));
+        }
     }
 
     pub fn epoch_id(&self) -> u64 {
