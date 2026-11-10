@@ -35,8 +35,6 @@ pub struct Recorded {
     pub restore_free_cells: Receipted<FreeCellRefusal>,
     /// Dyno 5.
     pub oversize: Receipted<Oversize>,
-    /// Dyno 6.
-    pub unreleased_hold: Receipted<UnreleasedHold>,
     /// Dyno 7.
     pub aris_view: Receipted<OverflowingView>,
     pub m5_prefill_tok_per_s_large: Receipted<u64>,
@@ -120,13 +118,6 @@ pub struct Oversize {
     pub launch_ctx: u32,
     pub pool_cells: u64,
     pub pages: [u64; 2],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-pub struct UnreleasedHold {
-    pub held_ms: u64,
-    pub running_pool: u32,
-    pub target_pool: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]

@@ -28,7 +28,7 @@
 //! | 4 | a capacity refusal loses the page | `turn_admission::admit_turn` + `kv_page_action` + the persisted ledger, on a fake engine | `inference/turn_admission/tests/restore_refusal.rs` |
 //! | 5 | a page larger than the whole cache | as 4; the launch half lacks [`expected::MissingSeam::LaunchKnowsResidentPages`] | as 4, and the serving `dyno.rs` |
 //! | §5b.1 | the restore-outcome proof list (restart, reclamation, oversize, incompatible, corrupt, concurrent, late receipt, torn ledger) | as 4 | as 4 |
-//! | 6 | an admission hold with no releaser | `llama_server::pool_growth` + `resource_admission` quiesce | `inference/llama_server/pool_growth.rs` tests |
+//! | 6 | an admission hold with no releaser | removed with its cause: the pool-growth relaunch and its quiesce are deleted (it froze the M5 for 2.5 h on 2026-11-10) | none: no hold exists |
 //! | 7 | an overflowing view | not drivable here yet: [`expected::MissingSeam::ViewTurnoverPolicy`] | `dyno/tests.rs` `view` |
 
 pub mod conservation;

@@ -263,9 +263,6 @@ impl ServingDaemonModule {
                 &admit,
             )
             .await;
-            // The pool's one relaunch has run once its request is spent (to a serving engine, or
-            // failed): admission, quiesced for it, reopens here (card 2540194e).
-            crate::inference::llama_server::end_hold_if_decided();
             if matches!(outcome, EnsureOutcome::Superseded)
                 || (matches!(outcome, EnsureOutcome::AlreadyServing) && !current())
             {
