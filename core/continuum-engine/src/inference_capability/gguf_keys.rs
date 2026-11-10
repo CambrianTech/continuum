@@ -29,6 +29,10 @@
 //! arch_from_gguf_string`); this module only surfaces the raw string.
 
 use candle_core::quantized::gguf_file::{Content, Value};
+#[path = "gguf_keys/architecture.rs"]
+mod architecture_schema;
+pub use architecture_schema::{decode as architecture_dimensions, GgufArchitecture};
+
 
 /// Validated split declaration. An absent declaration is an ordinary GGUF;
 /// a present declaration must carry every field with consistent geometry.
@@ -599,6 +603,32 @@ mod tests {
             buffered.reads,
             direct.reads
         );
+        Ok(())
+    }
+
+    #[test]
+    fn architecture_schema_requires_artifact_dimensions() -> Result<(), String> {
+        let fields = vec![
+            ("general.architecture", Value::String("llama".into())),
+            ("llama.embedding_length", Value::U32(128)),
+            ("llama.feed_forward_length", Value::U32(256)),
+            ("llama.attention.head_count", Value::U32(4)),
+            ("llama.attention.head_count_kv", Value::U32(2)),
+            ("llama.block_count", Value::U32(3)),
+            ("llama.context_length", Value::U32(2048)),
+            ("llama.vocab_size", Value::U32(32)),
+        ];
+        let path = std::path::Path::new("synthetic.gguf");
+        let dims = architecture_dimensions(&content_with(fields.clone()), path)?;
+        assert_eq!((dims.hidden_size, dims.head_dim, dims.num_kv_heads), (128, 32, 2));
+        for index in 0..fields.len() {
+            let mut malformed = fields.clone();
+            malformed.remove(index);
+            assert!(architecture_dimensions(&content_with(malformed), path).is_err());
+        }
+        let mut malformed = fields;
+        malformed.push(("llama.attention.key_length", Value::String("32".into())));
+        assert!(architecture_dimensions(&content_with(malformed), path).is_err());
         Ok(())
     }
 
