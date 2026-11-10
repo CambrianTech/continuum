@@ -35,6 +35,10 @@ pub use architecture_schema::{decode as architecture_dimensions, GgufArchitectur
 #[path = "gguf_keys/residency.rs"]
 mod residency_schema;
 pub use residency_schema::{decode as residency, GgufResidency};
+#[path = "gguf_keys/common.rs"]
+mod common_schema;
+pub use common_schema::{decode as common_metadata, GgufMetadata};
+
 
 
 
@@ -658,6 +662,24 @@ mod tests {
             buffered.reads,
             direct.reads
         );
+        Ok(())
+    }
+
+    #[test]
+    fn common_metadata_requires_backend_identity_and_context() -> Result<(), String> {
+        let path = std::path::Path::new("synthetic.gguf");
+        let fields = vec![
+            ("general.architecture", Value::String("qwen2".into())),
+            ("qwen2.context_length", Value::U32(4096)),
+        ];
+        let facts = common_metadata(&content_with(fields.clone()), path)?;
+        assert_eq!((facts.architecture.as_str(), facts.context_length), ("qwen2", 4096));
+        assert_eq!(facts.model_name, None);
+        for index in 0..fields.len() {
+            let mut incomplete = fields.clone();
+            incomplete.remove(index);
+            assert!(common_metadata(&content_with(incomplete), path).is_err());
+        }
         Ok(())
     }
 
