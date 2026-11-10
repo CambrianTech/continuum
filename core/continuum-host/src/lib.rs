@@ -14,6 +14,7 @@ pub mod file_identity;
 pub mod local_stream;
 pub mod output_handoff;
 pub mod positioned;
+pub mod process_class;
 pub mod process_exit;
 pub mod process_usage;
 pub mod read_pin;

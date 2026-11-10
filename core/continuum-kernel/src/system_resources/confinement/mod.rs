@@ -468,7 +468,7 @@ use landlock::confined_command_with;
 use unconfined::confined_command_with;
 
 /// THE one way a child is spawned for a caller: confined when `confinement` is hers,
-/// the operator's own process when `None`. Every confined spawn carries its receipt as
+/// the operator's own process when `None`, and either way below the foreground. Every confined spawn carries its receipt as
 /// a probe (`shell.confinement` / `shell.confinement.unavailable`), so an unconfined
 /// citizen child on a host without a sandbox is a line in the stream, never a silent gap.
 pub fn command_for(
@@ -479,15 +479,19 @@ pub fn command_for(
     cwd: Option<&Path>,
     cargo_grant: Option<&CargoTargetGrant>,
 ) -> tokio::process::Command {
+    // Every child a caller spawns runs below the engine that serves her: it takes the cores serving
+    // leaves idle and yields when serving needs them (continuum_host::process_class).
     let Some(confinement) = confinement else {
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
+        continuum_host::process_class::below_the_foreground(&mut cmd);
         return cmd;
     };
-    let (cmd, receipt) = confined_command(confinement, program, args, cwd, cargo_grant);
+    let (mut cmd, receipt) = confined_command(confinement, program, args, cwd, cargo_grant);
+    continuum_host::process_class::below_the_foreground(&mut cmd);
     match &receipt {
         Enforcement::Enforced { mechanism } => continuum_base::probe!(
             class = "shell.confinement",
