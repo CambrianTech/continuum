@@ -493,7 +493,10 @@ impl LlamaServerProcess {
         let ambiguous_adapter = lora_paths
             .iter()
             .any(|p| p.to_str().is_none_or(|p| p.contains(',')));
-        let local_inputs = if !cfg!(windows) || engine_install.is_none() {
+        // The install owner returns a receipt only for a supported, verified
+        // application contract. Consume that capability here; duplicating its
+        // platform decision would let preparation and receipt support diverge.
+        let local_inputs = if engine_install.is_none() {
             Err(
                 "exact restoration requires original Windows application and local input pins"
                     .into(),
