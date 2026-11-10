@@ -42,96 +42,15 @@ pub use common_schema::{decode as common_metadata, GgufMetadata};
 
 
 
-/// Validated split declaration. An absent declaration is an ordinary GGUF;
-/// a present declaration must carry every field with consistent geometry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GgufSplit {
-    pub count: u16,
-    pub index: u16,
-    pub tensors: u64,
-}
-
-pub fn split(ct: &Content) -> Result<Option<GgufSplit>, String> {
-    let Some(count) = ct.metadata.get("split.count") else {
-        if ct.metadata.contains_key("split.no") || ct.metadata.contains_key("split.tensors.count") {
-            return Err("GGUF split fields without split.count".into());
-        }
-        return Ok(None);
-    };
-    let count = count.to_u16().map_err(|e| e.to_string())?;
-    let index = ct
-        .metadata
-        .get("split.no")
-        .ok_or("missing split.no")?
-        .to_u16()
-        .map_err(|e| e.to_string())?;
-    let tensors = ct
-        .metadata
-        .get("split.tensors.count")
-        .ok_or("missing split.tensors.count")?
-        .to_i32()
-        .map_err(|e| e.to_string())?;
-    let tensors = u64::try_from(tensors).map_err(|_| "negative split.tensors.count")?;
-    if count == 0 || index >= count {
-        return Err("invalid GGUF split index/count".into());
-    }
-    Ok(Some(GgufSplit {
-        count,
-        index,
-        tensors,
-    }))
-}
-
-/// Input encoders explicitly represented by a projector artifact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProjectorEncoders {
-    pub has_vision: bool,
-    pub has_audio: bool,
-}
-
-pub fn projector_encoders(content: &Content) -> Result<ProjectorEncoders, String> {
-    let flag = |key: &str| -> Result<bool, String> {
-        match content.metadata.get(key) {
-            None => Ok(false), // The projector schema omits flags for absent encoders.
-            Some(value) => value
-                .to_bool()
-                .map_err(|error| format!("projector flag {key}: {error}")),
-        }
-    };
-    Ok(ProjectorEncoders {
-        has_vision: flag("clip.has_vision_encoder")?,
-        has_audio: flag("clip.has_audio_encoder")?,
-    })
-}
-
-/// A declared model total or the element count of a complete tensor table.
-/// File length includes metadata, padding and mixed quantization; it is not a
-/// parameter count and must not become residency evidence.
-pub fn artifact_parameter_count(content: &Content) -> Result<u64, String> {
-    if let Some(value) = content.metadata.get("general.parameter_count") {
-        let count = value.to_u64().map_err(|e| format!("invalid parameter count: {e}"))?;
-        return if count > 0 { Ok(count) } else { Err("zero parameter count".into()) };
-    }
-    if split(content)?.is_some_and(|split| split.count > 1) {
-        return Err("partial GGUF shard cannot establish the model parameter total".into());
-    }
-    let mut count = 0_u64;
-    for tensor in content.tensor_infos.values() {
-        let mut elements = 1_u64;
-        for &dimension in tensor.shape.dims() {
-            let dimension = u64::try_from(dimension).map_err(|e| e.to_string())?;
-            elements = elements.checked_mul(dimension).ok_or("tensor element count overflow")?;
-        }
-        if elements == 0 {
-            return Err("empty tensor cannot establish parameter count".into());
-        }
-        count = count.checked_add(elements).ok_or("model parameter count overflow")?;
-    }
-    if count == 0 {
-        return Err("empty tensor table cannot establish parameter count".into());
-    }
-    Ok(count)
-}
+#[path = "gguf_keys/split_schema.rs"]
+mod split_schema;
+pub use split_schema::{split, GgufSplit};
+#[path = "gguf_keys/projector_schema.rs"]
+mod projector_schema;
+pub use projector_schema::{projector_encoders, ProjectorEncoders};
+#[path = "gguf_keys/parameters_schema.rs"]
+mod parameters_schema;
+pub use parameters_schema::{artifact_parameter_count};
 
 /// Artifact readers use Candle's canonical decoder only after a bounded
 /// header-shape check. Candle allocates strings/arrays from on-disk counts before

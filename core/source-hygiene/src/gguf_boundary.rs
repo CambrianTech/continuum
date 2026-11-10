@@ -2,14 +2,19 @@
 //! This rule governs our engine readers, not the upstream model constructor.
 //! Fingerprinting enumerates metadata for canonical identity; it does not decode
 //! dimensions or supply missing values.
+//! Scope is explicitly engine-only. A non-GGUF field named metadata will also
+//! be flagged here; filesystem metadata() methods are distinct. Other crates
+//! migrate through their owners before this invariant expands to them.
 use crate::{SourceFile, SourceRule, Violation};
 
 const ENGINE: &str = "core/continuum-engine/src/";
 const DECODERS: &[&str] = &[
-    "inference_capability/gguf_keys.rs",
     "inference_capability/gguf_keys/architecture.rs",
     "inference_capability/gguf_keys/common.rs",
     "inference_capability/gguf_keys/residency.rs",
+    "inference_capability/gguf_keys/split_schema.rs",
+    "inference_capability/gguf_keys/projector_schema.rs",
+    "inference_capability/gguf_keys/parameters_schema.rs",
 ];
 
 pub(crate) fn is_decoder(file: &SourceFile) -> bool {
@@ -24,6 +29,7 @@ impl SourceRule for GgufMetadataOwner {
     fn check(&self, file: &SourceFile) -> Vec<Violation> {
         let Some(path) = file.repo.strip_prefix(ENGINE) else { return Vec::new(); };
         if is_decoder(file)
+            || path == "inference_capability/gguf_keys.rs"
             || path.split('/').any(|part| part == "vendored")
             || path == "inference_capability/gguf_fingerprint.rs"
         {
@@ -81,7 +87,8 @@ mod tests {
 
     #[test]
     fn decoder_identity_is_exact_and_crate_bound() {
-        assert!(is_decoder(&file("inference_capability/gguf_keys.rs", "")));
+        assert!(!is_decoder(&file("inference_capability/gguf_keys.rs", "")));
+        assert!(is_decoder(&file("inference_capability/gguf_keys/split_schema.rs", "")));
         assert!(!is_decoder(&file("inference_capability/gguf_keys/new_consumer.rs", "")));
         let mut foreign = file("inference_capability/gguf_keys.rs", "");
         foreign.repo = "core/other/src/inference_capability/gguf_keys.rs".into();

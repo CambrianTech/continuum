@@ -94,6 +94,7 @@ mod tests {
             RequiredInputComplaints.check(&file).len()
         };
         assert_eq!(check("inference_capability/gguf_keys/architecture.rs"), 0);
+        assert_eq!(check("inference_capability/gguf_keys.rs"), 1);
         assert_eq!(check("inference_capability/gguf_keys/new_consumer.rs"), 1);
         assert_eq!(check("model_registry/arch_config.rs"), 1);
         assert_eq!(check("inference/backends/mod.rs"), 1);
