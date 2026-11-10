@@ -19,7 +19,7 @@ impl OpenAICompatibleAdapter {
             .connect_timeout(std::time::Duration::from_secs(3))
             .pool_idle_timeout(std::time::Duration::from_secs(30))
             .build()
-            .expect("Failed to create HTTP client")
+            .expect("Failed to create HTTP client") // rustls-tls bundles webpki roots and the system resolver loads no host config, so these options cannot fail per machine: an error is a build misconfiguration every adapter test hits
     }
 
     pub fn new(config: OpenAICompatibleConfig) -> Self {
@@ -45,12 +45,11 @@ impl OpenAICompatibleAdapter {
         // `--parallel` slots — a short conversational reply slipstreams
         // between a solve's decode steps. The hardcoded 1 was the artificial
         // serializer every scarcity policy downstream compensated for: with 4
-        // served slots, citizen speech queued behind a 40k-prefill solve. The
-        // permit now starts at the LIVE served lane count and a reconciler
-        // (spawned at first use, see `spawn_permit_reconciler`) tracks
-        // relaunches both directions — grow adds permits, shrink retires them
-        // as in-flight generations finish (forget on acquire), so a smaller
-        // relaunch is never over-admitted.
+        // served slots, citizen speech queued behind a 40k-prefill solve.
+        // A POOLED endpoint's admissions take that endpoint's own permits,
+        // sized from its generation and resized on relaunch, shared by every
+        // adapter and the learner (`slots::EndpointConcurrency`, card 23069702).
+        // This semaphore bounds only traffic to an endpoint with no slot pool.
         let slots = if config.single_resident_model {
             crate::inference::llama_server::current_serving()
                 .lanes
@@ -63,25 +62,21 @@ impl OpenAICompatibleAdapter {
         Self {
             config,
             api_key: None,
-            runtime_base_url: None,
             dedicated_lane: false,
             client,
             initialized: false,
-            runtime_models: std::sync::Arc::new(std::sync::RwLock::new(None)),
-            lora_support: std::sync::Arc::new(std::sync::RwLock::new(LoraSupport::Unknown)),
+            runtime_models: std::sync::Arc::new(parking_lot::RwLock::new(None)),
+            lora_support: std::sync::Arc::new(parking_lot::RwLock::new(LoraSupport::Unknown)),
             concurrency,
-            permit_target: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(slots)),
-            permit_reconciler_started: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
         }
     }
 
     /// Override the base URL at runtime (e.g. when running inside a Docker
     /// container on Windows/Linux where DMR is at model-runner.docker.internal
-    /// instead of localhost:12434). Called post-construction, before init.
+    /// instead of localhost:12434). Called post-construction, before init; the adapter
+    /// owns its config, so the override IS its base URL from here on.
     pub fn with_runtime_base_url(mut self, url: String) -> Self {
-        self.runtime_base_url = Some(url);
+        self.config.base_url = url;
         self
     }
 
@@ -112,11 +107,7 @@ impl OpenAICompatibleAdapter {
     /// exactly one place and the snapshot's `/v1` shape can no longer double to
     /// `/v1/v1/...` (THE Asha-mute bug). See [`crate::ai::openai_endpoints`].
     pub(super) fn endpoints(&self) -> OpenAiBase {
-        let raw = self
-            .runtime_base_url
-            .as_deref()
-            .unwrap_or(self.config.base_url.as_str());
-        OpenAiBase::new(raw)
+        OpenAiBase::new(&self.config.base_url)
     }
 
     /// Does this adapter's effective base URL target the LOCAL llama-server lane
@@ -148,11 +139,7 @@ impl OpenAICompatibleAdapter {
                 .trim_end_matches("/v1")
                 .trim_end_matches('/')
         }
-        let raw = self
-            .runtime_base_url
-            .as_deref()
-            .unwrap_or(self.config.base_url.as_str());
-        norm(raw) == norm(serving_base)
+        norm(&self.config.base_url) == norm(serving_base)
     }
 
     /// The endpoint base for a SPECIFIC requested model. Same as [`Self::endpoints`]
@@ -226,7 +213,7 @@ impl OpenAICompatibleAdapter {
     /// `runtime_models` on success; leaves it unchanged on failure so stale
     /// data is preferred over empty data. Never silently succeeds with an
     /// empty set — returns Err if the endpoint responds with nothing.
-    pub(super) async fn refresh_runtime_models(&self) -> Result<(), String> {
+    pub(super) async fn refresh_runtime_models(&self) -> Result<usize, String> {
         let url = self.endpoints().models();
 
         let mut req = self.client.get(&url);
@@ -247,17 +234,16 @@ impl OpenAICompatibleAdapter {
         let ids: std::collections::HashSet<String> = body
             .get("data")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .ok_or_else(|| format!("{} returned no `data` array", url))?
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
+            .collect();
         if ids.is_empty() {
             return Err(format!("{} returned no models", url));
         }
-        *self.runtime_models.write().unwrap() = Some(ids);
-        Ok(())
+        let count = ids.len();
+        *self.runtime_models.write() = Some(ids);
+        Ok(count)
     }
 
     /// Resolve a logical model name to the actual DMR model ID stored in
@@ -287,7 +273,6 @@ impl OpenAICompatibleAdapter {
         let available: Vec<String> = self
             .runtime_models
             .read()
-            .unwrap()
             .as_ref()
             .map(|ids| ids.iter().cloned().collect())
             .ok_or_else(|| "DMR runtime_models still empty after refresh".to_string())?;
@@ -302,7 +287,7 @@ impl OpenAICompatibleAdapter {
     /// trivial contains in either direction. No I/O, no refresh — callers
     /// own the refresh decision.
     fn lookup_runtime_model(&self, model_name: &str) -> Option<String> {
-        let guard = self.runtime_models.read().unwrap();
+        let guard = self.runtime_models.read();
         let ids = guard.as_ref()?;
         let needle = model_name.to_lowercase();
         ids.iter()
@@ -327,7 +312,7 @@ impl OpenAICompatibleAdapter {
     /// 2026-07-24). Not a fallback: this records a fact the daemon's reconcile
     /// already verified against the live process.
     pub fn ensure_runtime_model(&self, id: &str) {
-        let mut guard = self.runtime_models.write().unwrap();
+        let mut guard = self.runtime_models.write();
         match guard.as_mut() {
             Some(set) => {
                 set.insert(id.to_string());
@@ -339,7 +324,7 @@ impl OpenAICompatibleAdapter {
     }
 
     pub(super) fn runtime_models_contain(&self, model_name: &str) -> bool {
-        let guard = self.runtime_models.read().unwrap();
+        let guard = self.runtime_models.read();
         match guard.as_ref() {
             None => false, // not populated — can't lie, return false
             Some(ids) => {

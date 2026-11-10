@@ -20,6 +20,7 @@ mod only_a_finish_frame_is_a_terminal_receipt;
 mod outer_lane_custody;
 mod prefill_progress_is_liveness;
 mod request_shaping;
+mod stream_usage_contract;
 mod tail_tools_reach_the_verified_lane_only;
 mod unguaranteed_model_refusal_says_which_situation;
 
