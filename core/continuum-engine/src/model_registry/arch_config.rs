@@ -31,7 +31,6 @@
 //! attention, i.e. kv == q), so computing them is reading the spec, not
 //! sniffing the name.
 
-use candle_core::quantized::gguf_file;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -113,8 +112,9 @@ impl ModelArchConfig {
     pub fn from_gguf(path: &Path) -> Result<Self, String> {
         let mut file =
             std::fs::File::open(path).map_err(|e| format!("open GGUF {}: {e}", path.display()))?;
-        let content = gguf_file::Content::read(&mut file)
-            .map_err(|e| format!("read GGUF {}: {e}", path.display()))?;
+        let content =
+            crate::inference_capability::gguf_keys::read_bounded_header(&mut file, &|| false)
+                .map_err(|e| format!("read GGUF {}: {e}", path.display()))?;
         let md = &content.metadata;
 
         // `general.architecture` via the ONE shared reader; this consumer's

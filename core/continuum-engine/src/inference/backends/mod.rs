@@ -13,8 +13,6 @@ pub mod mlx_adapter;
 
 use std::path::Path;
 
-use candle_core::quantized::gguf_file;
-
 // ─── Unified Text Generation ─────────────────────────────────────────────────
 
 /// Sampling configuration for text generation.
@@ -100,8 +98,8 @@ pub struct GgufMetadata {
 /// Read common metadata from a GGUF file without loading weights.
 pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
     let mut file = std::fs::File::open(path).map_err(|e| format!("Failed to open GGUF: {e}"))?;
-    let content =
-        gguf_file::Content::read(&mut file).map_err(|e| format!("Failed to read GGUF: {e}"))?;
+    let content = crate::inference_capability::gguf_keys::read_bounded_header(&mut file, &|| false)
+        .map_err(|e| format!("Failed to read GGUF: {e}"))?;
 
     // general.architecture is REQUIRED — silently falling back to "llama" would
     // route a qwen/mistral/phi/etc. model through the wrong backend and produce
@@ -144,4 +142,3 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-

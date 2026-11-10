@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 
-use candle_core::quantized::gguf_file::Content;
 
 use super::expert_residency::ExpertId;
 use super::placement::PlacementRequest;
@@ -70,7 +69,7 @@ pub fn moe_serving_context(
     relaunch_threshold: usize,
 ) -> Result<Option<MoeServingContext>, String> {
     let mut file = File::open(gguf_path).map_err(|e| format!("open {}: {e}", gguf_path.display()))?;
-    let ct = Content::read(&mut file).map_err(|e| format!("gguf header: {e}"))?;
+    let ct = crate::inference_capability::gguf_keys::read_bounded_header(&mut file, &|| false).map_err(|e| format!("gguf header: {e}"))?;
     let arch = gguf_keys::architecture(&ct).ok_or_else(|| "no general.architecture".to_string())?;
 
     // MoE detection + geometry. NotMoe → dense → no expert placement. An expert count with

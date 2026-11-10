@@ -161,7 +161,7 @@ fn kv_rate_from_header_cached(path: &std::path::Path) -> Option<u64> {
     let rate = (|| {
         let mut file = std::fs::File::open(path).ok()?;
         let content =
-            candle_core::quantized::gguf_file::Content::read(&mut file).ok()?;
+            crate::inference_capability::gguf_keys::read_bounded_header(&mut file, &|| false).ok()?;
         let arch = crate::inference_capability::gguf_keys::architecture(&content)?;
         crate::inference_capability::gguf_keys::kv_bytes_per_token_f16(&content, &arch)
     })();

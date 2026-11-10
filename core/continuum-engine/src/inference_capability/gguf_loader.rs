@@ -58,7 +58,7 @@ use std::path::Path;
 pub fn read_qwen_model_metadata(path: &Path) -> Result<QwenModelMetadata, String> {
     let mut file = std::fs::File::open(path)
         .map_err(|e| format!("Failed to open GGUF at {}: {e}", path.display()))?;
-    let content = gguf_file::Content::read(&mut file)
+    let content = crate::inference_capability::gguf_keys::read_bounded_header(&mut file, &|| false)
         .map_err(|e| format!("Failed to read GGUF at {}: {e}", path.display()))?;
 
     let file_size_bytes = std::fs::metadata(path)

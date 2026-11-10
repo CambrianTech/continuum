@@ -120,7 +120,7 @@ fn memory_cannot_shift(model: &crate::model_registry::types::Model) -> bool {
     }
     let recurrent = (|| {
         let mut file = std::fs::File::open(&path).ok()?;
-        let content = candle_core::quantized::gguf_file::Content::read(&mut file).ok()?;
+        let content = crate::inference_capability::gguf_keys::read_bounded_header(&mut file, &|| false).ok()?;
         let arch = crate::inference_capability::gguf_keys::architecture(&content)?;
         Some(crate::inference_capability::gguf_keys::holds_recurrent_state(&content, &arch))
     })()

@@ -208,9 +208,9 @@ impl OrpheusTts {
             .build()
             .map_err(|e| TTSError::ModelNotLoaded(format!("BPE build from GGUF: {e}")))?;
         let mut tk = Tokenizer::new(tokenizers::ModelWrapper::BPE(bpe));
-        tk.with_pre_tokenizer(Some(tokenizers::pre_tokenizers::byte_level::ByteLevel::new(
-            false, true, true,
-        )));
+        tk.with_pre_tokenizer(Some(
+            tokenizers::pre_tokenizers::byte_level::ByteLevel::new(false, true, true),
+        ));
         tk.with_decoder(Some(tokenizers::decoders::byte_level::ByteLevel::new(
             false, true, true,
         )));
@@ -590,7 +590,9 @@ impl OrpheusTts {
         // honest trade until a dynamic-axis export replaces this decoder.
         let total_frames = layers[0].len();
         if total_frames == 0 {
-            return Err(TTSError::SynthesisFailed("No audio frames to decode".into()));
+            return Err(TTSError::SynthesisFailed(
+                "No audio frames to decode".into(),
+            ));
         }
         // PAD the final partial window by repeating the last frame's codes —
         // a held codec frame briefly extends the last sound (benign), unlike
@@ -708,8 +710,11 @@ impl TextToSpeech for OrpheusTts {
 
         let mut gguf_file = std::fs::File::open(&gguf_path)
             .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to open GGUF file: {e}")))?;
-        let gguf_content = gguf_file::Content::read(&mut gguf_file)
-            .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to read GGUF content: {e}")))?;
+        let gguf_content = continuum_engine::inference_capability::gguf_keys::read_bounded_header(
+            &mut gguf_file,
+            &|| false,
+        )
+        .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to read GGUF content: {e}")))?;
 
         let tokenizer = Self::tokenizer_from_gguf(&gguf_content)?;
         clog_info!(
@@ -860,7 +865,9 @@ mod tests {
             AUDIO_TOKEN_OFFSET + AUDIO_TOKEN_SPAN - 1
         ));
         // Above range
-        assert!(!OrpheusTts::is_audio_token(AUDIO_TOKEN_OFFSET + AUDIO_TOKEN_SPAN));
+        assert!(!OrpheusTts::is_audio_token(
+            AUDIO_TOKEN_OFFSET + AUDIO_TOKEN_SPAN
+        ));
     }
 
     #[test]
