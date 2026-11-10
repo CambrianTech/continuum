@@ -274,6 +274,10 @@ mod tests {
         fn items(&self) -> Vec<Item<String>> {
             self.0.clone()
         }
+
+        fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+            None // a fixture that does not exercise folding
+        }
     }
 
     fn read(seq: u128, path: &str, body: &str) -> Item<String> {

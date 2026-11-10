@@ -75,4 +75,10 @@ impl Source<ContextMessage> for Facts {
     fn ended(&self, key: &str) -> Option<ContextMessage> {
         (!key.starts_with(EVENT)).then(|| ContextMessage::user(format!("[{}: no longer observed]", key.replace('_', " "))))
     }
+
+    /// No fold: a fact has no pointer and leaves her view when collapsed; a state is superseded by
+    /// its key, so the run costs nothing at its floor.
+    fn fold(&self, _folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        None
+    }
 }

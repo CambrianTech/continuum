@@ -135,6 +135,10 @@ impl Source<String> for Captured {
     fn items(&self) -> Vec<Item<String>> {
         self.items.clone()
     }
+
+    fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+        None // a fixture that does not exercise folding
+    }
 }
 
 /// The captures hold what was sent, not each item's pointer; a pointer is modelled as the
