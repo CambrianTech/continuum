@@ -28,6 +28,32 @@ impl<'a> Params<'a> {
     }
 
     // ================================================================
+    // Normalization — case/separator-insensitive key lookup
+    // ================================================================
+
+    /// Normalize a parameter name for comparison: lowercase, strip underscores and hyphens.
+    /// "call_id", "callId", "call-id" all normalize to "callid".
+    fn normalize(key: &str) -> String {
+        key.to_lowercase()
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '_' && *c != '-')
+            .collect::<String>()
+    }
+
+    /// Look up a value by normalized key name. Returns the first matching (raw_key, &Value).
+    fn get_normalized(&self, key: &str) -> Option<(&'a str, &'a Value)> {
+        let nk = Self::normalize(key);
+        if let Some(obj) = self.0.as_object() {
+            for (k, v) in obj {
+                if Self::normalize(k) == nk {
+                    return Some((k, v));
+                }
+            }
+        }
+        None
+    }
+
+    // ================================================================
     // ================================================================
     // String
     // ================================================================
@@ -74,25 +100,24 @@ impl<'a> Params<'a> {
 
     /// Required u64 parameter.
     pub fn u64(&self, key: &str) -> Result<u64, String> {
-        self.0
-            .get(key)
-            .and_then(|v| v.as_u64())
+        self.get_normalized(key)
+            .and_then(|(_, v)| v.as_u64())
             .ok_or_else(|| format!("Missing {key}"))
     }
 
     /// Optional u64 parameter with default.
     pub fn u64_or(&self, key: &str, default: u64) -> u64 {
-        self.0.get(key).and_then(|v| v.as_u64()).unwrap_or(default)
+        self.get_normalized(key).and_then(|(_, v)| v.as_u64()).unwrap_or(default)
     }
 
     /// Optional u64 (returns None if missing).
     pub fn u64_opt(&self, key: &str) -> Option<u64> {
-        self.0.get(key).and_then(|v| v.as_u64())
+        self.get_normalized(key).and_then(|(_, v)| v.as_u64())
     }
 
     /// Optional i64.
     pub fn i64_opt(&self, key: &str) -> Option<i64> {
-        self.0.get(key).and_then(|v| v.as_i64())
+        self.get_normalized(key).and_then(|(_, v)| v.as_i64())
     }
 
     // ================================================================
@@ -106,9 +131,8 @@ impl<'a> Params<'a> {
 
     /// Optional f64 (returns None if missing).
     pub fn f64_opt(&self, key: &str) -> Option<f64> {
-        self.0.get(key).and_then(|v| v.as_f64())
+        self.get_normalized(key).and_then(|(_, v)| v.as_f64())
     }
-
     /// Required f32 parameter.
     pub fn f32(&self, key: &str) -> Result<f32, String> {
         self.f64(key).map(|f| f as f32)
@@ -135,7 +159,7 @@ impl<'a> Params<'a> {
 
     /// Optional bool (returns None if missing).
     pub fn bool_opt(&self, key: &str) -> Option<bool> {
-        self.0.get(key).and_then(|v| v.as_bool())
+        self.get_normalized(key).and_then(|(_, v)| v.as_bool())
     }
 
     /// Optional bool parameter with default.
@@ -154,7 +178,7 @@ impl<'a> Params<'a> {
 
     /// Optional array parameter.
     pub fn array_opt(&self, key: &str) -> Option<&'a Vec<Value>> {
-        self.0.get(key).and_then(|v| v.as_array())
+        self.get_normalized(key).and_then(|(_, v)| v.as_array())
     }
 
     // ================================================================
@@ -164,23 +188,24 @@ impl<'a> Params<'a> {
     /// Required typed parameter via serde deserialization.
     /// Use for complex types: `let items: Vec<Item> = p.json("items")?;`
     pub fn json<T: DeserializeOwned>(&self, key: &str) -> Result<T, String> {
-        let v = self.0.get(key).ok_or_else(|| format!("Missing {key}"))?;
+        let v = self
+            .get_normalized(key)
+            .map(|(_, v)| v)
+            .ok_or_else(|| format!("Missing {key}"))?;
         serde_json::from_value(v.clone()).map_err(|e| format!("Invalid {key}: {e}"))
     }
 
     /// Optional typed parameter via serde deserialization, with default.
     pub fn json_or<T: DeserializeOwned + Default>(&self, key: &str) -> T {
-        self.0
-            .get(key)
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
+        self.get_normalized(key)
+            .and_then(|(_, v)| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default()
     }
 
     /// Optional typed parameter via serde deserialization.
     pub fn json_opt<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
-        self.0
-            .get(key)
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
+        self.get_normalized(key)
+            .and_then(|(_, v)| serde_json::from_value(v.clone()).ok())
     }
 
     // ================================================================
@@ -190,6 +215,11 @@ impl<'a> Params<'a> {
     /// Optional u64 with alias fallback.
     pub fn u64_opt_alias(&self, key1: &str, key2: &str) -> Option<u64> {
         self.u64_opt(key1).or_else(|| self.u64_opt(key2))
+    }
+
+    /// Optional string with alias fallback (tries key1 then key2).
+    pub fn str_opt_alias(&self, key1: &str, key2: &str) -> Option<&'a str> {
+        self.str_opt(key1).or_else(|| self.str_opt(key2))
     }
 
     /// Optional string with alias, mapped to owned String.
@@ -203,7 +233,7 @@ impl<'a> Params<'a> {
 
     /// Raw value access for complex types.
     pub fn value(&self, key: &str) -> Option<&'a Value> {
-        self.0.get(key)
+        self.get_normalized(key).map(|(_, v)| v)
     }
 
     /// The underlying Value reference.
