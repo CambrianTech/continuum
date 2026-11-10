@@ -253,3 +253,22 @@ fn the_price_never_holds_less_than_her_view_already_sent() {
     let plan = allocate(window, claims);
     assert!(held(&plan) >= sent, "the price holds what she sent: {} < {sent}", held(&plan));
 }
+
+// what this catches (the M5, 2026-11-10): her need recording only what this act holds, so her grant
+// matched it, her view grew into it and turned over every second act. Her need carries a growth
+// reserve as large as what her view already sent.
+#[test]
+fn her_need_carries_her_views_growth() {
+    let window = 755_456;
+    let bare = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
+    let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, m5());
+    let sent = 30_000;
+    claims.view[1].claim.min_tokens = claims.view[1].claim.floor_tokens + sent;
+    let grown = allocate(window, claims);
+    let tokens = |need: ActNeed| match need {
+        ActNeed::Chosen(n) | ActNeed::Censored(n) => Some(n.tokens()),
+        _ => None,
+    };
+    let (Some(before), Some(after)) = (tokens(bare.need), tokens(grown.need)) else { panic!("fixture: priced needs {:?} {:?}", bare.need, grown.need) };
+    assert!(after >= before + sent, "her need grows by what she sent: {before} -> {after}");
+}

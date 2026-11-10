@@ -70,6 +70,16 @@ pub enum ActNeed {
 }
 
 impl ActNeed {
+    /// This need with `extra` tokens of growth: a window she will append into. Unpriced stays
+    /// unpriced; past the trained context it is the defect it would be.
+    pub(super) fn grown(self, extra: u32, trained: TrainedContext) -> Self {
+        match self {
+            Self::Chosen(need) => Self::at(need.tokens().saturating_add(extra), false, trained),
+            Self::Censored(need) => Self::at(need.tokens().saturating_add(extra), true, trained),
+            other => other,
+        }
+    }
+
     /// `tokens` as an exact need (`censored` false) or a lower bound, on a model whose trained
     /// context is `trained`.
     pub(super) fn at(tokens: u32, censored: bool, trained: TrainedContext) -> Self {

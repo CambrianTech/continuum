@@ -98,7 +98,19 @@ fn least(claims: &ActClaims) -> u32 {
     // resident, so it adds no prefill to her act; a price that held less turned her epoch over and
     // re-prefilled all of it (the M5, 2026-11-10: views granted 7.5k-13.5k of 41k-49k windows, an
     // epoch every second act, her act time measured on those re-prefills priced the window down).
-    let view_held: u32 = claims
+    let view_held = view_sent(claims);
+    hard_limits(claims)
+        .saturating_add(held_above(&claims.framing))
+        .saturating_add(held_above(&claims.tools))
+        .saturating_add(claims.newest.whole())
+        .saturating_add(claims.reply.floor_tokens)
+        .saturating_add(view_held)
+}
+
+/// What her live view already sent above its floors (each source's flex basis): resident in the
+/// engine.
+fn view_sent(claims: &ActClaims) -> u32 {
+    claims
         .view
         .iter()
         .map(|view| {
@@ -106,13 +118,7 @@ fn least(claims: &ActClaims) -> u32 {
             let counted = if claim.required { claim.floor_tokens } else { 0 };
             if claim.min_tokens > claim.floor_tokens { claim.min_tokens.saturating_sub(counted) } else { 0 }
         })
-        .fold(0u32, u32::saturating_add);
-    hard_limits(claims)
-        .saturating_add(held_above(&claims.framing))
-        .saturating_add(held_above(&claims.tools))
-        .saturating_add(claims.newest.whole())
-        .saturating_add(claims.reply.floor_tokens)
-        .saturating_add(view_held)
+        .fold(0u32, u32::saturating_add)
 }
 
 /// The context `plan` holds: its window less her reply's grant.
@@ -168,7 +174,8 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
     let floor = least(&priced_claims);
     if floor >= window {
         // What she must hold fills her grant: her need is at least it.
-        return ActPlan { priced: Priced::WindowBinds, need: ActNeed::at(floor, true, trained), ..plan_at(window, claims) };
+        let need = ActNeed::at(floor, true, trained).grown(view_sent(&claims), trained);
+        return ActPlan { priced: Priced::WindowBinds, need, ..plan_at(window, claims) };
     }
     let measured = time.measured();
     let served = plan_at(window, claims.clone());
@@ -199,7 +206,11 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
     if !best.is_finite() {
         return outside;
     }
-    let need = need_past(window, &plan, best, beyond(window, &time, &claims), &probe, trained);
+    // Her need carries her view's growth: a reserve as large as what it already sent, as her
+    // view's start leaves one, so her next acts append into a granted window instead of turning
+    // her epoch over (the M5, 2026-11-10: Aris granted ~45k with her view at its edge, an epoch
+    // every second act, while the grants used 109k-168k of a 524k pool).
+    let need = need_past(window, &plan, best, beyond(window, &time, &claims), &probe, trained).grown(view_sent(&claims), trained);
     let priced = Priced::Held {
         held: plan.window,
         seconds: time.seconds(f64::from(held_context(&plan))),
