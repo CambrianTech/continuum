@@ -201,7 +201,7 @@ fn audited_crate_root() -> PathBuf {
         .map(|core| core.join(AUDITED_CRATE))
         // unwrap_or_else: a manifest dir with no parent cannot happen under cargo,
         // and inventing a relative fallback would scan the wrong tree silently.
-        .unwrap_or_else(|| PathBuf::from(AUDITED_CRATE))
+        .unwrap_or_else(|| PathBuf::from(AUDITED_CRATE)) // unwrap_or_else: cargo always gives the manifest dir a parent (see above)
 }
 
 /// The root of the checkout under audit (head, or the base tree a ratchet measures).

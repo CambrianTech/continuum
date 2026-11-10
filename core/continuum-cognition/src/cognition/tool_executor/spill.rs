@@ -665,7 +665,7 @@ pub fn read_extent(path: &Path, offset: u64, length: Option<usize>, allowance: A
         );
     }
     let len = length
-        .unwrap_or(capacity)
+        .unwrap_or(capacity) // unwrap_or: no length asked for reads as much as the encoding budget holds
         .min(capacity)
         .min((total_bytes - offset).min(usize::MAX as u64) as usize);
     let mut bytes = vec![0; len];

@@ -644,7 +644,7 @@ impl PersonaWorkspaceRegistry {
         // runaway) while turns — which send it — were clean.
         let (adapter, model) = cycle
             .current_model_route()
-            .unwrap_or_else(|| (cfg.adapter.clone(), None));
+            .unwrap_or_else(|| (cfg.adapter.clone(), None)); // unwrap_or_else: no live binding yet, so the adapter she was built with and no served-model id (named, never invented)
         Some((Arc::clone(&cfg.admission), adapter, model))
     }
 

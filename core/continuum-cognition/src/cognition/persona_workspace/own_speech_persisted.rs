@@ -27,17 +27,13 @@ impl OwnSpeechPersisted {
     }
 }
 
+/// Her checkpoint's path, under the one continuum home (`paths::continuum_home`: `$CONTINUUM_HOME`,
+/// a test build's home, else `~/.continuum`), never a home built by hand.
 pub(super) fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::PathBuf> {
-    let home = crate::paths::home_dir().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "cannot resolve persistent home directory",
-        )
+    let home = crate::paths::continuum_home().map_err(|why| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, format!("cannot resolve the continuum home: {why}"))
     })?;
-    Ok(home
-        .join(".continuum/personas")
-        .join(persona_id.to_string())
-        .join("volatile.json"))
+    Ok(home.join("personas").join(persona_id.to_string()).join("volatile.json"))
 }
 
 /// What one checkpoint did: nothing (her state is where the last one left it), or wrote this many
@@ -128,18 +124,15 @@ pub(super) fn save_volatile(
     snapshot.handoff = handoff;
     snapshot.acting_card = acting_card;
     let persisted = PersistedVolatile { wm: snapshot, own_speech: OwnSpeechPersisted::ByRoom(own_speech) };
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    use std::io::Write;
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} names no checkpoint file", path.display())));
+    };
     let bytes = serde_json::to_vec(&persisted)?; // file on disk: her checkpoint, read back at her next spawn
-    let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&tmp, &path)?;
-    checkpoint_adoption::sync_parent(&path)?;
+    // Staged beside it in her held directory, synced, and renamed over it: a reader sees the last
+    // checkpoint or this one, never half, and the placement survives power loss.
+    let mut staging = continuum_host::durable::Staging::new(&continuum_host::confine::open_root(dir)?)?;
+    staging.write_all(&bytes)?;
+    staging.replace(std::path::Path::new(name))?;
     last_marks().lock().insert(persona_id, mark);
     Ok(Checkpointed::Written { bytes: bytes.len(), archive })
 }
@@ -185,7 +178,7 @@ pub(super) fn result_handles_at(
     let handles: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
         load_volatile_at(path)?
             .map(|persisted| persisted.wm.reachable_handles())
-            .unwrap_or_default(),
+            .unwrap_or_default(), // unwrap_or_default: no checkpoint on disk names no handle (a read failure returned above)
     );
     cache.lock().insert(path.to_path_buf(), (modified, std::sync::Arc::clone(&handles)));
     Ok(handles)

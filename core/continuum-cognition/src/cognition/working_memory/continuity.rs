@@ -453,7 +453,7 @@ impl WorkingMemory {
         let edge = |ms: Option<u64>| {
             ms.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
                 .map(|t| format!(" (lease edge {}Z)", t.format("%H:%M")))
-                .unwrap_or_default()
+                .unwrap_or_default() // unwrap_or_default: a lease with no recorded edge names none
         };
         let untouched = "Your checkout and your patch are untouched.";
         let text = match verdict {
