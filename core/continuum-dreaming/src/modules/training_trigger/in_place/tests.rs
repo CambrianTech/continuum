@@ -51,25 +51,58 @@ fn engine(port: u16) -> EngineIncarnation {
     EngineIncarnation::of(std::process::id(), port).expect("test: this process's start time is readable")
 }
 
-// what this catches: one engine's step or fence (a wedged, unproven-dead engine) holding every other
-// engine's buckets (Codex on d177df17f). A busy engine defers its own bucket at once; another engine
-// is not waited on.
+// what this catches (Codex on B, card 23069702): her learner waiting for her act while holding her
+// bucket's gate, so her own submit stalled behind her background work. The learner waits for her
+// acts holding nothing of the trigger; the gate stays free, and once her act ends the step is
+// admitted (here refused: this engine has no pool) and the pass ends deferred, never failed.
 #[tokio::test]
-async fn a_busy_engine_defers_its_bucket_and_never_holds_another() {
+async fn her_waiting_learner_never_holds_her_bucket_gate() {
     let state = Arc::new(TrainingTriggerState::new(authority()));
-    let key = BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() };
-    let (wedged, free) = (engine(1), engine(2));
-    let _held = state.in_place.engine(wedged).lock_owned().await;
-    let pass = tokio::time::timeout(std::time::Duration::from_secs(1), state.in_place.learn_bucket(&state, &key, vec![], wedged))
+    let persona = Uuid::new_v4();
+    let key = BucketKey { persona_id: persona, trait_kind: "code".into(), base_model: "qwen".into() };
+    let example = crate::genome::fine_tuning::types::TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None, lived: None };
+    let row = Arrival { id: Uuid::new_v4(), sequence: 1, key: key.clone(), persona_name: "her".into(), examples: vec![example], learned: 0, lora: None, schedule: None };
+    let acting = crate::inference::slots::begin_act_for_test(persona).await;
+    let mut pass = Box::pin(state.learn_bucket(key.clone(), vec![row], engine(9)));
+    assert!(futures::poll!(&mut pass).is_pending(), "her act comes first: the learner waits");
+    assert!(state.submit_gates.try_acquire(&key).is_some(), "her bucket's gate is free while her learner waits");
+    drop(acting);
+    let pass = tokio::time::timeout(std::time::Duration::from_secs(5), pass)
         .await
-        .expect("test: a busy engine answers at once")
+        .expect("test: the pass ends once her act does")
         .expect("test: deferred, not failed");
     assert_eq!(pass, BucketPass { deferred: true, ..Default::default() });
-    let other = tokio::time::timeout(std::time::Duration::from_secs(1), state.in_place.learn_bucket(&state, &key, vec![], free))
-        .await
-        .expect("test: another engine is not held by the wedged one")
-        .expect("test: nothing to learn");
-    assert_eq!(other, BucketPass::default());
+}
+
+// what this catches (Codex on B): one mind's pass waiting (for her act, her slot, an engine) holding
+// every other bucket's pass behind it. Passes run together; a bucket that never finishes does not
+// stop another from running and finishing.
+#[tokio::test]
+async fn a_waiting_bucket_never_holds_another_buckets_pass() {
+    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let (waiting, other) = (
+        BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() },
+        BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() },
+    );
+    let finished = Arc::new(tokio::sync::Notify::new());
+    let seen = Arc::clone(&finished);
+    let stuck = waiting.clone();
+    let passes = state.learn_each(vec![(waiting, vec![]), (other, vec![])], move |_state, key, _rows| {
+        let (seen, stuck) = (Arc::clone(&seen), stuck.clone());
+        async move {
+            if key == stuck {
+                std::future::pending::<()>().await;
+            }
+            seen.notify_one();
+            Ok(BucketPass { learned: 1, ..Default::default() })
+        }
+    });
+    tokio::pin!(passes);
+    tokio::select! {
+        _ = finished.notified() => {}
+        _ = &mut passes => panic!("the waiting bucket's pass never ends"),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("the other bucket was held behind the waiting one"),
+    }
 }
 
 // what this catches: a restored learner re-teaching examples its generation already holds, when the

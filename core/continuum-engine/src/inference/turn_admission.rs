@@ -36,6 +36,7 @@ mod page_receipt;
 mod paging_lifetime;
 mod unresolved_page;
 mod transient;
+mod learning;
 
 pub use transient::admit_transient;
 #[cfg(test)]
