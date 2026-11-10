@@ -210,6 +210,31 @@ enum Next {
     AwaitMemory(crate::inference::training_admission::TrainingWait),
 }
 
+/// How a learner's wait for memory ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Waited {
+    /// Its memory may now be granted: prepare again.
+    Resumable,
+    /// The engine it was measured on is no longer serving: end the pass.
+    EngineReplaced,
+}
+
+/// Returns once `current()` is false, re-reading it at each of `changes`' updates; never, with no
+/// serving state to watch (no engine serves here, so none can be replaced).
+async fn while_engine_serves<T>(changes: Option<tokio::sync::watch::Receiver<T>>, current: impl Fn() -> bool) {
+    let Some(mut changes) = changes else {
+        return std::future::pending().await;
+    };
+    loop {
+        if !current() {
+            return;
+        }
+        if changes.changed().await.is_err() {
+            return; // the serving state's owner is gone: so is the engine it described
+        }
+    }
+}
+
 /// Where a bucket stands before its next step, decided holding no serving resource.
 enum Prepared {
     /// Seated, her next example's memory covered: admit the step.
@@ -767,10 +792,13 @@ impl TrainingTriggerState {
                     pass.deferred = true;
                     break;
                 }
-                Prepared::AwaitMemory(wait) => {
-                    self.await_memory(&key, &mut changes, &wait).await?;
-                    continue;
-                }
+                Prepared::AwaitMemory(wait) => match self.await_memory(&key, engine, &mut changes, &wait).await? {
+                    Waited::Resumable => continue,
+                    Waited::EngineReplaced => {
+                        pass.deferred = true;
+                        break;
+                    }
+                },
             }
             stepped_any = true; // a seated learner may hold progress to publish
             // 3. her slot as a keyed dream (an act begun since step 1 refuses it: back to step 1)
@@ -812,7 +840,12 @@ impl TrainingTriggerState {
                 Next::Again => continue,
                 Next::Stop => break,
                 Next::Fenced => return Ok(pass),
-                Next::AwaitMemory(wait) => self.await_memory(&key, &mut changes, &wait).await?,
+                Next::AwaitMemory(wait) => {
+                    if self.await_memory(&key, engine, &mut changes, &wait).await? == Waited::EngineReplaced {
+                        pass.deferred = true;
+                        break;
+                    }
+                }
             }
         }
         if stepped_any {
@@ -823,10 +856,23 @@ impl TrainingTriggerState {
     }
 
     /// Wait, holding nothing, for what kept her learner's memory from being granted.
-    async fn await_memory(&self, key: &BucketKey, changes: &mut tokio::sync::watch::Receiver<crate::resources::LeaseBoard>, wait: &crate::inference::training_admission::TrainingWait) -> Result<(), String> {
+    /// Wait, holding nothing, until her learner's memory can be granted, or until the engine it was
+    /// measured against is no longer the one serving: a replacement's geometry needs other memory, so
+    /// the old need must not keep the pass (and the recovery that would see the new engine) waiting
+    /// (Codex on #5915).
+    async fn await_memory(&self, key: &BucketKey, engine: EngineIncarnation, changes: &mut tokio::sync::watch::Receiver<crate::resources::LeaseBoard>, wait: &crate::inference::training_admission::TrainingWait) -> Result<Waited, String> {
         continuum_base::probe!(class = "training.in_place.awaiting_memory", persona = %key.persona_id, wait = %wait,
             "her learning step waits for memory holding no serving resource; her acts run meanwhile");
-        crate::inference::training_admission::await_training_change(changes, wait).await
+        let serving = crate::inference::llama_server::serving_state_receiver();
+        let still_serving = move || crate::inference::lane_registry::live_lane().map(|lane| lane.incarnation()) == Some(engine);
+        tokio::select! {
+            granted = crate::inference::training_admission::await_training_change(&self.in_place.authority.resources, changes, wait) => granted.map(|()| Waited::Resumable),
+            () = while_engine_serves(serving, still_serving) => {
+                continuum_base::probe!(class = "training.in_place.engine_replaced", persona = %key.persona_id,
+                    "the engine her learner waited on was replaced: the pass ends so recovery reads the new one");
+                Ok(Waited::EngineReplaced)
+            }
+        }
     }
 
     /// Take each due candidate in `page` whose base `served_model` serves, under its bucket's gate.

@@ -115,7 +115,7 @@ async fn a_seat_short_of_memory_answers_at_once_holding_nothing_and_seats_once_c
     let seated = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let mut wait = wait;
         loop {
-            await_training_change(&mut changes, &wait).await.expect("test: the authority is open");
+            await_training_change(&authority.resources, &mut changes, &wait).await.expect("test: the authority is open");
             match seat(&authority, engine.clone(), "learning:her", shadow()).await {
                 Ok(seated) => return seated,
                 Err(SeatRefusal::AwaitingMemory(again)) => wait = again,
