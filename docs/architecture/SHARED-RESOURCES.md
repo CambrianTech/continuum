@@ -180,6 +180,72 @@ Build order (each slice proven by its validator first, then a live read):
 5. **S3 priority and aging,** with #5914 as its first policy.
 6. **LoRA, experts and small-model weights** migrate as pool implementers; each old copy is deleted.
 
+## Cache tier levels
+
+Joel, 2026-11-10: "It's gotta be a sophisticated cache tier levels." A cache hierarchy with
+measured costs, not an evict-or-keep switch. It builds on vocabulary that already exists:
+`TierRole` (continuum-genome `tier.rs`, GENOME-FOUNDRY-SENTINEL Part 2) names tiers by role, never
+by ordinal, so the tier count follows the machine. `TierRole` moves down into the kernel's paging
+engine as the one tier vocabulary every concern uses. Recall scoring keeps reading it from there.
+
+### The roles
+
+| Role | Holds | Dedicated VRAM (CUDA) | Unified memory (Apple, AMD APU) |
+|---|---|---|---|
+| Fast | Bytes the accelerator reads at full bandwidth | VRAM | The hot part of unified memory |
+| Warm | Bytes one copy away from the accelerator | Pinned host RAM (PCIe) | Absent: the same pool as Fast, so the type has no Warm to evict into |
+| Bench | Bytes the host reads at memory speed, possibly compressed | Host RAM | Host RAM (compressed pages) |
+| Cold | Local flash | NVMe or SSD | NVMe or SSD |
+| Peer | Another node's Bench or Cold, over the grid | Grid peer | Grid peer |
+| Frozen | Archive, append-only with provenance | Archive | Archive |
+
+Below every tier is **recompute**: a miss re-derives the page. For KV that means re-prefilling at
+the measured prefill rate. Recompute is the cost every eviction is priced against.
+
+Each node's governor builds its `Vec<TierConfig>` from measurement, never from a machine kind:
+the backend's reported memory mode, each tier's capacity, and each tier's live read and write
+bandwidth and latency, sampled from real transfers. A Mac has no Warm. An AMD APU reports shared
+memory and gets the same shape. A 5090 box has all of them.
+
+### What a page carries
+
+- **A key** (typed, never a string) and **the concern** that owns it.
+- **A level of detail per tier,** like mipmaps: a page can be held more compactly farther down.
+  KV runs at the serving cache type in Fast, can be quantized further or compressed in Bench, and
+  compressed on Cold. A LoRA adapter is f16 in Fast and compressed on Cold. Every level of detail
+  is measured: bytes, encode and decode milliseconds, and the quality it costs where it is lossy
+  (only by a gene's or a lesson's evaluation, never on her normal work).
+- **A temperature:** recency, frequency and the scheduler's predicted next use (it knows which mind
+  acts next).
+
+### Policies (each per concern, declared, never hard-coded per tool)
+
+- **Inclusive or exclusive.** KV pages are exclusive: one live copy, plus at most one write-back
+  copy below for crash recovery. Weights are inclusive: memory-mapped on Cold always, with a Fast
+  copy as a cache.
+- **Admission.** A page is promoted only when its predicted reuse pays for the transfer (an
+  ARC-style second-touch rule), so a one-shot result never evicts a mind's working set.
+- **Eviction is demotion.** A page moves one tier down, chosen by expected loss per byte freed:
+  the chance it is needed again before it could come back, times the measured time to promote it
+  (or to recompute it, if the tier below would cost more than recomputing). This generalizes
+  today's `cost_of_loss = tail_tokens / prefill_rate`.
+- **Prefetch.** The scheduler promotes the next lease holder's pages during the current act (the
+  warm-ahead path, generalized).
+- **Write-back** runs off the frame, from bytes already in Bench. A Fast-tier write never waits on
+  flash.
+- **Deduplication** is by content address across minds and concerns. A shared prompt prefix or a
+  shared adapter is one page with many references (`seq_cp` is a back-reference). The codec's
+  dictionary and the page table are one table.
+- **Lines.** For hybrid models, whose recurrent state cannot roll back, checkpoints are the cache
+  lines: a page is valid only with its line, and the tiers keep them together.
+
+### Coherency and custody
+
+One owner holds each page at a time (custody, as the grant handoff proves today). Transfers happen
+at the frame fence. A page is never read while it moves, and never freed while a lease pins it.
+Every transfer reports its measured cost, which feeds back into `TierConfig`. The hierarchy tunes
+itself to each machine and keeps tuning as load changes.
+
 ## The test that proves the interface
 
 Two domain bases as far apart as they come must both fit without bending the core:
