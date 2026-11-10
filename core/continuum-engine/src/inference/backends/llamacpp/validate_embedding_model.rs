@@ -48,24 +48,21 @@ pub(super) fn embed_model(model: &Model, texts: &[String]) -> Result<Vec<Vec<f32
     }
     let model_limit = usize::try_from(model.n_ctx_train())
         .map_err(|_| "embedding model context exceeds native representation")?;
-    // The prefix every sequence begins with (BOS): each window of a long text carries it, so every
-    // window is the same shape of input a short text is.
-    let prefix = model.tokenize("", true, false)?;
-    if let Some(tokens) = sequences.iter().find(|tokens| !tokens.starts_with(&prefix)) {
-        return Err(format!(
-            "an embedding sequence does not begin with the model's {}-token prefix (begins {:?}): its windows would be built from the wrong tokens",
-            prefix.len(),
-            &tokens[..prefix.len().min(tokens.len())]
-        ));
-    }
-    let plans = sequences
-        .iter()
-        .map(|tokens| windows(tokens.len(), prefix.len(), model_limit))
-        .collect::<Result<Vec<_>, _>>()?;
+    // The prefix (BOS) is read only when a text needs windows: a batch of texts that fit never
+    // depends on how a tokenizer treats an empty string (Codex on #5901).
+    let prefix = if sequences.iter().any(|tokens| tokens.len() > model_limit) {
+        model.tokenize("", true, false)?
+    } else {
+        Vec::new()
+    };
+    let plans = plan(&sequences, &prefix, model_limit)?;
     let widest = plans
         .iter()
-        .flatten()
-        .map(|w| prefix.len() + w.len())
+        .zip(&sequences)
+        .map(|(plan, tokens)| match plan {
+            Plan::Direct => tokens.len(),
+            Plan::Windows(windows) => windows.iter().map(|w| prefix.len() + w.len()).max().unwrap_or(0), // unwrap_or: plan() never returns an empty window list
+        })
         .max()
         .ok_or("empty embedding request")?;
     let widest = u32::try_from(widest).map_err(|_| "embedding sequence length exceeds native representation")?;
@@ -77,19 +74,65 @@ pub(super) fn embed_model(model: &Model, texts: &[String]) -> Result<Vec<Vec<f32
         n_ubatch: widest,
         ..Default::default()
     })?;
+    embed_plans(&sequences, &plans, &prefix, |tokens| {
+        ctx.memory_clear(true);
+        ctx.embed(tokens)
+    })
+}
+
+/// How one tokenized text is embedded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Plan {
+    /// It fits the context: its own tokens, embedded exactly as they are.
+    Direct,
+    /// It does not (card 57ef2a06: BigMama's 38,603-token example at a 32,768 context errored the
+    /// whole batch): every window of it, each carrying the model's prefix, never its head alone.
+    Windows(Vec<std::ops::Range<usize>>),
+}
+
+/// Each text's plan. Only a text over `limit` is windowed, and it must begin with `prefix`.
+fn plan(sequences: &[Vec<i32>], prefix: &[i32], limit: usize) -> Result<Vec<Plan>, String> {
+    sequences
+        .iter()
+        .map(|tokens| {
+            if tokens.len() <= limit {
+                return Ok(Plan::Direct);
+            }
+            if !tokens.starts_with(prefix) {
+                return Err(format!(
+                    "a {}-token embedding sequence does not begin with the model's {}-token prefix: its windows would be built from the wrong tokens",
+                    tokens.len(),
+                    prefix.len()
+                ));
+            }
+            windows(tokens.len(), prefix.len(), limit).map(Plan::Windows)
+        })
+        .collect()
+}
+
+/// One vector per text, in order: a direct text is `embed` of its own tokens, untouched; a windowed
+/// text is its windows combined by `weighted_mean`.
+fn embed_plans(
+    sequences: &[Vec<i32>],
+    plans: &[Plan],
+    prefix: &[i32],
+    mut embed: impl FnMut(&[i32]) -> Result<Vec<f32>, String>,
+) -> Result<Vec<Vec<f32>>, String> {
     let mut out = Vec::with_capacity(sequences.len());
     for (tokens, plan) in sequences.iter().zip(plans) {
-        // A text longer than the model's context is every window of it, never its head
-        // (card 57ef2a06: BigMama's 38,603-token example errored the whole batch at 32,768).
-        let mut pieces = Vec::with_capacity(plan.len());
-        for window in plan {
-            let mut piece = Vec::with_capacity(prefix.len() + window.len());
-            piece.extend_from_slice(&tokens[..prefix.len()]);
-            piece.extend_from_slice(&tokens[window.clone()]);
-            ctx.memory_clear(true);
-            pieces.push((ctx.embed(&piece)?, window.len()));
-        }
-        out.push(weighted_mean(&pieces)?);
+        out.push(match plan {
+            Plan::Direct => embed(tokens)?,
+            Plan::Windows(windows) => {
+                let mut pieces = Vec::with_capacity(windows.len());
+                for window in windows {
+                    let mut piece = Vec::with_capacity(prefix.len() + window.len());
+                    piece.extend_from_slice(prefix);
+                    piece.extend_from_slice(&tokens[window.clone()]);
+                    pieces.push((embed(&piece)?, window.len()));
+                }
+                weighted_mean(&pieces)?
+            }
+        });
     }
     Ok(out)
 }
@@ -395,6 +438,33 @@ mod tests {
         assert!(weighted_mean(&[(vec![1.0], 1), (vec![1.0, 0.0], 1)]).is_err(), "dimensions must agree");
         assert!(weighted_mean(&[(vec![1.0, 0.0], 2), (vec![-1.0, 0.0], 2)]).is_err(), "windows that cancel are refused, never normalized to NaN");
         assert!(weighted_mean(&[]).is_err(), "a text with no window has no vector");
+    }
+
+    // what this catches (Codex on #5901): a text that fits re-encoded through the window combiner
+    // (multiplied by its token count and renormalized, so its f32 vector drifts from the model's),
+    // a prefix-only sequence refused, or outputs out of order in a mixed batch. A text that fits is
+    // EXACTLY embed(its tokens); a long one is planned into windows; order is kept.
+    #[test]
+    fn a_text_that_fits_is_embedded_exactly_and_a_mixed_batch_keeps_its_order() {
+        // A deterministic stand-in for the model: a non-normalized vector from the tokens, so any
+        // re-normalization of a direct text would show as a difference.
+        let fake = |tokens: &[i32]| -> Result<Vec<f32>, String> {
+            Ok(vec![tokens.len() as f32, tokens.iter().map(|t| *t as f32).sum::<f32>() + 0.1])
+        };
+        let short = vec![1, 5, 9];
+        let prefix_only = vec![1];
+        let long: Vec<i32> = std::iter::once(1).chain(2..12).collect(); // 11 tokens, prefix [1]
+        let sequences = vec![short.clone(), long.clone(), prefix_only.clone()];
+        let plans = plan(&sequences, &[1], 8).expect("test: plans");
+        assert_eq!(plans[0], Plan::Direct);
+        assert_eq!(plans[1], Plan::Windows(vec![1..8, 8..11]), "only the over-limit text is windowed");
+        assert_eq!(plans[2], Plan::Direct, "a prefix-only sequence that fits is embedded as before, never refused");
+        let out = embed_plans(&sequences, &plans, &[1], fake).expect("test: embeds");
+        assert_eq!(out.len(), 3, "one output per input");
+        assert_eq!(out[0], fake(&short).expect("test: fake"), "a fitting text is exactly embed(its tokens)");
+        assert_eq!(out[2], fake(&prefix_only).expect("test: fake"));
+        assert!(((out[1][0] * out[1][0] + out[1][1] * out[1][1]).sqrt() - 1.0).abs() < 1e-6, "the windowed text is a unit vector");
+        assert!(plan(&[vec![7; 20]], &[1], 8).is_err(), "a long text not beginning with the prefix refuses");
     }
 
     // what this catches (Codex on 57ef2a06): the last, short window of a long text weighted like a
