@@ -213,7 +213,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .read()
             .as_ref()
             .map(|b| b.n_ctx_train())
-            .unwrap_or(0);
+            .unwrap_or(0); // unwrap_or: no backend loaded yet; 0 is the capabilities contract's "ask the model" (model_metadata)
         let capabilities = match self.generation {
             GenerationSupport::EmbeddingOnly => vec![Capability::Embedding],
             GenerationSupport::Enabled { .. } => vec![
@@ -402,7 +402,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             let log = runtime::logger("llamacpp");
             log.info(&format!(
                 "generate_text request: model={} messages={} (text={} parts={}; parts contain text={} image={} audio={} other={})",
-                request.model.as_deref().unwrap_or("?"),
+                request.model.as_deref().unwrap_or("?"), // unwrap_or: a log line names an unnamed model "?"
                 request.messages.len(),
                 text_msgs,
                 parts_msgs,
@@ -422,10 +422,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // fingerprint without grepping logs.
             continuum_base::probe!(
                 class = "inference.generate.enter",
-                model = request.model.as_deref().unwrap_or("?"),
-                persona_id = request.persona_id.as_deref().unwrap_or(""),
+                model = request.model.as_deref().unwrap_or("?"), // unwrap_or: the probe names an unnamed model "?"
+                persona_id = request.persona_id.as_deref().unwrap_or(""), // unwrap_or: a request for no persona probes an empty id
                 msg_count = request.messages.len(),
-                max_tokens = request.max_tokens.unwrap_or(0),
+                max_tokens = ?request.max_tokens,
                 has_system_prompt = request.system_prompt.is_some(),
                 parts_image = parts_image,
                 parts_audio = parts_audio,
@@ -505,7 +505,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let max_tokens = request
             .max_tokens
             .map(|n| n as usize)
-            .unwrap_or_else(|| backend.n_ctx_train() as usize);
+            .unwrap_or_else(|| backend.n_ctx_train() as usize); // unwrap_or_else: a caller with no cap decodes to the model's trained context, never a guessed one
         let sampling = sampling_config_from_request(&request);
         // Stop sequences = caller-supplied + model's registry-declared
         // text-form stops. Some GGUFs (the forged qwen3.5 included) carry
@@ -514,7 +514,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // same answer until max_tokens. The registry's stop_sequences
         // field carries the correct strings (e.g. `<|im_end|>`) that the
         // scheduler matches against streamed output.
-        let mut stop_owned: Vec<String> = request.stop_sequences.clone().unwrap_or_default();
+        let mut stop_owned: Vec<String> = request.stop_sequences.iter().flatten().cloned().collect();
         if let Some(model_meta) =
             crate::model_registry::try_global().and_then(|reg| reg.model(backend.model_id()))
         {
@@ -547,19 +547,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // context-level before decode. Empty in the common base case.
         let requested_genes: Vec<(String, std::path::PathBuf, f32)> = request
             .active_adapters
-            .as_ref()
-            .map(|v| {
-                v.iter()
-                    .map(|a| {
-                        (
-                            a.name.clone(),
-                            std::path::PathBuf::from(&a.path),
-                            a.scale as f32,
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+            .iter()
+            .flatten()
+            .map(|a| (a.name.clone(), std::path::PathBuf::from(&a.path), a.scale as f32))
+            .collect();
 
         let result: Result<(String, usize), String> = if collected_media.is_empty() {
             // Pure-text path: scheduler-managed continuous batching.
@@ -630,7 +621,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     kinds.join(", ")
                 ));
             }
-            let (kind, media_bytes) = collected_media.into_iter().next().unwrap();
+            let Some((kind, media_bytes)) = collected_media.into_iter().next() else {
+                return Err("llamacpp_adapter: the media path was taken with no media item".into());
+            };
             // RTOS timing probe: mtmd path runs single-flight (no
             // scheduler batching for media) so the timing here is
             // direct end-to-end. Separate seam from the text path so
@@ -777,7 +770,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // embedder resolve via [`crate::resources::ResourceDaemon::reserve`].
         let batch = embedding.tokenize(&texts)?;
         let lease_bytes = batch.context_bytes();
-        const EMBED_LANE_LEASE_TTL_MS: u64 = 60_000; // SIGKILL backstop; the RAII guard frees on drop
+        // derived-or-floor: a SIGKILL backstop only; the RAII guard frees the bytes on drop, and an
+        // embedding finishes in under a second, so the TTL never decides a live lease.
+        const EMBED_LANE_LEASE_TTL_MS: u64 = 60_000;
         let _vram_lease = {
             use crate::resources::{
                 LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind,
@@ -793,52 +788,45 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         ttl_ms: EMBED_LANE_LEASE_TTL_MS,
                         reclaim_policy: ReclaimPolicy::Pinned,
                     };
-                    // ONE bounded retry on a capacity refusal (never a loop —
-                    // [[brittleness-is-the-highest-priority-work-there-is]]): with
-                    // the standing floor reserved at resolve, a refusal here means
-                    // a TRANSIENT over-commit (a lane mid-relaunch, a burst), and
-                    // relief lands within a governor tick. The second refusal is
-                    // the honest failure.
-                    let mut refused: Option<u64> = None;
-                    let mut granted = None;
-                    for attempt in 0..2u8 {
-                        match daemon.acquire_guarded(&req) {
-                            Ok(guard) => {
-                                continuum_base::probe!(
-                                    class = "embed.vram.leased",
-                                    consumer = EMBED_LANE_CONSUMER_ID,
-                                    bytes = lease_bytes,
-                                    texts = texts.len(),
-                                    retried = (attempt > 0),
-                                    "embedding lane acquired a governed VRAM lease"
-                                );
-                                granted = Some(guard);
-                                break;
-                            }
-                            Err(LeaseError::InsufficientCapacity { available, .. }) => {
-                                continuum_base::probe!(
-                                    class = "embed.vram.refused",
-                                    requested = lease_bytes,
-                                    available = available,
-                                    attempt = attempt,
-                                    "embedding VRAM lease refused — failing loud, NOT emitting degenerate zeros"
-                                );
-                                refused = Some(available);
-                                if attempt == 0 {
-                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                }
-                            }
-                            Err(e) => {
-                                return Err(format!(
-                                    "embed: VRAM lease error ({e:?}) — refusing to embed ungoverned"
-                                ));
-                            }
+                    // ONE bounded retry on a capacity refusal (never a loop,
+                    // [[brittleness-is-the-highest-priority-work-there-is]]): with the standing
+                    // floor reserved at resolve, a refusal here means a TRANSIENT over-commit (a
+                    // lane mid-relaunch, a burst), and relief lands within a governor tick. The
+                    // second refusal is the honest failure, with the availability it measured.
+                    let attempt = |attempt: u8| match daemon.acquire_guarded(&req) {
+                        Ok(guard) => {
+                            continuum_base::probe!(
+                                class = "embed.vram.leased",
+                                consumer = EMBED_LANE_CONSUMER_ID,
+                                bytes = lease_bytes,
+                                texts = texts.len(),
+                                retried = (attempt > 0),
+                                "embedding lane acquired a governed VRAM lease"
+                            );
+                            Ok(Ok(guard))
                         }
-                    }
-                    match granted {
-                        Some(guard) => Some(guard),
-                        None => {
-                            let available = refused.unwrap_or(0);
+                        Err(LeaseError::InsufficientCapacity { available, .. }) => {
+                            continuum_base::probe!(
+                                class = "embed.vram.refused",
+                                requested = lease_bytes,
+                                available = available,
+                                attempt = attempt,
+                                "embedding VRAM lease refused — failing loud, NOT emitting degenerate zeros"
+                            );
+                            Ok(Err(available))
+                        }
+                        Err(e) => Err(format!("embed: VRAM lease error ({e:?}) — refusing to embed ungoverned")),
+                    };
+                    let leased = match attempt(0)? {
+                        Ok(guard) => Ok(guard),
+                        Err(_) => {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            attempt(1)?
+                        }
+                    };
+                    match leased {
+                        Ok(guard) => Some(guard),
+                        Err(available) => {
                             return Err(format!(
                                 "embed: VRAM lease refused twice — {} MiB requested, {} MiB governed-available. \
                                  Refusing to allocate an OOM-doomed embedding context (it would decode to \

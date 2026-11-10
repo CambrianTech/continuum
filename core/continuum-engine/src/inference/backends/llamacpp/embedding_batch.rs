@@ -15,9 +15,6 @@ const CONTEXT_BYTES_PER_TOKEN: u64 = 114_688 + 615_424 + 12_314;
 /// the per-token costs above), rounded up to a MiB.
 const CONTEXT_FIXED_BYTES: u64 = 1024 * 1024;
 
-/// llama pads a context to a multiple of this many tokens (`n_ctx_slot = 256` for a 128 request).
-const CONTEXT_PAD_TOKENS: u32 = 256;
-
 /// One request's sequences, each one's plan, and the window that embeds the widest piece.
 pub(crate) struct EmbeddingBatch {
     sequences: Vec<Vec<i32>>,
@@ -86,7 +83,7 @@ impl EmbeddingBatch {
 
 /// What a context of `n_ctx` tokens allocates (see [`CONTEXT_BYTES_PER_TOKEN`]).
 pub(crate) fn context_bytes(n_ctx: u32) -> u64 {
-    u64::from(n_ctx.div_ceil(CONTEXT_PAD_TOKENS) * CONTEXT_PAD_TOKENS) * CONTEXT_BYTES_PER_TOKEN + CONTEXT_FIXED_BYTES
+    u64::from(llama::ContextParams::allocated_n_ctx(n_ctx)) * CONTEXT_BYTES_PER_TOKEN + CONTEXT_FIXED_BYTES
 }
 
 /// How one tokenized text is embedded.
