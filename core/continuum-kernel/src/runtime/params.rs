@@ -28,33 +28,34 @@ impl<'a> Params<'a> {
     }
 
     // ================================================================
+    // ================================================================
     // String
     // ================================================================
 
     /// Required string parameter. Returns error if missing or not a string.
+    /// Matches keys by normalized form: "call_id", "callId", and "call-id" all resolve to the same key.
     pub fn str(&self, key: &str) -> Result<&'a str, String> {
-        self.0
-            .get(key)
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("Missing {key}"))
+        let nk = Self::normalize(key);
+        for (k, v) in self.0.as_object().into_iter().flatten() {
+            if Self::normalize(k) == nk {
+                return v
+                    .as_str()
+                    .ok_or_else(|| format!("Missing {key}"));
+            }
+        }
+        Err(format!("Missing {key}"))
     }
 
     /// Optional string parameter. Returns None if missing.
+    /// Matches keys by normalized form (see `str`).
     pub fn str_opt(&self, key: &str) -> Option<&'a str> {
-        self.0.get(key).and_then(|v| v.as_str())
-    }
-
-    /// Optional string with default.
-    pub fn str_or<'b>(&'a self, key: &str, default: &'b str) -> &'b str
-    where
-        'a: 'b,
-    {
-        self.str_opt(key).unwrap_or(default)
-    }
-
-    /// String with alias fallback (e.g. "system_prompt" or "systemPrompt").
-    pub fn str_opt_alias(&self, key1: &str, key2: &str) -> Option<&'a str> {
-        self.str_opt(key1).or_else(|| self.str_opt(key2))
+        let nk = Self::normalize(key);
+        for (k, v) in self.0.as_object().into_iter().flatten() {
+            if Self::normalize(k) == nk {
+                return v.as_str();
+            }
+        }
+        None
     }
 
     // ================================================================
