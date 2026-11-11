@@ -98,10 +98,10 @@ impl DurableStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
-    fn submission(sequence: u64, examples: usize) -> (Uuid, Submission) {
+    pub(in crate::modules::training_trigger::durable) fn submission(sequence: u64, examples: usize) -> (Uuid, Submission) {
         submission_for(sequence, examples, "qwen")
     }
 

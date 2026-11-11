@@ -152,6 +152,13 @@ pub(crate) struct ActionRecord {
     /// repeat, and the checkpoint still restores.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "super::derived::or_none")]
     pub act: Option<continuum_context::cause::Act>,
+    /// How many of her acts in its room, ending with this one, made this exact request and got a
+    /// byte-identical outcome: taken as it is pushed, from the room's last act, so the run is a fact
+    /// of the newest record and survives her view folding the earlier ones out of RAM (IntelMac
+    /// 0051cdcf, 2026-11-11: a 3rd identical read after a turnover was told no run). `None` for an
+    /// act with no identity or outcome, and for a record from a build before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<u32>,
 }
 
 impl ActionRecord {
@@ -219,6 +226,17 @@ pub(super) struct ActionLog {
     /// Ascending by `seq`: `seq` is minted monotonically, so a push keeps the order and a reopen
     /// finds its record by binary search.
     records: VecDeque<ActionRecord>,
+    /// Each room's last act, its outcome and its run: what the next act's run is taken from. Never
+    /// drained with the records (one entry per room she acts in), so a run spans a fold.
+    last: std::collections::HashMap<Option<Uuid>, Last>,
+}
+
+/// A room's last act as a run's continuation reads it.
+#[derive(Debug, Clone, Copy)]
+struct Last {
+    act: continuum_context::cause::Act,
+    outcome: continuum_context::cause::ContentHash,
+    run: u32,
 }
 
 impl ActionLog {
@@ -230,7 +248,9 @@ impl ActionLog {
             records.sort_by_key(|record| record.seq);
             records.dedup_by_key(|record| record.seq);
         }
-        Self { records: records.into() }
+        let mut log = Self { records: VecDeque::with_capacity(records.len()), last: Default::default() };
+        records.into_iter().for_each(|record| log.push(record));
+        log
     }
 
     /// Every record up to and including `edge`, oldest first, out of the ring: O(drained). What her
@@ -245,7 +265,23 @@ impl ActionLog {
         self.records.len()
     }
 
-    pub fn push(&mut self, record: ActionRecord) {
+    /// Append her newest act, taking its run from the room's last act (a record restored with its
+    /// run keeps it).
+    pub fn push(&mut self, mut record: ActionRecord) {
+        match (record.act, record.outcome()) {
+            (Some(act), Some(outcome)) => {
+                let run = match self.last.get(&record.room) {
+                    Some(last) if last.act == act && last.outcome == outcome => last.run + 1,
+                    _ => 1,
+                };
+                let run = record.run.unwrap_or(run);
+                record.run = Some(run);
+                self.last.insert(record.room, Last { act, outcome, run });
+            }
+            _ => {
+                self.last.remove(&record.room);
+            }
+        }
         self.records.push_back(record);
     }
 
@@ -262,17 +298,8 @@ impl ActionLog {
     /// request (`cause::Act`: call and declared effect, undeclared included) and got a
     /// byte-identical outcome. `None` for a run of one.
     pub fn repeat_run(&self, seq: u64) -> Option<RepeatRun> {
-        let newest = self.get(seq)?;
-        let act = newest.act?;
-        let outcome = newest.outcome()?;
-        let earlier = self
-            .records
-            .iter()
-            .rev()
-            .filter(|record| record.seq < seq && record.room == newest.room)
-            .take_while(|record| record.act == Some(act) && record.outcome() == Some(outcome))
-            .count();
-        (earlier > 0).then_some(RepeatRun { times: earlier + 1 })
+        let times = self.get(seq)?.run?;
+        (times > 1).then_some(RepeatRun { times: times as usize })
     }
 
     /// Every record, oldest first.

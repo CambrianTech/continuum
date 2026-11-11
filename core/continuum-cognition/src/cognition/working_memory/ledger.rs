@@ -333,6 +333,7 @@ impl WorkingMemory {
                     handle,
                     stored_chars: None,
                     stored_content: None,
+                    run: None,
                     body: None,
                     received_ms: Some(continuum_base::time::EpochMs::now().millis()),
                     act: act_identity(&acts),

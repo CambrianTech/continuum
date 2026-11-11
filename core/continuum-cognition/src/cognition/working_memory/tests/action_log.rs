@@ -160,6 +160,7 @@ fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_
         summary: None,
         stored_chars: None,
         stored_content: None,
+        run: None,
         body: None,
         received_ms: Some(at),
         act: Some(continuum_context::cause::Act { fingerprint: continuum_context::cause::Fingerprint::of([("x", seq.to_be_bytes().as_slice())]), effect }),
@@ -205,4 +206,47 @@ fn an_evicted_read_keeps_the_outcome_hash_it_had_resident() {
     let restored = WorkingMemory::new(8);
     restored.restore(snapshot);
     assert_eq!(restored.action_renderings().0.first().map(|act| act.content), resident, "and across a restart");
+}
+
+// what this catches (IntelMac 0051cdcf on d17b1a419, 2026-11-11; Cormac's read): a run counted by
+// walking resident records, so when her view folded the earlier identical reads out of RAM her 3rd
+// identical read was told no run, and she re-read one handle ~45 times in 14 h. The run is the newest
+// record's own fact, taken as it is pushed; it survives a fold and a restart, and a changed outcome
+// or another room's act does not continue it.
+#[test]
+fn a_run_survives_her_view_folding_the_earlier_repeats_out_of_ram() {
+    use continuum_base::tool_effect::ToolEffect;
+    let (room, other) = (Uuid::from_u128(1), Uuid::from_u128(2));
+    let read = |seq: u64, room: Uuid, out: &str| super::super::action_log::ActionRecord {
+        seq,
+        room: Some(room),
+        scope: None,
+        operation: "tool/output".into(),
+        head: None,
+        result: Some(out.into()),
+        handle: None,
+        summary: None,
+        stored_chars: None,
+        stored_content: None,
+        run: None,
+        body: None,
+        received_ms: Some(seq),
+        act: Some(continuum_context::cause::Act {
+            fingerprint: continuum_context::cause::Fingerprint::of([("outputId", b"59db1a33".as_slice())]),
+            effect: ToolEffect::Reopens,
+        }),
+    };
+    let mut log = super::super::action_log::ActionLog::default();
+    log.push(read(1, room, "the same output"));
+    log.push(read(2, room, "the same output"));
+    assert_eq!(log.repeat_run(2).map(|r| r.times), Some(2));
+    assert_eq!(log.drain_through(2).len(), 2, "her view folded both earlier reads out of RAM");
+    log.push(read(3, room, "the same output"));
+    assert_eq!(log.repeat_run(3).map(|r| r.times), Some(3), "the run spans the fold");
+    let restored = super::super::action_log::ActionLog::from_records(log.records().cloned().collect());
+    assert_eq!(restored.repeat_run(3).map(|r| r.times), Some(3), "and a restart");
+    log.push(read(4, other, "the same output"));
+    assert_eq!(log.repeat_run(4), None, "another room's act starts its own run");
+    log.push(read(5, room, "a different output"));
+    assert_eq!(log.repeat_run(5), None, "a changed outcome ends it");
 }

@@ -59,7 +59,8 @@ fn admitted(t: &crate::genome::gene_trial::GeneTrial, boot: Uuid) -> GeneExamRec
 
 // what this catches: an examiner that sits a gene twice, never sits a new one, re-sits
 // retention in the same process that admitted it (that is no restart), never sits it after
-// one, or leaves a decision a receipt already made out of the trial file.
+// one, leaves a decision a receipt already made out of the trial file, or never again tries
+// a gene one process could not examine (card efcf6afb: served unjudged for 55 h).
 #[test]
 fn what_is_owed_follows_the_trials_and_their_receipts() {
     let dir = tempfile::tempdir().expect("test: dir");
@@ -82,8 +83,13 @@ fn what_is_owed_follows_the_trials_and_their_receipts() {
     assert_eq!(owed(boot), vec![(fresh.id, ExamKind::Initial), (unsettled.id, ExamKind::Settle)], "same process: no retention");
     assert_eq!(
         owed(later),
-        vec![(fresh.id, ExamKind::Initial), (promoted.id, ExamKind::Retention), (unsettled.id, ExamKind::Settle)],
-        "a later process owes the retention re-run"
+        vec![
+            (fresh.id, ExamKind::Initial),
+            (promoted.id, ExamKind::Retention),
+            (unsettled.id, ExamKind::Settle),
+            (unexaminable.id, ExamKind::Initial),
+        ],
+        "a later process owes the retention re-run, and another try at a gene it could not examine"
     );
     let mut retained = admitted(&promoted, boot);
     let s = sitting((a(5, 6), a(1, 6)), (a(6, 6), a(6, 6)), unmeasured());
