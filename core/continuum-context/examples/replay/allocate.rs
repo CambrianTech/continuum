@@ -31,7 +31,9 @@
 //! (`replay/epoch.rs`), as the live core runs them: each view source's basis is what the plan kept
 //! of it on her previous act, a grant below it is a turnover. That plan is priced by `--fit`: `live`
 //! (the default) her running fit, fed each completed act's timing (`ActTimeFit::observe`) as the
-//! core feeds it, so a change to the fit shows up here; `node` the NODE fit. Per resident it prints:
+//! core feeds it, so a change to the fit shows up here; `node` the NODE fit; `pooled` one fit per
+//! model over every resident's acts before this one, in time order (causal, as a node-wide fit would
+//! price live). Per resident it prints:
 //! turnovers (count and per act), the mean held basis (view tokens the epoch already sent), the mean
 //! predicted fresh tokens per act (her new tail, the re-prefill on a turnover) beside the engine's
 //! measured mean, and the mean predicted seconds per act on the NODE curve at those fresh tokens.
@@ -212,8 +214,11 @@ struct Columns {
 enum Fit {
     /// Her running fit, fed each completed act as the core feeds it.
     Live,
-    /// One fit over every act of every file given.
+    /// One fit over every act of every file given (it sees acts after the one it prices).
     Node,
+    /// One fit per model over every resident's acts BEFORE this one, in time order: what a
+    /// node-wide fit would price live (act time is the engine's and model's, never one mind's).
+    Pooled,
 }
 
 pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
@@ -229,7 +234,8 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
                 fit_by = match args.next().as_deref() {
                     Some("live") => Fit::Live,
                     Some("node") => Fit::Node,
-                    other => return Err(format!("--fit takes live or node, not {other:?}").into()),
+                    Some("pooled") => Fit::Pooled,
+                    other => return Err(format!("--fit takes live, node or pooled, not {other:?}").into()),
                 }
             }
             flag if flag.starts_with("--") => return Err(format!("--allocate does not take {flag}").into()),
@@ -251,9 +257,22 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         println!("allocate: the node's act time is unmeasured over {} acts: nothing to price", node.acts());
         return Ok(());
     };
+    // POOLED: every resident's acts on the model, in time order, before this act (causal).
+    let mut pooled: HashMap<(usize, usize), ContextPrice> = HashMap::new();
+    if fit_by == Fit::Pooled {
+        let mut order: Vec<(u64, usize, usize)> = residents.iter().enumerate().flat_map(|(r, (_, acts))| acts.iter().enumerate().map(move |(i, act)| (act.at_ms, r, i))).collect();
+        order.sort_unstable();
+        let mut fits: HashMap<&str, ActTimeFit> = HashMap::new();
+        for (_, r, i) in order {
+            let act = &residents[r].1[i];
+            let fit = fits.entry(act.model.as_str()).or_default();
+            pooled.insert((r, i), fit.price());
+            fit.observe(&act.sample);
+        }
+    }
     println!("node act time: {} acts, measured contexts {:?}, {:.1} s at 20k, {:.1} s at 40k", node.acts(), time.measured(), time.seconds(20_000.0), time.seconds(40_000.0));
-    println!("resident | acts | sent med/p90 | kept med/p90 | unpriced kept med | kept/sent med | held/window med | s/act at sent, kept (curve) | tools sent, kept med | held/binds/outside/unmeasured | live priced | live kept med | epoch ({}): turnovers (/act) | held basis mean | fresh/act pred, meas mean | s/act epoch mean | value mean, per s", if fit_by == Fit::Live { "live fit" } else { "node fit" });
-    for (name, acts) in &residents {
+    println!("resident | acts | sent med/p90 | kept med/p90 | unpriced kept med | kept/sent med | held/window med | s/act at sent, kept (curve) | tools sent, kept med | held/binds/outside/unmeasured | live priced | live kept med | epoch ({}): turnovers (/act) | held basis mean | fresh/act pred, meas mean | s/act epoch mean | value mean, per s", match fit_by { Fit::Live => "live fit", Fit::Node => "node fit", Fit::Pooled => "pooled fit" });
+    for (resident, (name, acts)) in residents.iter().enumerate() {
         let mut c = Columns::default();
         let mut outputs: Vec<u32> = Vec::new();
         let mut live: HashMap<String, ActTimeFit> = HashMap::new();
@@ -286,7 +305,11 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             c.live_priced += usize::from(matches!(live_price, ContextPrice::Measured(_)));
             c.live_kept.push(f64::from(kept(&allocate(act.window, claims(act, need, live_price))).min(sent)));
             // EPOCH: her view's basis is what her epoch sent; the plan's grants are the next basis.
-            let mut held_claims = claims(act, need, if fit_by == Fit::Live { live_price } else { ContextPrice::Measured(time) });
+            let mut held_claims = claims(act, need, match fit_by {
+                Fit::Live => live_price,
+                Fit::Node => ContextPrice::Measured(time),
+                Fit::Pooled => pooled.get(&(resident, index)).copied().unwrap_or(ContextPrice::Unmeasured), // unwrap_or: every act was walked above
+            });
             let basis = epoch.hold(&mut held_claims);
             let carried = allocate(act.window, held_claims);
             let step = epoch.record(&carried, turn_key(act), sent);
