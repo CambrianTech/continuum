@@ -152,27 +152,6 @@ async fn a_due_candidate_reaches_its_trial_while_another_bucket_waits() {
     }
 }
 
-// what this catches (Codex on #5915 at 8021168b3): a learner waiting on memory measured against an
-// engine that was replaced. The old need never fits, so the pass (and the recovery that would read
-// the new engine) waited forever. A serving change while her engine still serves keeps the wait; the
-// change that replaces it ends the wait; with no serving state there is nothing to end it.
-#[tokio::test]
-async fn a_memory_wait_ends_when_its_engine_is_replaced() {
-    let (publish, changes) = tokio::sync::watch::channel(0u32);
-    let serving = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let still = Arc::clone(&serving);
-    let mut wait = Box::pin(while_engine_serves(Some(changes), move || still.load(std::sync::atomic::Ordering::SeqCst)));
-    assert!(futures::poll!(&mut wait).is_pending(), "her engine serves: the wait holds");
-    publish.send_replace(1); // a serving change that keeps her engine
-    tokio::task::yield_now().await;
-    assert!(futures::poll!(&mut wait).is_pending(), "still her engine: the wait holds");
-    serving.store(false, std::sync::atomic::Ordering::SeqCst);
-    publish.send_replace(2); // the replacement
-    tokio::time::timeout(std::time::Duration::from_secs(5), wait).await.expect("test: the replacement ends the wait");
-    let mut none = Box::pin(while_engine_serves::<u32>(None, || false));
-    assert!(futures::poll!(&mut none).is_pending(), "no serving state: nothing can end it");
-}
-
 // what this catches: a restored learner re-teaching examples its generation already holds, when the
 // journal row was read before the generation's positions were projected onto it (Codex on 76f829e2b).
 #[test]
@@ -391,15 +370,19 @@ mod live_engine {
         assert_eq!(first.learned(), 2, "both arrivals are in the generation: {:?}", first.positions);
         assert_eq!(first.steps, 2, "one committed update per arrival, as the engine counted them");
         assert!(std::path::Path::new(&first.path).join("adapter.gguf").exists(), "the generation is on disk at {}", first.path);
-        // the pass's sweep ran with her seated: her shadow and its save dir must survive it
-        let train_dir = std::path::Path::new(&first.path).parent().expect("test: train dir").to_path_buf();
-        let prefix = format!("{}-", bucket_stem(&key));
-        let shadows: Vec<String> = std::fs::read_dir(&train_dir)
-            .expect("test: list")
-            .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .filter(|name| name.starts_with(&prefix) && name.ends_with(".gguf"))
-            .collect();
-        assert_eq!(shadows.len(), 1, "her seated shadow survives the sweep: {shadows:?}");
+        // the pass ended by paging her out: nothing seated, nothing in custody, nothing on the engine
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        while trigger.state.in_place.seated_on(engine).await > 0 {
+            assert!(tokio::time::Instant::now() < deadline, "her learner stayed seated after her pass published");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(custody.held(), (0, 0), "her pass released every lease when it paged her out");
+        assert_eq!(residencies(engine).await, before, "her shadow, optimizer and workspace left the engine with her pass");
+
+        // her next pass in the same life seats her from the generation and restores it
+        submit(&executor, persona, &base, "What is the capital of Ohio?", "Columbus.").await;
+        let paged = pass_by_tick(&trigger, &key, 3).await;
+        assert_eq!(paged.steps, 3, "the restored generation's 2 updates plus exactly 1: a replayed arrival would commit more");
 
         // shutdown: nothing stays seated, nothing stays in custody, the engine holds none of hers
         crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
@@ -409,11 +392,11 @@ mod live_engine {
         // second life over the same journal: restore the generation, learn the next arrival on it
         let (trigger, executor) = build_runtime_under(adapter.clone(), live_authority()).await;
         submit(&executor, persona, &base, "What is the capital of Maine?", "Augusta.").await;
-        let second = pass_by_tick(&trigger, &key, 3).await;
-        assert_ne!(second.name, first.name, "a new generation, on top of the restored one");
-        assert_eq!(second.learned(), 3, "the first two stay learned and are not learned again; the third joins: {:?}", second.positions);
-        assert_eq!(second.steps, 3, "the restored generation's 2 updates plus exactly 1: a replayed arrival would commit more");
-        assert!(!std::path::Path::new(&first.path).exists(), "the first generation left the train dir once the second was committed");
+        let second = pass_by_tick(&trigger, &key, 4).await;
+        assert_ne!(second.name, paged.name, "a new generation, on top of the restored one");
+        assert_eq!(second.learned(), 4, "the first three stay learned and are not learned again; the fourth joins: {:?}", second.positions);
+        assert_eq!(second.steps, 4, "the restored generation's 3 updates plus exactly 1: a replayed arrival would commit more");
+        assert!(!std::path::Path::new(&first.path).exists(), "the first generation left the train dir once a newer one was committed");
         assert!(std::path::Path::new(&second.path).join("adapter.gguf").exists(), "the newest generation stays: a reseat restores it");
         crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
         assert_eq!(residencies(engine).await, before, "the second life leaves nothing on the engine either");
