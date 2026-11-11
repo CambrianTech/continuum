@@ -397,7 +397,7 @@ Perception alone is not a course. A history becomes one through the lesson path 
 3. **The doctor writes its family:** generic tasks with oracles the world grades (§11 step 2), set in scratch repositories, never trivia about the repo the lesson came from.
 4. **A gene is trained and examined** on the lesson's unseen tasks and `lc-unrelated`, then re-sat after a restart (§11 steps 4 and 5). It is kept only when it lifts.
 
-**Order and scope.** The course is the history in time order, so a mind learns a codebase the way its team did. `.continuum/scope` decides what may be read. Private history trains only on the user's own nodes. Secrets never enter a correction.
+**Order and scope.** The course reads newest first and pages back while lessons still pay (Joel, 2026-11-11: "recency backwards more likely better"). Recent corrections name code that still exists. Older ones may be superseded, like "quarantine legacy, never delete it", which later became "legacy is a git tag", and newest-first meets the current rule before the one it overturned, so a contradicting older lesson is recognised as superseded and never trained. Each correction's own evidence (what was done, the review, the fix) is still read in its local order. `.continuum/scope` decides what may be read. Private history trains only on the user's own nodes. Secrets never enter a correction.
 
 **First course: this repo.** It is the dogfood source. Its PR reviews, the airc rooms and the Claude and Codex sessions that built it hold hundreds of corrections. 2026-11-11 alone produced at least these:
 - *a file named in feedback that is not where you looked is searched for before you conclude it is gone* (Aiko, #5923);
