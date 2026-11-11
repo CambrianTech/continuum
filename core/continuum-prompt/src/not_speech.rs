@@ -167,9 +167,12 @@ fn opens_with_tool_envelope(t: &str) -> bool {
         if let Some((before_close, after_close)) = rest.split_once(']') {
             let trimmed_after = after_close.trim_start();
 
-            // Comma-with-bracket form: [ns/verb,{…}] — object is inside bracket after comma.
+            // Comma-with-bracket form: [ns/verb,{…}] or [verb,{…}]
+            // The comma+brace structure is the tool envelope signal; namespace
+            // slash is NOT required because non-namespaced verbs like `code/read`
+            // are also valid tool calls (card 4b1e245c measurement).
             if let Some((comma_verb, _comma_rest)) = before_close.split_once(',') {
-                if verb_ok(comma_verb) && comma_verb.contains('/')
+                if verb_ok(comma_verb)
                     && _comma_rest.trim_start().starts_with('{')
                 {
                     return true;
