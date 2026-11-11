@@ -194,9 +194,14 @@ impl ActTime {
         self.fresh.at(context).clamp(0.0, context.max(0.0))
     }
 
-    /// Seconds one act spends holding `context` tokens.
+    /// Seconds one act spends holding `context` tokens, at her fitted fresh tokens per act.
     pub fn seconds(&self, context: f64) -> f64 {
-        let fresh = self.fresh_at(context);
+        self.seconds_prefilling(context, self.fresh_at(context))
+    }
+
+    /// Seconds one act spends holding `context` tokens when `fresh` of them are prefilled: the
+    /// allocation dyno's epoch knows each act's fresh tokens (its tail, or a turnover's re-prefill).
+    pub fn seconds_prefilling(&self, context: f64, fresh: f64) -> f64 {
         self.output * self.decode.at(context + self.output / 2.0) + fresh * self.prefill.at(context - fresh / 2.0)
     }
 

@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! cargo run -p continuum-context --example replay -- --allocate --since 2026-11-07T00:00Z \
-//!     [--until <UTC>] [--trace <act index>,...] [<capture.jsonl>...]
+//!     [--until <UTC>] [--fit live|node] [--trace <act index>,...] [<capture.jsonl>...]
 //! ```
 //!
 //! Each completed request becomes an `ActClaims`, priced in tokens at that act's own billed
@@ -26,16 +26,28 @@
 //! window over the served one, predicted seconds per act at sent and at kept, her tools sent and
 //! kept, what the price decided (held / window binds / outside the measured contexts / unmeasured)
 //! and how many acts the LIVE fit priced. `--trace` prints every claim of the acts named.
+//!
+//! EPOCH: each resident's acts, in capture order, also run through her running epoch
+//! (`replay/epoch.rs`), as the live core runs them: each view source's basis is what the plan kept
+//! of it on her previous act, a grant below it is a turnover. That plan is priced by `--fit`: `live`
+//! (the default) her running fit, fed each completed act's timing (`ActTimeFit::observe`) as the
+//! core feeds it, so a change to the fit shows up here; `node` the NODE fit. Per resident it prints:
+//! turnovers (count and per act), the mean held basis (view tokens the epoch already sent), the mean
+//! predicted fresh tokens per act (her new tail, the re-prefill on a turnover) beside the engine's
+//! measured mean, and the mean predicted seconds per act on the NODE curve at those fresh tokens.
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
 
-use continuum_context::allocation::{allocate, id, ActClaims, ActPlan, Consumer, Head, Leveled, Newest, Priced, Rungs, Span, ViewClaim};
+use continuum_context::allocation::{allocate, id, ActClaims, Consumer, Head, Leveled, Newest, Priced, Rungs, Span, ViewClaim};
 use continuum_context::flex::FlexClaim;
 use continuum_context::price::{ActSample, ActTimeFit, ContextPrice};
 use serde_json::Value;
 
 use crate::acts::{default_paths, utc};
 use crate::captures::{self, Window};
+use crate::epoch::{kept, Epoch};
+use crate::price::sample;
 
 /// One completed act: its request, its window and its engine timing.
 struct Act {
@@ -45,23 +57,6 @@ struct Act {
     model: String,
     sample: ActSample,
     request: Value,
-}
-
-fn sample(row: &Value) -> Option<ActSample> {
-    if row["event"].as_str() != Some("completed") {
-        return None;
-    }
-    let response = &row["response"];
-    let timing = &response["timing"];
-    let count = |value: &Value| value.as_u64().and_then(|n| u32::try_from(n).ok());
-    Some(ActSample {
-        input: count(&response["usage"]["inputTokens"])?,
-        cached: count(&timing["cachedTokens"])?,
-        fresh: count(&timing["prefillTokens"])?,
-        prefill_ms: timing["prefillMs"].as_f64()?,
-        output: count(&timing["decodeTokens"])?,
-        decode_ms: timing["decodeMs"].as_f64()?,
-    })
 }
 
 /// Every completed act of one capture file inside `window`, oldest first.
@@ -86,6 +81,24 @@ fn acts_of(path: &str, window: Window) -> Result<Vec<Act>, Box<dyn std::error::E
     Ok(acts)
 }
 
+/// Her messages, each with its role.
+fn messages(request: &Value) -> Vec<(&str, String)> {
+    request["messages"].as_array().into_iter().flatten().map(|m| (m["role"].as_str().unwrap_or_default(), captures::text(m))).collect() // unwrap_or_default: a message without a role is no assistant
+}
+
+/// Where her act loop starts: her first assistant message (the ask is the message before it).
+fn loop_at(messages: &[(&str, String)]) -> usize {
+    messages.iter().position(|(role, _)| *role == "assistant").unwrap_or(messages.len()) // unwrap_or: an act with no loop is all view and ask
+}
+
+/// The key of her act's turn: its ask. Acts of one turn share it, so her loop stays resident.
+fn turn_key(act: &Act) -> u64 {
+    let messages = messages(&act.request);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    loop_at(&messages).checked_sub(1).map(|at| &messages[at].1).hash(&mut hasher);
+    hasher.finish()
+}
+
 fn first_line(text: &str) -> usize {
     text.lines().next().map_or(0, |line| line.chars().take(185).count()).max(1) // map_or: an empty text points at nothing
 }
@@ -93,7 +106,7 @@ fn first_line(text: &str) -> usize {
 /// One act's claims, in tokens at its own billed density.
 fn claims(act: &Act, reply_need: u32, price: ContextPrice) -> ActClaims {
     let request = &act.request;
-    let messages: Vec<(&str, String)> = request["messages"].as_array().into_iter().flatten().map(|m| (m["role"].as_str().unwrap_or_default(), captures::text(m))).collect(); // unwrap_or_default: a message without a role is no assistant
+    let messages = messages(request);
     let system = request["systemPrompt"].as_str().unwrap_or_default(); // unwrap_or_default: a request without a system prompt frames nothing
     let tools: Vec<&Value> = request["tools"].as_array().into_iter().flatten().collect();
     let chars = system.chars().count() + tools.iter().map(|t| t.to_string().chars().count()).sum::<usize>() + messages.iter().map(|(_, t)| t.chars().count()).sum::<usize>();
@@ -108,7 +121,7 @@ fn claims(act: &Act, reply_need: u32, price: ContextPrice) -> ActClaims {
         })
         .collect();
     // Her act loop starts at her first assistant message; the ask is the message before it.
-    let loop_at = messages.iter().position(|(role, _)| *role == "assistant").unwrap_or(messages.len()); // unwrap_or: an act with no loop is all view and ask
+    let loop_at = loop_at(&messages);
     let ask_at = loop_at.checked_sub(1);
     let required = Leveled::one(Rungs::whole(ask_at.map_or(0, |at| tok(messages[at].1.chars().count())))); // map_or: no ask is no required input
     let (mut newest, mut last_move, mut history) = (Newest::Absent, Leveled::default(), 0usize);
@@ -160,9 +173,8 @@ fn claims(act: &Act, reply_need: u32, price: ContextPrice) -> ActClaims {
     }
 }
 
-/// What the plan holds for her prompt: every grant but the reply's.
-fn kept(plan: &ActPlan) -> u32 {
-    plan.claims().iter().filter(|claim| claim.source_id != id::REPLY).map(|claim| plan.granted(&claim.source_id)).sum()
+fn mean(values: &[f64]) -> f64 {
+    values.iter().sum::<f64>() / values.len().max(1) as f64
 }
 
 fn pct(mut values: Vec<f64>, at: f64) -> f64 {
@@ -185,17 +197,38 @@ struct Columns {
     decided: [usize; 4],
     live_priced: usize,
     live_kept: Vec<f64>,
+    turnovers: usize,
+    basis: Vec<f64>,
+    fresh: Vec<f64>,
+    fresh_measured: Vec<f64>,
+    seconds_epoch: Vec<f64>,
+}
+
+/// Which fit prices the epoch's plan.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fit {
+    /// Her running fit, fed each completed act as the core feeds it.
+    Live,
+    /// One fit over every act of every file given.
+    Node,
 }
 
 pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     let mut window = Window::default();
-    let (mut paths, mut trace) = (Vec::new(), Vec::new());
+    let (mut paths, mut trace, mut fit_by) = (Vec::new(), Vec::new(), Fit::Live);
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--since" => window.since_ms = Some(utc("--since", args.next())?),
             "--until" => window.until_ms = Some(utc("--until", args.next())?),
             "--trace" => trace = args.next().ok_or("--trace needs act indexes, e.g. 3,17")?.split(',').filter_map(|i| i.parse::<usize>().ok()).collect(),
+            "--fit" => {
+                fit_by = match args.next().as_deref() {
+                    Some("live") => Fit::Live,
+                    Some("node") => Fit::Node,
+                    other => return Err(format!("--fit takes live or node, not {other:?}").into()),
+                }
+            }
             flag if flag.starts_with("--") => return Err(format!("--allocate does not take {flag}").into()),
             _ => paths.push(arg),
         }
@@ -216,11 +249,12 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     println!("node act time: {} acts, measured contexts {:?}, {:.1} s at 20k, {:.1} s at 40k", node.acts(), time.measured(), time.seconds(20_000.0), time.seconds(40_000.0));
-    println!("resident | acts | sent med/p90 | kept med/p90 | unpriced kept med | kept/sent med | held/window med | s/act at sent, kept (curve) | tools sent, kept med | held/binds/outside/unmeasured | live priced | live kept med");
+    println!("resident | acts | sent med/p90 | kept med/p90 | unpriced kept med | kept/sent med | held/window med | s/act at sent, kept (curve) | tools sent, kept med | held/binds/outside/unmeasured | live priced | live kept med | epoch ({}): turnovers (/act) | held basis mean | fresh/act pred, meas mean | s/act epoch mean", if fit_by == Fit::Live { "live fit" } else { "node fit" });
     for (name, acts) in &residents {
         let mut c = Columns::default();
         let mut outputs: Vec<u32> = Vec::new();
         let mut live: HashMap<String, ActTimeFit> = HashMap::new();
+        let mut epoch = Epoch::default();
         for (index, act) in acts.iter().enumerate() {
             let need = outputs.iter().rev().take(20).copied().max().unwrap_or(256).max(256); // unwrap_or: no output yet needs the least a reply holds
             let sent = act.sample.input;
@@ -248,10 +282,21 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             let live_price = fit.price();
             c.live_priced += usize::from(matches!(live_price, ContextPrice::Measured(_)));
             c.live_kept.push(f64::from(kept(&allocate(act.window, claims(act, need, live_price))).min(sent)));
+            // EPOCH: her view's basis is what her epoch sent; the plan's grants are the next basis.
+            let mut held_claims = claims(act, need, if fit_by == Fit::Live { live_price } else { ContextPrice::Measured(time) });
+            let basis = epoch.hold(&mut held_claims);
+            let carried = allocate(act.window, held_claims);
+            let step = epoch.record(&carried, turn_key(act), sent);
+            c.turnovers += usize::from(step.turnover);
+            c.basis.push(f64::from(basis));
+            c.fresh.push(f64::from(step.fresh));
+            c.fresh_measured.push(f64::from(act.sample.fresh));
+            c.seconds_epoch.push(time.seconds_prefilling(f64::from(step.kept), f64::from(step.fresh)));
             fit.observe(&act.sample);
             outputs.push(act.sample.output);
             if trace.contains(&index) {
                 println!("  {name} act {index} {} window {} sent {sent}: {:?}", act.purpose, act.window, priced.priced);
+                println!("    epoch: basis {basis}, {step:?}, {:?}", carried.priced);
                 for claim in priced.claims() {
                     println!("    {:<28} p{:>2} floor {:>6} want {:>7} | priced {:>6} | unpriced {:>6}", claim.source_id, claim.priority, claim.floor_tokens, claim.max_tokens, priced.granted(&claim.source_id), unpriced.granted(&claim.source_id));
                 }
@@ -267,7 +312,7 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             m
         });
         println!(
-            "{name} | {n} | {:.0}/{:.0} | {:.0}/{:.0} | {:.0} | {:.0}% | {:.0}% | {:.0}, {:.0} | {:.0}, {:.0} | {}/{}/{}/{} | {}/{n} | {:.0}   ({} models)",
+            "{name} | {n} | {:.0}/{:.0} | {:.0}/{:.0} | {:.0} | {:.0}% | {:.0}% | {:.0}, {:.0} | {:.0}, {:.0} | {}/{}/{}/{} | {}/{n} | {:.0} | {} ({:.2}) | {:.0} | {:.0}, {:.0} | {:.1}   ({} models)",
             pct(c.sent.clone(), 0.5),
             pct(c.sent, 0.9),
             pct(c.kept.clone(), 0.5),
@@ -285,6 +330,12 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             c.decided[3],
             c.live_priced,
             pct(c.live_kept, 0.5),
+            c.turnovers,
+            c.turnovers as f64 / n.max(1) as f64,
+            mean(&c.basis),
+            mean(&c.fresh),
+            mean(&c.fresh_measured),
+            mean(&c.seconds_epoch),
             by_model.len(),
         );
     }

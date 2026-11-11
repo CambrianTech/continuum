@@ -75,6 +75,8 @@ mod paged;
 mod price;
 #[path = "replay/allocate.rs"]
 mod allocate;
+#[path = "replay/epoch.rs"]
+mod epoch;
 #[path = "replay/sediment.rs"]
 mod sediment;
 use continuum_context::view::View;
