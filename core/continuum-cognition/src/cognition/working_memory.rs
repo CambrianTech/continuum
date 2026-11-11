@@ -97,6 +97,11 @@ struct ResultAttribution<'a> {
     room: Option<Uuid>,
     operation: Option<&'a str>,
     spill_handle: Option<&'a str>,
+    /// Her newest act repeating earlier ones with an unchanged outcome: said in the label her
+    /// result wears, so her next input differs from her last even when the result's bytes do
+    /// not (IntelMac, 2026-11-11: one saved output re-read 20 times, each read byte-identical,
+    /// while the view's repeat level never reached the newest result).
+    repeat: Option<action_log::RepeatOf>,
 }
 
 impl std::fmt::Display for ResultAttribution<'_> {
@@ -109,6 +114,9 @@ impl std::fmt::Display for ResultAttribution<'_> {
         match self.operation {
             Some(operation) => write!(f, "; operation {operation}")?,
             None => f.write_str("; operation unrecorded")?,
+        }
+        if let Some(repeat) = self.repeat {
+            write!(f, "; repeat of #{} ({} times), outcome unchanged", repeat.last, repeat.times)?;
         }
         if let Some(handle) = self.spill_handle {
             write!(f, "; saved: {}", Reopen::Output(handle))?;
@@ -124,6 +132,7 @@ impl<'a> ResultAttribution<'a> {
             room: record.room,
             operation: Some(&record.operation),
             spill_handle: record.handle.as_deref(),
+            repeat: None,
         }
     }
 }
@@ -231,26 +240,11 @@ pub struct WorkingMemory {
     /// break out organically. (2) it reads as a recency ordinal in the bid. Not used
     /// for reasoning entries (chain-of-thought already varies turn to turn).
     next_action_seq: AtomicU64,
-    /// Fingerprints (tool name + args) of recent ACTIONS — the loop-awareness channel.
-    /// Distinct from `entries`, which carries result HEADS that vary turn to turn (so an
-    /// identical call still *looks* new); this keys on the CALL alone, so
-    /// [`note_action_fingerprint`](Self::note_action_fingerprint) can tell the mind "you have
-    /// issued this exact call N times." The `#seq` window-shift alone proved too implicit for
-    /// smaller models to interpret — they re-issue the identical call despite the changing
-    /// window. Explicit repeat-perception (a true fact about her own hands, never a directive)
-    /// lets a looping mind SEE its redundancy and move on organically.
+    /// Fingerprints (tool name + args) of her recent ACTIONS, the `capacity`-deep window the
+    /// verb tally reads ([`action_verb_tally`](Self::action_verb_tally)): the shape of her recent
+    /// investigation. A repeat of one act with an unchanged outcome is her action log's to name
+    /// (`action_log::ActionLog::repeat_of`, rendered in her result's label).
     action_fps: Mutex<VecDeque<String>>,
-    /// DURABLE per-session repeat COUNT per fingerprint — independent of the tiny
-    /// `capacity`-bounded `action_fps` window above. The default capacity is 3, so a
-    /// windowed count STRUCTURALLY caps at 3: the moment any other act interleaves,
-    /// the identical call is evicted before it can be counted again, and a deepening
-    /// loop reads "3 times" forever. Glass-boxed 2026-07-14: Atlas re-issued ONE
-    /// identical `code/tree{max_depth:1}` 38× while the loop-warning stayed pinned at
-    /// "3 times", conveying none of the spiral. This map accumulates over the whole
-    /// spawn so loop-awareness ESCALATES honestly (3 → 10 → 38). Distinct fingerprints
-    /// per session are naturally modest (a persona issues dozens of distinct calls,
-    /// not millions), so it is left unbounded within the per-spawn lifetime.
-    action_fp_counts: Mutex<HashMap<String, usize>>,
     /// Her actions, one record each ([`action_log`]): the ledger line every act leaves
     /// (#414: act history must survive the chatty `entries` ring, measured 2026-08-14 when
     /// Asha's 2,863 acts rendered as one), the whole result while it fits her window's

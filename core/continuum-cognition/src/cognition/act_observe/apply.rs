@@ -345,14 +345,13 @@ pub async fn apply_act(
     // Loop-awareness (experience structure): fingerprint each call (name+args) so the mind
     // perceives when it is RE-ISSUING an identical call. The result HEAD varies turn to turn,
     // so `entries`/`#seq` alone make a repeat look "new"; the fingerprint keys on the call.
-    let mut max_repeat = 0usize;
     for call in fg_calls.iter() {
         let fp = format!(
             "{}|{}",
             call.name,
             serde_json::to_string(&call.input).unwrap_or_default()
         );
-        max_repeat = max_repeat.max(body.working_memory.note_action_fingerprint(&fp));
+        body.working_memory.note_action_fingerprint(&fp);
         // The TYPED act is the SINGLE source now (Step 5). Correlate the result by
         // `tool_use_id == call.id` (NOT the positional `.get(i)` the old string render
         // used) — id-correlation is immune to the fg-vs-original index hazard (invariant
@@ -578,17 +577,8 @@ pub async fn apply_act(
         recall_observation.push_str(note);
         recall_observation.push_str("\n\n");
     }
-    let mut observation = observation.trim().to_string();
+    let observation = observation.trim().to_string();
     let recall_observation = recall_observation.trim().to_string();
-
-    // Count requests without claiming their results are identical or still retained.
-    // The actual result below is authoritative, including errors and changed state.
-    if max_repeat >= 2 {
-        observation = format!(
-            "[repetition] A call in this batch has been requested {max_repeat} times. \
-             This execution's result follows.\n\n{observation}"
-        );
-    }
 
     // Admit the outcome as an Episodic engram through the ONE production admit
     // path (a self-observation message from the persona to itself). This is the

@@ -78,6 +78,14 @@ impl crate::sdk_codegen::RefusalCause for ActOutputRefusal {
     }
 }
 
+/// An act repeating earlier ones: `last` is the newest earlier act it repeats, `times` counts
+/// them all, this one included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RepeatOf {
+    pub last: u64,
+    pub times: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ActionRecord {
     pub seq: u64,
@@ -139,6 +147,11 @@ pub(crate) struct ActionRecord {
 }
 
 impl ActionRecord {
+    /// What the act returned, as its hash: of the resident result, or kept from when it left RAM.
+    fn outcome(&self) -> Option<continuum_context::cause::ContentHash> {
+        self.result.as_deref().map(continuum_context::cause::ContentHash::of).or(self.stored_content)
+    }
+
     /// The key its per-call dependencies are filed under: its saved handle, or `seq:N` for
     /// a result whose save failed.
     pub fn receipt_key(&self) -> String {
@@ -226,6 +239,22 @@ impl ActionLog {
 
     pub fn push(&mut self, record: ActionRecord) {
         self.records.push_back(record);
+    }
+
+    /// Her act `seq` as a repeat of earlier acts of hers in this log: the same act (call and
+    /// effect, MIND-CONTEXT invariant 4) with a byte-identical outcome. `None` when it repeats
+    /// none, or carries no identity (a legacy receipt is never a repeat).
+    pub fn repeat_of(&self, seq: u64) -> Option<RepeatOf> {
+        let record = self.get(seq)?;
+        let act = record.act?;
+        let outcome = record.outcome()?;
+        let earlier: Vec<u64> = self
+            .records()
+            .filter(|other| other.seq < seq && other.act == Some(act) && other.outcome() == Some(outcome))
+            .map(|other| other.seq)
+            .collect();
+        let last = earlier.iter().copied().max()?;
+        Some(RepeatOf { last, times: earlier.len() + 1 })
     }
 
     pub fn get(&self, seq: u64) -> Option<&ActionRecord> {

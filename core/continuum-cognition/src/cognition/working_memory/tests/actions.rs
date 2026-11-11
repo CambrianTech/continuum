@@ -394,6 +394,24 @@ fn a_batch_receipts_summary_keeps_every_operation() {
     assert!(shell.contains("error[E0308]: mismatched types") && !shell.contains("[outline"), "an output keeps its ends: {shell}");
 }
 
+// what this catches: her newest result reaching her byte-identical act after act while she
+// repeats one call whose outcome never changes (IntelMac, 2026-11-11: one saved output re-read 20
+// times): the label her result wears names the repeat; a changed outcome or another call is none.
+#[test]
+fn the_newest_result_names_an_unchanged_repeat() {
+    let wm = WorkingMemory::new(8);
+    let list = |out: &str| act("code/list", serde_json::json!({"path": "."}), out.into());
+    for _ in 0..3 {
+        wm.record_receipt_typed(&[list("4 files")], "I ran code/list Result: 4 files", None, Default::default());
+    }
+    let newest = wm.snapshot().action_records().pop().expect("on record").seq;
+    let label = wm.result_label(newest);
+    assert!(label.contains(&format!("repeat of #{} (3 times), outcome unchanged", newest - 1)), "{label}");
+    wm.record_receipt_typed(&[list("5 files")], "I ran code/list Result: 5 files", None, Default::default());
+    assert!(!wm.result_label(newest + 1).contains("repeat of"), "a changed outcome is no repeat");
+    assert!(!wm.result_label(newest - 2).contains("repeat of"), "the first act repeats nothing");
+}
+
 // what this catches: an act's declared effects (`ActionRecord.act`, MIND-CONTEXT invariant 4) are
 // derived, like her view: a record written by a build whose `Act` had another shape must restore
 // with no act (that act is simply never a repeat), never refuse the checkpoint and the resident

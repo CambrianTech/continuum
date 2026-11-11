@@ -140,6 +140,7 @@ impl WorkingMemory {
             room: recorded.and_then(|record| record.room),
             operation: recorded.map(|record| record.operation.as_str()),
             spill_handle: recorded.and_then(|record| record.handle.as_deref()),
+            repeat: actions.repeat_of(seq),
         };
         format!("Full result of your most recent action ({attribution}):\n{full}")
     }
@@ -192,6 +193,7 @@ impl WorkingMemory {
             room: recorded.and_then(|record| record.room),
             operation: recorded.map(|record| record.operation.as_str()),
             spill_handle: recorded.and_then(|record| record.handle.as_deref()),
+            repeat: actions.repeat_of(seq),
         };
         format!("[result {attribution}]")
     }
