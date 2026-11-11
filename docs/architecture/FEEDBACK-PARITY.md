@@ -42,3 +42,27 @@ lesson from a correction becomes a gene, not a note.
 
 Gate for the whole table: each row is "none" or "better", each measured on a live node in a
 non-continuum activity (another project, any language, or no code at all).
+
+## The three general problems under the gaps (2026-11-11)
+
+Joel, 2026-11-11: "See the fundamental general problem and nuances as adaptations." Every gap found
+that day was one of three problems; each card is an adapter of one mechanism, never its own fix.
+
+1. **One fact, one owner, read live.** A stored copy drifted from the truth it copied: her window
+   (a stored "available" over her live grant, #5938), where she works (shell directory vs file-verb
+   root, card 566e390e), what memory is need (a cache counted as serving's need, 494c99f1), a grant
+   (a standing share vs her act's need, 7ce65258), the CI base (the last push vs canary, #5941).
+   Mechanism: each fact has one owner and every reader reads it live; any copy is a cache that
+   knows it can be stale; an adapter holds only what differs.
+2. **Everything addressed to her arrives, with a handle.** A peer's direct message never reached her
+   (2ec7abf1), a cut notice pointed nowhere (#5942), failures carried no evidence (d1ab6ea3), a
+   command's end was polled for (#5939, ce191b8c). Mechanism: one delivery path for messages,
+   process ends, refusals and cuts, routed on the typed recipient header, waking her as an interrupt
+   in the activity it concerns, carrying a handle to its evidence. Each event kind is an adapter that
+   says only how to name its evidence.
+3. **Nothing holds what it is not using.** A cache held as need, a learner holding memory through an
+   act (#5932), a fence holding the engine lock across a wait (7fc7e2ce), standing grants, a slot's
+   KV between acts. Mechanism: a resource is held for the use that needs it and given back when the
+   use ends; caches are always reclaimable, justified by predicted reuse; one reclaim path for every
+   holder. Each resource kind (KV, prompt cache, learner shadow, lock) is an adapter for how its
+   bytes go back and come back.
