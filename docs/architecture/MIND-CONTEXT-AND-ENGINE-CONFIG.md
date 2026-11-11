@@ -414,7 +414,14 @@ never read as a fast-path miss.
 **Proof before deploy.** The faculty replay (`fable/faculty-replay`) runs the captured acts through the
 old and new paths: bytes identical for every act that is not a repeat, the shared prefix between
 consecutive acts no shorter, a repeated reopen arriving as its repeat block, and across a replayed
-restart the render byte-identical to the one before it, framing aside (Cormac). Then the live read.
+restart the render byte-identical to the one before it, framing aside (Cormac). The engine sees
+identical bytes only if the render keeps the exact typed message sequence (Codex, from
+`request_body.rs`, which expands a tool use into assistant `tool_calls` and a tool result into
+`role=tool` with its `tool_call_id`): roles, ordering, content-part boundaries, call ids, names and
+argument bytes, which call each result answers, the framing's position, and no same-role coalescing
+across native tool boundaries. So the replay gates at BOTH the rendered messages and the final wire
+request's token prefix (same tools, template and generation flags), never text length or item hashes
+alone: keys and hashes prove provenance, not that the engine's KV holds the same tail. Then the live read.
 
 **Owners.** Fable (the source, the view, the deletions); Codex (the engine's view of the tail: what
 the KV cache holds across it); Cormac (checkpoints: the tail's items persist as the view's do).
