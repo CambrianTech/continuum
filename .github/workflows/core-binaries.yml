@@ -580,3 +580,32 @@ jobs:
               echo "pruning $tag"
               gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
             done
+
+  admit-next:
+    name: admit latest canary after publication
+    needs: [build, publish-check, publish-script-test, prune]
+    if: >-
+      success() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/canary' &&
+      vars.CORE_BINARIES_HOURLY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    # Same admission mutex as cron/check completion. The next build remains queued
+    # behind this workflow's existing canary concurrency group until we finish.
+    concurrency:
+      group: core-binaries-hourly-dispatch
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: canary
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node tools/scripts/core-binaries-hourly.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: 'false'
+          PUBLICATION_COMPLETION_KEY: ${{ inputs.build_key }}

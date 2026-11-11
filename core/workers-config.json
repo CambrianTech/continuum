@@ -18,15 +18,6 @@
       "enabled": true
     },
     {
-      "name": "inference-grpc",
-      "binary": "workers/target/release/inference-grpc",
-      "type": "tcp",
-      "port": 50051,
-      "description": "DEPRECATED: Candle inference now in continuum-core via CandleAdapter. Keep disabled.",
-      "enabled": false,
-      "memoryLimit": "8G"
-    },
-    {
       "name": "continuum-core",
       "binary": "workers/target/release/continuum-core-server",
       "socket": ".continuum/sockets/continuum-core.sock",

@@ -49,7 +49,6 @@ The Cargo workspace (root `Cargo.toml`) is the single source of build units. The
 | **Core** | `core/continuum-core` | `continuum-core-server` | `docker/continuum-core.Dockerfile` (+`-cuda`, `-vulkan`) | The headless substrate: commands, events, persona hosting. The foundation. |
 | **MCP sidecar** | `core/continuum-core` | `continuum-mcp` | (co-located w/ core) | Rust MCP server over stdio → core IPC socket. What MCP clients (Studio, Claude Code) spawn. |
 | **CLI / lifecycle** | `core/continuum-core` (bin) → **should migrate to `apps/cli`** | `continuum` | n/a (or thin) | `continuum start`/`stop` (lifecycle) + `continuum <command>` (uniform client). Replaces Node `./jtag`. |
-| **Inference** | `core/inference-grpc` | `inference-grpc` | (per topology) | GPU inference lane host. |
 | **LiveKit bridge** | `core/livekit-bridge` | `livekit-bridge` | `docker/livekit-bridge.Dockerfile` | Realtime media bridge. |
 | **llama-server** | *engine* | — | separate process | Our llama.cpp fork (`core/vendor/llama.cpp`): serving (`/v1` chat+embeddings), in-engine LoRA training, KV paging, multi-adapter serving. Addressed over `/v1`. |
 | **Clients (new)** | `client/*`, `apps/*` | web / mobile / desktop / task-trays | `docker/node-server.Dockerfile`, `docker/widget-server.Dockerfile` | Built ON TOP, on the uniform client SDK. Node only here. |

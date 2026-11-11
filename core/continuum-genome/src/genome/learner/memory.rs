@@ -81,6 +81,21 @@ fn covered(held: &[ResidencyRow], required: &[ResidencyRow]) -> bool {
     })
 }
 
+/// A replacement workspace's rows: every buffer the one it replaces was registered with and every
+/// buffer this example needs, each at the larger of the two. A longer example can need more on one
+/// buffer and less, or nothing, on another, and the engine refuses a replacement that does not
+/// cover the old registration (`uncovered`).
+fn widened(held: &[ResidencyRow], required: Vec<ResidencyRow>) -> Vec<ResidencyRow> {
+    let mut rows: Vec<ResidencyRow> = held.to_vec();
+    for need in required {
+        match rows.iter_mut().find(|row| row.device == need.device && row.buffer_type == need.buffer_type && row.host == need.host) {
+            Some(row) => row.bytes = row.bytes.max(need.bytes),
+            None => rows.push(need),
+        }
+    }
+    rows
+}
+
 /// The residencies a covered example learns inside.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Covered {
@@ -112,7 +127,13 @@ pub async fn cover(
     let (optimizer_rows, workspace_rows) = split(&plan.requirements);
     let workspace_residency = match workspace.as_ref() {
         Some(held) if held.covers(&workspace_rows) => held.claim.residency(),
-        _ => replace_workspace(authority, seat, consumer, workspace_rows, workspace).await?,
+        Some(held) => {
+            // The engine hands the old workspace's custody to the new one only when the new
+            // covers every row the old was registered with (claim_plan): never narrower.
+            let rows = widened(&held.rows, workspace_rows);
+            replace_workspace(authority, seat, consumer, rows, workspace).await?
+        }
+        None => replace_workspace(authority, seat, consumer, workspace_rows, workspace).await?,
     };
     let optimizer = match mind {
         Some(held) if covered(&held.rows, &optimizer_rows) => held.claim.residency(),
@@ -173,4 +194,28 @@ fn split(requirements: &[PlannedRow]) -> (Vec<ResidencyRow>, Vec<ResidencyRow>) 
         if kind == RowKind::SharedComputeRequired { workspace.push(resident) } else { optimizer.push(resident) }
     }
     (optimizer, workspace)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(device: &str, host: bool, bytes: u64) -> ResidencyRow {
+        ResidencyRow { device: device.into(), buffer_type: format!("{device}-buft"), kind: RowKind::SharedComputeRequired, bytes, host }
+    }
+
+    // what this catches (fork #107 measurement): a replacement workspace sized to the new example
+    // alone. A longer example can need more on the GPU and less on the host, or a buffer the old
+    // one held not at all; the engine then refuses the replacement as 'uncovered'.
+    #[test]
+    fn a_replacement_workspace_covers_the_one_it_replaces_and_the_new_need() {
+        let held = vec![row("gpu", false, 4_000), row("host", true, 7_000), row("cpu-extra", true, 512)];
+        let need = vec![row("gpu", false, 9_000), row("host", true, 2_500)];
+        let rows = widened(&held, need.clone());
+        assert!(covered(&rows, &held), "the replacement covers every old row");
+        assert!(covered(&rows, &need), "and this example's need");
+        assert_eq!(rows.len(), 3, "a buffer is listed once, at the larger size");
+        assert!(rows.iter().any(|r| r.device == "gpu" && r.bytes == 9_000));
+        assert!(rows.iter().any(|r| r.device == "host" && r.bytes == 7_000));
+    }
 }

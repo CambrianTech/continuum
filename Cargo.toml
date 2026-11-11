@@ -59,7 +59,6 @@ members = [
     "core/serving-replay",
     "core/continuum-orm-derive",
     "core/continuum-positron",
-    "core/inference-grpc",
     "core/jtag-mcp",
     "core/livekit-bridge",
     "core/livekit-protocol",
@@ -305,9 +304,7 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# gRPC
-tonic = "0.14"
-prost = "0.14"
+# Async streams
 tokio-stream = "0.1"
 
 # Timing and UUIDs (for JTAG protocol)
@@ -553,7 +550,7 @@ by_nature = ["continuum-cli-lifecycle", "jtag-mcp", "livekit-bridge", "llama", "
 pending = [
     "airc-test-fixtures", "continuum-airc-protocol", "continuum-bridge-protocol",
     "continuum-orm-derive", "continuum-positron", "continuum-text-analysis", "continuum-tool-protocol",
-    "expert-pager-policy", "inference-grpc", "serving-replay", "tool-working-set",
+    "expert-pager-policy", "serving-replay", "tool-working-set",
 ]
 # Tested crates whose lib tests run in their own steps (`matrix.crate == '...'`) in
 # continuum-rust-tests.yml, not in the generic `cargo test -p <crate> --lib` step.

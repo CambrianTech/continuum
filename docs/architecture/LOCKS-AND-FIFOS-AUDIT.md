@@ -121,5 +121,4 @@ semaphore permits).
 - Served generations are spawned.
 - `PerKeyGate` is per key.
 - The measured-hold defer is event-driven.
-- inference-grpc is disabled.
 - `ConcurrentProcessor` and `drain_all_personas` have no live caller.
