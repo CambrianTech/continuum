@@ -346,12 +346,17 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     }
 
     if note == Some(ReportedNote::CutAtLimit) {
+        // Name WHERE her draft is, never 'noted in your working memory': pointing nowhere, it sent
+        // Delia (IntelMac, 2026-11-11, 45+ min) reopening saved outputs to find it, each reopen
+        // nesting the last. The draft is the fact `cut_act_fact` records, by its exact opening words.
         return "Your last generation reached the output limit before a tool call was \
                 committed, so NOTHING ran and nothing changed — the act did not land. \
-                What you were composing is noted in your working memory. Do not \
-                re-check or redo earlier work that already landed. Commit the call \
-                first, with a smaller payload: state only what changed, not the full \
-                history, or split a large note across calls."
+                Your draft is already in front of you: the line in your own thoughts that \
+                begins \"my last act was CUT at the output limit\" quotes what you were \
+                composing. It is not in any saved output, so do not open outputs to find it. \
+                Do not re-check or redo earlier work that already landed. Commit the call \
+                now, with a smaller payload: state only what changed, not the full history, \
+                or split a large note across calls."
             .to_string();
     }
 
