@@ -158,12 +158,17 @@ pub(crate) async fn send_with_lane_retry(
                 header_bound.saturating_sub(quote_started.elapsed()),
             ).await?;
             let count_elapsed_ms = count_started.elapsed().as_millis() as u64;
-            super::serving_guard::guard_resident_model(
-                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller,
-            ).await?;
-            if let Some(DispatchAdmission { admission, .. }) = fill.admission {
-                super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }
-                    .check(admission.window, &cfg.name, quote.caller)?;
+            // ONE bound per request (SERVING-ENGINE section 8). An admitted request is bounded
+            // by its grant: admission sized it against the engine's own geometry and holds
+            // that much of the pool for this act, which may be more than an equal share. The
+            // lane's published share is the bound only for a caller with no grant. Checking an
+            // admitted request against the share too refused every act whose grant passed it:
+            // the M5, 2026-11-11 16:13Z, a 22,949-token prompt refused at a 136,517 grant
+            // against the 104,857 share, then landing on the retry sized to the share.
+            let measured = super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply };
+            match fill.admission {
+                Some(DispatchAdmission { admission, .. }) => measured.check(admission.window, &cfg.name, quote.caller)?,
+                None => super::serving_guard::guard_resident_model(cfg, quote.dedicated_lane, fill.model, measured, quote.caller).await?,
             }
             continuum_base::probe!(
                 class = "inference.prompt.prompt_quote",
