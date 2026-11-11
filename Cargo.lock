@@ -3060,6 +3060,7 @@ dependencies = [
  "dashmap",
  "futures",
  "inventory",
+ "parking_lot",
  "schemars",
  "serde",
  "serde_json",

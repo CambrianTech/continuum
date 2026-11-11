@@ -16,6 +16,7 @@ build = "../continuum-core/build.rs"
 # re-exports every moved module under its old path.
 
 [dependencies]
+parking_lot.workspace = true # the engine learning lock's holder record (in_place/engine_lock.rs)
 futures = { workspace = true }  # join every bucket's learning pass at once (training_trigger::in_place)
 continuum-mind = { path = "../continuum-mind" }
 continuum-academy = { path = "../continuum-academy" }

@@ -168,9 +168,9 @@ impl TrainingTriggerState {
                 continue;
             };
             let engine_learning = self.in_place.engine(engine);
-            let Ok(held) = Arc::clone(&engine_learning).try_lock_owned() else {
+            let Some(held) = engine_learning.try_acquire(Some(key.persona_id), super::engine_lock::Phase::Step) else {
                 drop((slot, lease));
-                drop(engine_learning.lock_owned().await);
+                drop(engine_learning.acquire(Some(key.persona_id), super::engine_lock::Phase::Step).await);
                 continue;
             };
             let step_rows = Arc::clone(&rows);
