@@ -451,8 +451,40 @@ prompt and holds the memory it lands in, so the next prompt is mostly known befo
 - *what minds share*: identical runs of attention cells across sequences are held once (`seq_cp`), one claim with
   several owners. The recurrent state at the end of a shared run is per sequence: copied, not shared, and each owner's
   own claim.
-A value without its measurement is the population's for the activity, marked so (provenance), and an unmeasured
-claim is granted only its floor.
+A value without its measurement is no value: the claim is not made until it is measured, never the population's
+number or a default (Joel, 2026-11-03: "use nothing not constants. Undefined type values is how you do it").
+
+**Admission is by the engine's cells, per request; a mind holds no window in advance** (2026-11-03, late; Joel:
+"Can't we deterministically get these values or is it a chicken egg situation?"). The chicken-and-egg was ours: we
+granted each mind a window ahead of her turns, estimated from her history, so a mind with no history needed a
+stand-in (a 2,048 floor, a population median, a bootstrap constant, a provisional trained window), and every drift
+rebound her. On a unified KV pool (`--kv-unified`) the only hard constraint is that the cells in use stay within
+`n_ctx`; a sequence holds exactly the cells its tokens occupy. So:
+- **What a request needs is exact and the engine's:** its prompt's tokens by the model's own tokenizer, minus the
+  prefix its sequence already holds, plus its `max_tokens` reply reserve (released when it ends). The core's
+  calibrated estimate (`view.rs`, `calibration.charge`) sizes her view; it never admits.
+- **What is free is the engine's report, never core arithmetic:** cells in use per sequence, in flight or idle. A
+  sequence's cached prefix stays in its cells after its request ends (that is the reuse we want), so free is not the
+  pool minus what is in flight: idle warm prefixes are held but evictable.
+- **Admission:** a request runs when its cells are free; otherwise the coldest IDLE sequence is evicted (`seq_rm`, or
+  paged out per fork #90 at its value) before the request waits, and a waiting request wakes on the engine's
+  cells-freed edge (a `Notify`), never a poll or a timer. No per-mind window, no grant map, no rebind.
+- **Her view** still compresses to the model's trained window (a fact of the model), and to the pool when the pool is
+  smaller; never to a window someone granted her.
+- **The launch** leaves `n_ctx` to the engine's own fit (`--fit on`, the fork's `common/fit.cpp`: a dry-run allocation
+  against the device's free memory at launch, a search against what the device can really allocate, never our formula).
+  The two inputs are measured: `--fit-target`, the memory the authority's other claims hold (never upstream's 1 GiB
+  default), and the fit's minimum context, the largest measured need on the seat, below which the launch is a typed
+  refusal, never a starved start (never upstream's 4,096). No launch reads a plan's transient and no relaunch grows it.
+
+The fork verbs this needs (S1-S3 of SERVING-ENGINE): `cells_used` per sequence (`llama_memory_seq_pos_min/max`), and
+`cells_needed(prompt, seq)` (tokenize, then the sequence's longest common prefix). `/slots` reports
+`n_prompt_tokens` and `n_prompt_tokens_cache` today, the per-request halves of the second, after the fact.
+
+**Deletes:** `capacity::window_grant` (`DemandFollowing`, `PoolGrants`), the re-home rebind on a grant, the
+provisional window in `materialize_adapters`, the growth relaunch (`pool_growth`, the quiesce, card ea54a1ce), and
+`MIN_SERVE_CTX` with `BOOTSTRAP_WORKING_SET`. **Owners:** admission (the cells-freed edge, the wait, the eviction hook,
+the deletions above) Cormac; the fork's cell verbs and the launch from facts Fable.
 
 **What this deletes:** `window_within`, `lanes_that_fit`, `ModelFootprint::pool_within`,
 `window_allocator::allocate`, the process-footprint inference (`lane_footprint`, `fixed_per_lane_bytes`),
@@ -521,6 +553,96 @@ replay; (c) at a chosen replay capacity of 16,384 tokens a resident completes a 
 **Validators:** replay the four residents' captures (`fixtures/prompt-captures`) against the fork's measured
 holdings: every clearing fits the reported capacity, resumes land at the predicted divergence, and fewer tokens are
 re-read than today's 1,244-resume baseline (80% within 8k, 10% past 25k).
+
+### Slice 5 in detail: everything that accumulates is drained by its class (2026-11-03)
+
+Joel, 2026-11-03: "Need drains to anything and everything that's accumulated"; "No SQL, no blind selects from
+ORM". Contract §6 already says every written directory is a class whose owner turns its grant into retention.
+That was never built: the eviction registry tracks 32 classes, 8 have an owner that drains (`OWNED`), 24 are a
+`DEFERRED` string with no drain, and some of the largest directories are not tracked at all. On the M5 that
+day:
+
+| Accumulation | Bytes | State |
+|---|---|---|
+| `~/.airc` (events.sqlite 2.9 GB + 14 GB WAL, worktrees, mirrors, logs) | 141 GB | deferred ("never owned by a continuum…", airc-mirrors "Owner not built") |
+| `~/.continuum/cache` (kv-pages 31 GB, cargo targets 21 GB, wt-targets 84 GB of agents' build dirs) | 138 GB | kv-pages deferred; wt-targets untracked |
+| `~/.continuum/citizens` (resident airc stores: Atlas 12.8 GB, Benchy 5.9 GB, 29 GB in all) | 85 GB | owned for dormant workspaces only; the stores inside never drained |
+| genome 24 GB, jtag logs 8 GB, benchmarks 5 GB, eval-captures 4 GB, archive 3.4 GB, evidence, tool-output, captures | ~50 GB | deferred or untracked |
+
+The cost is not only disk: airc #1618 walked every row of those resident stores at open (93 s per GB, measured
+on the IntelMac), which hung persona bootstrap for a day on every build that carried it.
+
+**The rule.** Nothing accumulates without a drain, and a drain is never a patch: it is the class. There is ONE
+drain, low in the stack and on by default (Joel: "low level default drain behavior not a million drains"): the
+class base (and, for a store, the store base) runs it; a class or a row kind only DECLARES its retention as data
+where it is defined (dead on arrival, newest per key, by age under the grant, or durable). A new class or kind
+gets its drain by being defined, and one without a declaration does not compile. No per-class drain code exists.
+
+1. **One class per thing written, and the only way to write it.** A writer asks the class owner for a handle;
+   the handle is constructed from the class's grant (contract §5: no grant, no handle), so an unbudgeted
+   writer does not compile. The handle says what it writes; the class says where. `writes_outside_a_class`
+   goes to 0, and a top-level directory under the continuum or airc home that no class names fails the
+   eviction test: untracked is a test failure, not a blind spot.
+2. **Every class declares its kind**, and the kind fixes its drain:
+   - *Derived* (build dirs, kv-pages, caches, captures re-creatable from their source): oldest first to the
+     grant, and a per-owner build dir is deleted when its work merges.
+   - *History* (event stores, probe ledgers, logs, prompt captures, eval captures, evidence): age-ordered
+     through the ORM entity, newest kept, oldest deleted to the grant; the newest page every reader asks for by
+     default is never in the drain's reach while the grant holds it.
+   - *Durable* (identity, trust, genes, task records, unfinished work, a mind's memory): never deleted by
+     pressure; a durable class over its grant is a refusal or an escalation the authority publishes, with the
+     bytes named.
+3. **A drain is a background stage of the class owner**, on the authority's tick (CONCURRENCY-STYLE-GUIDE: own
+   task, interval, bounded batches, blocking work in `spawn_blocking`, never a lock or transaction across a
+   wait). It never runs on a boot or open path and never blocks a reader or writer; a pass can stop anywhere and
+   resume. A shrinking grant is the request; the class acknowledges what it actually reclaimed (contract
+   safety rule).
+4. **Stores drain through the ORM, never SQL.** A store's retention is its entity's delete-by-age under the
+   grant, then the store's own checkpoint and incremental vacuum, with bytes before and after reported. No
+   store does data work on open; every read is the ORM's newest page with a limit, paging back on demand
+   (rule: recency, limits, paging).
+5. **airc is separately capable** (it runs without continuum): airc-store owns the same three kinds and the
+   same background drain for its own files (`~/.airc` and the resident stores under `citizens/*/airc`), under
+   a byte budget it reads from its own config, and reports its sizes. Continuum's authority tracks those bytes
+   and grants airc its disk claim; it never deletes airc's files itself.
+   airc is millisecond latency across the board (Joel, 2026-11-03), and these are gates with validators and
+   live receipts, the same with a drain running as without: a store open in milliseconds whatever its size
+   (no data work); the newest page of a room in milliseconds; a local send to its delivery acknowledgement in
+   milliseconds; a persona's airc bootstrap (identity, room join, seed) in milliseconds per persona. On
+   2026-11-03 an open took 91 s for 976 MB and persona bootstrap minutes, which is what these exist to forbid.
+
+6. **Clean and fast, measured** (Joel: "It's gotta all drain cleanly and be performant"):
+   - a drain deletes by an indexed key (the store's age or sequence index), a range at a time: never a scan, never
+     a select of the rows it deletes, never a deserialize. A store whose age has no index gets one in its
+     migration, built as the store's own work, never on a boot path;
+   - the batch is sized from the drain's own measured cost per row against the time a batch may hold the
+     writer, never a literal, and the drain's rate is reported against the class's ingest rate: a drain slower
+     than ingest is a typed state the authority publishes, not a quiet growth;
+   - the foreground is untouched: a reader's newest-page latency and a writer's commit latency are the same
+     with the drain running as without it, and the WAL stays bounded because every batch commits and checkpoints;
+   - "clean": after a pass the class is at or under its grant, the bytes are back on the volume (checkpoint and
+     incremental vacuum, measured on disk), and nothing a durable claim references was touched.
+
+**Migration** (each a pure move of a writer onto its class, deleting the writer's own path, rotation count or
+age; each PR deletes more than it adds):
+
+| Class | Kind | Owner |
+|---|---|---|
+| airc event stores (machine + resident), airc WAL | History | Cormac (airc e95d41a4 drain, 70055c76 no work on open) |
+| airc worktrees, mirrors, board/wall caches, daemon log | Derived / History | Cormac |
+| per-owner build dirs (`cache/wt-targets/*`, cargo targets) | Derived; deleted on merge | Fable |
+| kv-pages | Derived (a mind's page is re-creatable by prefill) | Fable (engine paging) |
+| probes, logs, jtag logs, prompt captures, eval captures, tool-output, evidence | History | Fable (capture), Codex (engine logs) |
+| benchmarks, archive, forge intermediates, fixtures, repos, models | Derived or Durable, decided per class | Cormac (genome/forge), Fable |
+| citizens' memory, identity, genes | Durable | Fable (persona), Cormac (genome) |
+
+**Validators:** the eviction test fails on any `DEFERRED` entry (the list goes to 0) and on any untracked
+top-level directory; a fixture store over its grant drains to it in bounded batches while a reader on another
+connection keeps reading its newest page; an open of a store with a million rows does no data work (it returns
+in milliseconds and reads no row); a durable class over its grant is refused and named, never deleted; a drain
+of a store far over its grant converges while a reader's newest-page p99 and a writer's commit p99 stay within
+their no-drain baseline, the WAL never exceeds one batch's frames past a checkpoint, and the file's bytes on disk
+fall to the grant.
 
 ### Acceptance: the user's own load (Joel, 2026-10-30: "What if we start this and someone is playing a video game or starts one later? Or Photoshop")
 
