@@ -297,6 +297,21 @@ async fn a_save_leaves_a_busy_engine_to_its_step() {
     assert_eq!((joined.busy, joined.stopped), (0, 0), "the join quiesces it once the step lets go");
 }
 
+// what this catches (Codex on #5928 at f8dfb9bcc): the trigger's drain or save override removed, so
+// the runtime's hooks fall back to the trait defaults (drain 0, save a no-op) and the shutdown
+// receipt says Drained and saved again while learning runs and an idle learner stays seated.
+#[tokio::test]
+async fn the_runtime_hooks_drain_and_save_through_the_trigger() {
+    use crate::runtime::ServiceModule;
+    let trigger = crate::modules::training_trigger::TrainingTriggerModule::new(authority());
+    trigger.state.spawn_owned(std::future::pending()).await;
+    assert_eq!(trigger.drain().await, Ok(1), "the runtime's drain counts the learning still running");
+    let idle = engine(9);
+    drop(trigger.state.in_place.engine(idle)); // an engine the trigger learned on, idle now
+    trigger.save_state().await.expect("test: nothing was left unpublished");
+    assert!(!trigger.state.in_place.engines.contains_key(&idle), "the runtime's save quiesced the idle engine");
+}
+
 #[cfg(feature = "live-engine-tests")]
 mod live_engine {
     use super::*;
