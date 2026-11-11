@@ -38,7 +38,10 @@ impl<T: Block> Judged<T> {
     /// yet): every item at `level`, as a view that holds nothing judges it (nothing is held, so
     /// nothing is a repeat or already shown).
     pub fn unheld(tail: &dyn Source<T>, level: impl Fn(&Item<T>) -> Level) -> Vec<Self> {
-        tail.items().into_iter().map(|item| Self::at(tail, item, level(&item))).collect()
+        tail.items().into_iter().map(|item| {
+            let level = level(&item);
+            Self::at(tail, item, level)
+        }).collect()
     }
 
     /// `item` of `tail` at `level`: a page is the item's summary (the page the act's allocation cut).
