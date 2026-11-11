@@ -236,8 +236,10 @@ pub(crate) async fn is_dirty(root: &Path) -> Result<bool, String> {
 /// publishes a commit: substrate and build byproducts (`SOLUTION_PATH_EXCLUDES`) are not her work.
 /// The autosave asks THIS, so a tree a submission called clean gets no `wip` commit after it, and
 /// the branch head stays the submitted head the merge gate compares with the PR's (HeadMoved).
+/// A submodule checkout that differs from the branch's pin is not her work either (card
+/// a7a37ce7): counted, it would make the autosave commit an unchanged tree every turn.
 pub(crate) async fn has_uncommitted_work(root: &Path) -> Result<bool, String> {
-    let mut status = vec!["status", "--porcelain", "--untracked-files=all", "--", "."];
+    let mut status = vec!["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=all", "--", "."];
     status.extend_from_slice(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES);
     run_git(root, &status).await.map(|s| !s.trim().is_empty())
 }
@@ -344,8 +346,11 @@ async fn commit_tree_no_hooks(
         add.extend_from_slice(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES);
     }
     run_git(root, &add).await?;
-    let tree = run_git(root, &["write-tree"]).await?.trim().to_string();
     let parent = head_sha(root).await;
+    if scope == TreeScope::Work && parent.is_some() {
+        crate::code::git_bridge::keep_submodule_pins(root).await?; // card a7a37ce7: a lagging checkout is never her work
+    }
+    let tree = run_git(root, &["write-tree"]).await?.trim().to_string();
     // The acting citizen is author AND committer: the runner applies `actor` (e5e72485).
     use crate::code::git_bridge::run_git_input;
     let commit = match &parent {

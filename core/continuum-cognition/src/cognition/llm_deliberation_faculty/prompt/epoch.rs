@@ -14,6 +14,7 @@
 //! history with the view, and [`LlmDeliberationFaculty::fit_view`] once the window's
 //! allocation has granted the history its budget.
 
+use continuum_context::cost::Estimate as _;
 use continuum_context::source::Source;
 use continuum_context::view::{Claim, View};
 
@@ -26,9 +27,6 @@ use crate::cognition::working_memory::WorkingMemory;
 
 /// The prefix of a view source's claim id in the window's one allocation.
 const VIEW_CLAIM: &str = continuum_context::allocation::id::VIEW;
-
-/// The source a sent prompt's tail joins her view under (`view_served`).
-const SENT_TAIL: &str = "sent";
 
 /// What fitting her view decided: whether a start funded her head's next epoch. What her view lacked
 /// past its grant is collapsed at the next start, never her need (`allocation::need`).
@@ -74,19 +72,37 @@ impl LlmDeliberationFaculty {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
-        continuum_context::view::claims(&cost, &sources)
+        // Her live view knows her re-read rates; before her first view there are none.
+        let claims = match self.context_view.lock().as_ref() {
+            Some(view) => view.claims(&cost, &sources),
+            None => continuum_context::view::claims(&cost, &sources),
+        };
+        claims
             .into_iter()
             .zip(&sources)
-            .map(|(claim, source)| continuum_context::allocation::ViewClaim {
+            .map(|(claim, source)| {
+                // What her live epoch already holds is computed once and resident: it is the
+                // claim's flex basis, topped up before any other claim grows, so the act's other
+                // wants never take back what a re-prefill would cost. Never its floor: a window that
+                // cannot hold it turns the epoch over, never refuses her turn.
+                let held = claim.floor.max(claim.held);
+                continuum_context::allocation::ViewClaim {
                 claim: continuum_context::flex::FlexClaim {
                     source_id: format!("{VIEW_CLAIM}{}", claim.source),
-                    priority: claim.priority,
+                    priority: claim.weight(),
                     floor_tokens: Self::clamp_u32(claim.floor),
-                    min_tokens: Self::clamp_u32(claim.floor),
-                    max_tokens: Self::clamp_u32(claim.full),
+                    min_tokens: Self::clamp_u32(held),
+                    max_tokens: Self::clamp_u32(claim.full.max(claim.held)),
                     required: source.required(),
                 },
                 consumer: source.consumer(),
+                // Her conversation's turn that arrived during this act, at this act's price.
+                arrived: if claim.source == crate::cognition::context_streams::conversation::NAME {
+                    streams.conversation.arrived().map_or(0, |message| Self::clamp_u32(cost.block(&message))) // map_or: no turn arrived during this act
+                } else {
+                    0
+                },
+            }
             })
             .collect()
     }
@@ -219,7 +235,12 @@ impl LlmDeliberationFaculty {
             "her view outgrew what the window granted its sources and started a new epoch, \
              its growing sources leaving a reserve as large as their start"
         );
-        Ok(ViewFitted { head_funded: funds_head })
+        // Her head changes only where nothing of hers is cached: the act that started her view (the
+        // first after a start or restart). A growth turnover keeps the head the engine holds and
+        // re-prefills only her view; adopting a new head there recomputed everything (Benchy, the
+        // M5, 2026-11-10 21:52Z: her tools changed at a turnover, 0 of 25,228 tokens cached). New
+        // verbs ride her tail until then.
+        Ok(ViewFitted { head_funded: funds_head && view.started })
     }
 
     /// Append this act's changes to her view and return its messages, and whether this act
@@ -258,10 +279,12 @@ impl LlmDeliberationFaculty {
             let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
             match View::start(&AllocationEstimate::uncalibrated(), Vec::new(), &sources, whole) {
                 Ok((view, _)) => {
-                    *held = Some(view);
+                    let view = held.insert(view);
                     self.tool_head_turned_over();
                     if let Some(memory) = memory {
                         memory.reclaim_ended_notices();
+                        // What this start folded leaves RAM for her archive.
+                        memory.release_folded(view);
                     }
                 }
                 Err(mismatch) => continuum_base::probe!(
@@ -298,86 +321,70 @@ impl LlmDeliberationFaculty {
         Some(Self::render(held.as_ref()))
     }
 
-    /// The prompt built on this act's view is final and about to be sent: nothing may rewind
-    /// the act it appended any more ([`View::sent`]).
-    pub(in super::super) fn view_sent(&self) {
-        if let Some(view) = self.context_view.lock().as_mut() {
-            view.sent();
-        }
-    }
-
-    /// Whether her view already shows `source`'s item `item`, in the bytes a sent tail showed it.
-    pub(in super::super) fn view_covers(&self, source: &str, item: &str) -> bool {
-        self.context_view.lock().as_ref().is_some_and(|view| view.covers(source, item))
-    }
-
-    /// Whether a sent tail already showed her `message`, byte for byte: not sent again.
-    pub(in super::super) fn view_holds_sent(&self, message: &ChatMessage) -> bool {
-        let Ok(held) = ContextMessage::from_chat(message) else {
-            return false; // a message her view cannot hold as sent was never held
-        };
-        self.context_view.lock().as_ref().is_some_and(|view| view.holds_sent(SENT_TAIL, &held))
-    }
-
-    /// Drop from this act's tail what a sent tail already showed her (the same ask, the same clock
-    /// line, her same statement): it is in her view, byte for byte, where it was sent. Asked after
-    /// her view is sized: a start covers nothing, so after a turnover everything is sent again.
-    pub(in super::super) fn drop_what_she_was_sent(&self, prompt: &mut PromptMessages) {
-        let asked = prompt.streams.conversation.stimulus.as_deref().is_some_and(|key| self.view_covers("conversation", key));
-        if asked || prompt.stimulus.as_ref().is_some_and(|message| self.view_holds_sent(message)) {
-            prompt.stimulus = None;
-        }
-        if prompt.action_statement.as_ref().is_some_and(|message| self.view_holds_sent(message)) {
-            prompt.action_statement = None;
-        }
-        let view_len = prompt.grounding_at.min(prompt.history.len());
-        let mut tail = prompt.history.split_off(view_len);
-        tail.retain(|message| !self.view_holds_sent(message));
-        prompt.history.append(&mut tail);
-    }
-
-    /// What this act's tail shows her that her sources also render: the ask (her conversation's
-    /// held-out turn) and her newest act (held out of her actions while newest).
-    pub(in super::super) fn tail_covers(prompt: &PromptMessages) -> Vec<(&'static str, String)> {
-        let asked = prompt.stimulus.as_ref().and(prompt.streams.conversation.stimulus.clone()).map(|key| ("conversation", key));
-        let acted = (!prompt.latest_result.is_empty()).then_some(prompt.streams.latest_act).flatten().map(|seq| ("actions", seq.to_string()));
-        asked.into_iter().chain(acted).collect()
-    }
-
-    /// The prompt built on `view` was served: its tail (what follows her view: the clock, the ask,
-    /// her call and its result) joins her view in the bytes it was sent ([`View::append_sent`]), so
-    /// her next act's prompt is this one plus what is new, and the engine resumes at its end
-    /// (`DeliberationPromptView::resumes_at`). A tail carrying media is not held as sent: it
-    /// re-renders from its producers next act, as every tail did before.
-    pub(in super::super) fn view_served(&self, view: &DeliberationPromptView) {
-        let kept: Result<Vec<ContextMessage>, _> = view.tail().iter().map(ContextMessage::from_chat).collect();
-        let tail = match kept {
-            Ok(tail) => tail,
-            Err(not_kept) => {
-                continuum_base::probe!(
-                    class = "delib.view.tail_not_kept",
-                    persona = %self.persona_name,
-                    reason = ?not_kept,
-                    "her sent tail carries what her view cannot hold as sent: it re-renders next act"
-                );
-                return;
+    /// Her act's tail as her view judges it now (`View::judge_tail`), placed in `prompt`'s slots
+    /// (`PromptMessages::place_tail`): a repeat of an act whose whole she holds is its repeat block,
+    /// an item her view already shows (the same ask, clock line or statement, her act once held) is
+    /// not sent again, and her newest result is at its page when the act's allocation `paged` it.
+    /// Pure: every render judges afresh (a refit, a moved grant, a turnover), and nothing joins her
+    /// view until the prompt is served (`view_served`).
+    pub(in super::super) fn judge_tail(&self, prompt: &mut PromptMessages, paged: bool) {
+        let judged = {
+            let tail = &prompt.streams.tail;
+            let result = tail.result();
+            let level = |item: &continuum_context::source::Item<ContextMessage>| {
+                if paged && Some(item.id()) == result { continuum_context::level::Level::Page } else { continuum_context::level::Level::Full }
+            };
+            let memory = self.working_memory.as_deref();
+            let actions = memory.map(|memory| crate::cognition::context_streams::actions::Actions { memory, persona: self.persona_id });
+            // Her earlier acts are what a repeat points at; with no memory she has none.
+            let none = crate::cognition::context_streams::tail::Tail::default();
+            let history: &dyn Source<ContextMessage> = match &actions {
+                Some(actions) => actions,
+                None => &none,
+            };
+            match self.context_view.lock().as_ref() {
+                Some(view) => view.judge_tail(tail, history, level),
+                // No view placed or none could start: a view that holds nothing judges it.
+                None => continuum_context::view::Judged::unheld(tail, level),
             }
         };
-        let covers: Vec<(&str, &str)> = view.tail_covers.iter().map(|(source, key)| (*source, key.as_str())).collect();
+        prompt.place_tail(judged);
+    }
+
+    /// Her working-context `block` as her view judges it (an identical block she already holds is
+    /// not sent again): the item to send ahead of her framing, or nothing.
+    pub(in super::super) fn judge_context(&self, block: String) -> Vec<continuum_context::view::Judged<ContextMessage>> {
+        let context = crate::cognition::context_streams::tail::Tail::context(self.persona_id, block);
+        let none = crate::cognition::context_streams::tail::Tail::default();
+        match self.context_view.lock().as_ref() {
+            Some(view) => view.judge_tail(&context, &none, |_| continuum_context::level::Level::Full),
+            None => continuum_context::view::Judged::unheld(&context, |_| continuum_context::level::Level::Full),
+        }
+    }
+
+    /// The prompt built on `view` was served: its tail (what follows her view: her working context,
+    /// the clock, the ask, her call and its result) joins her view as her view judged it
+    /// ([`View::append_tail`]), only what was sent and in its order, so her next act's prompt is this
+    /// one plus what is new and the engine resumes where it stops matching
+    /// (`DeliberationPromptView::resumes_at`); then nothing may rewind this act ([`View::sent`]).
+    /// Her result's attachments are never held: the next act shows it as text.
+    pub(in super::super) fn view_served(&self, view: &DeliberationPromptView) {
+        let sent: Vec<_> = view.sent_tail().into_iter().map(|(item, _)| item.clone()).collect();
         let memory = self.working_memory.as_deref();
         let mut held = self.context_view.lock();
         let Some(context) = held.as_mut() else {
-            return; // no view (no working memory): nothing holds the tail
+            return; // no view (none could start): nothing holds the tail
         };
-        let appended = context.append_sent(SENT_TAIL, tail, &covers);
+        let appended = context.append_tail(sent);
+        context.sent();
         continuum_base::probe!(
             class = "delib.view.tail_kept",
             persona = %self.persona_name,
             epoch = context.epoch_id(),
-            messages = appended.items,
+            items = appended.items,
             chars = appended.chars,
-            covers = covers.len(),
-            "her sent tail joined her view as sent: her next prompt extends this one"
+            repeats = appended.repeats,
+            "her served tail joined her view as judged: her next prompt extends this one"
         );
         if let Some(memory) = memory {
             memory.keep_view(held.clone());
@@ -423,6 +430,11 @@ impl LlmDeliberationFaculty {
             Ok(start) => {
                 if let Some(view) = held.as_mut() {
                     view.withhold(&withheld);
+                    // What this start folded leaves RAM for her archive: her resident log is
+                    // bounded by her view's measured fold edge, once per start.
+                    if let Some(memory) = memory {
+                        memory.release_folded(view);
+                    }
                 }
                 continuum_base::probe!(
                     class = "delib.view.turnover",
@@ -483,43 +495,27 @@ impl LlmDeliberationFaculty {
         }
     }
 
-    /// Her sources in the order an epoch start renders them, the front that survives a
-    /// turnover first: the settled blocks (standing and board churn, in their canonical
-    /// order), her actions, her conversation, the blocks that count or change within an
-    /// epoch (the kanban's claims, recall, awareness, an unknown block), her thoughts, her open
-    /// views, then the notices her substrate posted, whose investigation tally changes most acts. Within an epoch the order cannot matter (every act appends), so it is
-    /// chosen for the one rewrite an epoch costs: a turnover keeps the prefix up to the
-    /// first source whose FRONT changed.
+    /// Her sources in the order handed to her view. Within an epoch the order cannot matter
+    /// (every act appends) beyond being the same on every act. At a start her view orders them
+    /// by their measured motion (`continuum_context::motion`, `View::start`): the source whose
+    /// front never changed leads, so a turnover keeps the prefix up to the first source whose
+    /// front changed. This order is only the tie her view keeps among sources it has not yet
+    /// measured, a new mind's first start: her grounding blocks by name, her held work, her
+    /// actions, her conversation, her thoughts, her tasks, her open views, her notices, the facts.
     ///
-    /// A growing source's front changes at nearly every turnover, because that is where it
-    /// collapses: her conversation led, and a turnover broke the prompt at its first message,
-    /// re-prefilling everything behind identity and tools (Benchy on the M5, 2026-10-24
-    /// 00:32Z: turnover of 98 items, `delib.prompt.common_prefix` index 2, 20% shared; Delia
-    /// on the IntelMac, 10-24 00:14Z: index 2 at `[actions]`, 41%). The settled blocks lead,
-    /// then her actions, whose collapsed items keep their pointers so their front outlives a
-    /// turnover, then her conversation, whose collapsed turns leave the view. Nothing ahead
-    /// of her history counts or dates anything: the kanban's claimable count and claim
-    /// column changed on 30% of turns (card 5b09111e), so it rides after her history with
-    /// recall's "N ago" ages, awareness and her thoughts.
+    /// It replaced a hand-written split by churn label (standing and board blocks ahead of her
+    /// history, the kanban and recall after it): the label guessed per faculty id what motion
+    /// now measures per mind (the kanban changed on 30% of turns on the M5, card 5b09111e;
+    /// a growing conversation's front changes at nearly every turnover, Benchy 2026-10-24).
     fn view_sources<'a>(
         streams: &'a Streams,
         memory: Option<&'a MemoryStreams<'a>>,
     ) -> Vec<&'a dyn Source<ContextMessage>> {
-        use crate::cognition::deliberation_prompt::{churn_of, PromptChurn};
-        let settled = |block: &&crate::cognition::context_streams::blocks::Grounding| {
-            churn_of(&block.faculty) < PromptChurn::Claims
-        };
-        let as_source = |block: &'a crate::cognition::context_streams::blocks::Grounding| {
-            block as &dyn Source<ContextMessage>
-        };
         let mut sources: Vec<&dyn Source<ContextMessage>> =
-            streams.blocks.iter().filter(settled).map(as_source).collect();
-        // Her held work changes only on a card's transition (board churn), so it rides with the
-        // settled blocks, where the active-work block it replaced sorted.
+            streams.blocks.iter().map(|block| block as &dyn Source<ContextMessage>).collect();
         sources.push(&streams.held);
         sources.extend(memory.map(|m| &m.actions as &dyn Source<ContextMessage>));
         sources.push(&streams.conversation);
-        sources.extend(streams.blocks.iter().filter(|block| !settled(block)).map(as_source));
         sources.extend(memory.map(|m| &m.thoughts as &dyn Source<ContextMessage>));
         // A task's state changes within an epoch (running, then its end), so it rides with the
         // sources that change, where her dispatched list rendered before.

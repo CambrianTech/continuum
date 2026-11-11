@@ -16,7 +16,6 @@ mod lane_handoff;
 mod lanes;
 mod metrics;
 mod progress;
-mod quiesce;
 mod serving_lane_permit;
 #[cfg(test)]
 mod tests;
@@ -27,7 +26,4 @@ pub use lane_handoff::with_serving_lane;
 pub use lanes::*;
 pub use metrics::*;
 pub use progress::{LaneProgress, LaneWait};
-#[cfg(any(test, feature = "test-fixtures"))]
-pub use quiesce::quiesced_fixture;
-pub use quiesce::{AdmissionEntry, Quiesced};
 pub use serving_lane_permit::ServingLanePermit;

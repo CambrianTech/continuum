@@ -289,6 +289,9 @@ impl DeploySource for GitGhDeploySource {
         .map_err(|e| format!("deploy-source task join error: {e}"))??;
         let newest_key = self.build_key(&tip).await.unwrap_or_else(|| tip.clone()); // unwrap_or_else: unresolved build key names only the fetched tip
         if continuum_cli_lifecycle::deploy_tracker::running_satisfies(running_sha(), &tip, Some(&newest_key)) {
+            // up to date: the tip changed no build input. Said, so it never reads as a stall.
+            continuum_base::probe!(class = "deploy.track.current", tip = %tip, build_key = %newest_key, running = running_sha(),
+                "the running build already is the tip's newest build: nothing to deploy");
             return Ok(Some((tip, Checks::Unknown))); // equality satisfies without authorizing a different revision
         }
         let repo = repo_dir.clone();
@@ -298,7 +301,12 @@ impl DeploySource for GitGhDeploySource {
             .await.map_err(|e| format!("deploy-candidates task join error: {e}"))?;
         match super::deploy_candidate::deployable_candidate(&repo_dir, &candidates).await? {
             Some(candidate) => Ok(Some((candidate, Checks::Green))),
-            None => Ok(Some((tip, Checks::Unknown))), // no platform publication: wait
+            None => {
+                // waiting on CI to publish: named, with what was looked for (card 0129ec9e)
+                continuum_base::probe!(class = "deploy.track.unpublished", tip = %tip, running = running_sha(),
+                    candidates = %candidates.join(","), "no deploy candidate has a published, authorized build for this platform yet: waiting for CI");
+                Ok(Some((tip, Checks::Unknown))) // no platform publication: wait
+            }
         }
     }
 }
@@ -629,7 +637,7 @@ impl ServiceModule for DeployTrackerModule {
                 // request is exactly what a retry must be judged against.
                 let req = persisted
                     .or(standing)
-                    .unwrap_or_else(|| continuum_cli_lifecycle::deploy_tracker::DeployRequest::new(tip_sha, now));
+                    .unwrap_or_else(|| continuum_cli_lifecycle::deploy_tracker::DeployRequest::new(tip_sha, now)); // unwrap_or_else: no request stands for this tip, so this tick's new one is the request
                 self.actuate(req, tip_sha, stranded, now).await?;
             }
             DeployVerdict::UpToDate => {}

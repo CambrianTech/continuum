@@ -121,6 +121,17 @@ impl MindLearner {
         outcome
     }
 
+    /// Cover the memory a step on `messages` needs (her optimizer residency, the engine's shared
+    /// workspace) without running it: the learner does this BEFORE taking her serving resources,
+    /// so a capacity shortfall (`Uncovered(AwaitingMemory)`) waits holding nothing. Covered, the
+    /// step's own cover finds nothing to lease.
+    pub async fn cover(&mut self, authority: &Authority, workspace: &mut Option<EngineWorkspace>, messages: &[serde_json::Value], tools: Option<&serde_json::Value>) -> Result<(), LearnFailure> {
+        if self.grant.is_none() {
+            return Err(LearnFailure::Stopping);
+        }
+        memory::cover(authority, &self.seat, &self.consumer, messages, tools, &mut self.memory, workspace).await.map(|_| ()).map_err(LearnFailure::Uncovered)
+    }
+
     /// The step's example, once its memory is covered.
     async fn example(
         &mut self,

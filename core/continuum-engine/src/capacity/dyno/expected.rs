@@ -56,6 +56,11 @@ pub enum MissingSeam {
     /// adapter quarantines the endpoint and nothing receives the engine's later terminal receipt,
     /// so no test can deliver one. Needed: an operation custody record the late receipt resolves.
     LateReceiptCustody,
+    /// The IntelMac hour (2026-11-05 05:41-06:22Z): seven of eight admitted residents never
+    /// completed in 2,462 s. The capture records only the one completed turn's prompt split; the
+    /// other seven's prompt sizes, slot assignment and the engine's per-batch order are not in it,
+    /// so no service model can be checked against the hour's starvation.
+    LiveHourPrompts,
 }
 
 impl MissingSeam {
@@ -64,6 +69,7 @@ impl MissingSeam {
             Self::ViewTurnoverPolicy => "the view's collapse policy is not drivable from recorded items (continuum-context has no turnover policy; it lives in cognition prompt/view.rs)",
             Self::LaunchKnowsResidentPages => "the launch pool is sized without the residents' page sizes (launch_pool has no such input; the ledger has no page token count)",
             Self::LateReceiptCustody => "no custody record receives a late terminal receipt after an Uncertain page switch",
+            Self::LiveHourPrompts => "the IntelMac hour's capture lacks the seven unserved residents' prompt sizes, slots and the engine's batch order (per-request-rows.log carries only the completed turn's split)",
         }
     }
 }

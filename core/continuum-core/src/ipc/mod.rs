@@ -45,11 +45,6 @@ use crate::{log_debug, log_error, log_info};
 use dashmap::DashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-// Unix-domain socket is the primary IPC transport on Unix. On Windows there is
-// no Unix socket; the server binds ONLY the TCP loopback listener (below) and
-// local callers connect over TCP. These imports are Unix-only.
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;

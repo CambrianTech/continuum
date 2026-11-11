@@ -67,4 +67,10 @@ impl Source<ContextMessage> for Notices<'_> {
             })
             .collect()
     }
+
+    /// No fold: her notices are the ones that hold now, each superseded by its key or ended, so
+    /// the run is bounded by what is true at once, never by everything ever noticed.
+    fn fold(&self, _folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        None
+    }
 }

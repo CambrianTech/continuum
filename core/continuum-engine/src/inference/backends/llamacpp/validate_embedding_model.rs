@@ -37,42 +37,7 @@ pub(super) fn embed_model(model: &Model, texts: &[String]) -> Result<Vec<Vec<f32
     if texts.is_empty() {
         return Ok(Vec::new());
     }
-    // Non-causal embedding needs the entire sequence in one batch. Size the
-    // graph from the actual request, never a private token ceiling or head clip.
-    let sequences = texts
-        .iter()
-        .map(|text| model.tokenize(text, true, false))
-        .collect::<Result<Vec<_>, _>>()?;
-    let requested = sequences
-        .iter()
-        .map(Vec::len)
-        .max()
-        .ok_or("empty embedding request")?;
-    if sequences.iter().any(Vec::is_empty) {
-        return Err("embedding tokenization produced an empty sequence".into());
-    }
-    let requested = u32::try_from(requested)
-        .map_err(|_| "embedding sequence length exceeds native representation")?;
-    let model_limit = model.n_ctx_train();
-    if model_limit == 0 || requested > model_limit {
-        return Err(format!(
-            "embedding sequence length {requested} exceeds model context {model_limit}"
-        ));
-    }
-    let mut ctx = model.new_context(llama::ContextParams {
-        embeddings: true,
-        pooling_type: llama::PoolingType::Last,
-        n_ctx: requested,
-        n_batch: requested,
-        n_ubatch: requested,
-        ..Default::default()
-    })?;
-    let mut out = Vec::with_capacity(sequences.len());
-    for tokens in sequences {
-        ctx.memory_clear(true);
-        out.push(ctx.embed(&tokens)?);
-    }
-    Ok(out)
+    EmbeddingBatch::tokenize(model, texts)?.embed(model)
 }
 
 /// A caller-issued nonzero generation window; model metadata cannot create one.

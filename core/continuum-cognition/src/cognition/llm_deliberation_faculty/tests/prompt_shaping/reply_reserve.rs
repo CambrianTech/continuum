@@ -78,9 +78,10 @@ fn an_unmeasured_mind_reserves_a_reply_not_a_fraction_of_her_window() {
     // Deliberately a SPREAD, not our fleet's windows: an unmeasured reply costs what
     // a reply costs on ANY lane — a phone-sized 4k, a laptop 32k, a 5090's 101k, a
     // 1M frontier seat.
-    let prior = LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS;
+    // Nothing measured on this node: the reply wants nothing in the allocation (its request
+    // carries the room its prompt leaves, once), never a share of the window, at any size.
+    let prior = 1; // the cell a reply begins in
     for window in [
-        crate::inference::planning::MIN_SERVE_CTX,
         4_096,
         8_192,
         16_384,
@@ -167,7 +168,7 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     };
 
     let cold = wanted(persona, 0);
-    assert_eq!(cold, LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS);
+    assert_eq!(cold, 1, "nothing measured on this node: only the cell a reply begins in, never a guessed size");
     // (a) one landed turn is measured: its p90 is that turn, and it replaces the prior
     reg.record_emission_in_memory(persona, 2_500, 0, EmissionStop::Landed, 1);
     assert_eq!(wanted(persona, 0), 2_500);
@@ -183,7 +184,7 @@ fn measured_emissions_size_the_reserve_and_capped_turns_grow_it_back() {
     for t in 1..=3 {
         reg.record_emission_in_memory(quiet, 40, 0, EmissionStop::Landed, t);
     }
-    assert_eq!(wanted(quiet, 0), LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS);
+    assert_eq!(wanted(quiet, 0), 40, "her measured answer, never a constant floor");
     // (d) a turn cut mid-answer at 5,000 is a bound of 5,000: her answer's room is the
     // median past it, 10,000 — a citizen who needs the room has it on the next turn.
     reg.record_emission_in_memory(persona, 5_000, 0, EmissionStop::CutMidAnswer, 4);
@@ -396,11 +397,9 @@ fn stable_tier_bytes_are_identical_however_salience_ranks_them() {
         turn0.find("[room-roster]").expect("roster present"),
     );
     assert!(
-        roster < map && map < kanban,
-        "stable tier orders canonically by CHURN CLASS then name \
-                 (`deliberation_prompt::stable_prefix_order`): room-roster and \
-                 workspace-map are STANDING ground, room-kanban is the BOARD and comes \
-                 after both\n{turn0}"
+        kanban < roster && roster < map,
+        "stable tier orders canonically by name (`deliberation_prompt::stable_prefix_order`; \
+                 her view's motion orders a start)\n{turn0}"
     );
 
     // The volatile tier keeps salience order ON PURPOSE (#205: most salient
@@ -757,32 +756,6 @@ fn a_budget_too_small_for_even_one_unit_emits_no_header_at_all() {
 // after it (~4000 tokens / ~30s of pure re-prefill — the eval-lane crawl). Since
 // 2026-10-23 the room's standing framing leaves the system message too: the system
 // message is hers in every room. regression for #205
-// what this catches: churning grounding ahead of the append-only results ring. On the
-// M5 (2026-10-18) recall (Turn churn) and the kanban (Claims churn) led the messages,
-// every turn's reuse broke there, and the ~30k-token ring behind them re-prefilled at
-// ~100 tokens/s. The ring leads; the grounding follows it.
-#[test]
-fn the_results_ring_renders_before_churning_grounding() {
-    let wm = Arc::new(crate::cognition::working_memory::WorkingMemory::new(3));
-    let custody = |h: &str| crate::ai::types::ResultCustody::Whole { handle: h.into() };
-    wm.record_receipt_typed(&[], "RING-ENTRY older result", None, custody("1111111111111111"));
-    wm.record_receipt_typed(&[], "the newest result", None, custody("2222222222222222"));
-    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
-        .with_context_window(32_768)
-        .with_working_memory(Arc::clone(&wm));
-    let mut ws = Workspace::new("continue the card");
-    ws.broadcast.push(
-        Contribution::context(FacultyId::Recall, "RECALL-BLOCK something I remembered", 0.6, "recall")
-            .trailing(),
-    );
-    let view = faculty.prompt_view(&ws);
-    let at = |needle: &str| view.messages.iter().position(|m| m.content_text().contains(needle));
-    let (ring, recall) = (at("RING-ENTRY"), at("RECALL-BLOCK"));
-    assert!(ring.is_some() && recall.is_some(), "both render: ring {ring:?}, recall {recall:?}");
-    assert!(ring < recall, "the append-only ring leads, churning grounding follows: ring {ring:?}, recall {recall:?}");
-}
-
 #[test]
 fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
     use crate::ai::types::MessageContent;

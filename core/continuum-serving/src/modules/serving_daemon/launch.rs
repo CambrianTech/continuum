@@ -187,6 +187,7 @@ impl ServingDaemonModule {
         let force_relaunch = self.force_relaunch.clone();
         let server = self.server.clone();
         let served_pool = Arc::clone(&self.served_pool);
+        let served_sequence = Arc::clone(&self.served_sequence);
         let serving_tx = self.serving_tx.clone();
         let verified_target = self.verified_target.clone();
         let intent_owner = self.intent.clone();
@@ -263,9 +264,6 @@ impl ServingDaemonModule {
                 &admit,
             )
             .await;
-            // The pool's one relaunch has run once its request is spent (to a serving engine, or
-            // failed): admission, quiesced for it, reopens here (card 2540194e).
-            crate::inference::llama_server::end_hold_if_decided();
             if matches!(outcome, EnsureOutcome::Superseded)
                 || (matches!(outcome, EnsureOutcome::AlreadyServing) && !current())
             {
@@ -332,41 +330,48 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } | EnsureOutcome::Superseded => 0,
             };
-            // ONE SHARED POOL: each sequence is published its share of the pool the engine
-            // reports (`served_pool_tokens`), so what the readers budget and charge is the pool.
-            // Never the slot's `n_ctx`: the fork caps it at the trained window, and dividing that
-            // again halved the IntelMac's share (2026-11-03). An unreadable pool publishes the gap
-            // and retries next tick. An engine not known to be on the pool publishes its slot.
-            let (served_window, served_lanes) =
-                match (served_window > 0, server.pool_launch().map(|launch| launch.kv_shared())) {
-                    (true, Some(true)) => match server.served_pool_tokens().await {
-                        Ok(pool) => {
-                            served_pool.store(pool, Ordering::Relaxed);
-                            crate::inference::proven_pool::observe(
-                                &target.model.id,
-                                u64::from(pool),
-                                crate::inference::proven_pool::PoolContract::running(),
-                            );
-                            sequence_share(pool, served_lanes, target.model.context_window)
-                        }
-                        Err(e) => {
-                            continuum_base::probe!(
-                                target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
-                                desired = desired.as_str(),
-                                error = %e,
-                                "server ready on the shared pool but its pool is unreadable — \
-                                 publishing the gap (no guessed share; retries next tick)",
-                            );
-                            served_pool.store(0, Ordering::Relaxed);
-                            (0, served_lanes)
-                        }
-                    },
-                    // Fixed slots: the engine's pool is literally its slots, each a full window.
-                    _ => {
-                        served_pool.store(served_window.saturating_mul(served_lanes), Ordering::Relaxed);
-                        (served_window, served_lanes)
+            // The engine's own geometry, read the same way under either launch (SERVING-ENGINE
+            // section 8): the pool and the most one sequence may hold. The grants read both from
+            // here, never from argv. What sequences are PUBLISHED as their share still differs by
+            // launch: on the shared pool each is a share of the pool the engine reports (never the
+            // slot's `n_ctx`, which the fork caps at the trained window, halving the IntelMac's
+            // share, 2026-11-03); on fixed slots, its slot. An unreadable geometry publishes the gap
+            // and retries next tick.
+            let geometry = match served_window > 0 {
+                false => Err("no served window yet".to_string()),
+                true => server
+                    .served_geometry()
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|g| g.pool_tokens().zip(g.sequence_tokens()).ok_or_else(|| "geometry past the grants' token width".to_string())),
+            };
+            let (served_window, served_lanes) = match geometry {
+                Ok((pool, sequence)) => {
+                    served_pool.store(pool, Ordering::Relaxed);
+                    served_sequence.store(sequence, Ordering::Relaxed);
+                    crate::inference::proven_pool::observe(
+                        &target.model.id,
+                        u64::from(pool),
+                        crate::inference::proven_pool::PoolContract::running(),
+                    );
+                    match server.pool_launch().map(|launch| launch.kv_shared()) {
+                        Some(true) => sequence_share(pool, served_lanes, target.model.context_window),
+                        _ => (served_window, served_lanes),
                     }
-                };
+                }
+                Err(e) => {
+                    continuum_base::probe!(
+                        target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
+                        desired = desired.as_str(),
+                        error = %e,
+                        "server ready but its geometry is unreadable: publishing the gap (no guessed \
+                         pool or limit; retries next tick)",
+                    );
+                    served_pool.store(0, Ordering::Relaxed);
+                    served_sequence.store(0, Ordering::Relaxed);
+                    (0, served_lanes)
+                }
+            };
             // The grant the engine was LAUNCHED with: the spawn fact on the control, or — for
             // a lane this core did not spawn (ADOPTED; every deploy leaves the lane up for
             // the next core, so this is the common case, not the rare one) — read off the
@@ -374,7 +379,7 @@ impl ServingDaemonModule {
             let launched_cache_mib = server
                 .launched_prompt_cache_mib()
                 .or_else(adopted_prompt_cache_mib)
-                .unwrap_or(0);
+                .unwrap_or(0); // unwrap_or: neither the launch nor the adopted argv names it; the measurement withholds
             // THE GRANT THE ENGINE HOLDS vs THE ONE TODAY'S DECISION WANTS (2026-09-21).
             // `--cache-ram` is passed ONCE at spawn and is immutable for the engine's life,
             // while the derived target is re-computed every tick — so a transient trough at
@@ -478,7 +483,7 @@ impl ServingDaemonModule {
                     let sidecar_rows: Vec<crate::model_registry::types::Model> =
                         crate::model_registry::try_global()
                             .map(|r| r.models().cloned().collect())
-                            .unwrap_or_default();
+                            .unwrap_or_default(); // unwrap_or_default: no registry yet holds no sidecar rows
                     let sidecar_candidate = crate::inference::vision_sidecar::find_candidate(
                         &sidecar_rows,
                         Some(desired.as_str()),
@@ -509,7 +514,7 @@ impl ServingDaemonModule {
                     // its projector: /props said vision=true, readiness said no). The
                     // grow-check in `ensure` already trusts /props for an adopted lane;
                     // readiness now reads the same truth.
-                    let main_lane_wears = server.mmproj_on_lane().unwrap_or_else(|| {
+                    let main_lane_wears = server.mmproj_on_lane().unwrap_or_else(|| { // unwrap_or_else: unknown reads the readiness truth below
                         props.as_ref().is_some_and(|m| m.vision) // an adopted lane's fact is what it reports
                     });
                     let main_sees = match crate::inference::llama_server::vision_lane_ready(
@@ -673,7 +678,7 @@ impl ServingDaemonModule {
                 target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
                 desired = desired.as_str(),
                 ready = snapshot.ready,
-                active = snapshot.active_model.as_deref().unwrap_or("<none>"),
+                active = snapshot.active_model.as_deref().unwrap_or("<none>"), // probe field: no active model
                 served_window = snapshot.served_context_window,
                 "serving reconcile complete",
             );

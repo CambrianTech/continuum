@@ -418,6 +418,10 @@ pub(super) async fn settle_to_outcome<'c>(
                     room = %room_id,
                     acts_so_far = acts as u64,
                     dropped_in_flight = dropped_in_flight,
+                    // WHICH await held, and for how long (card 5e79e1c1): the M5's 25-minute
+                    // parks were anonymous until this, and a stall is fixed by its name.
+                    stage = abandoned.stage.map_or("unnamed", |(name, _)| name),
+                    stage_s = abandoned.stage.map_or(0, |(_, held)| held.as_secs()),
                     deadline_s = act_bound.as_secs(),
                     // Which sized it: `turn_bound` = her measured turn raised the floor,
                     // `floor` = she has no measured turn yet and the constant governed.
@@ -429,10 +433,11 @@ pub(super) async fn settle_to_outcome<'c>(
                 (
                     SettleStep::InferenceFailed {
                         error: format!(
-                            "tick exceeded {}s deadline ({}) at act {} — an in-tick await parked                              (infra), turn ended loudly so the measured hold releases",
+                            "tick exceeded {}s deadline ({}) at act {} in stage {} — an in-tick await parked                              (infra), turn ended loudly so the measured hold releases",
                             act_bound.as_secs(),
                             act_bound_source.as_str(),
-                            acts
+                            acts,
+                            abandoned.stage.map_or("unnamed", |(name, _)| name)
                         ),
                     },
                     None,
@@ -446,7 +451,8 @@ pub(super) async fn settle_to_outcome<'c>(
         // This act's model wall-time, captured before the accumulate consumes
         // the metrics — the pace row below splits act time into model vs
         // residue with it.
-        let act_model_ms = step_metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0);
+        // `None` when the step carried no metrics: no measured model time, never a measured 0 ms.
+        let act_model_ms = step_metrics.as_ref().map(|m| m.latency_ms);
         // How many generations THIS step dispatched — counted before the receipts are
         // folded into the turn's, because it is the other half of "did this iteration
         // reach the model at all" (`classify_act`).
@@ -496,7 +502,7 @@ pub(super) async fn settle_to_outcome<'c>(
                     act = acts,
                     waited_secs = act_secs as u64,
                     lanes_available = crate::inference::resource_admission::serving_lane_permits_available() as u64,
-                    model_ms = act_model_ms,
+                    model_ms = ?act_model_ms,
                     generations = act_generations as u64,
                     "this iteration never reached the model — she waited and produced nothing; it is NOT counted as an act"
                 );
@@ -517,8 +523,8 @@ pub(super) async fn settle_to_outcome<'c>(
                 // subtracting log aggregates; a stall hiding in tools vs a stall
                 // hiding in the model were the same number. Now each act names
                 // where its time went, per-act, at the moment it happens.
-                model_ms = act_model_ms,
-                residue_ms = ((act_secs * 1000.0) as u64).saturating_sub(act_model_ms),
+                model_ms = ?act_model_ms,
+                residue_ms = ?act_model_ms.map(|model| ((act_secs * 1000.0) as u64).saturating_sub(model)),
                 // THE CLASSIFICATION, on the row itself: `reached_model=false` is a
                 // WAIT, not an act, and `pace_samples` says how many acts the mean
                 // beside it actually stands on.

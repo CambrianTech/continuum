@@ -227,23 +227,25 @@ impl RetireReport {
 
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum OperationPoint {
+pub(in crate::modules::training_trigger) enum OperationPoint {
     BeforeSchemaSetup,
     AcceptanceCommitted,
+    /// A learner's pass, just seated, before her slot is asked for.
+    SeatedBeforeSlot,
 }
 
 /// Pause the actual owner at a persistence boundary; no replacement storage or
 /// dispatch implementation participates in cancellation regressions.
 #[cfg(test)]
 pub(in crate::modules::training_trigger) struct OperationPause {
-    pub(super) point: OperationPoint,
-    pub(super) entered: tokio::sync::Notify,
-    pub(super) resume: tokio::sync::Notify,
+    pub(in crate::modules::training_trigger) point: OperationPoint,
+    pub(in crate::modules::training_trigger) entered: tokio::sync::Notify,
+    pub(in crate::modules::training_trigger) resume: tokio::sync::Notify,
 }
 
 #[cfg(test)]
 impl TrainingTriggerState {
-    pub(super) async fn pause_operation(&self, point: OperationPoint) {
+    pub(in crate::modules::training_trigger) async fn pause_operation(&self, point: OperationPoint) {
         let pause = {
             let mut slot = self.operation_pause.lock().unwrap();
             if slot.as_ref().is_some_and(|pause| pause.point == point) {

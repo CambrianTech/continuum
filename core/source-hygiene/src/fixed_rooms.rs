@@ -73,8 +73,7 @@ mod tests {
              never a name in code (docs/architecture/ACTIVITY-ROOM-PATTERNS.md)."
                 .to_string()
         };
-        crate::ratchet::hold_sites("fixed_rooms", &violations, advice);
-        crate::ratchet::touched_clean("fixed_rooms", &violations, advice);
+        crate::ratchet::hold_sites("fixed_rooms", &violations, crate::ratchet::Touched::EndsClean, advice);
     }
 
     // what this catches: the predicate missing a room literal, or flagging a word in prose.

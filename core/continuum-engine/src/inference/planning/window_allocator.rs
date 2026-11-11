@@ -195,14 +195,16 @@ impl LaneRequirement {
         Self { persona, measure: Measure::Declared { target: window }, wish: Some(window), training: None }
     }
 
-    /// With the floor her held turns measured. A need above the target is clamped to it (a floor
-    /// cannot exceed what it floors); on an unmeasured mind a held need is both floor and target,
-    /// since she was served at that size.
+    /// With the need her held turns measured. Her target rises to the need's irreducible part (a
+    /// stale target never cuts what her turn cannot be sent below), and only the collapsible bound
+    /// is shaped under it ([`Observed::under`]; Codex on #5931). On an unmeasured mind a held need
+    /// is both need and target, since she was served at that size.
     pub fn held(mut self, need: Observed<Tokens>) -> Self {
         self.measure = match self.measure {
             Measure::Unmeasured => Measure::Held { need, target: need.value() },
             Measure::Wished { target } | Measure::Held { target, .. } | Measure::Declared { target } => {
-                Measure::Held { need: need.map(|need| need.min(target)), target }
+                let target = need.irreducible().map_or(target, |floor| target.max(floor));
+                Measure::Held { need: need.under(target), target }
             }
         };
         // A held turn with no measured wish: what it held is what she wished for.

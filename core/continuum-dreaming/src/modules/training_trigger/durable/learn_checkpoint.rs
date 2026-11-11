@@ -141,7 +141,7 @@ impl DurableStore {
             .data
             .ok_or("learn checkpoint query omitted rows")?
             .into_iter()
-            .map(|row| serde_json::from_value(row.data).map_err(|e| e.to_string())) // decode the persisted ORM row into its typed owner
+            .map(|row| row.decode().map_err(|e| e.to_string())) // decode the persisted ORM row into its typed owner
             .collect()
     }
 

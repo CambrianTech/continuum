@@ -51,25 +51,127 @@ fn engine(port: u16) -> EngineIncarnation {
     EngineIncarnation::of(std::process::id(), port).expect("test: this process's start time is readable")
 }
 
-// what this catches: one engine's step or fence (a wedged, unproven-dead engine) holding every other
-// engine's buckets (Codex on d177df17f). A busy engine defers its own bucket at once; another engine
-// is not waited on.
+// what this catches (Codex on B, card 23069702): her learner waiting for her act while holding her
+// bucket's gate, so her own submit stalled behind her background work. The learner waits for her
+// acts first, holding nothing of the trigger; the gate stays free, and once her act ends the pass
+// moves on (here to the trigger's own refusal: this bare trigger never recovered durable state).
 #[tokio::test]
-async fn a_busy_engine_defers_its_bucket_and_never_holds_another() {
+async fn her_waiting_learner_never_holds_her_bucket_gate() {
     let state = Arc::new(TrainingTriggerState::new(authority()));
-    let key = BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() };
-    let (wedged, free) = (engine(1), engine(2));
-    let _held = state.in_place.engine(wedged).lock_owned().await;
-    let pass = tokio::time::timeout(std::time::Duration::from_secs(1), state.in_place.learn_bucket(&state, &key, vec![], wedged))
-        .await
-        .expect("test: a busy engine answers at once")
-        .expect("test: deferred, not failed");
-    assert_eq!(pass, BucketPass { deferred: true, ..Default::default() });
-    let other = tokio::time::timeout(std::time::Duration::from_secs(1), state.in_place.learn_bucket(&state, &key, vec![], free))
-        .await
-        .expect("test: another engine is not held by the wedged one")
-        .expect("test: nothing to learn");
-    assert_eq!(other, BucketPass::default());
+    let persona = Uuid::new_v4();
+    let key = BucketKey { persona_id: persona, trait_kind: "code".into(), base_model: "qwen".into() };
+    let example = crate::genome::fine_tuning::types::TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None, lived: None };
+    let row = Arrival { id: Uuid::new_v4(), sequence: 1, key: key.clone(), persona_name: "her".into(), examples: vec![example], learned: 0, lora: None, schedule: None };
+    let acting = crate::inference::slots::begin_act_for_test(persona).await;
+    let mut pass = Box::pin(state.learn_bucket(key.clone(), vec![row], engine(9)));
+    assert!(futures::poll!(&mut pass).is_pending(), "her act comes first: the learner waits");
+    assert!(state.submit_gates.try_acquire(&key).is_some(), "her bucket's gate is free while her learner waits");
+    assert!(state.in_place.engine(engine(9)).try_acquire(None, engine_lock::Phase::Step).is_some(), "and so is the engine");
+    drop(acting);
+    let moved_on = tokio::time::timeout(std::time::Duration::from_secs(5), pass).await.expect("test: the pass moves on once her act ends");
+    assert!(moved_on.is_err_and(|why| why.contains("has not recovered")), "past her act, the trigger's own refusal");
+}
+
+// what this catches (Codex on B): one mind's pass waiting (for her act, her slot, an engine) holding
+// every other bucket's pass behind it. Passes run together; a bucket that never finishes does not
+// stop another from running and finishing.
+#[tokio::test]
+async fn a_waiting_bucket_never_holds_another_buckets_pass() {
+    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let (waiting, other) = (
+        BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() },
+        BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() },
+    );
+    let finished = Arc::new(tokio::sync::Notify::new());
+    let seen = Arc::clone(&finished);
+    let stuck = waiting.clone();
+    let passes = state.learn_each(vec![(waiting, vec![]), (other, vec![])], move |_state, key, _rows| {
+        let (seen, stuck) = (Arc::clone(&seen), stuck.clone());
+        async move {
+            if key == stuck {
+                std::future::pending::<()>().await;
+            }
+            seen.notify_one();
+            Ok(BucketPass { learned: 1, ..Default::default() })
+        }
+    });
+    tokio::pin!(passes);
+    tokio::select! {
+        _ = finished.notified() => {}
+        _ = &mut passes => panic!("the waiting bucket's pass never ends"),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => panic!("the other bucket was held behind the waiting one"),
+    }
+}
+
+// what this catches (Codex on #5905 at 0e7e4f4f5): the candidate sweep ran only after every bucket's
+// pass, so one bucket waiting (for her act, her memory, her slot) kept every ready candidate from its
+// trial. Mind A's due checkpoint opens its trial while mind B's pass still waits for her act.
+#[tokio::test]
+async fn a_due_candidate_reaches_its_trial_while_another_bucket_waits() {
+    use crate::commands::training_trigger::test_support::{build_runtime_trigger_only, ex, submit_params};
+    let (trigger, executor, _dir) = build_runtime_trigger_only().await;
+    let state = trigger.state.clone();
+    let competence = crate::genome::competence::MIN_EXAMPLES;
+    let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+    let examples = |n: usize| (0..n).map(|i| ex(&format!("p{i}"), "c")).collect::<Vec<_>>();
+    executor.execute_json("genome/training-trigger/submit", submit_params(a, "code", examples(competence))).await.expect("test: A submitted");
+    executor.execute_json("genome/training-trigger/submit", submit_params(b, "code", examples(1))).await.expect("test: B submitted");
+    let store = state.durable.require().expect("test: the store");
+    let arrivals = store.arrivals(0, 16).await.expect("test: arrivals");
+    let a_row = arrivals.iter().find(|row| row.key.persona_id == a).expect("test: A's row");
+    let a_key = a_row.key.clone();
+    // A's learner learned every example: its generation holds an adapter and retires A's row
+    let generation_dir = tempfile::tempdir().expect("test: a generation dir");
+    std::fs::write(generation_dir.path().join("adapter.gguf"), b"adapter bytes").expect("test: the adapter");
+    let generation = crate::modules::training_trigger::durable::Generation {
+        name: "a-generation-1.gguf".into(),
+        path: generation_dir.path().display().to_string(),
+        binding: "binding".into(),
+        steps: competence as i64,
+        provenance: serde_json::json!({}),
+        persona_name: "test-p".into(),
+        signature: None,
+    };
+    store.commit_checkpoint(&a_key, generation, &[Position { submission: a_row.id, learned: competence as u32 }]).await.expect("test: A's generation");
+    let _b_acting = crate::inference::slots::begin_act_for_test(b).await;
+    let pass = state.learn_in_place(engine(9), "synthetic");
+    tokio::pin!(pass);
+    let opened = async {
+        loop {
+            let row = store.checkpoint_of(&a_key).await.expect("test: A's checkpoint").expect("test: present");
+            if row.candidate_trial.is_some() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    };
+    tokio::select! {
+        _ = opened => {}
+        ended = &mut pass => panic!("B's pass cannot end while her act runs: {ended:?}"),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("A's candidate was held behind B's waiting pass"),
+    }
+}
+
+// what this catches (Codex on #5928 at 30f89e5f8): a page-out the engine did not confirm reported as
+// a confirmed one, so a failed unload or workspace release became success evidence for Phase 2.
+#[test]
+fn only_a_confirmed_page_out_takes_a_cost_receipt() {
+    use Released::{Confirmed, NotHers, Unconfirmed};
+    assert!(paged_out(Confirmed, Confirmed), "her stop and the workspace, both confirmed");
+    assert!(paged_out(Confirmed, NotHers), "her stop confirmed; the workspace another learner holds is not hers");
+    assert!(!paged_out(Unconfirmed, NotHers), "an unconfirmed stop");
+    assert!(!paged_out(Unconfirmed, Confirmed), "an unconfirmed stop, whatever the workspace did");
+    assert!(!paged_out(Confirmed, Unconfirmed), "an unconfirmed workspace release");
+    assert!(!paged_out(NotHers, NotHers), "nothing of hers was stopped");
+}
+
+// what this catches (BigMama 2026-11-11, 7 seated learners for 20+ minutes with no page-out): a
+// seated learner waiting out her act holding her shadow, its optimizer and her leases. She waits
+// for her act only while nothing of hers is seated.
+#[test]
+fn only_an_unseated_learner_waits_for_her_act() {
+    assert!(waits_for_her_act(false), "unseated, she holds nothing: her act comes first");
+    assert!(!waits_for_her_act(true), "seated, she yields instead of waiting it out");
 }
 
 // what this catches: a restored learner re-teaching examples its generation already holds, when the
@@ -177,6 +279,48 @@ fn eviction_deletes_only_this_buckets_superseded_generations() {
 ///
 ///   CONTINUUM_LEARN_ENGINE=<pid>:<port> CONTINUUM_LEARN_BASE=<served model id> CONTINUUM_LEARN_SLOTS=<-np> \
 ///     cargo test -p continuum-dreaming --lib --features live-engine-tests live_engine
+// what this catches (Codex, BigMama 8bed install 2026-11-11): the trigger answering the runtime's
+// drain with 0 while a learning operation still runs, so the shutdown receipt said Drained and the
+// join then timed out. A running operation is counted, and nothing new is admitted after it.
+#[tokio::test]
+async fn a_drain_counts_the_learning_still_running() {
+    let state = Arc::new(TrainingTriggerState::new(authority()));
+    state.spawn_owned(std::future::pending()).await;
+    assert_eq!(state.stop_admitting().await, 1, "the running operation is in flight, not drained");
+    assert!(state.require_ready().is_err(), "a stopping trigger admits nothing new");
+}
+
+// what this catches: the save phase waiting on an engine a learning step holds, so it timed out
+// instead of publishing the idle learners. A busy engine is counted and left to its step (the
+// join quiesces it); the save returns at once.
+#[tokio::test]
+async fn a_save_leaves_a_busy_engine_to_its_step() {
+    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let stepping = state.in_place.engine(engine(9)).try_acquire(Some(Uuid::new_v4()), engine_lock::Phase::Step).expect("test: the step holds the engine");
+    let saved = tokio::time::timeout(std::time::Duration::from_secs(5), state.in_place.quiesce(&state, Busy::Skip))
+        .await
+        .expect("test: the save does not wait on a step");
+    assert_eq!(saved.busy, 1, "the engine the step holds is counted");
+    drop(stepping);
+    let joined = state.in_place.quiesce(&state, Busy::Wait).await;
+    assert_eq!((joined.busy, joined.stopped), (0, 0), "the join quiesces it once the step lets go");
+}
+
+// what this catches (Codex on #5928 at f8dfb9bcc): the trigger's drain or save override removed, so
+// the runtime's hooks fall back to the trait defaults (drain 0, save a no-op) and the shutdown
+// receipt says Drained and saved again while learning runs and an idle learner stays seated.
+#[tokio::test]
+async fn the_runtime_hooks_drain_and_save_through_the_trigger() {
+    use crate::runtime::ServiceModule;
+    let trigger = crate::modules::training_trigger::TrainingTriggerModule::new(authority());
+    trigger.state.spawn_owned(std::future::pending()).await;
+    assert_eq!(trigger.drain().await, Ok(1), "the runtime's drain counts the learning still running");
+    let idle = engine(9);
+    drop(trigger.state.in_place.engine(idle)); // an engine the trigger learned on, idle now
+    trigger.save_state().await.expect("test: nothing was left unpublished");
+    assert!(!trigger.state.in_place.engines.contains_key(&idle), "the runtime's save quiesced the idle engine");
+}
+
 #[cfg(feature = "live-engine-tests")]
 mod live_engine {
     use super::*;
@@ -290,15 +434,19 @@ mod live_engine {
         assert_eq!(first.learned(), 2, "both arrivals are in the generation: {:?}", first.positions);
         assert_eq!(first.steps, 2, "one committed update per arrival, as the engine counted them");
         assert!(std::path::Path::new(&first.path).join("adapter.gguf").exists(), "the generation is on disk at {}", first.path);
-        // the pass's sweep ran with her seated: her shadow and its save dir must survive it
-        let train_dir = std::path::Path::new(&first.path).parent().expect("test: train dir").to_path_buf();
-        let prefix = format!("{}-", bucket_stem(&key));
-        let shadows: Vec<String> = std::fs::read_dir(&train_dir)
-            .expect("test: list")
-            .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .filter(|name| name.starts_with(&prefix) && name.ends_with(".gguf"))
-            .collect();
-        assert_eq!(shadows.len(), 1, "her seated shadow survives the sweep: {shadows:?}");
+        // the pass ended by paging her out: nothing seated, nothing in custody, nothing on the engine
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        while trigger.state.in_place.seated_on(engine).await > 0 {
+            assert!(tokio::time::Instant::now() < deadline, "her learner stayed seated after her pass published");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(custody.held(), (0, 0), "her pass released every lease when it paged her out");
+        assert_eq!(residencies(engine).await, before, "her shadow, optimizer and workspace left the engine with her pass");
+
+        // her next pass in the same life seats her from the generation and restores it
+        submit(&executor, persona, &base, "What is the capital of Ohio?", "Columbus.").await;
+        let paged = pass_by_tick(&trigger, &key, 3).await;
+        assert_eq!(paged.steps, 3, "the restored generation's 2 updates plus exactly 1: a replayed arrival would commit more");
 
         // shutdown: nothing stays seated, nothing stays in custody, the engine holds none of hers
         crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
@@ -308,13 +456,98 @@ mod live_engine {
         // second life over the same journal: restore the generation, learn the next arrival on it
         let (trigger, executor) = build_runtime_under(adapter.clone(), live_authority()).await;
         submit(&executor, persona, &base, "What is the capital of Maine?", "Augusta.").await;
-        let second = pass_by_tick(&trigger, &key, 3).await;
-        assert_ne!(second.name, first.name, "a new generation, on top of the restored one");
-        assert_eq!(second.learned(), 3, "the first two stay learned and are not learned again; the third joins: {:?}", second.positions);
-        assert_eq!(second.steps, 3, "the restored generation's 2 updates plus exactly 1: a replayed arrival would commit more");
-        assert!(!std::path::Path::new(&first.path).exists(), "the first generation left the train dir once the second was committed");
+        let second = pass_by_tick(&trigger, &key, 4).await;
+        assert_ne!(second.name, paged.name, "a new generation, on top of the restored one");
+        assert_eq!(second.learned(), 4, "the first three stay learned and are not learned again; the fourth joins: {:?}", second.positions);
+        assert_eq!(second.steps, 4, "the restored generation's 3 updates plus exactly 1: a replayed arrival would commit more");
+        assert!(!std::path::Path::new(&first.path).exists(), "the first generation left the train dir once a newer one was committed");
         assert!(std::path::Path::new(&second.path).join("adapter.gguf").exists(), "the newest generation stays: a reseat restores it");
         crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
         assert_eq!(residencies(engine).await, before, "the second life leaves nothing on the engine either");
+    }
+
+    /// Her pass, run directly on `engine`, paused once she is seated and before her slot is asked
+    /// for: the moment her act can begin underneath a seated learner.
+    async fn seated_pass(trigger: &crate::modules::training_trigger::TrainingTriggerModule, key: &BucketKey, base: &str, engine: EngineIncarnation)
+        -> (Arc<crate::modules::training_trigger::durable::OperationPause>, tokio::task::JoinHandle<Result<BucketPass, String>>) {
+        let pause = Arc::new(crate::modules::training_trigger::durable::OperationPause {
+            point: crate::modules::training_trigger::durable::OperationPoint::SeatedBeforeSlot,
+            entered: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        *trigger.state.operation_pause.lock().expect("test: pause slot") = Some(Arc::clone(&pause));
+        let store = trigger.state.durable.require().expect("test: storage");
+        let rows = eligible_buckets(&store, base).await.expect("test: pending journal")
+            .into_iter().find(|(k, _)| k == key).map(|(_, rows)| rows).expect("test: her bucket is pending");
+        let state = Arc::clone(&trigger.state);
+        let pass_key = key.clone();
+        let pass = tokio::spawn(async move { state.learn_bucket(pass_key, rows, engine).await });
+        tokio::time::timeout(std::time::Duration::from_secs(300), pause.entered.notified()).await.expect("test: she is seated within 300s");
+        assert_eq!(trigger.state.in_place.seated_on(engine).await, 1, "paused with her learner seated");
+        (pause, pass)
+    }
+
+    // what this catches (BigMama 2026-11-11, 7 fresh residencies of the running core held 20+ min
+    // with no page-out; Codex on #5932): a seated learner whose act begins waited it out (learn_slot
+    // Busy looped back to the act gate) holding her shadow, optimizer and leases. Her act now ends
+    // the pass, and settle pages her out before the pass returns.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_seated_learner_yields_to_her_act_and_pages_out() {
+        let home = tempfile::tempdir().expect("test: home");
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+        let (engine, base) = named_engine();
+        let slots: u32 = std::env::var("CONTINUUM_LEARN_SLOTS").ok().and_then(|n| n.parse().ok()).expect("live-engine-tests: CONTINUUM_LEARN_SLOTS");
+        crate::inference::slots::register_engine_for_fixture(&engine.root_url(), slots, engine.pid, engine.started_s);
+        register_live_lane(engine, &base, slots);
+        let before = residencies(engine).await;
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let persona = Uuid::new_v4();
+        let key = BucketKey { persona_id: persona, trait_kind: "geography".into(), base_model: base.clone() };
+        let authority = live_authority();
+        let custody = Arc::clone(&authority.custody);
+        let (trigger, executor) = build_runtime_under(adapter, authority).await;
+        submit(&executor, persona, &base, "What is the capital of Kansas?", "Topeka.").await;
+        let (pause, pass) = seated_pass(&trigger, &key, &base, engine).await;
+        let act = crate::inference::slots::begin_act_for_test(persona).await; // her act begins under her seated learner
+        pause.resume.notify_one();
+        let pass = tokio::time::timeout(std::time::Duration::from_secs(120), pass).await.expect("test: the pass ends, never waits out her act")
+            .expect("test: the pass task").expect("test: the pass");
+        assert!(pass.deferred && pass.learned == 0, "her act came first: nothing learned, the pass deferred: {pass:?}");
+        assert_eq!(trigger.state.in_place.seated_on(engine).await, 0, "her learner was paged out before the pass returned");
+        assert_eq!(custody.held(), (0, 0), "every lease left custody");
+        assert_eq!(residencies(engine).await, before, "the engine holds none of hers");
+        drop(act);
+        crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
+    }
+
+    // what this catches (Codex on #5932): a failure after she is seated returning early, so nothing
+    // paged her out. Here the trigger stops admitting while she is seated: the pass fails, and the
+    // runtime's save (quiesce) pages her out; nothing outlives the save.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failure_after_seating_leaves_nothing_past_the_save() {
+        let home = tempfile::tempdir().expect("test: home");
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+        let (engine, base) = named_engine();
+        let slots: u32 = std::env::var("CONTINUUM_LEARN_SLOTS").ok().and_then(|n| n.parse().ok()).expect("live-engine-tests: CONTINUUM_LEARN_SLOTS");
+        crate::inference::slots::register_engine_for_fixture(&engine.root_url(), slots, engine.pid, engine.started_s);
+        register_live_lane(engine, &base, slots);
+        let before = residencies(engine).await;
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let persona = Uuid::new_v4();
+        let key = BucketKey { persona_id: persona, trait_kind: "geography".into(), base_model: base.clone() };
+        let authority = live_authority();
+        let custody = Arc::clone(&authority.custody);
+        let (trigger, executor) = build_runtime_under(adapter, authority).await;
+        submit(&executor, persona, &base, "What is the capital of Oregon?", "Salem.").await;
+        let (pause, pass) = seated_pass(&trigger, &key, &base, engine).await;
+        trigger.state.stop_admitting().await; // a shutdown begins while she is seated
+        pause.resume.notify_one();
+        let pass = tokio::time::timeout(std::time::Duration::from_secs(120), pass).await.expect("test: the pass ends").expect("test: the pass task");
+        assert!(pass.is_err(), "a stopping trigger admits no step: {pass:?}");
+        crate::runtime::ServiceModule::save_state(trigger.as_ref()).await.expect("test: the save publishes and pages out");
+        assert_eq!(trigger.state.in_place.seated_on(engine).await, 0, "nothing she held outlives the save");
+        assert_eq!(custody.held(), (0, 0), "every lease left custody");
+        assert_eq!(residencies(engine).await, before, "the engine holds none of hers");
+        crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
     }
 }

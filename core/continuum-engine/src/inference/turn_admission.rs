@@ -9,7 +9,7 @@
 //! ## Event-driven, no timeout (the restore-into-busy-slot fix)
 //!
 //! The order is load-bearing:
-//! 1. **Permit first.** Take the concurrency permit (`Semaphore(lanes)`) BEFORE
+//! 1. **Permit first.** Take the concurrency permit (the endpoint's `DecodeBound`) BEFORE
 //!    leasing a slot. Holding a permit means a lane is genuinely free — an
 //!    event-driven wait that wakes when another turn releases, never a timer.
 //! 2. **Pin the leased slot** (synchronously, before any save/restore await) so
@@ -26,10 +26,9 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::inference::resource_admission::{LanePriority, ServingLanePermit};
-use crate::inference::slots::{KvSlotPool, MindTurn, PageKey, SlotClass, SlotPermit, SlotPin};
+use crate::inference::slots::{DecodeBound, DecodePermit, KvSlotPool, MindTurn, PageKey, SlotClass, SlotPermit, SlotPin};
 
 mod page_liveness;
 mod page_quote;
@@ -37,6 +36,7 @@ mod page_receipt;
 mod paging_lifetime;
 mod unresolved_page;
 mod transient;
+mod learning;
 
 pub use transient::admit_transient;
 #[cfg(test)]
@@ -99,7 +99,7 @@ pub struct TurnAdmission {
     /// Released after the pin so the next permit holder can lease the free slot.
     /// `None` only for [`admit_transient`], which holds its slot's operation permit
     /// instead of a lane (it serves no page, so it takes no lane from one).
-    _permit: Option<OwnedSemaphorePermit>,
+    _permit: Option<DecodePermit>,
     /// A lease is provisional until the adapter observes successful generation.
     /// Cancellation during paging or generation must not save foreign KV later.
     uncommitted: Option<(Arc<KvSlotPool>, PageKey, u32)>,
@@ -267,6 +267,10 @@ impl From<std::time::Duration> for AdmissionPatience {
 /// itself. On a single-slot server the pool saves and detaches the resident before
 /// transient traffic borrows that slot; `slot()` then returns its index.
 ///
+/// A keyed dream's refusal when her act is running or queued: her act comes first, and the
+/// dream (her learning step) is tried again later, having held nothing.
+pub const HER_ACT_FIRST: &str = "her act comes first: her own background work yields to it";
+
 /// `patience` is how long the turn holds through a CLOSED endpoint (an engine still
 /// loading, a transition in flight) before it is refused — the caller's bound, since
 /// only the caller knows what its request can afford: the persona adapter passes
@@ -276,7 +280,7 @@ impl From<std::time::Duration> for AdmissionPatience {
 /// A test that asserts immediate readiness refusal passes zero. See `EndpointSlots::admit_when_ready`
 /// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(
-    concurrency: &Arc<Semaphore>,
+    concurrency: impl Into<DecodeBound>,
     class: SlotClass,
     key: Option<PageKey>,
     pool: Option<Arc<KvSlotPool>>,
@@ -286,7 +290,8 @@ pub async fn admit_turn(
     patience: impl Into<AdmissionPatience>,
 ) -> Result<TurnAdmission, String> {
     let patience = patience.into();
-    let admission = admit(concurrency, class, key, pool, client, root, approx_tokens, false, patience.readiness);
+    let concurrency = concurrency.into();
+    let admission = admit(&concurrency, class, key, pool, client, root, approx_tokens, false, patience.readiness);
     match patience.deadline {
         Some(deadline) => {
             if deadline <= tokio::time::Instant::now() {
@@ -302,7 +307,7 @@ pub async fn admit_turn(
 /// Best-effort warm-ahead uses the same paging and provisional-attribution owner
 /// as a turn. No generation follows, so only proven physical warmth is committed.
 pub(crate) async fn warm_ahead(
-    concurrency: &Arc<Semaphore>,
+    concurrency: impl Into<DecodeBound>,
     key: PageKey,
     pool: Arc<KvSlotPool>,
     client: &reqwest::Client,
@@ -322,7 +327,8 @@ pub(crate) async fn warm_ahead(
     };
     // Best-effort: a closed endpoint is an instant no, never a held permit.
     // No generation follows: its drop keeps only the warmth paging confirmed (`Dispatch::Unsent`).
-    let admission = admit(concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
+    let concurrency = concurrency.into();
+    let admission = admit(&concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
     if let Some(slot) = admission.slot {
         continuum_base::probe!(
             class = "inference.kv_warm_ahead",
@@ -339,7 +345,7 @@ pub(crate) async fn warm_ahead(
 }
 
 async fn admit(
-    concurrency: &Arc<Semaphore>,
+    concurrency: &DecodeBound,
     class: SlotClass,
     key: Option<PageKey>,
     pool: Option<Arc<KvSlotPool>>,
@@ -358,10 +364,16 @@ async fn admit(
         crate::inference::resource_admission::take_serving_lane()?
     };
     let reacquire = caller_lane.as_ref().map(ServingLanePermit::reacquisition);
+    // A KEYED DREAM (her own background work on her page: a learning step) never waits holding her
+    // mind gate: it queues for its ambient lane, the permit and her slot holding nothing, and takes
+    // her gate only once her slot is pinned and permitted, without waiting (`HER_ACT_FIRST`).
+    // Queued at step 0 like a turn, it held the gate through every wait below and her own act
+    // queued behind her learning (Codex on card 23069702).
+    let keyed_dream = class == SlotClass::Dream && key.is_some();
     // 0. ONE ACT AT A TIME PER MIND — queued here, before the lane, holding nothing
     //    (`slots::mind_gate`). Warm-ahead took its gate itself, without waiting.
     let mut mind = match key {
-        Some(k) if !warm_only => {
+        Some(k) if !warm_only && !keyed_dream => {
             let begin = MindTurn::begin(k);
             tokio::pin!(begin);
             Some(match futures::poll!(&mut begin) {
@@ -388,19 +400,15 @@ async fn admit(
         //    semaphore is never closed over the adapter's lifetime. A dream holding its lane
         //    only TRIES: when the adapter is full it lets the lane go, waits for a permit
         //    holding nothing, and takes both again (Codex on #5786).
-        let _permit = match lane.as_ref().or(caller_lane.as_ref()).map(|_| concurrency.clone().try_acquire_owned()) {
+        let _permit = match lane.as_ref().or(caller_lane.as_ref()).map(|_| concurrency.try_acquire()) {
             Some(Ok(permit)) => permit,
             Some(Err(_)) => {
                 lane = None;
                 caller_lane = None;
-                drop(concurrency.clone().acquire_owned().await.expect("adapter semaphore never closed")); // expect: the semaphore lives as long as the adapter, never closed
+                drop(concurrency.acquire().await);
                 continue 'admit;
             }
-            None => concurrency
-                .clone()
-                .acquire_owned()
-                .await
-                .expect("adapter semaphore never closed"), // expect: the semaphore lives as long as the adapter, never closed
+            None => concurrency.acquire().await,
         };
 
         // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,
@@ -440,7 +448,9 @@ async fn admit(
         // it). Where it borrows a citizen slot (no scratch slot) it holds an ambient lane, so a
         // waiting turn still wins, and takes it holding nothing; with a scratch slot that slot is
         // its admission and it holds no lane.
-        if class == SlotClass::Dream && pool.as_ref().is_some_and(|pool| pool.scratch_slot().is_none()) {
+        // A keyed dream always borrows a citizen slot (her page), scratch or not, so it always
+        // holds the ambient lane: on a node with a scratch slot it would otherwise outrank residents.
+        if class == SlotClass::Dream && (keyed_dream || pool.as_ref().is_some_and(|pool| pool.scratch_slot().is_none())) {
             if lane.is_none() {
                 drop(admission);
                 lane = Some(crate::inference::resource_admission::acquire_serving_lane(None, LanePriority::Ambient, None).await);
@@ -500,6 +510,7 @@ async fn admit(
                 // No pin or provisional page exists yet. Keep the registered notification,
                 // then rediscover the pool under the next admitted generation.
                 drop(admission);
+                lane = None; // a waiting dream holds no lane either (Codex on #5898); only dreams hold one
                 notified.await;
                 continue 'admit;
             };
@@ -514,8 +525,25 @@ async fn admit(
             if let Some((slot, pin)) = pinned {
                 admission._pin = Some(pin);
                 admission.released = Some(pool.released());
-                admission._slot_permit = Some(pool.acquire_slot(slot).await?);
+                admission._slot_permit = Some(match pool.try_acquire_slot(slot) {
+                    Some(permit) => permit,
+                    // A keyed dream waits for her busy slot holding nothing: no pin, no lane, no
+                    // gate (Codex on #5898). A turn keeps its pin through the wait (a same-page
+                    // returner must await the prior owner without permitting eviction).
+                    None if keyed_dream => {
+                        drop(admission);
+                        lane = None;
+                        wait_until_free(pool, slot).await?;
+                        continue 'admit;
+                    }
+                    None => pool.acquire_slot(slot).await?,
+                });
                 admission._endpoint.check_ready()?;
+                if keyed_dream {
+                    // Her gate, without waiting: her act running or queued comes first. Returning
+                    // drops this admission, releasing the pin, the slot permit and the lane.
+                    mind = Some(MindTurn::try_begin(k).ok_or_else(|| HER_ACT_FIRST.to_owned())?);
+                }
                 // Before the plan moves the slot's attribution: once a stop has closed page IO,
                 // nothing pages a resident out (card 47151d36, `slots::page_io`).
                 let page_io = crate::inference::slots::admit_page_io(crate::inference::slots::page_io::gate())

@@ -16,6 +16,22 @@ impl TrainingTriggerState {
         Fut: std::future::Future<Output = T> + Send + 'static,
     {
         let lease = self.submit_gates.acquire(&key).await;
+        self.run_leased(lease, key, operation).await
+    }
+
+    /// [`Self::run_owned`] for a caller that already holds the bucket's lease (taken by
+    /// `try_acquire` while it held serving resources it would not wait holding).
+    pub(crate) async fn run_leased<T, F, Fut>(
+        self: &Arc<Self>,
+        lease: crate::runtime::Lease<BucketKey>,
+        key: BucketKey,
+        operation: F,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<Self>, BucketKey) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = T> + Send + 'static,
+    {
         let mut operations = self.operations.lock().await;
         self.require_ready()?;
         while let Some(joined) = operations.try_join_next() {
@@ -34,6 +50,19 @@ impl TrainingTriggerState {
         receive.await.map_err(|_| "training owner operation ended without a result; inspect durable status before retry".into())
     }
 
+    /// Admit no new owned operation, and count the ones still running.
+    pub(crate) async fn stop_admitting(&self) -> usize {
+        self.stopping.store(true, Ordering::Release);
+        self.ready.store(false, Ordering::Release);
+        let mut operations = self.operations.lock().await;
+        while let Some(joined) = operations.try_join_next() {
+            if let Err(error) = joined {
+                tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
+            }
+        }
+        operations.len()
+    }
+
     pub(crate) async fn drain_operations(&self) -> Result<(), String> {
         self.stopping.store(true, Ordering::Release);
         self.ready.store(false, Ordering::Release);
@@ -47,7 +76,7 @@ impl TrainingTriggerState {
             }
         }
         // nothing learns now: leave no learner seated
-        let quiesced = self.in_place.quiesce(self).await;
+        let quiesced = self.in_place.quiesce(self, super::super::in_place::Busy::Wait).await;
         continuum_base::probe!(class = "training.in_place.quiesced", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
             unconfirmed = quiesced.unconfirmed, "the trigger stopped: every learner checkpointed and stopped, every workspace released");
         failure.map_or(Ok(()), Err)
@@ -161,7 +190,7 @@ impl TrainingTriggerState {
             .durable
             .require()
             .map_err(|e| ("PersistenceUnavailable", e))?;
-        let id = submission_id.unwrap_or_else(Uuid::new_v4);
+        let id = submission_id.unwrap_or_else(Uuid::new_v4); // a submission with no id is minted one here: an identity, never a quantity
         let _lease = self.acceptance_gates.acquire(&id).await;
         if let Some(existing) = store
             .submissions

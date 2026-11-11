@@ -33,6 +33,48 @@
         git(dir, &["config", "user.name", "t"]).await;
     }
 
+    // what this catches (Benchy's #5883, card a7a37ce7): an autosave recording a lagging
+    // submodule checkout as a pin change. The repo pins its submodule at the first commit; the
+    // checkout is moved to a second; a Work autosave of an ordinary edit must keep the pin and
+    // carry the edit, while an Everything save (a stranded save that loses nothing) still may.
+    #[tokio::test]
+    async fn a_work_autosave_keeps_the_submodule_pin_and_carries_her_edit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sub = tmp.path().join("engine");
+        git(tmp.path(), &["init", "-q", "-b", "main", &sub.to_string_lossy()]).await;
+        identity(&sub).await;
+        std::fs::write(sub.join("a.txt"), "1").expect("write");
+        git(&sub, &["add", "a.txt"]).await;
+        git(&sub, &["commit", "-q", "-m", "one"]).await;
+        let pinned = head(&sub).await;
+        std::fs::write(sub.join("a.txt"), "2").expect("write");
+        git(&sub, &["commit", "-q", "-am", "two"]).await;
+        let lagging = head(&sub).await;
+
+        let repo = tmp.path().join("repo");
+        git(tmp.path(), &["init", "-q", "-b", "main", &repo.to_string_lossy()]).await;
+        identity(&repo).await;
+        git(&repo, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub.to_string_lossy(), "vendor/engine"]).await;
+        let checkout = repo.join("vendor/engine");
+        git(&checkout, &["checkout", "-q", &pinned]).await;
+        git(&repo, &["add", "vendor/engine"]).await;
+        git(&repo, &["commit", "-q", "-m", "pin the engine"]).await;
+
+        // Her checkout's submodule lags the branch's pin; she edits a file of her own.
+        git(&checkout, &["checkout", "-q", &lagging]).await;
+        std::fs::write(repo.join("her.rs"), "fn work() {}").expect("write");
+        commit_tree_no_hooks(&repo, "wip", true, &actor(), TreeScope::Work).await.expect("autosave");
+
+        let pin = git(&repo, &["rev-parse", "HEAD:vendor/engine"]).await.trim().to_string();
+        assert_eq!(pin, pinned, "the autosave kept the branch's pin, not the lagging checkout");
+        assert!(git(&repo, &["ls-tree", "--name-only", "HEAD"]).await.lines().any(|l| l == "her.rs"), "her edit is in the commit");
+        assert!(!has_uncommitted_work(&repo).await.expect("status"), "the lagging checkout alone is not her work: no wip every turn");
+
+        let stranded = commit_tree_no_hooks(&repo, "stranded", false, &actor(), TreeScope::Everything).await.expect("save");
+        let carried = git(&repo, &["rev-parse", &format!("{stranded}:vendor/engine")]).await.trim().to_string();
+        assert_eq!(carried, lagging, "a stranded save loses nothing, the checkout's commit included");
+    }
+
     /// The act-end sync's MECHANISM, with the carry decision granted. An offline fixture's
     /// remote is a local bare repo — exactly what the POLICY refuses — so the two are
     /// tested apart: the policy in

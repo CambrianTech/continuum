@@ -26,6 +26,7 @@ pub mod entity;
 pub mod legacy_grant_watermark;
 pub mod migration;
 pub mod query;
+pub mod record_decode;
 pub mod sqlite;
 pub mod store;
 pub mod types;

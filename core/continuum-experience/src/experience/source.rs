@@ -73,6 +73,7 @@ const EMBEDDED_RECIPES: &[(&str, &str)] = &[
     ("benchmark-round.json", include_str!("recipes/benchmark-round.json")),
     ("coursework-round.json", include_str!("recipes/coursework-round.json")),
     ("chat.json", include_str!("recipes/chat.json")),
+    ("category.json", include_str!("recipes/category.json")),
     ("video-chat.json", include_str!("recipes/video-chat.json")),
     ("profile.json", include_str!("recipes/profile.json")),
     ("project.json", include_str!("recipes/project.json")),
@@ -347,11 +348,13 @@ impl RecipeExperienceSource {
         recipes: impl Iterator<Item = ExperienceRecipe>,
     ) -> Result<Vec<crate::experience::recipe::CitizenRecipe>, RecipeLoadError> {
         let default_purpose = Self::shipped_purpose(shipped::CHAT)?;
-        Ok(recipes
+        // The embedded set is always in `recipes` and holds the chat recipe (`shipped_purpose` just
+        // found it), so none matching is a load defect, said by its type, never empty citizens.
+        recipes
             .filter(|r| r.purpose == default_purpose)
             .last()
             .map(|r| r.citizens)
-            .unwrap_or_default())
+            .ok_or(RecipeLoadError::ShippedMissing { id: shipped::CHAT })
     }
 
     /// The shipped recipe a [`shipped`] handle names. [`RecipeLoadError::ShippedMissing`]

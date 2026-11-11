@@ -38,6 +38,9 @@ pub enum SeatRefusal {
     Unmeasured(String),
     /// The resource authority did not grant the bytes, or the engine did not answer the residency.
     Unleased(String),
+    /// Not granted on this attempt, nothing held: wait for what it names (a capacity change, the
+    /// serving lifecycle) holding no serving resource, then try again.
+    AwaitingMemory(crate::inference::training_admission::TrainingWait),
     /// The engine refused to mirror the leases.
     Unmirrored(ResidencyRefusal),
     /// The engine did not load the shadow inside its residency. Released when the engine confirmed
@@ -51,6 +54,7 @@ impl std::fmt::Display for SeatRefusal {
             SeatRefusal::NoLedger => write!(f, "the engine has no learning ledger"),
             SeatRefusal::Unmeasured(why) => write!(f, "the shadow could not be measured: {why}"),
             SeatRefusal::Unleased(why) => write!(f, "the shadow's memory was not leased: {why}"),
+            SeatRefusal::AwaitingMemory(wait) => write!(f, "waiting for memory, holding nothing: {wait}"),
             SeatRefusal::Unmirrored(why) => write!(f, "the engine refused the residency: {why:?}"),
             SeatRefusal::Unloaded(why) => write!(f, "the shadow was not loaded: {why}"),
         }
@@ -140,7 +144,9 @@ pub(super) async fn register(
 }
 
 /// Lease each class of the rows (device memory as VRAM, host memory as RAM) from the resource
-/// authority, under the serving lifecycle gate.
+/// authority, under the serving lifecycle gate, in ONE attempt: a learner's step may hold her serving
+/// resources, so it never waits here (Codex on #5905). A shortfall answers `AwaitingMemory`, and the
+/// leases this call already took drop with it.
 pub(super) async fn lease_rows(authority: &Authority, consumer: &str, rows: &[ResidencyRow]) -> Result<Vec<(LeaseKind, u64, LeaseGuard)>, SeatRefusal> {
     let mut leases = Vec::new();
     for (kind, resource, host) in [(LeaseKind::Vram, ResourceKind::Vram, false), (LeaseKind::Ram, ResourceKind::Ram, true)] {
@@ -148,9 +154,9 @@ pub(super) async fn lease_rows(authority: &Authority, consumer: &str, rows: &[Re
         if bytes == 0 {
             continue;
         }
-        let guard = crate::inference::training_admission::wait_for_training_memory(authority.resources.clone(), &authority.serving, consumer, resource, bytes, |_| {})
-            .await
-            .map_err(SeatRefusal::Unleased)?;
+        let guard = crate::inference::training_admission::try_training_memory(&authority.resources, &authority.serving, consumer, resource, bytes)
+            .map_err(SeatRefusal::Unleased)?
+            .map_err(SeatRefusal::AwaitingMemory)?;
         leases.push((kind, bytes, guard));
     }
     Ok(leases)

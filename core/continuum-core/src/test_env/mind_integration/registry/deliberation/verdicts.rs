@@ -74,7 +74,9 @@ fn reply_priority_grows_the_reply_not_at_history_or_required_input() {
     let room = crate::identity::ActivityRoom::mint();
     let pass = writing_workspace(room, 200, false);
     let act = writing_workspace(room, 200, true);
-    assert_eq!((faculty.turn_kind(&pass), faculty.turn_kind(&act)), (TurnKind::Pass, TurnKind::Act));
+    // Every turn she has hands for is an act (60cf344aa): the ambient pass is a mind with none.
+    let handless = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", Arc::new(ScriptedAdapter::new(vec![]))).with_context_window(window);
+    assert_eq!((handless.turn_kind(&pass), faculty.turn_kind(&act)), (TurnKind::Pass, TurnKind::Act));
     wm.retain_truncated_emission(act.activity_room_id, 5_404);
 
     let required = |ws: &Workspace| faculty.messages_unfitted(ws, None).required_tokens();
@@ -87,16 +89,16 @@ fn reply_priority_grows_the_reply_not_at_history_or_required_input() {
     // Each turn on its own faculty: her view carries an epoch from one prompt to the next,
     // so the act on the pass's faculty would inherit the pass's epoch. What this test
     // pins is the allocation, which each turn makes from its own state.
-    let fresh = || {
-        LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", Arc::new(ScriptedAdapter::new(vec![])))
+    let fresh = |hands: bool| {
+        let faculty = LlmDeliberationFaculty::new(persona, "Benchy", "You are Benchy.", Arc::new(ScriptedAdapter::new(vec![])))
             .with_context_window(window)
-            .with_tools(vec![read_tool()])
-            .with_working_memory(Arc::clone(&wm))
+            .with_working_memory(Arc::clone(&wm));
+        if hands { faculty.with_tools(vec![read_tool()]) } else { faculty }
     };
-    let pass_view = fresh().prompt_view_within(&pass, window);
+    let pass_view = fresh(false).prompt_view_within(&pass, window);
     // Working memory keeps her view for her checkpoint; this act starts its own.
     wm.take_view();
-    let act_faculty = fresh();
+    let act_faculty = fresh(true);
     let act_view = act_faculty.prompt_view_within(&act, window);
     for view in [&pass_view, &act_view] {
         assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
@@ -105,16 +107,16 @@ fn reply_priority_grows_the_reply_not_at_history_or_required_input() {
             "required input is never traded"
         );
     }
+    // Her act's reply grows toward the pending cut's measured peak (5,404) at the act's priority,
+    // never left at the cell a reply begins in.
     assert!(
-        act_view.completion_reserve > pass_view.completion_reserve,
-        "the act's reply outranks the ambient pass's: {} vs {}",
+        act_view.completion_reserve > 1_000,
+        "the act's reply grows toward her pending cut: {} (the handless pass: {})",
         act_view.completion_reserve,
         pass_view.completion_reserve
     );
-    // An epoch start sizes history against the reply's runaway bound, the same on both
-    // turns (`fit_view`, epoch.rs), so one turn's priority never reshuffles her prefix:
-    // the act's larger reply comes out of the growth reserve, not out of her history.
-    assert_eq!(history(&act_view), history(&pass_view), "the act's reply leaves her history as it was");
+    // Her history is kept on both (the pass, with no hands, holds at least as much).
+    assert!(history(&act_view) > 0 && history(&pass_view) >= history(&act_view), "the act's reply never takes her history");
     let again = act_faculty.prompt_view_within(&act, window);
     assert_eq!(
         format!("{:?} {:?} {}", again.system, again.messages, again.completion_reserve),

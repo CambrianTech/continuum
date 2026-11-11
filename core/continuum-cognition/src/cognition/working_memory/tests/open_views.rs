@@ -89,6 +89,24 @@ fn a_code_read_opens_a_view_with_the_range_it_showed() {
     assert!(block.contains(&format!("- {PATH}, 498 lines: read 1-250; not yet read 251-498")), "{block}");
 }
 
+// what this catches (the M5, 2026-11-10: 20 identical re-reads, Atlas read one 666-line file 4
+// times): a whole file read inline left only "(all of it)" once it folded out of her view, with
+// nothing to reopen, and `./x` and `x` were two views. A whole inline read names its handle; one
+// spelling is one view.
+#[test]
+fn a_whole_file_read_inline_names_its_handle_and_one_spelling_is_one_view() {
+    let wm = WorkingMemory::new(3);
+    record(&wm, read(1, 498, 498, None));
+    let views = wm.snapshot().open_views;
+    assert_eq!(views[0].handle.as_deref(), Some("small"), "the whole read is reopenable by its handle");
+    let block = wm.open_views_block().expect("renders");
+    assert!(block.contains("read 1-498 (all of it) (that whole read is saved as output `small`)"), "{block}");
+    let mut again = read(1, 10, 498, None);
+    again.call.input = serde_json::json!({ "file_path": format!("./{PATH}"), "start_line": 1, "end_line": 10 });
+    record(&wm, again);
+    assert_eq!(wm.snapshot().open_views.len(), 1, "./{PATH} is {PATH}");
+}
+
 // what this catches: a second, overlapping page of the same file opening a second
 // view or listing both ranges side by side, so the cursor grows with every page
 // instead of saying how far she has got. Overlapping and touching ranges merge; the

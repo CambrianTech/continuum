@@ -615,13 +615,15 @@ fn the_product_limit_p90_is_the_landed_p90_without_cuts_and_only_rises_with_them
     assert_eq!(need::reasoning_at_least(&landed, &[1_100, 1_200], 1_200), None, "only where higher");
 }
 
-// what this catches (the M5, 2026-11-04 20:15-20:35Z): #5773 raised her WISH and her residency
-// need to a censored overflow bound, and the grant gave the bound all one sequence holds, so one
-// mind took the pool (125,696 -> {Aiko: 114,592}) and three residents went dark for 20 min. An
-// overflow is first reducible (her view collapses older items to handles, ONE-ACT stage 3): the
-// bound stays the typed MEASUREMENT (`need_tokens`); her requirement is sized from what held.
+// what this catches: (the M5, 2026-11-04) a censored bound granted all one sequence holds
+// (125,696 -> {Aiko: 114,592}, three residents dark 20 min; `within` now clamps a bound to its
+// value); (the M5, 2026-11-09) censored needs dropped from her residency, which pinned a mind whose
+// own price chose more than her grant at that grant forever; and (BigMama, 2026-11-11) a bound read
+// as an exact need, never granted above the ceiling, so Sahar parked for good. A censored need is
+// her act's PRICED window: her residency is granted its value, never a whole sequence, and a bound
+// past the ceiling is granted the ceiling, never parked.
 #[test]
-fn an_overflow_is_measured_as_a_bound_and_never_raises_her_residency() {
+fn a_censored_need_raises_her_residency_by_its_value_never_to_a_whole_sequence() {
     use crate::inference::planning::window_allocator::Measure;
     let reg = WorkingSetRegistry::new();
     let aiko = Uuid::new_v4();
@@ -634,12 +636,33 @@ fn an_overflow_is_measured_as_a_bound_and_never_raises_her_residency() {
     }
     let demand = reg.demand_of(aiko).expect("recorded");
     assert_eq!(need_tokens(&demand), Some(NeedSample::AtLeast { at_least: would_have_held }), "the measurement keeps the bound, typed as one");
-    assert_eq!(resident_need(&demand), Some(30_000), "residency reads only what held");
+    assert_eq!(resident_need(&demand).map(|need| need.value().get()), Some(would_have_held), "residency reads her need, censored samples included");
     let requirement = &requirements_for(&[aiko], &reg)[0];
     assert_eq!(requirement.wish.map(|w| w.get()), Some(48_000), "the bound raises no wish");
     let Measure::Held { need, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
-    assert!(!need.is_bound(), "no bound reaches the grant, where `within` hands it a whole sequence: {need:?}");
-    assert_eq!(need.value().get(), 30_000);
+    assert!(need.is_bound(), "a bound stays a bound, so admission can clamp it: {need:?}");
+    // granted its value, within her wish with the sent headroom (48,000 x 1.25), never a sequence
+    assert_eq!(need.value().get(), 60_000, "granted its value up to her wish");
+    assert_eq!(need.within(262_144).get(), 60_000, "under a roomy ceiling: its value, never a whole sequence");
+    assert_eq!(need.within(58_112).get(), 58_112, "past the ceiling: the ceiling, never parked (Sahar)");
+}
+
+// what this catches (Codex on #5931): a bound clamped below her irreducible floor. A floor between
+// the ceiling and the bound must stand and wait; a floor at the bound is still a floor; a floor
+// under the ceiling raises what the bound clamps to and never lowers it.
+#[test]
+fn a_bound_is_clamped_to_the_ceiling_never_below_her_floor() {
+    let reg = WorkingSetRegistry::new();
+    let her = Uuid::new_v4();
+    let need_at = |floor: u32, ceiling: u32| {
+        reg.record_need_in_memory(her, NeedSample::AtLeast { at_least: 116_240 }, 1);
+        reg.record_floor_in_memory(her, floor, 1);
+        resident_need(&reg.demand_of(her).expect("recorded")).expect("a need").within(ceiling).get()
+    };
+    assert_eq!(need_at(60_000, 58_112), 60_000, "a floor past the ceiling stands, and waits for room");
+    assert_eq!(need_at(116_240, 58_112), 116_240, "a floor at the bound is still a floor");
+    assert_eq!(need_at(30_000, 58_112), 58_112, "a floor under the ceiling: the bound clamps to the ceiling");
+    assert_eq!(need_at(30_000, 262_144), 116_240, "a roomy ceiling: the bound's value");
 }
 
 // what this catches (the M5, 2026-11-04): a deliberate start or a turnover within the grant
@@ -783,4 +806,25 @@ fn a_cut_inside_an_open_tool_call_is_a_cut_answer() {
     assert_eq!(read.stop, EmissionStop::CutMidAnswer, "the open call is her answer");
     assert!(read.answered);
     assert!(read.reasoning_tokens < 900, "the call's bytes are answer, not think: {}", read.reasoning_tokens);
+}
+
+// what this catches (Codex on #5931): a floor cut by a stale target on the way to admission. Her
+// wish 40,000 (target 50,000 with the sent headroom), floor 60,000 and bound 116,240 go through
+// requirements_for, the path admission reads: the floor stands past a 58,112 ceiling and waits,
+// and her target rises to it.
+#[test]
+fn a_stale_target_never_cuts_her_floor_on_the_way_to_admission() {
+    use crate::inference::planning::window_allocator::Measure;
+    let reg = WorkingSetRegistry::new();
+    let her = Uuid::new_v4();
+    for t in 0..4u64 {
+        reg.record_in_memory(her, 40_000, t);
+    }
+    reg.record_need_in_memory(her, NeedSample::AtLeast { at_least: 116_240 }, 5);
+    reg.record_floor_in_memory(her, 60_000, 5);
+    let requirement = &requirements_for(&[her], &reg)[0];
+    let Measure::Held { need, target } = requirement.measure else { panic!("a held need: {requirement:?}") };
+    assert!(target.get() >= 60_000, "her target rises to her floor: {target:?}");
+    assert_eq!(need.within(58_112).get(), 60_000, "past the ceiling her floor stands, and waits");
+    assert!(need.within(262_144).get() >= 60_000, "under a roomy ceiling, never below her floor");
 }

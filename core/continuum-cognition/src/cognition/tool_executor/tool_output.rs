@@ -226,12 +226,16 @@ impl ActionCommand for ToolOutput {
                 ))
             })?;
 
-        let act_handle = |act| {
+        let act_handle = move |act| {
             crate::cognition::persona_workspace::global()
                 .act_output_handle(persona_id, act)
                 .map_err(|fault| CommandError::Internal(fault.to_string()))
         };
-        let handle = named_output(params.handle.take(), params.act, act_handle)?;
+        // An act that left RAM is read back from her archive's segment: disk, so off the executor.
+        let (named, act) = (params.handle.take(), params.act);
+        let handle = tokio::task::spawn_blocking(move || named_output(named, act, act_handle))
+            .await
+            .map_err(|e| CommandError::Internal(format!("reopening an act failed: {e}")))??;
         let path = spill::resolve(persona_id, &handle)
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         let range = line_range(params.start_line, params.end_line);
@@ -389,7 +393,10 @@ fn act_refused(refusal: ActOutputRefusal) -> CommandError {
         ActOutputRefusal::Unknown { newest_saved: None, .. } | ActOutputRefusal::NothingSaved => {
             Ok(NextMoves::None(NoMove::NothingSaved))
         }
-        ActOutputRefusal::Unsaved { .. } => Ok(NextMoves::None(NoMove::NothingMoreExists)),
+        ActOutputRefusal::Unsaved { .. }
+        | ActOutputRefusal::Compacted { .. }
+        | ActOutputRefusal::Retired { .. }
+        | ActOutputRefusal::Unreadable { .. } => Ok(NextMoves::None(NoMove::NothingMoreExists)),
         ActOutputRefusal::Disagree { act, output, act_output } => {
             call(Reopen::Output(output), "the output you named by id").and_then(|first| {
                 let more = match act_output {

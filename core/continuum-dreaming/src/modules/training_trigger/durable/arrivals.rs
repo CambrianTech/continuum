@@ -42,7 +42,7 @@ impl DurableStore {
             .ok_or("training arrivals query omitted rows")?
             .into_iter()
             .map(|row| {
-                let row: Submission = serde_json::from_value(row.data).map_err(|error| error.to_string())?; // decode the persisted ORM row into its typed owner
+                let row: Submission = row.decode().map_err(|error| error.to_string())?; // decode the persisted ORM row into its typed owner
                 Ok(Arrival {
                     id: entity_id(&row.base)?,
                     sequence: row.sequence,
@@ -98,10 +98,10 @@ impl DurableStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
-    fn submission(sequence: u64, examples: usize) -> (Uuid, Submission) {
+    pub(in crate::modules::training_trigger::durable) fn submission(sequence: u64, examples: usize) -> (Uuid, Submission) {
         submission_for(sequence, examples, "qwen")
     }
 
