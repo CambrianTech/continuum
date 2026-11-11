@@ -188,10 +188,20 @@ fn opens_with_tool_envelope(t: &str) -> bool {
                 return true;
             }
 
-            // Stage-word + call form: [answer] note(x) — only valid if
-            // the verb part is namespaced (prevents false positives like
-            // `[answer] this` or `[code] hello`).
+            // Stage-word + call form: [answer] note(x) or [execute] code/read({…}) — only valid if
+            // the verb part is namespaced (prevents false positives like `[answer] this`).
+            // The original gate accepted both `(` and `{` after the stage word; preserve that.
             if let Some((stage_word, _call)) = trimmed_after.split_once('(') {
+                let stage_trimmed = stage_word.trim();
+                if !stage_trimmed.is_empty()
+                    && stage_trimmed.contains('/')
+                    && verb_ok(stage_trimmed)
+                {
+                    return true;
+                }
+            }
+            // Stage-word + brace call form (the `{` delimiter the original also accepted).
+            if let Some((stage_word, _call)) = trimmed_after.split_once('{') {
                 let stage_trimmed = stage_word.trim();
                 if !stage_trimmed.is_empty()
                     && stage_trimmed.contains('/')
@@ -245,13 +255,11 @@ fn opens_with_tool_envelope(t: &str) -> bool {
                 return true;
             }
 
-            // Labelled call: scan tokens in label text for namespaced callee.
-            // [call form: code/read({"file_path":"src/main.rs"})] (#0051cdcf, Intel Mac):
-            for token in before_paren.split(|c: char| c.is_whitespace() || c == ':') {
-                if verb_ok(token) && token.contains('/') && (has_json || has_kwargs)
-                {
-                    return true;
-                }
+            // Labelled call: the callee is the last whitespace/colon-separated token before `(`.
+            // [call form: code/read({"file_path":"src/main.rs"})] (#0051cdcf, Intel Mac).
+            let callee = before_paren.trim().rsplit(|c: char| c.is_whitespace() || c == ':').next().unwrap_or("");
+            if callee != before_paren.trim() && verb_ok(callee) && callee.contains('/') && (has_json || has_kwargs) {
+                return true;
             }
         }
     }
