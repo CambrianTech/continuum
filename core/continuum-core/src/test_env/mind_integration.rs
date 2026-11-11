@@ -14,6 +14,7 @@ mod registry;
 mod hands_isolation;
 mod obligation;
 mod remote_lane;
+mod resident_parity;
 mod source_guards;
 mod teach;
 mod tool_executor;

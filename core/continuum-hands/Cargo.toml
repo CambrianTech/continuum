@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" } # durable placement of git metadata and notes in her layer
 continuum-git = { path = "../continuum-git" } # a dead git's index.lock in a citizen's workspace (card d7765b90)
 schemars = { workspace = true }
 reqwest = { workspace = true, features = ["json", "multipart", "stream"] }

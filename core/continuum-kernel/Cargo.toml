@@ -15,6 +15,7 @@ command-name resolver, MeshPresence, ClogSink) installed at boot.
 [dependencies]
 continuum-base = { path = "../continuum-base" }
 continuum-host = { path = "../continuum-host" }
+continuum-saved-state = { path = "../continuum-saved-state" }  # the module-init record the boot's init deadline derives from
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }
 continuum-orm-derive = { path = "../continuum-orm-derive" }
@@ -64,7 +65,6 @@ tempfile = { workspace = true, optional = true }
 windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-landlock = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = { workspace = true }

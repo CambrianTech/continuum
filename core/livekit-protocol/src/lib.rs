@@ -12,6 +12,7 @@
 //!
 //! This crate has ZERO heavy dependencies (no ort, no livekit, no webrtc-sys).
 //! Both sides depend on it for shared types only.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use serde::{Deserialize, Serialize};
 

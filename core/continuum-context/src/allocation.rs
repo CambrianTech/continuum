@@ -113,12 +113,17 @@ impl Head {
 pub struct ViewClaim {
     pub claim: FlexClaim,
     pub consumer: Consumer,
+    /// The cost of this source's turn that arrived during this act (a room message that reached
+    /// her while she acted), 0 when none: her newest interaction, held whole beside every hard limit
+    /// when the window holds it ([`hold_arrived`]), else her source's floor stands and its own
+    /// index names where it is.
+    pub arrived: u32,
 }
 
 impl From<FlexClaim> for ViewClaim {
     /// A source she reads.
     fn from(claim: FlexClaim) -> Self {
-        Self { claim, consumer: Consumer::Context }
+        Self { claim, consumer: Consumer::Context, arrived: 0 }
     }
 }
 
@@ -287,12 +292,31 @@ fn hard_limits(claims: &ActClaims) -> u32 {
         .saturating_add(view_floors)
 }
 
+/// A turn that arrived during this act is her NEWEST interaction (goal 7: never clip the newest
+/// end): decided before her newest result exactly like it, whole whenever the window holds it beside
+/// every hard limit, her newest result's least page and her reply's measured need, so her result
+/// pages around it. One that cannot fit leaves its source at its floor (the index of what arrived
+/// names where it is), never a floor past the window.
+fn hold_arrived(window: u32, claims: &mut ActClaims) {
+    let mut held = hard_limits(claims).saturating_add(claims.newest.least()).saturating_add(claims.reply.floor_tokens);
+    for view in claims.view.iter_mut().filter(|view| view.arrived > 0 && view.claim.required) {
+        let with = held.saturating_add(view.arrived);
+        if with <= window {
+            view.claim.floor_tokens = view.claim.floor_tokens.saturating_add(view.arrived);
+            view.claim.min_tokens = view.claim.min_tokens.max(view.claim.floor_tokens);
+            view.claim.max_tokens = view.claim.max_tokens.max(view.claim.min_tokens);
+            held = with;
+        }
+    }
+}
+
 /// The plan of one act at `window` tokens shared across `claims`, once. Every leveled part
 /// answers "the most you can show within this" ([`Leveled::reduce`]); their levels are searched
 /// together ([`search`]), and the continuous parts share what the levels leave through the
 /// flexbox. The turn is short only when every hard limit together does not fit
 /// ([`ActPlan::irreducible_shortfall`], naming the binding one).
-fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
+fn plan_at(window: u32, mut claims: ActClaims) -> ActPlan {
+    hold_arrived(window, &mut claims);
     let hard = hard_limits(&claims);
     let ActClaims { framing, required, newest, tools, grounding, last_move, history, reply, view, price: _, trained: _ } = claims;
     // Her newest result is irreducible at its WHOLE: chosen before the search, against every other
@@ -332,6 +356,7 @@ fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
     let reply_need = reply.floor_tokens;
     reply.floor_tokens = reply_need.min(window.saturating_sub(hard.saturating_add(newest_cost)));
     reply.min_tokens = reply.floor_tokens;
+    let reply_floor = reply.floor_tokens;
     reply.source_id = id::REPLY.to_owned();
     let mut continuous = vec![span(id::HISTORY, HISTORY_PRIORITY, history, false)];
     continuous.extend(view.into_iter().map(|view| view.claim));
@@ -340,6 +365,7 @@ fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
     let singles = [whole(id::REQUIRED, &required), whole(id::LAST_MOVE, &last_move), Group { id: id::NEWEST.to_owned(), priority: FIXED_PRIORITY, options: vec![newest_cost] }];
     // A head part offers only its held levels while they fit beside every other hard limit (a level
     // change at the head re-prefills the whole prompt); else every reduction, and the loss is said.
+    let grounding_fits = hard.saturating_add(newest_cost).saturating_add(reply_floor).saturating_add(grounding.hard_limit()) <= window;
     let parts_with = |hold: bool| -> (Vec<Part<'_>>, Vec<&'static str>) {
         let mut lost = Vec::new();
         let mut parts = Vec::new();
@@ -378,7 +404,11 @@ fn plan_at(window: u32, claims: ActClaims) -> ActPlan {
         // While her newest result pages, it sits at its handles (the page left their room), or
         // leaves when even they do not fit.
         let mut options = if paged { vec![grounding.at_limit()] } else { grounding.options() };
-        if grounding.hard_limit() > 0 {
+        // It leaves only when its handles cannot fit beside every hard limit, her newest result as
+        // shown and her reply's floor: a turn is never short for it, and nothing that
+        // merely wants more takes the activity's wall away (standing grounding's last level is its
+        // minimum, `grounding.rs`; #5917, capacity_and_wire:166).
+        if grounding.hard_limit() > 0 && !grounding_fits {
             options.push(Choice::default());
         }
         parts.push(Part { id: id::GROUNDING, priority: GROUNDING_PRIORITY, leveled: &grounding, options });

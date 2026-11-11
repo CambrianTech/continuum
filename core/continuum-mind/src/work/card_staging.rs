@@ -42,8 +42,9 @@ pub enum Staging {
     /// her hands stay where they are.
     Ordinary,
     /// The card's work is ready in her workspace at `path` (workspace-relative
-    /// coordinates are what the card body already speaks).
-    Ready { path: PathBuf },
+    /// coordinates are what the card body already speaks). `arrival` is what arriving there
+    /// changed that she must be told ([`ArrivalOutcome::notice`]); `None` when nothing did.
+    Ready { path: PathBuf, arrival: Option<crate::persona::workspace_transfer::ArrivalOutcome> },
     /// A recipe card whose staging failed at `stage` — the claim stands, the failure
     /// is reported, and no scored solve fires on an unstaged workspace.
     Failed { stage: &'static str, error: String },
@@ -60,6 +61,12 @@ enum Step {
     Nothing,
 }
 
+/// The hands of `claimer`'s claim on `card`, the admission an arrival runs its git under; `None`
+/// for a card with no claim.
+fn claim_hands(claimer: Uuid, card: &airc_lib::WorkCard) -> Option<crate::identity::hands_context::HandsContext> {
+    card.claim_id.map(|claim| crate::identity::hands_context::HandsContext::for_claim(claimer, card.card_id.as_uuid(), claim.as_uuid()))
+}
+
 /// Stage `title`'s work into the workspace of `claimer` under `home`.
 /// Stage for a claimed CARD: a benchmark card stages by its title recipe (below);
 /// any other card of a repo this node has a checkout of gets airc's per-card
@@ -73,23 +80,26 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
     }
     let repo = card.repo.to_string();
     let branch = card_branch(card);
-    // Already staged: the same lookup a held-card turn uses, so claim time and turn
-    // time can never disagree about where her work lives.
-    // A checkout made as a linked worktree (before card d166e4f2) is NOT returned as-is: it
-    // falls through to the clone path below, whose ensure_card_clone migrates it to a card
-    // clone when nothing can be lost (airc #1582). Returning it here made that migration
-    // unreachable for exactly the checkouts it exists for (the M5, 2026-10-19: 0 of 3
-    // eligible held checkouts migrated in an hour; Fable).
+    // Already staged: the same lookup a held-card turn uses, so claim time and turn time can never
+    // disagree about where her work lives. Returned as-is only when it is a card clone with its
+    // HEAD on its creation anchor. A linked worktree (before card d166e4f2) falls through so ensure_card_clone
+    // migrates it (airc #1582; returned here, that migration never ran: the M5, 2026-10-19, Fable),
+    // and so does a clone off its anchor: airc re-allocates an anchorless one holding nothing
+    // unpublished and refuses one that does (airc #1668), and arrival puts an anchored one whose
+    // HEAD left it back on it (card f76005e8). Kimi on the Windows node, 2026-11-08, sat on a
+    // weeks-old clone that could never submit.
     if let Some(existing) = checkout_path_for(&claimer, card)
         .filter(|existing| !airc_lib::work_worktree::is_linked_worktree(existing))
     {
-        // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a checkout that already
-        // exists here may be BEHIND what another node pushed on this branch (the card
-        // changed hands), or DIVERGED from it. The transfer owner fetches and
-        // preserves same-branch unpublished successors/edits when origin adds no
-        // commits; genuine divergence is saved under a ref before transferring.
-        crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid()).await;
-        return Staging::Ready { path: existing };
+        if !crate::persona::card_checkout::off_creation_anchor(&existing).await {
+            // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a checkout that already exists
+            // here may be BEHIND what another node pushed on this branch (the card changed hands),
+            // or DIVERGED from it. The transfer owner fetches and preserves same-branch unpublished
+            // successors/edits when origin adds no commits; genuine divergence is saved under a ref
+            // before transferring.
+            let arrived = crate::persona::workspace_transfer::arrive_for(existing.clone(), branch, card.card_id.as_uuid(), claim_hands(claimer, card), &crate::persona::git_actor::of_persona(claimer)).await;
+            return Staging::Ready { path: existing, arrival: arrived.notable() };
+        }
     }
     let started = std::time::Instant::now();
     // A repo this node never checked out is CLONED, not refused. Before this, the claim
@@ -137,8 +147,14 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
         .map(|outcome| {
             // A held linked worktree replaced by a card clone (airc #1582): said once, with
             // where the old tree went, so a resident's moved checkout is never a mystery.
-            if let airc_lib::work_worktree::WorktreeOutcome::Migrated { path, retired } = &outcome {
-                continuum_base::probe!(class = "card.checkout.migrated", card = %spec_card, path = %path.display(), retired = %retired.display(), "linked card worktree replaced by a card clone; old tree kept aside");
+            match &outcome {
+                airc_lib::work_worktree::WorktreeOutcome::Migrated { path, retired } => {
+                    continuum_base::probe!(class = "card.checkout.migrated", card = %spec_card, path = %path.display(), retired = %retired.display(), "linked card worktree replaced by a card clone; old tree kept aside");
+                }
+                airc_lib::work_worktree::WorktreeOutcome::Reallocated { path, retired } => {
+                    continuum_base::probe!(class = "card.checkout.reallocated", card = %spec_card, path = %path.display(), retired = %retired.display(), "a card clone with no allocation evidence held nothing unpublished; re-allocated, old tree kept aside");
+                }
+                airc_lib::work_worktree::WorktreeOutcome::Created(_) | airc_lib::work_worktree::WorktreeOutcome::Reused(_) => {}
             }
             outcome.path().to_path_buf()
         })
@@ -155,8 +171,8 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
             // A branch cut here from the clone's HEAD: if another node already
             // pushed this card's branch, her work is there — fetch it and stand
             // at its tip before her first turn (card 73eefbbb).
-            crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid()).await;
-            Staging::Ready { path }
+            let arrived = crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid(), claim_hands(claimer, card), &crate::persona::git_actor::of_persona(claimer)).await;
+            Staging::Ready { path, arrival: arrived.notable() }
         }
         Err(error) => Staging::Failed { stage: "worktree", error },
     };
@@ -311,7 +327,7 @@ pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Stagi
     let started = std::time::Instant::now();
     let outcome = match step {
         Step::Nothing => match std::fs::create_dir_all(&workspace) {
-            Ok(()) => Staging::Ready { path: workspace },
+            Ok(()) => Staging::Ready { path: workspace, arrival: None },
             Err(error) => Staging::Failed { stage: "workspace", error: error.to_string() },
         },
         Step::Shell(shell) => stage_shell(&workspace, &shell).await,
@@ -368,7 +384,7 @@ async fn stage_shell(workspace: &Path, shell: &str) -> Staging {
         .output()
         .await
     {
-        Ok(out) if out.status.success() => Staging::Ready { path: workspace.to_path_buf() },
+        Ok(out) if out.status.success() => Staging::Ready { path: workspace.to_path_buf(), arrival: None },
         Ok(out) => Staging::Failed {
             stage: "setup_shell",
             error: String::from_utf8_lossy(&out.stderr).trim().to_string(),
@@ -453,7 +469,7 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
             }
         }
     });
-    Staging::Ready { path: workspace.join("swe").join(&instance.instance_id) }
+    Staging::Ready { path: workspace.join("swe").join(&instance.instance_id), arrival: None }
 }
 
 fn failed(claimer: Uuid, title: &str, stage: &'static str, error: String) -> Staging {
@@ -487,7 +503,7 @@ mod tests {
         )
         .join("workspace");
         let staged = stage_shell(&workspace, "mkdir -p staged/marker && touch staged/marker/ok").await;
-        assert_eq!(staged, Staging::Ready { path: workspace.clone() });
+        assert_eq!(staged, Staging::Ready { path: workspace.clone(), arrival: None });
         assert!(
             workspace.join("staged/marker/ok").exists(),
             "the setup ran in the CLAIMER's workspace, not an assignee's"

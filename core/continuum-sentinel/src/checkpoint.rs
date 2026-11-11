@@ -1,6 +1,6 @@
 //! Checkpoint persistence for durable pipeline resume.
 //!
-//! Atomic writes: serialize → write to .tmp → rename.
+//! Atomic writes: serialize → `continuum_host::durable::write_replace` (staged, synced, renamed).
 //! Storage: ~/.continuum/sentinel/checkpoints/{handle}.json
 //! (or `$CONTINUUM_CHECKPOINT_DIR` when set — tests use this to
 //! redirect writes to a per-process tempdir so `cargo test` never
@@ -14,47 +14,43 @@ use super::types::{PipelineCheckpoint, PipelineStatus};
 ///
 /// Production: `~/.continuum/sentinel/checkpoints/`.
 /// Tests / dev tools: set `CONTINUUM_CHECKPOINT_DIR` to redirect.
-fn checkpoints_dir() -> PathBuf {
+/// An unresolvable home is returned to the caller, whose checkpoint call fails with it.
+fn checkpoints_dir() -> Result<PathBuf, String> {
     if let Some(override_dir) = std::env::var_os("CONTINUUM_CHECKPOINT_DIR") {
-        return PathBuf::from(override_dir);
+        return Ok(PathBuf::from(override_dir));
     }
-    let home = continuum_kernel::paths::continuum_home().expect("Failed to resolve home directory");
-    home.join("sentinel").join("checkpoints")
+    let home = continuum_kernel::paths::continuum_home()
+        .map_err(|e| format!("Failed to resolve the checkpoints directory: {e}"))?;
+    Ok(home.join("sentinel").join("checkpoints"))
 }
 
 /// Ensure the checkpoints directory exists
 fn ensure_dir() -> Result<(), String> {
-    let dir = checkpoints_dir();
+    let dir = checkpoints_dir()?;
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create checkpoints dir {}: {e}", dir.display()))
 }
 
 /// Checkpoint file path for a given handle
-fn checkpoint_path(handle: &str) -> PathBuf {
-    checkpoints_dir().join(format!("{handle}.json"))
+fn checkpoint_path(handle: &str) -> Result<PathBuf, String> {
+    Ok(checkpoints_dir()?.join(format!("{handle}.json")))
 }
 
-/// Save a checkpoint atomically (write .tmp then rename)
+/// Save a checkpoint atomically through the one durable-write owner (staged, synced, renamed).
 pub fn save_checkpoint(handle: &str, checkpoint: &PipelineCheckpoint) -> Result<(), String> {
     ensure_dir()?;
-    let path = checkpoint_path(handle);
-    let tmp_path = path.with_extension("json.tmp");
+    let path = checkpoint_path(handle)?;
 
     let json = serde_json::to_string_pretty(checkpoint)
         .map_err(|e| format!("Failed to serialize checkpoint: {e}"))?;
 
-    std::fs::write(&tmp_path, json.as_bytes())
-        .map_err(|e| format!("Failed to write checkpoint tmp file: {e}"))?;
-
-    std::fs::rename(&tmp_path, &path)
-        .map_err(|e| format!("Failed to rename checkpoint file: {e}"))?;
-
-    Ok(())
+    continuum_host::durable::write_replace(&path, json.as_bytes())
+        .map_err(|e| format!("Failed to write checkpoint {}: {e}", path.display()))
 }
 
 /// Load a checkpoint by handle. Returns None if not found.
 pub fn load_checkpoint(handle: &str) -> Result<Option<PipelineCheckpoint>, String> {
-    let path = checkpoint_path(handle);
+    let path = checkpoint_path(handle)?;
     if !path.exists() {
         return Ok(None);
     }
@@ -70,7 +66,7 @@ pub fn load_checkpoint(handle: &str) -> Result<Option<PipelineCheckpoint>, Strin
 
 /// List all checkpoints (reads every JSON file in the checkpoints dir)
 pub fn list_checkpoints() -> Result<Vec<PipelineCheckpoint>, String> {
-    let dir = checkpoints_dir();
+    let dir = checkpoints_dir()?;
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -109,7 +105,7 @@ pub fn list_checkpoints() -> Result<Vec<PipelineCheckpoint>, String> {
 
 /// Delete a checkpoint file
 pub fn delete_checkpoint(handle: &str) -> Result<(), String> {
-    let path = checkpoint_path(handle);
+    let path = checkpoint_path(handle)?;
     if path.exists() {
         std::fs::remove_file(&path)
             .map_err(|e| format!("Failed to delete checkpoint {}: {e}", path.display()))?;

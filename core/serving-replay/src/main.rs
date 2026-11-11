@@ -1,5 +1,6 @@
 //! `serving-replay`: replay an act sequence against an engine and print the report.
 //! Flags and defaults are documented in the crate README.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::path::PathBuf;
 

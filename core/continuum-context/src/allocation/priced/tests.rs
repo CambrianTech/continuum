@@ -1,7 +1,7 @@
 use super::*;
 use crate::allocation::{allocate, ActNeed, Head, Leveled, NeedWindow, Newest, NewestShown, Rungs, Span, TrainedContext, ViewClaim};
 use crate::flex::FlexClaim;
-use crate::price::Line;
+use crate::price::{Curve, Line};
 
 /// The M5's measured contexts (`replay --act-price`, 2026-11-06T13Z..2026-11-07T13Z).
 const MEASURED: (u32, u32) = (10_840, 145_858);
@@ -19,6 +19,7 @@ fn m5_over(context: (u32, u32)) -> ActTime {
         fresh: line(5_421.0, 0.13209, context),
         observed: line(28.97, 3.7327e-3, context),
         output: 276.0,
+        curve: Curve::Composed,
     }
 }
 
@@ -36,7 +37,7 @@ const VERB: [u32; 3] = [450, 120, 15];
 
 fn source(name: &str, priority: u8, floor: u32, want: u32, consumer: Consumer) -> ViewClaim {
     let claim = FlexClaim { source_id: format!("{}{name}", id::VIEW), priority, floor_tokens: floor, min_tokens: floor, max_tokens: want, required: true };
-    ViewClaim { claim, consumer }
+    ViewClaim { claim, consumer, arrived: 0 }
 }
 
 /// An act whose view wants far more than it needs (a conversation of 300k, results of 100k),
@@ -236,4 +237,57 @@ fn a_need_past_the_trained_context_is_a_defect_and_an_unmeasured_price_records_n
     assert_eq!(binds.priced, Priced::WindowBinds);
     assert!(matches!(binds.need, ActNeed::BeyondTrained(beyond) if beyond.needed > 12_000), "{:?}", binds.need);
     assert_eq!(allocate(262_144, overflowing(900_000, ContextPrice::Unmeasured)).need, ActNeed::Unpriced);
+}
+
+// what this catches (the M5, 2026-11-10): the price holding a window below what her live view
+// already sent, so her epoch turned over every second act and re-prefilled what the engine held.
+// A view source whose flex basis (what the engine received) sits above its floor is part of what
+// she must hold: the priced window never drops below it.
+#[test]
+fn the_price_never_holds_less_than_her_view_already_sent() {
+    let window = 755_456;
+    let free = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
+    let Priced::Held { held: free_held, .. } = free.priced else { panic!("fixture: priced {:?}", free.priced) };
+    let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, m5());
+    let sent = free_held + 20_000;
+    claims.view[1].claim.min_tokens = sent; // her conversation: what the engine already holds
+    let plan = allocate(window, claims);
+    assert!(held(&plan) >= sent, "the price holds what she sent: {} < {sent}", held(&plan));
+}
+
+// what this catches (the M5, 2026-11-10): her need recording only what this act holds, so her grant
+// matched it, her view grew into it and turned over every second act. Her need carries a growth
+// reserve as large as what her view already sent.
+#[test]
+fn her_need_carries_her_views_growth() {
+    let window = 755_456;
+    let bare = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
+    let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, m5());
+    let sent = 30_000;
+    claims.view[1].claim.min_tokens = claims.view[1].claim.floor_tokens + sent;
+    let grown = allocate(window, claims);
+    let tokens = |need: ActNeed| match need {
+        ActNeed::Chosen(n) | ActNeed::Censored(n) => Some(n.tokens()),
+        _ => None,
+    };
+    let (Some(before), Some(after)) = (tokens(bare.need), tokens(grown.need)) else { panic!("fixture: priced needs {:?} {:?}", bare.need, grown.need) };
+    assert!(after >= before + sent, "her need grows by what she sent: {before} -> {after}");
+}
+
+// what this catches (the M5, 2026-11-11): a view whose held basis lies past every measured context
+// left the act unpriced and served it the whole window, so her view grew to the window's ceiling and
+// her acts were refused there. Released, the act is priced inside the measured contexts, and her view
+// is held below what it sent: it turns over into them.
+#[test]
+fn a_view_held_past_the_measured_contexts_turns_over_into_them() {
+    let window = 755_456;
+    let measured = (10_000, 60_000);
+    let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(m5_over(measured)));
+    let sent = 100_000;
+    let view = &mut claims.view[1].claim;
+    view.min_tokens = view.floor_tokens + sent;
+    view.max_tokens = view.max_tokens.max(view.min_tokens);
+    let plan = allocate(window, claims);
+    assert!(matches!(plan.priced, Priced::Held { .. }), "priced, never served the whole window: {:?}", plan.priced);
+    assert!(held(&plan) < sent, "held inside the measured contexts, below what she sent: {}", held(&plan));
 }

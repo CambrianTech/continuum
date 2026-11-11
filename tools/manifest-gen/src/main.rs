@@ -16,6 +16,7 @@
 //! Ownership: the Windows PS projection is validated end-to-end on a live RTX 5090
 //! (BigMama). The unix .sh projection is a first-cut shape (flat assoc arrays) for
 //! M5's bash runner to consume/reshape — she owns that consumer.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use serde::Deserialize;
 use std::collections::BTreeMap;

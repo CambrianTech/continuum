@@ -14,6 +14,7 @@
 //! `event::decode_deliver_frame`, `event::matches_subscription`), so the
 //! client and the substrate compose the SAME helpers with their
 //! respective `airc_lib::Airc` handles.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod command;
 pub mod event;

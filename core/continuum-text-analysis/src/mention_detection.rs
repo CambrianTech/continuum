@@ -19,13 +19,7 @@
 //! ASCII fast path is sufficient.
 
 use crate::ascii_case::starts_with_ascii_case_insensitive;
-use regex::Regex;
-use std::sync::LazyLock;
-
-/// Regex for detecting directed @mentions anywhere in text.
-/// Matches @word at start or after whitespace. Excludes email-like patterns (word@word).
-static DIRECTED_MENTION_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|\s)@[a-zA-Z][\w\s-]*").expect("directed mention regex"));
+use crate::scan::is_space;
 
 /// Check if a specific persona is mentioned in the message text.
 ///
@@ -109,8 +103,22 @@ fn starts_with_then_separator(haystack: &str, name: &str) -> bool {
 /// Used to prevent dog-piling: when someone @mentions a specific AI, others stay silent.
 ///
 /// Matches `@word` at start or after whitespace. Excludes email-like patterns.
+///
+/// Exactly `(?:^|\s)@[a-zA-Z]`: an `@` at the start of the text or after whitespace,
+/// followed by an ASCII letter. One pass, no allocation.
 pub fn has_directed_mention(text: &str) -> bool {
-    DIRECTED_MENTION_RE.is_match(text)
+    let mut previous: Option<char> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '@'
+            && previous.is_none_or(is_space)
+            && chars.peek().is_some_and(char::is_ascii_alphabetic)
+        {
+            return true;
+        }
+        previous = Some(c);
+    }
+    false
 }
 
 #[cfg(test)]
@@ -225,5 +233,16 @@ mod tests {
     #[test]
     fn test_at_symbol_alone() {
         assert!(!has_directed_mention("@ "));
+    }
+
+    // what this catches: the hand scan drifting from the regex it replaced (an `@` after
+    // Unicode whitespace, after a non-space, at the very start, before a non-ASCII letter).
+    #[test]
+    fn directed_mention_matches_the_replaced_regex() {
+        let re = regex::Regex::new(r"(?:^|\s)@[a-zA-Z][\w\s-]*").unwrap();
+        let tokens = ["@", "a", "Z", " ", "\n", "\u{3000}", "x", "é", "-", "1", "user@host"];
+        for text in crate::scan::tests::corpus(&tokens, 10_000, 6) {
+            assert_eq!(has_directed_mention(&text), re.is_match(&text), "{text:?}");
+        }
     }
 }

@@ -8,6 +8,9 @@
 //! `HardwareClass`.
 
 pub mod cascade;
+// Poisoned std locks unwrap here until card 461a951e (kernel buffers and GPU detection get
+// owners) lands; then delete this allow.
+#[allow(clippy::unwrap_used)]
 pub mod local;
 pub mod policy_file;
 pub mod policy_selector;

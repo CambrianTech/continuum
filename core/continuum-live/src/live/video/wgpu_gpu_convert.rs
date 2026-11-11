@@ -185,7 +185,7 @@ fn dispatch_compute(
 ) {
     // Drain pending registrations from global bridge
     {
-        let mut bridge = WGPU_BRIDGE.lock().unwrap();
+        let mut bridge = WGPU_BRIDGE.lock();
         state.pending_setup.append(&mut bridge.pending);
     }
 
@@ -497,8 +497,8 @@ fn dispatch_compute(
 // Public API — slot registration
 // =============================================================================
 
-static WGPU_BRIDGE: std::sync::LazyLock<std::sync::Mutex<WgpuBridgeRegistry>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(WgpuBridgeRegistry::default()));
+static WGPU_BRIDGE: std::sync::LazyLock<parking_lot::Mutex<WgpuBridgeRegistry>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(WgpuBridgeRegistry::default()));
 
 #[derive(Default)]
 struct WgpuBridgeRegistry {
@@ -514,7 +514,7 @@ pub fn register_slot(
     width: u32,
     height: u32,
 ) {
-    let mut bridge = WGPU_BRIDGE.lock().unwrap();
+    let mut bridge = WGPU_BRIDGE.lock();
     bridge
         .pending
         .push((slot_id, render_target, frame_tx, width, height));
@@ -529,12 +529,12 @@ pub fn register_slot(
 
 /// Check if a slot has a wgpu GPU bridge active.
 pub fn has_bridge(slot_id: u8) -> bool {
-    WGPU_BRIDGE.lock().unwrap().active_slots.contains(&slot_id)
+    WGPU_BRIDGE.lock().active_slots.contains(&slot_id)
 }
 
 /// Unregister a slot.
 pub fn unregister_slot(slot_id: u8) {
-    WGPU_BRIDGE.lock().unwrap().active_slots.remove(&slot_id);
+    WGPU_BRIDGE.lock().active_slots.remove(&slot_id);
 }
 
 // =============================================================================

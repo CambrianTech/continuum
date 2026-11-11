@@ -9,6 +9,9 @@
 //!
 //! Architecture: Rust is the brain, TypeScript is the face.
 //! Target: 60-70% Rust (cognition, compute, real-time), 30-40% TypeScript (UI only)
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![deny(clippy::await_holding_lock)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 // Self-alias so the `#[derive(Entity)]` macro's emitted paths
 // (`::continuum_core::orm::*`) resolve when used from within this

@@ -234,7 +234,7 @@ pub enum SweepOutcome {
 /// The canonical lanes directory: `~/.continuum/run/lanes/`. `None` only if there
 /// is no home directory — a degenerate environment where accounting is disarmed.
 pub fn lanes_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("run").join("lanes"))
+    crate::paths::continuum_home().ok().map(|home| home.join("run").join("lanes")) // the one home owner (card e3082752)
 }
 
 /// Record a spawned lane at the canonical directory. A write failure DISARMS
@@ -395,9 +395,7 @@ pub(crate) fn restamp_placement_in(
         return Ok(false);
     }
     let stamped = LaneRecord { placement: Some(placement), ..expected.clone() };
-    let tmp = path.with_extension("lane.tmp");
-    std::fs::write(&tmp, encode(&stamped)?)?;
-    std::fs::rename(&tmp, &path)?;
+    continuum_host::durable::write_replace(&path, encode(&stamped)?.as_bytes())?;
     Ok(true)
 }
 
@@ -421,7 +419,7 @@ pub(crate) fn record_in(dir: &Path, rec: &LaneRecord) -> std::io::Result<()> {
     if rec.role == LaneRole::Live {
         clear_live_records_in(dir);
     }
-    std::fs::write(record_path(dir, rec.pid), encode(rec)?)
+    continuum_host::durable::write_replace(&record_path(dir, rec.pid), encode(rec)?.as_bytes())
 }
 
 /// A record's on-disk form, the one encoder both writers use.

@@ -23,7 +23,7 @@
 //! delivery rests on this split.
 
 use crate::cognition::conversation::channel_items::ChatQueueItem;
-use crate::cognition::conversation::channel_types::{ActivityDomain, CoherentUnit};
+use crate::cognition::conversation::channel_types::{ActivityDomain, CoherentUnit, QueueItemBehavior};
 use crate::cognition::conversation::persona_identity::PersonaIdentity;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -132,8 +132,39 @@ pub struct ChatCoherentInput {
 /// is a TYPE, not a name string + id pair, so callers can't
 /// accidentally re-introduce the substring-match bug class by swapping
 /// out the helper.
+///
+/// Each view names the one unit shape it reads (`Unit`), so a unit of another
+/// domain cannot reach it: dispatch narrows the `CoherentUnit` first, and the
+/// narrowing is the only way to obtain a view's input.
 pub trait PersonaChannelView: Send + Sync {
-    fn interpret(&self, unit: &CoherentUnit, identity: &PersonaIdentity) -> CoherentInput;
+    type Unit<'a>;
+    fn interpret(&self, unit: Self::Unit<'_>, identity: &PersonaIdentity) -> CoherentInput;
+}
+
+/// A `CoherentUnit::Chat` burst, narrowed: the only input [`ChatChannelView`] takes.
+#[derive(Clone, Copy)]
+pub struct ChatBurst<'a> {
+    pub items: &'a [Arc<dyn QueueItemBehavior>],
+    pub window_span_ms: u64,
+    pub primary_room: Uuid,
+}
+
+impl<'a> ChatBurst<'a> {
+    /// The chat burst inside `unit`, or `None` for a unit of any other domain.
+    pub fn of(unit: &'a CoherentUnit) -> Option<Self> {
+        match unit {
+            CoherentUnit::Chat {
+                items,
+                window_span_ms,
+                primary_room,
+            } => Some(Self {
+                items,
+                window_span_ms: *window_span_ms,
+                primary_room: *primary_room,
+            }),
+            CoherentUnit::Voice { .. } | CoherentUnit::Task { .. } | CoherentUnit::Background { .. } => None,
+        }
+    }
 }
 
 //=============================================================================
@@ -153,106 +184,90 @@ pub trait PersonaChannelView: Send + Sync {
 /// ## Trait contract: only handles `CoherentUnit::Chat`
 ///
 /// Per `[[no-fallbacks-ever]]`: this view is responsible ONLY for the
-/// Chat domain. The dispatch layer (`ChannelRegistry::interpret_for_domain`)
-/// MUST route Voice/Task/Background units to a different view (or to
-/// the typed `CoherentInput::Other` construction inline). Calling
-/// `ChatChannelView::interpret` on a non-Chat unit is a programmer
-/// error and panics — silent fallthrough to `Other` was the original
-/// shape but adversarial review flagged it as a fallback that hides
-/// dispatch bugs.
+/// Chat domain, and its input type says so: it takes a [`ChatBurst`],
+/// which only [`ChatBurst::of`] builds from a `CoherentUnit::Chat`. The
+/// dispatch layer (`ChannelRegistry::interpret_for_domain`) routes every
+/// other unit to the typed `CoherentInput::Other` construction inline.
+/// (This view used to take any unit and panic on a non-Chat one; silent
+/// fallthrough to `Other` before that was flagged as a fallback that
+/// hides dispatch bugs. The type now rules out both.)
 pub struct ChatChannelView;
 
 impl PersonaChannelView for ChatChannelView {
-    fn interpret(&self, unit: &CoherentUnit, identity: &PersonaIdentity) -> CoherentInput {
-        match unit {
-            CoherentUnit::Chat {
-                items,
-                window_span_ms,
-                primary_room,
-            } => {
-                let mut aggregated = String::new();
-                let mut last_sender = String::new();
-                let mut anyone_mentioned = false;
-                let mut burst_embedding: Option<Arc<Vec<f32>>> = None;
-                // Sum across consolidated anchors — an item carrying
-                // `consolidated_context: Vec<ConsolidatedContext>` represents
-                // itself PLUS all the prior messages it absorbed. The doctrine's
-                // load-bearing count is the underlying message count, not the
-                // post-consolidation Vec length.
-                let mut total_messages: usize = 0;
+    type Unit<'a> = ChatBurst<'a>;
 
-                for item in items {
-                    let Some(chat) = item.as_any().downcast_ref::<ChatQueueItem>() else {
-                        continue;
-                    };
+    fn interpret(&self, unit: ChatBurst<'_>, identity: &PersonaIdentity) -> CoherentInput {
+        let ChatBurst {
+            items,
+            window_span_ms,
+            primary_room,
+        } = unit;
+        let mut aggregated = String::new();
+        let mut last_sender = String::new();
+        let mut anyone_mentioned = false;
+        let mut burst_embedding: Option<Arc<Vec<f32>>> = None;
+        // Sum across consolidated anchors — an item carrying
+        // `consolidated_context: Vec<ConsolidatedContext>` represents
+        // itself PLUS all the prior messages it absorbed. The doctrine's
+        // load-bearing count is the underlying message count, not the
+        // post-consolidation Vec length.
+        let mut total_messages: usize = 0;
 
-                    // Prior consolidated messages first, then the anchor itself —
-                    // matches the order ChatQueueItem.consolidate_with_items
-                    // produces the absorption in.
-                    for prior in &chat.consolidated_context {
-                        if !aggregated.is_empty() {
-                            aggregated.push('\n');
-                        }
-                        aggregated.push_str(&prior.sender_name);
-                        aggregated.push_str(": ");
-                        aggregated.push_str(&prior.content);
-                        if identity.mentions(&prior.content) {
-                            anyone_mentioned = true;
-                        }
-                    }
-                    total_messages += chat.consolidated_context.len();
+        for item in items {
+            let Some(chat) = item.as_any().downcast_ref::<ChatQueueItem>() else {
+                continue;
+            };
 
-                    if !aggregated.is_empty() {
-                        aggregated.push('\n');
-                    }
-                    aggregated.push_str(&chat.sender_name);
-                    aggregated.push_str(": ");
-                    aggregated.push_str(&chat.content);
-                    total_messages += 1;
-
-                    last_sender = chat.sender_name.clone();
-
-                    if identity.mentions(&chat.content) {
-                        anyone_mentioned = true;
-                    }
-
-                    // Read the shared embedding lazy cell on the FIRST
-                    // item — same Arc every persona sees. Read-once
-                    // keeps the per-persona perspective cheap.
-                    if burst_embedding.is_none() {
-                        burst_embedding = Some(chat.embedding());
-                    }
+            // Prior consolidated messages first, then the anchor itself —
+            // matches the order ChatQueueItem.consolidate_with_items
+            // produces the absorption in.
+            for prior in &chat.consolidated_context {
+                if !aggregated.is_empty() {
+                    aggregated.push('\n');
                 }
-
-                CoherentInput::Chat(ChatCoherentInput {
-                    primary_room: *primary_room,
-                    burst_message_count: total_messages,
-                    window_span_ms: *window_span_ms,
-                    aggregated_content: aggregated,
-                    last_sender_name: last_sender,
-                    anyone_mentioned_persona: anyone_mentioned,
-                    // Empty Arc<Vec<f32>> sentinel only when the burst
-                    // had no chat items (defensive — drain_batch should
-                    // never produce such a burst for ActivityDomain::Chat).
-                    burst_embedding: burst_embedding.unwrap_or_else(|| Arc::new(Vec::new())),
-                })
+                aggregated.push_str(&prior.sender_name);
+                aggregated.push_str(": ");
+                aggregated.push_str(&prior.content);
+                if identity.mentions(&prior.content) {
+                    anyone_mentioned = true;
+                }
             }
-            // Programmer-error guard, NOT a fallback. The dispatch
-            // contract (channel_registry::interpret_for_domain) MUST
-            // route non-Chat units away from this view. Reaching this
-            // branch means the registry's match is broken — silent
-            // construction of `CoherentInput::Other` here would mask
-            // the dispatch bug.
-            other => unreachable!(
-                "ChatChannelView::interpret called on non-Chat unit ({:?}). \
-                 This is a registry dispatch bug — check \
-                 ChannelRegistry::interpret_for_domain. \
-                 Per [[no-fallbacks-ever]], the Other variant must be \
-                 constructed directly by the dispatcher, not via this \
-                 view falling through.",
-                other.domain()
-            ),
+            total_messages += chat.consolidated_context.len();
+
+            if !aggregated.is_empty() {
+                aggregated.push('\n');
+            }
+            aggregated.push_str(&chat.sender_name);
+            aggregated.push_str(": ");
+            aggregated.push_str(&chat.content);
+            total_messages += 1;
+
+            last_sender = chat.sender_name.clone();
+
+            if identity.mentions(&chat.content) {
+                anyone_mentioned = true;
+            }
+
+            // Read the shared embedding lazy cell on the FIRST
+            // item — same Arc every persona sees. Read-once
+            // keeps the per-persona perspective cheap.
+            if burst_embedding.is_none() {
+                burst_embedding = Some(chat.embedding());
+            }
         }
+
+        CoherentInput::Chat(ChatCoherentInput {
+            primary_room,
+            burst_message_count: total_messages,
+            window_span_ms,
+            aggregated_content: aggregated,
+            last_sender_name: last_sender,
+            anyone_mentioned_persona: anyone_mentioned,
+            // Empty Arc<Vec<f32>> sentinel only when the burst
+            // had no chat items (defensive — drain_batch should
+            // never produce such a burst for ActivityDomain::Chat).
+            burst_embedding: burst_embedding.unwrap_or_else(|| Arc::new(Vec::new())),
+        })
     }
 }
 
@@ -309,7 +324,7 @@ mod tests {
         };
 
         let view = ChatChannelView;
-        let input = view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Helper"));
+        let input = view.interpret(ChatBurst::of(&burst).unwrap(), &PersonaIdentity::new(Uuid::new_v4(), "Helper"));
 
         match input {
             CoherentInput::Chat(chat) => {
@@ -346,7 +361,7 @@ mod tests {
         let view = ChatChannelView;
 
         // Maya sees herself mentioned
-        let maya_input = view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Maya"));
+        let maya_input = view.interpret(ChatBurst::of(&burst).unwrap(), &PersonaIdentity::new(Uuid::new_v4(), "Maya"));
         let maya_mentioned = match &maya_input {
             CoherentInput::Chat(c) => c.anyone_mentioned_persona,
             _ => panic!("expected Chat input"),
@@ -357,7 +372,7 @@ mod tests {
         );
 
         // Helper does NOT see itself mentioned
-        let helper_input = view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Helper"));
+        let helper_input = view.interpret(ChatBurst::of(&burst).unwrap(), &PersonaIdentity::new(Uuid::new_v4(), "Helper"));
         let helper_mentioned = match &helper_input {
             CoherentInput::Chat(c) => c.anyone_mentioned_persona,
             _ => panic!("expected Chat input"),
@@ -395,13 +410,13 @@ mod tests {
         let view = ChatChannelView;
 
         // Maya's perspective
-        let maya = match view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Maya")) {
+        let maya = match view.interpret(ChatBurst::of(&burst).unwrap(), &PersonaIdentity::new(Uuid::new_v4(), "Maya")) {
             CoherentInput::Chat(c) => c,
             _ => panic!("expected Chat"),
         };
 
         // Helper's perspective (different persona, SAME burst)
-        let helper = match view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Helper")) {
+        let helper = match view.interpret(ChatBurst::of(&burst).unwrap(), &PersonaIdentity::new(Uuid::new_v4(), "Helper")) {
             CoherentInput::Chat(c) => c,
             _ => panic!("expected Chat"),
         };
@@ -416,22 +431,20 @@ mod tests {
         );
     }
 
-    /// proves: ChatChannelView is responsible ONLY for Chat units.
-    /// Calling it on a non-Chat unit panics with a programmer-error
-    /// message — adversarial review (Reviewer 1 C4 / Reviewer 3 C6)
-    /// flagged the prior silent-fallthrough-to-Other shape as a
-    /// `[[no-fallbacks-ever]]` violation. The dispatch layer
-    /// (`ChannelRegistry::interpret_for_domain`) now constructs
-    /// `CoherentInput::Other` directly for non-Chat domains.
+    // what this catches: a non-Chat unit narrowing into the chat view's input.
+    // ChatChannelView is responsible ONLY for Chat units, and `ChatBurst::of` is
+    // the only way to build its input, so every other domain must narrow to None
+    // (the dispatcher then constructs `CoherentInput::Other` directly). This
+    // replaces the old panic-on-wrong-unit guard: the wrong call no longer compiles.
     #[test]
-    #[should_panic(expected = "ChatChannelView::interpret called on non-Chat unit")]
-    fn chat_view_panics_on_non_chat_unit() {
-        let burst = CoherentUnit::Voice {
-            items: Vec::new(),
-            window_span_ms: 0,
-        };
-
-        let view = ChatChannelView;
-        let _ = view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Maya"));
+    fn only_a_chat_unit_narrows_into_the_chat_view() {
+        let voice = CoherentUnit::Voice { items: Vec::new(), window_span_ms: 0 };
+        let task = CoherentUnit::Task { items: Vec::new(), window_span_ms: 0 };
+        let background = CoherentUnit::Background { items: Vec::new(), window_span_ms: 0 };
+        assert!(ChatBurst::of(&voice).is_none());
+        assert!(ChatBurst::of(&task).is_none());
+        assert!(ChatBurst::of(&background).is_none());
+        let chat = CoherentUnit::Chat { items: Vec::new(), window_span_ms: 7, primary_room: Uuid::nil() };
+        assert_eq!(ChatBurst::of(&chat).map(|c| c.window_span_ms), Some(7));
     }
 }

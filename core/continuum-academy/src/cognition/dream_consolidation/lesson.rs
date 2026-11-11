@@ -41,13 +41,13 @@ impl DistilledLesson {
     /// The format the request asks the engine to hold the answer to, for a request that lists
     /// `listed` prior beliefs: `supersedes` can name each of them at most once and nothing else
     /// (`maxItems` = `listed`, `uniqueItems`), so the list is bounded by the request's own data.
-    pub(super) fn format(listed: usize) -> ResponseFormat {
-        let mut schema = crate::sdk_codegen::input_schema::<Self>();
+    pub(super) fn format(listed: usize) -> Result<ResponseFormat, serde_json::Error> {
+        let mut schema = crate::sdk_codegen::input_schema::<Self>()?;
         if let Some(supersedes) = schema.pointer_mut("/properties/supersedes").and_then(serde_json::Value::as_object_mut) {
             supersedes.insert("maxItems".into(), listed.into());
             supersedes.insert("uniqueItems".into(), true.into());
         }
-        ResponseFormat::JsonSchema { json_schema: JsonSchemaFormat { name: "dream_lesson".into(), schema } }
+        Ok(ResponseFormat::JsonSchema { json_schema: JsonSchemaFormat { name: "dream_lesson".into(), schema } })
     }
 
     /// What the model reads about the shape, the same fields the schema holds it to. Its

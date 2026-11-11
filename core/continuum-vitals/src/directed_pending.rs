@@ -39,9 +39,12 @@ fn cell(persona: Uuid) -> Arc<Pending> {
 /// A directed line was forwarded to this citizen's inbox.
 pub fn signal(persona: Uuid) {
     let c = cell(persona);
-    c.state.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
-        Some(state.wrapping_add(2) | 1)
-    }).expect("attention generation update is unconditional");
+    // A compare-exchange loop, not `fetch_update`: the update is unconditional, so there is
+    // no refusal for a Result to carry.
+    let mut state = c.state.load(Ordering::SeqCst);
+    while let Err(actual) = c.state.compare_exchange_weak(state, state.wrapping_add(2) | 1, Ordering::SeqCst, Ordering::SeqCst) {
+        state = actual;
+    }
     c.notify.notify_waiters();
 }
 

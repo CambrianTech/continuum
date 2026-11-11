@@ -136,9 +136,9 @@ impl LlamaServerControl for FakeServer {
         // so the reconcile publishes a READY snapshot carrying a real window.
         Ok(11008)
     }
-    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
+    async fn served_geometry(&self) -> Result<crate::inference::weight_residency::ContextGeometry, LlamaServerError> {
         // One sequence's worth of the fixed window above: the share these tests publish.
-        Ok(11008)
+        Ok(crate::inference::weight_residency::ContextGeometry { allocated_tokens: 11008, max_tokens_per_sequence: 11008, sequence_capacity: 1 })
     }
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
         // 0 = "this fake's /props names no slot count", i.e. nothing to compare
@@ -395,7 +395,7 @@ pub(crate) async fn exercise_cancelled_exclusive_teacher(
         !daemon.serving_tx.borrow().ready,
         "non-model child cannot fabricate restore success"
     );
-    daemon.intent.set_pin(None, true);
+    assert!(daemon.intent.set_pin(None, true).is_ok());
     tokio::time::timeout(Duration::from_secs(20), async {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
         while daemon.lifecycle.is_held() {
@@ -581,8 +581,8 @@ mod health;
 mod prompt_cache;
 mod publication;
 use publication::test_pin_store;
-mod reconciliation;
-mod one_launch;
 /// The ONE-ACT dyno's launch reproductions (`continuum_engine::capacity::dyno`).
 mod dyno;
+mod one_launch;
+mod reconciliation;
 mod teacher;

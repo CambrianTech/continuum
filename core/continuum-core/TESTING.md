@@ -69,7 +69,7 @@ what the bare command does without auto-applying features.
 ## Targeting a different workspace package
 
 ```bash
-CARGO_TEST_RUST_PACKAGE=inference-grpc ./scripts/cargo-test.sh --lib
+CARGO_TEST_RUST_PACKAGE=continuum-engine ./scripts/cargo-test.sh --lib
 ```
 
 Defaults to `continuum-core`.

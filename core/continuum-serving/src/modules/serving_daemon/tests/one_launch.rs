@@ -122,7 +122,7 @@ fn model_swap_on_a_ready_lane_needs_a_sustained_streak() {
 #[test]
 fn the_launch_pool_is_the_live_plans_never_the_physical_totals() {
     let launch_pool = super::super::launch::launch_pool;
-    let none = super::super::launch::Seated { need: 0, proven: 0 };
+    let none = super::super::launch::Seated { need: 0, proven: None };
     let m5_trained = 262_144;
     let mut m5 = footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, m5_trained, true, None)
         .expect("a footprint from the weights");
@@ -155,15 +155,15 @@ fn a_relaunch_from_a_gap_budget_holds_every_seated_need_up_to_the_proven_pool() 
     // Benchy, Aris, Aiko (her 902,158 is a measurement defect, capped at the trained window), and two at their turns' sizes.
     let held: u64 = [136_694_u64, 70_538, 902_158, 56_431, 44_252].iter().map(|need| (*need).min(u64::from(trained))).sum();
     assert_eq!(held, 570_059, "test: the capped held needs");
-    let none = Seated { need: 0, proven: 0 };
+    let none = Seated { need: 0, proven: None };
     assert_eq!(launch_pool(Some(&m5), gap, 88_320, 2, 5, trained, none), 176_640, "today's relaunch, reproduced: 5 x 35,328");
     let proven = 997_390;
-    assert_eq!(launch_pool(Some(&m5), gap, 88_320, 2, 5, trained, Seated { need: held, proven }), held, "every seated need is held");
-    assert_eq!(launch_pool(Some(&m5), gap, 88_320, 2, 5, trained, Seated { need: held, proven: 300_000 }), 300_000, "never above the proven pool");
-    assert_eq!(launch_pool(Some(&m5), gap, 88_320, 2, 5, trained, Seated { need: held, proven: 0 }), 176_640, "nothing proven, nothing floored: the plan's own pool");
+    assert_eq!(launch_pool(Some(&m5), gap, 88_320, 2, 5, trained, Seated { need: held, proven: Some(proven) }), held, "every seated need is held");
+    assert_eq!(launch_pool(Some(&m5), gap, 88_320, 2, 5, trained, Seated { need: held, proven: Some(300_000) }), 300_000, "never above the proven pool");
+    assert_eq!(launch_pool(Some(&m5), gap, 88_320, 2, 5, trained, Seated { need: held, proven: None }), 176_640, "nothing proven, nothing floored: the plan's own pool");
     let steady = 60 * GB;
     let fit = launch_pool(Some(&m5), steady, 88_320, 2, 5, trained, none);
-    assert_eq!(launch_pool(Some(&m5), steady, 88_320, 2, 5, trained, Seated { need: held, proven: 0 }), fit, "a steady budget: the floor (proven 0) never lifts the pool past its live fit");
+    assert_eq!(launch_pool(Some(&m5), steady, 88_320, 2, 5, trained, Seated { need: held, proven: None }), fit, "a steady budget: the floor (proven 0) never lifts the pool past its live fit");
 }
 
 // what this catches (the M5, 2026-11-07 19:08Z, #5835 -> #5837): engine_pool held a planned_budget

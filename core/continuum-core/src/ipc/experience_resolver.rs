@@ -136,7 +136,7 @@ mod tests {
         let asha = Uuid::from_u128(2);
 
         let purpose: SharedRoomPurpose = Arc::new(FixedPurpose("benchmark/hard-rs"));
-        let source: SharedExperienceSource = Arc::new(RecipeExperienceSource::builtins(purpose));
+        let source: SharedExperienceSource = Arc::new(RecipeExperienceSource::builtins(purpose).expect("the embedded recipes parse"));
         let roster = Arc::new(StubRoster {
             me: PeerId(asha),
             members: vec![

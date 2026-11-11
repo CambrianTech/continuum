@@ -28,6 +28,10 @@ impl Source<String> for Reads {
             })
             .collect()
     }
+
+    fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+        None // a fixture that does not exercise folding
+    }
 }
 
 // what this catches: the depth wired end to end, from her view's own measurement to what a start

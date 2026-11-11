@@ -27,22 +27,24 @@ struct CanvasFeed {
 
 static FEED: OnceLock<Mutex<CanvasFeed>> = OnceLock::new();
 
+/// A second `install`: a boot-sequence bug, refused so boot stops (one feed per process).
+#[derive(Debug, thiserror::Error)]
+#[error("positron_canvas_source::install called twice — one canvas feed per process")]
+pub struct CanvasFeedInstalledTwice;
+
 /// Install the feed's render targets at boot (beside the bench emitter).
-/// Second call is a boot-sequence bug — fail loud, one feed per process.
-pub fn install(substrate: Substrate) {
-    if FEED
-        .set(Mutex::new(CanvasFeed {
-            builder: StateBuilder::standalone(),
-            substrate,
-            revision: 0,
-        }))
-        .is_err()
-    {
-        panic!("positron_canvas_source::install called twice — one canvas feed per process");
-    }
+/// Second call is a boot-sequence bug — refused, one feed per process.
+pub fn install(substrate: Substrate) -> Result<(), CanvasFeedInstalledTwice> {
+    FEED.set(Mutex::new(CanvasFeed {
+        builder: StateBuilder::standalone(),
+        substrate,
+        revision: 0,
+    }))
+    .map_err(|_| CanvasFeedInstalledTwice)?;
     // The feed renders what a persona's hands returned, so it taps the act seam the
     // mind owns; the mind never names this surface.
     crate::cognition::tool_executor::result_tap::install(maybe_publish_observation);
+    Ok(())
 }
 
 /// Publish one observation frame. Callable from any in-core seam that holds

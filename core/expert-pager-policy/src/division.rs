@@ -83,10 +83,9 @@ impl CoverageModel {
     /// Interpolate coverage at `slots` (piecewise-linear; flat beyond the last measured point —
     /// we never extrapolate an optimistic coverage past what was measured).
     pub fn coverage(&self, slots: u64) -> f64 {
-        if self.points.is_empty() {
+        let Some(last) = self.points.last() else {
             return 0.0;
-        }
-        let last = self.points.last().unwrap();
+        };
         if slots >= last.0 {
             return last.1; // saturate, don't extrapolate upward
         }

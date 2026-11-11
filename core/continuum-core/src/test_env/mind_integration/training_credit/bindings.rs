@@ -83,7 +83,7 @@ use super::*;
         assert_eq!(links.total, 1);
         let link: crate::orm::types::DataRecord =
             serde_json::from_value(links.items[0].clone()).unwrap();
-        let child: StagedCreditGeneration = serde_json::from_value(link.data).unwrap();
+        let child: StagedCreditGeneration = link.decode().unwrap();
         let handle = format!("@persona:{name}");
         let removed = data.commands().execute_value("data/batch", json!({
             "dbPath": handle,

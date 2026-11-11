@@ -257,7 +257,7 @@ pub struct WorkspaceCycle {
     /// std `Mutex` — set/read is a cheap clone of a refcounted `Sender`, never held
     /// across an await. Safe: a persona's live turns are sequential, and eval runs
     /// on a SEPARATE forked cycle, so no cross-turn contention.
-    pub(super) token_sink: std::sync::Mutex<
+    pub(super) token_sink: parking_lot::Mutex<
         Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
     >,
     /// #186 glass-box: the decaying per-axis "which faculty is firing" accumulator the

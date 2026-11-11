@@ -56,7 +56,7 @@
 //! }
 //! ```
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -73,7 +73,7 @@ const FIXTURE_ROOM: &str = "two-airc-loopback";
 
 /// Default bind address for peer_b's LAN listen. `:0` lets the kernel
 /// pick a free port so parallel test runs don't collide.
-const LOOPBACK_BIND: &str = "127.0.0.1:0";
+const LOOPBACK_BIND: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
 const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Typed errors the fixture surfaces. Each variant names the specific
@@ -183,13 +183,10 @@ impl TwoAircLoopback {
 
         // Wire the LAN: peer_b listens on a kernel-picked loopback port,
         // peer_a dials in with peer_b's peer_id for auth.
-        let bind: SocketAddr = LOOPBACK_BIND
-            .parse()
-            .expect("LOOPBACK_BIND is a valid SocketAddr");
         let peer_b_addr = peer_b
-            .listen_lan(bind)
+            .listen_lan(LOOPBACK_BIND)
             .await
-            .map_err(|e| LoopbackError::AircSpawn(format!("peer_b listen_lan({bind}): {e}")))?;
+            .map_err(|e| LoopbackError::AircSpawn(format!("peer_b listen_lan({LOOPBACK_BIND}): {e}")))?;
         peer_a
             .connect_lan(peer_b_addr, peer_b.peer_id())
             .await

@@ -1,12 +1,12 @@
 //! What the M5 recorded on 2026-11-04: the dyno's only inputs. The values are DATA
-//! (`2026-11-04.json`), each beside its receipt; this module is their typed shape and the
+//! (`fixtures/dyno/2026-11-04.json`), each beside its receipt; this module is their typed shape and the
 //! engine's refusal wording. A value that is not a measurement says so in its receipt ("SHAPE,
 //! not a receipt") and names the one property a scenario uses from it.
 
 use crate::inference::planning::serving_plan::ModelFootprint;
 
 /// The day's data file, compiled in so a run needs no file system.
-const RECORDED_JSON: &str = include_str!("2026-11-04.json");
+const RECORDED_JSON: &str = include_str!("../../../fixtures/dyno/2026-11-04.json");
 
 /// A recorded value and where it was measured.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -35,8 +35,6 @@ pub struct Recorded {
     pub restore_free_cells: Receipted<FreeCellRefusal>,
     /// Dyno 5.
     pub oversize: Receipted<Oversize>,
-    /// Dyno 6.
-    pub unreleased_hold: Receipted<UnreleasedHold>,
     /// Dyno 7.
     pub aris_view: Receipted<OverflowingView>,
     pub m5_prefill_tok_per_s_large: Receipted<u64>,
@@ -120,13 +118,6 @@ pub struct Oversize {
     pub launch_ctx: u32,
     pub pool_cells: u64,
     pub pages: [u64; 2],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-pub struct UnreleasedHold {
-    pub held_ms: u64,
-    pub running_pool: u32,
-    pub target_pool: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]

@@ -101,7 +101,10 @@ impl ActionCommand for WorkClaim {
             }
         }
         let claim_id = match claim_attempt {
-            Ok(id) => id,
+            Ok(id) => {
+                crate::persona::work_board::board_index::wrote_card(&airc, card_id);
+                id
+            }
             Err(e) => {
                 // Another's card is never a refusal (it is taken over), so a failed claim is a fault,
                 // or a card she already holds. Best-effort board read; the original error stands
@@ -164,6 +167,7 @@ impl ActionCommand for WorkClaim {
                         airc.select_work_claim(card_id, claim_id)
                             .await
                             .map_err(|e| CommandError::Denied(e.to_string()))?;
+                        crate::persona::work_board::board_index::wrote_card(&airc, card_id);
                     }
                     continuum_base::probe!(
                         class = "work.claim",

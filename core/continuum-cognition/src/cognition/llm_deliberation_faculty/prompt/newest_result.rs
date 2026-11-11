@@ -16,13 +16,12 @@
 //! another summary and handle (card 8a12dcd1). A page always carries content, and reading on
 //! always makes progress.
 //!
-//! Only a SAVED result has a page: one whose save failed has no other copy, and a reported note
-//! (a thought cut at the output limit) IS the result; each stays whole, and a window that cannot
-//! hold it is the turn's typed shortfall.
+//! Every result has a page: a slot with no saved whole (a reported note, a result restored with
+//! no active action) is saved when it must page, so a newest result larger than her window never
+//! refuses her act. Only a store that refuses the write leaves a slot whole (probed).
 
 use super::*;
 use crate::ai::types::{ContentPart, MessageContent};
-use crate::cognition::act_observe::Observation;
 use crate::cognition::tool_executor::tool_output::Reopen;
 use continuum_context::allocation::Newest;
 
@@ -85,18 +84,15 @@ impl Saved<'_> {
     /// `text`'s page holding its first `upto` bytes: whole lines when at least one fits, else
     /// the first line cut at a character boundary.
     fn page_at(&self, text: &str, upto: usize, chars: usize, tokens: usize) -> String {
+        let upto = text.floor_char_boundary(upto.min(text.len()));
         let first_line = text.find('\n').map_or(text.len(), |end| end + 1); // map_or: a one-line text is its first line
         if upto >= first_line {
-            let end = text[..upto.min(text.len())].rfind('\n').map_or(first_line, |at| at + 1); // map_or: no line end before upto keeps the first line
+            let end = text[..upto].rfind('\n').map_or(first_line, |at| at + 1); // map_or: no line end before upto keeps the first line
             let total = text.lines().count();
             let shown = text[..end].lines().count();
             return format!("{}\n{}", self.note(chars, tokens, Cut::Lines { shown, total }), &text[..end]);
         }
-        let mut end = upto;
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}\n{}", self.note(chars, tokens, Cut::Bytes { bytes: end }), &text[..end])
+        format!("{}\n{}", self.note(chars, tokens, Cut::Bytes { bytes: upto }), &text[..upto])
     }
 
     /// `text`'s first page within `target` tokens: the most content whose page fits, and never
@@ -137,10 +133,29 @@ impl LlmDeliberationFaculty {
     }
 
     /// Show her newest result as the allocation granted it: its first page within `room` (this
-    /// prompt's estimate). Answers whether it was shown short of whole
-    /// (`DeliberationPromptView::newest_result_reduced`).
+    /// prompt's estimate), carried as her tail's result item's summary and judged at `Level::Page`
+    /// (`judge_tail`), so the page is what is sent and what joins her view. Answers whether it was
+    /// shown short of whole (`DeliberationPromptView::newest_result_reduced`).
     pub(in super::super) fn fit_newest_result(&self, prompt: &mut PromptMessages, room: usize) -> bool {
-        self.page_newest(prompt.pricing, &mut prompt.latest_result, room, true)
+        // Only a result her view sends whole is paged: a repeat block is its whole, and a result she
+        // already holds is not sent.
+        let tail = &prompt.streams.tail;
+        let whole = tail.judged.iter().any(|item| Some(item.element()) == tail.result() && item.level() == continuum_context::level::Level::Full);
+        if !whole {
+            return false;
+        }
+        // Cut from her result as her tail renders it whole; its attachments ride beside the page.
+        let mut group = tail.result_group();
+        let attached = prompt.pricing.estimate_all(&prompt.latest_result).saturating_sub(prompt.pricing.estimate_all(&group));
+        if !self.page_newest(prompt.pricing, &mut group, room.saturating_sub(attached), true) {
+            return false;
+        }
+        let Some(Ok(page)) = group.last().map(crate::cognition::context_streams::ContextMessage::from_chat) else {
+            return false; // her result renders as text or protocol, so its page does too
+        };
+        prompt.streams.tail.page_result(page);
+        self.judge_tail(prompt, true);
+        true
     }
 
     /// `group` (her newest result's messages) cut to `room`: its largest slot first, each to its
@@ -152,29 +167,16 @@ impl LlmDeliberationFaculty {
         if whole_tokens <= room {
             return false;
         }
-        let Some(memory) = self.working_memory.as_ref() else { return false };
-        let Some((seq, _)) = memory.active_action_full() else { return false };
-        let observations = memory.active_action_observations(seq);
-        // A reported note (a thought cut at the output limit, a think-only turn) IS the result: a
-        // few sentences with nothing behind a handle. It is whole, or the turn is short.
-        let reported = |o: &Observation| crate::cognition::tool_executor::command_executor::is_reported_sentinel(&o.call.name);
-        if !observations.is_empty() && observations.iter().all(reported) {
-            if report {
-                continuum_base::probe!(
-                    class = "delib.newest_result.reported_note_whole",
-                    persona = %self.persona_name,
-                    seq,
-                    latest_result_tokens = whole_tokens,
-                    room,
-                    "her newest result is a reported note: kept whole, never paged"
-                );
-            }
-            return false;
-        }
-        // Each slot continues in the saved output it IS: her call's own saved whole, or (a legacy
-        // receipt) her act's.
-        let act_handle = memory.saved_handle(seq).ok();
-        let label = format!("result #{seq}");
+        // Every slot of her newest result pages: through its own saved whole when it has one, else
+        // saved now (content-addressed, so a save of what is already saved is the same handle).
+        // A result with no page was a refusal on every act while it stayed newest (the IntelMac,
+        // 2026-11-11: Iris and Eitan, 38 and 37 refusals, a 29,618-token result restored with no
+        // active action, so this returned before any probe). Joel: "These refusals are supposed
+        // to be impossible."
+        let active = self.working_memory.as_ref().and_then(|memory| memory.active_action_full().map(|(seq, _)| (memory, seq)));
+        let observations = active.map(|(memory, seq)| memory.active_action_observations(seq)).unwrap_or_default(); // unwrap_or_default: no active action has no observations; its slots are saved below
+        let act_handle = active.and_then(|(memory, seq)| memory.saved_handle(seq).ok());
+        let label = active.map_or_else(|| "result".to_owned(), |(_, seq)| format!("result #{seq}")); // map_or_else: a result with no active action is labelled by what it is
         let handle_of = |id: &Option<String>| -> Option<String> {
             match id {
                 Some(id) => observations
@@ -184,19 +186,29 @@ impl LlmDeliberationFaculty {
                 None => act_handle.clone(),
             }
         };
-        let mut slots: Vec<(Option<String>, &mut String)> = slots(group).into_iter().filter_map(|(id, text)| handle_of(&id).map(|handle| (Some(handle), text))).collect();
-        if slots.is_empty() {
-            if report {
-                continuum_base::probe!(
-                    class = "delib.newest_result.unsaved_over_window",
-                    persona = %self.persona_name,
-                    seq,
-                    latest_result_tokens = whole_tokens,
-                    room,
-                    "her newest result is over her window and was never saved: it stays whole, the turn is short"
-                );
-            }
-            return false;
+        let pin = crate::cognition::tool_executor::spill::LivePin::new();
+        let mut saved_now = 0usize;
+        let mut slots: Vec<(Option<String>, &mut String)> = slots(group)
+            .into_iter()
+            .map(|(id, text)| {
+                let handle = handle_of(&id).or_else(|| {
+                    let handle = pin.retain(self.persona_id, text).handle().map(str::to_owned);
+                    saved_now += usize::from(handle.is_some());
+                    handle
+                });
+                (handle, text)
+            })
+            .collect();
+        if report && saved_now > 0 {
+            continuum_base::probe!(
+                class = "delib.newest_result.saved_to_page",
+                persona = %self.persona_name,
+                saved_now,
+                active_action = active.is_some(),
+                latest_result_tokens = whole_tokens,
+                room,
+                "her newest result had no saved whole: saved now so it pages instead of refusing her act"
+            );
         }
         slots.sort_by_key(|(_, text)| std::cmp::Reverse(text.len()));
         let mut cost = whole_tokens;
@@ -216,7 +228,7 @@ impl LlmDeliberationFaculty {
             continuum_base::probe!(
                 class = "delib.newest_result.paged",
                 persona = %self.persona_name,
-                seq,
+                seq = active.map_or(0, |(_, seq)| seq), // map_or: a result with no active action has no act number
                 whole_tokens,
                 shown_tokens = pricing.estimate_all(group),
                 room,
@@ -224,5 +236,49 @@ impl LlmDeliberationFaculty {
             );
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: the 09:37:24 Windows Sahar abort when a multiline page cut split U+FFFD.
+    #[test]
+    fn multiline_page_cut_inside_replacement_character_preserves_first_line() {
+        let text = format!("ok tool/output(outputId=f68053e3b2bad9c9)\n{}\u{fffd}tail", "x".repeat(1456));
+        let Some(at) = text.find('\u{fffd}') else { panic!("fixture must contain the replacement character") };
+        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9" };
+        for split in [at + 1, at + 2] {
+            let page = saved.page_at(&text, split, text.chars().count(), estimate_guard_tokens(&text));
+            assert!(page.ends_with("ok tool/output(outputId=f68053e3b2bad9c9)\n"));
+            assert!(page.contains("lines 1-1 of 2"));
+        }
+    }
+    // what this catches: the same Sahar abort across every UTF-8 byte split and page-search budget.
+    #[test]
+    fn every_byte_cut_keeps_a_prefix_and_exact_continuation() {
+        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9" };
+        for text in ["", "ASCII", "é中😀tail", "header\né中😀tail", "é\n中\n😀tail"] {
+            for upto in 0..=text.len() + 2 {
+                let page = saved.page_at(text, upto, text.chars().count(), estimate_guard_tokens(text));
+                let Some((_, content)) = page.split_once('\n') else { panic!("page must separate note and content") };
+                assert!(text.starts_with(content));
+                let boundary = text.floor_char_boundary(upto.min(text.len()));
+                let first_line = text.find('\n').map_or(text.len(), |at| at + 1);
+                if boundary < first_line {
+                    assert_eq!(content, &text[..boundary]);
+                    assert!(page.contains(&format!("its first {boundary} bytes")));
+                } else if !text.is_empty() {
+                    let end = text[..boundary].rfind('\n').map_or(first_line, |at| at + 1);
+                    assert_eq!(content, &text[..end]);
+                }
+            }
+            for target in 0..=estimate_guard_tokens(text) + 5 {
+                let page = saved.first_page(text, target);
+                let Some((_, content)) = page.split_once('\n') else { panic!("page must separate note and content") };
+                assert!(text.starts_with(content));
+            }
+        }
     }
 }

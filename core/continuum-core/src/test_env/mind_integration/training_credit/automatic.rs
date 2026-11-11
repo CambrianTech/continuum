@@ -565,3 +565,66 @@ pub(super) async fn a_decision_that_always_hangs_never_holds_back_the_next() -> 
     assert_eq!(reviewed::credit_status(&r.data(), r.name, stuck).await?.state, State::AwaitingAcceptance, "the hanging one still waits");
     Ok(())
 }
+
+// What this catches: Kimi's submit must traverse actual staging admission and report the
+// retained work when arrival repairs an off-anchor checkout, never publish the emptied tree.
+#[tokio::test]
+async fn an_off_anchor_submit_realigns_and_reports_retained_work_without_publishing() -> TestResult {
+    let r = Resident::new().await?;
+    let checkout = airc_lib::work_worktree::worktree_path_for(r.card).ok_or("card path")?;
+    std::fs::create_dir_all(&checkout)?;
+    let git = |args: &[&str]| -> Result<String, Box<dyn std::error::Error>> {
+        let out = std::process::Command::new("git").args(args).current_dir(&checkout).output()?;
+        if !out.status.success() {
+            return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    git(&["init", "-q", "-b", "canary"])?;
+    git(&["config", "user.name", "Fixture"])?;
+    git(&["config", "user.email", "fixture@example.invalid"])?;
+    git(&["config", "commit.gpgsign", "false"])?;
+    std::fs::write(checkout.join("subject.txt"), "old\n")?;
+    git(&["add", "."])?;
+    git(&["commit", "-q", "-m", "old card line"])?;
+    let old = git(&["rev-parse", "HEAD"])?;
+    std::fs::write(checkout.join("subject.txt"), "integration\n")?;
+    git(&["commit", "-qam", "new allocation base"])?;
+    let base = git(&["rev-parse", "HEAD"])?;
+    git(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base])?;
+    // Kimi's actual allocation has both immutable records; match that state before departure.
+    let evidence = airc_lib::work_worktree::AllocationEvidence {
+        repo: airc_work::RepoId::new("acme/ordinary-project")?,
+        requested_branch: "old-card".into(),
+        integration_base: Some("canary".into()),
+        start_ref: "refs/heads/canary".into(),
+        creation_sha: base.clone(),
+    };
+    let evidence_file = r._home.1.path().join("fixture-allocation.json");
+    std::fs::write(&evidence_file, serde_json::to_vec(&evidence)?)?;
+    let object = git(&["hash-object", "-w", &evidence_file.to_string_lossy()])?;
+    git(&["update-ref", airc_lib::work_worktree::ALLOCATION_REF, &object])?;
+    let origin = r._home.1.path().join("origin.git");
+    git(&["clone", "-q", "--bare", ".", &origin.to_string_lossy()])?;
+    git(&["remote", "add", "origin", &origin.to_string_lossy()])?;
+    git(&["checkout", "-q", "-b", "old-card", &old])?;
+    std::fs::write(checkout.join("resident-work.txt"), "keep this work\n")?;
+    git(&["add", "."])?;
+    git(&["commit", "-q", "-m", "resident WIP"])?;
+    let work = git(&["rev-parse", "HEAD"])?;
+    crate::code::repo_registry::record("acme/ordinary-project", &checkout);
+    let params: WorkSubmitParams = serde_json::from_value(json!({
+        "room": r.room.channel.as_uuid().to_string(),
+        "card_id": r.card.as_uuid().to_string(),
+        "claim_id": r.claim.as_uuid().to_string(),
+    }))?;
+    let result = r.submit().run(&r.act("recovery-gen"), params).await;
+    let Err(error) = result else { return Err("recovery must not publish the reset tree".into()); };
+    let message = error.to_string();
+    assert!(message.contains("Nothing was submitted") && message.contains("refs/continuum/stranded/"), "{message}");
+    assert_eq!(git(&["rev-parse", "HEAD"])?, base);
+    assert!(git(&["for-each-ref", "--format=%(objectname)", "refs/continuum/stranded/"])?.lines().any(|sha| sha == work));
+    let board = r.airc.work_board_in(&r.room).await?;
+    assert!(board.card(r.card).ok_or("card still present")?.submissions.is_empty());
+    Ok(())
+}

@@ -23,6 +23,7 @@
 //! (the beat-WASTE knobs): hot pins served from ladder bank
 //! `--pin-tier`, the entire unpinned cold tail fetched from
 //! `--default-tier`. Omit both for the plain v1 residency plan.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -32,16 +33,21 @@ use expert_pager_policy::segment::{
 };
 use expert_pager_policy::BanditPlanController;
 
+/// Where the tkey→layer map comes from: exactly one source, so "both" and "neither" cannot be
+/// represented past `parse_args`.
+enum TableSource {
+    /// Operator-authored tkey→layer JSON (`--table`).
+    File(PathBuf),
+    /// Synthesize the tkey→layer map from layer count alone (`--synth-layers`,
+    /// [`TkeyTable::for_layers`]) — the zero-config seam `MoeTraceTail` uses. Lets the
+    /// driver replay a completed trace on any box without an operator JSON (offline
+    /// warm-coverage measurement).
+    SynthLayers(u32),
+}
+
 struct Args {
     trace: PathBuf,
-    /// Operator-authored tkey→layer JSON. Mutually exclusive with
-    /// `synth_layers` — exactly one is required.
-    table: Option<PathBuf>,
-    /// Synthesize the tkey→layer map from layer count alone
-    /// ([`TkeyTable::for_layers`]) — the zero-config seam `MoeTraceTail`
-    /// uses. Lets the driver replay a completed trace on any box
-    /// without an operator JSON (offline warm-coverage measurement).
-    synth_layers: Option<u32>,
+    table: TableSource,
     plan: PathBuf,
     budget_bytes: u64,
     window_k: u32,
@@ -121,13 +127,14 @@ fn parse_args() -> Result<Args, String> {
         }
         i += 2;
     }
-    if table.is_some() == synth_layers.is_some() {
-        return Err("exactly one of --table <json> or --synth-layers <n> is required".into());
-    }
+    let table = match (table, synth_layers) {
+        (Some(path), None) => TableSource::File(path),
+        (None, Some(n)) => TableSource::SynthLayers(n),
+        _ => return Err("exactly one of --table <json> or --synth-layers <n> is required".into()),
+    };
     Ok(Args {
         trace: trace.ok_or("--trace required")?,
         table,
-        synth_layers,
         plan: plan.ok_or("--plan required")?,
         budget_bytes: budget_bytes.ok_or("--budget-bytes required")?,
         window_k: window_k.ok_or("--window-k required")?,
@@ -154,8 +161,8 @@ fn main() {
         }
     };
 
-    let table = match (&args.table, args.synth_layers) {
-        (Some(path), _) => {
+    let table = match &args.table {
+        TableSource::File(path) => {
             let table_json = match std::fs::read_to_string(path) {
                 Ok(s) => s,
                 Err(e) => {
@@ -171,12 +178,10 @@ fn main() {
                 }
             }
         }
-        (None, Some(n)) => {
+        TableSource::SynthLayers(n) => {
             println!("# synthesizing tkey table for {n} layers (zero-config seam)");
-            TkeyTable::for_layers(n)
+            TkeyTable::for_layers(*n)
         }
-        // parse_args guarantees exactly one is set.
-        (None, None) => unreachable!("parse_args enforces --table xor --synth-layers"),
     };
     println!(
         "# driver up: table {} tkeys, trace {}, plan {}, pin_top {}, rewrite_every {}",

@@ -19,6 +19,7 @@ pub mod citizen_dir;
 pub mod airc_persona_conversation;
 pub mod airc_runtime;
 pub mod operator_avatar_seed;
+pub mod git_actor;
 pub mod operator_peer;
 pub mod org_room;
 pub mod command_inbound_pump;
@@ -31,6 +32,10 @@ pub mod command_inbound_pump;
 // form. Declaration." cfg gating IS the declaration.
 pub mod airc_runtime_registry;
 pub mod airc_source;
+// The crate denies unwrap/expect/panic; allocator.rs keeps one `.unwrap()` and one `.expect()`
+// until card 1748c554 moves the allocator onto the memory authority (editing the file trips its
+// pre-existing touched-file debt). panic stays denied. Delete this allow with that card.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 pub mod allocator;
 pub mod card;
 pub mod persona_scope;

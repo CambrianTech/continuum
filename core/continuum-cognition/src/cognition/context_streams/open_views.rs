@@ -65,4 +65,10 @@ impl Source<ContextMessage> for OpenViews<'_> {
             })
             .collect()
     }
+
+    /// No fold: one line per view she holds open (working memory keeps a bounded set), each
+    /// superseded by its key.
+    fn fold(&self, _folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        None
+    }
 }

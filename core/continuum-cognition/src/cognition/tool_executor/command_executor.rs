@@ -346,12 +346,17 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     }
 
     if note == Some(ReportedNote::CutAtLimit) {
+        // Name WHERE her draft is, never 'noted in your working memory': pointing nowhere, it sent
+        // Delia (IntelMac, 2026-11-11, 45+ min) reopening saved outputs to find it, each reopen
+        // nesting the last. The draft is the fact `cut_act_fact` records, by its exact opening words.
         return "Your last generation reached the output limit before a tool call was \
                 committed, so NOTHING ran and nothing changed — the act did not land. \
-                What you were composing is noted in your working memory. Do not \
-                re-check or redo earlier work that already landed. Commit the call \
-                first, with a smaller payload: state only what changed, not the full \
-                history, or split a large note across calls."
+                Your draft is already in front of you: the line in your own thoughts that \
+                begins \"my last act was CUT at the output limit\" quotes what you were \
+                composing. It is not in any saved output, so do not open outputs to find it. \
+                Do not re-check or redo earlier work that already landed. Commit the call \
+                now, with a smaller payload: state only what changed, not the full history, \
+                or split a large note across calls."
             .to_string();
     }
 
@@ -374,7 +379,9 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     // Omission from the default menu is not an authorization failure. These verbs
     // remain discoverable; preserve the actual refusal (or transport failure) so
     // a legitimate reviewer can recover, alongside purpose/own-work guidance.
-    if let Some(withheld) = crate::ai::tool_dialect::withheld_from_hands(&normalized) {
+    // The command declares why it is withheld and what to use instead, beside its disclosure.
+    let declared = command_registry().into_iter().find(|d| d.name == normalized || d.aliases.iter().any(|a| a.replace('_', "/") == normalized));
+    if let Some(withheld) = declared.and_then(|d| d.withheld) {
         return format!("{raw}\n{}\n{}", withheld.why, withheld.instead); // the status line already says it was refused
     }
 

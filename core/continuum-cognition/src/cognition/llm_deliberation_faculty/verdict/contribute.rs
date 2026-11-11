@@ -43,9 +43,10 @@ impl LlmDeliberationFaculty {
         // Retain the capacity observation that precedes assembly. Sampling again
         // after an await could mistake newly grown capacity for the refused one.
         // Her window, from the one determiner (card de7bb6e8). On the shared pool it is her grant. An
-        // ungranted mind is measured first (her view records her wish, never submitted), then parks on
-        // the grants watch, then decides again (Cormac on #5752).
-        let decided = match crate::capacity::mind_window::decide_window(
+        // ungranted mind is measured first (her view records her wish, never submitted), then waits for the
+        // first grants evaluation after it: granted, she decides again; not, her turn defers with its reason.
+        let decided = match super::admission_clock::stage("deliberation.window_grant", crate::capacity::mind_window::decide_window(
+            self.persona_id,
             || crate::capacity::mind_window::mind_window(self.persona_id, loaded.adapter.as_ref(), loaded.context_window),
             || {
                 continuum_base::probe!(
@@ -53,14 +54,26 @@ impl LlmDeliberationFaculty {
                     persona = %self.persona_name,
                     "no grant on the shared pool yet: measuring her view, then waiting for one"
                 );
-                let _measured = self.prompt_view_with_visual_feedback(ws, loaded.context_window, PromptCalibration::default(), None);
+                // Her wish priced at HER measured density, not the default: a default under-asks by her
+                // excess and the grant she then waits for is too small (Fable's audit, 2026-11-09).
+                let (_, calibration) = self.prompt_fit(&loaded);
+                let _measured = self.prompt_view_with_visual_feedback(ws, loaded.context_window, calibration, None);
             },
-            crate::capacity::mind_window::grants_waiter,
-        )
+            crate::capacity::mind_window::evaluation_after,
+        ))
         .await
         {
             Ok(decided) => decided,
-            Err(refused) => return Some(Contribution::deliberation_fault(refused.to_string())),
+            // A deferral (LaneStarved): nothing dispatched, her act budget kept, the next tick asks again.
+            Err(refused) => {
+                continuum_base::probe!(
+                    class = "delib.window.refused",
+                    persona = %self.persona_name,
+                    reason = %refused,
+                    "the first grants evaluation after her measure granted her no window"
+                );
+                return Some(Contribution::deliberation_fault(refused.to_string()));
+            }
         };
         let decided_window = decided.tokens();
         // The grant LEASE this turn is rendered against (size and revision), when she is on the
@@ -175,10 +188,14 @@ impl LlmDeliberationFaculty {
         let mut sent_reasoning_budget: Option<u32>;
         let kind = self.turn_kind(ws);
         // An act's cap follows its prompt's room, so a refusal its reserve would have passed is
-        // re-sent once at the engine's measured prompt, with the same view (never a refit of her view).
-        let mut room_resized = false;
+        // re-sent at the engine's measured prompt, with the same view (never a refit of her view),
+        // each time the engine's count rises: the count is bounded by the window, so this ends, and
+        // an act whose reply still fits is never given up after one try.
+        let mut room_resized_at: Option<u32> = None;
         // Re-rendered once against a grant that moved between render and dispatch.
         let mut grant_rerendered = false;
+        // Re-rendered once at the engine's measured price when a refit had no tail left to trim.
+        let mut view_rerendered_at_measured_price = false;
         // Correct only frozen admitted input, consuming a finite optional unit on
         // every retry. Exact measured progress is required too. No accepted cognition
         // is replayed, and no working-memory or RAG source is re-read or refilled.
@@ -243,12 +260,14 @@ impl LlmDeliberationFaculty {
                 "deliberation prompt — what the model sees this turn"
             );
             // This view's cap ([`request_allowance`]): a pass's grant, an act's window room after
-            // the prompt as the calibration prices it (the engine's own count after a refusal).
+            // the prompt at its input's price: a refusal's count for the same input, fresh for a changed one.
+            let measured = self.working_set.as_ref().and_then(|reg| reg.need_or_pooled(self.persona_id)).is_some();
             let allowance = match request_allowance(
                 kind,
+                measured,
                 view.completion_reserve,
                 fit_window,
-                calibration.charge(view.estimated_prompt_tokens),
+                calibration.for_input(view.input_identity).charge(view.estimated_prompt_tokens),
             ) {
                 Ok(allowance) => allowance,
                 // The room is below the reply's grant: never sent past a bound (`act_room.rs`).
@@ -273,43 +292,45 @@ impl LlmDeliberationFaculty {
             // call by name, and the system prompt's menu plus `commands/help` reach it.
             // The view retains the tool level bought by the shared allocation for this epoch.
             // Send that same selection so accounting, wire bytes and prefix reuse agree.
-            if request_template.is_none() {
-                // What her view's allocation bought, at its levels; a server that refuses `tail_tools`
-                // gets the same head without the verbs that would have ridden the tail.
-                let mut selected = view.tools.clone();
-                if tail_refused {
-                    selected.tail.clear();
+            let mut request = match &request_template {
+                Some(template) => template.clone(),
+                None => {
+                    // What her view's allocation bought, at its levels; a server that refuses `tail_tools`
+                    // gets the same head without the verbs that would have ridden the tail.
+                    let mut selected = view.tools.clone();
+                    if tail_refused {
+                        selected.tail.clear();
+                    }
+                    // Verbs she loaded into the tail ride beside the head, callable natively.
+                    let tail = std::mem::take(&mut selected.tail);
+                    // Selection and budget accounting borrow the cached schemas. Only the
+                    // owned inference request needs a copy of the selected surface.
+                    let tools = selected.specs.map(std::borrow::Cow::into_owned);
+
+                    let request = self.build_request_within(
+                        &binding,
+                        allowance,
+                        view.messages.clone(),
+                        tools,
+                        view.system.clone(),
+                        {
+                            // Turn-boundary hygiene: peer-name stops (#150, don't speak AS
+                            // teammates) + reserved-marker stops (#158, don't fabricate
+                            // [action]/[recall] receipts). Combined into one stop list.
+                            let mut stops = super::super::super::deliberation_budget::peer_stop_sequences(&ws.turns);
+                            stops.extend(super::super::super::deliberation_budget::reserved_marker_stop_sequences());
+                            (!stops.is_empty()).then_some(stops)
+                        },
+                        Some(ws.room_id),
+                        kind,
+                    );
+
+                    let mut template = request;
+                    template.tail_tools = (!tail.is_empty()).then_some(tail);
+                    template.messages.clear();
+                    request_template.insert(template).clone()
                 }
-                // Verbs she loaded into the tail ride beside the head, callable natively.
-                let tail = std::mem::take(&mut selected.tail);
-                // Selection and budget accounting borrow the cached schemas. Only the
-                // owned inference request needs a copy of the selected surface.
-                let tools = selected.specs.map(std::borrow::Cow::into_owned);
-
-                let request = self.build_request_within(
-                    &binding,
-                    allowance,
-                    view.messages.clone(),
-                    tools,
-                    view.system.clone(),
-                    {
-                        // Turn-boundary hygiene: peer-name stops (#150, don't speak AS
-                        // teammates) + reserved-marker stops (#158, don't fabricate
-                        // [action]/[recall] receipts). Combined into one stop list.
-                        let mut stops = super::super::super::deliberation_budget::peer_stop_sequences(&ws.turns);
-                        stops.extend(super::super::super::deliberation_budget::reserved_marker_stop_sequences());
-                        (!stops.is_empty()).then_some(stops)
-                    },
-                    Some(ws.room_id),
-                    kind,
-                );
-
-                let mut template = request;
-                template.tail_tools = (!tail.is_empty()).then_some(tail);
-                template.messages.clear();
-                request_template = Some(template);
-            }
-            let mut request = request_template.as_ref().expect("initial request assembled").clone();
+            };
             request.messages = view.messages.clone();
             // Where her next act stops matching THIS prompt: the engine checkpoints there and her
             // page keeps it, so the next act resumes past everything she already read.
@@ -368,7 +389,6 @@ impl LlmDeliberationFaculty {
                     self.prompt_feedback.store(Some(Arc::new(PromptFeedback {
                         binding: Arc::clone(&binding),
                         calibration,
-                        available: fit_window,
                         // Her replies' density survives the refusal; the next reply prices at its bound again.
                         density: self.density_on(&binding),
                     })));
@@ -387,10 +407,10 @@ impl LlmDeliberationFaculty {
                     // the measured room (the calibration above now prices this prompt at the
                     // engine's count) and her view is sent unchanged.
                     if kind == TurnKind::Act
-                        && !room_resized
+                        && room_resized_at.is_none_or(|previous| requested > previous)
                         && requested.saturating_add(view.completion_reserve) < available
                     {
-                        room_resized = true;
+                        room_resized_at = Some(requested);
                         continue;
                     }
                     if newest_refit_sent {
@@ -422,6 +442,12 @@ impl LlmDeliberationFaculty {
                     let reserve = view.completion_reserve;
                     view = match self.refit_rejected_prompt(view, requested, available, reserve) {
                         Ok(view) => view,
+                        // No tail left to trim, and a refit never cuts her view: rendered again ONCE at
+                        // the measured price, so her view's own allocation collapses oldest first.
+                        Err(_) if !view_rerendered_at_measured_price => {
+                            view_rerendered_at_measured_price = true;
+                            self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref())
+                        }
                         Err(error) => {
                             return Some(
                                 Contribution::prompt_capacity_refused(error)
@@ -489,10 +515,9 @@ impl LlmDeliberationFaculty {
                         &view,
                         response.usage.input_tokens,
                         response.timing.as_ref(),
-                        fit_window,
                         &response.model,
                     );
-                    self.view_served(&view); // her tail joins her view as sent: the next prompt extends this one
+                    self.view_served(&view); // her tail joins her view as judged: the next prompt extends this one
                     break (view, response);
                 }
             }
@@ -807,8 +832,8 @@ impl LlmDeliberationFaculty {
         //  (b) the model emitted a tool call as JSON in its prose (small models that
         //      ignore the native tool channel) — strictly better than dropping it.
         if !self.tools.is_empty() {
-            if matches!(resp.finish_reason, FinishReason::ToolUse) {
-                let mut calls = resp.tool_calls.clone().unwrap_or_default();
+            // A ToolUse finish with no calls carries none to run: it falls to the prose path below.
+            if let (FinishReason::ToolUse, Some(mut calls)) = (&resp.finish_reason, resp.tool_calls.clone()) {
                 // Wire dialect → canonical command names, BEFORE the
                 // authorization gate and the executor ever see them (the
                 // reverse half of the offer-side rename above).

@@ -7,7 +7,7 @@
 //! gguf-lora gene. But `forge/export` speaks to a SEPARATE process — the forge
 //! custodian binary (`forge::custodian_client`) — and until this module existed
 //! that process had to be started by an OPERATOR. Glass-boxed 2026-07-20: an
-//! organism-initiated `genome/job-create` trained cleanly, the sentinel fired on
+//! organism-initiated batch training job (the path card 4114a2c6 deleted) trained cleanly, the sentinel fired on
 //! completion, and the whole loop died at
 //! `forge/export … custodian unreachable … NOT adopted` because nobody had
 //! hand-started the sidecar. A self-improvement loop that needs a human to start

@@ -198,20 +198,6 @@ Local LLM generation. One model per instance; the substrate routes turns to it. 
 | Emissions | `[InferenceComplete, FirstTokenEmitted, ResidencyFault]` |
 | Estimated LoC | ~400 lines (composition → tokenizer → llama.cpp invoke → token stream + reprojection metadata) |
 
-### `inference-grpc-bridge`
-
-Bridge from the gRPC inference server (existing `inference-grpc/` crate) into the substrate's typed dataflow. Pure adapter.
-
-| Field | Value |
-|---|---|
-| Path | `core/continuum-core/src/inference/grpc_bridge.rs` |
-| Lane | `ResourceClass::Io` |
-| Target | `TargetSilicon::Network` |
-| Cadence | `OnReady` |
-| Subscriptions | `[InferenceRequest::Remote]` |
-| Emissions | `[InferenceComplete, RemoteInferenceFailed]` |
-| Estimated LoC | ~150 lines (Rust gRPC client + typed request/response mapping) |
-
 ### `embedding-batcher`
 
 Coalesce multiple embedding requests across personas into one model invocation. Replaces the original "EmbeddingBatcher" sketch with a substrate-aware module.
@@ -751,7 +737,7 @@ Newly unblocked / next-tier:
 
 | # | Module | Status | Notes |
 |---|---|---|---|
-| 6 | `inference-llm` | Unclaimed; unblocked | Governor + recall + working-set all shipped. Replaces inference-grpc hardcoded clamps with broker-issued leases. ~400 LoC, Section II. |
+| 6 | `inference-llm` | Unclaimed; unblocked | Governor + recall + working-set all shipped. ~400 LoC, Section II. |
 | 7 | `composer` | Unclaimed; unblocked | Recall + working-set shipped. Composition cache + materialization + pinning. ~250 LoC. |
 | 8 | `speculator` | Unclaimed; unblocked | Depends on composer. Pre-compose likely-next + hit-rate feedback to governor. ~280 LoC. |
 | 9 | `reprojection-service` | Unclaimed; independent | CBAR-SUBSTRATE §"Spatiotemporal Reprojection" toolkit. ~350 LoC. |
@@ -1145,7 +1131,7 @@ This catalog is dependency-ordered. Modules in earlier sections are foundational
 1. **Substrate floor:** `substrate-governor`, `pressure-broker` (shipped), `working-set-manager`, `genome-tier-store` (5 instances).
 2. **Recall + composition:** `demand-aligned-recall`, `composer`, `speculator`, `embedding-batcher`.
 3. **Cognition core:** `persona-cognition`, `rag-composer`, `hippocampus-consolidation`, `engram-recall`.
-4. **Inference path:** `inference-llm`, `inference-grpc-bridge` (shipped variant).
+4. **Inference path:** `inference-llm`.
 5. **Substrate services:** `reprojection-service`, `threat-detector`, `audit-recorder`, `vdd-reporter`.
 6. **Sensory:** `vision-*`, `voice-*`, `unity-frame-receiver` + per-platform receivers.
 7. **Federation + grid:** `federation-publisher`, `federation-puller`, `grid-inference-router`.

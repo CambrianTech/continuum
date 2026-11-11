@@ -33,6 +33,11 @@ pub fn due(trials: &[GeneTrial], receipts: &[GeneExamReceipt], boot: Uuid) -> Ve
                 (TrialState::Trial, None) => ExamKind::Initial,
                 (TrialState::Trial, Some(r)) => match r.outcome {
                     ExamOutcome::Admitted { .. } | ExamOutcome::Rejected { .. } => ExamKind::Settle,
+                    // A later core process may have what this one lacked (a family declared, a set
+                    // resolvable, provenance read); the refusal comes before any turn, so a re-sit
+                    // per process is cheap, and without it the gene stays in her head unjudged
+                    // forever (the M5's Aris code/owner, 55 h, card efcf6afb).
+                    ExamOutcome::Unexaminable { .. } if r.examined_boot != boot => ExamKind::Initial,
                     ExamOutcome::Unexaminable { .. } => return None,
                 },
                 (TrialState::Promoted, Some(r)) => match (&r.restart, r.deciding_verdict()) {

@@ -28,13 +28,9 @@ pub struct PathSecurity {
 pub enum ReadScope {
     /// The workspace and its read-only roots — every caller.
     Sandbox,
-    /// Also any absolute path the OS user can read or write, except `deny`: the operator
-    /// (`deny` empty: the core runs as the operator, whose files are the operator's), and
-    /// this node's resident (`deny` = her confinement's [`host_denials`]: every credential
-    /// path and every other citizen's directory, Joel 2026-10-18 "keep creds off-limits").
-    ///
-    /// [`host_denials`]: crate::system_resources::confinement::Confinement::host_denials
-    Host { deny: Vec<PathBuf> },
+    /// Also any absolute path the OS user can read or write: the operator, and this node's
+    /// residents, whose shell is the operator's (Joel, 2026-11-08: "Stop caging them").
+    Host,
     /// Also any absolute path inside the caller's confinement (card d598c806): a citizen
     /// whose trust admits `code/shell` reads what her shell can read — her workspace,
     /// her citizen directory, the toolchains, the temp dir — and nothing the kernel
@@ -350,8 +346,8 @@ pub fn clean_path_arg(raw: &str) -> CleanedPathArg {
 
 /// Whether a host-scope caller is refused `path` (canonical): inside a denial root, or a
 /// scope's signing key wherever it sits.
-fn host_denied(deny: &[PathBuf], path: &Path) -> bool {
-    deny.iter().any(|d| path.starts_with(d)) || crate::system_resources::confinement::is_scoped_credential(path)
+fn host_denied(path: &Path) -> bool {
+    crate::system_resources::confinement::is_scoped_credential(path)
 }
 
 impl PathSecurity {
@@ -425,8 +421,8 @@ impl PathSecurity {
         let sandboxed = self.validate_read(path);
         if let Ok(inside) = &sandboxed {
             // Inside the workspace too: a scope key or a credential is never hers to read.
-            if let ReadScope::Host { deny } = &scope {
-                if host_denied(deny, inside) {
+            if let ReadScope::Host = &scope {
+                if host_denied(inside) {
                     return Err(PathSecurityError::TraversalBlocked { path: path.to_string(), workspace: self.workspace_root.display().to_string() });
                 }
             }
@@ -438,11 +434,11 @@ impl PathSecurity {
             (_, Some(Ok(canonical))) => canonical,
         };
         match scope {
-            ReadScope::Host { deny } if host_denied(&deny, &canonical) => Err(PathSecurityError::TraversalBlocked {
+            ReadScope::Host if host_denied(&canonical) => Err(PathSecurityError::TraversalBlocked {
                 path: path.to_string(),
                 workspace: self.workspace_root.display().to_string(),
             }),
-            ReadScope::Host { .. } => Ok(canonical),
+            ReadScope::Host => Ok(canonical),
             ReadScope::Confined(list) if list.permits_read(&canonical) => Ok(canonical),
             // Outside her roots: the sandbox's verdict names the workspace she escaped, the
             // same refusal her shell would have met at the kernel.
@@ -462,11 +458,11 @@ impl PathSecurity {
     /// workspace verdict.
     pub fn validate_write_in(&self, path: &str, scope: &ReadScope) -> Result<PathBuf, PathSecurityError> {
         let sandboxed = self.validate_write(path);
-        let ReadScope::Host { deny } = scope else {
+        let ReadScope::Host = scope else {
             return sandboxed;
         };
         if let Ok(inside) = &sandboxed {
-            if host_denied(deny, inside) {
+            if host_denied(inside) {
                 return Err(PathSecurityError::TraversalBlocked { path: path.to_string(), workspace: self.workspace_root.display().to_string() });
             }
             return sandboxed;
@@ -481,7 +477,7 @@ impl PathSecurity {
             Ok(dir) => {
                 let target = dir.join(name);
                 let lands = target.canonicalize().unwrap_or_else(|_| target.clone());
-                if host_denied(deny, &target) || host_denied(deny, &lands) {
+                if host_denied(&target) || host_denied(&lands) {
                     return Err(PathSecurityError::TraversalBlocked {
                         path: path.to_string(),
                         workspace: self.workspace_root.display().to_string(),

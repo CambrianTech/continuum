@@ -47,38 +47,32 @@ pub fn focus_workspace_card<'a>(
 
 /// Resolve the same actionable choice used by hands against ordinary subscribed
 /// boards. A benchmark registry is not a catalog of a citizen's project work.
+/// Her held cards arrive with their rooms (her board index), so no board is walked
+/// to find the room again.
 pub(crate) async fn focus_room(
     citizen: &dyn super::airc_citizen::AircCitizen,
 ) -> Result<Option<uuid::Uuid>, airc_lib::AircError> {
-    let held = citizen.active_claims().await?;
+    let held = citizen.held_cards().await?;
     // A card she holds is her focus in ANY non-terminal column, Review included
     // (HER-LOOP-IS-HER-OWN.md; 7b0e8246). Excluding Review here sent a citizen
     // whose only held card awaited a verdict to her DEFAULT room for every
     // self-cycle: her thoughts, her notes and her resubmission posted into the
     // org room instead of her project's, and her project board never saw them
     // (Kimi, 2026-10-04). Active work still wins over a Review card.
-    let Some(card) = focus_workspace_card(&held) else {
+    let Some(card) = focus_workspace_card(held.iter().map(|(_, card)| card)) else {
         return Ok(None);
     };
-    let mut unreadable = None;
-    for room in citizen.subscribed_rooms().await? {
-        let board = match citizen.work_board(Some(room)).await {
-            Ok(board) => board,
-            Err(error) => {
-                unreadable = Some(error);
-                continue;
-            }
-        };
-        if board.cards.iter().any(|c| c.card_id == card.card_id) {
-            return Ok(Some(room));
-        }
+    let room = held
+        .iter()
+        .find(|(_, c)| c.card_id == card.card_id)
+        .map(|(room, _)| *room);
+    let subscribed = citizen.subscribed_rooms().await?;
+    match room {
+        Some(room) if subscribed.contains(&room) => Ok(Some(room)),
+        _ => Err(airc_lib::AircError::NotSubscribed(format!(
+            "selected work card {} has no readable subscribed board", card.card_id
+        ))),
     }
-    if let Some(error) = unreadable {
-        return Err(error);
-    }
-    Err(airc_lib::AircError::NotSubscribed(format!(
-        "selected work card {} has no readable subscribed board", card.card_id
-    )))
 }
 
 /// Shared intent ordering for turn focus and surplus-claim reconciliation.

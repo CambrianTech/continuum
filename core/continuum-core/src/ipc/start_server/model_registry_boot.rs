@@ -82,7 +82,7 @@ pub(super) fn prepare_socket_and_load_model_registry(
                 );
             }
         }
-        Err(e) => panic!("failed to load model_registry: {e}"),
+        Err(e) => return Err(BootError::from(e).into()),
     }
     Ok(phase_started)
 }

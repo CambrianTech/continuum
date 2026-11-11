@@ -21,6 +21,10 @@ impl ActingProvider for CoreActing {
         crate::persona::operator_peer::is_local_identity(peer)
     }
 
+    fn acting_name(&self, peer: Uuid) -> Option<String> {
+        crate::persona::git_actor::name_of(peer)
+    }
+
     fn acting_root_in(&self, persona: Uuid, context: Option<HandsContext>) -> Option<PathBuf> {
         crate::cognition::persona_workspace::acting_root_in(persona, context)
     }

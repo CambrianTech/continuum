@@ -299,7 +299,7 @@
         let args = build_key_log_args("4e3bc6477");
         let sep = args.iter().position(|a| a == "--").expect("a -- separator");
         assert_eq!(&args[..sep], ["log", "-1", "--format=%H", "4e3bc6477"]);
-        assert_eq!(&args[sep + 1..], BUILD_INPUTS.map(String::from));
+        assert_eq!(&args[sep + 1..], BUILD_INPUTS.iter().map(|input| String::from(*input)).collect::<Vec<_>>());
     }
 
     // what this catches (IntelMac, 2026-10-06): a node that waits forever on the newest tip

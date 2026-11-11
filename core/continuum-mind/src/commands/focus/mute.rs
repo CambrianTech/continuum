@@ -123,9 +123,7 @@ impl ActionCommand for FocusMute {
         })?;
 
         let handle = focus::registry().handle(persona_id);
-        let mut state = handle
-            .lock()
-            .unwrap();
+        let mut state = super::lock_focus(&handle)?;
 
         if p.unmute {
             state.unmute(lane);

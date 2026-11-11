@@ -21,7 +21,9 @@ pub trait SavedState {
     /// kind whose value holds under any world the node can be in.
     type Contract: Serialize;
     /// The state itself.
-    type Value: Serialize + DeserializeOwned;
+    /// `Clone + Send + 'static`: the process keeps one decoded copy per key and hands each load a
+    /// clone of it (`crate::memory`).
+    type Value: Serialize + DeserializeOwned + Clone + Send + 'static;
     /// Who places the bytes. Only [`OwnedFile`] exists in this slice.
     type Medium: Medium;
 

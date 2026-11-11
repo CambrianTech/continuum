@@ -4,6 +4,7 @@
 //! commands (`modules::work`) are one surface over these, and her own loop is another.
 
 pub mod advance;
+pub mod board_index;
 pub mod events;
 pub mod horizon;
 pub mod review;

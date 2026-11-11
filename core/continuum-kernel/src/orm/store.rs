@@ -162,6 +162,7 @@ where
     /// specific order should drop down to QueryBuilder + sort_asc /
     /// sort_desc on the relevant field.
     pub async fn find_all(&self) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
+        // bounded: the verb itself; each caller of find_all is counted where it reads (source-hygiene store_reads/reads.rs)
         self.find_matching(QueryBuilder::new(T::COLLECTION).build()).await
     }
 
@@ -175,7 +176,7 @@ where
             .map(|r| -> Result<(Uuid, T), OrmStoreError> {
                 let id = Uuid::parse_str(&r.id).map_err(OrmStoreError::InvalidUuid)?;
                 let entity: T =
-                    serde_json::from_value(r.data).map_err(OrmStoreError::DeserializeFailed)?;
+                    r.decode().map_err(OrmStoreError::DeserializeFailed)?;
                 Ok((id, entity))
             })
             .collect()
@@ -187,6 +188,7 @@ where
         field: &str,
         value: impl Into<serde_json::Value>,
     ) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
+        // bounded: the verb itself; each caller of find_eq is counted where it reads (source-hygiene store_reads/reads.rs)
         self.find_matching(QueryBuilder::new(T::COLLECTION).filter_eq(field, value).build())
             .await
     }
@@ -208,7 +210,7 @@ where
         let mut records = unwrap_adapter(result, "query", T::COLLECTION)?;
         match records.pop() {
             Some(r) => Ok(Some(
-                serde_json::from_value(r.data).map_err(OrmStoreError::DeserializeFailed)?,
+                r.decode().map_err(OrmStoreError::DeserializeFailed)?,
             )),
             None => Ok(None),
         }
@@ -362,7 +364,7 @@ fn unwrap_adapter<T>(
         Err(OrmStoreError::AdapterFailed {
             operation,
             collection: collection.to_string(),
-            detail: result.error.unwrap_or_else(|| "unknown".to_string()),
+            detail: result.error.unwrap_or_else(|| "the adapter gave no reason".to_string()), // unwrap_or_else: a failure without a message is reported as one
         })
     }
 }
@@ -384,7 +386,7 @@ fn unwrap_storage<T>(
     } else {
         Err(OrmStoreError::SchemaFailed {
             collection: collection.to_string(),
-            detail: result.error.unwrap_or_else(|| "unknown".to_string()),
+            detail: result.error.unwrap_or_else(|| "the adapter gave no reason".to_string()), // unwrap_or_else: a failure without a message is reported as one
         })
     }
 }

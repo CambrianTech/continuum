@@ -267,9 +267,12 @@ impl crate::persona::wall_source::WallReader for PersonaAircRuntime {
         .await
     }
 
-    /// The same board read the `Airc` impl answers (UFCS, for the reason above).
+    /// The cards of the wall's room, from her board index: no board read while the room's
+    /// board is unchanged (it was one full board read per act).
     async fn card_labels(&self, room: Option<uuid::Uuid>) -> Option<crate::persona::wall_source::CardLabels> {
-        <airc_lib::Airc as crate::persona::wall_source::WallReader>::card_labels(self.airc.as_ref(), room).await
+        let board =
+            crate::persona::work_board::board_index::room_board(self.airc.as_ref(), Some(room?)).await.ok()?;
+        Some(board.cards.iter().map(|card| (card.card_id.as_uuid(), (card.title.clone(), card.state))).collect())
     }
 }
 
@@ -293,14 +296,18 @@ impl crate::persona::held_work::AircWorkReader for PersonaAircRuntime {
         // django-15467, so the pull took her a SECOND card (matplotlib-21568) while a
         // teammate sat with none. The board carries owner, lease and claim id; nothing
         // the roster adds is needed to know her held work.
-        board_held_by(self.airc.as_ref()).await
+        crate::persona::work_board::board_index::board_held_by(self.airc.as_ref()).await
     }
 
-    /// The board's own row for one card, from every room she is in — the same walk
-    /// `card_in_subscribed_rooms` makes for claim staging, so a wake's "what became of my
-    /// card" reads the truth the renewal loop reads.
+    /// The board's own row for one card, from every room she is in, through her board
+    /// index: a wake's "what became of my card" reads the truth the renewal loop reads.
+    /// Every board of her subscribed rooms, through her board index (card 7f8c248e).
+    async fn boards(&self) -> Result<Vec<std::sync::Arc<airc_work::BoardSnapshot>>, AircError> {
+        crate::persona::work_board::board_index::boards(self.airc.as_ref()).await
+    }
+
     async fn card(&self, card_id: uuid::Uuid) -> Option<airc_lib::WorkCard> {
-        crate::persona::work_board::horizon::card_in_subscribed_rooms(
+        crate::persona::work_board::board_index::card(
             self.airc(),
             airc_work::WorkCardId::from_uuid(card_id),
         )
@@ -311,15 +318,14 @@ impl crate::persona::held_work::AircWorkReader for PersonaAircRuntime {
 
 #[async_trait::async_trait]
 impl crate::persona::room_board_source::RoomBoardReader for PersonaAircRuntime {
-    /// The current room's WHOLE work board — every card/column/owner. Delegates
-    /// to the inner airc handle's single board fold (`work_board_complete` →
-    /// snapshot), the same read the desktop-app kanban projector makes.
+    /// A room's WHOLE work board, every card/column/owner, through her board index: read
+    /// from airc only when that room's board changed since the last read.
     async fn work_board(
         &self,
         room: Option<uuid::Uuid>,
     ) -> Result<airc_work::BoardSnapshot, AircError> {
-        crate::persona::room_board_source::RoomBoardReader::work_board(self.airc.as_ref(), room)
-            .await
+        let board = crate::persona::work_board::board_index::room_board(self.airc.as_ref(), room).await?;
+        Ok(airc_work::BoardSnapshot::clone(&board))
     }
 
     /// Published display names for card owners — delegates to the inner airc
@@ -416,122 +422,14 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
             .map(|sub| sub.as_room().channel.as_uuid())
             .collect())
     }
-}
 
-/// The cards `airc`'s peer HOLDS right now, by the board alone: owner = her, lease live,
-/// not claimable. The one source for "her held work" — the pull's WIP=1 guard, the
-/// renewal loop, anything that asks. Never the work roster: it is rebuilt after a boot
-/// and reads empty for its first seconds (2026-09-13 08:40:50Z, a second pull).
-pub async fn board_held_by(airc: &Airc) -> Result<Vec<airc_lib::WorkCard>, AircError> {
-    Ok(scoped_board_held_by(airc)
-        .await?
-        .into_iter()
-        .map(|(_, card)| card)
-        .collect())
-}
-
-/// Keep routing provenance beside each held card; renewal must never infer its
-/// room from the persona's changing current-room pointer.
-pub(crate) async fn scoped_board_held_by(
-    airc: &Airc,
-) -> Result<Vec<(airc_lib::Room, airc_lib::WorkCard)>, AircError> {
-    let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
-    Ok(held_of_owned(scoped_board_owned_by(airc).await?, now_ms))
-}
-
-/// Every card the boards she stands in show with owner = her, in ANY state, whole, with its
-/// room. The one walk; `scoped_board_held_by` is its held filter.
-pub async fn scoped_board_owned_by(
-    airc: &Airc,
-) -> Result<Vec<(airc_lib::Room, airc_lib::WorkCard)>, AircError> {
-    // EVERY ROOM SHE STANDS IN, never "the board". airc's `work_board_complete` folds
-    // the scope's CURRENT room only — right after a boot that is her home room, so a
-    // card held in a run room read as not held: 2026-09-13 09:29:01Z, 13 s after the
-    // core answered, Atlas's gate read held=0 against her live django claim and the
-    // pull took her matplotlib as a second card (the same shape the roster read had).
-    // The per-room projection is what the pull itself reads; held work folds the same.
-    let me = airc.peer_id();
-    let rooms: Vec<airc_lib::Room> = airc
-        .subscription_set()
-        .await?
-        .all()
-        .map(|sub| sub.as_room())
-        .collect();
-    let walked_rooms: Vec<uuid::Uuid> = rooms.iter().map(|room| room.channel.as_uuid()).collect();
-    let mut held = Vec::new();
-    for room in rooms {
-        // ONE unreadable room must not erase every hold: this fold feeds the renewal loop,
-        // and a `?` here made a single bad room read lapse every card she held elsewhere.
-        let board = match crate::persona::room_board_source::RoomBoardReader::work_board(
-            airc,
-            Some(room.channel.as_uuid()),
-        )
-        .await
-        {
-            Ok(board) => board,
-            Err(error) => {
-                continuum_base::probe!(
-                    class = "persona.claim.board_room_unreadable",
-                    room = %room.channel,
-                    error = %error,
-                    "a subscribed room's board did not read — her holds elsewhere still count"
-                );
-                continue;
-            }
-        };
-        held.extend(
-            board
-                .cards
-                .into_iter()
-                .filter(|card| card.owner == Some(me))
-                .map(|card| (room.clone(), card)),
-        );
+    async fn held_cards(&self) -> Result<Vec<(Uuid, airc_lib::WorkCard)>, AircError> {
+        Ok(crate::persona::work_board::board_index::scoped_board_held_by(self.airc.as_ref())
+            .await?
+            .into_iter()
+            .map(|(room, card)| (room.channel.as_uuid(), card))
+            .collect())
     }
-    // THE FOLLOWED CLAIMS, here too (card ed2c9417). A claim that followed its card to a
-    // room she does not subscribe to is renewed through that room (the followed path of the
-    // renewal loop), so it is hers; a walk over her subscriptions alone never saw it. Kimi
-    // held 017843bb on #cambriantech with its lease renewed while the work gate read
-    // no_held_work, and she created a new review card every turn for one verdict
-    // (2026-10-06). One owned set feeds the gate and the renewal, so they cannot disagree.
-    let walked_cards: Vec<uuid::Uuid> = held.iter().map(|(_, card)| card.card_id.as_uuid()).collect();
-    let recorded = crate::persona::held_claims::held(me.as_uuid());
-    for followed in followed_beyond_rooms(&walked_rooms, &walked_cards, &recorded) {
-        match airc.work_board_in(&followed.room).await {
-            Ok(board) => {
-                if let Some(card) = board
-                    .card(airc_lib::WorkCardId::from_uuid(followed.card_id))
-                    .filter(|card| card.owner == Some(me))
-                {
-                    held.push((followed.room.clone(), card.clone()));
-                }
-            }
-            Err(error) => {
-                continuum_base::probe!(
-                    class = "persona.claim.board_room_unreadable",
-                    room = %followed.room.channel,
-                    error = %error,
-                    "a followed claim's room did not read; her other holds still count"
-                );
-            }
-        }
-    }
-    Ok(held)
-}
-
-/// PURE: the recorded claims a subscription walk could not have seen. Their room is not one
-/// she walked, and the walk did not already find the card. Those are the ones
-/// [`scoped_board_owned_by`] reads on their own room's board.
-pub(super) fn followed_beyond_rooms(
-    walked_rooms: &[uuid::Uuid],
-    walked_cards: &[uuid::Uuid],
-    recorded: &[crate::persona::held_claims::HeldClaim],
-) -> Vec<crate::persona::held_claims::HeldClaim> {
-    recorded
-        .iter()
-        .filter(|h| !walked_rooms.contains(&h.room.channel.as_uuid()))
-        .filter(|h| !walked_cards.contains(&h.card_id))
-        .cloned()
-        .collect()
 }
 
 impl Drop for PersonaAircRuntime {

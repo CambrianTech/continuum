@@ -1,5 +1,7 @@
 //! continuum-hands: cut out of continuum-core (MICROKERNEL-DECOMPOSITION.md). Depends only on the
 //! engine, the kernel and crates below them; core re-exports these modules under their old names.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![deny(clippy::await_holding_lock, clippy::significant_drop_in_scrutinee)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 pub use continuum_engine::{
     ai, capacity, concurrency, docker_tier, docker_tier_pool, entity_schemas, governor, gpu,

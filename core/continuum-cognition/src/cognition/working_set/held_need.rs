@@ -73,19 +73,23 @@ pub fn need_tokens(d: &PersonaDemand) -> Option<NeedSample> {
     }
 }
 
-/// What her residency is sized from: the median of the turns the fit HELD, raised to her newest
-/// turn's irreducible window. A censored bound is excluded (ONE-ACT stage 3): an overflow is first
-/// REDUCIBLE, because her view collapses older items to handles, so a bound proves only that her
-/// HISTORY outgrew the grant, never that her current view needs more. Read as residency, the
-/// bound let one mind take the pool (the M5, 2026-11-04 20:15-20:35Z: pool 125,696 -> {Aiko
-/// 114,592}, three residents dark 20 min). Irreducible growth is the floor, which stays exact.
-/// `None` until a held turn or a floor is measured; the allocator then gates on the wish.
-pub fn resident_need(d: &PersonaDemand) -> Option<u32> {
-    let (exact, _) = split_ring(d);
-    match (held_median(&exact, &[]), d.floor_tokens) {
-        (Some(held), Some(floor)) => Some(held.max(floor)),
-        (held, floor) => held.or(floor),
-    }
+/// What her residency is sized from: her need as [`need_tokens`] reads it (the product-limit median
+/// of her samples, a censored one, her act's priced window past her grant, counted as at least its
+/// bound; raised to her newest turn's irreducible window), granted as its value.
+/// Dropping censored samples left a mind whose own price chose more than her grant pinned at that
+/// grant forever, with 87% of the pool idle (the M5, 2026-11-09: Benchy's censored needs of
+/// 27-44k against a ~26k grant; every move down needs a way back up). The pool's contention is
+/// the allocator's, which shares what remains in proportion to what each mind still needs, so no
+/// mind's need leaves another dark (`capacity::window_grant`). `None` until a sample or a floor is
+/// measured; the allocator then gates on the wish.
+pub fn resident_need(d: &PersonaDemand) -> Option<crate::inference::planning::window_allocator::observed::Observed<crate::inference::planning::window_allocator::Tokens>> {
+    use crate::inference::planning::window_allocator::Tokens;
+    // A bound stays a bound over her floor (`Observed::over`): admission reads it through
+    // `Observed::within`, which collapses the bound into what exists and never the floor. Read as
+    // exact, a bound past the ceiling was never granted, never held and never measured again: every
+    // act parked for good (BigMama, Sahar on dc01d9563, 2026-11-11 09:19-11:59Z: 'NeedAboveCeiling
+    // 116240/58112' at fit 29,056; Codex traced it here, and found the floor case on #5931).
+    need_tokens(d)?.try_map(Tokens::new).map(|need| need.over(d.floor_tokens.and_then(Tokens::new)))
 }
 
 /// Her need ring's observed slots, split into exact sizes and censored bounds.

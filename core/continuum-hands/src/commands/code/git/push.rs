@@ -60,27 +60,22 @@ pub enum BranchPullRequest {
     Unknown { why: String },
 }
 
-/// The verb that opens a PR from a pushed branch, named where a push has none.
-const OPEN_A_PR: &str = "code/github/pr-create";
+/// The verb that opens a PR from a pushed branch, named where a push has none: on a card's branch
+/// `work/submit`, which opens it AND links it to the card (a PR the card does not link is one the
+/// merger never sees); on any other branch `code/github/pr-create`.
+fn open_a_pr(branch: &str) -> &'static str {
+    if crate::code::card_branch::is_card_branch(branch) {
+        "work/submit"
+    } else {
+        "code/github/pr-create"
+    }
+}
 
-/// The open PR whose head is `branch`, asked of GitHub once after the push.
+/// The open PR whose head is `branch`, asked of GitHub once after the push, through the one owner
+/// of a branch's PR.
 async fn pull_request_for(root: &std::path::Path, branch: &str) -> BranchPullRequest {
-    let args = [
-        "pr",
-        "list",
-        "--state",
-        "open",
-        "--head",
-        branch,
-        "--json",
-        "number,url",
-        "--jq",
-        ".[0] | select(.) | \"\\(.number) \\(.url)\"",
-    ]
-    .map(str::to_string)
-    .to_vec();
-    match crate::commands::code::github::run_gh(root.to_path_buf(), args).await {
-        Ok(line) => listed(&line),
+    match crate::commands::code::github::branch_pull_request::open_pull_request_for(root, None, branch).await {
+        Ok(found) => listed(found, branch),
         Err(err) => BranchPullRequest::Unknown {
             why: err.to_string(),
         },
@@ -96,20 +91,11 @@ fn pushed_branch(branch: &str) -> Option<String> {
     (!name.is_empty() && name != "HEAD").then(|| name.to_string())
 }
 
-/// `gh pr list`'s answer: `<number> <url>` for an open PR, nothing for none.
-fn listed(line: &str) -> BranchPullRequest {
-    match line
-        .trim()
-        .split_once(' ')
-        .and_then(|(n, url)| n.parse().ok().map(|number| (number, url)))
-    {
-        Some((number, url)) => BranchPullRequest::Open {
-            number,
-            url: url.to_string(),
-        },
-        None => BranchPullRequest::NoneYet {
-            open_with: OPEN_A_PR.to_string(),
-        },
+/// GitHub's answer for `branch`: its open PR, or the verb that opens one.
+fn listed(found: Option<crate::commands::code::github::branch_pull_request::OpenPullRequest>, branch: &str) -> BranchPullRequest {
+    match found {
+        Some(pr) => BranchPullRequest::Open { number: pr.number, url: pr.url },
+        None => BranchPullRequest::NoneYet { open_with: open_a_pr(branch).to_string() },
     }
 }
 
@@ -118,22 +104,26 @@ mod tests {
     use super::*;
 
     // what this catches: a pushed branch reported as having a PR when GitHub listed none (the
-    // resident who said "PR is up" after a push alone), or an open PR read as none.
+    // resident who said "PR is up" after a push alone), an open PR read as none, or a card's
+    // branch pointed at a verb that opens a PR the card never links (the merger never sees it).
     #[test]
     fn a_push_names_its_pull_request_or_the_verb_that_opens_one() {
+        use crate::commands::code::github::branch_pull_request::OpenPullRequest;
+        let open = OpenPullRequest {
+            number: 5718,
+            url: "https://github.com/CambrianTech/continuum/pull/5718".into(),
+            head: "fable/x".into(),
+            base: "canary".into(),
+        };
         assert_eq!(
-            listed("5718 https://github.com/CambrianTech/continuum/pull/5718\n"),
+            listed(Some(open), "fable/x"),
             BranchPullRequest::Open {
                 number: 5718,
                 url: "https://github.com/CambrianTech/continuum/pull/5718".into()
             }
         );
-        assert_eq!(
-            listed(""),
-            BranchPullRequest::NoneYet {
-                open_with: OPEN_A_PR.into()
-            }
-        );
+        assert_eq!(listed(None, "e5c80c7f/her-fix"), BranchPullRequest::NoneYet { open_with: "work/submit".into() }, "a card's branch opens and links through work/submit");
+        assert_eq!(listed(None, "fable/x"), BranchPullRequest::NoneYet { open_with: "code/github/pr-create".into() });
     }
 
     // what this catches: a push naming `HEAD` or a refspec asking GitHub for a PR whose head is

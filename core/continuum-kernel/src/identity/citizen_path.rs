@@ -57,36 +57,39 @@ pub fn kind_slug(kind: IdentityKind) -> &'static str {
 /// - Agent kind:
 ///   `<continuum_root>/citizens/agents/<provider>/<label>/airc/`
 ///
-/// `provider` is REQUIRED when `kind == Agent`. Callers passing
-/// `None` with `Agent` trip a panic — that's not operator input,
-/// it's a substrate bug (somewhere a call site forgot to thread
-/// the provider through). Per [[no-fallbacks-ever]] there is no
-/// `unknown/` fallback segment; agents either have a provider or
-/// they're a programming error. The panic surfaces the bug at the
-/// call site rather than silently landing rows under an
-/// `agents/unknown/` directory that downstream operators would
-/// have to chase.
-///
-/// Non-Agent kinds ignore the `provider` parameter regardless of
-/// value.
-pub fn citizen_home_path(
-    continuum_root: &Path,
-    kind: IdentityKind,
-    provider: Option<&str>,
-    label: &str,
-) -> PathBuf {
-    let kind_dir = kind_slug(kind);
-    let mut path = continuum_root.join("citizens").join(kind_dir);
-    if matches!(kind, IdentityKind::Agent) {
-        let provider = provider.expect( // JUSTIFIED: documented caller contract (no invented default); 23 call sites incl. persona/ owned by another branch
-            "citizen_home_path: provider is REQUIRED when kind == Agent. \
-             Per [[no-fallbacks-ever]] the substrate refuses to invent an \
-             agent-provider default. Fix the call site to thread the \
-             provider through.",
-        );
-        path = path.join(provider);
-    }
+/// An agent's provider is carried by [`CitizenKind::Agent`] itself, so an
+/// agent without one cannot be written: per [[no-fallbacks-ever]] there is no
+/// `unknown/` segment, and no runtime check for a call site that forgot it.
+pub fn citizen_home_path(continuum_root: &Path, kind: CitizenKind<'_>, label: &str) -> PathBuf {
+    let path = continuum_root.join("citizens").join(kind_slug(kind.identity_kind()));
+    let path = match kind {
+        CitizenKind::Agent { provider } => path.join(provider),
+        CitizenKind::Persona | CitizenKind::Human | CitizenKind::Jtag | CitizenKind::Web => path,
+    };
     path.join(label).join("airc")
+}
+
+/// A citizen's kind as its home path needs it: an [`IdentityKind`] with the agent
+/// provider (`claude`, `codex`, ...) attached to the one kind that nests under one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CitizenKind<'a> {
+    Persona,
+    Agent { provider: &'a str },
+    Human,
+    Jtag,
+    Web,
+}
+
+impl CitizenKind<'_> {
+    pub fn identity_kind(self) -> IdentityKind {
+        match self {
+            Self::Persona => IdentityKind::Persona,
+            Self::Agent { .. } => IdentityKind::Agent,
+            Self::Human => IdentityKind::Human,
+            Self::Jtag => IdentityKind::Jtag,
+            Self::Web => IdentityKind::Web,
+        }
+    }
 }
 
 /// The directory CONTAINING every citizen home of a given kind:
@@ -130,7 +133,7 @@ mod tests {
     #[test]
     fn persona_path_is_symmetric() {
         let root = PathBuf::from("/r");
-        let path = citizen_home_path(&root, IdentityKind::Persona, None, "maya");
+        let path = citizen_home_path(&root, CitizenKind::Persona, "maya");
         assert_eq!(path, PathBuf::from("/r/citizens/personas/maya/airc"));
     }
 
@@ -145,7 +148,7 @@ mod tests {
     fn seed_write_path_lives_under_the_resumer_scan_dir() {
         let root = PathBuf::from("/r");
         let label = "asha";
-        let home = citizen_home_path(&root, IdentityKind::Persona, None, label);
+        let home = citizen_home_path(&root, CitizenKind::Persona, label);
         // The instance manager derives the seed path from the home's parent.
         let seed_path = home.parent().expect("home has a parent").join("seed.json");
         // The resumer scans this dir's `<label>/seed.json`.
@@ -161,13 +164,13 @@ mod tests {
     #[test]
     fn agent_path_carries_provider_segment() {
         let root = PathBuf::from("/r");
-        let path = citizen_home_path(&root, IdentityKind::Agent, Some("claude"), "default");
+        let path = citizen_home_path(&root, CitizenKind::Agent { provider: "claude" }, "default");
         assert_eq!(
             path,
             PathBuf::from("/r/citizens/agents/claude/default/airc")
         );
 
-        let codex_path = citizen_home_path(&root, IdentityKind::Agent, Some("codex"), "default");
+        let codex_path = citizen_home_path(&root, CitizenKind::Agent { provider: "codex" }, "default");
         assert_eq!(
             codex_path,
             PathBuf::from("/r/citizens/agents/codex/default/airc")
@@ -175,7 +178,7 @@ mod tests {
 
         // Same provider + same label across kinds: provider is the
         // discriminator. Different providers DON'T collide.
-        let gemini_path = citizen_home_path(&root, IdentityKind::Agent, Some("gemini"), "default");
+        let gemini_path = citizen_home_path(&root, CitizenKind::Agent { provider: "gemini" }, "default");
         assert_ne!(path, gemini_path);
     }
 
@@ -183,15 +186,15 @@ mod tests {
     fn human_jtag_web_paths_skip_provider_segment() {
         let root = PathBuf::from("/r");
         assert_eq!(
-            citizen_home_path(&root, IdentityKind::Human, None, "operator-laptop"),
+            citizen_home_path(&root, CitizenKind::Human, "operator-laptop"),
             PathBuf::from("/r/citizens/humans/operator-laptop/airc")
         );
         assert_eq!(
-            citizen_home_path(&root, IdentityKind::Jtag, None, "inv-001"),
+            citizen_home_path(&root, CitizenKind::Jtag, "inv-001"),
             PathBuf::from("/r/citizens/jtags/inv-001/airc")
         );
         assert_eq!(
-            citizen_home_path(&root, IdentityKind::Web, None, "tab-42"),
+            citizen_home_path(&root, CitizenKind::Web, "tab-42"),
             PathBuf::from("/r/citizens/webs/tab-42/airc")
         );
     }
@@ -211,18 +214,5 @@ mod tests {
         assert_eq!(legacy_home_path(&root, IdentityKind::Human, "x"), None);
         assert_eq!(legacy_home_path(&root, IdentityKind::Jtag, "x"), None);
         assert_eq!(legacy_home_path(&root, IdentityKind::Web, "x"), None);
-    }
-
-    /// Per [[no-fallbacks-ever]]: calling `citizen_home_path` with
-    /// `kind=Agent + provider=None` is a SUBSTRATE BUG (a call site
-    /// forgot to thread the provider through). The function panics
-    /// at that point rather than silently routing the agent under
-    /// `agents/unknown/`. This test pins the panic so a future
-    /// refactor that softens it (e.g., reintroduces `unwrap_or`)
-    /// fails loudly here.
-    #[test]
-    #[should_panic(expected = "provider is REQUIRED when kind == Agent")]
-    fn agent_without_provider_panics() {
-        let _ = citizen_home_path(&PathBuf::from("/r"), IdentityKind::Agent, None, "default");
     }
 }

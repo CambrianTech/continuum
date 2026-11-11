@@ -1,5 +1,9 @@
 use super::*;
 
+/// A cancel is one message: the channel holds exactly that signal (the protocol, not a budget;
+/// a second cancel finds the handle's sender already taken).
+const ONE_CANCEL_SIGNAL: usize = 1;
+
 /// Global sentinel module reference for shutdown from signal handlers.
 /// Set during server startup, read during SIGTERM/SIGINT.
 pub(super) static GLOBAL_SENTINEL: std::sync::OnceLock<Arc<SentinelModule>> = std::sync::OnceLock::new();
@@ -34,12 +38,13 @@ pub struct SentinelModule {
 }
 
 impl SentinelModule {
-    pub fn new() -> Self {
+    /// `continuum_home` is the node's resolved home (`continuum_kernel::paths`), handed in by
+    /// boot: the one place that resolves it decides what an unresolvable home means.
+    pub fn new(continuum_home: &std::path::Path) -> Self {
         Self {
             sentinels: Arc::new(DashMap::new()),
             logs_base_dir: RwLock::new({
-                let home = continuum_kernel::paths::continuum_home().expect("Failed to resolve home directory"); // JUSTIFIED: module constructed once at boot; no HOME means no log storage, boot-fatal by design
-                home.join("jtag")
+                continuum_home.join("jtag")
                     .join("logs")
                     .join("system")
                     .join("sentinels")
@@ -61,9 +66,15 @@ impl SentinelModule {
             .ok_or_else(|| "sentinel: CommandExecutor not yet installed".to_string())
     }
 
-    /// Generate a unique handle ID
+    /// Generate a unique handle ID: the first eight hex digits of a v4 UUID (its first field).
     pub(super) fn generate_handle_id() -> String {
-        uuid::Uuid::new_v4().to_string()[..8].to_string()
+        format!("{:08x}", uuid::Uuid::new_v4().as_fields().0)
+    }
+
+    /// The channel a running sentinel's cancel travels on. One owner for the three places a
+    /// sentinel is registered.
+    pub(super) fn cancel_channel() -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
+        mpsc::channel(ONE_CANCEL_SIGNAL)
     }
 
     /// Get logs directory for a handle
@@ -157,7 +168,7 @@ impl SentinelModule {
         let handle_id = Self::generate_handle_id();
         let logs_dir = self.logs_dir(&handle_id);
 
-        let (cancel_tx, cancel_rx) = mpsc::channel(1);
+        let (cancel_tx, cancel_rx) = Self::cancel_channel();
         let handle = SentinelHandle {
             id: handle_id.clone(),
             sentinel_type: sentinel_type.clone(),

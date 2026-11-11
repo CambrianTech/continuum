@@ -645,13 +645,57 @@ fn a_decoded_hold_of_unknown_cause_is_unreadable_never_free() {
     use continuum_cli_lifecycle::deploy_hold::HoldObservation;
     use continuum_core::inference::llama_server::serving_hold::ServingHold;
     let decode = |held: serde_json::Value| serde_json::from_value::<ServingHold>(held).expect("test: a serving/status held_for");
-    assert_eq!(observation_of(None), HoldObservation::Free);
+    assert_eq!(observation_of(None, None), HoldObservation::Free);
     let resident = decode(json!({"sinceMs": 1, "by": {"kind": "resident", "work": [{
         "job": "8b46862c-a328-4904-9444-2ae9eeab143f", "consumer": "genome-train:8b46862c-a328-4904-9444-2ae9eeab143f",
         "baseModel": "ggml-org/Qwen3.8-27B-GGUF", "enginePid": 37904, "engineStartedS": 1793118524, "port": 58057}]}}));
-    assert!(matches!(observation_of(Some(&resident)), HoldObservation::LiveWork(work) if work.contains("genome-train:8b46862c")));
+    assert!(matches!(observation_of(Some(&resident), None), HoldObservation::LiveWork(work) if work.contains("genome-train:8b46862c")));
     let unknown = decode(json!({"sinceMs": 1, "by": {"kind": "unknown", "reason": "the residency record is unreadable"}}));
-    assert!(matches!(observation_of(Some(&unknown)), HoldObservation::Unreadable(why) if why.contains("residency record is unreadable")));
+    assert!(matches!(observation_of(Some(&unknown), None), HoldObservation::Unreadable(why) if why.contains("residency record is unreadable")));
     let empty = decode(json!({"sinceMs": 1, "by": {"kind": "resident", "work": []}}));
-    assert_eq!(observation_of(Some(&empty)), HoldObservation::Free);
+    assert_eq!(observation_of(Some(&empty), None), HoldObservation::Free);
+}
+
+// what this catches (card 51d6b4a6, the IntelMac 2026-11-08): genome-train cc9a10dc ran in the
+// live engine, which the macOS handoff keeps, and still deferred every deploy for 10 h. Work bound
+// to the kept engine (same pid AND start time) is Carried; any piece on another engine, a reused
+// pid, or a platform that keeps nothing (`kept` None) stays LiveWork and defers.
+#[test]
+fn only_work_bound_to_the_kept_engine_is_carried() {
+    use continuum_cli_lifecycle::deploy_hold::HoldObservation;
+    use continuum_core::inference::llama_server::serving_hold::ServingHold;
+    let held = |pids: &[(u32, u64)]| {
+        let work: Vec<_> = pids.iter().enumerate().map(|(i, (pid, started))| json!({
+            "job": format!("cc9a10dc-0d43-4116-8dbf-4cc0c7e3106{i}"), "consumer": format!("genome-train:cc9a10dc-{i}"),
+            "baseModel": "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF", "enginePid": pid, "engineStartedS": started, "port": 58057})).collect();
+        serde_json::from_value::<ServingHold>(json!({"sinceMs": 1, "by": {"kind": "resident", "work": work}})).expect("test: a serving/status held_for")
+    };
+    let kept = Some((30681, 1794093320));
+    assert!(matches!(observation_of(Some(&held(&[(30681, 1794093320)])), kept), HoldObservation::Carried(w) if w.contains("cc9a10dc")));
+    assert!(matches!(observation_of(Some(&held(&[(30681, 1794093320), (30681, 1794093320)])), kept), HoldObservation::Carried(_)), "every piece on the kept engine");
+    assert!(matches!(observation_of(Some(&held(&[(30681, 1794093320), (41000, 1794093320)])), kept), HoldObservation::LiveWork(_)), "one piece on another engine defers all");
+    assert!(matches!(observation_of(Some(&held(&[(30681, 1794000000)])), kept), HoldObservation::LiveWork(_)), "a reused pid is another engine");
+    assert!(matches!(observation_of(Some(&held(&[(30681, 1794093320)])), None), HoldObservation::LiveWork(_)), "a handoff that keeps nothing carries nothing");
+}
+
+// what this catches (Codex on #5872): the post-handoff check compared printed work strings, which
+// carry no engine start time, so a reused pid on a new engine read as a successful carry. The
+// carry holds only when every job held before is held after on the same pid AND start time.
+#[test]
+fn a_carry_holds_only_with_the_same_jobs_on_the_same_engine_incarnation() {
+    use continuum_core::inference::llama_server::serving_hold::ServingHold;
+    let held = |work: &[(&str, u32, u64)]| {
+        let work: Vec<_> = work.iter().map(|(job, pid, started)| json!({
+            "job": job, "consumer": format!("genome-train:{job}"), "baseModel": "m",
+            "enginePid": pid, "engineStartedS": started, "port": 58057})).collect();
+        serde_json::from_value::<ServingHold>(json!({"sinceMs": 1, "by": {"kind": "resident", "work": work}})).expect("test: a serving/status held_for")
+    };
+    let job = "cc9a10dc-0d43-4116-8dbf-4cc0c7e31062";
+    let other = "8b46862c-a328-4904-9444-2ae9eeab143f";
+    let before = held(&[(job, 30681, 1794093320)]);
+    assert!(carried_intact(&before, Some(&held(&[(job, 30681, 1794093320)]))));
+    assert!(carried_intact(&before, Some(&held(&[(job, 30681, 1794093320), (other, 30681, 1794093320)]))), "new work beside it is fine");
+    assert!(!carried_intact(&before, Some(&held(&[(job, 30681, 1794200000)]))), "a reused pid with another start is another engine");
+    assert!(!carried_intact(&before, Some(&held(&[(other, 30681, 1794093320)]))), "the job is gone");
+    assert!(!carried_intact(&before, None), "nothing held after");
 }

@@ -45,6 +45,9 @@ pub mod grid_capability;
 pub mod macros;
 pub mod presented_grant_store;
 pub mod probe_file_sink;
+// Poisoned std locks unwrap here until card 461a951e (kernel buffers and GPU detection get
+// owners) lands; then delete this allow.
+#[allow(clippy::unwrap_used)]
 pub mod probe_router;
 pub(crate) mod probe_span_meta;
 pub mod route_decision;

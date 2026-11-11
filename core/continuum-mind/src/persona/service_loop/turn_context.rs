@@ -2,7 +2,8 @@ use super::*;
 
 /// Mark the turn as started on the probe stream and take in the room up to this line.
 pub(super) fn announce_turn_start(ctx: &HostedPersona, trigger: TurnTrigger<'_>, opts: &ServeOptions) {
-    let TurnTrigger { msg, turn_room, admitted_retry } = trigger;
+    let TurnTrigger { msg, room, admitted_retry } = trigger;
+    let turn_room = room.as_uuid();
     continuum_base::probe!(
         class = "persona.turn.start",
         persona = %ctx.identity.agent_name,
@@ -37,7 +38,8 @@ pub(super) async fn admit_trigger(
     phase_timings: &mut PhaseTimings,
     mut wake_engram: Option<Uuid>,
 ) -> Option<Uuid> {
-    let TurnTrigger { msg, turn_room, admitted_retry } = trigger;
+    let TurnTrigger { msg, room, admitted_retry } = trigger;
+    let turn_room = room.as_uuid();
     // 1. Admit the incoming message into the persona's
     //    hippocampus. THIS is the L2 store growing — without
     //    this call, no engram ever forms and recall stays empty
@@ -160,7 +162,8 @@ pub(super) fn build_turn_burst(
     now_ms: u64,
     wake_engram: Option<Uuid>,
 ) -> crate::cognition::workspace::Burst {
-    let TurnTrigger { msg, turn_room, .. } = trigger;
+    let TurnTrigger { msg, room, .. } = trigger;
+    let turn_room = room.as_uuid();
     // The consolidated burst the WorkspaceCycle reasons over — a stream of
     // inbox items WITH their metadata (WHO + WHEN + WHAT), not bare text. A
     // mind needs who-said-what-and-when to follow the thread and avoid
@@ -211,10 +214,8 @@ pub(super) fn build_turn_burst(
     // chain back to what triggered them (CAUSAL-MEMORY-GRAPH.md §3a). `None` when
     // the message was deduped/quarantined — an honest gap, never a made-up link.
     crate::cognition::workspace::Burst::from_turns_at(
-        // turn_room falls back to identity.default_room (A.6), which is minted
-        // v4 at identity creation — non-nil by construction.
-        crate::identity::ActivityRoom::from_uuid(turn_room)
-            .expect("turn_room falls back to the identity's default_room, never nil"), // default_room is minted v4 at identity creation; never nil
+        // The trigger's room witness: refused at intake if nil (#425).
+        room,
         ws_turns,
         Some(now_ms),
         // The arrival that woke this turn IS its cause. A dedup Drop or a

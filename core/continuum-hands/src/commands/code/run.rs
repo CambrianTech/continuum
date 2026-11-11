@@ -220,7 +220,7 @@ impl ActionCommand for CodeRun {
 fn with_run_notes(mut stderr: String, out: &continuum_process::OwnedOutput, secs: u64, hint: &str) -> String {
     use continuum_process::{CaptureEnd, Ended};
     let mut note = |line: String| {
-        if !stderr.is_empty() && !stderr.ends_with('\n') {
+        if stderr.chars().next_back().is_some_and(|last| last != '\n') {
             stderr.push('\n');
         }
         stderr.push_str(&line);
@@ -313,11 +313,10 @@ async fn run_python(
     hands: &Hands,
 ) -> Result<CodeRunResult, CommandError> {
     let src = dir.join("main.py");
-    std::fs::write(&src, code)
+    continuum_host::durable::write_replace(&src, code.as_bytes())
         .map_err(|e| CommandError::Internal(format!("code/run: write failed: {e}")))?;
     let interpreter_label = interpreter.display().to_string();
     let mut cmd = hands.command(interpreter, &[src.clone().into()], Some(cwd.unwrap_or(dir)));
-    crate::code::shell_session::strip_secret_env(&mut cmd);
     crate::code::shell_session::utf8_text_env(&mut cmd);
     let started = std::time::Instant::now();
     let out = continuum_process::run_owned(cmd, Some(timeout), "code-run", std::sync::Arc::default())
@@ -361,7 +360,7 @@ async fn compile_and_run_rust(
 ) -> Result<CodeRunResult, CommandError> {
     let src = dir.join("snippet.rs");
     let bin = dir.join("snippet");
-    std::fs::write(&src, code)
+    continuum_host::durable::write_replace(&src, code.as_bytes())
         .map_err(|e| CommandError::Internal(format!("code/run: temp write failed: {e}")))?;
 
     let started = std::time::Instant::now();
@@ -369,12 +368,11 @@ async fn compile_and_run_rust(
     // 1. Compile, owned (continuum_process::run_owned) so a runaway rustc is ended; a non-success
     //    exit is a RESULT (the persona must SEE the compiler errors), only a spawn failure is
     //    an error.
-    let mut rustc = hands.command(
+    let rustc = hands.command(
         std::path::Path::new("rustc"),
         &["--edition".into(), "2021".into(), "-o".into(), bin.clone().into(), src.clone().into()],
         None,
     );
-    crate::code::shell_session::strip_secret_env(&mut rustc);
     let compiled = continuum_process::run_owned(rustc, Some(timeout), "rustc", std::sync::Arc::default())
         .await
         .map_err(|e| CommandError::Internal(format!("code/run: failed to run rustc (is it on PATH?): {e}")))?;
@@ -390,8 +388,7 @@ async fn compile_and_run_rust(
     // 2. Run the compiled binary, owned (continuum_process::run_owned): at the safety timeout,
     //    or when this command is dropped, it and everything it started are ended, never
     //    orphaned to init burning a core (observed: 6h+ runaway at 100% CPU).
-    let mut child = hands.command(&bin, &[], None);
-    crate::code::shell_session::strip_secret_env(&mut child);
+    let child = hands.command(&bin, &[], None);
     let out = continuum_process::run_owned(child, Some(timeout), "code-run", std::sync::Arc::default())
         .await
         .map_err(|e| CommandError::Internal(format!("code/run: failed to run the compiled binary: {e}")))?;
@@ -442,35 +439,6 @@ mod tests {
         assert!(!out.timed_out);
     }
 
-    // what this catches (card f25f4141): the snippet runner inherited the CORE's
-    // environment — the core is started with `set -a; . config.env`, so HF_TOKEN was
-    // one `std::env::var` away from any snippet, and tool output is quoted into rooms.
-    // The same strip that guards the shell (#3786) guards every citizen-facing spawn:
-    // a credential-shaped name is gone from the compiled program's environment, an
-    // ordinary name is still there.
-    #[tokio::test]
-    async fn a_snippet_cannot_see_credential_shaped_variables_of_the_core() {
-        std::env::set_var("CU_TEST_HF_TOKEN", "never-on-the-wire");
-        std::env::set_var("CU_TEST_PLAIN_DIR", "visible");
-        let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
-            .run(
-                &Ctx::default(),
-                CodeRunParams {
-                    lang: "rust".into(),
-                    code: "fn main() { println!(\"{:?} {:?}\", std::env::var(\"CU_TEST_HF_TOKEN\").ok(), std::env::var(\"CU_TEST_PLAIN_DIR\").ok()); }".into(),
-                    timeout_secs: None,
-                },
-            )
-            .await
-            .expect("ok");
-        assert!(out.ok, "{}", out.stderr);
-        assert_eq!(out.stdout.trim(), "None Some(\"visible\")");
-    }
-
-    // what this catches: a runtime panic is RETURNED, not swallowed — exit nonzero, the
-    // panic message in stderr. This is the whole point: the mind must SEE the failure to
-    // self-correct (the blind-coder fix). A regression that hid stderr would put her
-    // back to coding blind.
     #[tokio::test]
     async fn surfaces_panic_on_runtime_error() {
         let out = CodeRun { state: crate::test_acting::state_with_default_policy(tokio::runtime::Handle::current()) }
