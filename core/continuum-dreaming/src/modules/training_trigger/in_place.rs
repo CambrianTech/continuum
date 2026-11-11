@@ -111,6 +111,32 @@ struct Seated {
     checkpointed: HashMap<Uuid, u32>,
     /// Her name, for the provenance her candidates carry.
     persona_name: String,
+    /// What this seating has cost so far, reported when she pages out.
+    cost: SeatCost,
+}
+
+/// Where one seated life's time went: what paging her in and out costs against what she learned
+/// in it, the receipt that decides whether paging per step is worth engine verbs (card de1a9e5a).
+#[derive(Debug, Default, Clone, Copy)]
+struct SeatCost {
+    /// Seating: her competence decision, her shadow's memory and its load.
+    seat: std::time::Duration,
+    /// Restoring her generation onto the fresh shadow.
+    restore: std::time::Duration,
+    /// Her learning steps' requests, how many were sent, and how many the engine committed.
+    learn: std::time::Duration,
+    attempts: u32,
+    learned: u32,
+}
+
+/// Whether the engine confirmed a release the trigger asked of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Released {
+    Confirmed,
+    /// Unconfirmed: custody keeps what it held until the engine releases it.
+    Unconfirmed,
+    /// Not this learner's to release (the engine's workspace while another learner holds it).
+    NotHers,
 }
 
 /// What one bucket's pass did.
@@ -202,15 +228,34 @@ impl InPlace {
                 "her progress is not yet in a confirmed generation; she stays seated and the next pass publishes it");
             return Ok(published);
         }
-        stop(&mut held, key).await;
-        if held.minds.is_empty() {
-            if let Some(workspace) = held.workspace.take() {
-                if let Err((kept, why)) = workspace.release().await {
+        let cost = seated.cost;
+        let began = std::time::Instant::now();
+        let stopped = stop(&mut held, key).await;
+        // the workspace is the engine's: it goes with the last learner, and only then
+        let workspace = match (held.minds.is_empty(), held.workspace.take()) {
+            (true, Some(workspace)) => match workspace.release().await {
+                Ok(()) => Released::Confirmed,
+                Err((kept, why)) => {
                     held.workspace = Some(kept);
                     continuum_base::probe!(class = "training.in_place.workspace_unconfirmed", reason = %why,
                         "the engine's learning workspace release is unconfirmed; it stays held and the next settle tries again");
+                    Released::Unconfirmed
                 }
+            },
+            (_, kept) => {
+                held.workspace = kept;
+                Released::NotHers
             }
+        };
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        match paged_out(stopped, workspace) {
+            true => continuum_base::probe!(class = "training.in_place.paged_out",
+                persona = %key.persona_id, seat_ms = ms(cost.seat), restore_ms = ms(cost.restore), learn_ms = ms(cost.learn),
+                attempts = u64::from(cost.attempts), learned = u64::from(cost.learned), page_out_ms = ms(began.elapsed()),
+                workspace = ?workspace, "her learner paged out at the end of her pass, confirmed: what seating, restoring and paging out cost against what she learned"),
+            false => continuum_base::probe!(class = "training.in_place.page_out_unconfirmed", persona = %key.persona_id, stop = ?stopped,
+                workspace = ?workspace, page_out_ms = ms(began.elapsed()),
+                "her page-out was attempted and not confirmed; custody holds what the engine did not release, and no cost receipt is taken from it"),
         }
         Ok(published)
     }
@@ -295,6 +340,8 @@ async fn step_on(
         }
         // the POST is about to be sent: from here the slot holds whatever the engine leaves
         slot.dispatching();
+        let began = std::time::Instant::now();
+        let restoring = seated.restore.is_some();
         let step = match seated.restore.as_ref() {
             Some(generation) => {
                 let from = RestoreCheckpoint { name: generation.name.clone(), binding: generation.binding.clone(), steps: generation.steps };
@@ -306,12 +353,19 @@ async fn step_on(
                 (verdict(&outcome), false, outcome.refusal)
             }),
         };
+        if restoring {
+            seated.cost.restore += began.elapsed();
+        } else {
+            seated.cost.learn += began.elapsed();
+            seated.cost.attempts += 1;
+        }
         return match step {
             Ok((Verdict::Learned, true, _)) => {
                 seated.restore = None; // restored: the same example is learned next
                 Ok(Stepped::Next(Next::Again))
             }
             Ok((Verdict::Learned, false, _)) => {
+                seated.cost.learned += 1;
                 seated.progress.insert(row.id, learned + 1);
                 pass.learned += 1;
                 Ok(Stepped::Next(Next::Again))
@@ -425,6 +479,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
     if held.minds.contains_key(key) {
         return Ok(Seating::Seated);
     }
+    let began = std::time::Instant::now();
     // WHICH gene this competence trains, by the one rule (competence::decide): the bucket's pending
     // examples are the competence; nothing of hers learns it yet (no learner is seated for it).
     let examples: Vec<crate::genome::fine_tuning::types::TrainingExample> = rows.iter().flat_map(|r| r.examples.iter().cloned()).collect();
@@ -499,6 +554,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
                     progress: HashMap::new(),
                     checkpointed,
                     persona_name: row.persona_name.clone(),
+                    cost: SeatCost { seat: began.elapsed(), ..SeatCost::default() },
                 },
             );
             Ok(Seating::Seated)
@@ -601,12 +657,23 @@ fn memory_short(key: &BucketKey, wait: &crate::inference::training_admission::Tr
         "her learning memory was not free; the pass ends holding nothing and the next pass asks again");
 }
 
+/// PURE: whether a page-out is confirmed, so its cost receipt may be taken: her stop confirmed, and
+/// the workspace released with her or not hers to release. A failure is never success evidence.
+fn paged_out(stopped: Released, workspace: Released) -> bool {
+    matches!((stopped, workspace), (Released::Confirmed, Released::Confirmed | Released::NotHers))
+}
+
 /// Stop `key`'s learner; whatever it still holds stays in custody until the engine confirms it.
-async fn stop(held: &mut EngineLearning, key: &BucketKey) {
-    if let Some(seated) = held.minds.remove(key) {
-        if let Err((_orphaned, why)) = seated.mind.stop().await {
+async fn stop(held: &mut EngineLearning, key: &BucketKey) -> Released {
+    let Some(seated) = held.minds.remove(key) else {
+        return Released::NotHers;
+    };
+    match seated.mind.stop().await {
+        Ok(()) => Released::Confirmed,
+        Err((_orphaned, why)) => {
             continuum_base::probe!(class = "training.in_place.stop_unconfirmed", persona = %key.persona_id, reason = %why,
                 "a learner's stop is unconfirmed; custody holds what it held until the engine releases it");
+            Released::Unconfirmed
         }
     }
 }

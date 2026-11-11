@@ -152,6 +152,19 @@ async fn a_due_candidate_reaches_its_trial_while_another_bucket_waits() {
     }
 }
 
+// what this catches (Codex on #5928 at 30f89e5f8): a page-out the engine did not confirm reported as
+// a confirmed one, so a failed unload or workspace release became success evidence for Phase 2.
+#[test]
+fn only_a_confirmed_page_out_takes_a_cost_receipt() {
+    use Released::{Confirmed, NotHers, Unconfirmed};
+    assert!(paged_out(Confirmed, Confirmed), "her stop and the workspace, both confirmed");
+    assert!(paged_out(Confirmed, NotHers), "her stop confirmed; the workspace another learner holds is not hers");
+    assert!(!paged_out(Unconfirmed, NotHers), "an unconfirmed stop");
+    assert!(!paged_out(Unconfirmed, Confirmed), "an unconfirmed stop, whatever the workspace did");
+    assert!(!paged_out(Confirmed, Unconfirmed), "an unconfirmed workspace release");
+    assert!(!paged_out(NotHers, NotHers), "nothing of hers was stopped");
+}
+
 // what this catches: a restored learner re-teaching examples its generation already holds, when the
 // journal row was read before the generation's positions were projected onto it (Codex on 76f829e2b).
 #[test]
