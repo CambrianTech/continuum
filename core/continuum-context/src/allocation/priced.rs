@@ -121,6 +121,11 @@ fn view_sent(claims: &ActClaims) -> u32 {
         .fold(0u32, u32::saturating_add)
 }
 
+/// What `plan` renders: every grant but her reply's (the room no claim took is not context).
+fn rendered(plan: &ActPlan) -> u32 {
+    plan.claims().iter().filter(|claim| claim.source_id != id::REPLY).map(|claim| plan.granted(&claim.source_id)).fold(0u32, u32::saturating_add)
+}
+
 /// The context `plan` holds: its window less her reply's grant.
 fn held_context(plan: &ActPlan) -> u32 {
     plan.window.saturating_sub(plan.granted(id::REPLY))
@@ -235,7 +240,9 @@ fn collapse(window: u32, claims: &ActClaims, time: &ActTime, keep: &ActPlan) -> 
     if view_sent(claims) == 0 {
         return None;
     }
-    let keep_held = f64::from(held_context(keep));
+    // What keep actually renders (its grants), never the window it could fill: keep was charged
+    // for room it never used and collapse won after every regrowth (Benchy on the dyno, 2026-11-11).
+    let keep_held = f64::from(rendered(keep));
     let keep_view = f64::from(keep.view_granted());
     let keep_seconds = time.seconds(keep_held);
     let keep_rate = keep.searched.as_ref().map(|found| found.value / keep_seconds).filter(|_| keep_seconds > 0.0)?;
@@ -252,18 +259,21 @@ fn collapse(window: u32, claims: &ActClaims, time: &ActTime, keep: &ActPlan) -> 
     }
     let probe = |w: u32| {
         let plan = plan_at(w, free.clone());
-        let held = f64::from(held_context(&plan));
         // Her VIEW regrows, never her whole held window (which also reserves room other claims
         // grow into): the rebuild is spread over the acts until the view grants differ no more.
         let view = f64::from(plan.view_granted());
+        let held = f64::from(rendered(&plan));
         let rate = plan
             .searched
             .as_ref()
             .filter(|_| held < keep_held && view < keep_view)
             .map(|found| {
+                // A steady cycle: collapse, regrow by her fresh tokens per act back to where she is,
+                // collapse again. Its acts hold on average halfway back, and pay one rebuild per cycle.
+                let regrow = keep_view - view;
+                let acts = (regrow / time.fresh_at(held).max(1.0)).max(1.0);
                 let rebuild = held * time.prefill.at(held / 2.0);
-                let acts = ((keep_view - view) / time.fresh_at(held).max(1.0)).max(1.0);
-                found.value / (time.seconds(held) + rebuild / acts)
+                found.value / (time.seconds(held + regrow / 2.0) + rebuild / acts)
             })
             .unwrap_or(f64::NEG_INFINITY); // unwrap_or: a window that holds no less than she keeps is never a collapse
         (rate, plan)
