@@ -107,6 +107,15 @@ fn least(claims: &ActClaims) -> u32 {
         .saturating_add(view_held)
 }
 
+/// `claims` with her view's held basis released to its floors: what a turnover would start from.
+fn released(claims: &ActClaims) -> ActClaims {
+    let mut released = claims.clone();
+    for view in &mut released.view {
+        view.claim.min_tokens = view.claim.floor_tokens;
+    }
+    released
+}
+
 /// What her live view already sent above its floors (each source's flex basis): resident in the
 /// engine.
 fn view_sent(claims: &ActClaims) -> u32 {
@@ -184,12 +193,20 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
     let lo = floor.max(measured.0);
     let hi = window.min(measured.1.saturating_add(claims.reply.max_tokens));
     let outside = ActPlan { priced: Priced::OutsideMeasured { measured }, ..served.clone() };
+    if lo > hi {
+        // What her view already sent lies past every context measured: holding it cannot be
+        // priced, and serving the whole window let it grow to the ceiling (the M5, 2026-11-11). Her
+        // view's held basis is flex, never a floor: release it, and the act is priced inside the
+        // measured contexts; her view turns over into it, oldest first.
+        let released = released(&claims);
+        if least(&choosable(&released)) < floor {
+            return hold(window, released);
+        }
+        return outside;
+    }
     let Some(least_value) = plan_at(floor, priced_claims.clone()).searched.map(|found| found.value) else {
         return outside;
     };
-    if lo > hi {
-        return outside;
-    }
     let probe = |w: u32| {
         let plan = plan_at(w, priced_claims.clone());
         (rate(&plan, least_value, &time).unwrap_or(f64::NEG_INFINITY), plan) // unwrap_or: a window with no rate (outside the measured contexts) is never the peak

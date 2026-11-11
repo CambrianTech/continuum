@@ -394,6 +394,29 @@ fn a_batch_receipts_summary_keeps_every_operation() {
     assert!(shell.contains("error[E0308]: mismatched types") && !shell.contains("[outline"), "an output keeps its ends: {shell}");
 }
 
+// what this catches (Cormac on the IntelMac loops, 2026-11-11): a third identical request reaching
+// her exactly as the second did, so her input equals her last and the loop only moves one level
+// down; and an undeclared effect (a shell command) never signalled at all. The run of identical
+// requests with identical outcomes moves with every repeat, whatever the effect, and a changed
+// outcome ends it.
+#[test]
+fn a_run_of_identical_requests_moves_with_every_repeat() {
+    let wm = WorkingMemory::new(8);
+    let list = |out: &str| act("code/list", serde_json::json!({"path": "."}), out.into());
+    let mut seqs = Vec::new();
+    for _ in 0..3 {
+        wm.record_receipt_typed(&[list("4 files")], "I ran code/list Result: 4 files", None, Default::default());
+        seqs.push(wm.snapshot().action_records().pop().expect("on record").seq);
+    }
+    assert_eq!(wm.repeat_run(seqs[0]), None, "the first request is no run");
+    let (second, third) = (wm.repeat_run(seqs[1]).expect("a run of two"), wm.repeat_run(seqs[2]).expect("a run of three"));
+    assert_eq!((second.times, third.times), (2, 3));
+    assert_ne!(second.to_string(), third.to_string(), "her third input differs from her second");
+    wm.record_receipt_typed(&[list("5 files")], "I ran code/list Result: 5 files", None, Default::default());
+    let changed = wm.snapshot().action_records().pop().expect("on record").seq;
+    assert_eq!(wm.repeat_run(changed), None, "a changed outcome ends the run");
+}
+
 // what this catches: an act's declared effects (`ActionRecord.act`, MIND-CONTEXT invariant 4) are
 // derived, like her view: a record written by a build whose `Act` had another shape must restore
 // with no act (that act is simply never a repeat), never refuse the checkpoint and the resident

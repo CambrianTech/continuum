@@ -104,10 +104,11 @@ fn a_cause_cycle_beneath_an_arrival_ends_the_walk() {
 
 // what this catches: the same output from a tool that changes the world read as "nothing
 // happened" (Codex: two appends that both answer OK are two appends), and a tool that
-// declares nothing, or a reopen, ever rendered as a repeat.
+// declares nothing ever rendered as a repeat. (A reopen repeats only an identical reopen whose
+// whole she holds: `reopening_the_same_output_again_is_the_repeat_and_the_newest_act_is_judged_too`.)
 #[test]
 fn only_a_declared_observation_can_repeat() {
-    for effect in [ToolEffect::Changes, ToolEffect::Reopens, ToolEffect::Undeclared] {
+    for effect in [ToolEffect::Changes, ToolEffect::Undeclared] {
         let mut acts = Acts(Vec::new());
         let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
         acts.push("tool/x", r#"{"line":"a"}"#, effect, "OK");
@@ -158,4 +159,29 @@ fn a_rendering_already_sent_is_never_turned_into_a_repeat() {
     let advance = view.advance(&[&acts]);
     assert_eq!((advance.items, advance.repeats), (1, 0), "only the new read arrives");
     assert!(rendered(&view).starts_with(&before));
+}
+
+// what this catches (IntelMac, 2026-11-11: one saved output reopened 20+ times, each arriving
+// byte-identical, her input equal to her last): an identical reopen whose whole is in front of her
+// arriving whole again. It is the repeat; the FIRST reopen still arrives whole (a reopen never
+// answers another repeat), and her newest act is judged the same way before it rides whole.
+#[test]
+fn reopening_the_same_output_again_is_the_repeat_and_the_newest_act_is_judged_too() {
+    let mut acts = Acts(Vec::new());
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
+    acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, &body("saved"));
+    assert_eq!(view.advance(&[&acts]).repeats, 0, "the first reopen arrives whole");
+    assert!(view.renders("acts", "1"));
+    acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, &body("saved"));
+    assert_eq!(view.advance(&[&acts]).repeats, 1, "reopening it again, its whole in front of her, is the repeat");
+
+    // Her newest act rides whole after her view, outside its sources: the view judges it too.
+    let mut newest = Acts(acts.0.clone());
+    newest.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, &body("saved"));
+    let item = newest.items().pop().expect("the act just pushed");
+    let block = view.repeat_of_newest(&acts, item).expect("her newest identical reopen is a repeat");
+    assert!(block.contains("repeat of #1"), "{block}");
+    let mut changed = Acts(acts.0.clone());
+    changed.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, "a different body");
+    assert!(view.repeat_of_newest(&acts, changed.items().pop().expect("pushed")).is_none(), "a changed outcome arrives whole");
 }

@@ -67,6 +67,16 @@ continuum-saved-state = { path = "../continuum-saved-state", features = ["test-f
 airc-protocol = { workspace = true }
 futures = { workspace = true }
 
+
+# The llama crate's backend follows the machine, so a plain `cargo check` / `cargo test` builds the
+# right engine: Metal on Apple Silicon; the CPU profile on an Intel Mac, where ggml-metal device init
+# hangs (#129). No `--features metal` to remember, and no CPU-only build on an M-series by accident.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+llama = { path = "../llama", features = ["metal"] }
+
+[target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
+llama = { path = "../llama", features = ["mac-cpu-only"] }
+
 [features]
 default = []
 coreml = []

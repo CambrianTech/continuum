@@ -247,6 +247,22 @@ Dyno fidelity, 2026-11-11 ~03Z (each step changed the verdict, which is why the 
 Variant vs live on the faithful dyno (value/s, main segments): Atlas +18%, Benchy +5%, Aiko -1%,
 Aris -6%. Not yet every resident; next: Aris's act-by-act diff, as Aiko's found the head artifact.
 
+## Patterns, not leaves: one owner per fact (Joel, 2026-11-11 ~03:30Z)
+
+Every slow or stuck mind on 2026-11-10/11 traced to one fact with two owners, or a path around the
+one owner. Each row below is fixed once, for every mind, at its owner; a fix anywhere else is a leaf.
+
+| Concern | The one owner | Bypass found | Fix (state) |
+|---|---|---|---|
+| What she perceives | the view (`continuum_context::view`: keys, levels, epochs, invariant 4) | her newest act's result built by hand in `prompt/messages.rs` (`prompt_messages_outside_the_view`: 7 sites) | her act's tail is a `Source` of the view from birth; ratchet to 0 (next) |
+| What context costs | the price (`price.rs`, `allocation/priced.rs`) | a blind price served the whole window: views ran to the ceiling (Aris empty line; Atlas, Aiko noisy cold+warm slopes; 100k prompts in 104,857 windows, refused) | blind is bounded: an unknown fresh line prices cold, a view past the measured range turns over into it (fc8820cd4, live 03:23Z); next: the act-time curve is the engine's and model's, pooled across minds (moments merge exactly) |
+| Whether she repeats | invariant 4: "repeat of #n, outcome unchanged" | a second, prose "[repetition]" notice in `act_observe/apply.rs`, baked into stored results (a moving N defeats content identity); three IntelMac residents re-read one saved output 20+ times | delete the duplicate; the tail-as-source puts her newest act under invariant 4 (parked leaf: `fable/repeat-label-parked`) |
+| A slot's real capacity | the engine's count and admission | the allocator sized a 104,857 window; prompt 100,008 + cap 4,848 refused at the last token | the budget reads the engine's typed capacity, never a window number |
+| Work shared across minds | the engine's KV cache | each mind prefills the same system and tool trunk (5,912 shared chars) | shared trunk by `seq_cp` (fork), computed once |
+
+Measured daily beside the plan's numbers: `prompt_messages_outside_the_view` (7), unpriced acts per
+hour, refusals at the slot per hour, repeat acts per hour.
+
 ## Open: newer input is never paged out (found 2026-11-10, capacity_and_wire)
 
 A room message that arrives during her act is newer than her newest result, but it rides her view's

@@ -1,7 +1,7 @@
 use super::*;
 use crate::allocation::{allocate, ActNeed, Head, Leveled, NeedWindow, Newest, NewestShown, Rungs, Span, TrainedContext, ViewClaim};
 use crate::flex::FlexClaim;
-use crate::price::Line;
+use crate::price::{Curve, Line};
 
 /// The M5's measured contexts (`replay --act-price`, 2026-11-06T13Z..2026-11-07T13Z).
 const MEASURED: (u32, u32) = (10_840, 145_858);
@@ -19,6 +19,7 @@ fn m5_over(context: (u32, u32)) -> ActTime {
         fresh: line(5_421.0, 0.13209, context),
         observed: line(28.97, 3.7327e-3, context),
         output: 276.0,
+        curve: Curve::Composed,
     }
 }
 
@@ -271,4 +272,22 @@ fn her_need_carries_her_views_growth() {
     };
     let (Some(before), Some(after)) = (tokens(bare.need), tokens(grown.need)) else { panic!("fixture: priced needs {:?} {:?}", bare.need, grown.need) };
     assert!(after >= before + sent, "her need grows by what she sent: {before} -> {after}");
+}
+
+// what this catches (the M5, 2026-11-11): a view whose held basis lies past every measured context
+// left the act unpriced and served it the whole window, so her view grew to the window's ceiling and
+// her acts were refused there. Released, the act is priced inside the measured contexts, and her view
+// is held below what it sent: it turns over into them.
+#[test]
+fn a_view_held_past_the_measured_contexts_turns_over_into_them() {
+    let window = 755_456;
+    let measured = (10_000, 60_000);
+    let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(m5_over(measured)));
+    let sent = 100_000;
+    let view = &mut claims.view[1].claim;
+    view.min_tokens = view.floor_tokens + sent;
+    view.max_tokens = view.max_tokens.max(view.min_tokens);
+    let plan = allocate(window, claims);
+    assert!(matches!(plan.priced, Priced::Held { .. }), "priced, never served the whole window: {:?}", plan.priced);
+    assert!(held(&plan) < sent, "held inside the measured contexts, below what she sent: {}", held(&plan));
 }
