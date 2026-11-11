@@ -296,7 +296,7 @@ impl LearningEngine {
     pub async fn release_residency(&self, engine: &LedgerEngine, id: &str) -> Result<LedgerAnswer<Registered<ResidencyRefusal>>, LlamaServerError> {
         // the incarnation the residency was registered with: another one refuses stale_engine unchanged
         let body = serde_json::json!({ "engine": engine, "id": id });
-        let reply = self.ledger_request::<ResidencyRefusal>(self.client.post(format!("{}/learn/residency/release", self.root)).json(&body)).await?;
+        let reply = self.ledger_ticket::<ResidencyRefusal>("/learn/residency/release", body).await?;
         Ok(reply.map(LedgerReply::registered))
     }
 
@@ -312,7 +312,11 @@ impl LearningEngine {
     pub async fn unseat(&self, engine: &LedgerEngine, lora_id: i64) -> Result<LoadedAdapter, LlamaServerError> {
         // bound to the incarnation that loaded it: a relaunch reusing the id refuses, never unloads
         let body = serde_json::json!({ "engine": engine, "id": lora_id });
-        self.adapter_change(self.client.post(format!("{}/lora-adapters/unload", self.root)).json(&body)).await
+        match self.ticket("/lora-adapters/unload", body).await? {
+            Some(result) => serde_json::from_value::<LoadedAdapter>(result) // engine event wire: the adapter change reply
+                .map_err(|e| LlamaServerError::Unreachable(format!("adapter unload answered no id: {e}"))),
+            None => Err(LlamaServerError::Unreachable("this engine has no adapter unload".to_owned())),
+        }
     }
 
     async fn adapter_change(&self, request: reqwest::RequestBuilder) -> Result<LoadedAdapter, LlamaServerError> {

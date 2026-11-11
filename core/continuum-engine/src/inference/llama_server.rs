@@ -79,6 +79,7 @@ use pages::{
     PAGE_DIR_GUARD,
 };
 mod genome;
+pub mod learn_events;
 mod learn_ledger;
 pub use learn_ledger::{GrantId, GrantShare, LearningEngine, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
 mod learn_residency;

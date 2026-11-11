@@ -51,6 +51,7 @@ pub(crate) struct OpenAITimings {
 /// stuck, crashed, or the socket wedged — trips it, and then we fail loud naming
 /// the cause ([[fallbacks-are-illegal-fail-loud]]). Replaces the old wall-clock
 /// total-request timeout that killed legitimately-long generations.
+// derived-or-floor: a FLOOR on total stream silence (no byte at all; every chunk resets it, so slow decode never trips it), with no measured silence owner to take it from yet
 pub(crate) const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
 
 // Lane-send constants live in `crate::inference::lane_send` (S3b decompose).
@@ -245,7 +246,7 @@ pub(crate) struct StreamToolAccum {
 
 /// Fold one streamed tool-call fragment into the per-index accumulator.
 pub(crate) fn accumulate_stream_tool_call(acc: &mut Vec<StreamToolAccum>, tc: OpenAIStreamToolCall) {
-    let idx = tc.index.unwrap_or(0);
+    let idx = tc.index.unwrap_or(0); // a provider streaming a single tool call may omit its index: that one call is index 0
     if acc.len() <= idx {
         acc.resize_with(idx + 1, StreamToolAccum::default);
     }
@@ -353,7 +354,7 @@ pub(crate) async fn consume_sse_stream(
     // completed stream is proof of life. Both stamps are gated on this request
     // actually targeting the published serving lane.
 
-    let mut sse_buf: Vec<u8> = Vec::new();
+    let mut sse_frames = crate::inference::sse_frames::SseFrames::default();
     // Each raw event, kept only when a capture armed this request (card fb6d7912).
     let mut wire = crate::inference::wire_tap::WireTap::open(request.request_id.as_deref());
     let mut acc_content = String::new();
@@ -639,25 +640,12 @@ pub(crate) async fn consume_sse_stream(
             format!("{}: stream read error: {e}", cfg.name)
         })?;
 
-        // Strip CR (0x0D) so event boundaries normalize to `\n\n`. CR never
-        // appears inside a UTF-8 multibyte sequence, so this is decode-safe; we
-        // buffer RAW bytes and only decode COMPLETE events (no mid-char split).
-        for b in bytes.iter() {
-            if *b != b'\r' {
-                sse_buf.push(*b);
-            }
-        }
+        sse_frames.push(&bytes);
 
-        while let Some(pos) = sse_buf.windows(2).position(|w| w == b"\n\n") {
-            let event_bytes: Vec<u8> = sse_buf.drain(..pos + 2).collect();
-            let event = String::from_utf8_lossy(&event_bytes);
+        while let Some(event) = sse_frames.next_event() {
             wire.push(&event);
-            for line in event.lines() {
-                let Some(data) = line.trim_start().strip_prefix("data:") else {
-                    continue;
-                };
-                let data = data.trim();
-                if data.is_empty() || data == "[DONE]" {
+            for data in crate::inference::sse_frames::data_lines(&event) {
+                if data == "[DONE]" {
                     continue;
                 }
                 let parsed: OpenAIStreamChunk = match serde_json::from_str(data) {
@@ -869,10 +857,8 @@ mod tests {
         let replay = |events: &[String]| {
             let mut acc = Vec::new();
             for event in events {
-                for line in event.lines() {
-                    let Some(data) = line.trim_start().strip_prefix("data:") else { continue };
-                    let data = data.trim();
-                    if data.is_empty() || data == "[DONE]" {
+                for data in crate::inference::sse_frames::data_lines(event) {
+                    if data == "[DONE]" {
                         continue;
                     }
                     let chunk: OpenAIStreamChunk = serde_json::from_str(data).expect("test: chunk");

@@ -263,8 +263,54 @@ impl LearningEngine {
     /// last reservation settles.
     pub async fn revoke_learn_grant(&self, id: &str) -> Result<LedgerAnswer<LedgerSnapshot>, LlamaServerError> {
         let body = serde_json::json!({ "id": id });
-        let reply = self.ledger_request::<GrantRefusal>(self.client.post(format!("{}/learn/grants/revoke", self.root)).json(&body)).await?;
+        let reply = self.ledger_ticket::<GrantRefusal>("/learn/grants/revoke", body).await?;
         Ok(reply.map(|reply| reply.snapshot))
+    }
+
+    /// A learning mutation posted as a ticket (card 7fc7e2ce): the engine answers the ticket at once
+    /// and pushes its result on the incarnation's event stream, so this waits on that event, never
+    /// behind the chunk the engine's loop is computing and never on a timer. A refusal or an unknown
+    /// result is an error the caller treats as unconfirmed (custody keeps what it held).
+    pub(super) async fn ticket(&self, route: &str, mut body: serde_json::Value) -> Result<Option<serde_json::Value>, LlamaServerError> {
+        let events = super::learn_events::LearnEvents::of(self.process, &self.client).await.map_err(LlamaServerError::Unreachable)?;
+        body["ticket"] = serde_json::Value::Bool(true);
+        let resp = self
+            .client
+            .post(format!("{}{route}", self.root))
+            .json(&body)
+            .timeout(PROBE_TIMEOUT) // the ticket is answered at once, off the engine's loop
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        let status = resp.status();
+        if matches!(status.as_u16(), 404 | 405) {
+            return Ok(None);
+        }
+        let bytes = resp.bytes().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !status.is_success() {
+            return Err(LlamaServerError::Unreachable(format!("{route} refused ({status}): {}", String::from_utf8_lossy(&bytes))));
+        }
+        #[derive(serde::Deserialize)]
+        struct Ticket {
+            ticket: i64,
+        }
+        let ticket: Ticket = serde_json::from_slice(&bytes) // engine HTTP wire: the ticket
+            .map_err(|e| LlamaServerError::Unreachable(format!("{route} answered no ticket: {e}")))?;
+        match super::learn_events::LearnEvents::outcome(&events, ticket.ticket).await {
+            super::learn_events::TicketOutcome::Done(result) => Ok(Some(result)),
+            super::learn_events::TicketOutcome::Failed(error) => Err(LlamaServerError::Unreachable(format!("{route} refused: {error}"))),
+            super::learn_events::TicketOutcome::Unknown(why) => Err(LlamaServerError::Unreachable(format!("{route} unconfirmed: {why}"))),
+        }
+    }
+
+    /// A ledger mutation by ticket, parsed whole like its untagged reply.
+    pub(super) async fn ledger_ticket<R: serde::de::DeserializeOwned>(&self, route: &str, body: serde_json::Value) -> Result<LedgerAnswer<LedgerReply<R>>, LlamaServerError> {
+        match self.ticket(route, body).await? {
+            None => Ok(LedgerAnswer::NoLedger),
+            Some(result) => serde_json::from_value(result) // engine event wire: the ledger reply
+                .map(LedgerAnswer::Ledger)
+                .map_err(|e| LlamaServerError::Unreachable(format!("{route} answered no ledger: {e}"))),
+        }
     }
 
     /// One ledger route: the engine's answer parsed whole (identity, clock, grants, residencies,
