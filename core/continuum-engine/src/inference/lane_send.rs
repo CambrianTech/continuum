@@ -99,7 +99,8 @@ pub(crate) struct PromptQuote<'a> {
 
 /// Send `body` through `request_builder` (headers already set). `Ok(response)` is a 2xx response ready to stream; every failure is the
 /// typed turn-facing failure, already probed. `body` owns one prepared encoding;
-/// transport retries share its allocation rather than serializing again.
+/// transport retries share its allocation except when an admitted engine quote
+/// reprices the explicit reply allowance; the prompt remains unchanged.
 /// `turn_bound` is the request's own bound (`TextGenerationRequest::turn_bound`); the
 /// header wait is `max(PRE_STREAM_HEADER_TIMEOUT_SECS, turn_bound)`. `fill` is what the
 /// turn sent, so a tripped header wait can be recorded as the prefill measurement it is
@@ -126,7 +127,7 @@ pub(crate) async fn send_with_lane_retry(
     );
     // reqwest moves this Vec into its shared byte body. Cloning the prepared
     // builder below shares that allocation, including across transport retries.
-    let request_builder = request_builder.body(body);
+    let mut request_builder = request_builder.body(body);
     // A CONNECT error to a local resident lane means the lane is mid-relaunch, not
     // gone (see LANE_RELAUNCH_CONNECT_RETRIES) — the connection never opened so
     // nothing streamed, and re-sending the same lane is idempotent. Ride it out with
@@ -144,6 +145,7 @@ pub(crate) async fn send_with_lane_retry(
     // rearm a fresh quote allowance for each replacement engine.
     let quote_started = Instant::now();
     let response = loop {
+        let mut attempt_reply = fill.prompt_quote.map_or(0, |quote| quote.reply);
         if let Some(quote) = fill.prompt_quote {
             // A transport retry may reach a replacement engine. Re-count the
             // same prepared body on EVERY attempt; never reuse its predecessor's
@@ -165,7 +167,6 @@ pub(crate) async fn send_with_lane_retry(
             // admitted request against the share too refused every act whose grant passed it:
             // the M5, 2026-11-11 16:13Z, a 22,949-token prompt refused at a 136,517 grant
             // against the 104,857 share, then landing on the retry sized to the share.
-            let measured = super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply };
             match fill.admission {
                 Some(DispatchAdmission { admission, .. }) => {
                     // The quote awaited the engine, which may have been replaced meanwhile:
@@ -173,9 +174,14 @@ pub(crate) async fn send_with_lane_retry(
                     super::serving_guard::guard_resident_model(
                         cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Estimated(0), quote.caller,
                     ).await?;
-                    measured.check(admission.window, &cfg.name, quote.caller)?;
+                    (request_builder, attempt_reply) = measured_reply(
+                        request_builder, fill.prompt_tokens, admission.window, quote.reply,
+                    )?;
+                    super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: attempt_reply }
+                        .check(admission.window, &cfg.name, quote.caller)?;
                 }
-                None => super::serving_guard::guard_resident_model(cfg, quote.dedicated_lane, fill.model, measured, quote.caller).await?,
+                None => super::serving_guard::guard_resident_model(cfg, quote.dedicated_lane, fill.model,
+                    super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller).await?,
             }
             continuum_base::probe!(
                 class = "inference.prompt.prompt_quote",
@@ -201,7 +207,7 @@ pub(crate) async fn send_with_lane_retry(
                     return Err(InferenceError::GrantChanged { rendered: leased.tokens, current: None });
                 }
                 let needed = (fill.prompt_tokens as u64)
-                    .saturating_add(u64::from(fill.prompt_quote.map_or(0, |q| q.reply))) // map_or: no quote, no explicit reply allowance
+                    .saturating_add(u64::from(attempt_reply))
                     .min(u64::from(u32::MAX)) as u32;
                 crate::capacity::window_grant::reserve_attempt(reservation, persona, leased, needed).map_err(|refused| match refused {
                     crate::capacity::window_grant::ReserveRefused::Changed { leased, current } => {
@@ -395,4 +401,66 @@ pub(crate) async fn send_with_lane_retry(
     }
 
     Ok(response)
+}
+
+/// The engine measured the prompt on this attempt. Reprice the explicit reply against
+/// its remaining grant, retaining the caller's original limit across transport retries.
+/// Both the wire body and the reservation use this same allowance. Never turn an empty
+/// remainder into a zero/unlimited output sentinel.
+fn measured_reply(
+    builder: reqwest::RequestBuilder,
+    prompt: usize,
+    grant: u32,
+    requested: u32,
+) -> Result<(reqwest::RequestBuilder, u32), InferenceError> {
+    let prompt = u32::try_from(prompt)
+        .map_err(|_| InferenceError::Protocol("measured prompt exceeds the capacity receipt's token range".into()))?;
+    if requested == 0 {
+        return Ok((builder, requested));
+    }
+    let remaining = grant.checked_sub(prompt).and_then(|n| n.checked_sub(1))
+        .filter(|n| *n > 0)
+        .ok_or(InferenceError::ContextExceeded { requested: prompt, available: grant })?;
+    let reply = requested.min(remaining);
+    let request = builder.try_clone()
+        .ok_or_else(|| InferenceError::Protocol("reply pricing requires a replayable request".into()))?
+        .build().map_err(|error| InferenceError::Protocol(format!("reply pricing request: {error}")))?;
+    let bytes = request.body().and_then(reqwest::Body::as_bytes)
+        .ok_or_else(|| InferenceError::Protocol("reply pricing requires a prepared byte body".into()))?;
+    let mut value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| InferenceError::Protocol(format!("reply pricing JSON: {error}")))?;
+    let output = value.as_object_mut().and_then(|object| object.get_mut("max_tokens"))
+        .ok_or_else(|| InferenceError::Protocol("explicit reply allowance has no max_tokens field".into()))?;
+    *output = serde_json::Value::from(reply);
+    let bytes = serde_json::to_vec(&value)
+        .map_err(|error| InferenceError::Protocol(format!("reply pricing encoding: {error}")))?;
+    Ok((builder.body(bytes), reply))
+}
+
+#[cfg(test)]
+mod measured_reply_tests {
+    use super::*;
+
+    #[test]
+    fn measured_prompt_reprices_wire_reply_and_retry_keeps_original_limit() {
+        let original = serde_json::json!({"messages": [{"role": "user", "content": "same prompt"}], "max_tokens": 120000});
+        let builder = reqwest::Client::new().post("http://localhost/chat/completions").json(&original);
+        let (builder, reply) = measured_reply(builder, 66780, 181826, 120000).expect("prompt fits");
+        assert_eq!(reply, 115045);
+        let wire = builder.try_clone().expect("replayable").build().expect("request");
+        let body: serde_json::Value = serde_json::from_slice(wire.body().expect("body").as_bytes().expect("bytes")).expect("JSON");
+        assert_eq!(body["max_tokens"], reply);
+        assert_eq!(body["messages"], original["messages"]);
+        let (_, retry_reply) = measured_reply(builder, 60000, 181826, 120000).expect("retry quote fits");
+        assert_eq!(retry_reply, 120000, "a smaller retry quote may restore the original allowance");
+    }
+
+    #[test]
+    fn measured_reply_preserves_small_limits_and_refuses_no_output_room() {
+        let request = || reqwest::Client::new().post("http://localhost/chat/completions")
+            .json(&serde_json::json!({"max_tokens": 12}));
+        assert_eq!(measured_reply(request(), 50, 100, 12).expect("small explicit limit").1, 12);
+        assert!(matches!(measured_reply(request(), 99, 100, 12), Err(InferenceError::ContextExceeded { .. })));
+        assert!(matches!(measured_reply(request(), 100, 100, 12), Err(InferenceError::ContextExceeded { .. })));
+    }
 }
