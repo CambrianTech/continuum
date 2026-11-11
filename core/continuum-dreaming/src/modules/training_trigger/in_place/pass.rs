@@ -127,7 +127,11 @@ impl TrainingTriggerState {
                 }
             };
             match prepared {
-                Prepared::Ready => seated = true,
+                Prepared::Ready => {
+                    seated = true;
+                    #[cfg(test)]
+                    self.pause_operation(super::super::durable::OperationPoint::SeatedBeforeSlot).await;
+                }
                 Prepared::Nothing => break,
                 Prepared::Deferred => {
                     pass.deferred = true;

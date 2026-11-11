@@ -123,7 +123,7 @@ async fn a_due_candidate_reaches_its_trial_while_another_bucket_waits() {
     // A's learner learned every example: its generation holds an adapter and retires A's row
     let generation_dir = tempfile::tempdir().expect("test: a generation dir");
     std::fs::write(generation_dir.path().join("adapter.gguf"), b"adapter bytes").expect("test: the adapter");
-    let generation = super::super::durable::Generation {
+    let generation = crate::modules::training_trigger::durable::Generation {
         name: "a-generation-1.gguf".into(),
         path: generation_dir.path().display().to_string(),
         binding: "binding".into(),
@@ -464,5 +464,90 @@ mod live_engine {
         assert!(std::path::Path::new(&second.path).join("adapter.gguf").exists(), "the newest generation stays: a reseat restores it");
         crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
         assert_eq!(residencies(engine).await, before, "the second life leaves nothing on the engine either");
+    }
+
+    /// Her pass, run directly on `engine`, paused once she is seated and before her slot is asked
+    /// for: the moment her act can begin underneath a seated learner.
+    async fn seated_pass(trigger: &crate::modules::training_trigger::TrainingTriggerModule, key: &BucketKey, base: &str, engine: EngineIncarnation)
+        -> (Arc<crate::modules::training_trigger::durable::OperationPause>, tokio::task::JoinHandle<Result<BucketPass, String>>) {
+        let pause = Arc::new(crate::modules::training_trigger::durable::OperationPause {
+            point: crate::modules::training_trigger::durable::OperationPoint::SeatedBeforeSlot,
+            entered: tokio::sync::Notify::new(),
+            resume: tokio::sync::Notify::new(),
+        });
+        *trigger.state.operation_pause.lock().expect("test: pause slot") = Some(Arc::clone(&pause));
+        let store = trigger.state.durable.require().expect("test: storage");
+        let rows = eligible_buckets(&store, base).await.expect("test: pending journal")
+            .into_iter().find(|(k, _)| k == key).map(|(_, rows)| rows).expect("test: her bucket is pending");
+        let state = Arc::clone(&trigger.state);
+        let pass_key = key.clone();
+        let pass = tokio::spawn(async move { state.learn_bucket(pass_key, rows, engine).await });
+        tokio::time::timeout(std::time::Duration::from_secs(300), pause.entered.notified()).await.expect("test: she is seated within 300s");
+        assert_eq!(trigger.state.in_place.seated_on(engine).await, 1, "paused with her learner seated");
+        (pause, pass)
+    }
+
+    // what this catches (BigMama 2026-11-11, 7 fresh residencies of the running core held 20+ min
+    // with no page-out; Codex on #5932): a seated learner whose act begins waited it out (learn_slot
+    // Busy looped back to the act gate) holding her shadow, optimizer and leases. Her act now ends
+    // the pass, and settle pages her out before the pass returns.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_seated_learner_yields_to_her_act_and_pages_out() {
+        let home = tempfile::tempdir().expect("test: home");
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+        let (engine, base) = named_engine();
+        let slots: u32 = std::env::var("CONTINUUM_LEARN_SLOTS").ok().and_then(|n| n.parse().ok()).expect("live-engine-tests: CONTINUUM_LEARN_SLOTS");
+        crate::inference::slots::register_engine_for_fixture(&engine.root_url(), slots, engine.pid, engine.started_s);
+        register_live_lane(engine, &base, slots);
+        let before = residencies(engine).await;
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let persona = Uuid::new_v4();
+        let key = BucketKey { persona_id: persona, trait_kind: "geography".into(), base_model: base.clone() };
+        let authority = live_authority();
+        let custody = Arc::clone(&authority.custody);
+        let (trigger, executor) = build_runtime_under(adapter, authority).await;
+        submit(&executor, persona, &base, "What is the capital of Kansas?", "Topeka.").await;
+        let (pause, pass) = seated_pass(&trigger, &key, &base, engine).await;
+        let act = crate::inference::slots::begin_act_for_test(persona).await; // her act begins under her seated learner
+        pause.resume.notify_one();
+        let pass = tokio::time::timeout(std::time::Duration::from_secs(120), pass).await.expect("test: the pass ends, never waits out her act")
+            .expect("test: the pass task").expect("test: the pass");
+        assert!(pass.deferred && pass.learned == 0, "her act came first: nothing learned, the pass deferred: {pass:?}");
+        assert_eq!(trigger.state.in_place.seated_on(engine).await, 0, "her learner was paged out before the pass returned");
+        assert_eq!(custody.held(), (0, 0), "every lease left custody");
+        assert_eq!(residencies(engine).await, before, "the engine holds none of hers");
+        drop(act);
+        crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
+    }
+
+    // what this catches (Codex on #5932): a failure after she is seated returning early, so nothing
+    // paged her out. Here the trigger stops admitting while she is seated: the pass fails, and the
+    // runtime's save (quiesce) pages her out; nothing outlives the save.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failure_after_seating_leaves_nothing_past_the_save() {
+        let home = tempfile::tempdir().expect("test: home");
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+        let (engine, base) = named_engine();
+        let slots: u32 = std::env::var("CONTINUUM_LEARN_SLOTS").ok().and_then(|n| n.parse().ok()).expect("live-engine-tests: CONTINUUM_LEARN_SLOTS");
+        crate::inference::slots::register_engine_for_fixture(&engine.root_url(), slots, engine.pid, engine.started_s);
+        register_live_lane(engine, &base, slots);
+        let before = residencies(engine).await;
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let persona = Uuid::new_v4();
+        let key = BucketKey { persona_id: persona, trait_kind: "geography".into(), base_model: base.clone() };
+        let authority = live_authority();
+        let custody = Arc::clone(&authority.custody);
+        let (trigger, executor) = build_runtime_under(adapter, authority).await;
+        submit(&executor, persona, &base, "What is the capital of Oregon?", "Salem.").await;
+        let (pause, pass) = seated_pass(&trigger, &key, &base, engine).await;
+        trigger.state.stop_admitting().await; // a shutdown begins while she is seated
+        pause.resume.notify_one();
+        let pass = tokio::time::timeout(std::time::Duration::from_secs(120), pass).await.expect("test: the pass ends").expect("test: the pass task");
+        assert!(pass.is_err(), "a stopping trigger admits no step: {pass:?}");
+        crate::runtime::ServiceModule::save_state(trigger.as_ref()).await.expect("test: the save publishes and pages out");
+        assert_eq!(trigger.state.in_place.seated_on(engine).await, 0, "nothing she held outlives the save");
+        assert_eq!(custody.held(), (0, 0), "every lease left custody");
+        assert_eq!(residencies(engine).await, before, "the engine holds none of hers");
+        crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
     }
 }
