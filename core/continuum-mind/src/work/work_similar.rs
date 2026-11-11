@@ -404,7 +404,7 @@ impl WorkGet {
             let outcomes: Vec<_> = latest
                 .map(|id| board.submission_reviews_for(id).filter(|r| r.card_id == card.card_id).map(|r| r.outcome).collect())
                 .unwrap_or_default(); // unwrap_or_default: no submission, no outcomes
-            receipt.next = crate::persona::work_board::submissions::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), crate::persona::work_board::submissions::submission_review_handoff(board, card.card_id, latest));
+            receipt.next = crate::persona::work_board::submissions::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), crate::persona::work_board::submissions::submission_review_handoff(board, card.card_id, latest), card.pull_request.as_ref());
         }
         Ok(receipt)
     }

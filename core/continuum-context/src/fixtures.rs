@@ -82,4 +82,8 @@ impl Source<String> for Fake {
             .map(|(key, text)| item(key.clone(), text.clone(), None, Some(text.clone())))
             .collect()
     }
+
+    fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+        None // a fixture that does not exercise folding
+    }
 }

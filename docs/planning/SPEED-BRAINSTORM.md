@@ -184,6 +184,96 @@ halved residents' decode (13.2 -> 6.9 tok/s, inference: shared unified-memory ba
   agents, own worktrees and target dirs, cheap models for mechanical moves, Codex owns order.
 - **Idle machines** (IntelMac, MacBook Pro, the 5090 when free) run agents' checks.
 
+## The pipelined cache: compute only what is new (Joel, 2026-11-10)
+
+Joel: "computed once, phased out as it is no longer needed"; "cache levels everywhere"; "disk is
+cheap"; "only one needs to have computed it"; "like a high end graphics engine: light maps,
+texture computations"; "it's gotta work under the governor too".
+
+Measured on the M5 the same day (205 landed act pairs): 1.28M tokens prefilled, 19% new; 65% of
+the recompute was view turnovers; prefill 54% of act time, decode 39%, queue 8%; the median gap
+between acts 2.0 s (so prefill-ahead per mind has little to hide in; the cache is the lever).
+
+- **Keep what is computed** (live 1ee16e3b4): her sent view is resident, so the price never holds
+  less than it (`least`). After a cold first act Aiko's acts prefilled 554-1,478 fresh tokens on
+  27-30k cached, against 5,527 fresh at the day's median.
+- **Tiers, texture-streamed:** GPU KV <-> RAM <-> disk per mind, confirmed saves on every switch,
+  prefetch ahead of her predicted turn, write-behind during decode, restore at boot and on
+  shutdown. The engine's RAM prompt cache (`--cache-ram`, 5.2 GB) evicts by age at 0.3-1 GB per
+  entry and never spills to disk: size it from free memory, evict by value, spill to disk.
+- **The disk tier governed:** `kv-pages` was a deferred eviction class; 30 GB on disk, 3.1 GB
+  restorable (19.4 GB unconfirmed pages, 7.4 GB an unserved model). A broker pool evicts unserved
+  models, then unconfirmed pages, then the coldest non-resident confirmed pages.
+- **Shared between minds:** exact KV reuse needs an identical prefix. The four minds' system
+  prompts already share their first 5,912 chars (verbs, doctrine; identity after); the engine
+  copies a shared trunk to each sequence (`seq_cp`) instead of prefilling it per slot. Next: a
+  shared-corpus layer after the head (files several minds read, ordered by measured reuse), so
+  the first mind to read a file pays for it. Position-independent reuse (CacheBlend-style) works
+  on attention layers only; this hybrid model's recurrent layers rule it out.
+- **Her output is free input:** what she decoded is already in KV; render her turn in the bytes
+  she generated (her reasoning stripped by the template costs 160-280 tokens per act).
+- **Graphics-engine extras:** batched decode across minds (many draws, one submit), shadow
+  sequences building her next epoch in idle device time, predicted prefetch.
+- **Never a miss for a file read once:** a whole file read inline names its handle, so she reopens
+  it instead of re-reading (20 identical re-reads, 2,876 s in 6 h).
+
+## Collapse pricing on the dyno (2026-11-11, branch fable/collapse-pricing-dyno)
+
+`replay --allocate` now carries each resident's epoch (5601c6660). Over 972 acts of 2026-11-10, the
+warm-only fresh fit plus `priced::collapse` against the live code: predicted seconds per act
+Atlas 325 -> 194, Aris 134.5 -> 111.5, Benchy 134 -> 99, Aiko 99.5 -> 106; turnovers per act
+Atlas 0.01 -> 0.24, Aris 0.05 -> 0.16, Benchy 0.10 -> 0.51, Aiko 0.03 -> 0.05. It pays for three of
+four, but Benchy thrashes: each collapse is amortized over a regrowth horizon the next act already
+breaks. Next: hysteresis (a collapse commits to the horizon it was priced on; her epoch's age
+reaches the price), then re-run the dyno; deploy only when turnovers stay rare and time falls for
+every resident.
+
+Traced on the dyno (Benchy, 2026-11-11 ~02Z): her turnovers are deliberate collapses (held 13-20k
+of 45-74k windows), not shortfalls. Keep is priced at the window keep would CHOOSE, which fills
+with history wants far past what she sent, so collapse wins after every regrowth. Fix: price the
+cycle, not the act. Keep costs her sent view plus one act's growth; collapse is a steady cycle that
+pays one rebuild every N acts, N from her measured growth per act; compare the two cycles' value
+per second. Gate: dyno shows lower time and rare turnovers for every resident.
+
+Dyno fidelity, 2026-11-11 ~03Z (each step changed the verdict, which is why the gate is the dyno):
+- the dyno reports VALUE beside seconds; value per second is the price's own objective;
+- `--fit pooled`: one fit per model over every resident's EARLIER acts (causal). Act time is the
+  engine's and model's, never one mind's; fits are moments and merge exactly, so production can
+  price from the merged fit of the node's residents with no new store;
+- charging a collapse one standard error of its saving changed nothing for Aiko and cost Atlas
+  his gain: reverted;
+- the epoch now freezes her head inside an epoch as the core does: 12 growing-window acts of
+  Aiko's had replayed cold (7% of her seconds), an artifact.
+Variant vs live on the faithful dyno (value/s, main segments): Atlas +18%, Benchy +5%, Aiko -1%,
+Aris -6%. Not yet every resident; next: Aris's act-by-act diff, as Aiko's found the head artifact.
+
+## Patterns, not leaves: one owner per fact (Joel, 2026-11-11 ~03:30Z)
+
+Every slow or stuck mind on 2026-11-10/11 traced to one fact with two owners, or a path around the
+one owner. Each row below is fixed once, for every mind, at its owner; a fix anywhere else is a leaf.
+
+| Concern | The one owner | Bypass found | Fix (state) |
+|---|---|---|---|
+| What she perceives | the view (`continuum_context::view`: keys, levels, epochs, invariant 4) | her newest act's result built by hand in `prompt/messages.rs` (`prompt_messages_outside_the_view`: 7 sites) | her act's tail is a `Source` of the view from birth; ratchet to 0 (next) |
+| What context costs | the price (`price.rs`, `allocation/priced.rs`) | a blind price served the whole window: views ran to the ceiling (Aris empty line; Atlas, Aiko noisy cold+warm slopes; 100k prompts in 104,857 windows, refused) | blind is bounded: an unknown fresh line prices cold, a view past the measured range turns over into it (fc8820cd4, live 03:23Z); next: the act-time curve is the engine's and model's, pooled across minds (moments merge exactly) |
+| Whether she repeats | invariant 4: "repeat of #n, outcome unchanged" | a second, prose "[repetition]" notice in `act_observe/apply.rs`, baked into stored results (a moving N defeats content identity); three IntelMac residents re-read one saved output 20+ times | delete the duplicate; the tail-as-source puts her newest act under invariant 4 (parked leaf: `fable/repeat-label-parked`) |
+| A slot's real capacity | the engine's count and admission | the allocator sized a 104,857 window; prompt 100,008 + cap 4,848 refused at the last token | the budget reads the engine's typed capacity, never a window number |
+| Work shared across minds | the engine's KV cache | each mind prefills the same system and tool trunk (5,912 shared chars) | shared trunk by `seq_cp` (fork), computed once |
+
+Measured daily beside the plan's numbers: `prompt_messages_outside_the_view` (7), unpriced acts per
+hour, refusals at the slot per hour, repeat acts per hour.
+
+## Open: newer input is never paged out (found 2026-11-10, capacity_and_wire)
+
+A room message that arrives during her act is newer than her newest result, but it rides her view's
+conversation as an optional item. On a fresh view the allocation granted the result's page every
+token left (11,466 beside an unmeasured act's reply want of 0) and the conversation only its floor
+(30 of 620): the update was cut to a count. On canary the unmeasured act's 2,048-token reply want
+left that room by accident. Fix: in-turn room updates are required input like the stimulus (a hard
+limit, so no page takes their room), the conversation's floor counting them whole. Separately, the
+pager shows whole lines only: a result whose second line is 65k chars got a 392-char page of an
+11,466-token grant; fill the granted page with a byte cut of the next line.
+
 ## Ideas from anyone (append below)
 
 - 

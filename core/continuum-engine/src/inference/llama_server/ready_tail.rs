@@ -190,7 +190,9 @@ impl LlamaServerProcess {
         }
         let context = self.served_context_window().await?;
         let slots = self.served_lanes().await?;
-        let pool = self.served_pool_tokens().await?;
+        let pool = self.served_geometry().await?.pool_tokens().ok_or_else(|| {
+            LlamaServerError::Spawn("engine readiness reports a pool past the grants' token width".into())
+        })?;
         if context == 0 || slots == 0 || self.child_exit_status().is_some() {
             return Err(LlamaServerError::Spawn(
                 "engine readiness lacks live slot geometry".into(),

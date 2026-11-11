@@ -161,7 +161,7 @@ pub async fn open<T: Transport>(conn: &Connection<T>, persona_name: &str, person
         .into_iter()
         .map(|item| {
             let record: crate::orm::types::DataRecord = serde_json::from_value(item)?; // ORM boundary
-            Ok(serde_json::from_value(record.data)?) // ORM boundary: the row as written
+            Ok(record.decode()?) // ORM boundary: the row as written
         })
         .collect()
 }
@@ -202,7 +202,7 @@ pub async fn find<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uu
         None => Ok(None),
         Some(item) => {
             let record: crate::orm::types::DataRecord = serde_json::from_value(item)?; // ORM boundary
-            Ok(Some(serde_json::from_value(record.data)?)) // ORM boundary: the row as written
+            Ok(Some(record.decode()?)) // ORM boundary: the row as written
         }
     }
 }

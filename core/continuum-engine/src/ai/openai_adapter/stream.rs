@@ -23,11 +23,11 @@ impl OpenAICompatibleAdapter {
         let request_id = request
             .request_id
             .clone()
-            .unwrap_or_else(|| format!("req-{}", continuum_base::time::EpochMs::now().millis()));
+            .unwrap_or_else(|| format!("req-{}", continuum_base::time::EpochMs::now().millis())); // an un-ided request is minted its id here: an identity, never a quantity
         let raw_model = request
             .model
             .as_deref()
-            .unwrap_or(self.config.default_model.as_str());
+            .unwrap_or(self.config.default_model.as_str()); // no model named: the adapter's declared default is the documented contract
 
         // For DMR: resolve the logical model name to the actual model ID
         // stored in Docker Model Runner (which may have hf.co/ prefix and
@@ -59,12 +59,12 @@ impl OpenAICompatibleAdapter {
                     crate::sensory::route(row, crate::sensory::Modality::ImageIn).is_native()
                 })
             })
-            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::Vision));
+            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::Vision)); // no registry row: the adapter's set, itself projected from the registry (#65)
 
         // Build the base request body — `inference::request_body` (the head of assembly).
         let audio_native = crate::model_registry::try_global()
             .and_then(|reg| reg.model(raw_model).map(|row| row.has(Capability::AudioInput)))
-            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::AudioInput));
+            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::AudioInput)); // no registry row: the adapter's set, itself projected from the registry (#65)
         let mut body = crate::inference::request_body::build_base_body(
             &self.config,
             &request,
@@ -179,7 +179,7 @@ impl OpenAICompatibleAdapter {
                 continuum_base::probe!(
                     class = "inference.hold.backoff",
                     traffic = %class.as_str(),
-                    purpose = %request.purpose.as_deref().unwrap_or("-"),
+                    purpose = %request.purpose.as_deref().unwrap_or("-"), // display only: an unnamed purpose prints as -
                     "hold active at the adapter seam — refusing fast so the caller drops its permits and retries through the pre-gate defer"
                 );
                 return Err(
@@ -210,8 +210,10 @@ impl OpenAICompatibleAdapter {
                     miss.as_str(),
                 ))
             })?;
+            // The endpoint's own permits, shared by every adapter and the learner (card 23069702).
+            let endpoint_permits = crate::inference::slots::directory().endpoint(root).concurrency().bound();
             let adm = crate::inference::turn_admission::admit_turn(
-                &self.concurrency,
+                endpoint_permits,
                 class,
                 turn_key,
                 Some(pool),
@@ -248,10 +250,7 @@ impl OpenAICompatibleAdapter {
             let placement = decided.slot;
             _admission = Some(adm);
             // The draft only while this turn decodes alone (`inference::speculation`).
-            let others = self
-                .permit_target
-                .load(std::sync::atomic::Ordering::Relaxed)
-                .saturating_sub(self.concurrency.available_permits() + 1);
+            let others = crate::inference::slots::directory().endpoint(root).concurrency().decoding_others();
             if let (Some(limit), Some(obj)) = (crate::inference::speculation::draft_limit(others), body.as_object_mut()) {
                 obj.insert("speculative.n_max".to_string(), json!(limit));
             }
@@ -357,7 +356,7 @@ impl OpenAICompatibleAdapter {
         // discovered, not declared: it probes the endpoint and FAILS LOUD if the
         // backend can't page LoRA or a requested adapter isn't loaded. `None` only
         // when nothing is loaded (omit the field, no probe penalty for non-LoRA).
-        let active = request.active_adapters.as_deref().unwrap_or(&[]);
+        let active = request.active_adapters.as_deref().unwrap_or(&[]); // None means none requested: the empty set is that fact
         continuum_base::probe!(
             class = "inference.request.lora_resolve",
             adapters = active.len() as u64,
@@ -405,7 +404,7 @@ impl OpenAICompatibleAdapter {
         // stall happened (oversized prompt, wrong model, etc.). Kept at
         // info! because this is the one log line every failing-persona
         // investigation needs to see.
-        let body_bytes = serde_json::to_vec(&body).map_err(|error| {
+        let body_bytes = serde_json::to_vec(&body).map_err(|error| { // boundary: the OpenAI-compatible HTTP request body sent to the provider
             crate::ai::inference_error::InferenceError::Protocol(format!(
                 "could not encode generation request: {error}"
             ))
@@ -439,12 +438,8 @@ impl OpenAICompatibleAdapter {
             body_bytes.len(),
             body.get("tools")
                 .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0)
-                > 0,
-            body.get("stream")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
+                .is_some_and(|a| !a.is_empty()),
+            body.get("stream").and_then(|v| v.as_bool()) == Some(true)
         );
 
         // Concurrency permit. Turn admission above already took it (permit-FIRST,
@@ -734,16 +729,21 @@ impl OpenAICompatibleAdapter {
             }
         }
 
+        // Every request asks for `stream_options.include_usage`; a finished stream without
+        // its usage frame broke that contract, and zero tokens would be a count the budget trusts.
         let usage = stream_usage
             .map(|u| UsageMetrics {
                 input_tokens: u.prompt_tokens,
                 output_tokens: u.completion_tokens,
-                total_tokens: u
-                    .total_tokens
-                    .unwrap_or(u.prompt_tokens + u.completion_tokens),
-                estimated_cost: None, // TODO: Calculate from model pricing
+                total_tokens: u.total_tokens.unwrap_or(u.prompt_tokens + u.completion_tokens), // omitted total is the sum by definition
+                estimated_cost: None,
             })
-            .unwrap_or_default();
+            .ok_or_else(|| {
+                crate::ai::inference_error::InferenceError::Protocol(format!(
+                    "{} finished the stream without the usage frame include_usage requested",
+                    self.config.name
+                ))
+            })?;
 
         // Per-call PREFILL-vs-DECODE split for the speed harness. cache_n vs
         // prompt_n is the KV-cache hit/miss that dominates Metal wall-clock.
@@ -835,7 +835,7 @@ impl OpenAICompatibleAdapter {
         Ok(TextGenerationResponse {
             text,
             finish_reason,
-            model: resp_model.unwrap_or_else(|| model.to_string()),
+            model: resp_model.unwrap_or_else(|| model.to_string()), // the server named no model: the one addressed answered
             provider: self.config.provider_id.to_string(),
             usage,
             response_time_ms,

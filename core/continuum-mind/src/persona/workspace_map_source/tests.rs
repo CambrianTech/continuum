@@ -357,21 +357,10 @@
             nested_layout.repository.is_none(),
             "the owned Git runner cannot inherit the parent checkout across its discovery ceiling"
         );
-        run_git(
-            root,
-            &[
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.test",
-                "commit",
-                "--allow-empty",
-                "-m",
-                "initial",
-            ],
-        )
-        .await
-        .expect("commit");
+        let actor = crate::code::git_actor::GitActor::citizen(uuid::Uuid::new_v4(), Some("Test"));
+        crate::code::git_bridge::run_git_as(root, &actor, &["commit", "--allow-empty", "-m", "initial"])
+            .await
+            .expect("commit");
         let creation = run_git(root, &["rev-parse", "HEAD"]).await.expect("HEAD");
         let creation = creation.trim();
         run_git(root, &["update-ref", CREATION_BASE_REF, creation])

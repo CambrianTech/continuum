@@ -5,6 +5,7 @@ use super::residency::Resident;
 mod action_log;
 mod actions;
 mod custody;
+mod history;
 mod open_views;
 mod pins;
 mod provenance;

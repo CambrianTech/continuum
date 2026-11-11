@@ -50,20 +50,30 @@ pub(crate) struct EmbeddingCall {
 }
 
 impl EmbeddingCall {
+    /// Tokenize `texts` on this call's model, so its context's memory is known before it is leased.
+    pub(crate) fn tokenize(&self, texts: &[String]) -> Result<super::EmbeddingBatch, String> {
+        super::EmbeddingBatch::tokenize(&self.model, texts)
+    }
+
     pub(crate) async fn run<C: Send + 'static>(
         self,
-        texts: Vec<String>,
+        batch: super::EmbeddingBatch,
         custody: C,
     ) -> Result<Vec<Vec<f32>>, String> {
-        self.permit
-            .run(custody, move || super::embed_model(&self.model, &texts))
-            .await
+        self.permit.run(custody, move || batch.embed(&self.model)).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl EmbeddingCall {
+        async fn run_texts(self, texts: Vec<String>) -> Result<Vec<Vec<f32>>, String> {
+            let batch = self.tokenize(&texts)?;
+            self.run(batch, ()).await
+        }
+    }
 
     #[tokio::test]
     #[ignore = "requires CONTINUUM_TEST_EMBED_MODEL pointing to the Qwen3 embedding GGUF"]
@@ -80,10 +90,7 @@ mod tests {
                 .admit_embedding()
                 .await
                 .expect("admission")
-                .run(
-                    vec!["The resident preserves her work across restart.".into()],
-                    (),
-                )
+                .run_texts(vec!["The resident preserves her work across restart.".into()])
                 .await
                 .expect("embedding")
         }))
@@ -118,13 +125,10 @@ mod tests {
                 > 2048
         );
         let vectors = call
-            .run(
-                vec![
-                    format!("{prefix}The final subject is astronomy and distant galaxies."),
-                    format!("{prefix}The final subject is cooking and delicious vegetables."),
-                ],
-                (),
-            )
+            .run_texts(vec![
+                format!("{prefix}The final subject is astronomy and distant galaxies."),
+                format!("{prefix}The final subject is cooking and delicious vegetables."),
+            ])
             .await
             .expect("full input embedding");
         assert_eq!(vectors.len(), 2);

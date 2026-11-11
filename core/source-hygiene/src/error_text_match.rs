@@ -80,8 +80,7 @@ mod tests {
              freshly formatted string on every call."
                 .to_string()
         };
-        crate::ratchet::hold_sites("error_text_matches", &violations, advice);
-        crate::ratchet::touched_clean("error_text_matches", &violations, advice);
+        crate::ratchet::hold_sites("error_text_matches", &violations, crate::ratchet::Touched::EndsClean, advice);
     }
 
     // what this catches: the predicate missing the shapes it exists for, or flagging data.

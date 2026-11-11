@@ -154,6 +154,23 @@ impl<K: Eq + Hash + Clone> PerKeyGate<K> {
         }
     }
 
+    /// The lease for `key` if no one holds it now, without waiting. A caller holding other
+    /// resources tries this, and on `None` lets them go before it waits with [`Self::acquire`].
+    pub fn try_acquire(&self, key: &K) -> Option<Lease<K>> {
+        let gate: Arc<Mutex<()>> = self
+            .gates
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let guard = Arc::clone(&gate).try_lock_owned().ok()?;
+        Some(Lease {
+            key: key.clone(),
+            gate: Some(gate),
+            guard: Some(guard),
+            map: self.gates.clone(),
+        })
+    }
+
     /// Number of gates currently tracked. Includes both contested
     /// and idle gates. In steady state (no Lease mid-Drop on another
     /// thread), idle gates would have been evicted on the last lease
@@ -228,6 +245,21 @@ impl<K: Eq + Hash + Clone> Drop for Lease<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a try that waits (a caller holding serving resources would hold them
+    // through the wait), one that admits a second holder, and a refused try that leaves an
+    // idle gate behind in the map.
+    #[tokio::test]
+    async fn try_acquire_never_waits_never_doubles_and_leaves_no_idle_gate() {
+        let gate: PerKeyGate<u8> = PerKeyGate::new();
+        let held = gate.try_acquire(&1).expect("test: a free key");
+        assert!(gate.try_acquire(&1).is_none(), "a held key is refused at once");
+        assert!(gate.try_acquire(&2).is_some(), "another key is its own gate");
+        drop(held);
+        assert_eq!(gate.len(), 0, "every lease gone: no gate left in the map");
+        let again = gate.try_acquire(&1);
+        assert!(again.is_some(), "free again once released");
+    }
 
     // what this catches: repeated acquires for the same key
     // serialize through the SAME underlying Mutex<()>. v1 used

@@ -92,7 +92,11 @@
         let raw = "no Rust module handles command: 'tools/<cut at the output limit>'".to_string();
         let out = persona_tool_error(CUT_AT_LIMIT_SENTINEL, raw);
         assert!(out.contains("NOTHING ran"), "{out}");
-        assert!(out.contains("working memory"), "{out}");
+        // it names WHERE the draft is, by the recorded fact's opening words, and that no saved output
+        // holds it (Delia, IntelMac 2026-11-11: 'noted in your working memory' sent her reopening
+        // outputs for 45+ minutes)
+        assert!(out.contains("my last act was CUT at the output limit"), "{out}");
+        assert!(out.contains("not in any saved output"), "{out}");
         assert!(out.contains("smaller payload"), "{out}");
         assert!(!out.contains("not a tool you can call"), "{out}");
     }

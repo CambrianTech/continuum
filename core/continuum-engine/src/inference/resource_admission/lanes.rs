@@ -92,8 +92,6 @@ pub struct LaneAdmission {
     pub(super) work_waiting: AtomicUsize,
     /// Fires on every permit release so a parked ambient caller re-checks.
     pub(super) released: tokio::sync::Notify,
-    /// Held while the engine relaunches: every request enters it before either semaphore.
-    pub(super) quiesce: super::quiesce::Quiescer,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -159,13 +157,6 @@ pub fn set_served_lane_count(lanes: usize) {
     LANES.set_served_lane_count(lanes);
 }
 
-/// Hold every new inference request and wait until every request in admission has ended: the
-/// engine is then idle by construction, for its one upward relaunch (card 2540194e). `None` when a
-/// quiesce already runs. Dropping the result reopens admission.
-pub async fn quiesce_admission() -> Option<super::quiesce::Quiesced> {
-    LANES.quiesce.quiesce().await
-}
-
 /// Reconcile installed permits without waiting for running calls. The difference
 /// between installed and a smaller target is debt retried on the next serving tick.
 /// Caller holds the owner resize lock, the installed-permit accounting.
@@ -201,7 +192,7 @@ impl LaneAdmission {
         let _guard = self
             .resize_lock
             .lock()
-            .expect("lane-resize lock never poisoned");
+            .expect("lane-resize lock never poisoned"); // JUSTIFIED: held only across permit arithmetic, which cannot panic: never poisoned
         let target = match budget {
             LaneBudget::Physical => self.lane_count(),
             LaneBudget::NonDirected => self.nondirected_budget(),
@@ -250,7 +241,7 @@ impl LaneAdmission {
                 .clone()
                 .acquire_owned()
                 .await
-                .expect("lane semaphore never closed");
+                .expect("lane semaphore never closed"); // JUSTIFIED: these semaphores are never closed (nothing calls close)
             if let Some(permit) = self.permit_or_retire(permit, installed, budget) {
                 return permit;
             }
@@ -269,7 +260,6 @@ impl LaneAdmission {
             resize_lock: Mutex::new(()),
             work_waiting: AtomicUsize::new(0),
             released: tokio::sync::Notify::const_new(),
-            quiesce: super::quiesce::Quiescer::new(),
         }
     }
 
@@ -294,7 +284,7 @@ impl LaneAdmission {
         let _guard = self
             .resize_lock
             .lock()
-            .expect("lane-resize lock never poisoned");
+            .expect("lane-resize lock never poisoned"); // JUSTIFIED: held only across permit arithmetic, which cannot panic: never poisoned
         let before = (
             self.served.load(Ordering::Acquire),
             self.serving_installed.load(Ordering::Acquire),
@@ -367,8 +357,6 @@ impl LaneAdmission {
         let (observer, progress) = self.observe(persona, priority);
         let aging = observer.clone();
         let acquire = async move {
-        // Entered before either semaphore, so a quiesce for a relaunch holds every request.
-        let entry = self.quiesce.enter().await;
         let queued_at = std::time::Instant::now();
         let directed = priority.is_directed();
         // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
@@ -448,7 +436,6 @@ impl LaneAdmission {
             directed,
             priority,
             released: &self.released,
-            _entry: entry,
         }
         };
         (observer, acquire)

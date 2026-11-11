@@ -8,6 +8,7 @@
 //! Can be shared via Arc across threads.
 
 use super::module_metrics::ModuleMetrics;
+use super::module_readiness::{ModuleReadiness, ModuleUnavailable};
 use super::service_module::{ModuleConfig, ModulePriority, ServiceModule};
 use super::wiring_defect::{WiringDefect, WiringDefects};
 use dashmap::mapref::entry::Entry;
@@ -52,6 +53,15 @@ pub struct ModuleRegistry {
     /// Wiring the registry refused as modules registered (a duplicate name, a constructor
     /// without its descriptor). Boot reads [`Self::check_wiring`] and refuses on any.
     wiring_defects: parking_lot::Mutex<Vec<WiringDefect>>,
+
+    /// command name -> the module whose `commands()` contributed it. A dep-holding object
+    /// reaches its module's state, so it is admitted only as far as that module is; a stateless
+    /// object has no row and no owner.
+    object_owners: DashMap<&'static str, &'static str>,
+
+    /// Whether each module's `initialize` has returned (see [`ModuleReadiness`]). Here because
+    /// every dispatch path already holds the registry, so one table gates them all.
+    readiness: Arc<ModuleReadiness>,
 }
 
 impl Default for ModuleRegistry {
@@ -71,6 +81,8 @@ impl ModuleRegistry {
             type_routes: DashMap::new(),
             command_objects: DashMap::new(),
             wiring_defects: parking_lot::Mutex::new(Vec::new()),
+            object_owners: DashMap::new(),
+            readiness: Arc::new(ModuleReadiness::new()),
         };
         // Seed the typed object map with every self-registering STATELESS command
         // (zero host-module ceremony — see register_stateless_command!). Dep-holding
@@ -191,6 +203,7 @@ impl ModuleRegistry {
                     previous: existing.get().name(),
                 }),
                 Entry::Vacant(slot) => {
+                    self.object_owners.insert(cmd_name, name);
                     slot.insert(cmd);
                 }
             }
@@ -283,6 +296,25 @@ impl ModuleRegistry {
     /// command wins over its module's legacy `handle_command` arm.
     pub fn route_object(&self, command: &str) -> Option<Arc<dyn crate::sdk_codegen::DynCommand>> {
         self.command_objects.get(command).map(|e| e.value().clone())
+    }
+
+    /// The module that contributed command object `command`; `None` for a stateless one.
+    pub fn object_owner(&self, command: &str) -> Option<&'static str> {
+        self.object_owners.get(command).map(|e| *e.value())
+    }
+
+    /// The readiness table every dispatch path consults.
+    pub fn readiness(&self) -> Arc<ModuleReadiness> {
+        Arc::clone(&self.readiness)
+    }
+
+    /// Admit a command for its owning module (`None` = no owner: admitted). Waits while the
+    /// owner initializes, bounded by the init deadline; refuses by type when it is degraded.
+    pub async fn admit(&self, owner: Option<&str>) -> Result<(), ModuleUnavailable> {
+        match owner {
+            Some(module) => self.readiness.admit(module).await,
+            None => Ok(()),
+        }
     }
 
     /// List all registered command-object names (debugging / health-check /

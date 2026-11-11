@@ -111,7 +111,7 @@ pub fn probe_messages() -> Vec<ChatMessage> {
     probes.extend(PROBE_TEXTS.iter().map(|text| ChatMessage::tool_result("c1", *text, false)));
     probes.push(call("f", serde_json::json!({})));
     probes.push(call("code_read", serde_json::json!({ "path": "main.rs" })));
-    probes.push(call("work_list", serde_json::json!({ "room": "general", "limit": 5 })));
+    probes.push(call("work_list", serde_json::json!({ "room": continuum_base::reserved_rooms::GENERAL, "limit": 5 })));
     probes.push(call("code_edit", serde_json::json!({ "path": "src/lib.rs", "old": "a", "new": "b\nc" })));
     probes
 }

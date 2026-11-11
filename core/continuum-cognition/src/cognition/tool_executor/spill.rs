@@ -271,7 +271,7 @@ const CLASS: &str = "tool-output";
 
 /// The writer of the tool-output class. Refused before boot installs the registry: there is no
 /// directory to guess, and a result that cannot be saved is handed back whole as `Unsaved`.
-fn store() -> std::io::Result<ClassWriter> {
+pub(crate) fn store() -> std::io::Result<ClassWriter> {
     LIFE_START.get_or_init(std::time::SystemTime::now);
     ClassWriter::of(CLASS)
 }
@@ -665,7 +665,7 @@ pub fn read_extent(path: &Path, offset: u64, length: Option<usize>, allowance: A
         );
     }
     let len = length
-        .unwrap_or(capacity)
+        .unwrap_or(capacity) // unwrap_or: no length asked for reads as much as the encoding budget holds
         .min(capacity)
         .min((total_bytes - offset).min(usize::MAX as u64) as usize);
     let mut bytes = vec![0; len];

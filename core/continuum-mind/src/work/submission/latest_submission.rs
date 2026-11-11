@@ -386,7 +386,19 @@ pub(super) async fn stage_for_owner_on_demand(
         .map_err(|e| CommandError::Internal(format!("continuum home: {e}")))?;
     let card_uuid = card.card_id.as_uuid();
     match crate::work::card_staging::stage_for_card(&home, runtime.persona_id(), card).await {
-        Staging::Ready { path } => {
+        // Arrival just put her checkout back on its anchor: what she had is on a stranded ref, so a
+        // patch read now would not be her work. Said, nothing submitted (card f76005e8).
+        Staging::Ready {
+            arrival: Some(crate::persona::workspace_transfer::ArrivalOutcome::Realigned { branch, anchor, stranded, own_commits }),
+            ..
+        } => Err(CommandError::Invalid(format!(
+            "{} Nothing was submitted: bring back the work you mean to submit, then submit again.",
+            crate::persona::workspace_transfer::realigned_notice(&branch, &anchor, &stranded, own_commits)
+        ))),
+        Staging::Ready { arrival: Some(crate::persona::workspace_transfer::ArrivalOutcome::AncestryUnknown { branch, reason }), .. } => {
+            Err(CommandError::Invalid(crate::persona::workspace_transfer::ancestry_unknown_notice(&branch, &reason)))
+        }
+        Staging::Ready { path, .. } => {
             continuum_base::probe!(
                 class = "work.submit.staged_on_demand",
                 card_id = %short8(card_uuid),
@@ -760,9 +772,9 @@ pub enum SubmitOutcome {
 
 /// The answer to a submit of a submission the card already holds: that submission, as success,
 /// with what became of it so far.
-pub(super) fn already_submitted(existing: &airc_work::WorkSubmission, room_id: Uuid, outcomes: &[airc_work::WorkReviewOutcome], bench: bool) -> WorkSubmitResult {
+pub(super) fn already_submitted(existing: &airc_work::WorkSubmission, room_id: Uuid, outcomes: &[airc_work::WorkReviewOutcome], bench: bool, pull_request: Option<&airc_work::PullRequestRef>) -> WorkSubmitResult {
     let id = existing.submission_id.as_uuid();
-    let verdict = next_after_submission(Some(id), outcomes, bench, None).unwrap_or_default(); // unwrap_or_default: Some(..) in, so always Some
+    let verdict = next_after_submission(Some(id), outcomes, bench, None, pull_request).unwrap_or_default(); // unwrap_or_default: Some(..) in, so always Some
     WorkSubmitResult {
         outcome: SubmitOutcome::AlreadySubmitted,
         submission_id: id,

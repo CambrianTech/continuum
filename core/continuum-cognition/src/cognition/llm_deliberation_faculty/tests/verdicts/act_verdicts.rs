@@ -451,9 +451,13 @@ async fn directed_turn_withholds_the_silence_escape() {
         "a directed turn carries the DIRECTED presence variant (never ghost a \
                  question; a pure pleasantry may rest — the natural spiral-break)"
     );
+    // Contracts are standing blocks of her view, written once per epoch (`contracts_in_force`), so
+    // the ambient block this epoch already showed stays as history; the turn's live framing names
+    // which contract is in force now.
+    let in_force = directed.lines().rev().find(|line| line.starts_with("[In force this turn:")).expect("test: a turn names its contracts in force");
     assert!(
-        !directed.contains("do not need to be addressed by name"),
-        "a directed turn never carries the ambient block"
+        in_force.contains("Directed Presence") && !in_force.contains("Conversational Presence"),
+        "a directed turn puts the directed contract in force, never the ambient one: {in_force}"
     );
     assert!(
         !directed.contains("stay silent"),
@@ -511,15 +515,18 @@ async fn directed_turn_withholds_the_silence_escape() {
                 "human opportunity retains the foreground lane: {text}",
             );
             let delivered = whole(&faculty.prompt_view(&ws));
+            // Contracts are standing blocks of her view, once per epoch: an earlier turn's stays as
+            // history, and the live framing names the one in force now.
+            let in_force = delivered.lines().rev().find(|line| line.starts_with("[In force this turn:")).expect("test: a turn names its contracts in force");
             assert_eq!(
-                delivered.contains("This message names you"),
+                in_force.contains("Directed Presence"),
                 expected_attention == TurnAttention::Addressed,
-                "the actual prompt must not turn admission priority into addressing: {text}",
+                "the actual prompt must not turn admission priority into addressing: {text}: {in_force}",
             );
             assert_eq!(
-                delivered.contains("do not need to be addressed by name"),
+                in_force.contains("Conversational Presence"),
                 expected_attention != TurnAttention::Addressed,
-                "unmentioned messages keep ordinary participation: {text}",
+                "unmentioned messages keep ordinary participation: {text}: {in_force}",
             );
         }
     }

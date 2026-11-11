@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn nil_room_literals_never_rise() {
         let violations = scan(&[&NoNilRoomInProductionCognition]);
-        crate::ratchet::hold_sites("nil_room_lines", &violations, || {
+        crate::ratchet::hold_sites("nil_room_lines", &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
             "production nil-room literals rose to {}.\n\
              An activity without a room is unrepresentable (#425) — mint or rejoin an \
@@ -123,19 +123,10 @@ mod tests {
     // serving path — the string-key regression Joel banned outright. Keys are
     // typed structs of UUIDs; maps key on the struct.
     #[test]
-    fn string_composite_id_keys_never_rise() {
+    fn string_composite_id_keys_are_zero() {
         let violations = scan(&[&NoStringCompositeIdKeys]);
-        crate::ratchet::hold_sites("string_composite_keys", &violations, || {
-            format!(
-            "string-composite id keys rose to {}.\n\
-             Key on a typed struct of UUIDs, never a formatted string.\nOffenders:\n{}",
-            violations.len(),
-            violations
-                .iter()
-                .map(|v| format!("  {}:{} — {}", v.file, v.line, v.source))
-                .collect::<Vec<_>>()
-                .join("\n")
-            )
+        crate::ratchet::zero("string_composite_keys", &violations, || {
+            "Key on a typed struct of UUIDs, never a formatted string.".to_string()
         });
     }
 

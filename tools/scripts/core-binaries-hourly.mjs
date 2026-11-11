@@ -1,12 +1,11 @@
 // Hourly publication admission. No build, ledger, tag, or runtime mutation here.
 import { pathToFileURL } from 'node:url';
+import { resolveBuildKey } from './publication-build-key.mjs';
 
 export const platforms = ['macos-arm64', 'macos-x86_64', 'windows-x86_64'];
 
-export async function planPublication(api, repo) {
+async function publicationComplete(api, repo, sha) {
   const prefix = `/repos/${repo}`;
-  const { sha } = await api(`${prefix}/commits/canary`);
-  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('canary did not resolve to a full SHA');
   const tag = `canary-${sha.slice(0, 12)}`;
   const release = await api(`${prefix}/releases/tags/${tag}`, { allow404: true });
   if (release !== null && !Array.isArray(release.assets)) throw new Error('release assets response is malformed');
@@ -27,22 +26,49 @@ export async function planPublication(api, repo) {
       }
     }
   }
-  if (complete) return { sha, action: 'skip', reason: 'all platform manifests published' };
-  const runs = await api(`${prefix}/actions/workflows/core-binaries.yml/runs?head_sha=${sha}&per_page=100`);
+  return complete;
+}
+
+// Only the successful publisher may hand off its own finishing run. The release
+// manifests prove publication, while the run receipt binds the exclusion to this
+// repository, workflow, branch and attempt. No arbitrary active-run exemption.
+async function finishingPublication(api, repo, completion) {
+  const { runId, attempt, key } = completion;
+  if (!Number.isSafeInteger(runId) || runId <= 0 ||
+      !Number.isSafeInteger(attempt) || attempt <= 0 || !/^[0-9a-f]{40}$/.test(key)) {
+    throw new Error('malformed publication completion');
+  }
+  const run = await api(`/repos/${repo}/actions/runs/${runId}`);
+  if (run.id !== runId || run.run_attempt !== attempt || run.event !== 'workflow_dispatch' ||
+      run.path !== '.github/workflows/core-binaries.yml' || run.head_branch !== 'canary' ||
+      run.repository?.full_name !== repo || run.head_repository?.full_name !== repo ||
+      run.status !== 'in_progress') throw new Error('publication completion run does not match');
+  if (!await publicationComplete(api, repo, key)) throw new Error('finishing publication is incomplete');
+  return runId;
+}
+
+export async function planPublication(api, repo, resolve = resolveBuildKey, completion = null) {
+  const finishingId = completion === null ? null : await finishingPublication(api, repo, completion);
+  const prefix = `/repos/${repo}`;
+  const { sha: tip } = await api(`${prefix}/commits/canary`);
+  if (!/^[0-9a-f]{40}$/.test(tip)) throw new Error('canary did not resolve to a full SHA');
+  const sha = await resolve(tip, process.cwd());
+  if (await publicationComplete(api, repo, sha)) return { sha, action: 'skip', reason: 'all platform manifests published' };
+  const runs = await api(`${prefix}/actions/workflows/core-binaries.yml/runs?event=workflow_dispatch&per_page=100`);
   if (!Array.isArray(runs.workflow_runs)) throw new Error('workflow runs response is malformed');
-  if (runs.workflow_runs.some(run => run.head_sha === sha && run.event !== 'pull_request' && run.status !== 'completed')) {
+  if (runs.workflow_runs.some(run => run.event === 'workflow_dispatch' && run.status !== 'completed' &&
+      (finishingId === null || run.id !== finishingId))) {
     return { sha, action: 'skip', reason: 'publication already queued or running' };
   }
   return { sha, action: 'dispatch', reason: 'latest canary is not fully published' };
 }
 
-export async function runPublication(api, repo, dryRun) {
-  const plan = await planPublication(api, repo);
+export async function runPublication(api, repo, dryRun, resolve = resolveBuildKey, completion = null) {
+  const plan = await planPublication(api, repo, resolve, completion);
   if (plan.action === 'dispatch' && !dryRun) {
-    // GitHub resolves canary when accepting dispatch. A merge racing this read may
-    // advance it; do not misreport the inspected SHA as a pinned build revision.
+    // Keep the canary concurrency group while pinning the build's immutable identity.
     await api(`/repos/${repo}/actions/workflows/core-binaries.yml/dispatches`, {
-      method: 'POST', body: { ref: 'canary' },
+      method: 'POST', body: { ref: 'canary', inputs: { build_key: plan.sha } },
     });
   }
   return { ...plan, dryRun, dispatched: plan.action === 'dispatch' && !dryRun };
@@ -63,5 +89,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (!response.ok) throw new Error(`GitHub ${method} ${path}: HTTP ${response.status}`);
     return response.status === 204 ? null : response.json();
   };
-  console.log(JSON.stringify(await runPublication(api, repo, process.env.DRY_RUN === 'true')));
+  const completion = process.env.PUBLICATION_COMPLETION_KEY === undefined ? null : {
+    runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+    key: process.env.PUBLICATION_COMPLETION_KEY,
+  };
+  console.log(JSON.stringify(await runPublication(api, repo, process.env.DRY_RUN === 'true', resolveBuildKey, completion)));
 }

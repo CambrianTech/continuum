@@ -30,16 +30,20 @@ pub mod add;
 pub mod apply;
 pub mod commit;
 pub mod diff;
+pub mod fetch;
 pub mod log;
 pub mod push;
+pub mod rebase;
 pub mod status;
 
 use add::CodeGitAdd;
 use apply::CodeGitApply;
 use commit::CodeGitCommit;
 use diff::CodeGitDiff;
+use fetch::CodeGitFetch;
 use log::CodeGitLog;
 use push::CodeGitPush;
+use rebase::CodeGitRebase;
 use status::CodeGitStatus;
 
 /// Resolve the caller's workspace root, provisioning the engine on first use.
@@ -80,6 +84,12 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(CodeGitPush {
             state: state.clone(),
         }),
+        Arc::new(CodeGitFetch {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGitRebase {
+            state: state.clone(),
+        }),
         Arc::new(CodeGitApply { state }),
     ]
 }
@@ -101,6 +111,8 @@ mod tests {
         assert_eq!(CodeGitAdd::NAME, "code/git/add");
         assert_eq!(CodeGitCommit::NAME, "code/git/commit");
         assert_eq!(CodeGitPush::NAME, "code/git/push");
+        assert_eq!(CodeGitFetch::NAME, "code/git/fetch");
+        assert_eq!(CodeGitRebase::NAME, "code/git/rebase");
     }
 
     // what this catches: the generator macro fills DESCRIPTION from the doc comment.

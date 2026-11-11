@@ -356,7 +356,7 @@ pub async fn read_one<T: Transport, E: OrmEntity + DeserializeOwned>(
         .pop()
         .map(|value| {
             let record: crate::orm::types::DataRecord = serde_json::from_value(value)?; // Decode the ORM envelope before its typed entity payload.
-            Ok(serde_json::from_value(record.data)?) // The entity payload crosses the Value-native storage boundary here.
+            Ok(record.decode()?) // The entity payload crosses the Value-native storage boundary here.
         })
         .transpose()
 }
@@ -630,7 +630,7 @@ pub(super) async fn generation_row<T: Transport>(
         let record: crate::orm::types::DataRecord =
             serde_json::from_value(value).map_err(ClientError::from)?; // Decode the storage protocol's DataRecord envelope.
         let link: StagedCreditGeneration =
-            serde_json::from_value(record.data).map_err(ClientError::from)?; // Decode the persisted generation-index entity from its storage record.
+            record.decode().map_err(ClientError::from)?; // Decode the persisted generation-index entity from its storage record.
         if link.submitted_request_id != generation {
             return Err(CreditBindingError::WrongSelection);
         }
@@ -785,7 +785,7 @@ pub(super) async fn read_reservations<T: Transport>(
     let mut rows = std::collections::HashMap::with_capacity(result.items.len());
     for value in result.items {
         let record: crate::orm::types::DataRecord = serde_json::from_value(value)?; // Decode the data/list ORM envelope before moving its payload.
-        let row: CreditGenerationReservation = serde_json::from_value(record.data)?; // Decode the entity once at its storage boundary.
+        let row: CreditGenerationReservation = record.decode()?; // Decode the entity once at its storage boundary.
         if rows.insert(row.id.clone(), row).is_some() {
             return Err(ClientError::Transport(
                 "duplicate generation reservation".into(),

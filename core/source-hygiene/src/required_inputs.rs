@@ -99,12 +99,7 @@ mod tests {
                     .join("\n")
             )
         };
-        crate::ratchet::hold_sites("required_input_complaints", &violations, advice);
-        crate::ratchet::touched_clean("required_input_complaints", &violations, || {
-            "a file this change touches still complains at run time about a required input: \
-             make the input required by its type"
-                .to_string()
-        });
+        crate::ratchet::hold_sites("required_input_complaints", &violations, crate::ratchet::Touched::EndsClean, advice);
     }
 
     // what this catches: the predicate drifting either way. It flags a complaint about a

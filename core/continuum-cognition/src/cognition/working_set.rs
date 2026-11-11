@@ -689,6 +689,30 @@ impl WorkingSetRegistry {
         })
     }
 
+    /// Her need, or, before her own first landed turn, the need the minds on this node measured
+    /// (each channel's median across them): a measurement, never a prior. `None` only on a node
+    /// where no mind has landed a turn.
+    pub fn need_or_pooled(&self, persona: Uuid) -> Option<OutputNeed> {
+        self.need_of(persona).or_else(|| self.pooled_need())
+    }
+
+    fn pooled_need(&self) -> Option<OutputNeed> {
+        // Keys first, so no map guard is held while each need is read.
+        let minds: Vec<Uuid> = self.emitted.iter().map(|entry| *entry.key()).collect();
+        let needs: Vec<OutputNeed> = minds.into_iter().filter_map(|mind| self.need_of(mind)).collect();
+        let median = |mut values: Vec<u32>| -> Option<u32> {
+            values.sort_unstable();
+            values.get(values.len() / 2).copied()
+        };
+        Some(OutputNeed {
+            reasoning: median(needs.iter().map(|n| n.reasoning).collect())?,
+            answer: median(needs.iter().map(|n| n.answer).collect())?,
+            turns: 0, // none of them hers
+            reasoning_at_least: None,
+            answer_at_least: None,
+        })
+    }
+
     fn save(&self, persona: Uuid, demand: &PersonaDemand) {
         self.persist(persona, DEMAND_FILE, serde_json::to_vec(demand).map_err(std::io::Error::from), "working-set demand"); // BOUNDARY: disk — the per-persona working-set.json durable format
     }
@@ -828,12 +852,12 @@ pub fn requirements_for(
         .iter()
         .map(|p| {
             let demand = working_set.demand_of(*p);
-            use crate::inference::planning::window_allocator::{observed::Observed, LaneRequirement, Tokens};
+            use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
             // Measured or not, as a type: no turn yet is unmeasured, never a zero standing in for one.
             let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d)));
-            // Residency is sized from what held, never from a censored bound: an overflow is
-            // reducible by her view's collapse (ONE-ACT stage 3, `resident_need`).
-            let need = demand.as_ref().and_then(resident_need).and_then(Tokens::new).map(Observed::Exact);
+            // Her need as measured, a bound kept a bound: an overflow is reducible by her view's
+            // collapse, so admission clamps it to what one sequence holds (`resident_need`).
+            let need = demand.as_ref().and_then(resident_need);
             // Her parked training examples' reservation, carried beside her conversational target
             // and need (card ea157b1a): the allocator grows toward it only from spare budget.
             let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();

@@ -38,12 +38,12 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
     // WorkingMemory (this harness faculty has none), so no ledger
     // message here — the ledger-specific behavior is pinned in
     // steps_ledger_renders_receipts_and_explicit_zero_case below.
-    // …plus the presence contract, which now stands in her view as its own
-    // block (cached once per epoch, not re-sent each act), and the short live
-    // line naming it, still ask-last (the 2026-10-25 framing split).
+    // …plus the presence contract, which stands in her view as its own block
+    // (cached once per epoch, not re-sent each act; a block leads a first start),
+    // and the short live line naming it, still ask-last (the 2026-10-25 framing split).
     assert_eq!(
         roles,
-        vec!["user", "assistant", "user", "user", "user", "user"],
+        vec!["user", "user", "assistant", "user", "user", "user"],
         "view: {view:?}"
     );
     let text_of = |m: &crate::ai::types::ChatMessage| match &m.content {
@@ -68,7 +68,7 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
     // The persona's own line is the `assistant` turn and carries NO name prefix
     // (her own voice; the system prompt forbids self-prefixing). Peers' lines are
     // `user` turns prefixed with the author so several speakers stay distinct.
-    let assistant = &view.messages[1];
+    let assistant = &view.messages[2];
     assert_eq!(assistant.role, "assistant");
     assert_eq!(
         assistant.content_text(),
@@ -78,15 +78,16 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
         !assistant.content_text().contains("Asha:"),
         "the persona's own turn must not be self-prefixed: {assistant:?}"
     );
-    assert!(view.messages[0]
+    assert!(view.messages[1]
         .content_text()
         .starts_with("[occurred 1970-01-01T00:00:00.001Z] Operator: "));
     // Perception facts are GROUNDING inserted BEFORE the final ask (the last user
     // turn), so the ask stays LAST where the model answers it — not the bracketed
     // meta, which it would otherwise parrot (2026-07-20 humaneval parrot fix). Here
-    // the layout is [Joel, Asha(assistant), [Conversational Presence] (the standing
-    // contract, in her view), [context]-fact, the live line, Joel-ask]: the grounding
-    // sits at [3], after her view and before the ask, and the ask is last.
+    // the layout is [[Conversational Presence] (the standing contract, a block of her
+    // view, leading a first start), Joel, Asha(assistant), [context]-fact, the live line,
+    // Joel-ask]: the grounding sits at [3], after her view and before the ask, and the ask
+    // is last.
     assert!(
         view.messages[3].content_text().starts_with("[context]"),
         "grounding fact sits after her view and before the ask: {:?}",

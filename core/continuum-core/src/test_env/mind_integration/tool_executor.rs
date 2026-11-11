@@ -24,7 +24,7 @@ use crate::runtime::ModuleRegistry;
 #[tokio::test]
 async fn persona_executes_ping_via_typed_object_path() {
     let registry = Arc::new(ModuleRegistry::new());
-    registry.register(Arc::new(crate::modules::health::HealthModule::new()));
+    registry.register(Arc::new(crate::modules::health::HealthModule::new(registry.readiness())));
     let exec = exec_over(registry, Uuid::new_v4());
 
     let calls = vec![NativeToolCall {

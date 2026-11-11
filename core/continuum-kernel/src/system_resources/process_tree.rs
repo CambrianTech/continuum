@@ -155,7 +155,7 @@ pub fn descendants(pid: u32) -> Vec<ProcessIdentity> {
     let mut found: Vec<(usize, ProcessIdentity)> = Vec::new();
     let mut frontier = vec![(pid, 0usize)];
     while let Some((at, depth)) = frontier.pop() {
-        for &child in children.get(&at).map(Vec::as_slice).unwrap_or(&[]) {
+        for &child in children.get(&at).into_iter().flatten() { // a pid with no children has no entry
             if found.iter().any(|(_, seen)| seen.pid == child.pid) {
                 continue; // a table read mid-fork can list a pid twice; walk it once
             }
@@ -184,6 +184,33 @@ pub fn still_present(set: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
                 .is_some_and(|p| p.start_time() == who.start_time && p.status() != ProcessStatus::Zombie)
         })
         .collect()
+}
+
+/// What the process table lists for one pid, read alone: a liveness probe's first question.
+/// Not listed is NOT absence; the probe asks the OS kernel for positive evidence next
+/// (`continuum_host::process_presence`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Listed {
+    /// Listed and running; its start time, or 0 when the table cannot read it.
+    Running { start_time: u64 },
+    /// Listed as exited and only awaiting its reaper (a zombie): it holds its pid and start
+    /// time, so read as running it would hold what it owns forever (card e4ef7780).
+    Exited,
+    /// The table does not list it.
+    NotListed,
+}
+
+/// Read `pid` from the process table.
+pub fn listed(pid: u32) -> Listed {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let target = Pid::from_u32(pid);
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[target]), true, ProcessRefreshKind::nothing());
+    match sys.process(target) {
+        Some(p) if p.status() == ProcessStatus::Zombie => Listed::Exited,
+        Some(p) => Listed::Running { start_time: p.start_time() },
+        None => Listed::NotListed,
+    }
 }
 
 /// What reading one process's accumulated CPU time found.

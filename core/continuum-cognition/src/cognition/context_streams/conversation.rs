@@ -8,6 +8,9 @@ use continuum_context::source::{Item, Source};
 
 use super::{element, priority, ContextMessage, Producer, Role};
 
+/// The source's name: its claim is `view/conversation`.
+pub(crate) const NAME: &str = "conversation";
+
 pub(crate) struct Turn {
     pub key: String,
     pub role: Role,
@@ -21,15 +24,26 @@ pub(crate) struct Turn {
 pub(crate) struct Conversation {
     /// Whose conversation this is (its turns' ids, `super::element`).
     pub persona: uuid::Uuid,
+    /// Every turn but the act's ask (the newest external speech), which her act's tail carries
+    /// (`tail::Tail`) under the same element, so once it is held there it never arrives here again.
     pub turns: Vec<Turn>,
-    /// The key of the turn held out of `turns` as this act's ask (the newest external speech, the
-    /// stimulus): a sent tail that carried it covers it (`View::append_sent`).
-    pub stimulus: Option<String>,
+    /// The key of the turn that arrived during this act (the newest room message that reached her
+    /// while she acted): her newest interaction, which the act's allocation holds whole when the
+    /// window can ([`continuum_context::allocation::ViewClaim::arrived`]).
+    pub arrived: Option<String>,
+}
+
+impl Conversation {
+    /// The turn that arrived during this act, as her view renders it whole.
+    pub(crate) fn arrived(&self) -> Option<ContextMessage> {
+        let key = self.arrived.as_deref()?;
+        self.turns.iter().find(|turn| turn.key == key).map(|turn| ContextMessage::new(turn.role, turn.line.clone()))
+    }
 }
 
 impl Source<ContextMessage> for Conversation {
     fn name(&self) -> &str {
-        "conversation"
+        NAME
     }
 
     fn priority(&self) -> u8 {
@@ -54,5 +68,12 @@ impl Source<ContextMessage> for Conversation {
                 Item::whole(id, cause, turn.key.clone(), full).with_pointer(pointer)
             })
             .collect()
+    }
+
+    /// No fold: an ordinary turn has no pointer and leaves her view when collapsed (the room's
+    /// history keeps it, `chat/history`); only a room-update index keeps itself, so the run's
+    /// pointers are only those indexes.
+    fn fold(&self, _folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        None
     }
 }

@@ -3,8 +3,8 @@
 //! Reads a persona's SHARED lessons (`memory_type == "shared"`, written by
 //! [`memory/share`](super::super) #2025) from its durable corpus and submits each into
 //! the SAME training flywheel a live turn uses: `genome/training-trigger/submit` →
-//! buckets by trait → gym-gated `evalSet` → auto `genome/job-create` → train → eval-lift
-//! (#59) → page-in. This is the LAST WIRE of the received axis: a lesson one agent taught
+//! buckets by trait → learned in place on her live engine → a candidate gene → the
+//! examiner's unseen-task verdict → page-in. This is the LAST WIRE of the received axis: a lesson one agent taught
 //! becomes another agent's trained-in capability — adopted only if it lifts the benchmark,
 //! so telepathy can never make her worse ([[lived-and-eval-experience-are-one-stream-one-being]]).
 //!

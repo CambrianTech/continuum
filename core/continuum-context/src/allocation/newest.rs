@@ -14,9 +14,9 @@
 //! smaller, and then as its FIRST PAGE: its own content cut to exactly the room left (never a
 //! summary, never a bare handle), with a note naming the call that reads on from where the page
 //! ends. The page's least ([`Newest::Pageable::least`]) is its producer's measure: the note plus
-//! at least as much content as the note costs. A result with no other copy (never saved, or a
-//! reported note that IS the result) has no page: it is whole, and a window that cannot hold it is
-//! the typed shortfall.
+//! at least as much content as the note costs. Its producer saves a result that has no other copy
+//! before it must page (a refusal on every act while it stayed newest: the IntelMac, 2026-11-11), so
+//! `Whole` is only a result whose save the store refused.
 
 /// Her newest result as the allocation sees it, in the allocation's unit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

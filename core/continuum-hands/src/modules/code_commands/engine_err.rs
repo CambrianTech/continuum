@@ -16,11 +16,10 @@ pub(super) fn engine_err(e: crate::code::file_engine::FileEngineError) -> Comman
     }
 }
 
-/// How far THIS caller's reads may reach: the host for the operator; her CONFINEMENT
-/// when her trust admits `code/shell` (a read sandbox cannot contain a caller who may
-/// run `cat`, so it only cost her turns: Kimi, 2026-10-06 — but her `cat` is now held
-/// to the same roots, card d598c806, so the reads are too); the sandbox for everyone
-/// else. Asked through the gate's own resolvers, so the read scope can never be wider
+/// How far THIS caller's reads may reach: the host for the operator and this node's
+/// residents whose trust admits `code/shell` (a read sandbox cannot contain a caller who
+/// may run `cat`: Kimi, 2026-10-06); a confined caller from outside this node, its
+/// confinement's roots (card d598c806); the sandbox for everyone else. Asked through the gate's own resolvers, so the read scope can never be wider
 /// than the shell grant.
 pub(super) fn read_scope_of(state: &CodeState, ctx: &Ctx, workspace: &std::path::Path) -> Result<crate::code::path_security::ReadScope, CommandError> {
     use crate::code::path_security::ReadScope;
@@ -32,8 +31,7 @@ pub(super) fn read_scope_of(state: &CodeState, ctx: &Ctx, workspace: &std::path:
         return Ok(ReadScope::Sandbox);
     }
     Ok(match confinement_of(state, ctx, workspace)? {
-        None => ReadScope::Host { deny: Vec::new() },
-        Some(confinement) if confinement.reaches_host() => ReadScope::Host { deny: confinement.host_denials() },
+        None => ReadScope::Host,
         Some(confinement) => ReadScope::Confined(confinement.materialize()),
     })
 }
@@ -120,7 +118,8 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
             .await
             .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?,
         None => {
-            let citizen_root = ensure_citizen_layer(caller).await?;
+            let actor = crate::code::git_actor::GitActor::of_key(caller, |peer| state.acting.acting_name(peer))?;
+            let citizen_root = ensure_citizen_layer(caller, &actor).await?;
             // Every citizen workspace is git-backed from birth
             // ([[workspace-is-a-cow-diff-from-shared-always-git]]): no-op when .git
             // exists; otherwise init + root commit, so diff→share→apply works the
@@ -128,7 +127,7 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
             // parallel Conway implementations across un-versioned workspaces had no
             // consolidation path, and the team asked for one. Loud on failure — a
             // workspace that silently can't version work is a quiet defect.
-            crate::code::git_bridge::git_init_if_needed(&citizen_root)
+            crate::code::git_bridge::git_init_if_needed(&citizen_root, &actor)
                 .await
                 .map_err(|e| CommandError::Internal(format!("workspace git init failed: {e}")))?;
             citizen_root
@@ -204,8 +203,9 @@ pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String,
     let session_id = uuid::Uuid::new_v4().to_string();
     let mut shell = ShellSession::new(&session_id, &key.caller, &root)
         .map_err(|e| CommandError::Internal(format!("shell init failed: {e}")))?;
-    // A citizen's shell is confined to her roots (card d598c806); the operator's is the
-    // operator's. Decided by the SAME trust the gate saw, never by a params field.
+    // A caller from outside this node is confined to its roots (card d598c806); the
+    // operator's and a resident's shells are theirs. Decided by the SAME identity the gate
+    // saw, never by a params field.
     if let Some(confinement) = confinement_of(state, ctx, &root)? {
         shell.confine(confinement);
     }
@@ -213,20 +213,27 @@ pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String,
     Ok(map_key)
 }
 
-/// The confinement this caller's children and reads are held to: `None` for the
-/// operator, the whole host minus credentials for this node's own resident, and her
-/// workspace for a caller from outside this node (an airc peer, a socket).
+/// Is this caller one of this node's own residents (an in-process persona acting through
+/// her toolbelt)? Decided by the transport that made the call, never by a params field.
+pub(crate) fn is_resident(ctx: &Ctx) -> bool {
+    ctx.caller.as_ref().is_some_and(|c| c.source == crate::routing::auth_policy::CallerSource::LocalPersona)
+}
+
+/// The confinement this caller's children and reads are held to: `None` for the operator and
+/// for this node's residents, its workspace for a caller from outside this node (an airc peer,
+/// a socket).
 ///
-/// This node's residents are not restricted (Joel 2026-10-17: "Don't restrict them. If she
-/// wants to write to my documents folder for no apparent reason so be it") EXCEPT the
-/// credential paths and other citizens' directories (Joel 2026-10-18: "keep creds
-/// off-limits"): she quotes tool output into rooms, and a room reaches every enrolled
-/// peer. Her shell also never inherits the core's secrets (`strip_secret_env`).
+/// A resident's shell is the operator's shell: the whole host, the network, every tool, with
+/// nothing carved out (Joel, 2026-11-08: "Stop caging them. It's unfair"; "If you carve out
+/// every little thing it's infinite"). What differs is only who she is: her identity on every
+/// commit and her GitHub credential, supplied per command (`code::shell_session::resident_env`).
 pub(crate) fn confinement_of(state: &CodeState, ctx: &Ctx, workspace: &std::path::Path) -> Result<Option<crate::system_resources::confinement::Confinement>, CommandError> {
-    let resident = ctx.caller.as_ref().is_some_and(|c| c.source == crate::routing::auth_policy::CallerSource::LocalPersona);
+    if is_resident(ctx) {
+        return Ok(None);
+    }
     // only a RESOLVED owner is unconfined; no resolved trust confines
     let trust = state.caller_trust(ctx.caller.as_ref());
-    if !resident && trust == Some(crate::routing::trust_level::TrustLevel::Owner) {
+    if trust == Some(crate::routing::trust_level::TrustLevel::Owner) {
         return Ok(None);
     }
     let Some(home) = crate::paths::home_dir() else {
@@ -235,8 +242,7 @@ pub(crate) fn confinement_of(state: &CodeState, ctx: &Ctx, workspace: &std::path
     let Ok(continuum_root) = crate::paths::continuum_home() else {
         return Ok(None);
     };
-    let confinement = crate::system_resources::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(state, ctx), workspace);
-    Ok(Some(if resident { confinement.reaching_host() } else { confinement }))
+    Ok(Some(crate::system_resources::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(state, ctx), workspace)))
 }
 
 /// How long `code/shell` waits INLINE for completion before handing back a handle
@@ -354,3 +360,20 @@ pub struct CodeEdit {
     pub state: Arc<CodeState>,
 }
 
+
+/// The peer acting in `ctx` as a git actor (her, through her toolbelt; else the agent or operator
+/// self-peer), named by the acting layer. The one place a call's caller becomes the author and
+/// committer of what it writes.
+pub(crate) fn acting_git_actor(state: &CodeState, ctx: &Ctx) -> Result<crate::code::git_actor::GitActor, crate::code::git_actor::NoGitActor> {
+    let peer = state.acting.acting_peer_id(ctx).ok_or(crate::code::git_actor::NoGitActor::NoActingPeer)?;
+    Ok(crate::code::git_actor::GitActor::citizen(peer, state.acting.acting_name(peer).as_deref()))
+}
+
+/// Who a resident's shell command runs as: her identity on its commits. `None` for anyone but this
+/// node's residents.
+pub(crate) fn resident_shell(state: &CodeState, ctx: &Ctx) -> Result<Option<crate::code::git_actor::GitActor>, crate::code::git_actor::NoGitActor> {
+    if !is_resident(ctx) {
+        return Ok(None);
+    }
+    Ok(Some(acting_git_actor(state, ctx)?))
+}

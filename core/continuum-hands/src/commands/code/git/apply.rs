@@ -53,6 +53,7 @@ crate::action_command! {
     native: true,
     aliases: &["git_apply"],
     disclosure: Withheld, // it takes a PEER's diff: offered among her hands, four citizens called it with an empty patch inside twenty minutes (2026-09-04)
+    withheld: "`code/git/apply` applies a peer's unified diff; it is not the command for authoring your own edits." => "Your edits land with `code/edit` and `code/write`; commit them with `code/git/commit`.",
     params: GitApplyParams,
     output: GitApplyResult,
     run(this, ctx, p) => {
@@ -97,7 +98,7 @@ mod tests {
         for d in [&a, &b] {
             std::fs::create_dir_all(d).unwrap();
             std::fs::write(d.join("life.rs"), "fn main() {}\n").unwrap();
-            git_bridge::git_init_if_needed(d).await.expect("init");
+            git_bridge::git_init_if_needed(d, &crate::code::git_actor::GitActor::citizen(uuid::Uuid::nil(), Some("Tester"))).await.expect("init");
         }
         // Author edits + stages; diff of the staged change is the shared patch.
         std::fs::write(a.join("life.rs"), "fn main() { println!(\"glider\"); }\n").unwrap();

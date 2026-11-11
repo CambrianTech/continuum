@@ -51,6 +51,16 @@ pub enum ActOutputRefusal {
     /// call is hers to make again with one. `act_output` is the act's own saved output, if any.
     #[error("outputId {output} and act #{act} name different outputs; name one")]
     Disagree { act: u64, output: String, act_output: Option<String> },
+    /// The act left RAM for her archive and its span was compacted past her reopen horizon: its
+    /// own line and output are gone, and the span's summary is what remains. The answer, typed.
+    #[error("act #{act} was compacted into its span, {span}: its own line and output are no longer kept, and this summary is what remains")]
+    Compacted { act: u64, span: super::archive::SpanSummary },
+    /// The act's archive segment was deleted by disk-pressure retention.
+    #[error("act #{act} was archived and its span has since been deleted under disk pressure: nothing of it remains to reopen")]
+    Retired { act: u64 },
+    /// The act's archive segment is there and cannot be read.
+    #[error("act #{act} is archived but its segment could not be read: {error}")]
+    Unreadable { act: u64, error: String },
 }
 
 /// Hers to read and act on: what she named reopens nothing, or names two things.
@@ -58,10 +68,29 @@ impl crate::sdk_codegen::RefusalCause for ActOutputRefusal {
     fn category(&self) -> crate::sdk_codegen::Category {
         match self {
             ActOutputRefusal::Disagree { .. } => crate::sdk_codegen::Category::Invalid,
-            ActOutputRefusal::Unknown { .. } | ActOutputRefusal::Unsaved { .. } | ActOutputRefusal::NothingSaved => {
-                crate::sdk_codegen::Category::NotFound
-            }
+            ActOutputRefusal::Unknown { .. }
+            | ActOutputRefusal::Unsaved { .. }
+            | ActOutputRefusal::NothingSaved
+            | ActOutputRefusal::Compacted { .. }
+            | ActOutputRefusal::Retired { .. }
+            | ActOutputRefusal::Unreadable { .. } => crate::sdk_codegen::Category::NotFound,
         }
+    }
+}
+
+/// Her newest act's run of identical requests with identical outcomes ([`ActionLog::repeat_run`]):
+/// a fact about her hands that moves with every repeat, so her newest input never equals her last
+/// (Cormac on the IntelMac loops, 2026-11-11: a grep 6 times, a missing file read 32 times, then
+/// one saved output reopened 20+ times). Rendered into her newest result only, never stored, so a
+/// stored outcome keeps its content identity. Never a directive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RepeatRun {
+    pub times: usize,
+}
+
+impl std::fmt::Display for RepeatRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[the same request {} times in a row; its output byte-identical each time]", self.times)
     }
 }
 
@@ -82,6 +111,15 @@ pub(crate) struct ActionRecord {
     /// The saved whole; `None` when the save failed, and then the result never collapses
     /// (nothing else holds its bytes).
     pub handle: Option<String>,
+    /// Where exactly this record's resident body is saved, under the body's own content address:
+    /// what a shed moves it to and what her view loads back. Usually `handle` itself; for an act
+    /// that reopened a saved output, `handle` names that SOURCE (raw) while the body is her rendered
+    /// result, so the two never matched and every such body stayed resident as "the last copy"
+    /// (the M5, 2026-11-10: 480 `wm.results.last_copy_kept` mismatches in 90 min for one resident).
+    /// Set by the memory owner at shed time (`save_unsaved_bodies`), never on the act path. `None`
+    /// until then, and for a record from a build before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
     /// The result's summary level (`continuum_context::levels`): a numbered read's outline,
     /// else an output's head and tail; what her view gives it when it cannot keep it whole.
     /// Kept after the result collapses, so what she read stays addressable.
@@ -93,6 +131,14 @@ pub(crate) struct ActionRecord {
     /// before this was kept (their whole then has no price: they show at pointer level).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stored_chars: Option<usize>,
+    /// The whole result's hash, taken as its body leaves RAM and kept with its handle, so an
+    /// evicted observation is still the occurrence a re-read is matched against
+    /// (`continuum_context::rereads`). Without it an evicted read hashed as `Absent`, no re-read
+    /// ever matched, and her view measured zero re-reads while Atlas re-read an identical file
+    /// 103 times in 300 acts (the M5, 2026-11-09): collapse looked free and her reads thrashed.
+    /// `None` while resident (the body is hashed directly) and for records evicted before this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored_content: Option<continuum_context::cause::ContentHash>,
     /// When the result was received (ms since the Unix epoch): the one clock that orders every
     /// mind's resident results oldest-first when the memory owner sheds across minds. `None`
     /// for a record from a build before this was kept, which sheds first (it is older than any
@@ -106,9 +152,21 @@ pub(crate) struct ActionRecord {
     /// repeat, and the checkpoint still restores.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "super::derived::or_none")]
     pub act: Option<continuum_context::cause::Act>,
+    /// How many of her acts in its room, ending with this one, made this exact request and got a
+    /// byte-identical outcome: taken as it is pushed, from the room's last act, so the run is a fact
+    /// of the newest record and survives her view folding the earlier ones out of RAM (IntelMac
+    /// 0051cdcf, 2026-11-11: a 3rd identical read after a turnover was told no run). `None` for an
+    /// act with no identity or outcome, and for a record from a build before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<u32>,
 }
 
 impl ActionRecord {
+    /// What the act returned, as its hash: of the resident result, or kept from when it left RAM.
+    fn outcome(&self) -> Option<continuum_context::cause::ContentHash> {
+        self.result.as_deref().map(continuum_context::cause::ContentHash::of).or(self.stored_content)
+    }
+
     /// The key its per-call dependencies are filed under: its saved handle, or `seq:N` for
     /// a result whose save failed.
     pub fn receipt_key(&self) -> String {
@@ -128,8 +186,8 @@ impl ActionRecord {
 
 }
 
-/// A shed moves its result body to its handle (`residency`); the line and the summary stay with
-/// the record for as long as her mind lives.
+/// A shed moves its result body to its saved copy (`residency`); the line and the summary stay with
+/// the record while her view shows it unfolded, then leave RAM for her archive (`archive`).
 impl super::residency::Resident for ActionRecord {
     fn id(&self) -> super::residency::RecordId {
         super::residency::RecordId::Act(self.seq)
@@ -139,8 +197,9 @@ impl super::residency::Resident for ActionRecord {
         self.result.as_deref()
     }
 
+    /// Its body's own saved copy once the memory owner named it, else its receipt's handle.
     fn handle(&self) -> Option<&str> {
-        self.handle.as_deref()
+        self.body.as_deref().or(self.handle.as_deref())
     }
 
     fn received_ms(&self) -> Option<u64> {
@@ -153,27 +212,75 @@ impl super::residency::Resident for ActionRecord {
 
     fn shed_body(&mut self) {
         self.stored_chars = self.result.as_ref().map(|result| result.chars().count());
+        self.stored_content = self.result.as_deref().map(continuum_context::cause::ContentHash::of);
         self.result = None;
     }
 }
 
+/// Her resident acts: a ring keyed by `seq`, pushed at the newest end, drained at the oldest by
+/// her view's measured fold edge (`drain_through`, `WorkingMemory::release_folded`). A record her
+/// view still shows unfolded stays; one it folded leaves RAM for her archive. Its bodies' RAM is
+/// the one memory owner's to shed (`residency`), never a character cap.
 #[derive(Debug, Default)]
 pub(super) struct ActionLog {
-    /// Ascending by `seq`.
+    /// Ascending by `seq`: `seq` is minted monotonically, so a push keeps the order and a reopen
+    /// finds its record by binary search.
     records: VecDeque<ActionRecord>,
+    /// Each room's last act, its outcome and its run: what the next act's run is taken from. Never
+    /// drained with the records (one entry per room she acts in), so a run spans a fold.
+    last: std::collections::HashMap<Option<Uuid>, Last>,
+}
+
+/// A room's last act as a run's continuation reads it.
+#[derive(Debug, Clone, Copy)]
+struct Last {
+    act: continuum_context::cause::Act,
+    outcome: continuum_context::cause::ContentHash,
+    run: u32,
 }
 
 impl ActionLog {
-    /// A log from records in any order. Nothing here bounds it: a record keeps its line and its
-    /// handle for as long as her mind lives, and its body's RAM is the one memory owner's to
-    /// shed (`residency`), never a character cap.
+    /// A log from records as a checkpoint carries them: already ascending (they were written
+    /// from this ring), so this is one O(n) check; only a checkpoint from before the ring is
+    /// sorted.
     pub fn from_records(mut records: Vec<ActionRecord>) -> Self {
-        records.sort_by_key(|record| record.seq);
-        records.dedup_by_key(|record| record.seq);
-        Self { records: records.into() }
+        if !records.windows(2).all(|pair| pair[0].seq < pair[1].seq) {
+            records.sort_by_key(|record| record.seq);
+            records.dedup_by_key(|record| record.seq);
+        }
+        let mut log = Self { records: VecDeque::with_capacity(records.len()), last: Default::default() };
+        records.into_iter().for_each(|record| log.push(record));
+        log
     }
 
-    pub fn push(&mut self, record: ActionRecord) {
+    /// Every record up to and including `edge`, oldest first, out of the ring: O(drained). What her
+    /// view folded at its start leaves RAM here, never by a count.
+    pub fn drain_through(&mut self, edge: u64) -> Vec<ActionRecord> {
+        let keep = self.records.partition_point(|record| record.seq <= edge);
+        self.records.drain(..keep).collect()
+    }
+
+    /// How many of her acts are resident.
+    pub fn resident(&self) -> usize {
+        self.records.len()
+    }
+
+    /// Append her newest act, taking its run from the room's last act (a record restored with its
+    /// run keeps it).
+    pub fn push(&mut self, mut record: ActionRecord) {
+        match (record.act, record.outcome()) {
+            (Some(act), Some(outcome)) => {
+                let run = match self.last.get(&record.room) {
+                    Some(last) if last.act == act && last.outcome == outcome => last.run + 1,
+                    _ => 1,
+                };
+                let run = *record.run.get_or_insert(run);
+                self.last.insert(record.room, Last { act, outcome, run });
+            }
+            _ => {
+                self.last.remove(&record.room);
+            }
+        }
         self.records.push_back(record);
     }
 
@@ -184,6 +291,14 @@ impl ActionLog {
     pub fn get_mut(&mut self, seq: u64) -> Option<&mut ActionRecord> {
         let index = self.records.binary_search_by_key(&seq, |record| record.seq).ok()?;
         self.records.get_mut(index)
+    }
+
+    /// Her act `seq`'s run: how many of her acts in its room, ending with it, made this exact
+    /// request (`cause::Act`: call and declared effect, undeclared included) and got a
+    /// byte-identical outcome. `None` for a run of one.
+    pub fn repeat_run(&self, seq: u64) -> Option<RepeatRun> {
+        let times = self.get(seq)?.run?;
+        (times > 1).then_some(RepeatRun { times: times as usize })
     }
 
     /// Every record, oldest first.
@@ -224,15 +339,22 @@ impl ActionLog {
         pointers
     }
 
-    /// Every receipt whose dependencies must stay reachable: each retained result's key and
-    /// every handle a record names. A body moved to its handle exists only on disk, so its
-    /// handle is live for as long as its record is, however many pointers are newer.
+    /// Every receipt whose dependencies must stay reachable while its record is resident: each
+    /// retained result's key, every handle a record names, and each body's own saved copy. Bounded
+    /// by the ring, which her view's fold edge drains: a record that left for her archive is
+    /// counted by the archive's references instead (`archive::Archive`), so this never keeps
+    /// every handle she ever made live.
     pub fn receipt_keys(&self) -> HashSet<String> {
-        self.records
-            .iter()
-            .filter(|record| record.result.is_some() || record.handle.is_some())
-            .map(ActionRecord::receipt_key)
-            .collect()
+        let mut keys = HashSet::new();
+        for record in &self.records {
+            if record.result.is_some() || record.handle.is_some() {
+                keys.insert(record.receipt_key());
+            }
+            if let Some(body) = &record.body {
+                keys.insert(body.clone());
+            }
+        }
+        keys
     }
 
     /// The RAM every record holds, in bytes: bodies, lines and summaries.

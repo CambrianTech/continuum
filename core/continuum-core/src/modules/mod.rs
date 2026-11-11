@@ -85,7 +85,6 @@ pub mod runtime_control;
 pub use continuum_engine::{plasticity, serving_pin_store, serving_tier_down};
 pub use continuum_serving::modules::{serving_consumer, serving_daemon};
 pub mod system_resources;
-pub mod training_completion_sentinel;
 pub use continuum_dreaming::modules::training_trigger;
 pub use continuum_mind::activity;
 pub use continuum_mind::vdd::module as vdd;

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::modules::training_trigger::{DispatchPhase, TrainingTriggerState};
+use crate::modules::training_trigger::TrainingTriggerState;
 
 /// `genome/training-trigger/status` input — none; returns all pending buckets.
 #[derive(Debug, Deserialize, TS, JsonSchema)]
@@ -42,22 +42,8 @@ pub struct PendingBucketView {
     pub persona_name: String,
     pub trait_kind: String,
     pub base_model: String,
+    /// Examples accepted and not yet learned in place.
     pub examples_pending: u32,
-    pub min_examples: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "string")]
-    pub dispatch_id: Option<Uuid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub dispatch: Option<DispatchPhase>,
-    /// The attempt the active dispatch is in, minted before job-create ran (card 55d4b9e3).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "string")]
-    pub dispatch_attempt: Option<Uuid>,
-    /// A stranded dispatch written before attempts existed: nothing names what it may have
-    /// started, so its outcome is unknown and it is never retried on its own. Settle it with
-    /// `genome/training-trigger/resolve` from concrete evidence.
-    pub unknown_legacy: bool,
 }
 
 /// `genome/training-trigger/status` output — all pending buckets, sorted by
@@ -70,17 +56,12 @@ pub struct PendingBucketView {
 )]
 pub struct StatusReport {
     pub success: bool,
-    /// Both indexed metadata scans have completed at least one pass since boot.
-    /// Until then, buckets is a recovered snapshot, not a complete backlog count.
-    pub initial_scan_complete: bool,
-    /// Known buckets whose retained payload recovery still has pages to read.
-    pub recovering_buckets: usize,
     pub buckets: Vec<PendingBucketView>,
 }
 
 crate::action_command! {
-    /// List every pending training bucket — `(persona, traitKind, baseModel)` plus how
-    /// many examples are queued vs the bucket's fire threshold — in a deterministic
+    /// List every training bucket with examples not yet learned in place — `(persona,
+    /// traitKind, baseModel)` plus how many examples wait — in a deterministic
     /// order. Read-only inspection: spends no compute, dispatches nothing. Use it to
     /// see whether accumulated curriculum is close to firing a training job.
     pub struct TrainingTriggerStatus {
@@ -93,16 +74,14 @@ crate::action_command! {
     run(this, _ctx, _p) => {
         let state = &this.state;
         state.require_ready().map_err(crate::sdk_codegen::CommandError::Invalid)?;
-        let mut buckets = state.pending_views();
+        let mut buckets = state.pending_views().await.map_err(crate::sdk_codegen::CommandError::Internal)?;
         // Deterministic order — sort by (persona_id, trait_kind, base_model) so
         // operator-tooling tests don't flake on DashMap iteration order.
         buckets.sort_by(|a, b| {
-            (a.persona_id, &a.trait_kind, &a.base_model, a.dispatch_id)
-                .cmp(&(b.persona_id, &b.trait_kind, &b.base_model, b.dispatch_id))
+            (a.persona_id, &a.trait_kind, &a.base_model).cmp(&(b.persona_id, &b.trait_kind, &b.base_model))
         });
 
-        let (initial_scan_complete, recovering_buckets) = state.recovery_progress();
-        Ok(StatusReport { success: true, initial_scan_complete, recovering_buckets, buckets })
+        Ok(StatusReport { success: true, buckets })
     }
 }
 
@@ -110,7 +89,7 @@ crate::action_command! {
 mod tests {
     use super::*;
     use crate::commands::training_trigger::test_support::{
-        build_runtime_with_trigger_and_genome, ex, submit_params,
+        build_runtime_trigger_only, ex, submit_params,
     };
     use crate::sdk_codegen::{AccessLevel, ActionCommand};
     use uuid::Uuid;
@@ -131,21 +110,21 @@ mod tests {
     // would make every snapshot look "different" even when state is identical.
     #[tokio::test]
     async fn status_returns_deterministic_bucket_list() {
-        let (_trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
+        let (_trigger, executor, _dir) = build_runtime_trigger_only().await;
         let a = Uuid::nil(); // stable for ordering
         let b = Uuid::from_u128(1);
 
         let _ = executor
             .execute_json(
                 "genome/training-trigger/submit",
-                submit_params(b, "trait-z", vec![ex("a", "b")], Some(5)),
+                submit_params(b, "trait-z", vec![ex("a", "b")]),
             )
             .await
             .unwrap();
         let _ = executor
             .execute_json(
                 "genome/training-trigger/submit",
-                submit_params(a, "trait-a", vec![ex("c", "d")], Some(5)),
+                submit_params(a, "trait-a", vec![ex("c", "d")]),
             )
             .await
             .unwrap();

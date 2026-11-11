@@ -24,7 +24,7 @@
             "a room-addressed verb goes to the executor"
         );
         // Bare names and the explicit-local spelling are the local route, unchanged.
-        for local in ["ping", "genome/job-status", "airc:///ping", "commands/list"] {
+        for local in ["ping", "genome/teach", "airc:///ping", "commands/list"] {
             assert!(
                 super::addressed_elsewhere(local).is_none(),
                 "{local} stays name-routed"

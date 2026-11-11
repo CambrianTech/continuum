@@ -104,7 +104,7 @@ mod tests {
         // reader to lines that predate the guard; the four real ones (#4211) were in
         // files starting with `b` and `s`. Say what is printed, and how to find yours.
         let count = violations.len();
-        crate::ratchet::hold_sites("unjustified_unwraps", &violations, || {
+        crate::ratchet::hold_sites("unjustified_unwraps", &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
             "unjustified production unwraps rose to {count}.\n\
              Every unwrap/expect/unwrap_or needs a same-line `//` comment saying WHY it is safe.\n\

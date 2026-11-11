@@ -14,7 +14,7 @@ impl LlamaCppBackend {
             .model_path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".into());
+            .unwrap_or_else(|| "unknown".into()); // unwrap_or_else: a model path with no file stem is named "unknown" in logs and receipts
 
         let load_start = Instant::now();
         let model = Model::load(
@@ -51,6 +51,19 @@ impl LlamaCppBackend {
     }
 
     /// The model's real capability facts (read once at load).
+    /// Where this backend's layers are, as configured: on the GPU when llama offloads to one and
+    /// every layer is offloaded, on the host when none is, split otherwise (never measured: see
+    /// [`super::Placement`]).
+    pub(crate) fn placement(&self) -> super::Placement {
+        let offloads = llama::supports_gpu_offload();
+        match self.config.n_gpu_layers {
+            0 => super::Placement::Host,
+            _ if !offloads => super::Placement::Host,
+            n if n < 0 || u32::try_from(n).is_ok_and(|n| n >= self.model.n_layer()) => super::Placement::Device,
+            _ => super::Placement::Split,
+        }
+    }
+
     pub fn capabilities(&self) -> &ModelCapabilities {
         &self.caps
     }
