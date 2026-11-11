@@ -568,7 +568,34 @@ usage and prediction).
 - Wish versus held versus declared as separate admission paths, the target/headroom shaping and the
   clamps between them: one need type, one rule.
 
-### 8.4 Gate
+### 8.4 Expand first, collapse second: memory ebbs and flows with the minds' demand
+
+Joel, 2026-11-11: "If context switching and caching of tokens already translated is fast and using a
+graphics pipelined approach, the cost of taking more of the pool should be negligible, if it's
+necessary to solve the problem. Yeah collapsing is important too, very much per our flexbox, but as
+you know, pulling off disk cache is ms fast. It ebbs and flows as the demand of the minds require."
+
+So "available" in 8.2 is not only the free cells: it is the free cells plus everything held by minds
+that are not acting now, because their state pages to RAM or disk (`llama_state_seq_*`, the page
+store) and back in milliseconds, and their prefix stays cached. When her need exceeds the free cells,
+the owner pages out the coolest holders (by measured activity temperature, goal 9: aging means none is
+starved) until her need fits, and she is granted it. Her view collapses only when the minds holding
+memory are all acting at once and the pool still cannot hold her need: a flexbox grows items into free
+space first and shrinks them only when the container is full. The cost of a page-out and its later
+page-in is measured per node and is the only thing that can make collapsing cheaper than expanding.
+
+Taken to its end (Joel, 2026-11-11: "expanding the next persona in that lane isn't a huge cost either.
+So if you shrink the others, pull what you need to move forward with the persona needing it, next
+context switch for any of those reduced persona can get it back. They could all get the whole pool if
+you were smart"): a grant is not a standing share. It is held for the act that uses it: the mind
+acting now may take up to the whole pool, the minds not acting page out, and each gets her memory
+back at her own next context switch, in milliseconds, the way a GPU time-slices contexts. Only minds
+acting at the same moment share the pool (the engine batches them, section 1c); a mind acting alone
+has all of it. So every mind can have the whole pool, one act at a time, and nothing holds memory
+between its acts except what predicted reuse keeps cached.
+
+### 8.5 Gate
 
 On BigMama and the M5 over an hour: capacity refusals 0; every mind with a turn asked takes an act;
-no grant below a mind's irreducible part; the admission code is smaller than before it.
+no grant below a mind's irreducible part; no view collapsed while another mind's idle state held
+the memory she needed; the admission code is smaller than before it.

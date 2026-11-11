@@ -389,7 +389,6 @@ impl LlmDeliberationFaculty {
                     self.prompt_feedback.store(Some(Arc::new(PromptFeedback {
                         binding: Arc::clone(&binding),
                         calibration,
-                        available: fit_window,
                         // Her replies' density survives the refusal; the next reply prices at its bound again.
                         density: self.density_on(&binding),
                     })));
@@ -516,7 +515,6 @@ impl LlmDeliberationFaculty {
                         &view,
                         response.usage.input_tokens,
                         response.timing.as_ref(),
-                        fit_window,
                         &response.model,
                     );
                     self.view_served(&view); // her tail joins her view as judged: the next prompt extends this one

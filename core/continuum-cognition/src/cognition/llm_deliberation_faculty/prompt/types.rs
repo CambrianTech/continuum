@@ -260,7 +260,6 @@ impl Density {
 pub(in super::super) struct PromptFeedback {
     pub(in super::super) binding: Arc<ModelBinding>,
     pub(in super::super) calibration: PromptCalibration,
-    pub(in super::super) available: u32,
     /// Her replies' measured density on this binding; a refusal carries it through unchanged.
     pub(in super::super) density: Density,
 }

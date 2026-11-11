@@ -658,3 +658,37 @@ async fn capacity_growth_during_assembly_is_not_lost_when_refusal_is_published()
         .await.expect("already published growth must not require another notification");
     assert_eq!(adapter.call_count(), 0, "refused assembly never generates");
 }
+
+// what this catches (Aiko on the M5, 2026-11-11 13:00-14:30Z): a refusal's smaller window kept as
+// her window for every later act. One refusal at 49,025 fitted every act after it at 49,025 while
+// she held a 112,925 grant, so her view turned over every few acts and her plans collapsed to
+// pointers. A refusal shapes only the retry of the act it refused; the next act is fitted to her
+// live window again.
+#[tokio::test]
+async fn a_refusal_never_shrinks_her_window_for_the_acts_after_it() {
+    let home = tempfile::tempdir().expect("isolated demand storage");
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let persona = Uuid::new_v4();
+    let window = 32_768;
+    let adapter = Arc::new(ScriptedAdapter::new(vec![
+        make_response(FinishReason::Stop, "PASS", None),
+        make_response(FinishReason::Stop, "PASS", None),
+        make_response(FinishReason::Stop, "PASS", None),
+    ]));
+    adapter.rejections.lock().expect("fixture rejection queue").push_back(
+        crate::ai::inference_error::InferenceError::ContextExceeded { requested: 9_000, available: 8_192 },
+    );
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+        .with_context_window(window)
+        .with_working_memory(Arc::new(crate::cognition::working_memory::WorkingMemory::new(8)))
+        .with_working_set(crate::cognition::working_set::WorkingSetRegistry::new());
+    let mut first = Workspace::new("A first stimulus.");
+    first.now_ms = Some(1_000);
+    let _ = faculty.contribute(&first).await; // refused once at 8,192, whatever its retry made of it
+    let mut next = Workspace::new("A different stimulus, later.");
+    next.now_ms = Some(200_000);
+    let outcome = faculty.contribute(&next).await.expect("the next act contributes");
+    let receipt = outcome.receipts.last().expect("the next act dispatched");
+    let allocation = receipt.allocation.as_ref().expect("the call names its allocation");
+    assert_eq!(allocation.window, window, "the next act is fitted to her live window, never the refusal's 8,192");
+}
