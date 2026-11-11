@@ -97,6 +97,11 @@ pub struct CognitionTraceResult {
 #[async_trait]
 impl ActionCommand for CognitionTrace {
     const NAME: &'static str = "cognition/trace";
+    // Hers like any work verb (Joel, 2026-11-11: "she should be able to investigate herself or any
+    // other persona the same way you can"): native, one help away, and it only observes.
+    const NATIVE: bool = true;
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Observes;
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
         "Inspect a persona's recent cognition: per-tick faculty bids (recall/grounding/\
@@ -163,6 +168,11 @@ pub struct CognitionPromptResult {
 #[async_trait]
 impl ActionCommand for CognitionPrompt {
     const NAME: &'static str = "cognition/prompt";
+    // Hers like any work verb (Joel, 2026-11-11: "she should be able to investigate herself or any
+    // other persona the same way you can"): native, one help away, and it only observes.
+    const NATIVE: bool = true;
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Observes;
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
         "Inspect the verbatim LLM I/O of a persona's recent turns: the exact system prompt, the \
@@ -250,6 +260,11 @@ pub struct CognitionPersonasResult {
 #[async_trait]
 impl ActionCommand for CognitionPersonas {
     const NAME: &'static str = "cognition/personas";
+    // Hers like any work verb (Joel, 2026-11-11: "she should be able to investigate herself or any
+    // other persona the same way you can"): native, one help away, and it only observes.
+    const NATIVE: bool = true;
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Observes;
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
         "List every persona with a live cognition (a resident WorkspaceCycle) in this process: \
@@ -322,8 +337,12 @@ pub struct CognitionPlaybackResult {
 #[async_trait]
 impl ActionCommand for CognitionPlayback {
     const NAME: &'static str = "cognition/playback";
+    // Hers like any work verb (Joel, 2026-11-11: "she should be able to investigate herself or any
+    // other persona the same way you can"): native, one help away, and it only observes.
+    const NATIVE: bool = true;
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Observes;
     const ACCESS: AccessLevel = AccessLevel::Privileged;
-    const NATIVE: bool = false;
     const DESCRIPTION: &'static str = "Read recorded model-call lifecycle headers or one exact captured request/response. Execution-free playback; cognition/replay separately performs fresh inference against current faculties.";
     type Params = CognitionPlaybackParams;
     type Output = CognitionPlaybackResult;
