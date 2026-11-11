@@ -106,6 +106,11 @@ pub struct Line {
 }
 
 impl Line {
+    /// Fresh tokens per act when every held token is fresh: a cold act, over `context`.
+    pub fn cold(context: (u32, u32)) -> Self {
+        Line { intercept: 0.0, slope: 1.0, slope_se: 0.0, intercept_se: 0.0, acts: 0, context }
+    }
+
     pub fn at(&self, context: f64) -> f64 {
         self.intercept + self.slope * context
     }
@@ -154,11 +159,19 @@ impl ActTimeFit {
     /// marginal seconds at her mean context are within one standard error of none (a few acts'
     /// noise is never a price: it would collapse her on a slope nobody measured).
     pub fn price(&self) -> ContextPrice {
-        let (Some(decode), Some(prefill), Some(fresh), Some(observed)) = (self.decode.line(), self.prefill.line(), self.fresh.line(), self.observed.line()) else {
+        let (Some(decode), Some(prefill), Some(observed)) = (self.decode.line(), self.prefill.line(), self.observed.line()) else {
             return ContextPrice::Unmeasured;
         };
+        // Her fresh tokens per act, or, before she has measured them, every held token fresh: the
+        // dearest reading, replaced by her own once her acts fill the line. Unmeasured here left
+        // her view unpriced and filling her window, so her acts grew too slow to finish and the
+        // line never filled (Aris on the M5, 2026-11-11: a 59k-token prompt, no act completed in
+        // four hours after the line was added empty).
+        let (fresh, typical) = match self.fresh.line() {
+            Some(line) => (line, self.fresh.mean_x),
+            None => (Line::cold(observed.context), self.observed.mean_x),
+        };
         let time = ActTime { decode, prefill, fresh, observed, output: self.output / f64::from(self.acts) };
-        let typical = self.fresh.mean_x;
         if time.seconds_per_token(typical) > time.seconds_per_token_se(typical) {
             ContextPrice::Measured(time)
         } else {

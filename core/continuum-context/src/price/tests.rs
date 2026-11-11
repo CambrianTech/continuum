@@ -58,3 +58,20 @@ fn too_few_acts_no_spread_or_noise_is_unmeasured() {
     }
     assert_eq!(noisy.price(), ContextPrice::Unmeasured, "noise is never a price");
 }
+
+// what this catches: a fit whose fresh line is still empty (a field added after her acts were
+// measured) refusing to price at all, which left her view unpriced and filling the window (Aris,
+// the M5, 2026-11-11); priced cold instead, every held token is charged as prefilled.
+#[test]
+fn an_empty_fresh_line_prices_every_held_token_as_fresh() {
+    let decode = |c: f64| 0.05 + 2e-6 * c;
+    let prefill = |c: f64| 0.004 + 1e-7 * c;
+    let mut fit = ActTimeFit::default();
+    for input in [10_000u32, 20_000, 35_000, 50_000, 75_000] {
+        fit.observe(&act(input, 1_000 + input / 10, 400, decode, prefill));
+    }
+    fit.fresh = Moments::default();
+    let ContextPrice::Measured(time) = fit.price() else { panic!("decode and prefill measured: priced, never unmeasured") };
+    assert_eq!(time.fresh_at(30_000.0), 30_000.0, "cold: every held token is fresh");
+    assert!(time.seconds_per_token(30_000.0) > 0.0);
+}
