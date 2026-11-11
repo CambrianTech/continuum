@@ -156,7 +156,7 @@ fn claims(act: &Act, reply_need: u32, price: ContextPrice) -> ActClaims {
         let floor: usize = items.iter().map(|item| item.pointer().map_or_else(|| item.full().chars().count(), |p| p.chars().count())).sum(); // map_or_else: an item with no pointer is its own floor
         let claim = FlexClaim { source_id: format!("{}{name}", id::VIEW), priority: crate::priority(name), floor_tokens: tok(floor), min_tokens: tok(floor), max_tokens: tok(full).max(tok(floor)), required: acting };
         let consumer = if name == "held-work" { Consumer::Actionable } else { Consumer::Context };
-        view.push(ViewClaim { claim, consumer });
+        view.push(ViewClaim { claim, consumer, arrived: 0 });
     }
     let want = request["maxTokens"].as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(reply_need); // unwrap_or: a request with no cap wants its need
     ActClaims {

@@ -163,12 +163,14 @@ impl LlmDeliberationFaculty {
         // burst, keyed by their event: in her view they append like any turn, and one
         // already in the burst keeps its place. They rode the fresh tail as required input
         // under a quarter-of-the-window share (ROOM_UPDATE_SHARE_DENOM), a second budget.
+        let mut arrived = None;
         for update in ws.room_updates.iter() {
             let key = update.event_id.to_string();
             if turns.iter().any(|turn| turn.key == key) {
                 continue;
             }
             let line = update.render_room_update();
+            arrived = Some(key.clone());
             turns.push(crate::cognition::context_streams::conversation::Turn { key, role: crate::cognition::context_streams::Role::User, line, pointer: None });
         }
         // One line after them that never collapses: how many arrived and where the rest
@@ -448,7 +450,7 @@ impl LlmDeliberationFaculty {
             input_identity: input.finalize().into(),
             history: Vec::new(),
             streams: super::types::Streams {
-                conversation: crate::cognition::context_streams::conversation::Conversation { persona: self.persona_id, turns },
+                conversation: crate::cognition::context_streams::conversation::Conversation { persona: self.persona_id, turns, arrived },
                 blocks,
                 held: crate::cognition::context_streams::held_work::HeldWorkStream { persona: self.persona_id, work: std::sync::Arc::clone(&ws.held) },
                 facts: crate::cognition::context_streams::facts::Facts { persona: self.persona_id, facts },

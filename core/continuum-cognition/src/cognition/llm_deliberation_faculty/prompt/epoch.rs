@@ -14,6 +14,7 @@
 //! history with the view, and [`LlmDeliberationFaculty::fit_view`] once the window's
 //! allocation has granted the history its budget.
 
+use continuum_context::cost::Estimate as _;
 use continuum_context::source::Source;
 use continuum_context::view::{Claim, View};
 
@@ -95,6 +96,12 @@ impl LlmDeliberationFaculty {
                     required: source.required(),
                 },
                 consumer: source.consumer(),
+                // Her conversation's turn that arrived during this act, at this act's price.
+                arrived: if claim.source == crate::cognition::context_streams::conversation::NAME {
+                    streams.conversation.arrived().map_or(0, |message| Self::clamp_u32(cost.block(&message))) // map_or: no turn arrived during this act
+                } else {
+                    0
+                },
             }
             })
             .collect()

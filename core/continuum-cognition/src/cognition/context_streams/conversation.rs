@@ -8,6 +8,9 @@ use continuum_context::source::{Item, Source};
 
 use super::{element, priority, ContextMessage, Producer, Role};
 
+/// The source's name: its claim is `view/conversation`.
+pub(crate) const NAME: &str = "conversation";
+
 pub(crate) struct Turn {
     pub key: String,
     pub role: Role,
@@ -24,11 +27,23 @@ pub(crate) struct Conversation {
     /// Every turn but the act's ask (the newest external speech), which her act's tail carries
     /// (`tail::Tail`) under the same element, so once it is held there it never arrives here again.
     pub turns: Vec<Turn>,
+    /// The key of the turn that arrived during this act (the newest room message that reached her
+    /// while she acted): her newest interaction, which the act's allocation holds whole when the
+    /// window can ([`continuum_context::allocation::ViewClaim::arrived`]).
+    pub arrived: Option<String>,
+}
+
+impl Conversation {
+    /// The turn that arrived during this act, as her view renders it whole.
+    pub(crate) fn arrived(&self) -> Option<ContextMessage> {
+        let key = self.arrived.as_deref()?;
+        self.turns.iter().find(|turn| turn.key == key).map(|turn| ContextMessage::new(turn.role, turn.line.clone()))
+    }
 }
 
 impl Source<ContextMessage> for Conversation {
     fn name(&self) -> &str {
-        "conversation"
+        NAME
     }
 
     fn priority(&self) -> u8 {

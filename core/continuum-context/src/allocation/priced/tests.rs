@@ -37,7 +37,7 @@ const VERB: [u32; 3] = [450, 120, 15];
 
 fn source(name: &str, priority: u8, floor: u32, want: u32, consumer: Consumer) -> ViewClaim {
     let claim = FlexClaim { source_id: format!("{}{name}", id::VIEW), priority, floor_tokens: floor, min_tokens: floor, max_tokens: want, required: true };
-    ViewClaim { claim, consumer }
+    ViewClaim { claim, consumer, arrived: 0 }
 }
 
 /// An act whose view wants far more than it needs (a conversation of 300k, results of 100k),
