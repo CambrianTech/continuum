@@ -273,12 +273,7 @@ fn collapse(window: u32, claims: &ActClaims, time: &ActTime, keep: &ActPlan) -> 
                 let regrow = keep_view - view;
                 let acts = (regrow / time.fresh_at(held).max(1.0)).max(1.0);
                 let rebuild = held * time.prefill.at(held / 2.0);
-                let mean_held = held + regrow / 2.0;
-                // The seconds it claims to save are charged one standard error of that saving: a
-                // young fit cannot tell a small saving from noise, so she keeps (Aiko on the dyno,
-                // 2026-11-11: collapses priced on a fit of her first acts cost her 6.5% value/s).
-                let doubt = time.seconds_per_token_se(keep_held) * (keep_held - mean_held).max(0.0);
-                found.value / (time.seconds(mean_held) + rebuild / acts + doubt)
+                found.value / (time.seconds(held + regrow / 2.0) + rebuild / acts)
             })
             .unwrap_or(f64::NEG_INFINITY); // unwrap_or: a window that holds no less than she keeps is never a collapse
         (rate, plan)
