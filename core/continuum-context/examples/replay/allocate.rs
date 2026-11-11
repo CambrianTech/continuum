@@ -198,6 +198,9 @@ struct Columns {
     live_priced: usize,
     live_kept: Vec<f64>,
     turnovers: usize,
+    /// The epoch plan's searched value, beside its predicted seconds: the price trades value per
+    /// second, so a plan that is slower but shows her more is not worse by time alone.
+    value: Vec<f64>,
     basis: Vec<f64>,
     fresh: Vec<f64>,
     fresh_measured: Vec<f64>,
@@ -249,7 +252,7 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     println!("node act time: {} acts, measured contexts {:?}, {:.1} s at 20k, {:.1} s at 40k", node.acts(), time.measured(), time.seconds(20_000.0), time.seconds(40_000.0));
-    println!("resident | acts | sent med/p90 | kept med/p90 | unpriced kept med | kept/sent med | held/window med | s/act at sent, kept (curve) | tools sent, kept med | held/binds/outside/unmeasured | live priced | live kept med | epoch ({}): turnovers (/act) | held basis mean | fresh/act pred, meas mean | s/act epoch mean", if fit_by == Fit::Live { "live fit" } else { "node fit" });
+    println!("resident | acts | sent med/p90 | kept med/p90 | unpriced kept med | kept/sent med | held/window med | s/act at sent, kept (curve) | tools sent, kept med | held/binds/outside/unmeasured | live priced | live kept med | epoch ({}): turnovers (/act) | held basis mean | fresh/act pred, meas mean | s/act epoch mean | value mean, per s", if fit_by == Fit::Live { "live fit" } else { "node fit" });
     for (name, acts) in &residents {
         let mut c = Columns::default();
         let mut outputs: Vec<u32> = Vec::new();
@@ -288,6 +291,7 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             let carried = allocate(act.window, held_claims);
             let step = epoch.record(&carried, turn_key(act), sent);
             c.turnovers += usize::from(step.turnover);
+            c.value.push(carried.searched.as_ref().map_or(0.0, |found| found.value)); // map_or: an unsearched plan shows no levels
             c.basis.push(f64::from(basis));
             c.fresh.push(f64::from(step.fresh));
             c.fresh_measured.push(f64::from(act.sample.fresh));
@@ -312,7 +316,7 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             m
         });
         println!(
-            "{name} | {n} | {:.0}/{:.0} | {:.0}/{:.0} | {:.0} | {:.0}% | {:.0}% | {:.0}, {:.0} | {:.0}, {:.0} | {}/{}/{}/{} | {}/{n} | {:.0} | {} ({:.2}) | {:.0} | {:.0}, {:.0} | {:.1}   ({} models)",
+            "{name} | {n} | {:.0}/{:.0} | {:.0}/{:.0} | {:.0} | {:.0}% | {:.0}% | {:.0}, {:.0} | {:.0}, {:.0} | {}/{}/{}/{} | {}/{n} | {:.0} | {} ({:.2}) | {:.0} | {:.0}, {:.0} | {:.1} | {:.2}, {:.4}   ({} models)",
             pct(c.sent.clone(), 0.5),
             pct(c.sent, 0.9),
             pct(c.kept.clone(), 0.5),
@@ -336,6 +340,8 @@ pub fn main(args: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             mean(&c.fresh),
             mean(&c.fresh_measured),
             mean(&c.seconds_epoch),
+            mean(&c.value),
+            mean(&c.value) / mean(&c.seconds_epoch).max(f64::EPSILON),
             by_model.len(),
         );
     }
