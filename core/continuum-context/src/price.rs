@@ -116,7 +116,13 @@ impl Line {
 pub struct ActTimeFit {
     decode: Moments,
     prefill: Moments,
-    fresh: Moments,
+    /// Fresh tokens per act by prompt tokens, from WARM acts only (most of the prompt cached): what
+    /// an act prefills when her epoch extends, the regime her cache keeps her in. A cold or
+    /// turnover act re-prefills everything; fitted in, it priced context as if every act
+    /// recomputed it (the M5, 2026-11-10: views squeezed to a fraction of their window). The
+    /// re-prefill a collapse costs is priced on its own (`allocation::priced`).
+    #[serde(default)]
+    warm: Moments,
     observed: Moments,
     acts: u32,
     output: f64,
@@ -129,7 +135,9 @@ impl ActTimeFit {
         self.acts += 1;
         self.output += f64::from(act.output);
         let input = f64::from(act.input);
-        self.fresh.observe(input, f64::from(act.fresh), 1.0);
+        if act.cached >= act.fresh {
+            self.warm.observe(input, f64::from(act.fresh), 1.0);
+        }
         self.observed.observe(input, (act.decode_ms + act.prefill_ms) / 1_000.0, 1.0);
         if act.output > 0 {
             let over = input + f64::from(act.output) / 2.0;
@@ -150,11 +158,11 @@ impl ActTimeFit {
     /// marginal seconds at her mean context are within one standard error of none (a few acts'
     /// noise is never a price: it would collapse her on a slope nobody measured).
     pub fn price(&self) -> ContextPrice {
-        let (Some(decode), Some(prefill), Some(fresh), Some(observed)) = (self.decode.line(), self.prefill.line(), self.fresh.line(), self.observed.line()) else {
+        let (Some(decode), Some(prefill), Some(fresh), Some(observed)) = (self.decode.line(), self.prefill.line(), self.warm.line(), self.observed.line()) else {
             return ContextPrice::Unmeasured;
         };
         let time = ActTime { decode, prefill, fresh, observed, output: self.output / f64::from(self.acts) };
-        let typical = self.fresh.mean_x;
+        let typical = self.warm.mean_x;
         if time.seconds_per_token(typical) > time.seconds_per_token_se(typical) {
             ContextPrice::Measured(time)
         } else {

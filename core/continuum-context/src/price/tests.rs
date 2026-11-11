@@ -58,3 +58,20 @@ fn too_few_acts_no_spread_or_noise_is_unmeasured() {
     }
     assert_eq!(noisy.price(), ContextPrice::Unmeasured, "noise is never a price");
 }
+
+// what this catches (the M5, 2026-11-10): turnover and cold acts, which re-prefill their whole
+// prompt, fitted into her fresh tokens per act, so holding more context looked like recomputing
+// more every act and the price squeezed her view into a turnover every second act. Only warm acts
+// (most of the prompt cached) say what an act prefills when her epoch extends.
+#[test]
+fn cold_acts_never_enter_her_fresh_tokens_per_act() {
+    let decode = |c: f64| 0.05 + 2e-6 * c;
+    let prefill = |c: f64| 0.004 + 1e-7 * c;
+    let mut fit = ActTimeFit::default();
+    for input in [10_000u32, 20_000, 35_000, 50_000, 75_000] {
+        fit.observe(&act(input, 1_000 + input / 10, 400, decode, prefill));
+        fit.observe(&act(input, input, 400, decode, prefill)); // cold: the whole prompt re-prefilled
+    }
+    let ContextPrice::Measured(time) = fit.price() else { panic!("the warm acts fit") };
+    assert!((time.fresh.slope - 0.1).abs() < 1e-9 && (time.fresh.intercept - 1_000.0).abs() < 1e-6, "only warm acts: {time:?}");
+}
