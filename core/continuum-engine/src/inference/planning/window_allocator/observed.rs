@@ -17,13 +17,14 @@ use super::Tokens;
 pub enum Observed<T> {
     /// A measurement.
     Exact(T),
+    /// A lower bound over an irreducible floor (`floor <= at_least`): the bound may be collapsed into
+    /// a limit, the floor never is (Codex on #5931: a floor between the ceiling and the bound was cut
+    /// below what her turn cannot go below). Built only by [`Observed::over`]. Declared BEFORE
+    /// `AtLeast`: untagged reads try variants in order and ignore unknown fields, so after it a
+    /// floored need would read back as a bare bound, its floor dropped.
+    Floored { at_least: T, floor: T },
     /// A lower bound: the true size is at least this, never known to be this.
     AtLeast { at_least: T },
-    /// A lower bound over an irreducible floor (`floor <= at_least`): the bound may be clamped to a
-    /// limit, the floor never is. Built only by residency (`working_set::resident_need`), never
-    /// recorded in a ring; listed after `AtLeast` so a persisted bound reads as one (Codex on #5931:
-    /// a floor between the ceiling and the bound was clamped below what her turn cannot go below).
-    Floored { at_least: T, floor: T },
 }
 
 impl<T: Default> Default for Observed<T> {
