@@ -580,18 +580,38 @@ pub(crate) struct Quiesced {
     pub(crate) unpublished: u32,
     /// Stops and workspace releases the engine did not confirm: custody holds what they held.
     pub(crate) unconfirmed: u32,
+    /// Engines a step held, left to it (`Busy::Skip`).
+    pub(crate) busy: u32,
+}
+
+/// What a quiesce does with an engine a learning step holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Busy {
+    /// Wait for the step (the join, after every operation has ended).
+    Wait,
+    /// Leave it to the step and count it (the save, while steps may still run).
+    Skip,
 }
 
 impl InPlace {
     /// Shutdown, after every owned operation has drained: publish what each seated learner learned
     /// since its newest generation, stop it, and release each engine's workspace. Nothing is left
     /// seated in the trigger; what an engine did not confirm stays in custody.
-    pub(crate) async fn quiesce(&self, state: &TrainingTriggerState) -> Quiesced {
+    pub(crate) async fn quiesce(&self, state: &TrainingTriggerState, busy: Busy) -> Quiesced {
         let mut quiesced = Quiesced::default();
-        let engines: Vec<_> = self.engines.iter().map(|entry| Arc::clone(entry.value())).collect();
-        self.engines.clear();
-        for engine in engines {
-            let mut held = engine.lock().await;
+        let engines: Vec<_> = self.engines.iter().map(|entry| (*entry.key(), Arc::clone(entry.value()))).collect();
+        for (incarnation, engine) in engines {
+            let mut held = match busy {
+                Busy::Wait => engine.lock_owned().await,
+                Busy::Skip => match engine.try_lock_owned() {
+                    Ok(held) => held,
+                    Err(_) => {
+                        quiesced.busy += 1; // a step holds it: its learner pages out when her pass ends
+                        continue;
+                    }
+                },
+            };
+            self.engines.remove(&incarnation);
             let keys: Vec<BucketKey> = held.minds.keys().cloned().collect();
             for key in keys {
                 if let Some(seated) = held.minds.get_mut(&key) {

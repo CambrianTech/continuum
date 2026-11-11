@@ -50,6 +50,19 @@ impl TrainingTriggerState {
         receive.await.map_err(|_| "training owner operation ended without a result; inspect durable status before retry".into())
     }
 
+    /// Admit no new owned operation, and count the ones still running.
+    pub(crate) async fn stop_admitting(&self) -> usize {
+        self.stopping.store(true, Ordering::Release);
+        self.ready.store(false, Ordering::Release);
+        let mut operations = self.operations.lock().await;
+        while let Some(joined) = operations.try_join_next() {
+            if let Err(error) = joined {
+                tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
+            }
+        }
+        operations.len()
+    }
+
     pub(crate) async fn drain_operations(&self) -> Result<(), String> {
         self.stopping.store(true, Ordering::Release);
         self.ready.store(false, Ordering::Release);
@@ -63,7 +76,7 @@ impl TrainingTriggerState {
             }
         }
         // nothing learns now: leave no learner seated
-        let quiesced = self.in_place.quiesce(self).await;
+        let quiesced = self.in_place.quiesce(self, super::super::in_place::Busy::Wait).await;
         continuum_base::probe!(class = "training.in_place.quiesced", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
             unconfirmed = quiesced.unconfirmed, "the trigger stopped: every learner checkpointed and stopped, every workspace released");
         failure.map_or(Ok(()), Err)
