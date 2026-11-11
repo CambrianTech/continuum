@@ -159,7 +159,7 @@ fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
 }
 
 /// Record usage only for the settled generation that produced it. Successful
-    /// service does not certify that this geometry satisfies future workloads.
+/// service does not certify that this geometry satisfies future workloads.
 fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
     let Some(mut stored) = load_from(path) else { return };
     // Only promote candidates that were recorded under the same generation lease.
