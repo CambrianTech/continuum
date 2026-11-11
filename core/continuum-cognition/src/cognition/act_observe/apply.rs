@@ -57,7 +57,7 @@ fn is_long_running(command: &str) -> bool {
 /// cross turns or rooms by construction — the wire is the scope, never an
 /// inference over timestamps.
 #[derive(Default)]
-pub struct ActChain(std::sync::Mutex<Option<Uuid>>, Option<super::EffectGate>);
+pub struct ActChain(parking_lot::Mutex<Option<Uuid>>, Option<super::EffectGate>);
 
 impl ActChain {
     /// A chain with no recorded antecedent — its first act links to nothing.
@@ -79,7 +79,7 @@ impl ActChain {
     /// what counts as a root lives in ONE place (`Cause::root`) instead of at every
     /// driver that builds a chain.
     pub fn rooted_in(cause: &crate::cognition::workspace::Cause) -> Self {
-        Self(std::sync::Mutex::new(cause.root()), None)
+        Self(parking_lot::Mutex::new(cause.root()), None)
     }
 
     /// The turn's pre-effect mark (stop-drain S2): held by the chain the turn owns, so it is
@@ -98,11 +98,11 @@ impl ActChain {
     /// engram, or — before any act has run — the trigger the chain was rooted in.
     /// `None` only when the chain has no antecedent at all.
     pub fn prior(&self) -> Option<Uuid> {
-        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+        *self.0.lock()
     }
 
     fn advance(&self, id: Uuid) {
-        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
+        *self.0.lock() = Some(id);
     }
 }
 
@@ -345,12 +345,9 @@ pub async fn apply_act(
     // Each call's fingerprint (name+args) into the recent window her verb tally reads. Whether an
     // act repeats one she holds is her view's to say (MIND-CONTEXT invariant 4), never here.
     for call in fg_calls.iter() {
-        let fp = format!(
-            "{}|{}",
-            call.name,
-            serde_json::to_string(&call.input).unwrap_or_default()
-        );
-        body.working_memory.note_action_fingerprint(&fp);
+        // The tally reads only the tool name (`action_verb_tally`); the arguments were serialized
+        // for nothing.
+        body.working_memory.note_action_fingerprint(&call.name);
         // The TYPED act is the SINGLE source now (Step 5). Correlate the result by
         // `tool_use_id == call.id` (NOT the positional `.get(i)` the old string render
         // used) — id-correlation is immune to the fg-vs-original index hazard (invariant
@@ -364,7 +361,7 @@ pub async fn apply_act(
             .iter()
             .find(|r| r.tool_use_id == call.id)
             .cloned()
-            .unwrap_or_else(|| ToolResult {
+            .unwrap_or_else(|| ToolResult { // unwrap_or_else: a call the executor returned no result for is told to her as exactly that, never dropped
                 tool_use_id: call.id.clone(),
                 content: "(no result returned)".to_string(),
                 is_error: None,
@@ -486,7 +483,7 @@ pub async fn apply_act(
                 thought: reasoning.take(),
                 timestamp: now_ms,
             };
-            match serde_json::to_value(&update) {
+            match serde_json::to_value(&update) { // boundary: persona:act is published to clients over the event wire
                 Ok(payload) => bus.publish_async_only(crate::cognition::mind_events::PERSONA_ACT, payload),
                 Err(e) => {
                     tracing::warn!(error = %e, "persona:act receipt failed to serialize — receipt dropped, act unaffected")
@@ -598,7 +595,7 @@ pub async fn apply_act(
     let tool_name = fg_calls
         .first()
         .map(|c| c.name.clone())
-        .unwrap_or_else(|| "action".to_string());
+        .unwrap_or_else(|| "action".to_string()); // unwrap_or_else: an act with no foreground call is recalled by its kind, never an invented tool
     let obs_hash = crate::cognition::inbox_admission::content_hash_sha256(&recall_observation);
     let self_observation = crate::cognition::engram::Engram {
         id: Uuid::new_v4(),

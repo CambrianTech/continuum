@@ -348,12 +348,12 @@ fn render_cursor(view: &OpenView) -> String {
     if view.seen.is_empty() {
         line.push_str("not yet read past what was first shown");
     } else {
-        let unread = view.total_lines.map(|total| unread_ranges(&view.seen, total)).unwrap_or_default();
         line.push_str("read ");
         line.push_str(&ranges(&view.seen));
-        match view.total_lines {
-            Some(_) if unread.is_empty() => line.push_str(" (all of it)"),
-            Some(_) => {
+        // An unknown length leaves what is unread unknown: nothing is claimed about it.
+        match view.total_lines.map(|total| unread_ranges(&view.seen, total)) {
+            Some(unread) if unread.is_empty() => line.push_str(" (all of it)"),
+            Some(unread) => {
                 line.push_str("; not yet read ");
                 line.push_str(&ranges(&unread));
             }

@@ -13,6 +13,7 @@ pub mod durable;
 pub mod file_identity;
 pub mod local_stream;
 pub mod output_handoff;
+pub mod own_group;
 pub mod positioned;
 pub mod process_class;
 pub mod process_exit;

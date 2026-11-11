@@ -254,7 +254,7 @@ impl LlmDeliberationFaculty {
             // `with_model_binding` (so a `serving/pin` re-home is seen here), and
             // `with_model`/`with_context_window` mutate it for tests. Mirrors how
             // `new` builds an `empty_genome()` that `with_genome` then shares in.
-            binding: model_binding(Arc::clone(&adapter), None, adapter.capabilities().max_context_window.unwrap_or(crate::inference::planning::MIN_SERVE_CTX)), // unwrap_or: an adapter that reports no window binds the minimum serving window, as this private binding did before it read the adapter; the spawn replaces it
+            binding: model_binding(Arc::clone(&adapter), None, adapter.capabilities().max_context_window.unwrap_or(0)), // unwrap_or: an adapter that reports no window binds none (nothing fits, so an unreplaced binding refuses loudly instead of serving on an invented floor); the spawn replaces it
             prompt_feedback: ArcSwapOption::empty(),
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
@@ -762,6 +762,12 @@ pub mod test_support {
         fn name(&self) -> &str {
             "scripted"
         }
+        fn capabilities(&self) -> crate::ai::adapter::AdapterCapabilities {
+            // The scripted model reports the window these tests were written against, as a real
+            // adapter reports its own: a faculty with no reported window binds none.
+            crate::ai::adapter::AdapterCapabilities { max_context_window: Some(2048), ..crate::ai::adapter::AdapterCapabilities::text_only() }
+        }
+
         fn default_model(&self) -> &str {
             "scripted"
         }

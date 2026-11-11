@@ -11,6 +11,11 @@ impl Acts {
     fn push(&mut self, verb: &'static str, args: &'static str, effect: ToolEffect, output: &str) {
         self.0.push((verb, args, effect, output.to_owned()));
     }
+
+    /// Her history as of act `n`: the acts before her newest.
+    fn through(&self, n: usize) -> Acts {
+        Acts(self.0.iter().take(n).cloned().collect())
+    }
 }
 
 impl Source<String> for Acts {
@@ -232,7 +237,7 @@ fn a_served_tail_is_the_next_acts_prefix_and_its_act_never_arrives_twice() -> Re
     acts.push("code/read", r#"{"path":"b.rs"}"#, ToolEffect::Observes, "result 2");
     let mut shown = tail_item(&acts, 2);
     shown.full = "result 2 as her tail sent it".to_owned();
-    let judged = view.judge_tail(&Tail(vec![shown]), &Acts(acts.0[..1].to_vec()), |_| Level::Full);
+    let judged = view.judge_tail(&Tail(vec![shown]), &acts.through(1), |_| Level::Full);
     let sent = [rendered(&view), "result 2 as her tail sent it".to_owned()].join("\n");
     view.append_tail(judged);
     view.sent();
@@ -258,7 +263,7 @@ fn her_tail_judges_her_newest_act_against_her_history() {
     acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, &body("saved"));
     view.advance(&[&acts]);
     acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, &body("saved"));
-    let history = Acts(acts.0[..1].to_vec());
+    let history = acts.through(1);
     let before = view.render().count();
     let judged = view.judge_tail(&Tail(vec![tail_item(&acts, 2)]), &history, |_| Level::Full);
     assert!(judged[0].text.contains("repeat of #1"), "judged before the send: {}", judged[0].text);
@@ -266,7 +271,7 @@ fn her_tail_judges_her_newest_act_against_her_history() {
     let appended = view.append_tail(judged);
     assert_eq!(appended.repeats, 1, "reopening it again, its whole in front of her, is the repeat");
     acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, "a different body");
-    let changed = view.judge_tail(&Tail(vec![tail_item(&acts, 3)]), &Acts(acts.0[..2].to_vec()), |_| Level::Full);
+    let changed = view.judge_tail(&Tail(vec![tail_item(&acts, 3)]), &acts.through(2), |_| Level::Full);
     assert_eq!(changed.len(), 1);
     assert!(!changed[0].text.contains("repeat of"), "a changed outcome arrives whole: {}", changed[0].text);
 }
@@ -282,7 +287,7 @@ fn a_paged_result_arrives_at_its_page() {
     item.summary = Some("[page 1 of big.rs: lines 1-40 of 61; read on with tool/output act=1 startLine=41]".to_owned());
     let judged = view.judge_tail(&Tail(vec![item]), &Acts(Vec::new()), |_| Level::Page);
     view.append_tail(judged);
-    let event = view.epoch.events().last().expect("the page appended");
+    let event = view.epoch.events().last().expect("the page appended"); // expect: append_tail just appended the judged page
     assert_eq!(event.level, Level::Page);
     assert!(event.text.starts_with("[page 1 of big.rs"), "{}", event.text);
 }

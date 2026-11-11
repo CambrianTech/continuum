@@ -100,7 +100,7 @@ impl LlamaServerProcess {
         // a relaunch (we own one) frees the port via `kill_child` and must NOT pay
         // the reclaim wait; a fresh claim (we own none) is where a crashed
         // predecessor's orphan may still hold the canonical port.
-        let had_own_child = self.child.lock().unwrap().is_some();
+        let had_own_child = self.child.lock().unwrap().is_some(); // JUSTIFIED: poison means a prior panic mutating the owned child.
         // The engine being replaced holds the residents' freshest KV in its slots, newer than
         // any page on disk. Save each attributed resident before the kill, through the same
         // owner the restore session uses: on the M5 at 2026-10-23 05:09Z a relaunch killed two
@@ -234,8 +234,7 @@ impl LlamaServerProcess {
         // leave it for adoption. Its fate is decided by NAME (the lane registry, the
         // ownership sweep, the adopt-or-reap rail), never by which group it happened
         // to be born into. Windows has no process groups here; ownership does the job.
-        #[cfg(unix)]
-        cmd.process_group(0);
+        continuum_host::own_group::own_group(&mut cmd);
         if let Some(receipt) = &engine_install {
             receipt.confirm().await.map_err(LlamaServerError::Spawn)?;
         }

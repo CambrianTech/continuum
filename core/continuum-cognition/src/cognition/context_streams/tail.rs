@@ -260,7 +260,7 @@ impl Tail {
 /// A line of her tail named by what it says: an identical line is the same element.
 fn said(persona: uuid::Uuid, kind: &str, message: ContextMessage) -> Item<ContextMessage> {
     let digest = sha2::Sha256::digest(message.text.as_bytes());
-    let hex: String = digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect();
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
     let key = format!("{kind}/{hex}");
     Item::whole(element(persona, Producer::Tail, key.as_bytes()), Cause::Root(Origin::External), key, message)
 }

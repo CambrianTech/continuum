@@ -274,8 +274,7 @@ impl ActionLog {
                     Some(last) if last.act == act && last.outcome == outcome => last.run + 1,
                     _ => 1,
                 };
-                let run = record.run.unwrap_or(run);
-                record.run = Some(run);
+                let run = *record.run.get_or_insert(run);
                 self.last.insert(record.room, Last { act, outcome, run });
             }
             _ => {
