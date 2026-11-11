@@ -40,13 +40,39 @@ pub(super) fn propagate_render_layers(
     }
 }
 
-/// Dump all named entities in a scene hierarchy (for debugging bone names).
-pub(super) fn dump_bone_names(
-    _entity: Entity,
-    _children: &Query<&Children>,
-    _names: &Query<&Name>,
-) {
-    // No-op: bevy_debug calls removed. Function retained for call-site compatibility.
+/// Recursively walk all descendants of `entity`, logging each named entity
+/// (for debugging missing-body issues).
+pub(super) fn dump_bone_names(root: Entity, children: &Query<&Children>, names: &Query<&Name>) {
+    let mut buf = Vec::<String>::new();
+    fn walk_names(
+        e: Entity,
+        depth: usize,
+        children: &Query<&Children>,
+        names: &Query<&Name>,
+        out: &mut Vec<String>,
+    ) {
+        let indent = "  ".repeat(depth);
+        if let Ok(name) = names.get(e) {
+            out.push(format!("{}{}", indent, name.as_str()));
+        }
+        if let Ok(child_list) = children.get(e) {
+            for child in child_list.iter() {
+                walk_names(*child, depth + 1, children, names, out);
+            }
+        }
+    }
+    walk_names(root, 0, children, names, &mut buf);
+    if !buf.is_empty() {
+        clog_info!("🎨 dump_bone_names: entity {:?} descendants:", root);
+        for line in buf {
+            clog_info!("  {line}");
+        }
+    } else {
+        clog_warn!(
+            "🎨 dump_bone_names: no named descendants found on entity {:?}",
+            root
+        );
+    }
 }
 
 /// Reference head Y for VRM standard models (~1.50m).
