@@ -91,6 +91,27 @@ impl Observed<Tokens> {
         }
     }
 
+    /// The part of this need no collapse can remove: an exact need whole, a floored bound's floor,
+    /// nothing of a bare bound.
+    pub fn irreducible(self) -> Option<Tokens> {
+        match self {
+            Self::Exact(need) | Self::Floored { floor: need, .. } => Some(need),
+            Self::AtLeast { .. } => None,
+        }
+    }
+
+    /// This need shaped under `target`: its bound collapses to the target, its irreducible part
+    /// never does. A caller first raises the target to [`Observed::irreducible`] (`LaneRequirement::held`),
+    /// so a stale target never cuts a floor (Codex on #5931: wish 40,000, target 50,000, floor 60,000
+    /// was cut to 50,000 before admission).
+    pub fn under(self, target: Tokens) -> Self {
+        match self {
+            Self::Exact(need) => Self::Exact(need),
+            Self::AtLeast { at_least } => Self::AtLeast { at_least: at_least.min(target) },
+            Self::Floored { at_least, floor } => Self::Floored { at_least: at_least.min(target).max(floor), floor },
+        }
+    }
+
     /// This need over an irreducible `floor` (a size her turn cannot be sent below): an exact need is
     /// raised to it, and a bound keeps it beside itself, so `within` may collapse the bound into what
     /// exists and never the floor. A floor past the bound is the need, exact. The ONE place a floor

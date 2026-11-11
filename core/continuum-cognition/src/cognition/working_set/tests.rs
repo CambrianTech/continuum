@@ -807,3 +807,24 @@ fn a_cut_inside_an_open_tool_call_is_a_cut_answer() {
     assert!(read.answered);
     assert!(read.reasoning_tokens < 900, "the call's bytes are answer, not think: {}", read.reasoning_tokens);
 }
+
+// what this catches (Codex on #5931): a floor cut by a stale target on the way to admission. Her
+// wish 40,000 (target 50,000 with the sent headroom), floor 60,000 and bound 116,240 go through
+// requirements_for, the path admission reads: the floor stands past a 58,112 ceiling and waits,
+// and her target rises to it.
+#[test]
+fn a_stale_target_never_cuts_her_floor_on_the_way_to_admission() {
+    use crate::inference::planning::window_allocator::Measure;
+    let reg = WorkingSetRegistry::new();
+    let her = Uuid::new_v4();
+    for t in 0..4u64 {
+        reg.record_in_memory(her, 40_000, t);
+    }
+    reg.record_need_in_memory(her, NeedSample::AtLeast { at_least: 116_240 }, 5);
+    reg.record_floor_in_memory(her, 60_000, 5);
+    let requirement = &requirements_for(&[her], &reg)[0];
+    let Measure::Held { need, target } = requirement.measure else { panic!("a held need: {requirement:?}") };
+    assert!(target.get() >= 60_000, "her target rises to her floor: {target:?}");
+    assert_eq!(need.within(58_112).get(), 60_000, "past the ceiling her floor stands, and waits");
+    assert!(need.within(262_144).get() >= 60_000, "under a roomy ceiling, never below her floor");
+}
