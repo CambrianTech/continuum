@@ -111,6 +111,21 @@ struct Seated {
     checkpointed: HashMap<Uuid, u32>,
     /// Her name, for the provenance her candidates carry.
     persona_name: String,
+    /// What this seating has cost so far, reported when she pages out.
+    cost: SeatCost,
+}
+
+/// Where one seated life's time went: what paging her in and out costs against what she learned
+/// in it, the receipt that decides whether paging per step is worth engine verbs (card de1a9e5a).
+#[derive(Debug, Default, Clone, Copy)]
+struct SeatCost {
+    /// Seating: her competence decision, her shadow's memory and its load.
+    seat: std::time::Duration,
+    /// Restoring her generation onto the fresh shadow.
+    restore: std::time::Duration,
+    /// Her learning steps, and how many.
+    learn: std::time::Duration,
+    steps: u32,
 }
 
 /// What one bucket's pass did.
@@ -202,8 +217,11 @@ impl InPlace {
                 "her progress is not yet in a confirmed generation; she stays seated and the next pass publishes it");
             return Ok(published);
         }
+        let cost = seated.cost;
+        let began = std::time::Instant::now();
         stop(&mut held, key).await;
-        if held.minds.is_empty() {
+        let last = held.minds.is_empty();
+        if last {
             if let Some(workspace) = held.workspace.take() {
                 if let Err((kept, why)) = workspace.release().await {
                     held.workspace = Some(kept);
@@ -212,6 +230,10 @@ impl InPlace {
                 }
             }
         }
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        continuum_base::probe!(class = "training.in_place.paged_out", persona = %key.persona_id, seat_ms = ms(cost.seat),
+            restore_ms = ms(cost.restore), learn_ms = ms(cost.learn), steps = u64::from(cost.steps), page_out_ms = ms(began.elapsed()),
+            last_learner = last, "her learner paged out at the end of her pass: what seating, restoring and paging out cost against what she learned");
         Ok(published)
     }
 
@@ -295,6 +317,8 @@ async fn step_on(
         }
         // the POST is about to be sent: from here the slot holds whatever the engine leaves
         slot.dispatching();
+        let began = std::time::Instant::now();
+        let restoring = seated.restore.is_some();
         let step = match seated.restore.as_ref() {
             Some(generation) => {
                 let from = RestoreCheckpoint { name: generation.name.clone(), binding: generation.binding.clone(), steps: generation.steps };
@@ -306,6 +330,12 @@ async fn step_on(
                 (verdict(&outcome), false, outcome.refusal)
             }),
         };
+        if restoring {
+            seated.cost.restore += began.elapsed();
+        } else {
+            seated.cost.learn += began.elapsed();
+            seated.cost.steps += 1;
+        }
         return match step {
             Ok((Verdict::Learned, true, _)) => {
                 seated.restore = None; // restored: the same example is learned next
@@ -425,6 +455,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
     if held.minds.contains_key(key) {
         return Ok(Seating::Seated);
     }
+    let began = std::time::Instant::now();
     // WHICH gene this competence trains, by the one rule (competence::decide): the bucket's pending
     // examples are the competence; nothing of hers learns it yet (no learner is seated for it).
     let examples: Vec<crate::genome::fine_tuning::types::TrainingExample> = rows.iter().flat_map(|r| r.examples.iter().cloned()).collect();
@@ -499,6 +530,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
                     progress: HashMap::new(),
                     checkpointed,
                     persona_name: row.persona_name.clone(),
+                    cost: SeatCost { seat: began.elapsed(), ..SeatCost::default() },
                 },
             );
             Ok(Seating::Seated)
