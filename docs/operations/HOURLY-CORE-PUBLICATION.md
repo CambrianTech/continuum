@@ -3,7 +3,14 @@
 The enabled dispatcher runs after successful `Continuum Rust Tests` push runs on
 canary, after successful `core-binaries` publication dispatches, and hourly, for
 the latest unpublished canary revision. These events use the same admission script
-and concurrency group. Publication completion rechecks the latest key when its
+and concurrency group. The successful publisher calls admission directly from its
+final job, after build, verification, script tests and pruning succeed. It verifies
+the current run identity/attempt and complete exact-key manifests before excluding
+only that finishing run from the active-publication check. Every other active run
+still blocks. The next build queues behind the existing non-cancelling canary
+publication group until this publisher exits. This replaces the publication
+`workflow_run` trigger; successful Rust checks retain their trigger.
+Publication completion rechecks the latest key when its
 earlier wake skipped behind an active build; complete manifests make that recheck
 a no-op. PR/fork runs, failures and manually started test runs do not trigger
 publication. Failed publication waits for the next ordinary wake rather than
@@ -39,7 +46,9 @@ No service or deployment ledger changes are involved.
 The dispatcher checks all three platforms' manifest, archive and checksum assets,
 including full manifest git SHA, before declaring a revision published. Missing or
 partial publication is eligible; API errors fail visibly instead of launching a
-build on a guess. Any queued/running publication prevents another dispatch.
+build on a guess. Any queued/running publication prevents another dispatch, except
+the verified finishing publisher performing its own completion handoff. An incomplete
+finishing release refuses handoff rather than creating a retry loop.
 Manual `core-binaries` dispatch remains available independently for urgent repair.
 It requires a full `build_key` selected from canary history. The dispatcher and
 consumer share `core/continuum-cli-lifecycle/build-inputs.txt`: the newest commit
