@@ -236,6 +236,7 @@ fn collapse(window: u32, claims: &ActClaims, time: &ActTime, keep: &ActPlan) -> 
         return None;
     }
     let keep_held = f64::from(held_context(keep));
+    let keep_view = f64::from(keep.view_granted());
     let keep_seconds = time.seconds(keep_held);
     let keep_rate = keep.searched.as_ref().map(|found| found.value / keep_seconds).filter(|_| keep_seconds > 0.0)?;
     let mut free = claims.clone();
@@ -252,13 +253,16 @@ fn collapse(window: u32, claims: &ActClaims, time: &ActTime, keep: &ActPlan) -> 
     let probe = |w: u32| {
         let plan = plan_at(w, free.clone());
         let held = f64::from(held_context(&plan));
+        // Her VIEW regrows, never her whole held window (which also reserves room other claims
+        // grow into): the rebuild is spread over the acts until the view grants differ no more.
+        let view = f64::from(plan.view_granted());
         let rate = plan
             .searched
             .as_ref()
-            .filter(|_| held < keep_held)
+            .filter(|_| held < keep_held && view < keep_view)
             .map(|found| {
                 let rebuild = held * time.prefill.at(held / 2.0);
-                let acts = ((keep_held - held) / time.fresh_at(held).max(1.0)).max(1.0);
+                let acts = ((keep_view - view) / time.fresh_at(held).max(1.0)).max(1.0);
                 found.value / (time.seconds(held) + rebuild / acts)
             })
             .unwrap_or(f64::NEG_INFINITY); // unwrap_or: a window that holds no less than she keeps is never a collapse
