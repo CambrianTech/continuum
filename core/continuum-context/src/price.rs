@@ -116,6 +116,10 @@ impl Line {
 pub struct ActTimeFit {
     decode: Moments,
     prefill: Moments,
+    /// Absent in a fit saved by a build that kept warm acts apart (0b1450291, reverted): it loads
+    /// empty and refills, never refusing her whole checkpoint (it did: every seat failed with
+    /// "missing field `fresh`", the M5, 2026-11-11 00:43Z).
+    #[serde(default)]
     fresh: Moments,
     observed: Moments,
     acts: u32,
