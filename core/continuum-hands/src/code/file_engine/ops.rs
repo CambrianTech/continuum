@@ -128,7 +128,7 @@ impl FileEngine {
         }
 
         // Write the file
-        fs::write(&abs_path, content)?;
+        continuum_host::durable::write_replace_keeping(&abs_path, content.as_bytes())?;
 
         // Record in change graph
         let node = ChangeNode {
@@ -363,7 +363,7 @@ impl FileEngine {
             compute_bidirectional_diff(&old_content, &new_content, relative_path);
 
         // Write the modified file
-        fs::write(&abs_path, &new_content)?;
+        continuum_host::durable::write_replace_keeping(&abs_path, new_content.as_bytes())?;
 
         // Record in change graph
         let node = ChangeNode {
@@ -558,11 +558,11 @@ impl FileEngine {
                     fs::create_dir_all(parent)?;
                 }
             }
-            fs::write(&abs_path, content)?;
+            continuum_host::durable::write_replace_keeping(&abs_path, content.as_bytes())?;
         } else {
             // Undoing a write/edit = apply reverse diff
             let restored = apply_reverse_simple(&current_content, &reverse_diff);
-            fs::write(&abs_path, &restored)?;
+            continuum_host::durable::write_replace_keeping(&abs_path, restored.as_bytes())?;
         }
         // Every undo arm rewrote (or removed) the one restored file. `undo_last` folds
         // through here, so each of its undos announces itself too.
