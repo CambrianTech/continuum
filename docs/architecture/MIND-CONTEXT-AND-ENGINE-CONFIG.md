@@ -393,17 +393,28 @@ protocol, its items keyed by what they are:
   identity and outcome hash, so `repeat::resolve` judges it on arrival like any item; its
   `RepeatRun` rides in its rendering;
 - `turn/{key}/stimulus`: the ask, required, whole;
-- `framing/{hash}`: the volatile framing (clock, presence flip), a standing item whose new version
-  supersedes the old at the tail, never mid-prefix.
+- the volatile framing (the `[now ...]` clock, `[In force this turn]`): NOT an item that stays. It is
+  the FIFO's one mutable end, rendered after every item, replaced each act and never checkpointed;
+  kept as items, each act's framing would sit stale in the middle forever (Cormac).
 The newest result's paging (`Newest::Pageable`) becomes the item's levels (whole, then its first page
 naming its handle), so the one allocation still sees it as irreducible at whole while it fits.
 `View::advance` appends the tail's new items at the end of the epoch like every source's; the prompt is
 `view.render()`; `sent()` marks them held. What goes away: `append_sent`, `SENT_TAIL`, `covers`,
 `repeat_of_newest`, and every hand-built prompt message (the ratchet goes 7 -> 0).
 
+**One prompt owner, learning included** (Cormac). The learner's example (her served conversation ending
+in the reply she learns) is the same view items through the same `view.render()`, never a second
+builder, so the learned prefix equals the served prefix by construction. A learn step's restored-tail
+proof (#5905 `served_tail_restored`) compares the tail items' keys and outcome hashes, never byte counts.
+
+**Restart.** A checkpointed view restores her call and result items; the engine's KV for them is gone,
+so her first act after a restart re-prefills them: classified as an intentional cold start (#5188),
+never read as a fast-path miss.
+
 **Proof before deploy.** The faculty replay (`fable/faculty-replay`) runs the captured acts through the
 old and new paths: bytes identical for every act that is not a repeat, the shared prefix between
-consecutive acts no shorter, and a repeated reopen arriving as its repeat block. Then the live read.
+consecutive acts no shorter, a repeated reopen arriving as its repeat block, and across a replayed
+restart the render byte-identical to the one before it, framing aside (Cormac). Then the live read.
 
 **Owners.** Fable (the source, the view, the deletions); Codex (the engine's view of the tail: what
 the KV cache holds across it); Cormac (checkpoints: the tail's items persist as the view's do).
