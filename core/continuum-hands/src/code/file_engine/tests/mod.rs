@@ -171,6 +171,29 @@
         );
     }
 
+    // what this catches (Benchy on the M5, 2026-11-11: ~25 minutes moving one closing brace): a fix
+    // that is only valid whole. A test appended after `mod tests`'s closing brace needs that brace
+    // moved to the end: removing it alone and adding one alone are each unparseable, so each is
+    // refused; the two as one batch are checked once, on the result, and land.
+    #[test]
+    fn a_fix_valid_only_whole_lands_as_one_batch() {
+        let (dir, engine) = setup_engine();
+        let before = "mod tests {\n    fn a() {}\n}\nfn b() {}\n";
+        fs::write(dir.path().join("src/moved.rs"), before).unwrap();
+        let remove = EditMode::LineRange { start_line: 3, end_line: 3, new_content: String::new() };
+        let close = EditMode::Append { content: "}\n".to_string() };
+        for half in [&remove, &close] {
+            let refused = engine.edit("src/moved.rs", half, None).expect("a refusal is a result");
+            assert!(!refused.success, "each half alone leaves the file unparseable, so it is refused");
+            assert_eq!(fs::read_to_string(dir.path().join("src/moved.rs")).unwrap(), before, "and changes nothing");
+        }
+        let batch = EditMode::Batch { edits: vec![remove, close] };
+        let landed = engine.edit("src/moved.rs", &batch, None).expect("the batch is applied");
+        assert!(landed.success, "the two together parse, so they land: {:?}", landed.error);
+        let after = fs::read_to_string(dir.path().join("src/moved.rs")).unwrap();
+        assert!(after.trim_end().ends_with('}') && after.contains("fn b() {}"), "the brace now closes after b: {after}");
+    }
+
     // what this catches: repair-forward-on-rubble. flask-4045 run 5 (M5, 2026-08-04): an
     // early edit dropped a guard clause into `super().__init__(`'s argument list; four acts
     // later she worked out the right idiom and applied a CORRECT content-anchored fix — on

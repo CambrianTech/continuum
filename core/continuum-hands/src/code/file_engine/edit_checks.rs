@@ -674,6 +674,8 @@ pub(super) fn edit_anchor_line(edit_mode: &EditMode, new_content: &str) -> Optio
             let total = new_content.lines().count() as u32;
             (total > 0).then_some(total)
         }
+        // A batch lands where its first edit does.
+        EditMode::Batch { edits } => edits.first().and_then(|first| edit_anchor_line(first, new_content)),
     }
 }
 

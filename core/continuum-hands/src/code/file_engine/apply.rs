@@ -183,6 +183,8 @@ pub(super) fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, 
             result.push_str(new_content);
             Ok(result)
         }
+        // Each edit applies to the result of the one before; the caller checks the final result once.
+        EditMode::Batch { edits } => edits.iter().try_fold(content.to_string(), |text, edit| apply_edit(&text, edit)),
     }
 }
 
