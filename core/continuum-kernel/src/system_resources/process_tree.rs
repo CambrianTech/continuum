@@ -155,7 +155,7 @@ pub fn descendants(pid: u32) -> Vec<ProcessIdentity> {
     let mut found: Vec<(usize, ProcessIdentity)> = Vec::new();
     let mut frontier = vec![(pid, 0usize)];
     while let Some((at, depth)) = frontier.pop() {
-        for &child in children.get(&at).map(Vec::as_slice).unwrap_or(&[]) {
+        for &child in children.get(&at).into_iter().flatten() { // a pid with no children has no entry
             if found.iter().any(|(_, seen)| seen.pid == child.pid) {
                 continue; // a table read mid-fork can list a pid twice; walk it once
             }
@@ -201,6 +201,34 @@ pub enum CpuTime {
 /// and the identity checked AFTER: a process that still holds the pid with the same start time
 /// after the read held it continuously since it started, so the reading was its own. A reused
 /// pid is `Gone`, never another process's CPU read as "busy". The OS call is
+
+/// What the process table lists for one pid, read alone: a liveness probe's first question.
+/// Not listed is NOT absence; the probe asks the OS kernel for positive evidence next
+/// (`continuum_host::process_presence`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Listed {
+    /// Listed and running; its start time, or 0 when the table cannot read it.
+    Running { start_time: u64 },
+    /// Listed as exited and only awaiting its reaper (a zombie): it holds its pid and start
+    /// time, so read as running it would hold what it owns forever (card e4ef7780).
+    Exited,
+    /// The table does not list it.
+    NotListed,
+}
+
+/// Read `pid` from the process table.
+pub fn listed(pid: u32) -> Listed {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let target = Pid::from_u32(pid);
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[target]), true, ProcessRefreshKind::nothing());
+    match sys.process(target) {
+        Some(p) if p.status() == ProcessStatus::Zombie => Listed::Exited,
+        Some(p) => Listed::Running { start_time: p.start_time() },
+        None => Listed::NotListed,
+    }
+}
+
 /// [`continuum_host::process_usage::cpu_time`]'s adapter.
 pub fn cpu_time(who: ProcessIdentity) -> CpuTime {
     let used = continuum_host::process_usage::cpu_time(who.pid);

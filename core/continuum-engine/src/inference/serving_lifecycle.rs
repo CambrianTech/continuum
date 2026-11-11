@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
 
 mod handoff;
-pub use handoff::{HandoffClose, HandoffOwner};
+pub use handoff::HandoffClose;
 
 use continuum_base::time::EpochMs;
 
@@ -129,7 +129,7 @@ pub enum HandoffCloseOutcome {
     Busy,
     /// Another handoff, whose owner runs (or cannot be verified gone), holds it closed: nothing
     /// changed; it is that handoff's to reopen.
-    Taken { owner: HandoffOwner },
+    Taken { owner: crate::inference::engine_residency::ProcessIncarnation },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,7 +253,7 @@ impl LifecycleGate {
     /// another live (or unverifiable) owner holds is never replaced, or its handoff would proceed
     /// to the stop with admission reopened by the other (Codex on #5553); only a verified-dead
     /// owner's close is replaced.
-    pub fn close_for_handoff(&self, owner: HandoffOwner) -> HandoffCloseOutcome {
+    pub fn close_for_handoff(&self, owner: crate::inference::engine_residency::ProcessIncarnation) -> HandoffCloseOutcome {
         let Some(operation) = self.try_operation() else {
             return HandoffCloseOutcome::Busy;
         };
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn a_handoff_close_refuses_admission_until_its_own_token_reopens_it() {
         let gate = LifecycleGate::unowned(true);
-        let me = HandoffOwner::of(std::process::id()).expect("test: this process's start time is readable");
+        let me = crate::inference::engine_residency::ProcessIncarnation::of(std::process::id()).expect("test: this process's start time is readable");
         assert!(gate.hold_for_admission().is_ok(), "open: admits");
         let HandoffCloseOutcome::Closed { token } = gate.close_for_handoff(me) else { panic!("test: a free gate closes") };
         assert_eq!(gate.hold_for_admission().err(), Some(GateRefusal::Handoff), "closed by a live owner: waits");
@@ -346,15 +346,15 @@ mod tests {
     #[test]
     fn a_second_handoff_never_releases_a_live_owners_close() {
         let gate = LifecycleGate::unowned(true);
-        let a = HandoffOwner::of(std::process::id()).expect("test: this process's start time is readable");
+        let a = crate::inference::engine_residency::ProcessIncarnation::of(std::process::id()).expect("test: this process's start time is readable");
         let HandoffCloseOutcome::Closed { token: a_token } = gate.close_for_handoff(a) else { panic!("test: A closes") };
-        let b = HandoffOwner { pid: a.pid, started_s: a.started_s }; // another handoff from a live process
+        let b = crate::inference::engine_residency::ProcessIncarnation { pid: a.pid, started_s: a.started_s }; // another handoff from a live process
         assert_eq!(gate.close_for_handoff(b), HandoffCloseOutcome::Taken { owner: a }, "B cannot take A's close");
         assert!(!gate.reopen_after_handoff(uuid::Uuid::from_u128(0xb)), "nor reopen it");
         assert_eq!(gate.hold_for_admission().err(), Some(GateRefusal::Handoff), "A's exclusion stands");
         assert!(gate.reopen_after_handoff(a_token));
         // a close whose owner is verified gone (pid 0 is never a process) is replaced
-        *gate.handoff.lock() = Some(HandoffClose { token: uuid::Uuid::from_u128(1), owner: HandoffOwner { pid: 0, started_s: 1 } });
+        *gate.handoff.lock() = Some(HandoffClose { token: uuid::Uuid::from_u128(1), owner: crate::inference::engine_residency::ProcessIncarnation { pid: 0, started_s: 1 } });
         assert!(matches!(gate.close_for_handoff(b), HandoffCloseOutcome::Closed { .. }), "a dead owner's close is replaced");
     }
 }
