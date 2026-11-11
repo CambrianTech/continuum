@@ -584,6 +584,16 @@ memory are all acting at once and the pool still cannot hold her need: a flexbox
 space first and shrinks them only when the container is full. The cost of a page-out and its later
 page-in is measured per node and is the only thing that can make collapsing cheaper than expanding.
 
+Taken to its end (Joel, 2026-11-11: "expanding the next persona in that lane isn't a huge cost either.
+So if you shrink the others, pull what you need to move forward with the persona needing it, next
+context switch for any of those reduced persona can get it back. They could all get the whole pool if
+you were smart"): a grant is not a standing share. It is held for the act that uses it: the mind
+acting now may take up to the whole pool, the minds not acting page out, and each gets her memory
+back at her own next context switch, in milliseconds, the way a GPU time-slices contexts. Only minds
+acting at the same moment share the pool (the engine batches them, section 1c); a mind acting alone
+has all of it. So every mind can have the whole pool, one act at a time, and nothing holds memory
+between its acts except what predicted reuse keeps cached.
+
 ### 8.5 Gate
 
 On BigMama and the M5 over an hour: capacity refusals 0; every mind with a turn asked takes an act;
