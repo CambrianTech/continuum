@@ -198,6 +198,31 @@ impl FileEngine {
         let old_content = fs::read_to_string(&abs_path)?;
         let new_content = apply_edit(&old_content, edit_mode)?;
 
+        // AN EDIT THAT CHANGES NOTHING SAYS SO, AND WRITES NOTHING (FEEDBACK-PARITY problem 4,
+        // invariant 2). Twice on the M5, 2026-11-11, a search_replace whose search and replace
+        // were identical answered ok, rewrote the same bytes, and was taken as a fix (Benchy
+        // 16:01Z; Aiko 16:52Z, who then believed a missing `if` header was restored for twelve
+        // minutes). Every edit mode reaches this one comparison.
+        if new_content == old_content {
+            continuum_base::probe!(
+                class = "code.edit.unchanged",
+                path = %relative_path,
+                "edit changed nothing; nothing written"
+            );
+            return Ok(WriteResult {
+                success: false,
+                change_id: None,
+                file_path: relative_path.to_string(),
+                bytes_written: 0,
+                error: Some(format!(
+                    "NO CHANGE: applying this edit leaves {relative_path} exactly as it is, so nothing \
+                     was written. Your replacement text equals the text it replaces (or the range \
+                     already holds it). Read the region again and send the text as you want it to be."
+                )),
+                applied_context: None,
+            });
+        }
+
         self.security
             .validate_size(relative_path, new_content.len() as u64)?;
 

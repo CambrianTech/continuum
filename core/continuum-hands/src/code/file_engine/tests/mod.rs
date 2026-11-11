@@ -175,6 +175,23 @@
     // that is only valid whole. A test appended after `mod tests`'s closing brace needs that brace
     // moved to the end: removing it alone and adding one alone are each unparseable, so each is
     // refused; the two as one batch are checked once, on the result, and land.
+    // what this catches: the M5, 2026-11-11 (Benchy 16:01Z, Aiko 16:52Z): a search_replace whose
+    // replace equals its search answered ok and rewrote the same bytes, and was taken as a fix.
+    // An edit that changes nothing is not a success, writes nothing, and records no change.
+    #[test]
+    fn an_edit_that_changes_nothing_says_so_and_writes_nothing() {
+        let (dir, engine) = setup_engine();
+        let path = dir.path().join("src/same.rs");
+        fs::write(&path, "fn a() {}\n").unwrap();
+        let written_at = fs::metadata(&path).unwrap().modified().unwrap();
+        let same = EditMode::SearchReplace { search: "fn a() {}".into(), replace: "fn a() {}".into(), all: false };
+        let result = engine.edit("src/same.rs", &same, None).expect("a no-change edit is a result");
+        assert!(!result.success, "nothing changed, so it is not a success");
+        assert!(result.change_id.is_none() && result.bytes_written == 0, "no change recorded, nothing written");
+        assert!(result.error.as_deref().is_some_and(|e| e.starts_with("NO CHANGE")), "{:?}", result.error);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), written_at, "the file was not rewritten");
+    }
+
     #[test]
     fn a_fix_valid_only_whole_lands_as_one_batch() {
         let (dir, engine) = setup_engine();
