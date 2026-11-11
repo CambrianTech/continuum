@@ -134,6 +134,11 @@ mod the_newest_result_over_her_window {
 
     /// Her working memory after recording `content` as her newest result in `scope` (her acting root).
     fn memory_after(content: &str, scope: Option<&str>) -> Arc<WorkingMemory> {
+        memory_with(content, scope, ResultCustody::Whole { handle: HANDLE.into() })
+    }
+
+    /// Her memory after one act whose result is held under `custody`.
+    fn memory_with(content: &str, scope: Option<&str>, custody: ResultCustody) -> Arc<WorkingMemory> {
         let wm = Arc::new(WorkingMemory::new(8));
         wm.set_scope(scope.map(str::to_owned));
         let room = Uuid::new_v4();
@@ -144,7 +149,7 @@ mod the_newest_result_over_her_window {
             output: ToolOutput {
                 image: None,
                 additional_images: None,
-                result: crate::ai::types::ToolResult { tool_use_id: "call-aris".into(), content: content.into(), is_error: None, custody: ResultCustody::Whole { handle: HANDLE.into() } },
+                result: crate::ai::types::ToolResult { tool_use_id: "call-aris".into(), content: content.into(), is_error: None, custody: custody.clone() },
                 verb: ToolVerb::classify("work/submission"),
                 paths: Vec::new(),
                 verdict: Default::default(),
@@ -152,7 +157,7 @@ mod the_newest_result_over_her_window {
             status: ActStatus::Executed,
         };
         let rendered = observation.render_recency();
-        wm.record_receipt_typed(&[observation], &rendered, Some(room), ResultCustody::Whole { handle: HANDLE.into() });
+        wm.record_receipt_typed(&[observation], &rendered, Some(room), custody);
         wm
     }
 
@@ -185,6 +190,24 @@ mod the_newest_result_over_her_window {
         let restored = Arc::new(WorkingMemory::new(8));
         restored.restore(before.snapshot());
         assert_fits_paged(&faculty_with(restored), &whole);
+    }
+
+    // what this catches (the IntelMac, 2026-11-11: Iris and Eitan, 38 and 37 refusals in a row,
+    // 'prompt capacity 43448 > 32768 ... parked'): a newest result with no saved whole had no page,
+    // was charged whole as her least, and refused every act while it stayed newest. Saved when it
+    // must page, it comes in as its first page naming the output it was saved as, and the act goes.
+    #[test]
+    fn an_unsaved_newest_result_is_saved_and_pages_instead_of_refusing() {
+        let whole = evidence_answer(578);
+        let faculty = faculty_with(memory_with(&whole, None, ResultCustody::Unsaved));
+        let ws = Workspace::new("what does the evidence say?");
+        let view = faculty.prompt_view_with_visual_feedback(&ws, ARIS_WINDOW, aris_calibration(), None);
+        assert!(view.capacity_error.is_none() && view.budget_fault.is_none(), "{:?} {:?}", view.capacity_error, view.budget_fault);
+        let results = tool_results(&view);
+        assert_eq!(results.len(), 1, "the native call/result pair is intact");
+        let (note, page) = results[0].1.split_once('\n').expect("test: a note, then the page"); // JUSTIFIED: test fixture
+        assert!(note.contains("this is its first page") && note.contains("\"outputId\":\""), "a page naming the output it was saved as: {note}");
+        assert!(!page.is_empty() && whole.starts_with(page) && page.len() < whole.len(), "content from her result's start, short of whole");
     }
 
     // what this catches: two owners deciding differently whether a result is her current one. Her
