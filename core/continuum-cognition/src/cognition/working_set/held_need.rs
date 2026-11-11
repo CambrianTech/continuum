@@ -83,17 +83,13 @@ pub fn need_tokens(d: &PersonaDemand) -> Option<NeedSample> {
 /// mind's need leaves another dark (`capacity::window_grant`). `None` until a sample or a floor is
 /// measured; the allocator then gates on the wish.
 pub fn resident_need(d: &PersonaDemand) -> Option<crate::inference::planning::window_allocator::observed::Observed<crate::inference::planning::window_allocator::Tokens>> {
-    use crate::inference::planning::window_allocator::{observed::Observed, Tokens};
-    // A bound stays a bound: admission reads it through `Observed::within`, at most its value and at
-    // most what one sequence holds, so above the ceiling she is granted the ceiling and her view
-    // collapses to fit it. Read as exact, a bound past the ceiling was never granted, never held, and
-    // never measured again: every act parked for good (BigMama, Sahar on dc01d9563, 2026-11-11
-    // 09:19-11:59Z: 'NeedAboveCeiling 116240/58112' at fit 29,056; Codex traced it here). Only an
-    // irreducible floor (her newest turn cannot be sent below it) is exact, and it waits for room.
-    match need_tokens(d)? {
-        NeedSample::Exact(need) => Tokens::new(need).map(Observed::Exact),
-        NeedSample::AtLeast { at_least } => Tokens::new(at_least).map(|at_least| Observed::AtLeast { at_least }),
-    }
+    use crate::inference::planning::window_allocator::Tokens;
+    // A bound stays a bound over her floor (`Observed::over`): admission reads it through
+    // `Observed::within`, which collapses the bound into what exists and never the floor. Read as
+    // exact, a bound past the ceiling was never granted, never held and never measured again: every
+    // act parked for good (BigMama, Sahar on dc01d9563, 2026-11-11 09:19-11:59Z: 'NeedAboveCeiling
+    // 116240/58112' at fit 29,056; Codex traced it here, and found the floor case on #5931).
+    need_tokens(d)?.try_map(Tokens::new).map(|need| need.over(d.floor_tokens.and_then(Tokens::new)))
 }
 
 /// Her need ring's observed slots, split into exact sizes and censored bounds.

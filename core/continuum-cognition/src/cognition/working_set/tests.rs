@@ -647,6 +647,24 @@ fn a_censored_need_raises_her_residency_by_its_value_never_to_a_whole_sequence()
     assert_eq!(need.within(58_112).get(), 58_112, "past the ceiling: the ceiling, never parked (Sahar)");
 }
 
+// what this catches (Codex on #5931): a bound clamped below her irreducible floor. A floor between
+// the ceiling and the bound must stand and wait; a floor at the bound is still a floor; a floor
+// under the ceiling raises what the bound clamps to and never lowers it.
+#[test]
+fn a_bound_is_clamped_to_the_ceiling_never_below_her_floor() {
+    let reg = WorkingSetRegistry::new();
+    let her = Uuid::new_v4();
+    let need_at = |floor: u32, ceiling: u32| {
+        reg.record_need_in_memory(her, NeedSample::AtLeast { at_least: 116_240 }, 1);
+        reg.record_floor_in_memory(her, floor, 1);
+        resident_need(&reg.demand_of(her).expect("recorded")).expect("a need").within(ceiling).get()
+    };
+    assert_eq!(need_at(60_000, 58_112), 60_000, "a floor past the ceiling stands, and waits for room");
+    assert_eq!(need_at(116_240, 58_112), 116_240, "a floor at the bound is still a floor");
+    assert_eq!(need_at(30_000, 58_112), 58_112, "a floor under the ceiling: the bound clamps to the ceiling");
+    assert_eq!(need_at(30_000, 262_144), 116_240, "a roomy ceiling: the bound's value");
+}
+
 // what this catches (the M5, 2026-11-04): a deliberate start or a turnover within the grant
 // measures no shortfall, and must not inflate her need: held turns alone stay an exact size, the
 // same median as before the bound existed, and an exact need raises no wish.
