@@ -216,7 +216,36 @@ fn an_item_whose_element_the_epoch_shows_under_another_key_is_not_appended() {
     let judged = view.judge_tail(&tail, &Acts(Vec::new()), |_| Level::Full);
     assert_eq!(view.append_tail(judged).items, 1, "the tail shows act 1 once served");
     assert_eq!(view.advance(&[&acts]).items, 0, "her actions offer act 1 again: already shown");
-    assert!(!view.renders("acts", "1") && view.renders("tail", "act/1/result"));
+    assert!(view.renders("acts", "1") && view.renders("tail", "act/1/result"), "she read act 1 whole, where her tail showed it");
+}
+
+// what this catches: the M5's tail re-prefill (2026-11-06, 2,822 s over 78 acts): her tail sent once
+// and re-rendered the next act as an item of her actions, so no prompt was the next one's prefix.
+// Joined once served, her tail is the next prompt's prefix, the act it showed never arrives again
+// from her actions, and a start renders that act from her actions.
+#[test]
+fn a_served_tail_is_the_next_acts_prefix_and_its_act_never_arrives_twice() -> Result<(), GrantMismatch> {
+    let mut acts = Acts(Vec::new());
+    acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, "result 1");
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full)?;
+    view.advance(&[&acts]);
+    acts.push("code/read", r#"{"path":"b.rs"}"#, ToolEffect::Observes, "result 2");
+    let mut shown = tail_item(&acts, 2);
+    shown.full = "result 2 as her tail sent it".to_owned();
+    let judged = view.judge_tail(&Tail(vec![shown]), &Acts(acts.0[..1].to_vec()), |_| Level::Full);
+    let sent = [rendered(&view), "result 2 as her tail sent it".to_owned()].join("\n");
+    view.append_tail(judged);
+    view.sent();
+    assert_eq!(rendered(&view), sent, "her view ends with her tail exactly as it was sent");
+    acts.push("code/read", r#"{"path":"c.rs"}"#, ToolEffect::Observes, "result 3");
+    view.advance(&[&acts]);
+    let next = rendered(&view);
+    assert!(next.starts_with(&sent), "the next act's prompt extends the sent one");
+    assert!(!next.contains("[#2 code/read] result 2"), "act 2 arrived twice:\n{next}");
+    view.turn_over(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full)?;
+    let started = rendered(&view);
+    assert!(started.contains("[#2 code/read] result 2") && !started.contains("as her tail sent it"), "a start renders from her actions:\n{started}");
+    Ok(())
 }
 
 // what this catches (IntelMac, 2026-11-11: one saved output reopened 20+ times, each arriving

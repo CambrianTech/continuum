@@ -3,9 +3,9 @@
 //! A source renders its current state as ITEMS under stable keys (one result, one open
 //! file, one notice), never as one block. The epoch appends only the items whose rendering
 //! changed, so a source that grows by one item costs one item, not a re-render of all of
-//! them. A source that cannot key its state (the clock, this act's ask) is not a source:
-//! it rides the act's tail after the epoch, and the tail joins the epoch in the bytes it was
-//! sent (`view::View::append_sent`), so even it never moves once sent.
+//! them. Even the act's tail (the clock, the ask, her call and its result) is a source, keyed by
+//! what each item is: judged by the view before the send and joining the epoch once served
+//! (`view::View::judge_tail`, `view::View::append_tail`), so it never moves once sent.
 
 use crate::cause::{Act, Cause, Content, ContentHash, ElementId};
 use crate::epoch::Block;

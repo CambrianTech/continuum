@@ -157,10 +157,11 @@ pub struct View<T: Block> {
     /// a view saved before repeats, which held none.
     #[serde(default)]
     repeats: HashSet<SourceId>,
-    /// Items a sent prompt's tail already showed her this epoch ([`View::append_sent`]): the tail
-    /// is in the view in the bytes it was sent, so the item never arrives again as its source
-    /// renders it until a start re-renders everything. Absent in a view saved before the tail
-    /// joined the view, which covered nothing.
+    /// Items whose element her epoch already shows whole under another key (her act's tail showed
+    /// act k; her actions now offer it as `#k`): one element, one occurrence, so the item never
+    /// arrives again as its source renders it until a start re-renders everything, and she read it
+    /// where it was shown ([`View::renders`]). Absent in a view saved before the tail joined the
+    /// view, which covered nothing.
     #[serde(default)]
     covered: HashSet<SourceId>,
     /// Items of a source the start's allocation SHED for want of its floor ([`View::withhold`]):
@@ -583,50 +584,6 @@ impl<T: Block> View<T> {
         (self.epoch.holds(&id) && !self.collapsed.contains(&id) && !self.repeats.contains(&id)) || self.covered.contains(&id)
     }
 
-    /// Whether a sent tail already showed her `source`'s item `item` this epoch
-    /// ([`View::append_sent`]): the caller does not send it in a tail again.
-    pub fn covers(&self, source: &str, item: &str) -> bool {
-        self.covered.contains(&key(source, item))
-    }
-
-    /// Whether this epoch holds `block` exactly, appended under `source` by a sent tail and not
-    /// retired: a tail piece she was already sent (the same clock line, the same ask) is not sent
-    /// again, or every act would re-append it.
-    pub fn holds_sent(&self, source: &str, block: &T) -> bool {
-        let prefix = format!("{source}/");
-        self.epoch.events().iter().any(|event| !event.retired && event.source.0.starts_with(&prefix) && &event.text == block)
-    }
-
-    /// The tail of a prompt that was SENT after this view (the clock line, the ask, her own call
-    /// and its result), appended in the exact blocks it was sent under `source`, so the next act's
-    /// prompt is this prompt plus what is new and the engine resumes at its end. Before this the
-    /// tail was re-rendered every act: her newest result as native protocol at the end of one
-    /// prompt and as a `[result #n]` item of her actions in the next, so every act re-prefilled the
-    /// previous one's tail (the M5, 2026-11-06: 2,822 s over 78 acts). `covers` names the items
-    /// (`(source, key)`) these blocks already show her: they do not arrive again from their source
-    /// this epoch; a start re-renders everything from the sources and drops the tail blocks.
-    pub fn append_sent(&mut self, source: &str, blocks: Vec<T>, covers: &[(&str, &str)]) -> Advance {
-        let mut advance = Advance::default();
-        for block in blocks {
-            // Unique for the epoch: events only grow once a prompt is sent (rewind never passes it).
-            let id = key(source, &self.epoch.events().len().to_string());
-            let chars = block.chars();
-            if let Observed::Appended { .. } = self.epoch.observe(id, None, Level::Full, block) {
-                advance.items += 1;
-                advance.chars += chars;
-            }
-        }
-        for (covered_source, item) in covers {
-            self.covered.insert(key(covered_source, item));
-        }
-        // The tail is this act's growth too: the next start reserves room for it.
-        match self.appended.last_mut() {
-            Some(last) => *last += advance.chars,
-            None => self.appended.push(advance.chars),
-        }
-        advance
-    }
-
     /// Whether `id` is held whole this epoch: rendered at its whole level, not collapsed,
     /// summarized, folded or a repeat. What a repeat may point at.
     fn holds_whole(&self, id: &SourceId) -> bool {
@@ -635,7 +592,7 @@ impl<T: Block> View<T> {
             && !self.summarized.contains(id)
             && !self.folded.contains(id)
             && !self.repeats.contains(id);
-        // A sent tail showed it in the bytes she read it in: whole.
+        // Her tail showed its element whole, under the tail's key.
         held || self.covered.contains(id)
     }
 
@@ -724,14 +681,18 @@ impl<T: Block> View<T> {
                 }
                 // A folded item is held by its source's fold block, fixed at the start: it
                 // arrives on its own only when a later start raises it (the prefix never moves).
-                // A covered item is in her view already, in the bytes a sent tail showed her.
+                // A covered item is in her view already, where her tail showed its element whole.
                 // A withheld item waits for a start that funds its source (`View::withhold`).
                 if self.folded.contains(&id) || self.covered.contains(&id) || self.withheld.contains(&id) {
                     continue;
                 }
                 // One element, one occurrence: an item whose element her epoch already shows under
-                // another key (her act's tail showed act k; her actions now offer it as `#k`).
+                // another key (her act's tail showed act k; her actions now offer it as `#k`). Shown
+                // whole there, she read it there: covered for the epoch.
                 if !self.epoch.holds(&id) && self.epoch.holds_element(item.id()) {
+                    if self.epoch.holds_element_whole(item.id()) {
+                        self.covered.insert(id);
+                    }
                     continue;
                 }
                 // An item with no pointer would leave her view entirely if collapsed (a peer's
@@ -812,7 +773,7 @@ impl<T: Block> View<T> {
 
     /// The items of `source` this epoch holds (their latest version not retired) that the source no
     /// longer offers, each with the notice that ends it, for a source of states ([`Source::ended`]).
-    /// Its fold block and anything a sent tail covers are not its items to end.
+    /// Its fold block and anything her tail covers are not its items to end.
     fn ended(&self, source: &dyn Source<T>) -> Vec<(SourceId, T)> {
         let prefix = format!("{}/", source.name());
         let offered: HashSet<String> = source.items().into_iter().map(|item| item.key).collect();

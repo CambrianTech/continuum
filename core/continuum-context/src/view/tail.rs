@@ -13,7 +13,9 @@
 //! Every tail item is judged as every arriving item is: a repeat of an act whose whole she holds
 //! arrives as its repeat block (invariant 4), and an item whose element her epoch already shows is
 //! shown (one element, one occurrence). Its level is the act's: whole, or the page the allocation
-//! chose for her newest result (`Level::Page`).
+//! chose for her newest result (`Level::Page`). Once it is held, her sources' items for the same
+//! elements are covered: never shown a second time, and read as she read them in her tail
+//! (`View::renders`).
 
 use super::{key, repeat::resolve, Advance, View};
 use crate::cause::ElementId;
@@ -29,6 +31,28 @@ pub struct Judged<T> {
     level: Level,
     /// What her prompt shows of it.
     pub text: T,
+}
+
+impl<T: Block> Judged<T> {
+    /// Her tail with no view to judge it against (none could start, or her view is not placed
+    /// yet): every item whole, as a view that holds nothing judges it.
+    pub fn whole(tail: &dyn Source<T>) -> Vec<Self> {
+        let name = tail.name().to_owned();
+        tail.items()
+            .into_iter()
+            .map(|item| Self { id: key(&name, &item.key), element: item.id(), level: Level::Full, text: crate::source::whole(tail, item) })
+            .collect()
+    }
+
+    /// The occurrence it shows: which item of her tail it is.
+    pub fn element(&self) -> ElementId {
+        self.element
+    }
+
+    /// The level her view judged it at.
+    pub fn level(&self) -> Level {
+        self.level
+    }
 }
 
 impl<T: Block> View<T> {
