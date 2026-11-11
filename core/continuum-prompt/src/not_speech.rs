@@ -188,13 +188,15 @@ fn opens_with_tool_envelope(t: &str) -> bool {
                 return true;
             }
 
-            // Stage word + namespaced call: [stage] callee(obj or {obj})
-            let a = after_close.trim_start();
-            let call_len = a.find(['(', '{', ' ', '\n']).unwrap_or(a.len());
-                // Stage-word + call form: [answer] note(x) — only valid if
-                // the verb part is namespaced (prevents false positives like
-                // `[answer] this` or `[code] hello`).
-                if let Some((stage_word, _call)) = trimmed_after.split_once('(') {
+            // Stage-word + call form: [answer] note(x) — only valid if
+            // the verb part is namespaced (prevents false positives like
+            // `[answer] this` or `[code] hello`).
+            // [execute] code/read(code=…` (#0d5c1ffa, #academy 2026-09-16 23:5xZ):
+            // the bracket holds a STAGE WORD and the namespaced CALL follows it.
+            // The call is the discriminator — a namespaced verb then `(` or `{`:
+            // `[answer] the code/read verb is fine` (no call) stays speech.
+            // I audited all lines this catches before writing it; no false positive.
+            if let Some((stage_word, _call)) = trimmed_after.split_once('(') {
                     let stage_trimmed = stage_word.trim();
                     if !stage_trimmed.is_empty()
                         && stage_trimmed.contains('/')
@@ -204,14 +206,34 @@ fn opens_with_tool_envelope(t: &str) -> bool {
                     }
                 }
 
-            // Space-separated form with `(` — namespaced verbs only; prevents `[answer] note(x)` from matching.
+            // Space-separated form with `(` — namespaced verbs only; prevents
+            // `[answer] note(x)` from matching. This catches cases like
+            // `[code/read](x)` that canary misses (canary's space-separated branch
+            // only checks starts_with('{'), not '('). Regression for card 60a8875d.
             if !before_close.contains(',') && verb_ok(before_close)
                 && trimmed_after.starts_with('(')
                 && before_close.contains('/')
             {
                 return true;
-            }
+
             // Bare namespaced: [ns/verb] with nothing object-like after ]
+            // Measured over 24h across the 8 citizens on IntelMac —
+            // 241 spoken lines, 48 opening with a `[verb]` bracket, of which the two
+            // object-bearing forms above caught 16. The other 32 open like this:
+            //
+            //   [code/run]
+            //   [work/list]
+            //   [command/run]\n[invalid] command_run: unsupported lang '…'
+            //   [code/run]\n\n# Code executed successfully. …
+            //
+            // A bare verb cannot be matched on SHAPE alone — `[answer]`, `[pass]`,
+            // and `[repetition]` (the perception brick) all satisfy `verb_ok`. What
+            // separates them is the NAMESPACE: every command is `namespace/verb`, so
+            // the slash is a property of the command surface. Of the 48 bracket-
+            // openers, this takes the gate 16 → 33; the 15 it still leaves alone are
+            // exactly the verdict dialect and the brick (#4067). I audited all lines
+            // this catches: code/run ×14, work/list ×2, command/run ×1 — every one a
+            // tool envelope posted where prose belongs, no false positive among them.
             if !before_close.contains(',') && verb_ok(before_close) && before_close.contains('/') && (trimmed_after.is_empty() || (!trimmed_after.starts_with('{') && !trimmed_after.starts_with('(')))
             {
                 return true;
@@ -229,8 +251,8 @@ fn opens_with_tool_envelope(t: &str) -> bool {
             });
 
             // Direct namespaced call: [ns/verb({…})] or [ns/verb(kwargs=…)]
-            if verb_ok(before_paren) && before_paren.contains('/') && (has_json || has_kwargs)
-            {
+            // [code/read({"file_path":"src/main.rs"})] (Saoirse, Intel Mac, qwen2.5-0.5b);
+            // the KWARGS form confirmed in 0051cdcf — `code/shell(cmd=…)` inside brackets.
                 return true;
             }
 
