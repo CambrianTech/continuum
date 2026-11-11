@@ -393,11 +393,20 @@ protocol, its items keyed by what they are:
   identity and outcome hash, so `repeat::resolve` judges it on arrival like any item; its
   `RepeatRun` rides in its rendering;
 - `turn/{key}/stimulus`: the ask, required, whole;
-- the volatile framing (the `[now ...]` clock, `[In force this turn]`): NOT an item that stays. It is
-  the FIFO's one mutable end, rendered after every item, replaced each act and never checkpointed;
-  kept as items, each act's framing would sit stale in the middle forever (Cormac).
-The newest result's paging (`Newest::Pageable`) becomes the item's levels (whole, then its first page
-naming its handle), so the one allocation still sees it as irreducible at whole while it fits.
+- `act/{seq}/framing`: the act's framing (the `[now ...]` clock, `[In force this turn]`), an item
+  like the rest, in its place before the ask (the parrot-fix order). Revised after the code read
+  (2026-11-11): made the mutable end and never kept, it would break the cached prefix at every act
+  (act k's framing gone from act k+1's prompt re-prefills act k's call and result each time).
+  A framing line was true when sent ("[now 03:12Z]"): kept, it is append-only history, and its
+  growth folds with its act like any item. Prefix stability wins over compactness.
+The newest result's paging (`Newest::Pageable`) becomes a level of its item, `Level::Page`, decided by
+the allocation (`newest.shown`) as today and passed into the view's admission for that one item; the
+source renders it with today's page renderer (`prompt/newest_result.rs`, moved into the source).
+
+**One allocation, no double count.** The arriving tail keeps its own claims in the one allocation:
+REQUIRED (the ask and her statement), NEWEST (her result) and LAST_MOVE, as today. Once sent, its items
+are held view items, counted by the view's claims (their held basis) from the next act on, which is
+exactly today's accounting after `append_sent`. The source keeps that split; it adds no claim.
 `View::advance` appends the tail's new items at the end of the epoch like every source's; the prompt is
 `view.render()`; `sent()` marks them held. What goes away: `append_sent`, `SENT_TAIL`, `covers`,
 `repeat_of_newest`, and every hand-built prompt message (the ratchet goes 7 -> 0).
