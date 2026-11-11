@@ -189,16 +189,26 @@ fn opens_with_tool_envelope(t: &str) -> bool {
             // Stage word + namespaced call: [stage] callee(obj or {obj})
             let a = after_close.trim_start();
             let call_len = a.find(['(', '{', ' ', '\n']).unwrap_or(a.len());
-            if call_len > 0
-                && verb_ok(before_close)
-                && verb_ok(&a[..call_len])
-                && matches!(a[call_len..].chars().next(), Some('(') | Some('{'))
+                // Stage-word + call form: [answer] note(x) — only valid if
+                // the verb part is namespaced (prevents false positives like
+                // `[answer] this` or `[code] hello`).
+                if let Some((stage_word, _call)) = trimmed_after.split_once('(') {
+                    let stage_trimmed = stage_word.trim();
+                    if !stage_trimmed.is_empty()
+                        && stage_trimmed.contains('/')
+                        && verb_ok(stage_trimmed)
+                    {
+                        return true;
+                    }
+                }
+
+            // Space-separated form: [verb] {obj} or [verb](args) — no slash required for the verb itself.
+            if !before_close.contains(',') && verb_ok(before_close) && (trimmed_after.starts_with('{') || trimmed_after.starts_with('('))
             {
                 return true;
             }
-
             // Bare namespaced: [ns/verb] with nothing object-like after ]
-            if !before_close.contains(',') && verb_ok(before_close) && before_close.contains('/') && !trimmed_after.starts_with('{')
+            if !before_close.contains(',') && verb_ok(before_close) && before_close.contains('/') && (trimmed_after.is_empty() || (!trimmed_after.starts_with('{') && !trimmed_after.starts_with('(')))
             {
                 return true;
             }
