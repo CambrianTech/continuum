@@ -8,7 +8,7 @@ use super::*;
 /// run of non-blank lines around it. Indent is the one structure every language's text
 /// shares, so this needs no parser. Both the edit receipt (what landed, whole) and the repair
 /// search (where the construct really closes) read this one measure; neither guesses a count.
-pub(super) fn construct_span(content: &str, line: u32) -> std::ops::RangeInclusive<u32> {
+pub(super) fn construct_span(content: &str, line: u32) -> Option<std::ops::RangeInclusive<u32>> {
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len() as u32;
     let indent = |n: u32| -> Option<usize> {
@@ -16,11 +16,11 @@ pub(super) fn construct_span(content: &str, line: u32) -> std::ops::RangeInclusi
         (!l.trim().is_empty()).then(|| l.len() - l.trim_start().len())
     };
     if total == 0 {
-        return 1..=0;
+        return None;
     }
     let at = line.clamp(1, total);
     let Some(own) = (at..=total).find_map(indent) else {
-        return at..=at;
+        return Some(at..=at);
     };
     let opens = ((at + 1)..=total).find_map(indent).is_some_and(|next| next > own);
     let opener = if opens {
@@ -31,7 +31,7 @@ pub(super) fn construct_span(content: &str, line: u32) -> std::ops::RangeInclusi
     let Some((start, level)) = opener else {
         let first = (1..at).rev().take_while(|n| indent(*n).is_some()).last().unwrap_or(at); // unwrap_or: no non-blank line above means the run starts at the line itself
         let last = ((at + 1)..=total).take_while(|n| indent(*n).is_some()).last().unwrap_or(at); // unwrap_or: no non-blank line below means the run ends at the line itself
-        return first..=last;
+        return Some(first..=last);
     };
     let mut end = start;
     for n in (start + 1)..=total {
@@ -46,7 +46,7 @@ pub(super) fn construct_span(content: &str, line: u32) -> std::ops::RangeInclusi
             None => {}
         }
     }
-    start..=end
+    Some(start..=end)
 }
 
 /// A file's own language checker, if this file type has a cheap one. `None` means "no
@@ -317,7 +317,10 @@ pub(super) fn repair_hint(abs_path: &std::path::Path, old_content: &str, edit_mo
     // lines need not follow the opener's indent: sympy-22005's `'\'')` closes the `raise` block),
     // so that measured span bounds the search: never past it into unrelated code.
     let old_lines: Vec<&str> = old_content.lines().collect();
-    for candidate in (end_line + 1)..=*construct_span(old_content, *end_line).end() {
+    let Some(span) = construct_span(old_content, *end_line) else {
+        return GENERAL.to_string();
+    };
+    for candidate in (end_line + 1)..=*span.end() {
         let widened = EditMode::LineRange {
             start_line: *start_line,
             end_line: candidate,
@@ -731,9 +734,25 @@ pub(super) fn numbered_neighborhood(content: &str, anchor: u32) -> String {
     }
     let anchor = anchor.clamp(1, total);
     let mut out = String::new();
-    for n in construct_span(content, anchor) {
+    for n in construct_span(content, anchor).into_iter().flatten() {
         let marker = if n == anchor { '>' } else { ' ' };
         out.push_str(&format!("{marker}{n:>5} | {}\n", lines[(n - 1) as usize]));
     }
     out
+}
+
+#[cfg(test)]
+mod construct_span_tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_file_has_no_construct_or_numbered_lines() {
+        assert_eq!(construct_span("", 1), None);
+        assert_eq!(numbered_neighborhood("", 1), "(file is now empty)");
+    }
+
+    #[test]
+    fn a_nonempty_construct_keeps_one_based_inclusive_lines() {
+        assert_eq!(construct_span("fn f() {\n    run();\n}\n", 2), Some(1..=3));
+    }
 }
