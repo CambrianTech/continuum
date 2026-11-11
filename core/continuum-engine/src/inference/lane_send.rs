@@ -167,7 +167,14 @@ pub(crate) async fn send_with_lane_retry(
             // against the 104,857 share, then landing on the retry sized to the share.
             let measured = super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply };
             match fill.admission {
-                Some(DispatchAdmission { admission, .. }) => measured.check(admission.window, &cfg.name, quote.caller)?,
+                Some(DispatchAdmission { admission, .. }) => {
+                    // The quote awaited the engine, which may have been replaced meanwhile:
+                    // residency again (Codex on #5947), then the size against her grant.
+                    super::serving_guard::guard_resident_model(
+                        cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Estimated(0), quote.caller,
+                    ).await?;
+                    measured.check(admission.window, &cfg.name, quote.caller)?;
+                }
                 None => super::serving_guard::guard_resident_model(cfg, quote.dedicated_lane, fill.model, measured, quote.caller).await?,
             }
             continuum_base::probe!(
