@@ -213,7 +213,8 @@ fn an_item_whose_element_the_epoch_shows_under_another_key_is_not_appended() {
     let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
     acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
     let tail = Tail(vec![tail_item(&acts, 1)]);
-    assert_eq!(view.append_tail(&tail, &Acts(Vec::new()), |_| Level::Full).items, 1, "the tail shows act 1");
+    let judged = view.judge_tail(&tail, &Acts(Vec::new()), |_| Level::Full);
+    assert_eq!(view.append_tail(judged).items, 1, "the tail shows act 1 once served");
     assert_eq!(view.advance(&[&acts]).items, 0, "her actions offer act 1 again: already shown");
     assert!(!view.renders("acts", "1") && view.renders("tail", "act/1/result"));
 }
@@ -229,13 +230,16 @@ fn her_tail_judges_her_newest_act_against_her_history() {
     view.advance(&[&acts]);
     acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, &body("saved"));
     let history = Acts(acts.0[..1].to_vec());
-    let appended = view.append_tail(&Tail(vec![tail_item(&acts, 2)]), &history, |_| Level::Full);
+    let before = view.render().count();
+    let judged = view.judge_tail(&Tail(vec![tail_item(&acts, 2)]), &history, |_| Level::Full);
+    assert!(judged[0].text.contains("repeat of #1"), "judged before the send: {}", judged[0].text);
+    assert_eq!(view.render().count(), before, "judging appends nothing: a refused render leaves her epoch as it was");
+    let appended = view.append_tail(judged);
     assert_eq!(appended.repeats, 1, "reopening it again, its whole in front of her, is the repeat");
-    let last = view.render().last().cloned().expect("the tail appended");
-    assert!(last.contains("repeat of #1"), "{last}");
     acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, "a different body");
-    let changed = view.append_tail(&Tail(vec![tail_item(&acts, 3)]), &Acts(acts.0[..2].to_vec()), |_| Level::Full);
-    assert_eq!((changed.items, changed.repeats), (1, 0), "a changed outcome arrives whole");
+    let changed = view.judge_tail(&Tail(vec![tail_item(&acts, 3)]), &Acts(acts.0[..2].to_vec()), |_| Level::Full);
+    assert_eq!(changed.len(), 1);
+    assert!(!changed[0].text.contains("repeat of"), "a changed outcome arrives whole: {}", changed[0].text);
 }
 
 // what this catches: her newest result paged by the act's allocation arriving whole anyway, or as a
@@ -247,7 +251,8 @@ fn a_paged_result_arrives_at_its_page() {
     acts.push("code/read", r#"{"path":"big.rs"}"#, ToolEffect::Observes, &body("big.rs"));
     let mut item = tail_item(&acts, 1);
     item.summary = Some("[page 1 of big.rs: lines 1-40 of 61; read on with tool/output act=1 startLine=41]".to_owned());
-    view.append_tail(&Tail(vec![item]), &Acts(Vec::new()), |_| Level::Page);
+    let judged = view.judge_tail(&Tail(vec![item]), &Acts(Vec::new()), |_| Level::Page);
+    view.append_tail(judged);
     let event = view.epoch.events().last().expect("the page appended");
     assert_eq!(event.level, Level::Page);
     assert!(event.text.starts_with("[page 1 of big.rs"), "{}", event.text);

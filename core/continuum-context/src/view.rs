@@ -23,6 +23,7 @@ mod allot;
 mod log;
 mod repeat;
 mod tail;
+pub use tail::Judged;
 
 use allot::{allot, rank};
 pub use crate::level::Level;
