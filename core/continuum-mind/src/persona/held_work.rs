@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::cognition::work_preconditions::Held;
-use crate::cognition::workspace::{AwaitingResubmission, EndedClaim, HeldWork};
+use crate::cognition::workspace::{AwaitingResubmission, ChangedFile, ChangesUnread, EndedClaim, FileChange, HeldWork, SubmissionChanges, SubmissionVerdict};
 
 /// Reads THIS persona's currently-claimed work cards from airc. A supertrait of
 /// `AircCitizen` (like `AircRosterReader`): the persona's runtime implements it
@@ -78,17 +78,155 @@ pub(crate) async fn read_through(reader: &(dyn AircWorkReader + '_), persona: Uu
             Vec::new()
         }
     };
-    let baselines = BASELINES.get_or_init(Default::default);
-    let mut baselines = baselines.lock().unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a poisoned baseline map still holds the last good reads
-    let baseline = baselines.entry(persona).or_default();
-    let mut seen = (!baseline.is_empty()).then(|| std::mem::take(baseline));
-    let at_ms = continuum_base::time::EpochMs::now().millis(); // the read's own time: what her moves are decided at
-    let mut held = observe(&mut seen, holder, at_ms, claims, crate::persona::claim_rejections::recent(persona));
-    *baseline = seen.unwrap_or_default(); // unwrap_or_default: no good read yet leaves no baseline
+    // The baseline lock is released before any await below (the git reads).
+    let mut held = {
+        let baselines = BASELINES.get_or_init(Default::default);
+        let mut baselines = baselines.lock().unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a poisoned baseline map still holds the last good reads
+        let baseline = baselines.entry(persona).or_default();
+        let mut seen = (!baseline.is_empty()).then(|| std::mem::take(baseline));
+        let at_ms = continuum_base::time::EpochMs::now().millis(); // the read's own time: what her moves are decided at
+        let held = observe(&mut seen, holder, at_ms, claims, crate::persona::claim_rejections::recent(persona));
+        *baseline = seen.unwrap_or_default(); // unwrap_or_default: no good read yet leaves no baseline
+        held
+    };
     if let Some(held) = held.as_mut() {
         held.awaiting = awaiting(&boards, holder);
+        held.submissions = submissions(persona, &held.holds, &boards).await;
     }
     held
+}
+
+/// A submission's diff never changes, so each resident keeps the ones her current submissions read:
+/// keyed by (checkout, base, head), replaced on every read with only the keys still in use, so it
+/// is bounded by what she holds (computed once, phased out by usage). Only a read that succeeded is
+/// kept; a failure (commits not fetched yet) is tried again on her next read.
+type DiffKey = (std::path::PathBuf, String, String);
+static DIFFS: OnceLock<Mutex<HashMap<Uuid, HashMap<DiffKey, Vec<ChangedFile>>>>> = OnceLock::new();
+
+/// Her latest submission on each of her own cards, with the files it changes against its recorded
+/// base (read in the card's checkout) and the newest verdict on it (card 1e9774cc).
+async fn submissions(persona: Uuid, holds: &[Held], boards: &[std::sync::Arc<airc_work::BoardSnapshot>]) -> Vec<SubmissionChanges> {
+    let known: HashMap<DiffKey, Vec<ChangedFile>> = {
+        let diffs = DIFFS.get_or_init(Default::default);
+        let mut diffs = diffs.lock().unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a poisoned cache still holds diffs that never change
+        diffs.remove(&persona).unwrap_or_default() // unwrap_or_default: her first read has none kept
+    };
+    let mut kept: HashMap<DiffKey, Vec<ChangedFile>> = HashMap::new();
+    let mut out = Vec::new();
+    for held in holds {
+        if !matches!(held.role, crate::cognition::work_preconditions::CardRole::Code) {
+            continue; // a review card's submission is someone else's: work/submission reads it
+        }
+        let Some(latest) = held.card.latest_submission() else { continue };
+        let airc_work::SubmissionHead::At(head) = &latest.head else { continue };
+        let base = latest.base_sha.to_string();
+        let head = head.to_string();
+        let files = match crate::persona::card_checkout::checkout_path_for(&persona, &held.card) {
+            Some(checkout) => {
+                let key: DiffKey = (checkout.clone(), base.clone(), head.clone());
+                let read = match known.get(&key) {
+                    Some(files) => Ok(files.clone()),
+                    None => changed_files(&checkout, &base, &head).await,
+                };
+                if let Ok(files) = &read {
+                    kept.insert(key, files.clone());
+                }
+                read
+            }
+            None => Err(ChangesUnread::NoCheckout),
+        };
+        out.push(SubmissionChanges {
+            card: held.card.card_id,
+            title: held.card.title.clone(),
+            submission: latest.submission_id,
+            base,
+            head,
+            files,
+            verdict: verdict(boards, held.card.card_id, latest.submission_id),
+        });
+    }
+    let diffs = DIFFS.get_or_init(Default::default);
+    diffs.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(persona, kept); // unwrap_or_else: as above
+    out
+}
+
+/// What `head` changes against `base` in `checkout`: two reads of one diff (status and counts),
+/// both NUL-separated so any path reads exactly.
+async fn changed_files(checkout: &std::path::Path, base: &str, head: &str) -> Result<Vec<ChangedFile>, ChangesUnread> {
+    let diff = |args: &'static str| async move {
+        crate::code::git_bridge::run_git(checkout, &["diff", args, "-z", "-M", base, head]).await
+    };
+    let (status, counts) = match (diff("--name-status").await, diff("--numstat").await) {
+        (Ok(status), Ok(counts)) => (status, counts),
+        (Err(detail), _) | (_, Err(detail)) => {
+            // Only on failure: is it the commits that are missing (she can fetch them), or git itself?
+            let has = |sha: &str| {
+                let spec = format!("{sha}^{{commit}}");
+                async move { crate::code::git_bridge::run_git(checkout, &["cat-file", "-e", &spec]).await.is_ok() }
+            };
+            return Err(if has(base).await && has(head).await {
+                ChangesUnread::GitRefused { detail }
+            } else {
+                ChangesUnread::CommitsAbsent { base: base.to_owned(), head: head.to_owned() }
+            });
+        }
+    };
+    parse_changes(&status, &counts).map_err(|detail| ChangesUnread::Unparsable { detail })
+}
+
+/// PURE: `git diff --name-status -z -M` and `--numstat -z -M` of one diff, in git's one order,
+/// into changed files. A rename names both paths in each; a binary file has `-` counts.
+fn parse_changes(status: &str, counts: &str) -> Result<Vec<ChangedFile>, String> {
+    let mut status = status.split('\0').filter(|field| !field.is_empty());
+    let mut changes = Vec::new();
+    while let Some(code) = status.next() {
+        let path = status.next().ok_or_else(|| format!("git name-status ended after '{code}'"))?;
+        let change = match code.chars().next() {
+            Some('A') => (FileChange::Added, path.to_owned()),
+            Some('D') => (FileChange::Deleted, path.to_owned()),
+            Some(kind @ ('R' | 'C')) => {
+                let to = status.next().ok_or_else(|| format!("git name-status {kind} of '{path}' has no new path"))?;
+                let from = path.to_owned();
+                (if kind == 'R' { FileChange::Renamed { from } } else { FileChange::Copied { from } }, to.to_owned())
+            }
+            _ => (FileChange::Modified, path.to_owned()),
+        };
+        changes.push(change);
+    }
+    let mut counts = counts.split('\0').filter(|field| !field.is_empty());
+    let mut files = Vec::with_capacity(changes.len());
+    for (change, path) in changes {
+        let line = counts.next().ok_or_else(|| format!("git numstat has no counts for '{path}'"))?;
+        let mut fields = line.splitn(3, '\t');
+        // Git writes '-' for a binary file's counts; anything else that is not a number is git
+        // answering in a shape this reader does not know, never "binary".
+        let count = |field: Option<&str>| -> Result<Option<u64>, String> {
+            match field {
+                Some("-") => Ok(None),
+                Some(n) => n.parse().map(Some).map_err(|_| format!("git numstat count '{n}' for '{path}' is not a number")),
+                None => Err(format!("git numstat has no count for '{path}'")),
+            }
+        };
+        let added = count(fields.next())?;
+        let deleted = count(fields.next())?;
+        if matches!(change, FileChange::Renamed { .. } | FileChange::Copied { .. }) {
+            // numstat -z writes a rename as "a\td\t" then the old and new paths as their own fields
+            counts.next();
+            counts.next();
+        }
+        files.push(ChangedFile { path, change, added, deleted });
+    }
+    Ok(files)
+}
+
+/// PURE: the newest verdict anyone gave on `submission` of `card`, with the reviewer's words.
+fn verdict(boards: &[std::sync::Arc<airc_work::BoardSnapshot>], card: WorkCardId, submission: airc_work::SubmissionId) -> Option<SubmissionVerdict> {
+    boards
+        .iter()
+        .flat_map(|board| board.submission_reviews.iter())
+        .filter(|review| review.card_id == card && review.submission_id == submission)
+        .max_by_key(|review| review.reviewed_at_ms)
+        .map(|review| SubmissionVerdict { reviewer: review.reviewer, outcome: review.outcome, evidence: review.evidence_text.clone() })
 }
 
 /// PURE: her open send-backs on `boards` (card 7f8c248e). A card counts when her NEWEST verdict on
@@ -180,7 +318,7 @@ fn observe(
         })
         .collect();
     *baseline = Some(now);
-    Some(HeldWork { holds, selected, ended, rejections, awaiting: Vec::new() }) // her send-backs are read from the boards by `read`
+    Some(HeldWork { holds, selected, ended, rejections, awaiting: Vec::new(), submissions: Vec::new() }) // her send-backs and submissions are read from the boards by `read`
 }
 
 #[cfg(test)]
@@ -360,5 +498,29 @@ mod tests {
         let citizen = crate::persona::airc_citizen::StubAircCitizen::new(me.as_uuid()).with_board_snapshots(vec![board]);
         let held = read_through(&citizen, uuid::Uuid::new_v4(), me).await.expect("test: a good read");
         assert_eq!(held.awaiting.iter().map(|item| (item.card, item.reviewed)).collect::<Vec<_>>(), vec![(card.card_id, judged.submission_id)]);
+    }
+
+    // what this catches: the diff she is shown misreading git's NUL-separated output, so a renamed
+    // or binary file shifts every later path onto the wrong counts. Real git -z output for one diff:
+    // a root file added, one modified, one renamed, one binary, one deleted.
+    #[test]
+    fn a_submissions_files_parse_from_one_diffs_status_and_counts() -> Result<(), String> {
+        let status = "A\0_verify_unified_bracket.rs\0M\0src/lib.rs\0R087\0old/name.rs\0new/name.rs\0M\0logo.png\0D\0gone.rs\0C100\0kept.rs\0copy.rs\0";
+        let counts = "40\t0\t_verify_unified_bracket.rs\03\t1\tsrc/lib.rs\02\t2\t\0old/name.rs\0new/name.rs\0-\t-\tlogo.png\00\t12\tgone.rs\00\t0\t\0kept.rs\0copy.rs\0";
+        let files = parse_changes(status, counts)?;
+        let shown: Vec<(String, FileChange, Option<u64>, Option<u64>)> =
+            files.into_iter().map(|file| (file.path, file.change, file.added, file.deleted)).collect();
+        assert_eq!(shown, vec![
+            ("_verify_unified_bracket.rs".into(), FileChange::Added, Some(40), Some(0)),
+            ("src/lib.rs".into(), FileChange::Modified, Some(3), Some(1)),
+            ("new/name.rs".into(), FileChange::Renamed { from: "old/name.rs".into() }, Some(2), Some(2)),
+            ("logo.png".into(), FileChange::Modified, None, None),
+            ("gone.rs".into(), FileChange::Deleted, Some(0), Some(12)),
+            ("copy.rs".into(), FileChange::Copied { from: "kept.rs".into() }, Some(0), Some(0)),
+        ]);
+        // what this catches (Fable on #5924): a count that does not parse shown as "(binary)".
+        // Only git's '-' means binary; anything else is an error she is told.
+        assert!(parse_changes("M\0a.rs\0", "x\t1\ta.rs\0").is_err(), "a non-numeric count is a parse error, never binary");
+        Ok(())
     }
 }

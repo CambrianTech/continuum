@@ -16,7 +16,7 @@ use continuum_context::source::{Item, Source};
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::card_facts::state_str;
 use crate::cognition::work_preconditions::{CardRole, Held, NextMove};
-use crate::cognition::workspace::{AwaitingResubmission, EndedClaim, HeldWork};
+use crate::cognition::workspace::{AwaitingResubmission, ChangedFile, ChangesUnread, EndedClaim, FileChange, HeldWork, SubmissionChanges};
 
 /// The occurrence of a held card's rendering: its card, the state entry it belongs to, and the
 /// rendered projection itself (`whole`).
@@ -59,6 +59,61 @@ impl HeldWorkStream {
         let next = held.next.as_ref().map(|next| format!("; next: {}", next.verb().offered())).unwrap_or_default(); // unwrap_or_default: no next move = nothing to add
         let pointer = format!("[my work] card {id} \"{}\" {state}: you can {can}{next}", card.title);
         Item::whole(held_card_element(self.persona, held, &whole), Cause::Root(Origin::ActivityStart), card.card_id.as_uuid().to_string(), ContextMessage::user(whole))
+            .with_pointer(ContextMessage::user(pointer))
+    }
+
+    /// Her latest submission on one of her cards: the files it changes against its base and the
+    /// newest verdict, in the reviewer's own words (card 1e9774cc). Placed right after its card, so
+    /// a review that names a file meets the paths she submitted. Keyed by the submission; a new
+    /// verdict is a new occurrence.
+    fn submission(&self, changes: &SubmissionChanges) -> Item<ContextMessage> {
+        let id = shown_form(changes.card.as_uuid());
+        let submission = shown_form(changes.submission.as_uuid());
+        let base = &changes.base;
+        let mut lines = Vec::new();
+        let summary = match &changes.files {
+            Ok(files) => {
+                lines.push(format!(
+                    "[my work] your submission {submission} on card {id} \"{}\" changes {} file(s) against its base {base}:",
+                    changes.title,
+                    files.len()
+                ));
+                lines.extend(files.iter().map(changed_file_line));
+                format!("{} file(s) changed", files.len())
+            }
+            Err(why) => {
+                lines.push(format!(
+                    "[my work] your submission {submission} on card {id} \"{}\": what it changes against its base {base} could not be read: {}",
+                    changes.title,
+                    unread_line(why)
+                ));
+                "its files could not be read".to_owned()
+            }
+        };
+        let verdict = match &changes.verdict {
+            Some(verdict) => {
+                let outcome = match verdict.outcome {
+                    airc_work::WorkReviewOutcome::Passed => "PASSED",
+                    airc_work::WorkReviewOutcome::Failed => "FAILED",
+                    // a newer reviewer's outcome this build cannot name: said as such, never guessed
+                    airc_work::WorkReviewOutcome::Unknown => "of an outcome this build does not know",
+                };
+                lines.push(format!("verdict: {outcome} by {}", shown_form(verdict.reviewer.as_uuid())));
+                if let Some(evidence) = &verdict.evidence {
+                    lines.push(format!("in the reviewer's words:\n{evidence}"));
+                }
+                format!("; verdict {outcome}")
+            }
+            None => String::new(),
+        };
+        let whole = lines.join("\n");
+        let pointer = format!("[my work] submission {submission} on card {id}: {summary}{verdict}");
+        let occurrence = element(
+            self.persona,
+            Producer::Work,
+            &[b"submission".as_slice(), changes.submission.as_uuid().as_bytes(), whole.as_bytes()].concat(),
+        );
+        Item::whole(occurrence, Cause::Root(Origin::External), format!("submission:{}", changes.submission.as_uuid()), ContextMessage::user(whole))
             .with_pointer(ContextMessage::user(pointer))
     }
 
@@ -120,6 +175,34 @@ impl HeldWorkStream {
     }
 }
 
+/// Why her submission's files could not be read, and what she can do about it.
+fn unread_line(why: &ChangesUnread) -> String {
+    match why {
+        ChangesUnread::NoCheckout => "her card's checkout is not on this node".to_owned(),
+        ChangesUnread::CommitsAbsent { base, head } => {
+            format!("its commits {base}..{head} are not in your checkout; fetch them (git fetch) and it reads on your next turn")
+        }
+        ChangesUnread::GitRefused { detail } => format!("git refused the diff: {detail}"),
+        ChangesUnread::Unparsable { detail } => format!("git's answer could not be read: {detail}"),
+    }
+}
+
+/// One changed file, as a line: how it changed, its path, and its line counts.
+fn changed_file_line(file: &ChangedFile) -> String {
+    let change = match &file.change {
+        FileChange::Added => "added".to_owned(),
+        FileChange::Deleted => "deleted".to_owned(),
+        FileChange::Modified => "modified".to_owned(),
+        FileChange::Renamed { from } => format!("renamed from {from} to"),
+        FileChange::Copied { from } => format!("copied from {from} to"),
+    };
+    let counts = match (file.added, file.deleted) {
+        (Some(added), Some(deleted)) => format!(" (+{added} -{deleted})"),
+        _ => " (binary)".to_owned(),
+    };
+    format!("  {change} {}{counts}", file.path)
+}
+
 /// The one fact about a card's submission its holder needs in this role: the parent's submission
 /// a reviewer reads, an author's latest submission, or why the board refused her last one.
 fn submission_fact(held: &Held) -> Option<String> {
@@ -167,7 +250,10 @@ impl Source<ContextMessage> for HeldWorkStream {
         let work = &self.work;
         let mut items: Vec<_> = work.ended.iter().map(|ended| self.ended(ended)).collect();
         items.extend(work.rejections.iter().map(|line| self.rejected(line)));
-        items.extend(work.holds.iter().map(|held| self.card(held)));
+        for held in &work.holds {
+            items.push(self.card(held));
+            items.extend(work.submissions.iter().filter(|changes| changes.card == held.card.card_id).map(|changes| self.submission(changes)));
+        }
         items.extend(work.awaiting.iter().map(|item| self.awaiting(item)));
         items
     }
@@ -186,6 +272,7 @@ mod tests {
     use continuum_context::epoch::Block;
     use continuum_context::view::{Advance, Claim, GrantMismatch, View};
     use crate::cognition::work_preconditions::{fixture_card, FIXTURE_NOW_MS};
+    use crate::cognition::workspace::SubmissionVerdict;
 
     fn her() -> airc_core::PeerId {
         airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(1))
@@ -284,5 +371,55 @@ mod tests {
         view.advance(&[&at(CardState::Review, 40)]);
         assert_ne!(newest(&view), review, "Review entered again is a fresh occurrence, never the old one");
         Ok(())
+    }
+
+    // what this catches (Aiko, card 60a8875d / #5923, 2026-11-11): a review said three scratch files
+    // were committed at the repo root; her view showed only "your latest submission", she guessed
+    // their path, and git status showed a clean tree because they were committed. Her own card's
+    // latest submission now lists every file it changes against its base, right after the card, with
+    // the reviewer's words verbatim, so the file the review names is a path she can see.
+    #[test]
+    fn her_submission_lists_the_files_it_changes_beside_the_reviewers_words() {
+        let card = held(1, CardState::InProgress, None, 10);
+        let evidence = "Three scratch files are committed at the repo root: _verify_unified_bracket.rs and two more. Remove them.";
+        let changes = SubmissionChanges {
+            card: card.card.card_id,
+            title: card.card.title.clone(),
+            submission: airc_work::SubmissionId::from_u128(9),
+            base: "abc123".into(),
+            head: "def456".into(),
+            files: Ok(vec![
+                ChangedFile { path: "_verify_unified_bracket.rs".into(), change: FileChange::Added, added: Some(40), deleted: Some(0) },
+                ChangedFile { path: "core/continuum-prompt/src/lib.rs".into(), change: FileChange::Modified, added: Some(3), deleted: Some(1) },
+            ]),
+            verdict: Some(SubmissionVerdict {
+                reviewer: airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(2)),
+                outcome: airc_work::WorkReviewOutcome::Failed,
+                evidence: Some(evidence.into()),
+            }),
+        };
+        let work = HeldWork { holds: vec![card], submissions: vec![changes], ..Default::default() };
+        let items = HeldWorkStream { persona: uuid::Uuid::from_u128(7), work: std::sync::Arc::new(work) }.items();
+        assert_eq!(items.len(), 2, "her card, then its submission");
+        let text = items[1].full().text();
+        assert!(text.contains("  added _verify_unified_bracket.rs (+40 -0)"), "the root file the review names is listed by its path: {text}");
+        assert!(text.contains("  modified core/continuum-prompt/src/lib.rs (+3 -1)"), "{text}");
+        assert!(text.contains("verdict: FAILED") && text.contains(evidence), "the reviewer's words, verbatim: {text}");
+        assert!(items[1].pointer().is_some_and(|p| p.text().contains("2 file(s) changed") && p.text().contains("FAILED")), "collapsed, the count and the verdict stay");
+    }
+
+    // what this catches: a submission whose commits are not in her checkout rendering nothing, so
+    // she reads an empty list as "nothing changed". She is told why the files could not be read.
+    #[test]
+    fn unreadable_files_are_said_never_shown_as_none() {
+        let card = held(1, CardState::InProgress, None, 10);
+        let changes = SubmissionChanges {
+            card: card.card.card_id, title: card.card.title.clone(), submission: airc_work::SubmissionId::from_u128(9),
+            base: "abc123".into(), head: "def456".into(), files: Err(ChangesUnread::NoCheckout), verdict: None,
+        };
+        let work = HeldWork { holds: vec![card], submissions: vec![changes], ..Default::default() };
+        let items = HeldWorkStream { persona: uuid::Uuid::from_u128(7), work: std::sync::Arc::new(work) }.items();
+        let text = items[1].full().text();
+        assert!(text.contains("could not be read: her card's checkout is not on this node"), "{text}");
     }
 }
