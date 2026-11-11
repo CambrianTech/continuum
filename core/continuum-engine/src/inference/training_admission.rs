@@ -19,170 +19,75 @@ pub fn request(consumer: &str, kind: ResourceKind, bytes: u64) -> LeaseRequest {
     }
 }
 
-/// The smallest calibration grant worth dispatching: the engine's own minimum training budget
-/// (`/train` refuses `memory_budget_mib` under 1, fork server-train.cpp), so a smaller grant would
-/// only post a run the engine must refuse.
-const CALIBRATION_GRANT_MIN: u64 = 1024 * 1024;
-
-/// What a training run asks the governor for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrainingNeed {
-    /// A footprint measured for this shape: exactly these bytes.
-    Measured(u64),
-    /// An unmeasured shape: a calibration run leases everything governed and free, READ AT
-    /// ADMISSION under the serving gate, so nothing grows into it. Not the plan-time number:
-    /// measured on the 5090 2026-10-10 (job a7893e09), a plan read 7.05 GB free while serving
-    /// was mid-handoff at a 6k window, serving then re-homed to 68k, and the job waited for
-    /// 7.05 GB with 4.26 GB free until a hand cancelled it.
-    /// Unmeasured: lease everything governed and free at admission, once at least `at_least` (the
-    /// family's smallest measured whole run, when there is one) is free.
-    Calibrate { at_least: Option<u64> },
-}
-
 /// While the serving lifecycle refuses (unsettled, or an operation holds the gate),
-/// admission retries on this cadence as well as on governor changes: a relaunch that
+/// a waiting learner retries on this cadence as well as on governor changes: a relaunch that
 /// frees and re-leases can finish with no governor edge, and the gate has no event.
 // derived-or-floor: a floor — far below a relaunch's duration, far above a spin.
 const SERVING_BUSY_RETRY: Duration = Duration::from_secs(1);
 
-/// Keep prepared native work queued until the authority changes. Dropping this
-/// future cancels the wait; no child or lease exists until admission succeeds.
-///
-/// Each attempt reads and leases UNDER the serving lifecycle gate (card aae8af55): a
-/// relaunch or placement move frees the engine's memory while it holds that gate, so a
-/// free-memory read inside its window is refused instead of admitting a trainer nobody
-/// called; and nothing is admitted before serving's first plan on this core, when the
-/// authority may still read a card with no physical reading as wholly free. The gate is released as soon as the attempt decides; the granted lease is
-/// what keeps serving out of the trainer's memory for the run.
-pub async fn wait_for_training_memory(
-    daemon: std::sync::Arc<ResourceDaemon>,
-    serving: &LifecycleGate,
-    consumer: &str,
-    kind: ResourceKind,
-    bytes: u64,
-    waiting: impl FnMut(u64),
-) -> Result<LeaseGuard, String> {
-    wait_for_training_memory_bound(daemon, serving, consumer, kind, TrainingNeed::Measured(bytes), waiting, |_| Ok(())).await
+/// Why a training lease is not granted on this attempt, and what to wait for before the next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrainingWait {
+    /// The serving lifecycle refuses admission (a boot or relaunch window); it has no event.
+    Serving(String),
+    /// Governed capacity in `kind` is short for `consumer`: resumable once that much is free.
+    Capacity { consumer: String, kind: ResourceKind, needed: u64, available: u64 },
 }
 
-/// [`wait_for_training_memory`] for a [`TrainingNeed`], plus `bind`: run with the granted
-/// bytes once the lease is granted and BEFORE the
-/// serving gate is released, so whatever it establishes is in place before any relaunch can
-/// take the gate (SHARED-RESIDENT-LIFECYCLE.md step 1: "establish the residency record inside
-/// the existing admission hold, after capacity admission and before dropping that hold").
-/// In-engine training binds its run to the engine incarnation here. A `bind` error refuses
-/// the admission: the lease is released and the error returned, so a lane replaced while the
-/// job waited is never trained on.
-pub async fn wait_for_training_memory_bound(
-    daemon: std::sync::Arc<ResourceDaemon>,
-    serving: &LifecycleGate,
-    consumer: &str,
-    kind: ResourceKind,
-    need: TrainingNeed,
-    mut waiting: impl FnMut(u64),
-    bind: impl FnOnce(u64) -> Result<(), String>,
-) -> Result<LeaseGuard, String> {
-    let mut bind = Some(bind);
-    if need == TrainingNeed::Measured(0) {
+impl std::fmt::Display for TrainingWait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Serving(refusal) => write!(f, "the serving lifecycle refuses training admission now ({refusal})"),
+            Self::Capacity { kind, needed, available, .. } => write!(f, "{available} of {needed} governed {kind:?} bytes are free"),
+        }
+    }
+}
+
+/// One training lease attempt under the serving lifecycle gate, never waiting: a caller holding a
+/// mind's serving resources (her act gate, a lane, a slot) tries here, and on a [`TrainingWait`]
+/// lets them all go before [`await_training_change`]. Same authority, same gate, no capacity made up.
+pub fn try_training_memory(daemon: &std::sync::Arc<ResourceDaemon>, serving: &LifecycleGate, consumer: &str, kind: ResourceKind, bytes: u64) -> Result<Result<LeaseGuard, TrainingWait>, String> {
+    if bytes == 0 {
         return Err("training memory requirement must be measured before admission".into());
     }
-    let mut bytes = match need {
-        TrainingNeed::Measured(bytes) => bytes,
-        TrainingNeed::Calibrate { .. } => 0,
+    let hold = match serving.hold_for_admission() {
+        Ok(hold) => hold,
+        Err(refusal) => return Ok(Err(TrainingWait::Serving(refusal.name().to_owned()))),
     };
-    let mut changes = daemon.subscribe();
-    let mut last_available = None;
-    let mut serving_refusal_said = None;
-    let mut retry = tokio::time::interval_at(
-        tokio::time::Instant::now() + SERVING_BUSY_RETRY,
-        SERVING_BUSY_RETRY,
-    );
-    retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        // Mark before the attempt so a concurrent release cannot be missed.
-        changes.borrow_and_update();
-        let hold = match serving.hold_for_admission() {
-            Ok(hold) => hold,
-            Err(refusal) => {
-                if serving_refusal_said != Some(refusal) {
-                    continuum_base::probe!(
-                        class = "training.admission.serving_busy",
-                        consumer = consumer,
-                        footprint_bytes = bytes,
-                        refusal = refusal.name(),
-                        "prepared training waits on the serving lifecycle: free memory now is \
-                         a boot or relaunch window, not capacity"
-                    );
-                    serving_refusal_said = Some(refusal);
-                }
-                tokio::select! {
-                    changed = changes.changed() => {
-                        changed.map_err(|_| "training resource authority closed".to_owned())?
-                    }
-                    _ = retry.tick() => {}
-                }
-                continue;
+    let attempt = daemon.acquire_guarded(&request(consumer, kind, bytes));
+    drop(hold);
+    match attempt {
+        Ok(guard) => Ok(Ok(guard)),
+        Err(LeaseError::InsufficientCapacity { available, .. }) => {
+            continuum_base::probe!(class = "training.admission.waiting", consumer = consumer, footprint_bytes = bytes, available_bytes = available,
+                "a training lease waits for governed capacity, holding no serving resource");
+            Ok(Err(TrainingWait::Capacity { consumer: consumer.to_owned(), kind, needed: bytes, available }))
+        }
+        Err(error) => Err(format!("training memory admission failed: {error:?}")),
+    }
+}
+
+/// Wait, holding nothing, until `wait` may have cleared. For capacity: until the authority's governed
+/// free bytes in that pool cover the need, the very test a lease is refused by, read at each of its
+/// changes (`changes` subscribed BEFORE the attempt, so a release in between is not missed). The
+/// board changes with every lease serving takes, so waking on any change re-ran a learner's whole
+/// preparation several times a second against a need that could not fit (BigMama 2026-11-10: 150
+/// probes in 28 s for 16.8 GB needed against 3.03 GB free). For the serving gate, which has no event:
+/// its retry cadence.
+pub async fn await_training_change(daemon: &std::sync::Arc<ResourceDaemon>, changes: &mut tokio::sync::watch::Receiver<crate::resources::LeaseBoard>, wait: &TrainingWait) -> Result<(), String> {
+    match wait {
+        TrainingWait::Capacity { consumer, kind, needed, .. } => loop {
+            if daemon.available_for(consumer, *kind) >= *needed {
+                return Ok(());
             }
-        };
-        serving_refusal_said = None;
-        if let TrainingNeed::Calibrate { at_least } = need {
-            bytes = daemon.available_for(consumer, kind);
-            // the smallest whole run this family ever measured, else the engine's syntax floor:
-            // a grant under it can only post a run the engine must refuse (Cormac on #4949: the
-            // context alone was 2,543 MiB at w67584, so a few MiB is a guaranteed refusal)
-            if bytes < at_least.map_or(CALIBRATION_GRANT_MIN, |b| b.max(CALIBRATION_GRANT_MIN)) {
-                // less than the engine accepts as a budget is free under the gate (nothing, or a
-                // sliver a previous run has not yet released): wait for the authority to change.
-                // The 5090, 2026-10-11 14:08Z, job 61b782cd: a sub-MiB grant became
-                // memory_budget_mib=0, the engine refused it ('memory_budget_mib must be >= 1'),
-                // and a refusal of the request itself is not returnable, so its examples stranded
-                drop(hold);
-                if last_available != Some(0) {
-                    waiting(0);
-                    last_available = Some(0);
-                }
-                changes
-                    .changed()
-                    .await
-                    .map_err(|_| "training resource authority closed".to_owned())?;
-                continue;
+            changes.changed().await.map_err(|_| "training resource authority closed".to_owned())?;
+        },
+        TrainingWait::Serving(_) => {
+            tokio::select! {
+                changed = changes.changed() => changed.map_err(|_| "training resource authority closed".to_owned()),
+                _ = tokio::time::sleep(SERVING_BUSY_RETRY) => Ok(()),
             }
         }
-        let attempt = daemon.acquire_guarded(&request(consumer, kind, bytes));
-        // bound while the gate is still held; a failed bind drops the lease with the error
-        let attempt = match attempt {
-            Ok(guard) => match bind.take().map_or(Ok(()), |b| b(bytes)) {
-                Ok(()) => Ok(guard),
-                Err(why) => {
-                    drop(guard);
-                    drop(hold);
-                    return Err(why);
-                }
-            },
-            Err(e) => Err(e),
-        };
-        drop(hold);
-        match attempt {
-            Ok(guard) => return Ok(guard),
-            Err(LeaseError::InsufficientCapacity { available, .. }) => {
-                if last_available != Some(available) {
-                    continuum_base::probe!(
-                        class = "training.admission.waiting",
-                        consumer = consumer,
-                        footprint_bytes = bytes,
-                        available_bytes = available,
-                        "prepared training waits for governed capacity"
-                    );
-                    waiting(available);
-                    last_available = Some(available);
-                }
-            }
-            Err(error) => return Err(format!("training memory admission failed: {error:?}")),
-        }
-        changes
-            .changed()
-            .await
-            .map_err(|_| "training resource authority closed".to_owned())?;
     }
 }
 
@@ -204,4 +109,41 @@ pub fn acquire_training_memory(consumer: &str, kind: ResourceKind, bytes: u64) -
         "governor granted a training lease"
     );
     Ok(guard)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resources::{CapacitySource, DaemonConfig, MockCapacitySource};
+    use std::sync::Arc;
+
+    // what this catches (card b9dc9130; BigMama 2026-11-10, 150 probes in 28 s): a learner's capacity
+    // wait woke on every board change. Serving's own leases change the board constantly, so the
+    // learner re-ran its whole preparation against a need that could not fit. Changes that leave too
+    // little free must not wake it; the change that frees enough must.
+    #[tokio::test]
+    async fn a_capacity_wait_sleeps_through_changes_that_cannot_cover_it_and_wakes_on_one_that_does() {
+        let source = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 100));
+        let daemon = ResourceDaemon::start(vec![Arc::clone(&source) as Arc<dyn CapacitySource>], vec![], DaemonConfig::default());
+        let mut changes = daemon.subscribe();
+        changes.borrow_and_update();
+        let serving = LifecycleGate::unowned(true);
+        let wait = match try_training_memory(&daemon, &serving, "learning:her", ResourceKind::Vram, 1_000).expect("test: one attempt") {
+            Err(wait) => wait,
+            Ok(_) => panic!("test: 1,000 bytes cannot fit in 100"),
+        };
+        let waiting = await_training_change(&daemon, &mut changes, &wait);
+        tokio::pin!(waiting);
+        for _ in 0..5 {
+            let lease = daemon.acquire_guarded(&request("serving", ResourceKind::Vram, 10)).expect("test: serving leases a little");
+            drop(lease);
+            tokio::task::yield_now().await;
+            assert!(futures::poll!(&mut waiting).is_pending(), "a board change that leaves too little free must not wake her learner");
+        }
+        source.set_ceiling(10_000);
+        tokio::time::timeout(Duration::from_secs(10), waiting)
+            .await
+            .expect("test: the change that frees enough wakes it")
+            .expect("test: the authority is open");
+    }
 }

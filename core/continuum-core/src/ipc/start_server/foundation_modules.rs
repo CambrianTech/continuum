@@ -29,7 +29,7 @@ pub(super) fn register_foundation_modules(
     crate::live::video::bevy_renderer::set_gpu_manager(gpu_manager.clone());
 
     // Phase 1: HealthModule (stateless)
-    runtime.register(Arc::new(HealthModule::new()));
+    runtime.register(Arc::new(HealthModule::new(runtime.registry().readiness())));
 
     // NavModule — nav/mark-read: advance the shared read cursor + publish NAV_CHANGED
     // on the airc bus (nav slice 3). Command in, Event out; the write half of the
@@ -64,14 +64,6 @@ pub(super) fn register_foundation_modules(
     // CONTINUUM_LAUNCH_MODE to config.env (same key bin/continuum reads) and emits
     // system:launch-mode:changed so a running UI can attach/tear down its overlay.
     runtime.register(Arc::new(LaunchModeModule::new()));
-
-    // The cadence-deploy DECISION, in Rust (replacing the Unix-only track-canary.sh shell
-    // jack): watches the tracked branch tip and records a DeployRequest for the supervisor
-    // when a green tip differs from the running build. Never reboots. Degrades safely with
-    // no checkout/gh. (card ee76c0df)
-    runtime.register(Arc::new(
-        crate::modules::deploy_tracker::DeployTrackerModule::new(),
-    ));
 
     // AircBridgeDirectiveModule — recognizes inbound `!continuum` directives on
     // the airc bus (chat:posted) OFF the transport hot path, emitting an

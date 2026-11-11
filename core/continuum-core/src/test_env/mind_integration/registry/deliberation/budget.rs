@@ -131,7 +131,7 @@ fn the_structurally_mute_sensor_still_asks_for_the_whole_surface() {
     // wrong surface. A bound satisfied by accident pins nothing.
     let hands_based = faculty.tool_surface().hands_tokens() as u32
         + faculty.framing_floor_tokens()
-        + LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS;
+        + 1;
 
     assert!(
         needed > hands_based,

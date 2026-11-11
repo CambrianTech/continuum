@@ -71,6 +71,15 @@ pub(super) fn register_serving_daemon(
         ),
     ));
 
+    // The cadence-deploy DECISION, in Rust (replacing the Unix-only track-canary.sh shell
+    // jack): watches the tracked branch tip and records a DeployRequest for the supervisor
+    // when a green tip differs from the running build. Never reboots. Degrades safely with
+    // no checkout/gh (card ee76c0df). Registered after serving: it reads serving's hold, and
+    // launches no handoff while live work holds the engine (card fd833a10).
+    runtime.register(Arc::new(crate::modules::deploy_tracker::DeployTrackerModule::new(
+        serving_daemon.subscribe_serving(),
+    )));
+
     // #79: expose the one per-machine resource authority's accounting board as a typed
     // read command (`resources/board`). The daemon owns its background poll + watch
     // snapshot; this thin module wraps the same `Arc<ResourceDaemon>` so the measured

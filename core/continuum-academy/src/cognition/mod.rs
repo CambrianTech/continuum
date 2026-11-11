@@ -9,6 +9,7 @@ pub mod correction_families;
 pub mod curriculum;
 pub mod training_sources;
 pub mod learning_policy;
+#[allow(clippy::unwrap_used)] // 23 std lock unwraps wait on region.rs's self_sized sites: #5860
 pub mod dream_consolidation;
 pub mod decay_tick;
 pub mod experience;

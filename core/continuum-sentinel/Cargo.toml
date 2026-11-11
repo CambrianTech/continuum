@@ -9,6 +9,7 @@ description = "Sentinels: concurrent, fault-tolerant pipeline execution (the sen
 continuum-process = { path = "../continuum-process" }
 continuum-base = { path = "../continuum-base" }
 continuum-kernel = { path = "../continuum-kernel" }
+continuum-host = { path = "../continuum-host" }
 continuum-engine = { path = "../continuum-engine" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -23,7 +24,6 @@ once_cell = { workspace = true }
 futures-util = { workspace = true }
 futures = { workspace = true }
 dashmap = { workspace = true }
-regex = { workspace = true }
 sysinfo = { workspace = true }
 libc = { workspace = true }
 

@@ -193,7 +193,7 @@ pub fn build_messages_with_media(
     model_caps: &std::collections::HashSet<crate::model_registry::Capability>,
 ) -> Vec<crate::ai::types::ChatMessage> {
     use crate::ai::types::{AudioInput, ChatMessage, ContentPart, ImageInput, MessageContent};
-    use crate::persona::media_policy::MediaPolicy;
+    use crate::persona::media_policy::{Attachable, MediaPolicy, NativeMedia};
 
     // Default text-only path. Always start here; we may rewrite the
     // last user message below if the policy chose an attachable item.
@@ -232,30 +232,24 @@ pub fn build_messages_with_media(
     // encounters the real sensory input before any text fallback for
     // older media. mtmd_tokenize splices the model's media marker at
     // ContentPart::Image position; description markers are inert.
-    if let Some(item) = plan.attachable {
-        let part = match item.item_type.as_str() {
-            "image" => ContentPart::Image {
+    if let Some(Attachable { item, kind }) = plan.attachable {
+        // The policy hands the native kind it matched, so this match is exhaustive: an
+        // item the model cannot consume as bytes never reaches the byte slot.
+        let part = match kind {
+            NativeMedia::Image => ContentPart::Image {
                 image: ImageInput {
                     url: None,
                     base64: item.base64.clone(),
                     mime_type: item.mime_type.clone(),
                 },
             },
-            "audio" => ContentPart::Audio {
+            NativeMedia::Audio => ContentPart::Audio {
                 audio: AudioInput {
                     url: None,
                     base64: item.base64.clone(),
                     mime_type: item.mime_type.clone(),
                 },
             },
-            // Policy guarantees attachable is natively-supported, so
-            // any other branch is a contract violation. Falling
-            // through silently would resurrect the silent-drop bug
-            // we're refactoring away — make it loud instead.
-            other => unreachable!(
-                "MediaPolicy returned attachable item with unsupported type '{other}' — \
-                 is_natively_supported is out of sync with the ContentPart variants here"
-            ),
         };
         emitted_parts.push(part);
     }

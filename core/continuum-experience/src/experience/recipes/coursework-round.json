@@ -3,7 +3,7 @@
   "id": "7c0e5a3b-2f4d-4e61-9b8a-3d5c1e7f9a24",
   "version": 1,
   "purpose": "coursework/round",
-  "base": "academy",
+  "base": "academy/coursework",
   "regions": [
     {
       "name": "scoreboard",

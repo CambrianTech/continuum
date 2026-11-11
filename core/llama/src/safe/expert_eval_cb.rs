@@ -110,6 +110,15 @@ pub enum PoolingType {
     Last,
 }
 
+impl ContextParams {
+    /// The window llama allocates for a requested `n_ctx`: it pads every context to a multiple of
+    /// 256 tokens (`llama-context.cpp`, `cparams.n_ctx = GGML_PAD(cparams.n_ctx, 256)`), so what a
+    /// context costs is priced on this, never on the request.
+    pub fn allocated_n_ctx(n_ctx: u32) -> u32 {
+        n_ctx.next_multiple_of(256)
+    }
+}
+
 impl Default for ContextParams {
     fn default() -> Self {
         Self {

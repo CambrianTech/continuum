@@ -1,3 +1,8 @@
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
+
 //! continuum-serving: the serving planner and lane lifecycle, cut out of continuum-core (plan
 //! phase 2, `docs/architecture/MODULE-ARCHITECTURE.md` §9.2: Serving is its own module).
 //! `serving_daemon` is the `ServingDaemonModule` (planner, reconciler, publication, pins) and its
@@ -6,6 +11,7 @@
 //!
 //! The lower crates are re-exported under the names the moved files already use
 //! (`crate::inference`, `crate::persona`, ...), so a move needs import paths only.
+#![deny(clippy::await_holding_lock)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 pub use continuum_engine::{
     ai, capacity, inference, model_registry,

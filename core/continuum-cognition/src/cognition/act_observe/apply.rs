@@ -57,7 +57,7 @@ fn is_long_running(command: &str) -> bool {
 /// cross turns or rooms by construction — the wire is the scope, never an
 /// inference over timestamps.
 #[derive(Default)]
-pub struct ActChain(std::sync::Mutex<Option<Uuid>>, Option<super::EffectGate>);
+pub struct ActChain(parking_lot::Mutex<Option<Uuid>>, Option<super::EffectGate>);
 
 impl ActChain {
     /// A chain with no recorded antecedent — its first act links to nothing.
@@ -79,7 +79,7 @@ impl ActChain {
     /// what counts as a root lives in ONE place (`Cause::root`) instead of at every
     /// driver that builds a chain.
     pub fn rooted_in(cause: &crate::cognition::workspace::Cause) -> Self {
-        Self(std::sync::Mutex::new(cause.root()), None)
+        Self(parking_lot::Mutex::new(cause.root()), None)
     }
 
     /// The turn's pre-effect mark (stop-drain S2): held by the chain the turn owns, so it is
@@ -98,11 +98,11 @@ impl ActChain {
     /// engram, or — before any act has run — the trigger the chain was rooted in.
     /// `None` only when the chain has no antecedent at all.
     pub fn prior(&self) -> Option<Uuid> {
-        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+        *self.0.lock()
     }
 
     fn advance(&self, id: Uuid) {
-        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
+        *self.0.lock() = Some(id);
     }
 }
 
@@ -342,17 +342,12 @@ pub async fn apply_act(
     // Each carries the call (INCLUDING `.id`), the id-correlated ToolResult, the precomputed
     // verb, and the typed paths, so no downstream consumer re-parses the receipt string.
     let mut acts: Vec<Observation> = Vec::new();
-    // Loop-awareness (experience structure): fingerprint each call (name+args) so the mind
-    // perceives when it is RE-ISSUING an identical call. The result HEAD varies turn to turn,
-    // so `entries`/`#seq` alone make a repeat look "new"; the fingerprint keys on the call.
-    let mut max_repeat = 0usize;
+    // Each call's fingerprint (name+args) into the recent window her verb tally reads. Whether an
+    // act repeats one she holds is her view's to say (MIND-CONTEXT invariant 4), never here.
     for call in fg_calls.iter() {
-        let fp = format!(
-            "{}|{}",
-            call.name,
-            serde_json::to_string(&call.input).unwrap_or_default()
-        );
-        max_repeat = max_repeat.max(body.working_memory.note_action_fingerprint(&fp));
+        // The tally reads only the tool name (`action_verb_tally`); the arguments were serialized
+        // for nothing.
+        body.working_memory.note_action_fingerprint(&call.name);
         // The TYPED act is the SINGLE source now (Step 5). Correlate the result by
         // `tool_use_id == call.id` (NOT the positional `.get(i)` the old string render
         // used) — id-correlation is immune to the fg-vs-original index hazard (invariant
@@ -366,7 +361,7 @@ pub async fn apply_act(
             .iter()
             .find(|r| r.tool_use_id == call.id)
             .cloned()
-            .unwrap_or_else(|| ToolResult {
+            .unwrap_or_else(|| ToolResult { // unwrap_or_else: a call the executor returned no result for is told to her as exactly that, never dropped
                 tool_use_id: call.id.clone(),
                 content: "(no result returned)".to_string(),
                 is_error: None,
@@ -488,7 +483,7 @@ pub async fn apply_act(
                 thought: reasoning.take(),
                 timestamp: now_ms,
             };
-            match serde_json::to_value(&update) {
+            match serde_json::to_value(&update) { // boundary: persona:act is published to clients over the event wire
                 Ok(payload) => bus.publish_async_only(crate::cognition::mind_events::PERSONA_ACT, payload),
                 Err(e) => {
                     tracing::warn!(error = %e, "persona:act receipt failed to serialize — receipt dropped, act unaffected")
@@ -578,17 +573,8 @@ pub async fn apply_act(
         recall_observation.push_str(note);
         recall_observation.push_str("\n\n");
     }
-    let mut observation = observation.trim().to_string();
+    let observation = observation.trim().to_string();
     let recall_observation = recall_observation.trim().to_string();
-
-    // Count requests without claiming their results are identical or still retained.
-    // The actual result below is authoritative, including errors and changed state.
-    if max_repeat >= 2 {
-        observation = format!(
-            "[repetition] A call in this batch has been requested {max_repeat} times. \
-             This execution's result follows.\n\n{observation}"
-        );
-    }
 
     // Admit the outcome as an Episodic engram through the ONE production admit
     // path (a self-observation message from the persona to itself). This is the
@@ -609,7 +595,7 @@ pub async fn apply_act(
     let tool_name = fg_calls
         .first()
         .map(|c| c.name.clone())
-        .unwrap_or_else(|| "action".to_string());
+        .unwrap_or_else(|| "action".to_string()); // unwrap_or_else: an act with no foreground call is recalled by its kind, never an invented tool
     let obs_hash = crate::cognition::inbox_admission::content_hash_sha256(&recall_observation);
     let self_observation = crate::cognition::engram::Engram {
         id: Uuid::new_v4(),

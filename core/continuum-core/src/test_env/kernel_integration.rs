@@ -154,7 +154,7 @@ mod command_executor {
     #[tokio::test]
     async fn ping_dispatches_through_executor_via_typed_object_path() {
         let registry = Arc::new(ModuleRegistry::new());
-        registry.register(Arc::new(crate::modules::health::HealthModule::new()));
+        registry.register(Arc::new(crate::modules::health::HealthModule::new(registry.readiness())));
         let executor = CommandExecutor::new(registry);
 
         let result = executor

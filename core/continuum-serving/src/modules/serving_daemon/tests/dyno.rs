@@ -41,7 +41,7 @@ fn no_launch_sizes_from_a_reading_taken_while_the_old_engine_is_wired() {
         1,
         sequences,
         day.qwen36_trained_window.value,
-        super::super::launch::Seated { need: 0, proven: 0 },
+        super::super::launch::Seated { need: 0, proven: None },
     );
     assert_eq!(pool, u64::from(cold_boot.launched_pool), "test: today's launch, reproduced (-c 125,640)");
     assert_eq!(

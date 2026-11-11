@@ -257,7 +257,7 @@ async fn a_claims_hands_are_its_own_and_her_default_hands_never_move() {
     assert!(crate::persona::card_checkout::checkout_path_for(&persona, &gym_card).is_none());
     assert_eq!(
         card_staging::stage_for_card(home.path(), persona, &gym_card).await,
-        card_staging::Staging::Ready { path: workspace.clone() },
+        card_staging::Staging::Ready { path: workspace.clone(), arrival: None },
     );
     let cycle = WorkspaceCycle::new(vec![], Arc::new(crate::cognition::workspace::SalienceArbiter))
         .with_acting(Arc::new(ActingBody {

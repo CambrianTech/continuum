@@ -29,16 +29,16 @@ impl WorkspaceCycle {
         // it never touches the conversation turns.
         // S1: what the ROOM's recipe lets her do, read before the burst is consumed.
         let activity_room_id = match self.acting() {
-            Some(body) => super::super::persona_workspace::activity_room_for(
+            Some(body) => crate::cognition::llm_deliberation_faculty::admission_clock::stage("board_walk.activity_room", super::super::persona_workspace::activity_room_for(
                 body.persona_id, burst.hands, burst.room.as_uuid(),
-            ).await,
+            )).await,
             None => burst.room.as_uuid(),
         };
         let room_affordances = self.room_affordances_for(activity_room_id);
         // Her held work, read once for the tick: her surface and her view both follow it
         // (STATE-DRIVEN-SURFACE.md). No body or a failed read carries none.
         let held = match self.acting() {
-            Some(body) => crate::cognition::extensions::held_work(body.persona_id).await,
+            Some(body) => crate::cognition::llm_deliberation_faculty::admission_clock::stage("board_walk.held_work", crate::cognition::extensions::held_work(body.persona_id)).await,
             None => None,
         };
         let mut ws = Workspace::from_burst(burst)
@@ -88,7 +88,7 @@ impl WorkspaceCycle {
         // generation does NOT run on this barrier and is untouched.
         const PERCEPTION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
         let perception_timed: Vec<(FacultyId, u128, Option<Contribution>)> =
-            join_all(perception.iter().map(|f| {
+            crate::cognition::llm_deliberation_faculty::admission_clock::stage("perception", join_all(perception.iter().map(|f| {
                 let f = *f;
                 let ws = &ws;
                 async move {
@@ -110,7 +110,7 @@ impl WorkspaceCycle {
                     };
                     (id, t0.elapsed().as_micros(), bid)
                 }
-            }))
+            })))
             .await;
         continuum_base::probe!(
             class = "workspace.perception.done",

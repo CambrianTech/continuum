@@ -17,7 +17,8 @@
 //! drift apart. Minimizing the human/persona gap starts with refusing to encode it.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use positron_core::wire::StateEnvelope;
 use tokio::sync::watch;
@@ -76,7 +77,6 @@ impl PerUserSubstrates {
     pub fn for_citizen(&self, citizen: Uuid) -> Substrate {
         self.by_citizen
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) // poisoning = a PRIOR holder panicked; values are Arc handles and no invariant spans this lock, so recover the guard rather than fail a read for someone else's panic
             .entry(citizen)
             .or_default()
             .clone()
@@ -86,7 +86,6 @@ impl PerUserSubstrates {
     pub fn citizen_count(&self) -> usize {
         self.by_citizen
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) // poisoning = a PRIOR holder panicked; values are Arc handles and no invariant spans this lock, so recover the guard rather than fail a read for someone else's panic
             .len()
     }
 }
@@ -132,7 +131,6 @@ impl PerRoomSubstrates {
     pub fn for_room(&self, room: Uuid) -> Substrate {
         self.by_room
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) // poisoning = a PRIOR holder panicked; values are Arc handles, no invariant spans this lock, so recover rather than take grounding down for someone else's panic
             .entry(room)
             .or_default()
             .clone()
@@ -155,7 +153,6 @@ impl PerRoomSubstrates {
     pub fn read_room(&self, room: Uuid) -> Option<Substrate> {
         self.by_room
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) // same as `for_room`: a poisoned lock means someone else panicked while holding it, not that the map is inconsistent
             .get(&room)
             .cloned()
     }
@@ -164,7 +161,6 @@ impl PerRoomSubstrates {
     pub fn room_count(&self) -> usize {
         self.by_room
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) // same as `for_room`: a length read cannot observe a torn value, and an ops probe must not panic because something unrelated did
             .len()
     }
 }

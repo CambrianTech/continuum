@@ -105,7 +105,7 @@ impl ReviewBoundaryStore {
             let record: crate::orm::types::DataRecord = serde_json::from_value(value)?; // Decode the ORM record envelope before its entity.
             let key = record.id.to_string();
             let checked = async {
-                let accepted: CreditReviewAcceptance = serde_json::from_value(record.data)?; // Decode the immutable acceptance at the persistence boundary.
+                let accepted: CreditReviewAcceptance = record.decode()?; // Decode the immutable acceptance at the persistence boundary.
                 if accepted.id.to_string() != key {
                     return Err(ClientError::Transport(
                         "acceptance key differs from its identity".into(),

@@ -95,7 +95,8 @@
 use std::any::Any;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use parking_lot::Mutex;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -319,7 +320,7 @@ impl ServiceModule for SubstrateGovernor {
         // Prune cadence entries for personas that left, so the table can't grow
         // unbounded over a long-lived process. Lock taken + released here; never held
         // across an await (concurrency-style-guide rule).
-        self.cadence.lock().unwrap().retain_personas(&personas);
+        self.cadence.lock().retain_personas(&personas);
 
         // ── Phase 1: collect due pairs, grouped by orientation class ──────────────
         // One lock spanning a purely synchronous loop (no await inside) → released
@@ -327,7 +328,7 @@ impl ServiceModule for SubstrateGovernor {
         let mut groups: [Vec<(usize, Uuid, Orientation)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut skipped = 0usize;
         {
-            let cadence = self.cadence.lock().unwrap();
+            let cadence = self.cadence.lock();
             for (region_idx, region) in self.regions.iter().enumerate() {
                 let orientation = region.orientation(); // static class, read once per region
                 let oi = orientation_index(orientation);
@@ -345,7 +346,7 @@ impl ServiceModule for SubstrateGovernor {
         // The active policy is the controller's current shares (R4) if installed, else the
         // static prior. Brief lock, released before any region tick.
         let active_shares = match &self.controller {
-            Some(c) => c.lock().unwrap().shares(),
+            Some(c) => c.lock().shares(),
             None => self.shares,
         };
 
@@ -381,7 +382,7 @@ impl ServiceModule for SubstrateGovernor {
         // Close the R4 loop: feed this pass's measured per-class deferral back so the
         // controller reallocates for the NEXT pass. Brief lock, before any await below.
         if let Some(c) = &self.controller {
-            c.lock().unwrap().observe(deferred_by_orientation);
+            c.lock().observe(deferred_by_orientation);
         }
 
         let mut ticked = 0usize;
@@ -430,7 +431,7 @@ impl ServiceModule for SubstrateGovernor {
 
             // Record the hint → schedule next eligibility. Lock taken + released here,
             // AFTER the await; never held across it.
-            self.cadence.lock().unwrap().record(key, tick, hint);
+            self.cadence.lock().record(key, tick, hint);
         }
 
         // ── Out-breath: announce which beings got a cognitive slice ──────────────────
@@ -535,13 +536,6 @@ fn admit_pass(
     (out, deferred)
 }
 
-/// The smallest per-pass budget the gate will ever impose while any pair is due. A being
-/// is never fully silenced by pressure — under emergency the pass still admits this many
-/// (region × persona) ticks, and the orientation floors inside [`apportion`] hand them to
-/// the reactive spine first. The mind does less *background* work when the host is starved;
-/// it never goes comatose (BEING-SOCIETY-GOVERNOR.md, the never-coma rail).
-const PRESSURE_SPINE_FLOOR: usize = 1;
-
 /// Map a live memory `PressureLevel` band to the per-pass slice budget — the R4 slice 3
 /// homeostatic **protection** ([[commands-are-agency-algs-are-pathways]]: a reflex that keeps
 /// the backend safe, never cognition-steering). As system RAM climbs through the canonical
@@ -554,8 +548,14 @@ const PRESSURE_SPINE_FLOOR: usize = 1;
 ///   on a healthy host (a being is never throttled while there's headroom).
 /// - `Warning` (80–90%) → ¾ of due: gently trim the background population.
 /// - `High` (90–95%) → ½ of due.
-/// - `Critical` (> 95%) → ¼ of due, floored at [`PRESSURE_SPINE_FLOOR`]: minimal background,
-///   the floors claim it for the reactive spine first.
+/// - `Critical` (> 95%) → ¼ of due: minimal background, the floors claim it for the
+///   reactive spine first.
+///
+/// The never-coma rail (BEING-SOCIETY-GOVERNOR.md) holds by construction: with at least one
+/// pair due, the ceiling of a positive fraction of it is at least one tick, so a being is
+/// never fully silenced by pressure; the orientation floors inside [`apportion`] hand that
+/// tick to the reactive spine first. The mind does less *background* work when the host is
+/// starved; it never goes comatose.
 ///
 /// The band thresholds (0.80/0.90/0.95) are the system-wide canonical memory tiers, NOT a
 /// per-deployment env knob, and the monitor's built-in hysteresis (`consecutive_at_level`)
@@ -575,8 +575,7 @@ fn pressure_budget(level: PressureLevel, total_due: usize) -> Option<usize> {
         PressureLevel::High => 1.0 / 2.0,
         PressureLevel::Critical => 1.0 / 4.0,
     };
-    let budget = ((total_due as f64) * fraction).ceil() as usize;
-    Some(budget.max(PRESSURE_SPINE_FLOOR))
+    Some(((total_due as f64) * fraction).ceil() as usize)
 }
 
 // ─────────────────────────── governor/status ─────────────────────
@@ -808,16 +807,21 @@ mod tests {
     }
 
     // what this catches: the never-coma rail. Even under Critical pressure with only a couple
-    // pairs due, the pass still admits at least PRESSURE_SPINE_FLOOR — a being is never fully
-    // silenced by pressure; the orientation floors then hand that slice to the reactive spine.
+    // pairs due, the pass still admits at least one tick — a being is never fully silenced by
+    // pressure; the orientation floors then hand that slice to the reactive spine. The rail is
+    // the ceiling of a positive fraction of a non-zero count, so every band and count is checked.
     #[test]
     fn pressure_budget_never_silences_a_small_society() {
-        // 2 due × ¼ = 0.5 → ceil 1, already ≥ floor; 1 due × ¼ = 0.25 → ceil 1.
+        // 2 due × ¼ = 0.5 → ceil 1; 1 due × ¼ = 0.25 → ceil 1.
         assert_eq!(pressure_budget(PressureLevel::Critical, 2), Some(1));
         assert_eq!(pressure_budget(PressureLevel::Critical, 1), Some(1));
-        assert!(
-            pressure_budget(PressureLevel::Critical, 1).unwrap() >= PRESSURE_SPINE_FLOOR,
-            "the spine keeps breathing under emergency pressure",
-        );
+        for level in [PressureLevel::Warning, PressureLevel::High, PressureLevel::Critical] {
+            for due in 1..=64 {
+                assert!(
+                    pressure_budget(level, due).is_some_and(|budget| budget >= 1),
+                    "the spine keeps breathing under {level:?} with {due} due",
+                );
+            }
+        }
     }
 }

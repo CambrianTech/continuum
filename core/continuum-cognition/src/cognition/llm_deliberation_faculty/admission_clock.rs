@@ -32,6 +32,9 @@ pub(crate) struct QueueTime {
     pub(crate) dispatched: bool,
     /// The act this step is, when a mind is acting (a faculty test or replay has none).
     pub(crate) act: Option<ActAt>,
+    /// The named await this step is inside now, and when it entered it ([`stage`]): what a
+    /// deadline that ends the step names, so a park is never anonymous (card 5e79e1c1).
+    pub(crate) stage: Option<(&'static str, Instant)>,
 }
 impl QueueTime {
     pub(crate) fn new(base: Instant, bound: Duration, act: Option<ActAt>) -> Self {
@@ -44,6 +47,7 @@ impl QueueTime {
             stalled: false,
             dispatched: false,
             act,
+            stage: None,
         }
     }
     /// Generation extensions accrue only outside a registered wait. Completed
@@ -70,6 +74,33 @@ pub(crate) fn note_dispatched() {
     QUEUE_TIME
         .try_with(|tx| tx.send_modify(|state| state.dispatched = true))
         .unwrap_or(()); // unwrap_or: no step scope = no step deadline to tell a drop from a wait
+}
+
+/// Run `work` as the step's named stage: the step's deadline, if it ends the step inside, names
+/// `name` and how long the step had been in it. The previous stage is restored when `work`
+/// finishes or is dropped (a cancelled step included), so a nested stage never leaves its name
+/// behind. Outside a step's scope it only runs `work`.
+pub(crate) async fn stage<T>(name: &'static str, work: impl Future<Output = T>) -> T {
+    let _restore = QUEUE_TIME
+        .try_with(|tx| {
+            let mut previous = None;
+            tx.send_modify(|state| previous = state.stage.replace((name, Instant::now())));
+            StageRestore { tx: tx.clone(), previous }
+        })
+        .ok();
+    work.await
+}
+
+/// Puts the enclosing stage back when a stage ends, by completion or by drop.
+struct StageRestore {
+    tx: watch::Sender<QueueTime>,
+    previous: Option<(&'static str, Instant)>,
+}
+impl Drop for StageRestore {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        self.tx.send_modify(|state| state.stage = previous);
+    }
 }
 
 /// The act the current step is, if this runs inside one; `None` outside a step's scope.

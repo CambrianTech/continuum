@@ -17,6 +17,12 @@ use super::Tokens;
 pub enum Observed<T> {
     /// A measurement.
     Exact(T),
+    /// A lower bound over an irreducible floor (`floor <= at_least`): the bound may be collapsed into
+    /// a limit, the floor never is (Codex on #5931: a floor between the ceiling and the bound was cut
+    /// below what her turn cannot go below). Built only by [`Observed::over`]. Declared BEFORE
+    /// `AtLeast`: untagged reads try variants in order and ignore unknown fields, so after it a
+    /// floored need would read back as a bare bound, its floor dropped.
+    Floored { at_least: T, floor: T },
     /// A lower bound: the true size is at least this, never known to be this.
     AtLeast { at_least: T },
 }
@@ -32,21 +38,37 @@ impl<T> Observed<T> {
     /// The value observed: the size, or the bound.
     pub fn value(self) -> T {
         match self {
-            Self::Exact(value) | Self::AtLeast { at_least: value } => value,
+            Self::Exact(value) | Self::AtLeast { at_least: value } | Self::Floored { at_least: value, .. } => value,
         }
     }
 
     /// Whether this is a lower bound, never a size.
     pub fn is_bound(&self) -> bool {
-        matches!(self, Self::AtLeast { .. })
+        matches!(self, Self::AtLeast { .. } | Self::Floored { .. })
     }
 
     /// The same observation of `f(value)`: a bound stays a bound.
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Observed<U> {
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Observed<U> {
         match self {
             Self::Exact(value) => Observed::Exact(f(value)),
             Self::AtLeast { at_least } => Observed::AtLeast { at_least: f(at_least) },
+            Self::Floored { at_least, floor } => {
+                let floor = f(floor);
+                Observed::Floored { at_least: f(at_least), floor }
+            }
         }
+    }
+
+    /// The same observation of `f(value)`, or `None` when `f` refuses any part (a zero is no size).
+    pub fn try_map<U>(self, mut f: impl FnMut(T) -> Option<U>) -> Option<Observed<U>> {
+        Some(match self {
+            Self::Exact(value) => Observed::Exact(f(value)?),
+            Self::AtLeast { at_least } => Observed::AtLeast { at_least: f(at_least)? },
+            Self::Floored { at_least, floor } => {
+                let floor = f(floor)?;
+                Observed::Floored { at_least: f(at_least)?, floor }
+            }
+        })
     }
 }
 
@@ -63,6 +85,44 @@ impl Observed<Tokens> {
         match self {
             Self::Exact(need) => need,
             Self::AtLeast { at_least } => Tokens::new(limit).map_or(at_least, |limit| at_least.min(limit)), // map_or: a zero limit holds nothing to clamp to
+            // The bound is clamped, never below her floor: a floor past the limit stands, as an
+            // exact need does, and waits for room.
+            Self::Floored { at_least, floor } => Self::AtLeast { at_least }.within(limit).max(floor),
+        }
+    }
+
+    /// The part of this need no collapse can remove: an exact need whole, a floored bound's floor,
+    /// nothing of a bare bound.
+    pub fn irreducible(self) -> Option<Tokens> {
+        match self {
+            Self::Exact(need) | Self::Floored { floor: need, .. } => Some(need),
+            Self::AtLeast { .. } => None,
+        }
+    }
+
+    /// This need shaped under `target`: its bound collapses to the target, its irreducible part
+    /// never does. A caller first raises the target to [`Observed::irreducible`] (`LaneRequirement::held`),
+    /// so a stale target never cuts a floor (Codex on #5931: wish 40,000, target 50,000, floor 60,000
+    /// was cut to 50,000 before admission).
+    pub fn under(self, target: Tokens) -> Self {
+        match self {
+            Self::Exact(need) => Self::Exact(need),
+            Self::AtLeast { at_least } => Self::AtLeast { at_least: at_least.min(target) },
+            Self::Floored { at_least, floor } => Self::Floored { at_least: at_least.min(target).max(floor), floor },
+        }
+    }
+
+    /// This need over an irreducible `floor` (a size her turn cannot be sent below): an exact need is
+    /// raised to it, and a bound keeps it beside itself, so `within` may collapse the bound into what
+    /// exists and never the floor. A floor past the bound is the need, exact. The ONE place a floor
+    /// joins a need.
+    pub fn over(self, floor: Option<Tokens>) -> Self {
+        let Some(floor) = floor else { return self };
+        match self {
+            Self::Exact(need) => Self::Exact(need.max(floor)),
+            Self::AtLeast { at_least } | Self::Floored { at_least, .. } if floor >= at_least => Self::Exact(floor),
+            Self::AtLeast { at_least } => Self::Floored { at_least, floor },
+            Self::Floored { at_least, floor: held } => Self::Floored { at_least, floor: held.max(floor) },
         }
     }
 }

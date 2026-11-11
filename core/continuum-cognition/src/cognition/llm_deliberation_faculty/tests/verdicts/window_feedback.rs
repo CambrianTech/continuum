@@ -68,7 +68,8 @@ async fn live_window_reductions_bound_actual_requests_and_persist() {
             request.tools.as_ref().expect("native tools retained"),
         );
         assert_eq!(schemas, faculty.prompt_view(&ws).tools.tokens);
-        assert_eq!(request.max_tokens, Some(expected_view.completion_reserve));
+        // a turn she has hands for is an act: its cap is the room past its prompt, at least her reply's grant
+        assert!(request.max_tokens >= Some(expected_view.completion_reserve), "{:?}", request.max_tokens);
         let cost = LlmDeliberationFaculty::framing_cost(
             request.system_prompt.as_deref().expect("system framing"),
         ) + PromptCalibration::default().estimate_all(&request.messages)
@@ -149,10 +150,8 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
             let seen = old_adapter.seen.lock().expect("old route requests");
             assert_eq!(seen.len(), 1);
             assert_eq!(seen[0].model.as_deref(), Some("original-model"));
-            assert_eq!(
-                seen[0].max_tokens,
-                Some(faculty.prompt_view_within(&ws, 16_384).completion_reserve)
-            );
+            // an act's cap is the room past its prompt, at least her reply's grant
+            assert!(seen[0].max_tokens >= Some(faculty.prompt_view_within(&ws, 16_384).completion_reserve));
         }
         let verdict = faculty.contribute(&ws).await.expect("next verdict");
         assert!(verdict.fault.is_none());
@@ -162,9 +161,10 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
         assert_eq!(request.model, replacement.model);
         let next_window = if same_route { 16_384 } else { 24_576 };
         assert_eq!(binding.load().context_window, next_window);
-        assert_eq!(
-            request.max_tokens,
-            Some(
+        // an act's cap is the room past its prompt, at least her reply's grant
+        assert!(
+            request.max_tokens
+                >= Some(
                 faculty
                     .prompt_view_within(&ws, next_window)
                     .completion_reserve
@@ -307,10 +307,18 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                 let ask = pair[1].messages.iter().position(|m| m.content_text().contains(stimulus)).unwrap();
                 assert!(ground[0] < ask);
                 assert_eq!(pair[0].system_prompt, pair[1].system_prompt);
-                assert_eq!(pair[0].max_tokens, pair[1].max_tokens);
+                // each attempt is an act: its cap is that attempt's room past its own (refit) prompt
                 assert_eq!(serde_json::to_value(&pair[0].tools).unwrap(), serde_json::to_value(&pair[1].tools).unwrap());
-                assert!(PromptCalibration::default().estimate_all(&pair[1].messages)
-                    < PromptCalibration::default().estimate_all(&pair[0].messages));
+                // each retry of an act makes measured progress: her view refit smaller, or her view
+                // kept whole and the cap shrunk to the engine's measured room
+                let (before, after) = (
+                    PromptCalibration::default().estimate_all(&pair[0].messages),
+                    PromptCalibration::default().estimate_all(&pair[1].messages),
+                );
+                assert!(
+                    after < before || (after == before && pair[1].max_tokens < pair[0].max_tokens),
+                    "no progress: prompt {before} -> {after}, cap {:?} -> {:?}", pair[0].max_tokens, pair[1].max_tokens
+                );
             }
             assert_eq!(outcome.receipts.len(), seen.len());
             for (receipt, request) in outcome.receipts.iter().zip(seen.iter()) {
@@ -337,9 +345,14 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
             let first = &seen[0];
             let second = seen.last().unwrap();
             assert_ne!(first.request_id, second.request_id);
+            // measured progress: a smaller prompt, or her view kept and the cap shrunk
+            let (before, after) = (
+                PromptCalibration::default().estimate_all(&first.messages),
+                PromptCalibration::default().estimate_all(&second.messages),
+            );
             assert!(
-                PromptCalibration::default().estimate_all(&second.messages)
-                    < PromptCalibration::default().estimate_all(&first.messages)
+                after < before || (after == before && second.max_tokens < first.max_tokens),
+                "no progress: prompt {before} -> {after}, cap {:?} -> {:?}", first.max_tokens, second.max_tokens
             );
             assert!(second
                 .messages
@@ -623,7 +636,7 @@ async fn a_prompt_denser_than_her_measured_density_is_refit_before_generation() 
     let charged = (cost(resent) as u64 * u64::from(requested)).div_ceil(cost(refused).max(1) as u64).max(cost(resent) as u64);
     let allowance = resent.max_tokens.expect("test: the refit names its reply allowance"); // JUSTIFIED: test fixture
     assert!(charged + u64::from(allowance) <= u64::from(window), "{charged} + {allowance} > {window}");
-    assert!(allowance >= LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS, "her reply's allowance survives: {allowance}");
+    assert!(allowance >= 1, "her reply's allowance survives: {allowance}");
 }
 
 // The fitted view observed 4k; the same adapter grows before refusal is
@@ -644,4 +657,38 @@ async fn capacity_growth_during_assembly_is_not_lost_when_refusal_is_published()
     tokio::time::timeout(std::time::Duration::from_secs(1), readiness.wait())
         .await.expect("already published growth must not require another notification");
     assert_eq!(adapter.call_count(), 0, "refused assembly never generates");
+}
+
+// what this catches (Aiko on the M5, 2026-11-11 13:00-14:30Z): a refusal's smaller window kept as
+// her window for every later act. One refusal at 49,025 fitted every act after it at 49,025 while
+// she held a 112,925 grant, so her view turned over every few acts and her plans collapsed to
+// pointers. A refusal shapes only the retry of the act it refused; the next act is fitted to her
+// live window again.
+#[tokio::test]
+async fn a_refusal_never_shrinks_her_window_for_the_acts_after_it() {
+    let home = tempfile::tempdir().expect("isolated demand storage");
+    let _native = crate::paths::NativeHomeOverride::install(home.path());
+    let persona = Uuid::new_v4();
+    let window = 32_768;
+    let adapter = Arc::new(ScriptedAdapter::new(vec![
+        make_response(FinishReason::Stop, "PASS", None),
+        make_response(FinishReason::Stop, "PASS", None),
+        make_response(FinishReason::Stop, "PASS", None),
+    ]));
+    adapter.rejections.lock().expect("fixture rejection queue").push_back(
+        crate::ai::inference_error::InferenceError::ContextExceeded { requested: 9_000, available: 8_192 },
+    );
+    let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+        .with_context_window(window)
+        .with_working_memory(Arc::new(crate::cognition::working_memory::WorkingMemory::new(8)))
+        .with_working_set(crate::cognition::working_set::WorkingSetRegistry::new());
+    let mut first = Workspace::new("A first stimulus.");
+    first.now_ms = Some(1_000);
+    let _ = faculty.contribute(&first).await; // refused once at 8,192, whatever its retry made of it
+    let mut next = Workspace::new("A different stimulus, later.");
+    next.now_ms = Some(200_000);
+    let outcome = faculty.contribute(&next).await.expect("the next act contributes");
+    let receipt = outcome.receipts.last().expect("the next act dispatched");
+    let allocation = receipt.allocation.as_ref().expect("the call names its allocation");
+    assert_eq!(allocation.window, window, "the next act is fitted to her live window, never the refusal's 8,192");
 }

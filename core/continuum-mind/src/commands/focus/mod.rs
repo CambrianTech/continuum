@@ -18,3 +18,17 @@
 pub mod continue_;
 pub mod mute;
 pub mod nudge;
+
+use crate::cognition::focus::FocusState;
+use crate::sdk_codegen::CommandError;
+
+/// Her focus state, locked for a verb. A poisoned lock is a prior panic mid-mutation; the
+/// focus registry's policy is to propagate it, never swallow it, so the verb refuses with
+/// a typed internal error instead of panicking the command dispatcher.
+fn lock_focus(
+    handle: &std::sync::Mutex<FocusState>,
+) -> Result<std::sync::MutexGuard<'_, FocusState>, CommandError> {
+    handle.lock().map_err(|_| {
+        CommandError::Internal("focus state poisoned by a prior panic mid-mutation; not read or written".into())
+    })
+}

@@ -37,6 +37,7 @@ pub mod publishers;
 pub mod registry;
 // The Bevy slot allocator + renderer factory — exists only with the 3D renderer.
 #[cfg(feature = "avatar-3d")]
+#[allow(clippy::unwrap_used)] // 9 std lock unwraps wait on the file's self_sized sites: #5860
 pub mod render_loop;
 pub mod renderer;
 pub mod selection;

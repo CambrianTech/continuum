@@ -406,7 +406,7 @@ impl ServingDaemonModule {
                 health_fails.store(0, Ordering::Relaxed);
                 // A success invalidates the miss-time fingerprint — a stale one must
                 // never exonerate a LATER freeze.
-                *last_miss_fp.lock().unwrap() = None;
+                *last_miss_fp.lock() = None;
                 health_probing.store(false, Ordering::Release);
                 return;
             }
@@ -420,7 +420,7 @@ impl ServingDaemonModule {
             // and latency as before.
             let cur_fp = server.slots_activity_fingerprint().await;
             let prev_fp = {
-                let mut guard = last_miss_fp.lock().unwrap();
+                let mut guard = last_miss_fp.lock();
                 std::mem::replace(&mut *guard, cur_fp)
             };
             if matches!(

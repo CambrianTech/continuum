@@ -272,7 +272,22 @@ pub(super) async fn run_self_cycle(
     // to be doing benchmarks"). The self-cycle used to take a card off a working round's
     // deck for an idle citizen; that is how ac49a7d5 landed in her hands without her
     // choosing it. Boards are in her perception; claiming is her act, with her hands.
-    let work_room = focus_room.unwrap_or(ctx.identity.default_room); // unwrap_or: no held claim = home room
+    // The cycle's room, as the witness every later step takes: a held claim's room, else
+    // home. A nil room is refused here, once, before she acts in it (#425).
+    let work_room = match crate::identity::ActivityRoom::from_uuid(
+        focus_room.unwrap_or(ctx.identity.default_room), // unwrap_or: no held claim = home room
+    ) {
+        Ok(room) => room,
+        Err(refused) => {
+            continuum_base::probe!(
+                class = "persona.selftick.roomless",
+                persona = %ctx.identity.agent_name,
+                error = %refused,
+                "self-cycle has no real room (focus and home both nil); skipped, never run roomless",
+            );
+            return;
+        }
+    };
     // HER INITIATIVE rides this beat (`persona::initiative_turn`): with nothing held, the
     // gate offers her a turn with her hands, paced by THIS heartbeat and no timer of its
     // own. Not on a wake her own mind raised (a continuation, a perceive): that wake is
@@ -316,7 +331,7 @@ pub(super) async fn run_self_cycle(
         cognition
             .compose_for_turn(
                 now_ms,
-                Some(focus_room.unwrap_or(ctx.identity.default_room)),
+                Some(work_room.as_uuid()),
             )
             .await
     };
@@ -358,18 +373,15 @@ pub(super) async fn run_self_cycle(
     // grounding against), else her default. Before this, the composition used the
     // focus room while the anchor/burst/drive/say all used default — she reasoned
     // about her claim's room and then acted in a different one.
-    let tick_room = focus_room.unwrap_or(ctx.identity.default_room); // no focus claim → the tick drives in her default room by design
+    let tick_room = work_room.as_uuid(); // the cycle's one room, resolved and refused-if-nil above
     append_ring_anchor_if_starved(
         &mut selftick_turns,
         &deliveries,
         ctx.identity.peer_id,
         tick_room,
     );
-    let room_invariant =
-        "focus room comes from a live claim's real room; default_room is minted v4 — never nil";
-    let activity_room = crate::identity::ActivityRoom::from_uuid(tick_room).expect(room_invariant); // claim rooms are spawned real; default_room minted v4 — nil unreachable
     let burst = crate::cognition::workspace::Burst::from_turns_at(
-        activity_room,
+        work_room,
         selftick_turns,
         Some(now_ms),
         // Ambient, and honestly so. The self-tick wakes on a CHANGE to a re-read
@@ -436,9 +448,17 @@ pub(super) async fn run_self_cycle(
     // synchronous read (no await held), per the concurrency style guide.
     let focus_handle = crate::cognition::focus::registry().handle(ctx.identity.peer_id.as_uuid());
     let wakes = {
-        let mut focus = focus_handle
-            .lock()
-            .expect("focus mutex poisoned by a prior panic");
+        // A poisoned lock is a prior panic mid-mutation; the focus registry's policy is to
+        // propagate it, never read through it. The cycle stops here, loudly, and her work is
+        // untouched for the next one.
+        let Ok(mut focus) = focus_handle.lock() else {
+            continuum_base::probe!(
+                class = "persona.selftick.focus_poisoned",
+                persona = %ctx.identity.agent_name,
+                "focus state poisoned by a prior panic; self-cycle skipped, never woken on a half-written mute list",
+            );
+            return;
+        };
         focus.prune_expired(now_ms); // drop lapsed snoozes while we hold it (bounded list)
         focus.wakes_on(ctx.identity.default_room, addressed, now_ms)
     };

@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn unbounded_orm_selects_never_increase() {
         let violations = scan(&[&UnboundedOrmSelects]);
-        crate::ratchet::hold_sites("unbounded_orm_selects", &violations, || advice("unbounded_orm_selects", &violations));
+        crate::ratchet::hold_sites("unbounded_orm_selects", &violations, crate::ratchet::Touched::EndsClean, || advice("unbounded_orm_selects", &violations));
     }
 
     // what this catches: rows loaded to be filtered, sorted or searched in Rust, which decodes
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn load_then_filter_rows_never_increase() {
         let violations = scan(&[&LoadThenFilterRows]);
-        crate::ratchet::hold_sites("load_then_filter_rows", &violations, || advice("load_then_filter_rows", &violations));
+        crate::ratchet::hold_sites("load_then_filter_rows", &violations, crate::ratchet::Touched::EndsClean, || advice("load_then_filter_rows", &violations));
     }
 
     fn count(rule: &dyn SourceRule, src: &str) -> usize {

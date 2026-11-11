@@ -470,7 +470,7 @@ impl Contribution {
             // The mind's narration of WHY it's acting — surfaced/audited like any
             // contribution content; the calls themselves live on the decision.
             Decision::Act { intent, .. } => intent.clone(),
-            Decision::Pass { reason } => reason.clone().unwrap_or_default(),
+            Decision::Pass { reason } => reason.clone().unwrap_or_default(), // unwrap_or_default: a pass that gave no reason says none
         };
         Self {
             faculty: FacultyId::Deliberation,

@@ -383,11 +383,17 @@ impl Registry {
                     .retain(|entry| !Arc::ptr_eq(entry, &dir));
             }
         }
+        // A root already recorded keeps its recorded device (below): observing it again every
+        // tick walked the filesystem for a result nothing read (the M5, 2026-11-10: ~270
+        // resolutions a minute over 29 roots, 78% of the core's log lines).
+        let recorded: Option<std::collections::HashSet<std::path::PathBuf>> =
+            self.1.lock().await.as_ref().map(|records| records.saved.keys().cloned().collect());
         let mut observations = Vec::new();
         for dir in self
             .snapshot()
             .into_iter()
             .filter(|dir| CARGO_TARGET_CLASSES.contains(&dir.class()))
+            .filter(|dir| recorded.as_ref().is_none_or(|recorded| !recorded.contains(dir.path())))
         {
             let volume = self
                 .path_work(dir.path(), PathWork::Observe)
@@ -411,7 +417,7 @@ impl Registry {
             .await
             .map_err(|error| error.to_string())?;
         let mut saved = std::collections::HashMap::new();
-        for (_, record) in store.find_all().await.map_err(|error| error.to_string())? {
+        for (_, record) in store.find_all().await.map_err(|error| error.to_string())? { // bounded: one record per tracked cargo root, retired when it empties
             if !CARGO_TARGET_CLASSES.contains(&record.class.as_str()) {
                 return Err(format!("unknown tracked Cargo class {}", record.class));
             }
@@ -571,7 +577,7 @@ impl DurableRoots {
             .saved
             .get(&physical)
             .cloned()
-            .unwrap_or_else(|| RootRecord::new(class, &physical));
+            .unwrap_or_else(|| RootRecord::new(class, &physical)); // unwrap_or_else: a root with no saved record starts one
         record.volume_id = volume_id;
         if let Some(peer) = citizen {
             if record.citizen.is_some_and(|prior| prior != peer) {
@@ -650,7 +656,7 @@ pub async fn admit_cargo_target(
 fn register_pool(broker: &PressureBroker, dir: Arc<TrackedDir>) {
     let budget = DiskPressureMonitor::volume_for(dir.path())
         .map(|volume| super::super::cargo_target_budget_bytes(volume.total_bytes))
-        .unwrap_or(super::super::DEFAULT_CARGO_TARGET_BUDGET_BYTES);
+        .unwrap_or(super::super::DEFAULT_CARGO_TARGET_BUDGET_BYTES); // unwrap_or: a root whose volume does not read takes the default budget until it does
     broker.register(Arc::new(CargoTargetPool::new(dir, budget)));
 }
 

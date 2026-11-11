@@ -67,7 +67,7 @@ macro_rules! engine {
 use crate::code::citizen_layer::*;
 use crate::code::hands::ReleaseHandsResult;
 
-mod engine_err;
+pub(crate) mod engine_err;
 pub use engine_err::*;
 mod code_verbs;
 pub use code_verbs::*;

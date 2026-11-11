@@ -9,11 +9,12 @@ pub(super) enum Resync {
 }
 
 /// The one turn trigger shared by the intake steps: the message, the room it arrived in,
-/// and whether it is an already-admitted retry.
+/// and whether it is an already-admitted retry. The room is the witness (#425): the loop
+/// refuses a nil room before it builds a trigger, so no step past intake can meet one.
 #[derive(Clone, Copy)]
 pub(super) struct TurnTrigger<'a> {
     pub(super) msg: &'a IncomingMessage,
-    pub(super) turn_room: Uuid,
+    pub(super) room: crate::identity::ActivityRoom,
     pub(super) admitted_retry: bool,
 }
 

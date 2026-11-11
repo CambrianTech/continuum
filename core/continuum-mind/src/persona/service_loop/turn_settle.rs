@@ -14,7 +14,8 @@ pub(super) async fn finish_spoken_turn(
     pending: &mut crate::persona::wake_backlog::PendingInput,
     effects: &crate::cognition::act_observe::EffectGate,
 ) -> SpeechMark {
-    let TurnTrigger { msg, turn_room, .. } = trigger;
+    let TurnTrigger { msg, room, .. } = trigger;
+    let turn_room = room.as_uuid();
     let SpokenTurn {
         response_text,
         turn_credit,
@@ -109,7 +110,7 @@ pub(super) async fn finish_spoken_turn(
         ctx,
         conversation,
         msg.lamport,
-        turn_room,
+        room,
         spoke_directed,
         // A message turn never offers her initiative: the message snapped her beat to
         // engaged, and that beat (the self-tick) offers it.

@@ -3,6 +3,8 @@
 //! file can disagree with the live world, each answered with its own verdict. A kind's test calls
 //! [`every_outcome`] with a sample value instead of writing its own save/load/corrupt test.
 
+#![cfg(any(test, feature = "test-fixtures"))]
+
 use crate::{CorruptCause, Loaded, OwnedFile, SaveError, SavedState, Store};
 use sha2::{Digest, Sha256};
 use std::fmt::Debug;

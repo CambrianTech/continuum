@@ -55,7 +55,9 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
+use parking_lot::Mutex;
+
+use crate::routing::capped_appender::CappedAppender;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -163,18 +165,21 @@ impl RagCaptureSink for NoopRagCaptureSink {
 /// up; the mechanic's lift might be temporarily out of order.)
 pub struct JsonlRagCaptureSink {
     path: PathBuf,
-    file: Mutex<std::fs::File>,
+    file: Mutex<CappedAppender>,
 }
 
 impl JsonlRagCaptureSink {
-    /// Open `path` for append (creating it if needed). Parent dir
-    /// MUST already exist; caller is responsible for the rotation
-    /// strategy + directory creation.
+    /// Open `path` for append (creating it and its directory if needed). Writes go through
+    /// the kernel's [`CappedAppender`], the one owner of a bounded append: the trace rotates
+    /// at its cap and keeps its generations, instead of this sink choosing its own retention.
     pub fn open(path: PathBuf) -> std::io::Result<Self> {
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let (Some(dir), Some(file_name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("rag capture trace path {} names no file in a directory", path.display()),
+            ));
+        };
+        let file = CappedAppender::new(dir, file_name)?;
         Ok(Self {
             path,
             file: Mutex::new(file),
@@ -209,7 +214,7 @@ impl RagCaptureSink for JsonlRagCaptureSink {
         line.push('\n');
         // Mutex-protected append. Failures log + drop per the
         // "capture failure must never fail the cognition turn" rule.
-        let mut file = self.file.lock().unwrap();
+        let mut file = self.file.lock();
         if let Err(err) = std::io::Write::write_all(&mut *file, line.as_bytes()) {
             tracing::warn!(
                 error = %err,
@@ -303,26 +308,26 @@ impl InMemoryRagCaptureSink {
     /// Snapshot of all captured events so far. Cheap clone — events
     /// are Clone.
     pub fn events(&self) -> Vec<RagCaptureEvent> {
-        self.inner.lock().unwrap().clone()
+        self.inner.lock().clone()
     }
 
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        self.inner.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().unwrap().is_empty()
+        self.inner.lock().is_empty()
     }
 
     /// Clear all captured events. Useful between test phases.
     pub fn clear(&self) {
-        self.inner.lock().unwrap().clear();
+        self.inner.lock().clear();
     }
 }
 
 impl RagCaptureSink for InMemoryRagCaptureSink {
     fn record(&self, event: RagCaptureEvent) {
-        self.inner.lock().unwrap().push(event);
+        self.inner.lock().push(event);
     }
 }
 

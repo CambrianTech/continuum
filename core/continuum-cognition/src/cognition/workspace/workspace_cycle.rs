@@ -12,7 +12,7 @@ impl WorkspaceCycle {
             model_binding: None,
             experience: None,
             cycle_counter: std::sync::atomic::AtomicU64::new(0),
-            token_sink: std::sync::Mutex::new(None),
+            token_sink: parking_lot::Mutex::new(None),
             faculty_pulse: Arc::new(super::super::faculty_pulse::FacultyPulse::new()),
             kv_cached_tokens: std::sync::atomic::AtomicU64::new(0),
             kv_prefill_tokens: std::sync::atomic::AtomicU64::new(0),
@@ -186,14 +186,14 @@ impl WorkspaceCycle {
         &self,
         sink: Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
     ) {
-        *self.token_sink.lock().unwrap() = sink;
+        *self.token_sink.lock() = sink;
     }
 
     /// The per-turn streaming sink to hand this tick's Workspace, or `None`.
     pub(super) fn current_token_sink(
         &self,
     ) -> Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>> {
-        self.token_sink.lock().unwrap().clone()
+        self.token_sink.lock().clone()
     }
 
     /// The inference adapter this mind CURRENTLY deliberates through — read from

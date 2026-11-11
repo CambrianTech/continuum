@@ -10,7 +10,8 @@
 use crate::governor::{load_policy_file, LocalSubstrateGovernor, PolicyFile, PolicyFileError};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyDirectoryError {
@@ -53,10 +54,7 @@ impl PolicyDirectoryWatcher {
     }
 
     pub fn last_error(&self) -> Option<String> {
-        self.last_error
-            .lock()
-            .unwrap()
-            .clone()
+        self.last_error.lock().clone()
     }
 
 }
@@ -88,9 +86,7 @@ pub fn watch_policy_directory(
         if let Err(error) = result {
             let message = error.to_string();
             tracing::error!(target: "continuum_core::governor::policy_watcher", %message);
-            let mut guard = callback_last_error
-                .lock()
-                .unwrap();
+            let mut guard = callback_last_error.lock();
             *guard = Some(message);
         }
     })

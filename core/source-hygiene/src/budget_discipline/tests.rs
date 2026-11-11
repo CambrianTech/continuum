@@ -18,10 +18,8 @@ const MIND: &str = "core/continuum-cognition/src/cognition/recall.rs";
 /// Count `rule` over the tree, hold it against the base, and judge the change's files.
 fn judge(rule: &dyn SourceRule, instead: &str) {
     let violations = scan(&[rule]);
-        let advice = || format!("{instead} The contract: docs/architecture/ONE-BUDGET.md.");
-    crate::ratchet::touched_clean(rule.name(), &violations, advice);
     let count = violations.len();
-    crate::ratchet::hold_sites(rule.name(), &violations, || {
+    crate::ratchet::hold_sites(rule.name(), &violations, crate::ratchet::Touched::EndsClean, || {
         format!(
             "{} {instead} The contract: docs/architecture/ONE-BUDGET.md.\nFirst {} of {count} (not necessarily new):\n{}",
             rule.name(),

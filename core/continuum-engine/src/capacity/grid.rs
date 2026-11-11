@@ -258,7 +258,7 @@ impl<P: GridPlacementPolicy> StickyPlacementPolicy<P> {
 
 impl<P: GridPlacementPolicy> GridPlacementPolicy for StickyPlacementPolicy<P> {
     fn place(&self, grid: &GridSnapshot, req: &LeaseRequest) -> Placement {
-        let mut cached = self.cached.lock().expect("sim-only lock");
+        let mut cached = self.cached.lock().expect("sim-only lock"); // JUSTIFIED: the dyno simulator's own cache; a poisoned lock means a panicked simulation, which fails the replay
         cached
             .get_or_insert_with(|| self.inner.place(grid, req))
             .clone()
@@ -524,7 +524,7 @@ impl GridSimulator {
                 .iter()
                 .find(|(p, _)| p == peer)
                 .map(|(_, n)| *n)
-                .unwrap_or(0)
+                .unwrap_or(0) // unwrap_or: a peer with no entry holds no seats
         };
         let mut verdicts = vec![NodeVerdict {
             node: NodePick::Local,
@@ -658,8 +658,9 @@ pub fn grid_week() -> GridScenario {
 
 /// Deterministic hash (splitmix64) — the swarm's churn source. NOT randomness: the same
 /// (seed, peer, tick) always yields the same world, so a swarm scenario is as replayable as a
-/// hand-written one. Determinism is what makes a 2000-decision swarm a regression TEST.
-fn churn(seed: u64) -> u64 {
+/// hand-written one. Determinism is what makes a 2000-decision swarm a regression TEST. The
+/// dyno's generated schedules draw from the same hash (`dyno::service::clock`).
+pub(crate) fn churn(seed: u64) -> u64 {
     let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);

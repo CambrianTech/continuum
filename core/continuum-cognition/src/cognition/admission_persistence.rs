@@ -157,9 +157,8 @@ impl AdmissionPersistenceSink for OrmPersistenceSink {
 
     fn observe_admission(&self, engram: &Engram, metadata: RecallMetadata) {
         let engram = engram.clone();
-        let metadata_row = EngramRecallMetadata::for_new_row(engram.id, metadata);
-        let row_id = uuid::Uuid::parse_str(&metadata_row.base.id)
-            .expect("BaseEntity::for_new_record always produces a valid UUID");
+        let row_id = Uuid::new_v4();
+        let metadata_row = metadata_row_at(row_id, engram.id, metadata);
         let engram_id = engram.id;
         // Cache the engram_id → row_id mapping NOW (before spawn) so
         // any concurrent `observe_metadata_update` for this engram_id
@@ -287,10 +286,18 @@ async fn update_metadata_row(
             // Recreate at the cached row_id to preserve the
             // engram_id → row_id mapping (otherwise the next update
             // would orphan the new row).
-            let mut row = EngramRecallMetadata::for_new_row(patch.engram_id, patch.metadata);
-            row.base.id = patch.base_id.to_string();
+            let row = metadata_row_at(patch.base_id, patch.engram_id, patch.metadata);
             store.save(patch.base_id, &row).await
         }
+    }
+}
+
+/// A new recall-metadata row under a primary key the caller already holds as a typed id: the
+/// sink caches `engram_id -> row_id` before the write, and recreates a lost row at that id.
+fn metadata_row_at(row_id: Uuid, engram_id: Uuid, metadata: RecallMetadata) -> EngramRecallMetadata {
+    EngramRecallMetadata {
+        base: crate::orm::BaseEntity::for_new_record_at(row_id),
+        ..EngramRecallMetadata::for_new_row(engram_id, metadata)
     }
 }
 
@@ -304,17 +311,17 @@ async fn update_metadata_row(
 /// system level, ubiquitous across every test in the substrate,
 /// not bespoke per test module.
 pub struct RecordingSink {
-    admissions: std::sync::Mutex<Vec<(Engram, RecallMetadata)>>,
-    metadata_updates: std::sync::Mutex<Vec<(Uuid, RecallMetadata)>>,
-    content_updates: std::sync::Mutex<Vec<Engram>>,
+    admissions: parking_lot::Mutex<Vec<(Engram, RecallMetadata)>>,
+    metadata_updates: parking_lot::Mutex<Vec<(Uuid, RecallMetadata)>>,
+    content_updates: parking_lot::Mutex<Vec<Engram>>,
 }
 
 impl RecordingSink {
     pub fn new() -> Self {
         Self {
-            admissions: std::sync::Mutex::new(Vec::new()),
-            metadata_updates: std::sync::Mutex::new(Vec::new()),
-            content_updates: std::sync::Mutex::new(Vec::new()),
+            admissions: parking_lot::Mutex::new(Vec::new()),
+            metadata_updates: parking_lot::Mutex::new(Vec::new()),
+            content_updates: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -323,11 +330,11 @@ impl RecordingSink {
     }
 
     pub fn admissions_seen(&self) -> Vec<(Engram, RecallMetadata)> {
-        self.admissions.lock().unwrap().clone()
+        self.admissions.lock().clone()
     }
 
     pub fn metadata_updates_seen(&self) -> Vec<(Uuid, RecallMetadata)> {
-        self.metadata_updates.lock().unwrap().clone()
+        self.metadata_updates.lock().clone()
     }
 
 }
@@ -345,17 +352,15 @@ impl AdmissionPersistenceSink for RecordingSink {
     fn observe_admission(&self, engram: &Engram, metadata: RecallMetadata) {
         self.admissions
             .lock()
-            .unwrap()
             .push((engram.clone(), metadata));
     }
     fn observe_metadata_update(&self, engram_id: Uuid, metadata: RecallMetadata) {
         self.metadata_updates
             .lock()
-            .unwrap()
             .push((engram_id, metadata));
     }
     fn observe_content_update(&self, engram: &Engram) {
-        self.content_updates.lock().unwrap().push(engram.clone());
+        self.content_updates.lock().push(engram.clone());
     }
 }
 

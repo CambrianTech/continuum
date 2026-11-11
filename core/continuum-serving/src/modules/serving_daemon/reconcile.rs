@@ -349,7 +349,6 @@ impl ServingDaemonModule {
                 && live.active_model.as_deref() == Some(desired.as_str())
                 && live.adapters == desired_adapter_paths
                 && !self.shared_pool_move_due(&live.base_url)
-                && !self.pool_growth_due(&desired, served_ctx, lanes)
             {
                 // The lanes this hour served: the health window's maximum (the lane-bound rest
                 // stands on it).
@@ -402,7 +401,7 @@ impl ServingDaemonModule {
             let mut pending = self
                 .pending_model_change
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(|p| p.into_inner()); // unwrap_or_else: a poisoned lock still holds the pending change; recover it
             let verdict = model_change_gate(
                 live.ready,
                 live.active_model.as_deref(),
@@ -416,7 +415,7 @@ impl ServingDaemonModule {
                     continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.model",
                         decision = "deferred",
-                        live_model = live.active_model.as_deref().unwrap_or("<none>"),
+                        live_model = live.active_model.as_deref().unwrap_or("<none>"), // probe field: no live model
                         plan_model = desired.as_str(),
                         streak = streak as u64,
                         needs_streak = MODEL_CHANGE_SUSTAINED_TICKS as u64,
@@ -430,7 +429,7 @@ impl ServingDaemonModule {
                     continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.model",
                         decision = "swapping",
-                        live_model = live.active_model.as_deref().unwrap_or("<none>"),
+                        live_model = live.active_model.as_deref().unwrap_or("<none>"), // probe field: no live model
                         plan_model = desired.as_str(),
                         streak = streak as u64,
                         "sustained plan disagreement — committing the model swap",

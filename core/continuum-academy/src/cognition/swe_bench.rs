@@ -42,6 +42,7 @@ use serde::{Deserialize, Serialize};
 
 mod swe_instance;
 pub use swe_instance::*;
+#[allow(clippy::expect_used)] // CLONE_AT_LOCKS poison expect waits on the file's cache writes and sizes: #5860
 mod fetch_hf_rows;
 pub use fetch_hf_rows::*;
 mod diff_target_paths;
@@ -50,6 +51,7 @@ mod build_env_from_scratch;
 pub use build_env_from_scratch::*;
 mod log_parser;
 pub use log_parser::*;
+#[allow(clippy::expect_used)] // LIVE_GRADES poison expects wait on the file's sized constants: #5860
 mod split_node_outcome;
 pub use split_node_outcome::*;
 mod grade;

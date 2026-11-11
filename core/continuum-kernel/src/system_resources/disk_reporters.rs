@@ -214,15 +214,19 @@ use registry::TRACKED_DIRS;
 
 pub fn registry_installed() -> bool { TRACKED_DIRS.get().is_some() }
 
+/// A second `install_tracked_dirs` in one process: a boot-sequence bug, refused so two
+/// measurement sets never coexist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("install_tracked_dirs called twice — one measurement registry per process")]
+pub struct TrackedDirsAlreadyInstalled;
+
 /// Install the boot-time tracked-dir set. Second call is a boot-sequence
 /// bug — fail loud, never silently keep two measurement sets.
-pub async fn install_tracked_dirs(dirs: Vec<Arc<TrackedDir>>) -> Vec<Arc<TrackedDir>> {
+pub async fn install_tracked_dirs(dirs: Vec<Arc<TrackedDir>>) -> Result<Vec<Arc<TrackedDir>>, TrackedDirsAlreadyInstalled> {
     let registry = registry::Registry::new(dirs).await;
     let dirs = registry.snapshot();
-    if TRACKED_DIRS.set(registry).is_err() {
-        panic!("install_tracked_dirs called twice — one measurement registry per process");
-    }
-    dirs
+    TRACKED_DIRS.set(registry).map_err(|_| TrackedDirsAlreadyInstalled)?;
+    Ok(dirs)
 }
 
 /// Fetch a tracked cache class by name, e.g. `"cargo-target"`. `None`

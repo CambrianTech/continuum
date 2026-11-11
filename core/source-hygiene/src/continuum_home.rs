@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn hand_built_continuum_homes_only_fall() {
         let sites = scan(&[&ContinuumHomeResolvedOnce]);
-        crate::ratchet::hold_sites("hand_built_homes", &sites, || {
+        crate::ratchet::hold_sites("hand_built_homes", &sites, crate::ratchet::Touched::EndsClean, || {
             format!(
                 "hand-built continuum homes rose. Resolve through crate::paths::continuum_home() instead:\n{}",
                 sites

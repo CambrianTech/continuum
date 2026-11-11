@@ -21,6 +21,10 @@ impl ActingProvider for TestActing {
         false
     }
 
+    fn acting_name(&self, _peer: Uuid) -> Option<String> {
+        None
+    }
+
     fn acting_root_in(&self, _persona: Uuid, _context: Option<HandsContext>) -> Option<PathBuf> {
         None
     }

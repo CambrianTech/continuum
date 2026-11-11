@@ -282,20 +282,33 @@
     fn after_a_submit_the_receipt_says_what_happens_next() {
         use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
         let id = uuid::Uuid::new_v4();
-        let bench = super::next_after_submission(Some(id), &[], true, None).expect("submitted");
+        let bench = super::next_after_submission(Some(id), &[], true, None, None).expect("submitted");
         assert!(bench.contains(&short8(id)) && bench.contains("test oracle grades it now") && bench.contains("verdict in the room"), "{bench}");
         assert!(bench.contains("marking the card done") && !bench.contains("No state"), "never contradicts the bench card's own text: {bench}");
         assert!(bench.contains("failed grade: revise and work/submit again"), "{bench}");
         let handoff = Some(airc_lib::WorkCardId::new());
-        let reviewed = super::next_after_submission(Some(id), &[], false, handoff).expect("submitted");
+        let pr = airc_work::PullRequestRef {
+            repo: airc_work::RepoId::new("CambrianTech/continuum").expect("a valid repo id"),
+            number: 5900,
+            head: airc_work::BranchName::new("e5c80c7f/her-fix").expect("a valid branch"),
+            base: airc_work::BranchName::new("canary").expect("a valid branch"),
+        };
+        let reviewed = super::next_after_submission(Some(id), &[], false, handoff, Some(&pr)).expect("submitted");
         assert!(reviewed.contains("Await the review") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
-        assert_eq!(super::next_after_submission(Some(id), &[Unknown], false, handoff), Some(reviewed.clone()), "an unknown verdict is still waiting");
-        assert!(super::next_after_submission(Some(id), &[], false, None).unwrap().contains("no review handoff is recorded"));
-        let back = super::next_after_submission(Some(id), &[Failed], true, None).expect("sent back");
+        assert!(reviewed.contains("CambrianTech/continuum#5900"), "the pull request carrying it is named: {reviewed}");
+        assert_eq!(super::next_after_submission(Some(id), &[Unknown], false, handoff, Some(&pr)), Some(reviewed.clone()), "an unknown verdict is still waiting");
+        assert!(super::next_after_submission(Some(id), &[], false, None, None).unwrap().contains("no review handoff is recorded"));
+        let back = super::next_after_submission(Some(id), &[Failed], true, None, None).expect("sent back");
         assert!(back.contains("sent submission") && back.contains("work/submit again"), "{back}");
-        let done = super::next_after_submission(Some(id), &[Failed, Passed], false, handoff).expect("passed");
-        assert!(done.contains("passed review") && done.contains("card is done"), "a pass outranks an earlier send-back: {done}");
-        assert_eq!(super::next_after_submission(None, &[], true, None), None, "nothing submitted, nothing to say");
+        let merging = super::next_after_submission(Some(id), &[Failed, Passed], false, handoff, Some(&pr)).expect("passed");
+        assert!(merging.contains("passed review") && merging.contains("CambrianTech/continuum#5900") && !merging.contains("card is done"), "a pass outranks an earlier send-back, and lands through its merge: {merging}");
+        // what this catches (break 2): a pass with no PR linked told her the card was done while
+        // its patch landed nowhere; it names the move that opens and links the PR instead.
+        let unlanded = super::next_after_submission(Some(id), &[Passed], false, handoff, None).expect("passed");
+        assert!(!unlanded.contains("card is done") && unlanded.contains("no pull request is linked") && unlanded.contains("work/submit"), "{unlanded}");
+        let graded = super::next_after_submission(Some(id), &[Passed], true, None, None).expect("passed");
+        assert!(graded.contains("card is done"), "an oracle-graded card finishes on its grade: {graded}");
+        assert_eq!(super::next_after_submission(None, &[], true, None, None), None, "nothing submitted, nothing to say");
     }
 
     // what this catches (Kimi, 2026-09-28): the same patch resubmitted on a card minting a
@@ -874,7 +887,7 @@
             publisher: airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(2)),
             submitted_at_ms: 7,
         };
-        let answer = super::already_submitted(&existing, uuid::Uuid::from_u128(5), &[], false);
+        let answer = super::already_submitted(&existing, uuid::Uuid::from_u128(5), &[], false, None);
         assert_eq!((answer.outcome, answer.submission_id), (super::SubmitOutcome::AlreadySubmitted, uuid::Uuid::from_u128(1)));
         assert!(answer.next.contains("already your submission"), "{}", answer.next);
     }

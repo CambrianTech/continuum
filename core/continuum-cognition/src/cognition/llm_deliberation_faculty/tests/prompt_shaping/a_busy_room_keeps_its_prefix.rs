@@ -34,6 +34,10 @@ impl Source<String> for Stream {
             })
             .collect()
     }
+
+    fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+        None // a fixture that does not exercise folding
+    }
 }
 
 const GROUNDING: u8 = crate::cognition::context_streams::priority::GROUNDING;

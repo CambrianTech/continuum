@@ -156,8 +156,7 @@ impl Agent {
                     .await
                     .map_err(|e| format!("Failed to publish video track: {}", e))?;
                 info!("📹 Video track published for '{}'", self.display_name);
-                *vs = Some(new_source);
-                vs.as_ref().unwrap()
+                &*vs.insert(new_source)
             }
         };
 
@@ -634,8 +633,8 @@ async fn forward_video_to_core(
             let w = width as usize;
             let h = height as usize;
 
-            // I420 → RGBA
-            let mut rgba = vec![0u8; w * h * 4];
+            // I420 → RGB, written straight into the image JPEG encodes (JPEG has no alpha).
+            let mut rgb_img = image::RgbImage::new(width, height);
             for y in 0..h {
                 for x in 0..w {
                     let y_val = y_plane[y * stride_y + x] as f32;
@@ -646,19 +645,10 @@ async fn forward_video_to_core(
                     let g = (y_val - 0.344 * u_val - 0.714 * v_val).clamp(0.0, 255.0) as u8;
                     let b = (y_val + 1.772 * u_val).clamp(0.0, 255.0) as u8;
 
-                    let i = (y * w + x) * 4;
-                    rgba[i] = r;
-                    rgba[i + 1] = g;
-                    rgba[i + 2] = b;
-                    rgba[i + 3] = 255;
+                    rgb_img.put_pixel(x as u32, y as u32, image::Rgb([r, g, b]));
                 }
             }
 
-            // RGBA → RGB → JPEG (JPEG doesn't support alpha channel)
-            let img: image::RgbaImage = image::ImageBuffer::from_raw(
-                width, height, rgba,
-            ).unwrap();
-            let rgb_img = image::DynamicImage::ImageRgba8(img).to_rgb8();
             let mut jpeg_buf = std::io::Cursor::new(Vec::new());
             rgb_img.write_to(&mut jpeg_buf, image::ImageFormat::Jpeg).ok();
             let jpeg = jpeg_buf.into_inner();

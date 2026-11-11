@@ -135,12 +135,6 @@ pub struct CapacityOffer {
     /// comparison site).
     #[serde(default)]
     pub capabilities: Vec<CapabilityId>,
-    /// The bases a peer may lease LoRA training to this node for (card 6f05b89d): those a
-    /// trainer on THIS host would accept (its resident weights or its own copy), never one it
-    /// would pass to a grid peer or a cloud provider. Today at most the served base. An older
-    /// core advertises nothing (serde default), which reads as "trains nothing", never "all".
-    #[serde(default)]
-    pub trainable_bases: Vec<String>,
     /// THE MINDS HERE THAT ARE STUCK (card 1c157668): each resident this node judged stalled
     /// (work asked, nothing completed) or regressed over its last service window, with the
     /// refusal that explains it. Kimi was refused before inference for 17 hours on 2026-10-26
@@ -176,16 +170,6 @@ pub enum CapabilityId {
     /// sends the cancel only to a seat advertising this; absence means it would be ignored,
     /// and a seat that never learned the command must not be sent one.
     RemoteGenerateCancel,
-    /// The node trains a LoRA job another node leases to it (`genome/lease/train`, with
-    /// `lease/status`, `lease/poll` and `lease/cancel`; cards cc34db0d, ec1d8b76) for a base it
-    /// lists in `trainable_bases`. A grid trainer leases only to a peer advertising this:
-    /// absence means a core that predates the lease verbs, which must never be sent one.
-    TrainingLease,
-    /// A leased job's trained adapter comes back to its origin (S3 of card 6f05b89d): the node
-    /// serves `genome/lease/artifact` ranges of a recorded manifest, and as an origin pulls,
-    /// verifies and places a returned adapter in its own job directory for adoption (card
-    /// 92cd2251). A grid trainer leases only when BOTH ends advertise this and `TrainingLease`.
-    TrainingLeaseReturn,
     /// The seat's `ai/generate` takes a mind's think budget (`GenerateParams::think`) and bounds
     /// her think with it on its own engine. A grid lane forwards a turn with a think budget only to
     /// a seat advertising this; absence means a core that would generate it unbounded.
@@ -209,8 +193,6 @@ pub fn this_build_capabilities() -> Vec<CapabilityId> {
         CapabilityId::LaneWaitReporting,
         CapabilityId::PlacementReservationGrant,
         CapabilityId::RemoteGenerateCancel,
-        CapabilityId::TrainingLease,
-        CapabilityId::TrainingLeaseReturn,
         CapabilityId::RemoteThinkBudget,
     ]
 }
@@ -596,7 +578,6 @@ mod tests {
             // capabilities at all, and the ledger must fold that as 'nothing',
             // never as 'all' (card 8bd75362).
             capabilities: Vec::new(),
-            trainable_bases: Vec::new(),
             resident_alarms: Vec::new(),
         }
     }
@@ -907,7 +888,7 @@ mod tests {
         let wire = serde_json::to_string(&this_build_capabilities())?;
         assert_eq!(
             wire,
-            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"training_lease\",\"training_lease_return\",\"remote_think_budget\"]"
+            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"remote_think_budget\"]"
         );
         assert!(!this_build_capabilities().contains(&CapabilityId::Unknown), "emission never advertises Unknown");
 

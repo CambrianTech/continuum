@@ -42,6 +42,8 @@ mod execution_id;
 pub use execution_id::*;
 mod run_shell_command;
 pub use run_shell_command::*;
+pub mod resident_env;
+pub use resident_env::*;
 
 #[cfg(test)]
 mod tests;

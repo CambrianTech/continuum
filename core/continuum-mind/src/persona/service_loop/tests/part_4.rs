@@ -144,7 +144,7 @@ use super::*;
             &hosted,
             &mut conversation,
             1,
-            room,
+            crate::identity::ActivityRoom::from_uuid(room).unwrap(),
             false,
             crate::persona::initiative_turn::Initiative::Offered,
         )
@@ -215,7 +215,7 @@ use super::*;
                     &hosted,
                     &mut conversation,
                     1,
-                    room,
+                    crate::identity::ActivityRoom::from_uuid(room).unwrap(),
                     false,
                     crate::persona::initiative_turn::Initiative::NotOffered,
                 )
@@ -519,7 +519,7 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
             &hosted,
             &mut conversation,
             1,
-            room,
+            crate::identity::ActivityRoom::from_uuid(room).unwrap(),
             false,
             offer,
         )

@@ -53,7 +53,7 @@ pub trait DynCommand: Send + Sync {
     /// The codegen / tool-surface / ACL descriptor — delegates to the command's
     /// [`CommandSpec`], so the object map and the static registry describe the
     /// SAME command.
-    fn descriptor(&self) -> CommandDescriptor;
+    fn descriptor(&self) -> Result<CommandDescriptor, super::CodegenDefect>;
 
     /// Parse the JSON envelope → run the typed handler → shape the reply per the
     /// command's [`WireShape`] → map errors to the refusal channel. `caller` is the
@@ -83,7 +83,7 @@ where
         <H::Spec as CommandSpec>::NAME
     }
 
-    fn descriptor(&self) -> CommandDescriptor {
+    fn descriptor(&self) -> Result<CommandDescriptor, super::CodegenDefect> {
         CommandDescriptor::of::<H::Spec>()
     }
 
@@ -393,6 +393,8 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Undeclared;
     /// Where this verb sits in a mind's hands. See [`CommandSpec::DISCLOSURE`]; defaults to `Core`.
     const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::Core;
+    /// For a `Withheld` verb: why, and what to use instead. See [`CommandSpec::WITHHELD`].
+    const WITHHELD: Option<continuum_base::tool_disclosure::WithheldGuidance> = None;
 
     /// The typed request payload (a ts-rs wire type). `JsonSchema` so its schema
     /// is derived automatically (no hand-authoring) and exposed to every SDK.
@@ -415,13 +417,14 @@ impl<T: ActionCommand> CommandSpec for T {
     const ALIASES: &'static [&'static str] = <T as ActionCommand>::ALIASES;
     const EFFECT: continuum_base::tool_effect::ToolEffect = <T as ActionCommand>::EFFECT;
     const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = <T as ActionCommand>::DISCLOSURE;
+    const WITHHELD: Option<continuum_base::tool_disclosure::WithheldGuidance> = <T as ActionCommand>::WITHHELD;
     const WIRE: WireShape = WireShape::Bare;
     type Params = <T as ActionCommand>::Params;
     type Result = <T as ActionCommand>::Output;
 
     /// Derived AUTOMATICALLY from the params type — the base trait's payoff: every
     /// `ActionCommand` exposes a real param schema to every SDK, no hand-authoring.
-    fn params_schema() -> serde_json::Value {
+    fn params_schema() -> Result<serde_json::Value, serde_json::Error> {
         super::input_schema::<<T as ActionCommand>::Params>()
     }
 }
@@ -505,7 +508,7 @@ mod tests {
         let cmd = EchoAction;
         assert_eq!(DynCommand::name(&cmd), "test/echo-action");
 
-        let d = cmd.descriptor();
+        let d = cmd.descriptor().expect("EchoAction is describable");
         assert_eq!(d.name, "test/echo-action");
         assert_eq!(
             d.access_level,
@@ -547,7 +550,7 @@ mod tests {
         });
         assert_eq!(cmd.name(), "test/counting-action");
         assert_eq!(
-            cmd.descriptor().access_level,
+            cmd.descriptor().expect("CountingAction is describable").access_level,
             AccessLevel::Privileged,
             "per-command ACCESS override is honored"
         );
@@ -595,7 +598,7 @@ mod tests {
     // unambiguous shape runs instead of refusing, and a call that decodes is passed untouched.
     #[test]
     fn the_descriptor_accepts_an_unambiguous_shape_and_returns_what_to_dispatch() {
-        let d = CommandDescriptor::of::<EchoAction>();
+        let d = CommandDescriptor::of::<EchoAction>().expect("EchoAction is describable");
         let wrapped = serde_json::json!({ "text": { "text": "hi" } });
         assert_eq!(d.accept(&wrapped).expect("one reading").as_ref(), &serde_json::json!({ "text": "hi" })); // test: a refusal here is the failure being caught
         let number = serde_json::json!({ "text": 5 });
