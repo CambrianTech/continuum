@@ -136,6 +136,10 @@ outliers' tests before any migration):
    Twice on 2026-11-11 a `search_replace` whose search and replace were identical answered `ok`,
    rewrote the same bytes, and was taken as a fix (Benchy 16:01Z; Aiko 16:52Z, who then spent twelve
    minutes believing a missing `if` header was restored).
+   A refusal names its OWN cause from the edit, never a generic one: a `search_replace` whose
+   replacement ends with lines that already follow the matched text is told exactly that ("your
+   replacement's last 2 lines, `return true;` and `}`, already follow your match"), not the
+   line-range advice (Aiko, 2026-11-11 17:37Z, after three refusals whose text named another cause).
 3. **Raw output is never deleted**: stdout, stderr, exit status and artifacts stay reachable by handle;
    the renderer wraps evidence, and migrating a tool never drops what it used to show.
 4. **A pass proves its check, nothing more**: Build/Test passed means that declared check passed, not
