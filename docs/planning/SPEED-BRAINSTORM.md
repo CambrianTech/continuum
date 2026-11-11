@@ -228,6 +228,13 @@ breaks. Next: hysteresis (a collapse commits to the horizon it was priced on; he
 reaches the price), then re-run the dyno; deploy only when turnovers stay rare and time falls for
 every resident.
 
+Traced on the dyno (Benchy, 2026-11-11 ~02Z): her turnovers are deliberate collapses (held 13-20k
+of 45-74k windows), not shortfalls. Keep is priced at the window keep would CHOOSE, which fills
+with history wants far past what she sent, so collapse wins after every regrowth. Fix: price the
+cycle, not the act. Keep costs her sent view plus one act's growth; collapse is a steady cycle that
+pays one rebuild every N acts, N from her measured growth per act; compare the two cycles' value
+per second. Gate: dyno shows lower time and rare turnovers for every resident.
+
 ## Open: newer input is never paged out (found 2026-11-10, capacity_and_wire)
 
 A room message that arrives during her act is newer than her newest result, but it rides her view's
