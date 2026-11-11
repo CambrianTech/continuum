@@ -379,7 +379,9 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     // Omission from the default menu is not an authorization failure. These verbs
     // remain discoverable; preserve the actual refusal (or transport failure) so
     // a legitimate reviewer can recover, alongside purpose/own-work guidance.
-    if let Some(withheld) = crate::ai::tool_dialect::withheld_from_hands(&normalized) {
+    // The command declares why it is withheld and what to use instead, beside its disclosure.
+    let declared = command_registry().into_iter().find(|d| d.name == normalized || d.aliases.iter().any(|a| a.replace('_', "/") == normalized));
+    if let Some(withheld) = declared.and_then(|d| d.withheld) {
         return format!("{raw}\n{}\n{}", withheld.why, withheld.instead); // the status line already says it was refused
     }
 

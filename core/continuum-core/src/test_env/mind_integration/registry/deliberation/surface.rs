@@ -156,13 +156,15 @@ fn the_real_registry_declares_her_own_work_as_core_hands() {
         [
             "code/edit", "code/git/add", "code/git/commit", "code/git/diff", "code/git/push",
             "code/git/status", "code/github/pr-comment", "code/github/pr-create", "code/list",
-            "code/read", "code/run", "code/search", "code/shell", "code/shell-poll", "code/tree",
+            "code/read", "code/run", "code/search", "code/shell", "code/tree",
             "code/write", "work/claim", "work/create", "work/get", "work/heartbeat", "work/list",
             "work/note", "work/release", "work/state", "work/submit",
         ],
         "her core hands are exactly these; a new native command declares where it sits"
     );
     assert_eq!(declared("code/git/apply"), Some(Disclosure::Withheld));
+    // A command's end is pushed to her [tasks], so a read of a running one is withheld (#5939).
+    assert_eq!(declared("code/shell-poll"), Some(Disclosure::Withheld));
     let hands = hands_surface(&offers);
     assert!(hands.len() > core_hands(&offers).len(), "some of her hands are on demand");
 }
