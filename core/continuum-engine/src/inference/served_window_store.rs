@@ -321,12 +321,10 @@ mod tests {
         let tokens = 5_000u32;
         observe_to(&path, &gen_a, tokens);
 
-        let stored = load_from(&path).unwrap();
-        assert!(stored.candidate.is_none(), "transient must not store a candidate");
-        assert_eq!(
-            stored.cache_geometry(),
-            None,
-            "cache must remain empty before steady settlement + usage"
+        // Transient reconciliation writes nothing — file must not exist.
+        assert!(
+            load_from(&path).is_none(),
+            "transient (settled_now=false) must not write any record"
         );
 
         // --- steady two-lane launch → candidate stored ---
