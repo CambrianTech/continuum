@@ -14,10 +14,12 @@
 //! `event::decode_deliver_frame`, `event::matches_subscription`), so the
 //! client and the substrate compose the SAME helpers with their
 //! respective `airc_lib::Airc` handles.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod command;
 pub mod event;
 pub mod inbound;
+pub mod refusal;
 pub mod ws;
 
 pub use command::{
@@ -31,6 +33,7 @@ pub use inbound::{
     classify as classify_inbound, Addressing, ConversationEvent, InboundEvent, ProtocolEnvelope,
     ProtocolKind, NODE_TELEMETRY_BODY_HINT,
 };
+pub use refusal::{Calls, CommandRefusal, NextMoves, NoMove, SuggestedCall};
 pub use ws::{WsClientMessage, WsServerMessage};
 pub use event::{
     // Helper functions — shared by substrate AND client

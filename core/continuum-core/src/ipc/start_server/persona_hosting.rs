@@ -12,7 +12,7 @@ pub(super) fn start_persona_host(
     airc_interceptor_cell: &Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>>,
     rt_handle: &tokio::runtime::Handle,
     stretch_mark: &mut impl FnMut(&'static str, &'static str),
-) -> tokio::sync::oneshot::Sender<Arc<crate::runtime::CommandExecutor>> {
+) -> Result<tokio::sync::oneshot::Sender<Arc<crate::runtime::CommandExecutor>>, crate::experience::source::RecipeLoadError> {
     // The Grid's first heartbeat at server boot: resume any
     // existing citizens from disk + ensure at least one is
     // present. ResumeOrMintProvider scans
@@ -160,7 +160,7 @@ pub(super) fn start_persona_host(
                      citizens until the named file is fixed or removed \
                      (#430)"
                 );
-                RecipeExperienceSource::resident_citizens_embedded()
+                RecipeExperienceSource::resident_citizens_embedded()?
             }
         }
     };
@@ -179,7 +179,7 @@ pub(super) fn start_persona_host(
             &crate::paths::continuum_root(),
         );
         RecipeExperienceSource::grid_citizens(&overlay_dir)
-            .unwrap_or_else(|_| RecipeExperienceSource::grid_citizens_embedded()) // unwrap_or_else: a refused overlay was already reported by the resident read above; the embedded activities stand
+            .or_else(|_| RecipeExperienceSource::grid_citizens_embedded())? // or_else: a refused overlay was already reported by the resident read above; the embedded activities stand
     };
     runtime.register(Arc::new(
         crate::modules::grid_allocator::GridAllocatorModule::new(
@@ -266,5 +266,5 @@ pub(super) fn start_persona_host(
         supervisor,
         serving_plan_rx,
     ));
-    executor_ready_tx
+    Ok(executor_ready_tx)
 }

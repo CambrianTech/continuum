@@ -61,7 +61,7 @@ async fn rehome_requires_a_readable_local_assignment() {
     let id = Uuid::new_v4();
     let cycle = registry.register_from_cfg(cfg_for(id, "Ivar")).expect("resident");
     let (original, original_model) = cycle.current_model_route().expect("binding");
-    let airc = crate::identity::citizen_path::citizen_home_path(root.path(), crate::identity::IdentityKind::Persona, None, "Ivar");
+    let airc = crate::identity::citizen_path::citizen_home_path(root.path(), crate::identity::citizen_path::CitizenKind::Persona, "Ivar");
     let home = crate::cognition::home::PersonaHome::from_root(airc.parent().expect("parent").to_path_buf());
     let remote = PersonaModelOverride::new_remote("remote/model", None, 1, Uuid::new_v4().to_string());
     remote.write(&home).expect("remote override");
@@ -95,7 +95,7 @@ async fn a_resident_bound_at_the_provisional_window_is_rehomed_to_the_served_win
     let registry = PersonaWorkspaceRegistry::new();
     let local = registry.register_from_cfg(cfg_for(Uuid::new_v4(), "Aiko")).expect("local resident");
     let remote = registry.register_from_cfg(cfg_for(Uuid::new_v4(), "Kira")).expect("remote resident");
-    let airc = crate::identity::citizen_path::citizen_home_path(root.path(), crate::identity::IdentityKind::Persona, None, "Kira");
+    let airc = crate::identity::citizen_path::citizen_home_path(root.path(), crate::identity::citizen_path::CitizenKind::Persona, "Kira");
     let home = crate::cognition::home::PersonaHome::from_root(airc.parent().expect("parent").to_path_buf());
     PersonaModelOverride::new_remote("remote/model", None, 1, Uuid::new_v4().to_string()).write(&home).expect("remote override");
     let before = local.current_binding().expect("local binding");

@@ -348,7 +348,10 @@ pub trait LlamaServerControl: Send + Sync {
     /// it. Never `n_ctx` x slots: under a unified cache the fork caps each slot's `n_ctx` at the
     /// model's trained window (server-context.cpp, "the slot context exceeds the training
     /// context"), so `n_ctx` reads 32,768 on a 65,536 pool (IntelMac, 2026-11-03 07:32Z).
-    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError>;
+    /// The whole geometry in one read: the pool and the most one sequence may hold
+    /// (`context_geometry.max_tokens_per_sequence`), so no reader derives a sequence's limit from
+    /// how the engine was launched.
+    async fn served_geometry(&self) -> Result<crate::inference::weight_residency::ContextGeometry, LlamaServerError>;
 
     /// The REAL number of continuous-batching slots the running server serves,
     /// read from its own `/props` (`total_slots`) — the LANE sibling of
@@ -390,6 +393,14 @@ pub trait LlamaServerControl: Send + Sync {
     ///
     /// [`EngineIncarnation`]: crate::inference::engine_residency::EngineIncarnation
     fn served_incarnation(&self) -> Option<crate::inference::engine_residency::EngineIncarnation> {
+        None
+    }
+
+    /// The chat template observed through this endpoint's own
+    /// `/apply-template` and `/tokenize`: each probe message and the tokens it added
+    /// ([`super::template_overhead`]). `None` = not measured (a
+    /// fake or remote control, or an engine whose endpoints did not answer).
+    async fn served_template_overhead(&self) -> Option<Vec<super::template_overhead::TemplateSample>> {
         None
     }
 

@@ -24,7 +24,7 @@
     #[test]
     fn validate_recipe_refuses_unknown_and_passes_every_shipped_purpose() {
         let empty_overlay = tempfile::tempdir().expect("tempdir");
-        for purpose in crate::experience::source::RecipeExperienceSource::shipped_purposes() {
+        for purpose in crate::experience::source::RecipeExperienceSource::shipped_purposes().expect("the embedded recipes parse") {
             assert!(
                 validate_recipe(&purpose, empty_overlay.path()).is_ok(),
                 "shipped purpose {purpose:?} must validate"
@@ -79,8 +79,8 @@
             crate::experience::source::RecipeExperienceSource::shipped_purpose(
                 crate::experience::source::shipped::BENCHMARK_HARD_RS
             )
-            .as_deref(),
-            Some("benchmark/hard-rs")
+            .expect("the shipped benchmark recipe resolves"),
+            "benchmark/hard-rs"
         );
     }
 
@@ -170,16 +170,16 @@
         use crate::experience::recipe::ExperienceRecipe;
         use std::collections::BTreeMap;
 
-        // what this catches: the shipped benchmark recipe declares `academy` as its base —
-        // a round is LEARNING and roots there by what it is, not by where the curator
-        // stood. Losing this line would drop every round to a flat top-level room again.
+        // what this catches: the shipped benchmark recipe declares `academy/benchmarks` as its
+        // base: a run is LEARNING and lives under the academy's benchmarks by what it is, beside
+        // its training and coursework, never a flat top-level room.
         #[test]
         fn the_benchmark_recipe_roots_in_the_academy() {
             let recipe = crate::experience::recipe::ExperienceRecipe::from_json(include_str!(
                 "../../../continuum-experience/src/experience/recipes/benchmark.json"
             ))
             .expect("shipped recipe parses"); // test: the embedded recipe is authored JSON
-            assert_eq!(recipe.base.as_deref(), Some("academy"));
+            assert_eq!(recipe.base.as_deref(), Some("academy/benchmarks"));
         }
 
         fn recipe_with_params() -> ExperienceRecipe {
@@ -359,4 +359,142 @@
                 "unset budget rides the declared default onto the binding"
             );
         }
+
+    // THE ROOM TREE (ACTIVITY-ROOM-PATTERNS.md): every activity is a room at a path, opened by
+    // resume-or-create, its ancestors rooms too, archived never deleted.
+    mod room_tree {
+        use super::*;
+        use crate::experience::children::{RoomChildRecord, CHILD_WALL_CATEGORY};
+
+        async fn scope() -> (tempfile::TempDir, Airc) {
+            let home = tempfile::tempdir().expect("temp airc home");
+            let airc = Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .expect("a local airc scope opens without a daemon");
+            (home, airc)
+        }
+
+        async fn room_at(airc: &Airc, path: &str) -> airc_lib::Room {
+            let key = crate::experience::room_path::RoomPath::parse(path).expect("a room path").channel_key();
+            airc.subscribe_room(&key).await.expect("the room opens")
+        }
+
+        async fn recipe_of(airc: &Airc, path: &str) -> Option<String> {
+            let room = room_at(airc, path).await;
+            let posts = airc.wall_posts_in(&room, Some(RECIPE_WALL_CATEGORY)).await.expect("its wall reads");
+            crate::experience::binding::project_binding(&posts).expect("its binding reads").map(|b| b.recipe)
+        }
+
+        async fn children_of(airc: &Airc, path: &str) -> Vec<String> {
+            let room = room_at(airc, path).await;
+            let posts = airc.wall_posts_in(&room, Some(CHILD_WALL_CATEGORY)).await.expect("its wall reads");
+            posts.iter().map(|p| serde_json::from_str::<RoomChildRecord>(&p.body).expect("a child record").name).collect()
+        }
+
+        // what this catches: an activity's room losing its place in the tree. A name goes under
+        // its recipe's base (a benchmark run under academy/benchmarks); a name holding a `/` is
+        // already its path; a name with neither stands at the top.
+        #[tokio::test]
+        async fn a_name_goes_under_its_base_and_a_path_is_its_own_place() {
+            let (_home, airc) = scope().await;
+            assert_eq!(activity_path(&airc, "run-1", None, Some("academy/benchmarks")).await.expect("placed").as_str(), "academy/benchmarks/run-1");
+            assert_eq!(activity_path(&airc, "/projects/demo/", None, Some("academy")).await.expect("placed").as_str(), "projects/demo");
+            assert_eq!(activity_path(&airc, "settings", None, None).await.expect("placed").as_str(), "settings");
+        }
+
+        // what this catches: the ancestors of an activity not being rooms (a run whose
+        // `academy/benchmarks` nobody can open or walk), opening that moves the caller's focus,
+        // and re-opening that re-creates instead of resuming: a second binding, a second child
+        // record, an archived run left archived.
+        #[tokio::test]
+        async fn opening_a_path_makes_its_ancestors_rooms_and_opening_it_again_resumes_it() {
+            let (_home, airc) = scope().await;
+            let focus = airc.join("where-she-stands").await.expect("her focus").channel;
+
+            let made = spawn_activity_room(&airc, "projects/demo/notes", "chat", None, &Default::default(), None, None).await.expect("opened");
+            assert_eq!((made.path.as_str(), made.opened), ("projects/demo/notes", ActivityOpened::Created));
+            assert_eq!(airc.current_room().await.expect("focus reads").channel, focus, "opening never moves her focus");
+            assert_eq!(recipe_of(&airc, "projects").await.as_deref(), Some(CATEGORY_RECIPE), "an ancestor is a category room");
+            assert_eq!(recipe_of(&airc, "projects/demo").await.as_deref(), Some(CATEGORY_RECIPE));
+            assert_eq!(children_of(&airc, "projects").await, vec!["projects/demo".to_string()], "each child is on its parent's wall");
+            assert_eq!(children_of(&airc, "projects/demo").await, vec!["projects/demo/notes".to_string()]);
+
+            let room = room_at(&airc, "projects/demo/notes").await;
+            publish_standing_in(&airc, &room, &RoomStanding { archived: true, ..RoomStanding::default() }).await.expect("archived");
+            let again = spawn_activity_room(&airc, "projects/demo/notes", "chat", None, &Default::default(), None, None).await.expect("reopened");
+            assert_eq!((again.room_id, again.opened, again.binding_post_id), (made.room_id, ActivityOpened::Resumed, made.binding_post_id), "the same room, resumed");
+            assert!(!standing_in(&airc, &room).await.expect("standing").archived, "resuming brings it back to live");
+            assert_eq!(children_of(&airc, "projects/demo").await.len(), 1, "resuming announces nothing twice");
+
+            let refused = spawn_activity_room(&airc, "projects/demo/notes", "project", None, &Default::default(), None, None).await;
+            assert!(refused.is_err(), "a path already bound to one recipe is never re-bound to another");
+        }
+
+        // A room opened before the room tree: channel = the last segment, bound with no path.
+        async fn pre_tree_room(airc: &Airc, leaf: &str, recipe: &str) -> airc_lib::Room {
+            let room = airc.subscribe_room(leaf).await.expect("the pre-tree room opens");
+            let binding = crate::experience::binding::RoomRecipeBinding { recipe: recipe.to_string(), parent: None, params: Default::default(), path: None };
+            let body = serde_json::to_string(&binding).expect("a binding encodes");
+            airc.publish_wall_post_in(&room, RECIPE_WALL_CATEGORY.to_string(), body, None).await.expect("bound");
+            room
+        }
+
+        // what this catches: a run opened before the room tree being orphaned. Its channel was its
+        // last segment; the tree keys a nested room by its whole path, so re-opening it by name
+        // would make a second, empty room beside the first and leave its cards and board behind
+        // (Cormac on #5878). It is adopted once (its path written, announced to its parent) and
+        // resumed every time after; no tree-keyed room is ever made for it.
+        #[tokio::test]
+        async fn a_room_opened_before_the_tree_is_resumed_never_duplicated() {
+            let (_home, airc) = scope().await;
+            let old = pre_tree_room(&airc, "run-1", "chat").await;
+
+            let first = spawn_activity_room(&airc, "projects/demo/run-1", "chat", None, &Default::default(), None, None).await.expect("opened");
+            assert_eq!((first.room_id, first.opened), (old.channel, ActivityOpened::Resumed), "the pre-tree room is the activity, resumed");
+            let posts = airc.wall_posts_in(&old, Some(RECIPE_WALL_CATEGORY)).await.expect("its wall reads");
+            let binding = crate::experience::binding::project_binding(&posts).expect("its binding reads").expect("bound");
+            assert_eq!(binding.path.as_ref().map(|p| p.as_str()), Some("projects/demo/run-1"), "adopting writes its path");
+            assert_eq!(children_of(&airc, "projects/demo").await, vec!["projects/demo/run-1".to_string()], "and puts it on its parent's wall");
+
+            let again = spawn_activity_room(&airc, "projects/demo/run-1", "chat", None, &Default::default(), None, None).await.expect("reopened");
+            assert_eq!((again.room_id, again.binding_post_id), (old.channel, first.binding_post_id), "the same room and binding again");
+            assert_eq!(children_of(&airc, "projects/demo").await.len(), 1, "adopted once, announced once");
+            let key = crate::experience::room_path::RoomPath::parse("projects/demo/run-1").expect("a room path").channel_key();
+            assert!(airc.room_by_name_or_channel(&key, "check").await.is_err(), "no second, tree-keyed room was made");
+        }
+
+        // what this catches: a second node making its own room for a path another node already
+        // stands at (Cormac on #5878). This scope never held `run-3`; its parent's wall carries the
+        // announcement another node made when it adopted that pre-tree room. Opening the path walks
+        // to that room by the record, never subscribes a second, tree-keyed one.
+        #[tokio::test]
+        async fn a_node_that_never_held_the_room_walks_to_it_by_its_parents_record() {
+            let (_home, airc) = scope().await;
+            let path = crate::experience::room_path::RoomPath::parse("projects/demo/run-3").expect("a room path");
+            let parent = open_ancestors(&airc, &path).await.expect("ancestors open").expect("a nested path has a parent");
+            let mesh = airc.mesh_identity().await.expect("a mesh identity");
+            let elsewhere = airc_lib::derive_room_id(&mesh, &airc_lib::ChannelName::new("run-3").expect("a channel name"));
+            let record = crate::experience::children::RoomChildRecord {
+                room_id: elsewhere.as_uuid(), name: path.as_str().to_string(), recipe: "chat".into(), suite: None, spawned_at_ms: 1,
+            };
+            let body = serde_json::to_string(&record).expect("a record encodes");
+            airc.publish_wall_post_in(&parent, CHILD_WALL_CATEGORY.to_string(), body, None).await.expect("announced");
+            assert!(airc.room_by_name_or_channel("run-3", "check").await.is_err(), "this scope never held it");
+
+            let opened = spawn_activity_room(&airc, path.as_str(), "chat", None, &Default::default(), None, None).await.expect("opened");
+            assert_eq!(opened.room_id, elsewhere, "it lands in the room the parent announces");
+            assert!(airc.room_by_name_or_channel(&path.channel_key(), "check").await.is_err(), "no second, tree-keyed room was made");
+        }
+
+        // what this catches: adoption taking over an unrelated room that shares the last segment.
+        // A pre-tree room bound to another recipe stays as it is, and the path gets its own room.
+        #[tokio::test]
+        async fn a_pre_tree_room_of_another_recipe_is_never_adopted() {
+            let (_home, airc) = scope().await;
+            let other = pre_tree_room(&airc, "run-2", "project").await;
+            let made = spawn_activity_room(&airc, "projects/demo/run-2", "chat", None, &Default::default(), None, None).await.expect("opened");
+            assert_eq!(made.opened, ActivityOpened::Created);
+            assert_ne!(made.room_id, other.channel, "the other recipe's room is left alone");
+        }
     }
+}

@@ -67,4 +67,5 @@ pub use continuum_mind::commands::{focus, gym};
 pub use continuum_mind::vdd::commands as vdd;
 pub use continuum_store::commands::vector;
 pub mod vision;
+#[allow(clippy::expect_used)] // 7 static-regex expects wait on web/mod.rs and brave.rs self_sized sites: #5860
 pub mod web;

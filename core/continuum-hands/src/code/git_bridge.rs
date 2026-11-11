@@ -11,6 +11,7 @@
 
 use std::path::Path;
 
+use super::git_actor::GitActor;
 use super::types::GitStatusInfo;
 
 /// Get git status for a workspace directory.
@@ -207,7 +208,7 @@ pub fn repo_slug_from_remote_url(url: &str) -> Option<String> {
         path
     };
     let path = path.trim_matches('/');
-    let path = path.strip_suffix(".git").unwrap_or(path);
+    let path = path.strip_suffix(".git").unwrap_or(path); // unwrap_or: a remote without the suffix is its own name
 
     let mut segments = path.rsplit('/').filter(|s| !s.is_empty());
     let name = segments.next()?;
@@ -237,13 +238,13 @@ pub async fn git_add(workspace_root: &Path, paths: &[&str]) -> Result<String, St
     run_git(workspace_root, &args).await
 }
 
-/// Create a commit with the given message.
+/// Create a commit with the given message, made by `actor` (author AND committer).
 ///
 /// Returns the full commit hash on success.
-pub async fn git_commit(workspace_root: &Path, message: &str) -> Result<String, String> {
+pub async fn git_commit(workspace_root: &Path, actor: &GitActor, message: &str) -> Result<String, String> {
     // Commit through the repository's normal hook path. AI-authored commits
     // must fail loudly when validation fails; callers surface the git stderr.
-    run_git(workspace_root, &["commit", "-m", message]).await?;
+    run_git_as(workspace_root, actor, &["commit", "-m", message]).await?;
 
     // Return the commit hash
     run_git(workspace_root, &["rev-parse", "HEAD"]).await.map(|s| s.trim().to_string())
@@ -261,7 +262,7 @@ pub async fn git_apply(workspace_root: &Path, patch: &str, check_only: bool) -> 
         args.push("--check");
     }
     // the patch goes in on stdin; a patch git didn't take whole is not an applied patch
-    run_git_input(workspace_root, &args, &[], Some(patch.as_bytes().to_vec())).await?;
+    run_git_input(workspace_root, None, &args, &[], Some(patch.as_bytes().to_vec())).await?;
     Ok(if check_only {
         "patch applies cleanly (checked, not applied)".to_string()
     } else {
@@ -274,27 +275,18 @@ pub async fn git_apply(workspace_root: &Path, patch: &str, check_only: bool) -> 
 /// citizen workspace is diff-able/apply-able from birth
 /// ([[workspace-is-a-cow-diff-from-shared-always-git]]). Loud Err if git
 /// itself is unavailable — a workspace that silently can't version work is
-/// the kind of quiet defect the jobs-ledger taught us to refuse.
-pub async fn git_init_if_needed(workspace_root: &Path) -> Result<bool, String> {
+/// the kind of quiet defect the jobs-ledger taught us to refuse. The root commit is made
+/// by `actor`, the citizen whose workspace it is.
+pub async fn git_init_if_needed(workspace_root: &Path, actor: &GitActor) -> Result<bool, String> {
     if workspace_root.join(".git").exists() {
         return Ok(false);
     }
     run_git(workspace_root, &["init"]).await.map_err(|e| format!("git init failed: {e}"))?;
-    // Identity for the initial commit: repo-local, never touching global config.
-    let _ = run_git(
-        workspace_root,
-        &["config", "user.email", "citizen@continuum.local"],
-    ).await;
-    let _ = run_git(
-        workspace_root,
-        &["config", "user.name", "continuum-citizen"],
-    ).await;
-    let _ = run_git(workspace_root, &["add", "-A"]).await;
+    run_git(workspace_root, &["add", "-A"]).await.map_err(|e| format!("workspace initial add failed: {e}"))?;
     // An empty dir still gets a root commit so diffs have a base.
-    let _ = run_git(
-        workspace_root,
-        &["commit", "--allow-empty", "-m", "workspace: initial state"],
-    ).await;
+    run_git_as(workspace_root, actor, &["commit", "--allow-empty", "-m", "workspace: initial state"])
+        .await
+        .map_err(|e| format!("workspace initial commit failed: {e}"))?;
     Ok(true)
 }
 
@@ -343,6 +335,7 @@ pub struct GitSyncReport {
 pub async fn git_sync_from_shared(
     workspace_root: &Path,
     shared_checkout: &Path,
+    actor: &GitActor,
 ) -> Result<GitSyncReport, String> {
     // 0. A card branch is the citizen's own work in flight for review, and it gets pushed.
     // The autosave below would commit her whole workspace onto it, and the shared-wins merge
@@ -350,7 +343,7 @@ pub async fn git_sync_from_shared(
     // the branch and both its PRs were closed). A card branch reconciles with canary through
     // card staging, never here, so the sync leaves it untouched and says why.
     let branch = run_git(workspace_root, &["symbolic-ref", "--short", "-q", "HEAD"]).await
-        .unwrap_or_default()
+        .unwrap_or_default() // unwrap_or_default: a detached HEAD (symbolic-ref exits 1) is on no card branch
         .trim()
         .to_string();
     if crate::code::card_branch::is_card_branch(&branch) {
@@ -369,20 +362,20 @@ pub async fn git_sync_from_shared(
     }
 
     // 1. Preserve: commit in-flight persona work before merging.
-    let porcelain = run_git(workspace_root, &["status", "--porcelain"]).await.unwrap_or_default();
+    // A preserve that fails stops the sync: merging over work that was not committed could lose it.
+    // A submodule checkout that lags its pin is not work to preserve (keep_submodule_pins).
+    let porcelain = run_git(workspace_root, &["status", "--porcelain", "--ignore-submodules=all"]).await
+        .map_err(|e| format!("could not read the workspace's status, so it was not synced (your work is untouched): {e}"))?;
     if !porcelain.trim().is_empty() {
-        let _ = run_git(workspace_root, &["add", "-A"]).await;
-        let _ = run_git(
-            workspace_root,
-            &[
-                "commit",
-                "-m",
-                "workspace: autosave persona work before shared sync",
-            ],
-        ).await;
+        run_git(workspace_root, &["add", "-A"]).await
+            .map_err(|e| format!("could not stage your work to preserve it, so the workspace was not synced (your work is untouched): {e}"))?;
+        keep_submodule_pins(workspace_root).await
+            .map_err(|e| format!("could not keep the submodule pins while preserving your work, so the workspace was not synced (your work is staged, untouched): {e}"))?;
+        run_git_as(workspace_root, actor, &["commit", "-m", "workspace: autosave persona work before shared sync"]).await
+            .map_err(|e| format!("could not commit your work to preserve it, so the workspace was not synced (your work is staged, untouched): {e}"))?;
     }
     let before = run_git(workspace_root, &["rev-parse", "HEAD"]).await
-        .unwrap_or_default()
+        .unwrap_or_default() // unwrap_or_default: an unborn HEAD has no commit, so nothing reads as synced
         .trim()
         .to_string();
 
@@ -395,8 +388,9 @@ pub async fn git_sync_from_shared(
     .map_err(|e| format!("fetch from shared checkout '{shared}' failed: {e}"))?;
 
     // 3. Merge shared in — shared wins framework conflicts, persona files kept.
-    if let Err(e) = run_git(
+    if let Err(e) = run_git_as(
         workspace_root,
+        actor,
         &[
             "merge",
             "--no-edit",
@@ -415,7 +409,7 @@ pub async fn git_sync_from_shared(
         // merge; the persona's versions live on in her autosave history
         // (preserve-first is the commit, not the tree). A merge that failed
         // without staging anything still aborts loud, workspace intact.
-        match resolve_conflicts_shared_wins(workspace_root).await {
+        match resolve_conflicts_shared_wins(workspace_root, actor).await {
             Ok(true) => {
                 continuum_base::probe!(
                     class = "workspace.sync.conflicts_resolved",
@@ -425,27 +419,25 @@ pub async fn git_sync_from_shared(
             }
             _ => {
                 // Never leave a half-merge — abort so the workspace stays usable, fail loud.
-                let _ = run_git(workspace_root, &["merge", "--abort"]).await;
-                return Err(format!(
-                    "shared merge failed (aborted; workspace left intact): {e}"
-                ));
+                return Err(match run_git_as(workspace_root, actor, &["merge", "--abort"]).await {
+                    Ok(_) => format!("shared merge failed (aborted; workspace left intact): {e}"),
+                    Err(abort) => format!("shared merge failed AND its abort failed, so the workspace is mid-merge (run `git merge --abort` or resolve it): {e}; abort: {abort}"),
+                });
             }
         }
     }
 
     let after = run_git(workspace_root, &["rev-parse", "HEAD"]).await
-        .unwrap_or_default()
+        .map_err(|e| format!("merged shared in, but could not read the workspace's HEAD after it: {e}"))?
         .trim()
         .to_string();
     let synced = !before.is_empty() && before != after;
     let summary = if synced {
-        let count = run_git(
-            workspace_root,
-            &["rev-list", "--count", &format!("{before}..{after}")],
-        ).await
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+        // The sync is done; a count that cannot be read says so in its summary.
+        let count = match run_git(workspace_root, &["rev-list", "--count", &format!("{before}..{after}")]).await {
+            Ok(count) => count.trim().to_string(),
+            Err(e) => format!("an uncounted number of (could not count them: {e})"),
+        };
         format!("synced {count} shared commit(s) in; your work was preserved")
     } else {
         "already current with the shared checkout".to_string()
@@ -473,7 +465,7 @@ pub async fn git_sync_from_shared(
 ///
 /// Returns Ok(true) on a concluded merge, Ok(false) when there was nothing
 /// staged to salvage (caller aborts loud).
-async fn resolve_conflicts_shared_wins(workspace_root: &Path) -> Result<bool, String> {
+async fn resolve_conflicts_shared_wins(workspace_root: &Path, actor: &GitActor) -> Result<bool, String> {
     let unmerged = run_git(workspace_root, &["ls-files", "-u"]).await?;
     if unmerged.trim().is_empty() {
         return Ok(false); // merge failed before staging conflicts — nothing to salvage
@@ -486,7 +478,9 @@ async fn resolve_conflicts_shared_wins(workspace_root: &Path) -> Result<bool, St
         let Some((meta, path)) = line.split_once('\t') else {
             return Ok(false);
         };
-        let stage = meta.split_whitespace().nth(2).unwrap_or("");
+        let Some(stage) = meta.split_whitespace().nth(2) else {
+            return Ok(false);
+        };
         let entry = theirs_present.entry(path.to_string()).or_insert(false);
         if stage == "3" {
             *entry = true;
@@ -505,7 +499,7 @@ async fn resolve_conflicts_shared_wins(workspace_root: &Path) -> Result<bool, St
                 .map_err(|e| format!("shared-wins delete of '{p}' failed: {e}"))?;
         }
     }
-    run_git(workspace_root, &["commit", "--no-edit"]).await
+    run_git_as(workspace_root, actor, &["commit", "--no-edit"]).await
         .map_err(|e| format!("concluding merge after shared-wins resolve failed: {e}"))?;
     Ok(true)
 }
@@ -521,40 +515,72 @@ pub async fn within<F: std::future::Future>(deadline: tokio::time::Instant, work
     DEADLINE.scope(deadline, work).await
 }
 
-/// What a git error says when its deadline ended the git mid-run: its effect is UNKNOWN (a
-/// push may have reached the remote). One phrase, defined here and read by [`interrupted`].
+/// How a git error renders a git its deadline ended mid-run ([`GitEnd::Interrupted`]).
 const INTERRUPTED: &str = "interrupted at its deadline: its effect is unknown";
-/// What a git error says when its deadline had already passed: it never started.
+/// How a git error renders a git whose deadline had already passed ([`GitEnd::NeverRan`]).
 const NOT_STARTED: &str = "not started: its deadline had passed";
-
-/// Did the deadline end this git mid-run (its effect unknown)?
-#[cfg(test)]
-pub(crate) fn interrupted(err: &str) -> bool {
-    err.contains(INTERRUPTED)
-}
-
-/// Did the deadline stop this git before it started, or end it mid-run?
-pub fn out_of_time(err: &str) -> bool {
-    err.contains(INTERRUPTED) || err.contains(NOT_STARTED)
-}
 
 /// The deadline in force on this task, if its caller set one.
 pub(crate) fn deadline() -> Option<tokio::time::Instant> {
     DEADLINE.try_with(|at| *at).ok()
 }
 
+/// A submodule's recorded commit is never an autosave's to move. A checkout's submodule can lag its
+/// branch (a rebase moves the pin, the checkout stays), and `add -A` records the lag as a pin
+/// change: Benchy's #5883 was an autosave whose whole diff moved the engine pin back (card
+/// a7a37ce7). After an autosave's `add`, every staged gitlink change goes back to HEAD's pin. The
+/// ONE owner for every autosave (the card's work save and the shared sync, card 432809f4); a pin
+/// moves only by a deliberate commit. Returns the pins it kept.
+pub async fn keep_submodule_pins(root: &Path) -> Result<Vec<String>, String> {
+    // `--raw -z`: each entry is `:<old mode> <new mode> <old sha> <new sha> <status>` NUL `<path>` NUL,
+    // so a path with any character parses whole. 160000 is a gitlink's mode.
+    let staged = run_git(root, &["diff", "--cached", "--raw", "-z", "--no-renames", "HEAD"]).await?;
+    let mut fields = staged.split('\0');
+    let mut pins = Vec::new();
+    while let (Some(meta), Some(path)) = (fields.next(), fields.next()) {
+        let mut modes = meta.trim_start_matches(':').split_whitespace();
+        if let (Some(old_mode), Some(new_mode)) = (modes.next(), modes.next()) {
+            if old_mode == GITLINK_MODE || new_mode == GITLINK_MODE {
+                pins.push(path.to_string());
+            }
+        }
+    }
+    if pins.is_empty() {
+        return Ok(pins);
+    }
+    let mut reset = vec!["reset", "-q", "HEAD", "--"];
+    reset.extend(pins.iter().map(String::as_str));
+    run_git(root, &reset).await?;
+    continuum_base::probe!(
+        class = "workspace.autosave.pin_kept",
+        root = %root.display(),
+        pins = %pins.join(","),
+        "a submodule checkout differed from the branch's pin: the autosave kept the pin, not the checkout"
+    );
+    Ok(pins)
+}
+
+/// git's mode for a submodule entry (a gitlink) in a tree or the index.
+const GITLINK_MODE: &str = "160000";
+
 /// Run a git command in the workspace directory. `pub(crate)` so the one context-clean
 /// runner (env stripped, ceiling set, no terminal prompt) is shared by every crate seam
 /// that shells to git — `persona::workspace_transfer` carries a card's branch between
 /// nodes through it — rather than each seam re-deriving the hygiene below.
 pub async fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
-    Ok(run_git_input(workspace_root, args, &[], None).await?)
+    Ok(run_git_input(workspace_root, None, args, &[], None).await?)
 }
 
-/// [`run_git`] with extra environment for this one invocation (e.g. `GIT_AUTHOR_*` so a
-/// citizen's act commit is authored by her). Same hygiene; the env is applied last.
+/// [`run_git`] for a git that writes a commit: made by `actor`, author and committer.
+pub async fn run_git_as(workspace_root: &Path, actor: &GitActor, args: &[&str]) -> Result<String, String> {
+    Ok(run_git_input(workspace_root, Some(actor), args, &[], None).await?)
+}
+
+/// [`run_git`] with extra environment for this one invocation (the citizen layer lifts the
+/// discovery ceiling by name). Same hygiene; the env is applied after it. Identity is never
+/// passed here: it is the `actor` of [`run_git_input`].
 pub async fn run_git_with_env(workspace_root: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
-    Ok(run_git_input(workspace_root, args, env, None).await?)
+    Ok(run_git_input(workspace_root, None, args, env, None).await?)
 }
 
 /// How a git that gave no answer ended, for a caller whose next step depends on whether it had
@@ -566,16 +592,39 @@ pub enum GitEnd {
     /// It exited non-zero: git's own verdict that it failed. For a push that doesn't prove the
     /// remote is unchanged (it can take the ref and the connection fail before git hears so).
     Refused,
-    /// Its effect is unknown: its deadline ended it mid-run, it exited 0 but its input or
-    /// output wasn't whole or readable, or the runner failed around it (Codex reviewer on #5037).
+    /// Its effect is unknown: it exited 0 but its input or output wasn't whole or readable, or
+    /// the runner failed around it (Codex reviewer on #5037).
     Unknown,
+    /// Its effect is unknown because its deadline ended it mid-run (a push may have landed).
+    Interrupted,
+    /// It never ran: it writes a commit and no actor was named for it. A commit is made by the
+    /// peer acting, never by the node's global git config.
+    NoActor,
 }
 
-/// A git that gave no answer: how it ended, and the one rendering of why.
+/// A git that gave no answer: how it ended, its exit code and stdout when it exited, and the one
+/// rendering of why.
 #[derive(Debug)]
 pub struct GitError {
     pub end: GitEnd,
+    /// Git's exit code when it exited non-zero ([`GitEnd::Refused`]): `ls-remote --exit-code`
+    /// says "no such ref" with 2, a decision no caller reads from the stderr.
+    pub code: Option<i32>,
+    /// What it printed on stdout before it failed: a machine format (`push --porcelain`'s ref
+    /// lines) a caller decides on, never its stderr prose.
+    pub stdout: String,
     message: String,
+}
+
+impl GitError {
+    fn ended(end: GitEnd, message: String) -> Self {
+        Self { end, code: None, stdout: String::new(), message }
+    }
+
+    /// Did its deadline stop it before it started, or end it mid-run?
+    pub fn out_of_time(&self) -> bool {
+        matches!(self.end, GitEnd::NeverRan | GitEnd::Interrupted)
+    }
 }
 
 impl std::fmt::Display for GitError {
@@ -595,13 +644,23 @@ impl From<GitError> for String {
 /// An exit that isn't success is an `Err` with git's stderr; so is an output that wasn't read
 /// whole or an input that wasn't delivered; a deadline that ended it says its effect is UNKNOWN
 /// (a push may have landed), never that nothing happened.
-pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &str)], input: Option<Vec<u8>>) -> Result<String, GitError> {
+///
+/// THE ONE ACTOR OWNER: a git that writes a commit runs as `actor`, author AND committer, set
+/// after every other variable; one that names no actor is refused before it runs
+/// ([`GitEnd::NoActor`]), so no commit ever falls to the node's global identity.
+pub async fn run_git_input(workspace_root: &Path, actor: Option<&GitActor>, args: &[&str], env: &[(&str, &str)], input: Option<Vec<u8>>) -> Result<String, GitError> {
     use continuum_process::{run_owned_with_input, Answer, Why};
+    if actor.is_none() && super::git_actor::commits(args) {
+        return Err(GitError::ended(
+            GitEnd::NoActor,
+            format!("git {} refused: it writes a commit and names no actor (a commit is made by the peer acting, never the node's global config)", args.join(" ")),
+        ));
+    }
     let bound = match deadline() {
         Some(at) => {
             let left = at.saturating_duration_since(tokio::time::Instant::now());
             if left.is_zero() {
-                return Err(GitError { end: GitEnd::NeverRan, message: format!("git {} {NOT_STARTED}", args.join(" ")) });
+                return Err(GitError::ended(GitEnd::NeverRan, format!("git {} {NOT_STARTED}", args.join(" "))));
             }
             Some(left)
         }
@@ -639,7 +698,12 @@ pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &
         .env_remove("GIT_COMMON_DIR")
         .env_remove("GIT_INDEX_FILE")
         .env_remove("GIT_PREFIX")
-        .env("GIT_CEILING_DIRECTORIES", workspace_root.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(workspace_root))
+        // Identity comes only from `actor`, never inherited from the process.
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
+        .env("GIT_CEILING_DIRECTORIES", workspace_root.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(workspace_root)) // unwrap_or: a root with no parent is its own ceiling
         // A headless core has no terminal: a fetch or push that would ask for
         // credentials must FAIL (a named outcome) rather than hang the turn on a prompt
         // nobody will answer.
@@ -648,29 +712,33 @@ pub async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &
         // by name (the citizen layer's `rev-parse --show-toplevel` lifts the ceiling: it
         // IS the upward discovery).
         .envs(env.iter().copied());
+    if let Some(actor) = actor {
+        cmd.envs(actor.env());
+    }
     let out = run_owned_with_input(cmd, input, bound, "git", std::sync::Arc::default())
         .await
         // the runner's errors aren't all before the spawn (a failed wait, an end that couldn't
         // run): what the git did is unknown, never "it never ran" (Codex reviewer on #5037)
-        .map_err(|e| GitError { end: GitEnd::Unknown, message: format!("Failed to run git: {e}") })?;
+        .map_err(|e| GitError::ended(GitEnd::Unknown, format!("Failed to run git: {e}")))?;
     // the shared projection (continuum_process::OwnedOutput::answer): a non-zero exit is git's own
     // failure, with its stderr, and any delivery note beside it; a deadline that ended it says
     // its effect is unknown
     if let Answer::Not(unanswered) = out.answer() {
-        let (end, at_deadline) = match unanswered.why {
-            Why::Exited(_) => (GitEnd::Refused, String::new()),
-            Why::NotWhole => (GitEnd::Unknown, String::new()),
+        let ((end, code), at_deadline) = match unanswered.why {
+            Why::Exited(status) => ((GitEnd::Refused, status.code()), String::new()),
+            Why::NotWhole => ((GitEnd::Unknown, None), String::new()),
             Why::TimedOut { .. } => {
                 // this process just ended that git: its lock is that git's, unless another git
                 // now works in the tree, so it goes now rather than in ten minutes
                 settle_index_lock(workspace_root, std::time::Duration::ZERO).await;
-                (GitEnd::Unknown, format!(" {INTERRUPTED}"))
+                ((GitEnd::Interrupted, None), format!(" {INTERRUPTED}"))
             }
         };
-        return Err(GitError { end, message: format!("git {}{at_deadline}: {unanswered}", args.join(" ")) });
+        let stdout = String::from_utf8_lossy(&unanswered.stdout.bytes).into_owned();
+        return Err(GitError { end, code, stdout, message: format!("git {}{at_deadline}: {unanswered}", args.join(" ")) });
     }
     // it exited 0 with everything read whole, but what it said isn't text: what it did is unknown
-    String::from_utf8(out.stdout.bytes).map_err(|e| GitError { end: GitEnd::Unknown, message: format!("git {}: invalid UTF-8 in its output: {e}", args.join(" ")) })
+    String::from_utf8(out.stdout.bytes).map_err(|e| GitError::ended(GitEnd::Unknown, format!("git {}: invalid UTF-8 in its output: {e}", args.join(" "))))
 }
 
 /// [`continuum_git::index_lock::settle`] for a citizen's workspace, off the async threads (its

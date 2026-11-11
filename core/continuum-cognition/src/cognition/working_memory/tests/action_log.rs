@@ -159,6 +159,9 @@ fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_
         handle: None,
         summary: None,
         stored_chars: None,
+        stored_content: None,
+        run: None,
+        body: None,
         received_ms: Some(at),
         act: Some(continuum_context::cause::Act { fingerprint: continuum_context::cause::Fingerprint::of([("x", seq.to_be_bytes().as_slice())]), effect }),
     };
@@ -174,4 +177,76 @@ fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_
     changed.push(act(6, room, 140, ToolEffect::Changes));
     changed.push(act(7, room, 150, ToolEffect::Observes));
     assert_eq!(super::super::action_log::ActionLog::from_records(changed).acts_since_change(room, 100), 1, "a declared change resets it");
+}
+
+// what this catches: an evicted observation hashed as `Absent`, so it was no occurrence and a
+// re-read of it never matched: her view measured zero re-reads while Atlas re-read an identical
+// file 103 times in 300 acts (the M5, 2026-11-09), so collapse looked free and her reads
+// thrashed. Evicted, a read keeps the outcome hash it had resident, across a restart too.
+#[test]
+fn an_evicted_read_keeps_the_outcome_hash_it_had_resident() {
+    let wm = WorkingMemory::new(8);
+    let cap = 2 * BODY;
+    let body = format!("first\n{}", "a".repeat(cap / 2));
+    wm.record_receipt_typed(&[], &body, None, saved("first-handle"));
+    for act in 2..=5 {
+        record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
+    }
+    // read once later acts exist: her newest act is in flight and not yet rendered
+    let resident = wm.action_renderings().0.first().map(|act| act.content);
+    assert!(matches!(resident, Some(continuum_context::cause::Content::Hashed(_))), "precondition: resident, hashed: {resident:?}");
+    shed(&wm, cap / 2);
+    assert!(wm.actions.lock().records().next().is_some_and(|first| first.result.is_none()), "precondition: the first read was evicted");
+    let evicted = wm.action_renderings().0.first().map(|act| act.content);
+    assert_eq!(evicted, resident, "an evicted read is the same occurrence it was resident");
+    assert!(matches!(evicted, Some(continuum_context::cause::Content::Hashed(_))), "never Absent: {evicted:?}");
+    // through the checkpoint's disk form, as a restart reads it
+    let Ok(saved) = serde_json::to_string(&wm.snapshot()) else { panic!("test: the checkpoint serializes") };
+    let Ok(snapshot) = serde_json::from_str(&saved) else { panic!("test: the checkpoint reads back") };
+    let restored = WorkingMemory::new(8);
+    restored.restore(snapshot);
+    assert_eq!(restored.action_renderings().0.first().map(|act| act.content), resident, "and across a restart");
+}
+
+// what this catches (IntelMac 0051cdcf on d17b1a419, 2026-11-11; Cormac's read): a run counted by
+// walking resident records, so when her view folded the earlier identical reads out of RAM her 3rd
+// identical read was told no run, and she re-read one handle ~45 times in 14 h. The run is the newest
+// record's own fact, taken as it is pushed; it survives a fold and a restart, and a changed outcome
+// or another room's act does not continue it.
+#[test]
+fn a_run_survives_her_view_folding_the_earlier_repeats_out_of_ram() {
+    use continuum_base::tool_effect::ToolEffect;
+    let (room, other) = (Uuid::from_u128(1), Uuid::from_u128(2));
+    let read = |seq: u64, room: Uuid, out: &str| super::super::action_log::ActionRecord {
+        seq,
+        room: Some(room),
+        scope: None,
+        operation: "tool/output".into(),
+        head: None,
+        result: Some(out.into()),
+        handle: None,
+        summary: None,
+        stored_chars: None,
+        stored_content: None,
+        run: None,
+        body: None,
+        received_ms: Some(seq),
+        act: Some(continuum_context::cause::Act {
+            fingerprint: continuum_context::cause::Fingerprint::of([("outputId", b"59db1a33".as_slice())]),
+            effect: ToolEffect::Reopens,
+        }),
+    };
+    let mut log = super::super::action_log::ActionLog::default();
+    log.push(read(1, room, "the same output"));
+    log.push(read(2, room, "the same output"));
+    assert_eq!(log.repeat_run(2).map(|r| r.times), Some(2));
+    assert_eq!(log.drain_through(2).len(), 2, "her view folded both earlier reads out of RAM");
+    log.push(read(3, room, "the same output"));
+    assert_eq!(log.repeat_run(3).map(|r| r.times), Some(3), "the run spans the fold");
+    let restored = super::super::action_log::ActionLog::from_records(log.records().cloned().collect());
+    assert_eq!(restored.repeat_run(3).map(|r| r.times), Some(3), "and a restart");
+    log.push(read(4, other, "the same output"));
+    assert_eq!(log.repeat_run(4), None, "another room's act starts its own run");
+    log.push(read(5, room, "a different output"));
+    assert_eq!(log.repeat_run(5), None, "a changed outcome ends it");
 }

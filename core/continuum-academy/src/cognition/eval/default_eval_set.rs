@@ -69,8 +69,8 @@ impl std::ops::Deref for EvalLane {
 /// the moment its last real user drops — no lingering VRAM, no reaper task, no eviction
 /// policy to get wrong. Dangling entries are pruned lazily on the next miss.
 pub(super) static WARM_EVAL_LANES: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<EvalLaneInner>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    parking_lot::Mutex<std::collections::HashMap<String, std::sync::Weak<EvalLaneInner>>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 /// Guards the WARM-LANE map across a cold spawn: a racer for the same key must find
 /// the winner's lane instead of building a second one, which needs the lookup, the
@@ -91,7 +91,7 @@ pub(super) static EVAL_LANE_SPAWN_GATE: std::sync::LazyLock<tokio::sync::Mutex<(
 
 /// Return a handle to a live warm lane for `key`, pruning a dangling entry on a miss.
 pub(super) fn lookup_warm_eval_lane(key: &str) -> Option<EvalLane> {
-    let mut map = WARM_EVAL_LANES.lock().unwrap();
+    let mut map = WARM_EVAL_LANES.lock();
     if let Some(weak) = map.get(key) {
         if let Some(inner) = weak.upgrade() {
             return Some(EvalLane { inner });
@@ -131,7 +131,6 @@ where
     let inner = std::sync::Arc::new(build().await?);
     WARM_EVAL_LANES
         .lock()
-        .unwrap()
         .insert(key.to_string(), std::sync::Arc::downgrade(&inner));
     Ok(EvalLane { inner })
 }

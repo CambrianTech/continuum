@@ -22,6 +22,7 @@ members = [
     "core/continuum-flow",
     "core/continuum-git",
     "core/continuum-host",
+    "core/continuum-saved-state",
     "core/continuum-context",
     "core/continuum-proving-types",
     "core/continuum-core",
@@ -58,7 +59,6 @@ members = [
     "core/serving-replay",
     "core/continuum-orm-derive",
     "core/continuum-positron",
-    "core/inference-grpc",
     "core/jtag-mcp",
     "core/livekit-bridge",
     "core/livekit-protocol",
@@ -99,6 +99,15 @@ members = [
 # when adopting an airc change; all crates resolve from the same
 # checkout so the IPC ABI version (IPC_PROTOCOL_VERSION) stays
 # consistent across the dependency graph.
+#
+# 2026-11-08 bump e05c44d → a3a7396: complete_card_history completes a shallow card clone's
+# history under airc's network bound, so arrival can prove whether HEAD left its creation anchor
+# (airc#1669; Kimi's shallow clone, continuum card f76005e8).
+#
+# 2026-11-08 bump 22c9c0e → e05c44d: ensure_card_clone re-allocates a card clone with no
+# allocation evidence when nothing in it is unpublished (HEAD and branch tips on the remote, clean
+# tree, no stash), else refuses naming what it holds (airc#1668; Kimi's weeks-old clone on the
+# Windows node). IPC_PROTOCOL_VERSION unchanged (6).
 #
 # 2026-09-16 bump 15f7b4b → 17abc10: inbox pages are byte-bounded and carry
 # `has_more` (airc#1440) — the daemon-attached paging loop continues past a
@@ -261,23 +270,23 @@ members = [
 # classified by a header string or a body. BLOCKED: the core's command receiver also
 # needs the addressed module (AddressedInbox / VerifiedAddressed / reply bound to the
 # request) that lands on top of it; bump again to that rev when it publishes.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "b158a7e93ff0c1dfd8558f81f800986350fba4b1" }
-airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "b158a7e93ff0c1dfd8558f81f800986350fba4b1" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "b158a7e93ff0c1dfd8558f81f800986350fba4b1" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "b158a7e93ff0c1dfd8558f81f800986350fba4b1" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "b158a7e93ff0c1dfd8558f81f800986350fba4b1" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "b158a7e93ff0c1dfd8558f81f800986350fba4b1" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "b158a7e93ff0c1dfd8558f81f800986350fba4b1" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
 # airc-trust: the peer trust store's tier writes. Test fixtures only: TwoAircLoopback
 # enrols its two peers at `own_account`, the tier the command ingress contract requires.
-airc-trust = { git = "https://github.com/CambrianTech/airc", rev = "b158a7e93ff0c1dfd8558f81f800986350fba4b1" }
+airc-trust = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "b158a7e93ff0c1dfd8558f81f800986350fba4b1" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
@@ -295,9 +304,7 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# gRPC
-tonic = "0.14"
-prost = "0.14"
+# Async streams
 tokio-stream = "0.1"
 
 # Timing and UUIDs (for JTAG protocol)
@@ -543,7 +550,7 @@ by_nature = ["continuum-cli-lifecycle", "jtag-mcp", "livekit-bridge", "llama", "
 pending = [
     "airc-test-fixtures", "continuum-airc-protocol", "continuum-bridge-protocol",
     "continuum-orm-derive", "continuum-positron", "continuum-text-analysis", "continuum-tool-protocol",
-    "expert-pager-policy", "inference-grpc", "serving-replay", "tool-working-set",
+    "expert-pager-policy", "serving-replay", "tool-working-set",
 ]
 # Tested crates whose lib tests run in their own steps (`matrix.crate == '...'`) in
 # continuum-rust-tests.yml, not in the generic `cargo test -p <crate> --lib` step.

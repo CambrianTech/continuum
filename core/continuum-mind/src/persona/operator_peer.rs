@@ -46,8 +46,7 @@ pub async fn ensure_operator_peer(
     }
     let label = operator_label();
     match PersonaAircRuntime::bootstrap_as(
-        crate::identity::IdentityKind::Human,
-        None,
+        crate::identity::citizen_path::CitizenKind::Human,
         uuid::Uuid::new_v4(), // pre-mint id; the durable identity is the home keypair (post-collapse peer id wins)
         &label,
         continuum_root,
@@ -246,8 +245,7 @@ pub async fn ensure_agent_peer(
         return;
     }
     match PersonaAircRuntime::bootstrap_as(
-        crate::identity::IdentityKind::Agent,
-        Some("claude-code"),
+        crate::identity::citizen_path::CitizenKind::Agent { provider: "claude-code" },
         uuid::Uuid::new_v4(), // pre-mint; the durable identity is the home keypair
         "Claude",
         continuum_root,

@@ -689,3 +689,18 @@
             "[]"
         );
     }
+
+    // what this catches: the hand scan that replaced the `\{\{([^{}\n]+)\}\}` regex
+    // drifting from it at the edges: a third leading brace, an empty `{{}}`, a newline or
+    // nested brace inside, an unclosed `{{`, and multibyte text around a match.
+    #[test]
+    fn innermost_scan_matches_the_old_pattern_at_the_edges() {
+        let mark = |s: &str| replace_innermost(s, |inner| format!("<{inner}>"));
+        assert_eq!(mark("{{{a}}"), "{<a>");
+        assert_eq!(mark("{{}}"), "{{}}");
+        assert_eq!(mark("{{a\nb}}"), "{{a\nb}}");
+        assert_eq!(mark("{{a.{{b}}.c}}"), "{{a.<b>.c}}");
+        assert_eq!(mark("x {{a"), "x {{a");
+        assert_eq!(mark("é{{a}}ü{{b}}"), "é<a>ü<b>");
+        assert_eq!(mark("{{a}"), "{{a}");
+    }

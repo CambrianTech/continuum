@@ -192,23 +192,6 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                     true
                 }
             };
-            // THE POOL'S ONE UPWARD TEST (S2 debt, `pool_growth`): the daemon asked this engine
-            // process to grow, and the target's pool is strictly larger than the one it reports
-            // holding. Decided once per process; downward never relaunches.
-            let running_pid = ctrl.served_incarnation().map(|engine| engine.pid);
-            let running_pool = ctrl.served_pool_tokens().await.ok();
-            let target_pool = u64::from(target.context_window) * u64::from(target.lanes);
-            let grow_ok = !super::pool_growth::growth_due(running_pid, running_pool, target_pool);
-            if let (false, Some(pid)) = (grow_ok, running_pid) {
-                super::pool_growth::spend(pid);
-                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.pool.grow",
-                    model = target.model_id(),
-                    pid = u64::from(pid),
-                    from_tokens = running_pool.map_or(0, u64::from), // map_or: grow_ok=false implies the pool is known
-                    to_tokens = target_pool,
-                    "the first steady plan proves a larger pool than this engine launched with: relaunching once into it (S2 debt)"
-                );
-            }
             // THE ENGINE ITSELF — the fourth operand (card 7c5f139d). A deploy installs the
             // engine the pin names (install-llama-server.sh, stamp-gated, atomic), but every
             // deploy leaves the lane up for the next core, so an adopted lane keeps running
@@ -224,6 +207,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // The same reading decides what this engine process can take (`tail_tools`); an
             // error keeps the evidence only while the same incarnation serves (Codex on #5491).
             observe_served_engine(ctrl.served_incarnation(), served_engine_probe.as_ref().map(Option::as_deref).map_err(|_| ()));
+            observe_template(ctrl, target.model_id()).await;
             let served_engine = match served_engine_probe {
                 Ok(build) => build,
                 Err(_) => None, // a probe error is "engine OK", as for the window and lanes
@@ -268,21 +252,20 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                      onto the installed binary"
                 );
             }
-            if !engine_ok || !sight_ok || !kv_ok || !pool_ok || !grow_ok {
+            if !engine_ok || !sight_ok || !kv_ok || !pool_ok {
                 continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.relaunch",
                     model = target.model_id(),
                     engine_ok,
                     sight_ok,
                     kv_ok,
                     pool_ok,
-                    grow_ok,
                     planned_kv = %planned_kv.cache_type,
                     planned_flash_attn = planned_kv.flash_attn,
                     running_kv = running_kv.as_ref().map(|r| r.cache_type_or_default().to_string()).unwrap_or_default(), // unwrap_or_default: "" = the running decision is unknown (no live argv); kv_ok is then true
                     running_flash_attn = running_kv.as_ref().map(|r| r.flash_attn).unwrap_or(false), // unwrap_or: unknown reads false alongside the empty type above
                     "the running engine is not the one a launch would start now (its binary, its \
-                     sight, its KV decision, a cache not yet on the shared pool, or its one upward \
-                     pool test) — relaunching once; a window or lane change never relaunches",
+                     sight, its KV decision, or a cache not yet on the shared pool) — relaunching \
+                     once; a window or lane change never relaunches",
                 );
                 // fall through to relaunch on the installed binary, with eyes, on the decided
                 // cache type, on the shared pool.
@@ -356,7 +339,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // relaunched lane starts clean" — this is the site that makes it true.
             reset_real_decode_failures();
             mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
-            observe_launched_engine(ctrl).await;
+            observe_launched_engine(ctrl, target.model_id()).await;
             EnsureOutcome::Spawned {
                 model: target.model_id().to_string(),
             }
@@ -375,7 +358,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                 Ok(()) => {
                     reset_real_decode_failures();
                     mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
-                    observe_launched_engine(ctrl).await;
+                    observe_launched_engine(ctrl, target.model_id()).await;
                     EnsureOutcome::Spawned {
                         model: target.model_id().to_string(),
                     }
@@ -395,9 +378,21 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
 /// A lane this reconcile launched answered ready: read its own build now, not at the next
 /// reconcile that happens to pass the convergence check, so her tool head is decided by what the
 /// running engine says before her acts reach it.
-async fn observe_launched_engine<C: LlamaServerControl + ?Sized>(ctrl: &C) {
+async fn observe_launched_engine<C: LlamaServerControl + ?Sized>(ctrl: &C, model: &str) {
     let probe = ctrl.served_engine_build().await;
     observe_served_engine(ctrl.served_incarnation(), probe.as_ref().map(Option::as_deref).map_err(|_| ()));
+    observe_template(ctrl, model).await;
+}
+
+/// Measure the serving model's chat-template tokens around one message, once per engine process
+/// and model ([`super::template_overhead`]): a new engine or a new model measures afresh, an
+/// unchanged one reads what it measured.
+async fn observe_template<C: LlamaServerControl + ?Sized>(ctrl: &C, model: &str) {
+    let now = ctrl.served_incarnation();
+    if super::template_overhead::measured_for(now, model) {
+        return;
+    }
+    super::template_overhead::record(now, model, ctrl.served_template_overhead().await);
 }
 
 /// The refusal last reported by [`keep_incumbent`], so an unchanged one is said once, not on

@@ -123,6 +123,13 @@ pub fn wire_name(name: &str, primary_alias: Option<&str>, style: OfferStyle) -> 
     }
 }
 
+/// The name her tool list offers a command under, read from its declaration (canonical name
+/// and aliases) through [`wire_name`] and the served model's [`offer_style_for`]. Every verb and
+/// example call her text names is offered through this, so none can disagree with her tools.
+pub fn offered_name_of(name: &str, aliases: &'static [&'static str]) -> String {
+    wire_name(name, primary_alias(aliases), offer_style_for(None))
+}
+
 /// A reference to a command in her hands, by its type. Renders as her tool list names it.
 pub struct VerbRef<C>(PhantomData<fn() -> C>);
 
@@ -162,7 +169,7 @@ impl<C: CommandSpec> VerbRef<C> {
 
     /// The name her tool list offers it under, read from the declaration when rendered.
     pub fn offered(self) -> String {
-        wire_name(C::NAME, primary_alias(C::ALIASES), offer_style_for(None))
+        offered_name_of(C::NAME, C::ALIASES)
     }
 }
 

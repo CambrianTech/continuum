@@ -38,12 +38,12 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
     // WorkingMemory (this harness faculty has none), so no ledger
     // message here — the ledger-specific behavior is pinned in
     // steps_ledger_renders_receipts_and_explicit_zero_case below.
-    // …plus the presence contract, which now stands in her view as its own
-    // block (cached once per epoch, not re-sent each act), and the short live
-    // line naming it, still ask-last (the 2026-10-25 framing split).
+    // …plus the presence contract, which stands in her view as its own block
+    // (cached once per epoch, not re-sent each act; a block leads a first start),
+    // and the short live line naming it, still ask-last (the 2026-10-25 framing split).
     assert_eq!(
         roles,
-        vec!["user", "assistant", "user", "user", "user", "user"],
+        vec!["user", "user", "assistant", "user", "user", "user"],
         "view: {view:?}"
     );
     let text_of = |m: &crate::ai::types::ChatMessage| match &m.content {
@@ -68,7 +68,7 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
     // The persona's own line is the `assistant` turn and carries NO name prefix
     // (her own voice; the system prompt forbids self-prefixing). Peers' lines are
     // `user` turns prefixed with the author so several speakers stay distinct.
-    let assistant = &view.messages[1];
+    let assistant = &view.messages[2];
     assert_eq!(assistant.role, "assistant");
     assert_eq!(
         assistant.content_text(),
@@ -78,15 +78,16 @@ fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
         !assistant.content_text().contains("Asha:"),
         "the persona's own turn must not be self-prefixed: {assistant:?}"
     );
-    assert!(view.messages[0]
+    assert!(view.messages[1]
         .content_text()
         .starts_with("[occurred 1970-01-01T00:00:00.001Z] Operator: "));
     // Perception facts are GROUNDING inserted BEFORE the final ask (the last user
     // turn), so the ask stays LAST where the model answers it — not the bracketed
     // meta, which it would otherwise parrot (2026-07-20 humaneval parrot fix). Here
-    // the layout is [Joel, Asha(assistant), [Conversational Presence] (the standing
-    // contract, in her view), [context]-fact, the live line, Joel-ask]: the grounding
-    // sits at [3], after her view and before the ask, and the ask is last.
+    // the layout is [[Conversational Presence] (the standing contract, a block of her
+    // view, leading a first start), Joel, Asha(assistant), [context]-fact, the live line,
+    // Joel-ask]: the grounding sits at [3], after her view and before the ask, and the ask
+    // is last.
     assert!(
         view.messages[3].content_text().starts_with("[context]"),
         "grounding fact sits after her view and before the ask: {:?}",
@@ -121,7 +122,7 @@ fn fit_receipt_names_what_it_dropped_and_when_it_emptied_the_history() {
         grounding_at: 0,
         history,
         stimulus: Some(stimulus.clone()),
-        latest_result: Vec::new(), action_statement: None,
+        latest_result: Vec::new(), action_statement: None, pricing: PromptCalibration::default(),
     };
     let required = prompt(Vec::new()).required_tokens();
     let total: usize = history.iter().map(LlmDeliberationFaculty::message_cost).sum();
@@ -174,14 +175,14 @@ fn fit_drops_whole_oldest_messages_and_opens_on_a_cluster_opener() {
                     grounding_at: 0,
                     history: msgs[..n].to_vec(),
                     stimulus: None,
-                    latest_result: Vec::new(), action_statement: None,
+                    latest_result: Vec::new(), action_statement: None, pricing: PromptCalibration::default(),
                 },
                 budget,
             )
             .expect("whole history suffix fits")
             .messages;
         assert!(!fit.is_empty());
-        let kept = LlmDeliberationFaculty::messages_cost(&fit);
+        let kept = PromptCalibration::default().estimate_all(&fit);
         assert!(kept <= budget, "act {n}: kept {kept} over its budget {budget}");
         let dropped = n - fit.len();
         if dropped > 0 {
@@ -220,7 +221,7 @@ fn fit_drops_whole_oldest_messages_and_opens_on_a_cluster_opener() {
                 grounding_at: 0,
                 history: clustered,
                 stimulus: None,
-                latest_result: Vec::new(), action_statement: None,
+                latest_result: Vec::new(), action_statement: None, pricing: PromptCalibration::default(),
             },
             budget,
         )
@@ -233,9 +234,9 @@ fn fit_drops_whole_oldest_messages_and_opens_on_a_cluster_opener() {
     );
     // The fitted suffix honors the budget.
     assert!(
-        LlmDeliberationFaculty::messages_cost(&last_fit) <= budget,
+        PromptCalibration::default().estimate_all(&last_fit) <= budget,
         "fitted cost {} exceeds budget {budget}",
-        LlmDeliberationFaculty::messages_cost(&last_fit)
+        PromptCalibration::default().estimate_all(&last_fit)
     );
     // A quantum larger than the optional history must not evict every
     // message on a quiet self-tick with no external stimulus or result.
@@ -249,7 +250,7 @@ fn fit_drops_whole_oldest_messages_and_opens_on_a_cluster_opener() {
             ChatMessage::text("user", "current situation ".repeat(20)),
         ],
         stimulus: None,
-        latest_result: Vec::new(), action_statement: None,
+        latest_result: Vec::new(), action_statement: None, pricing: PromptCalibration::default(),
     };
     let ambient_cost =
         LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
@@ -275,7 +276,7 @@ fn the_pinned_result_rides_last_and_nothing_rides_after_the_ask() {
         input_identity: [0; 32], grounding_at: 0,
         history: vec![ChatMessage::text("user", "[work turn] fix the bug")],
         stimulus: Some(ChatMessage::text("user", "the ask")),
-        latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")).into_iter().collect(), action_statement: None,
+        latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")).into_iter().collect(), action_statement: None, pricing: PromptCalibration::default(),
     };
     let order = |result: bool| -> Vec<String> {
         faculty.fit_messages(prompt(result), 100_000).expect("test: fits").messages.iter()
@@ -299,12 +300,12 @@ fn continuity_followup_keeps_completed_action_evidence() {
         ChatMessage::text("user", "Full result of code/write: file written successfully."),
         ChatMessage::text("user", "Now review the file you just wrote."),
     ];
-    let expected = LlmDeliberationFaculty::messages_cost(&history);
+    let expected = PromptCalibration::default().estimate_all(&history);
     let prompt = PromptMessages {
         streams: Default::default(),
         result_pointers: Vec::new(),
         input_identity: [0; 32], grounding_at: 0,
-        history, stimulus: None, latest_result: Vec::new(), action_statement: None,
+        history, stimulus: None, latest_result: Vec::new(), action_statement: None, pricing: PromptCalibration::default(),
     };
     assert!(prompt.recent_move_evidence().tokens >= expected,
         "a new follow-up cannot make the preceding action and result disposable");
@@ -324,7 +325,7 @@ fn continuity_insufficient_capacity_refuses_instead_of_dropping_evidence() {
             ChatMessage::text("assistant", "calling code/write: completed.py ".repeat(30)),
             ChatMessage::text("user", "Full result of code/write: file written successfully."),
         ],
-        stimulus: None, latest_result: Vec::new(), action_statement: None,
+        stimulus: None, latest_result: Vec::new(), action_statement: None, pricing: PromptCalibration::default(),
     };
     let insufficient = prompt.recent_move_evidence().tokens - 1;
     assert!(faculty.fit_messages(prompt, insufficient).is_err(),
@@ -409,15 +410,17 @@ fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window:
     let act = allocate(
         window,
         ActClaims {
-            framing: Head { leveled: framing.leveled.clone(), held: framing.held.clone() },
+            framing: Head { held: framing.held.clone(), ..Head::free(framing.leveled.clone()) },
             required: Leveled::default(),
-            newest: Leveled::default(),
+            newest: continuum_context::allocation::Newest::Absent,
             tools: offer.head(),
             grounding: Leveled::default(),
             last_move: Leveled::default(),
             history: Span::default(),
             reply,
             view: Vec::new(),
+            price: continuum_context::price::ContextPrice::Unmeasured,
+            trained: continuum_context::allocation::TrainedContext::Unreported,
         },
     );
     (faculty.granted_tools(ws, offer, &framing, &act, &charge), act)
@@ -478,7 +481,7 @@ fn a_view_turnover_keeps_her_tool_set() {
     let (choice, _) = tools_within(&faculty, &declared, 200_000);
     // The fit turns her view over in this act (what `fit_view` does when it outgrows its grant).
     let none: [&dyn Source<crate::cognition::context_streams::ContextMessage>; 0] = [];
-    faculty.context_view.lock().as_mut().expect("a view").turn_over(Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
+    faculty.context_view.lock().as_mut().expect("a view").turn_over(&continuum_context::cost::Chars, Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
     let (sent, _) = faculty.retain_tools(choice, false, true);
     assert_eq!(wire(&sent), wire(&first.tools), "the turnover act sends the set she held");
     let next = faculty.prompt_view_within(&declared, 200_000);
@@ -565,7 +568,7 @@ fn a_moves_change_waits_for_her_views_next_start_and_rides_the_tail_until_then()
     // The act that starts her view's next epoch adopts the set her moves select.
     let (choice, _) = tools_within(&faculty, &moved, 200_000);
     let none: [&dyn Source<crate::cognition::context_streams::ContextMessage>; 0] = [];
-    faculty.context_view.lock().as_mut().expect("a view").turn_over(Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
+    faculty.context_view.lock().as_mut().expect("a view").turn_over(&continuum_context::cost::Chars, Vec::new(), &none, |_| Vec::new()).expect("no sources, no grants");
     let (adopted, _) = faculty.retain_tools(choice, false, true);
     assert!(surface.names_of(&adopted).iter().any(|name| name == verb), "the start adopts the set her moves select");
     let next = faculty.prompt_view_within(&moved, 200_000);

@@ -58,6 +58,7 @@ ron = { workspace = true }     # RON scene descriptions (Bevy-idiomatic on-disk 
 uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-host = { path = "../continuum-host" }
+continuum-saved-state = { path = "../continuum-saved-state" } # main names the build every saved value records
 continuum-kernel = { path = "../continuum-kernel" }
 continuum-perception = { path = "../continuum-perception" }
 continuum-sentinel = { path = "../continuum-sentinel" }
@@ -296,6 +297,16 @@ metal = { workspace = true }
 #
 # mlx-rs = { version = "0.25", optional = true }  # phase B
 
+
+# The llama crate's backend follows the machine, so a plain `cargo check` / `cargo test` builds the
+# right engine: Metal on Apple Silicon; the CPU profile on an Intel Mac, where ggml-metal device init
+# hangs (#129). No `--features metal` to remember, and no CPU-only build on an M-series by accident.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+llama = { path = "../llama", features = ["metal"] }
+
+[target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
+llama = { path = "../llama", features = ["mac-cpu-only"] }
+
 [features]
 # `metal` is NOT default — earlier comment claimed it was harmless on
 # non-Mac targets, empirically false (2026-04-22 docker CI failure):
@@ -414,6 +425,9 @@ test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtur
 # `#[cfg(test)] mod tests` block (chat, generator, data cursors,
 # airc realtime_store as of this writing). Greppable by:
 #     grep -rln 'cfg(feature = "stress-tests")' src/
+# The resident-parity cases that need GitHub, the network or installs (test_env/mind_integration/
+# resident_parity.rs `live`): run on a node holding a `gh` login; CI has no credential to broker.
+resident-parity-live = []
 stress-tests = ["continuum-kernel/stress-tests", "continuum-mind/stress-tests", "continuum-dreaming/stress-tests", "continuum-store/stress-tests"]
 
 # Integration tests that link a `test-fixtures`-gated lib symbol (the

@@ -6,8 +6,8 @@ import type { TrainingSource } from "../genome/fine_tuning/TrainingSource";
 
 /**
  * `genome/training-trigger/submit` input — one batch of curated examples plus the
- * bucket discriminator + optional per-bucket policy (threshold, LoRA, schedule,
- * provider preference). All `Option` fields default; first-arrival pins the bucket's
+ * bucket discriminator + optional per-bucket policy (LoRA, schedule, provider
+ * preference). All `Option` fields default; first-arrival pins the bucket's
  * policy and later submits to the same bucket must agree (else `InconsistentBucket`).
  */
 export type SubmitParams = { 
@@ -22,4 +22,4 @@ submissionId?: string, personaId: string, personaName: string, baseModel: string
  * rejected `InconsistentBucket`. It rides onto the dispatched `TrainingJobRequest`;
  * adoption does not read it (the gene's verdict is its in-room trial).
  */
-evalSet?: string, lora?: LoRAHyperparams, schedule?: ScheduleParams, localArtifactDir?: string, preferredProvider?: string, minExamples?: number, validationSplit?: number, };
+evalSet?: string, lora?: LoRAHyperparams, schedule?: ScheduleParams, localArtifactDir?: string, preferredProvider?: string, validationSplit?: number, };

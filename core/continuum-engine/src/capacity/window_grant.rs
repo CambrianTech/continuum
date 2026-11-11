@@ -19,7 +19,10 @@ use std::collections::BTreeMap;
 use crate::inference::planning::window_allocator::Tokens;
 
 mod lease;
-pub(crate) use lease::{record_reclaimed_grant, record_refused_grant, is_grant_retiring};
+pub(crate) use lease::{record_reclaimed_grant, record_refused_grant};
+pub use lease::is_grant_retiring;
+#[cfg(test)]
+pub(crate) use lease::dyno_seam;
 pub use lease::{publish_fair_grants, FairGrantState, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
 
 /// One publication of one mind's grant: monotonic and never reused in this process. A grant that
@@ -49,6 +52,11 @@ impl GrantRevision {
 pub struct GrantOwner(uuid::Uuid);
 
 impl GrantOwner {
+    /// The owner's id on a wire (a residency or grant registered with an engine names it).
+    pub fn id(&self) -> uuid::Uuid {
+        self.0
+    }
+
     /// This process's grant owner.
     pub fn this_process() -> Self {
         static OWNER: std::sync::OnceLock<GrantOwner> = std::sync::OnceLock::new();
@@ -149,6 +157,136 @@ pub fn current_grant(persona: uuid::Uuid) -> Option<u32> {
 /// Her current grant and its revision: what a request is priced against and reserved by.
 pub fn current_lease(persona: uuid::Uuid) -> Option<GrantLease> {
     GRANTS.get()?.borrow().as_ref()?.lease_for(persona)
+}
+
+/// Why one grants evaluation granted nobody: every way `grant_inputs` has nothing to grant from,
+/// typed (card 5e79e1c1; Codex: "type those truthfully").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoGrants {
+    /// The engine does not serve yet (relaunching, faulted, not adopted).
+    NotReady,
+    /// The engine serves but reported a 0-token per-sequence window.
+    ServedWindowZero,
+    /// The engine reported no pool (`context_geometry.allocated_tokens` = 0).
+    PoolZero,
+    /// The served model is not in the registry, so its trained window is unknown.
+    ModelUnresolved,
+}
+
+/// Why a measured mind's requirement entered no demand on one evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Excluded {
+    /// Her requirement has no observed need yet.
+    NeedUnobserved,
+    /// Her requirement has no wish.
+    NoWish,
+    /// Her target rounds to no tokens.
+    NoTarget,
+}
+
+/// One run of the grants publisher, published EVERY time it runs, changed or not: the grants it
+/// published with, and, when it granted nobody, why; and each requirement it left out, and why. One
+/// value, so a mind reads her grant and its reason from the same evaluation, never two watches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantEvaluation {
+    /// Rises by one per evaluation: a waiter waits for one newer than what it saw.
+    pub seq: u64,
+    /// When this evaluation began reading its inputs: a mind measured before it is in them.
+    pub started: std::time::Instant,
+    /// The publisher's own interval between evaluations: a waiter that sees none begin within two
+    /// of them knows the publisher stalled (`mind_window::WindowRefused::PublisherSilent`).
+    pub cadence: std::time::Duration,
+    pub engine: Option<crate::inference::engine_residency::EngineIncarnation>,
+    /// The grants current after this evaluation (`None` when none are published).
+    pub grants: Option<PoolGrants>,
+    /// Why nobody could be granted; `None` when the inputs were there.
+    pub nobody: Option<NoGrants>,
+    /// Each requirement this evaluation could not turn into a demand.
+    pub excluded: BTreeMap<uuid::Uuid, Excluded>,
+    /// Each demand that reached the publisher and holds no grant after it, and why (Codex on #5890:
+    /// a demand waiting for room is not one that never arrived).
+    pub waiting: BTreeMap<uuid::Uuid, Waiting>,
+}
+
+/// Why a demand the publisher received holds no grant after its evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Waiting {
+    /// Her need is above what one sequence holds: no grant can seat her.
+    NeedAboveCeiling { need: u32, ceiling: u32 },
+    /// Her need is above the whole pool.
+    NeedAbovePool { need: u32, pool: u32 },
+    /// Her own grant is being reclaimed: she is regranted after its receipt.
+    Reclaiming,
+    /// Queued for room behind others (1-based `position` of `of`): a holder must yield first.
+    Queued { position: usize, of: usize },
+    /// Seatable, not reclaiming, and in no queue: the fair publisher left her out, which it should
+    /// never do. Named, so a live read shows the defect instead of a reason it does not have.
+    Unplaced,
+}
+
+impl GrantEvaluation {
+    /// Why `persona` holds no grant after this evaluation; `None` when she holds one.
+    pub fn ungranted(&self, persona: uuid::Uuid) -> Option<Ungranted> {
+        if self.grants.as_ref().and_then(|g| g.grant_for(persona)).is_some() {
+            return None;
+        }
+        Some(match (self.nobody, self.excluded.get(&persona), self.waiting.get(&persona)) {
+            (Some(nobody), _, _) => Ungranted::Nobody(nobody),
+            (None, Some(excluded), _) => Ungranted::Excluded(*excluded),
+            (None, None, Some(waiting)) => Ungranted::Waiting(*waiting),
+            (None, None, None) => Ungranted::NotADemand,
+        })
+    }
+}
+
+/// Why one mind holds no grant after an evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ungranted {
+    /// The publisher could grant nobody.
+    Nobody(NoGrants),
+    /// Her requirement was there and left out.
+    Excluded(Excluded),
+    /// Her demand reached the publisher and waits, for the named reason.
+    Waiting(Waiting),
+    /// The publisher had inputs, but no requirement of hers reached it.
+    NotADemand,
+}
+
+impl Ungranted {
+    /// Her turn comes once room opens: she is queued behind others, or the engine is relaunching.
+    /// She waits for a later evaluation, never fails her turn (Joel, 2026-11-09: "get what it needs
+    /// and wait its turn"). A grant being RECLAIMED is not waited out inside her turn: the reclaim
+    /// takes her mind's turn lock (`MindTurn::reclaim`), so a turn waiting on it waits on itself
+    /// (the M5, d0abbddd1, 2026-11-10: Aris parked to the 1,500 s tick deadline, five times, while
+    /// her seat never came back). Her turn ends, the reclaim proceeds, and she is regranted.
+    /// Every other reason names a defect.
+    pub fn awaits_room(&self) -> bool {
+        matches!(self, Self::Waiting(Waiting::Queued { .. }) | Self::Nobody(NoGrants::NotReady))
+    }
+}
+
+impl std::fmt::Display for Ungranted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Nobody(why) => write!(f, "the grants publisher could grant nobody: {why:?}"),
+            Self::Excluded(why) => write!(f, "her requirement was left out of the demands: {why:?}"),
+            Self::Waiting(why) => write!(f, "her demand reached the grants publisher and waits: {why:?}"),
+            Self::NotADemand => f.write_str("no requirement of hers reached the grants publisher"),
+        }
+    }
+}
+
+static EVALUATIONS: std::sync::OnceLock<tokio::sync::watch::Receiver<Option<GrantEvaluation>>> = std::sync::OnceLock::new();
+
+/// Install the grants publisher's evaluations beside its grants ([`install_grants`]). Set once.
+pub fn install_evaluations(rx: tokio::sync::watch::Receiver<Option<GrantEvaluation>>) -> bool {
+    EVALUATIONS.set(rx).is_ok()
+}
+
+/// A receiver of the publisher's evaluations: what an ungranted mind waits on. `None` before the
+/// serving daemon installs them.
+pub fn evaluations_receiver() -> Option<tokio::sync::watch::Receiver<Option<GrantEvaluation>>> {
+    EVALUATIONS.get().cloned()
 }
 
 /// One measured mind's current demand on the pool: her floor and target, and whether a turn of hers
@@ -633,4 +771,15 @@ mod tests {
         assert_eq!(Observed::AtLeast { at_least: t(4_096) }.within(ceiling), t(4_096), "a bound within the ceiling is untouched");
     }
 
+
+    // what this catches: a floored need crossing a JSON boundary (requirements to the serving
+    // daemon) read back as a bare bound with its floor dropped, because untagged reads try variants
+    // in order and ignore unknown fields; and a bare bound or exact size no longer reading as before.
+    #[test]
+    fn every_need_shape_survives_a_json_round_trip() {
+        for need in [Observed::Exact(t(30_000)), Observed::AtLeast { at_least: t(116_240) }, Observed::Floored { at_least: t(116_240), floor: t(60_000) }] {
+            let json = serde_json::to_string(&need).expect("test: a need serializes"); // expect: plain numbers always serialize
+            assert_eq!(serde_json::from_str::<Observed<Tokens>>(&json).expect("test: it reads back"), need, "{json}"); // expect: written by the line above
+        }
+    }
 }

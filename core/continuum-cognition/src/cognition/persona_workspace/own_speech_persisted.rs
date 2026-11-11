@@ -27,31 +27,62 @@ impl OwnSpeechPersisted {
     }
 }
 
+/// Her checkpoint's path, under the one continuum home (`paths::continuum_home`: `$CONTINUUM_HOME`,
+/// a test build's home, else `~/.continuum`), never a home built by hand.
 pub(super) fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::PathBuf> {
-    let home = crate::paths::home_dir().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "cannot resolve persistent home directory",
-        )
+    let home = crate::paths::continuum_home().map_err(|why| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, format!("cannot resolve the continuum home: {why}"))
     })?;
-    Ok(home
-        .join(".continuum/personas")
-        .join(persona_id.to_string())
-        .join("volatile.json"))
+    Ok(home.join("personas").join(persona_id.to_string()).join("volatile.json"))
+}
+
+/// What one checkpoint did: nothing (her state is where the last one left it), or wrote this many
+/// bytes, and what her archive's tick did first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Checkpointed {
+    Unchanged { archive: crate::cognition::working_memory::ArchiveTick },
+    Written { bytes: usize, archive: crate::cognition::working_memory::ArchiveTick },
+}
+
+/// Everything a checkpoint writes, as the last write found it: her memory's generation and what
+/// the writer stamps from outside it (`acting_card`, her own speech, the handoff without its clock).
+/// Compared, never serialized: an unmoved mark is a skipped write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Mark {
+    /// Which working memory (a respawn builds a new one, whose generation starts over).
+    instance: u64,
+    generation: u64,
+    acting_card: Option<Uuid>,
+    own_speech: Vec<(Uuid, Vec<String>)>,
+    handoff: Option<crate::cognition::handoff::Handoff>,
+}
+
+/// The mark of each persona's last written checkpoint, one row per resident.
+fn last_marks() -> &'static parking_lot::Mutex<std::collections::HashMap<Uuid, Mark>> {
+    static MARKS: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<Uuid, Mark>>> = std::sync::OnceLock::new();
+    MARKS.get_or_init(Default::default)
 }
 
 /// Persist the volatile tier — atomic tmp+rename so a crash mid-write never
 /// leaves a torn file. Called under the registry checkpoint gate, on a blocking
 /// worker. Failures propagate to both periodic and shutdown lifecycle receipts.
+///
+/// Her archive ticks first: an act that left RAM is on disk before the checkpoint that no longer
+/// carries it replaces the one that did (an archive failure keeps the old checkpoint). The
+/// checkpoint carries only her resident part, bounded by her view's fold edge, and a periodic one
+/// whose [`Mark`] has not moved since the last write is skipped: no snapshot, no JSON, no bytes
+/// (the M5, 2026-11-10: 12-46 MB rewritten whole every ~15 s per mind, 120 writes per 30 min at
+/// 51-161 ms each).
 pub(super) fn save_volatile(
     persona_id: Uuid,
     reason: SaveReason,
     staged_deadline: Option<std::time::Instant>,
     wm: &super::super::working_memory::WorkingMemory,
-) -> std::io::Result<()> {
+) -> std::io::Result<Checkpointed> {
     let path = volatile_path(persona_id)?;
     let _checkpoint_lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
-    let mut snapshot = wm.snapshot();
+    let archive = wm.tick_archive()?;
+    let generation = wm.checkpoint_generation();
     // THE HANDOFF (card 49b5e806): composed from what her turns already stamped (rooting,
     // work/note, the seam walk) plus the two things only the seam knows — what tears this
     // life, read from the deploy claim the reboot holds, and what stands on disk at her root.
@@ -59,7 +90,7 @@ pub(super) fn save_volatile(
     let home = crate::paths::continuum_home().ok();
     let torn_by = crate::cognition::handoff::torn_by_for(reason, home.as_deref(), now_ms);
     let acting_root = acting_root_of(persona_id);
-    snapshot.handoff = crate::cognition::handoff::compose(
+    let handoff = crate::cognition::handoff::compose(
         persona_id,
         torn_by,
         acting_root.as_deref(),
@@ -72,26 +103,38 @@ pub(super) fn save_volatile(
     // hands stand now: the card she stands at is on the board and recoverable from it, the
     // pending comparison is recoverable from nowhere else — a checkpoint that wrote the
     // ambient root would settle it by forgetting (Astra on #4315, round 2).
-    snapshot.acting_card = wm
+    let acting_card = wm
         .peek_restored_acting_card()
         .or_else(|| acting_card_of(persona_id));
-    let persisted = PersistedVolatile {
-        wm: snapshot,
-        own_speech: OwnSpeechPersisted::ByRoom(super::super::deliberation_budget::own_speech_by_room(
-            crate::identity::PeerId::from_uuid(persona_id),
-        )),
+    let own_speech = super::super::deliberation_budget::own_speech_by_room(crate::identity::PeerId::from_uuid(persona_id));
+    let mark = Mark {
+        instance: wm.instance_id(),
+        generation,
+        acting_card,
+        own_speech: own_speech.clone(),
+        handoff: handoff.clone().map(|mut handoff| {
+            handoff.written_ms = 0;
+            handoff
+        }),
     };
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+    if matches!(reason, SaveReason::Periodic) && last_marks().lock().get(&persona_id) == Some(&mark) {
+        return Ok(Checkpointed::Unchanged { archive });
     }
-    let tmp = path.with_extension("json.tmp");
-    use std::io::Write;
-    let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(&serde_json::to_vec(&persisted)?)?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&tmp, &path)?;
-    checkpoint_adoption::sync_parent(&path)
+    let mut snapshot = wm.snapshot();
+    snapshot.handoff = handoff;
+    snapshot.acting_card = acting_card;
+    let persisted = PersistedVolatile { wm: snapshot, own_speech: OwnSpeechPersisted::ByRoom(own_speech) };
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} names no checkpoint file", path.display())));
+    };
+    let bytes = serde_json::to_vec(&persisted)?; // file on disk: her checkpoint, read back at her next spawn
+    // Staged beside it in her held directory, synced, and renamed over it: a reader sees the last
+    // checkpoint or this one, never half, and the placement survives power loss.
+    let mut staging = continuum_host::durable::Staging::new(&continuum_host::confine::open_root(dir)?)?;
+    staging.write_all(&bytes)?;
+    staging.replace(std::path::Path::new(name))?;
+    last_marks().lock().insert(persona_id, mark);
+    Ok(Checkpointed::Written { bytes: bytes.len(), archive })
 }
 
 /// Load the previous life's volatile tier under the same owner lock as saves
@@ -135,7 +178,7 @@ pub(super) fn result_handles_at(
     let handles: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
         load_volatile_at(path)?
             .map(|persisted| persisted.wm.reachable_handles())
-            .unwrap_or_default(),
+            .unwrap_or_default(), // unwrap_or_default: no checkpoint on disk names no handle (a read failure returned above)
     );
     cache.lock().insert(path.to_path_buf(), (modified, std::sync::Arc::clone(&handles)));
     Ok(handles)

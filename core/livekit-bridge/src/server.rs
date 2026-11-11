@@ -65,7 +65,8 @@ pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std
                 };
 
                 // Share write access between command handler and event forwarder
-                let writer = Arc::new(std::sync::Mutex::new(write_stream));
+                // parking_lot: no poison state, so a writer is never refused for a panic elsewhere.
+                let writer = Arc::new(parking_lot::Mutex::new(write_stream));
                 let writer_for_events = writer.clone();
 
                 // Spawn event forwarder — pushes bridge events AND binary media
@@ -97,7 +98,7 @@ pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std
                                         &json,
                                         payload.binary.as_deref(),
                                     );
-                                    let mut w = writer_for_events.lock().unwrap();
+                                    let mut w = writer_for_events.lock();
                                     if let Err(e) = w.write_all(&frame) {
                                         warn!("🌉 Event write error (core disconnected?): {}", e);
                                         break;
@@ -108,7 +109,7 @@ pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std
                                     continuum_bridge_protocol::encode_media_frame_into(
                                         &mut media_buf, kind, channel, &payload,
                                     );
-                                    let mut w = writer_for_events.lock().unwrap();
+                                    let mut w = writer_for_events.lock();
                                     if let Err(e) = w.write_all(&media_buf) {
                                         warn!("🌉 Media write error (core disconnected?): {}", e);
                                         break;
@@ -152,7 +153,7 @@ fn handle_client(
     mut read_stream: UnixStream,
     manager: Arc<AgentManager>,
     rt: tokio::runtime::Handle,
-    writer: Arc<std::sync::Mutex<UnixStream>>,
+    writer: Arc<parking_lot::Mutex<UnixStream>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = vec![0u8; 4 * 1024 * 1024]; // 4MB read buffer (video frames can be large)
     let mut pending = Vec::new();
@@ -180,8 +181,8 @@ fn handle_client(
         pending.extend_from_slice(&buf[..n]);
 
         // Process complete frames
-        while pending.len() >= 4 {
-            let frame_len = u32::from_le_bytes(pending[0..4].try_into().unwrap()) as usize;
+        while let Some(header) = pending.first_chunk::<4>() {
+            let frame_len = u32::from_le_bytes(*header) as usize;
             if pending.len() < 4 + frame_len {
                 break;
             }
@@ -268,7 +269,7 @@ fn handle_client(
                         let resp_json = serde_json::to_vec(&response).unwrap_or_default();
                         let resp_frame =
                             continuum_bridge_protocol::encode_frame(&resp_json, None);
-                        let mut w = writer.lock().unwrap();
+                        let mut w = writer.lock();
                         if w.write_all(&resp_frame).is_err() {
                             return Ok(());
                         }
@@ -284,7 +285,7 @@ fn handle_client(
                     let resp_json = serde_json::to_vec(&response).unwrap_or_default();
                     let resp_frame = continuum_bridge_protocol::encode_frame(&resp_json, None);
 
-                    let mut w = writer.lock().unwrap();
+                    let mut w = writer.lock();
                     if let Err(e) = w.write_all(&resp_frame) {
                         warn!("🌉 Response write error: {}", e);
                         return Err(e.into());

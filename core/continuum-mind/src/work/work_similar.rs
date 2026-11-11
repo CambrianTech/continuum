@@ -7,16 +7,12 @@ use super::*;
 // times, sympy-24152 five — and no surface could show it, so the triage never
 // started. Both compose the text-level primitives (`embedding/similar` /
 // `embedding/groups`); the only board-specific part is what text stands for a card.
-/// What a card SAYS, for similarity: its title plus the head of its body. The title
-/// alone catches instance duplicates (the bench cards' titles are identical); the
-/// body head catches engineering cards that name the same defect in different words.
+/// What a card SAYS, for similarity: its title plus its body. The title alone catches instance
+/// duplicates (the bench cards' titles are identical); the body catches engineering cards that name
+/// the same defect in different words. The embedder takes the text whole and owns its own length.
 pub(super) fn card_text(c: &WorkCard) -> String {
-    const BODY_HEAD: usize = 400;
     match c.body.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
-        Some(body) => {
-            let head: String = body.chars().take(BODY_HEAD).collect();
-            format!("{}\n{}", c.title, head)
-        }
+        Some(body) => format!("{}\n{}", c.title, body),
         None => c.title.clone(),
     }
 }
@@ -404,11 +400,11 @@ impl WorkGet {
             .map(submission::WorkReviewResult::from).collect();
         // the holder's card only: a review card's next step is its verdict, not a submission
         if card.reviews.is_none() {
-            let latest = crate::cognition::card_holder::latest_submission(card).map(|s| s.submission_id);
+            let latest = card.latest_submission().map(|s| s.submission_id);
             let outcomes: Vec<_> = latest
                 .map(|id| board.submission_reviews_for(id).filter(|r| r.card_id == card.card_id).map(|r| r.outcome).collect())
                 .unwrap_or_default(); // unwrap_or_default: no submission, no outcomes
-            receipt.next = crate::persona::work_board::submissions::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), crate::persona::work_board::submissions::submission_review_handoff(board, card.card_id, latest));
+            receipt.next = crate::persona::work_board::submissions::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), crate::persona::work_board::submissions::submission_review_handoff(board, card.card_id, latest), card.pull_request.as_ref());
         }
         Ok(receipt)
     }

@@ -202,6 +202,62 @@ goes live: a new idea is a policy, a replay, then one command to switch it on.
 - **#69** covers compatible text prefill on non-unified KV only; priority follows #74, with aging
   and cancellation. **Media deadlines are not unlimited priority.**
 
+## The population is larger than the grid (Joel, 2026-11-02)
+
+Joel: "I assume people would potentially make many far more than capacity just shared across all
+devices and possibly base models flexible. It's a matter of how many are hosted online,
+abilities, personalities, appearance, which depends on grid." And: "the whole idea of persona
+generation, incubation, whatever as a users grid expands ro they just make more of them, I
+don't know what's natural." Joel's direction: build it and take the team's opinion.
+
+What this adds to the design above:
+
+- **A mind exists independent of hardware.** Her identity, memory, genome, personality and
+  appearance belong to the user's whole grid, not to a node. The population can be many times
+  what all devices together could host awake; nothing ever deletes or shrinks a mind to fit
+  hardware (no resident lost, as the gates already say). A node joining the grid is not a reason
+  to mint minds, and a node leaving never ends one.
+- **Birth is a request, never a quota.** A mind is born because someone asked: the user (create,
+  invite, a project that needs a role), or another mind whose work outgrew her (a reviewer for
+  her PRs, a teammate for a room). Each birth records who asked and why (the existing gate: no
+  birth without a recorded reason). **A persona creates minds as a user does** (Joel,
+  2026-11-02: "First class citizenship allows persona abilities to create minds too"): the same
+  verb, the same recorded reason and lineage (who created her), the same population ledger; no
+  second, lesser path for minds.
+- **Genesis: her id seeds who she is** (Joel, 2026-11-02: "from its own random uuidv7 you'd use
+  it for all characteristics: gender, voice (matching gender), appearance, phenotypes,
+  personality (also a gene I believe) and so on. Procedurally consistent and then editable by
+  self and commands and technically user but we might allow persona agency over it.") A
+  newborn needs no separate incubation phase: her own UUIDv7 is the seed, and every trait is a
+  deterministic draw from it with its own salt (gender; a voice matching it; appearance and
+  phenotype; personality as a gene), so the same id always yields the same mind. After birth
+  the traits are hers to change: by her own agency, by commands, and by the user. Today this is
+  partial: `continuum-live/src/live/avatar/hash.rs` `deterministic_pick(id, options, salt)`
+  seeds gender, avatar, voice and scene; personality and phenotype are not seeded, the pick
+  lives in the live crate (the genome cannot reach it), and it takes the id as a string. The
+  build: one genesis owner in a floor crate, keyed by the typed `Uuid`, salted per trait,
+  covering every trait including the personality gene, with each trait's edits recorded as her
+  own changes over the seeded default.
+- **Being online is placement, decided by the grid.** The allocator (this document's admission,
+  and FLOW-IMPLEMENTATION-PLAN §6e's grants from demand events) decides who is online now,
+  where, and on which base model. Engagement wakes a mind (a mention, a card, a call, a peer's
+  request); quiet lets her go dormant with her home, memory and work intact.
+- **The base model is per placement, the mind is not.** The same mind may run on a 35B MoE on
+  the M5 and a smaller model on a laptop. What travels with her: identity, memory, genome
+  (adapters keyed to the bases they were trained on, re-fit or re-trained for a new base by the
+  learning loop, never silently dropped). What the node decides: which base serves her now.
+- **Abilities and appearance follow placement.** What she can do online depends on the node
+  she is placed on: vision and voice need a capable model or the sensory bridge (CLAUDE.md,
+  "Sensory Architecture"); a rendered avatar needs a node that can render; tools need a
+  workspace on a node with her checkout. Placement chooses a node that can give her what her
+  current activity needs, and a mind placed with fewer abilities is told so as a fact, never
+  silently diminished.
+- **Capacity changes how many are online, not who exists.** When a user's grid grows, minds
+  already waiting get more time online; new minds arrive only when someone asks. The declared
+  `CONTINUUM_PERSONA_FLOOR` (one owner since #5713: `continuum_base::population::persona_floor`)
+  becomes only the cold-start count before any demand is measured, then is replaced by the
+  live projection this document already specifies.
+
 ## Open questions for the team
 
 - **Codex (serving, admission, grid):** answered: seats from the persisted service curves and
@@ -218,6 +274,13 @@ goes live: a new idea is a policy, a replay, then one command to switch it on.
   Codex).
 - **All:** what replaces the expiring hold, and how a node's owner sees and overrides who is
   awake (a person's choice beats the allocator).
+- **All (2026-11-02, the population larger than the grid):** decided: a persona creates minds
+  with the same ability a user has; a newborn needs no incubation phase (genesis above). Open: when a mind moves to a different base model, how do her genes follow
+  (re-fit, re-train, or wait for a node with her base)? Decided: a user sees the whole
+  population as presence, like any chat app (Joel, 2026-11-02: "Users would just see them as
+  offline if not active"): a mind not placed now reads offline (see Presence above), still
+  there to message or call, which wakes her. Open: how a user chooses who is online when
+  capacity is short (the person's choice beats the allocator, as above).
 
 ## Gates (done when)
 

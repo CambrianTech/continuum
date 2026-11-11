@@ -3,6 +3,9 @@ use super::*;
 #[async_trait]
 impl ActionCommand for WorkSubmission {
     const NAME: &'static str = "work/submission";
+    // In hand when her held card puts it there (a review card, or her card once it carries a
+    // submission: `work_preconditions::in_hand`), one `commands/help` away otherwise.
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str = "Read submission_id. Task: work/get. Publish: work/submit.";
@@ -34,35 +37,19 @@ impl ActionCommand for WorkSubmission {
                 room_label(&room.name, room.channel.as_uuid()),
             ))
         })?;
-        let submission_uuid = resolve_shown(
-            &p.submission_id,
-            &card
-                .submissions
-                .iter()
-                .map(|s| s.submission_id.as_uuid())
-                .collect::<Vec<_>>(),
-            "submission",
-        )
-        .map_err(|e| {
-            let on_card: Vec<(Uuid, Uuid)> = card
-                .submissions
-                .iter()
-                .map(|s| (s.submission_id.as_uuid(), s.publisher.as_uuid()))
-                .collect();
-            with_hint(e, Some(submissions_on_card(&on_card)))
-        })?;
-        let submitted = card
-            .submissions
-            .iter()
-            .find(|s| s.submission_id.as_uuid() == submission_uuid)
-            .ok_or_else(|| {
-                CommandError::NotFound(
-                    "submission is absent from this card and room — this verb inspects a SUBMISSION by \
-                     submission_id; to read the card itself use work/get {card_id}, to publish yours \
-                     use work/submit"
-                        .into(),
-                )
-            })?;
+        // The one handle resolver: `latest` (the default) is the card's newest, a review card
+        // reads what it reviews, and a card with none is refused with the call that makes one.
+        let actor = runtime.airc().peer_id();
+        let now_ms = EpochMs::now().millis();
+        let (submitted, card) = match p.submission_id.read(&board, card) {
+            Ok(SubmissionRead::Found { submission, on }) => (submission, on),
+            Ok(SubmissionRead::NoneYet { on }) => {
+                return Err(submission_refused(SubmissionRefusal::NoneYet { card: on.card_id }, &p.submission_id, card.card_id, on, actor, now_ms))
+            }
+            Err(unread) => return Err(submission_refused(SubmissionRefusal::Unread(unread), &p.submission_id, card.card_id, card, actor, now_ms)),
+        };
+        let submission_uuid = submitted.submission_id.as_uuid();
+        let card_uuid = card.card_id.as_uuid();
         let mut staged_evidence = None;
         let mut staged_evidence_error = None;
         let credit = async {
@@ -125,7 +112,7 @@ impl ActionCommand for WorkSubmission {
                 artifact: (&submitted.artifact).into(),
                 submitted_at_ms: submitted.submitted_at_ms,
                 bound_staged_revision_id: credit.as_ref().and_then(|c| c.staged_revision_id),
-                next: next_after_submission(Some(submission_uuid), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), submission_review_handoff(&board, card.card_id, Some(submitted.submission_id))).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+                next: next_after_submission(Some(submission_uuid), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), submission_review_handoff(&board, card.card_id, Some(submitted.submission_id)), card.pull_request.as_ref()).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
             },
             claim_id: submitted.claim_id.as_uuid(),
             base_sha: submitted.base_sha.to_string(),

@@ -469,11 +469,20 @@ async fn emit_once(
     if !force && last_published.as_ref() == Some(&update) {
         return directory_changed;
     }
-    // Substrate-owned type: a serialize failure is a bug, not a
-    // runtime condition (same discipline as
-    // `continuum_positron::StateBuilder::build`).
-    let payload = serde_json::to_value(&update)
-        .expect("AircPresenceUpdate must serialize — bug, not a runtime error");
+    // Substrate-owned type: a serialize failure is a bug, not a runtime condition. It is
+    // refused the way a failed roster read is above: reported with its cause, nothing
+    // published, and `last_published` left as it was so the next tick tries again.
+    let payload = match serde_json::to_value(&update) {
+        Ok(payload) => payload,
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                %room_id,
+                "positron_presence: AircPresenceUpdate did not serialize — a bug in its Serialize; skip emit, keep last roster"
+            );
+            return directory_changed;
+        }
+    };
     bus.publish_async_only(PRESENCE_UPDATED, payload);
     *last_published = Some(update);
     directory_changed

@@ -51,8 +51,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::identity::citizen_path::citizen_home_path;
-use crate::identity::IdentityKind;
+use crate::identity::citizen_path::{citizen_home_path, CitizenKind};
 use crate::cognition::home::PersonaHome;
 use crate::persona::PersonaModelOverride;
 use crate::runtime::{CommandExecutor, LateBound};
@@ -153,7 +152,7 @@ pub struct ReassignModelReport {
 /// (`…/citizens/personas/<name>/`), which is what [`PersonaHome`] wraps and where
 /// `model_override.json` lives alongside `seed.json` + `engrams.sqlite`.
 fn resolve_home(continuum_root: &Path, persona: &str) -> Option<PersonaHome> {
-    let airc_dir = citizen_home_path(continuum_root, IdentityKind::Persona, None, persona);
+    let airc_dir = citizen_home_path(continuum_root, CitizenKind::Persona, persona);
     airc_dir
         .parent()
         .map(|root| PersonaHome::from_root(root.to_path_buf()))

@@ -473,7 +473,7 @@ impl std::fmt::Display for Unanswered<'_> {
                 None => write!(f, "{status}")?,
             },
             Why::NotWhole => write!(f, "exited 0, but it is not an answer")?,
-            Why::TimedOut { unconfirmed } if unconfirmed.is_empty() => write!(f, "timed out")?,
+            Why::TimedOut { unconfirmed: [] } => write!(f, "timed out")?,
             Why::TimedOut { unconfirmed } => write!(f, "timed out; not confirmed gone: {unconfirmed:?}")?,
         }
         if let Some(note) = &self.note {

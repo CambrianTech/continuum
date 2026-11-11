@@ -150,8 +150,9 @@ pub struct ServingDaemonModule {
     resource_daemon: Arc<ResourceDaemon>,
     /// The plan's memory budget, SUSTAINED: every instantaneous reading of the last
     /// `READY_TIMEOUT`, so the plan grows only into headroom that has outlived one relaunch
-    /// and shrinks the moment pressure arrives (`system_resources::sustained`).
-    budget_readings: parking_lot::Mutex<crate::system_resources::sustained::Sustained>,
+    /// and shrinks the moment pressure arrives (`system_resources::sustained`), within one
+    /// credit view (`own_credit::CreditedReadings`).
+    budget_readings: parking_lot::Mutex<own_credit::CreditedReadings>,
     /// The published decision. `None` until the first successful plan. Held as
     /// the module's only shared state; `send` takes `&self` so `tick()` can
     /// publish without interior-mutability gymnastics.
@@ -233,7 +234,7 @@ pub struct ServingDaemonModule {
     /// not wedge evidence. Cleared on every smoke success so a stale value can never
     /// exonerate a later freeze. `std::sync::Mutex` — held only for a copy, never
     /// across an await.
-    last_miss_slots_fp: Arc<std::sync::Mutex<Option<u64>>>,
+    last_miss_slots_fp: Arc<parking_lot::Mutex<Option<u64>>>,
     frozen_slots: Arc<parking_lot::Mutex<Option<FrozenSlots>>>,
     /// Where the first plan after boot learns about a PAST FORM OF OURSELF still holding VRAM.
     /// Defaults to the lane registry; tests own it ([`Self::set_inherited_lane`]). See
@@ -345,25 +346,25 @@ pub struct ServingDaemonModule {
     /// asked for divides every mind's window for nothing (the 4-slots-for-2-
     /// personas starvation, 2026-07-10). Default 1 — window-first.
     lane_demand: Arc<std::sync::atomic::AtomicU32>,
-    /// The usable bytes the last plan sized against: the budget the one launch lays its pool
-    /// out on, so the engine holds the memory the planner just proved it may.
-    plan_budget_bytes: Arc<std::sync::atomic::AtomicU64>,
+    /// The budget the last plan sized against and whether it already held serving's own bytes:
+    /// the one launch lays its pool out on it, so the engine holds the memory the planner just
+    /// proved it may. `None` until a plan has been computed.
+    planned_budget: Arc<parking_lot::Mutex<Option<PlannedBudget>>>,
     /// The engine process this core last asked to move onto the shared pool: one try per
     /// engine, so a refused move is never retried every tick.
     shared_pool_move_tried: Arc<std::sync::atomic::AtomicU64>,
-    /// The models whose one upward pool relaunch this core run has asked for (`pool_growth`): once
-    /// per model, never once per engine process, since the relaunch itself makes a new one (S2 debt).
-    pool_growth_models: Arc<parking_lot::Mutex<std::collections::BTreeSet<String>>>,
     /// Each local mind's grant on the engine's pool (`grants.rs`): what her binding follows.
     /// `None` until a ready engine has been granted from.
     grants_tx: watch::Sender<Option<crate::capacity::window_grant::PoolGrants>>,
+    /// Every grants evaluation, changed or not (`publish_grants`).
+    evaluations_tx: watch::Sender<Option<crate::capacity::window_grant::GrantEvaluation>>,
     fair_grants: Arc<parking_lot::Mutex<crate::capacity::window_grant::FairGrantState>>,
-    /// Whether the engine process `pid` runs on the shared pool: read off its argv once per
-    /// process, never every tick.
-    shared_pool_of: Arc<parking_lot::Mutex<Option<(u32, bool)>>>,
-    /// The pool the running engine reports (`served_pool_tokens`, its `context_geometry`), as
+    /// The pool the running engine reports (`served_geometry`, its `context_geometry`), as
     /// the launch's ready path last read it; `0` = not read. The grants' one source for the pool.
     served_pool: Arc<std::sync::atomic::AtomicU32>,
+    /// The most one sequence may hold, from the same report (`max_tokens_per_sequence`); `0` =
+    /// not read. The grants' one source for a mind's limit (SERVING-ENGINE section 8).
+    served_sequence: Arc<std::sync::atomic::AtomicU32>,
 
     /// L10 (#438): consecutive plan ticks wanting a DIFFERENT base model than the
     /// ready incumbent, and which model that was. A model swap re-homes every
@@ -509,11 +510,9 @@ impl ServingDaemonModule {
             gpu,
             system,
             resource_daemon,
-            budget_readings: parking_lot::Mutex::new(
-                crate::system_resources::sustained::Sustained::new(
-                    crate::inference::llama_server::READY_TIMEOUT,
-                ),
-            ),
+            budget_readings: parking_lot::Mutex::new(own_credit::CreditedReadings::new(
+                crate::inference::llama_server::READY_TIMEOUT,
+            )),
             plan_tx,
             plan_view_tx,
             server,
@@ -538,7 +537,7 @@ impl ServingDaemonModule {
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
             leased_in_sent: Arc::new(crate::inference::resource_admission::leased_in_sent_samples),
-            last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
+            last_miss_slots_fp: Arc::new(parking_lot::Mutex::new(None)),
             frozen_slots: Arc::new(parking_lot::Mutex::new(None)),
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
@@ -552,13 +551,13 @@ impl ServingDaemonModule {
             pin_store,
             intent,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
-            plan_budget_bytes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            planned_budget: Arc::new(parking_lot::Mutex::new(None)),
             shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            pool_growth_models: Arc::new(parking_lot::Mutex::new(std::collections::BTreeSet::new())),
             grants_tx: watch::channel(None).0,
+            evaluations_tx: watch::channel(None).0,
             fair_grants: Arc::new(parking_lot::Mutex::new(crate::capacity::window_grant::FairGrantState::default())),
-            shared_pool_of: Arc::new(parking_lot::Mutex::new(None)),
             served_pool: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            served_sequence: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
             serving_hold: Arc::new(parking_lot::Mutex::new(None)),
@@ -617,7 +616,7 @@ use moe_cache::{
 };
 mod intent;
 use intent::ServingPlanSnapshot;
-pub use intent::{PinFit, PinFitChecker, ServingIntent, ServingIntentSnapshot};
+pub use intent::{IntentRevisionExhausted, PinFit, PinFitChecker, ServingIntent, ServingIntentSnapshot};
 mod lifecycle;
 #[cfg(test)]
 use lifecycle::reconcile_wedged;
@@ -684,7 +683,8 @@ mod launch;
 mod planning;
 mod grants;
 mod hold;
-mod pool_growth;
+mod own_credit;
+use own_credit::{OwnCredit, PlanBudget, PlannedBudget};
 mod reconcile;
 mod tick;
 

@@ -136,9 +136,9 @@ impl LlamaServerControl for FakeServer {
         // so the reconcile publishes a READY snapshot carrying a real window.
         Ok(11008)
     }
-    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
+    async fn served_geometry(&self) -> Result<crate::inference::weight_residency::ContextGeometry, LlamaServerError> {
         // One sequence's worth of the fixed window above: the share these tests publish.
-        Ok(11008)
+        Ok(crate::inference::weight_residency::ContextGeometry { allocated_tokens: 11008, max_tokens_per_sequence: 11008, sequence_capacity: 1 })
     }
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
         // 0 = "this fake's /props names no slot count", i.e. nothing to compare
@@ -225,6 +225,26 @@ pub(super) fn test_resource_daemon() -> Arc<ResourceDaemon> {
         ))],
         vec![],
         DaemonConfig::default(),
+    )
+}
+
+/// A memory authority over one test-driven capacity source that ticks fast enough for a
+/// test to wait on its board (the shape the floor and placement tests already build inline).
+pub(super) fn ticking_resource_daemon(
+    source: Arc<crate::resources::MockCapacitySource>,
+) -> Arc<ResourceDaemon> {
+    use crate::resources::{DaemonConfig, GovernorConfig};
+    ResourceDaemon::start(
+        vec![source],
+        vec![],
+        DaemonConfig {
+            tick_interval: Duration::from_millis(20),
+            min_reclaim_budget: Duration::from_millis(100),
+            governor: GovernorConfig {
+                min_dwell_ms: 0,
+                graceful_grace_ms: 50,
+            },
+        },
     )
 }
 
@@ -375,7 +395,7 @@ pub(crate) async fn exercise_cancelled_exclusive_teacher(
         !daemon.serving_tx.borrow().ready,
         "non-model child cannot fabricate restore success"
     );
-    daemon.intent.set_pin(None, true);
+    assert!(daemon.intent.set_pin(None, true).is_ok());
     tokio::time::timeout(Duration::from_secs(20), async {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
         while daemon.lifecycle.is_held() {
@@ -411,12 +431,23 @@ pub(super) fn daemon_on_card(
     server: Arc<dyn LlamaServerControl>,
     vram_bytes: u64,
 ) -> ServingDaemonModule {
+    daemon_on_authority(server, vram_bytes, test_resource_daemon())
+}
+
+/// The harness daemon over a memory authority the test drives (its capacity source, its
+/// leases, its consumers): the owner-to-planner boundary (`host_budget_snapshot`) then reads a
+/// board the test controls.
+pub(super) fn daemon_on_authority(
+    server: Arc<dyn LlamaServerControl>,
+    vram_bytes: u64,
+    resource_daemon: Arc<ResourceDaemon>,
+) -> ServingDaemonModule {
     let gpu = Arc::new(GpuMemoryManager::simulated("test card", vram_bytes));
     let system = Arc::new(SystemResourceMonitor::new());
     let mut daemon = ServingDaemonModule::with_control(
         gpu,
         system,
-        test_resource_daemon(),
+        resource_daemon,
         server,
         test_catalog(),
         test_pin_store(),
@@ -544,13 +575,14 @@ mod engine_admission;
 
 mod budget;
 mod catalog;
+mod credit;
 mod demand;
 mod health;
 mod prompt_cache;
 mod publication;
 use publication::test_pin_store;
-mod reconciliation;
-mod one_launch;
 /// The ONE-ACT dyno's launch reproductions (`continuum_engine::capacity::dyno`).
 mod dyno;
+mod one_launch;
+mod reconciliation;
 mod teacher;

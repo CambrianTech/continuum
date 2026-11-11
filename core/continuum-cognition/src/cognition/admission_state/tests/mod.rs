@@ -349,7 +349,7 @@
         // Stamp the middle engram as belonging to the exam episode (the acting body tags act
         // results with a context_id in the live path; here we set it directly for the test).
         {
-            let mut engrams = state.engrams.lock().unwrap();
+            let mut engrams = state.engrams.lock();
             engrams[1].context_id = Some(exam_ctx);
         }
         let forgotten = state.forget_context(exam_ctx);

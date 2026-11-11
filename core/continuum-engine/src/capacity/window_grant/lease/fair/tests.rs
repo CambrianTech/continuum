@@ -307,3 +307,64 @@ fn a_reclaimed_holder_queues_behind_existing_waiters() {
         );
     }
 }
+
+// what this catches (the M5, 2026-11-10: Aiko and Benchy queued for ten minutes behind two holders):
+// a seat that never turns because its holder is idle. A holder granted but idle across two
+// evaluations, who never served on this engine, holds no KV to reclaim: her seat goes to the waiter
+// with no physical handoff. One evaluation of idleness is not enough (she may be building her prompt).
+#[test]
+fn an_unused_seat_yields_to_a_waiter_after_two_idle_evaluations() {
+    let owner = Box::leak(Box::new(Reservations::new()));
+    let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
+    let mut fair = FairGrantState::default();
+    let mut current = None;
+    let publish = |fair: &mut FairGrantState, current: &mut Option<PoolGrants>, minds: &[uuid::Uuid]| {
+        let demands: Vec<_> = minds.iter().map(|mind| Demand {
+            mind: *mind, need: t(60), target: t(60), wish: t(60), in_flight: false, settled: true, ceiling: 100,
+        }).collect();
+        let before = current.clone();
+        owner.fair_publish(fair, &demands, 100, 100, engine(), || before, |next| *current = Some(next)).1
+    };
+    assert!(publish(&mut fair, &mut current, &[a]).is_empty());
+    let holds = |current: &Option<PoolGrants>| current.as_ref().expect("published").by_mind.clone();
+    assert_eq!(holds(&current), BTreeMap::from([(a, 60)]), "she holds the seat");
+    assert!(publish(&mut fair, &mut current, &[a, b]).is_empty());
+    assert_eq!(holds(&current), BTreeMap::from([(a, 60)]), "idle once: her seat stands");
+    let tickets = publish(&mut fair, &mut current, &[a, b]);
+    assert!(tickets.is_empty(), "no KV of hers on this engine: nothing to reclaim");
+    assert_eq!(holds(&current).get(&b), Some(&60), "idle twice: the waiter is seated");
+    assert!(!holds(&current).contains_key(&a), "her unused seat went to the waiter");
+}
+
+// what this catches: the yield armed by id order, pinning one holder (the lowest id) whether or not
+// she was the one using her seat. The holder that served most since her grant is armed.
+#[test]
+fn the_holder_that_served_most_is_armed_to_yield() {
+    let owner = Box::leak(Box::new(Reservations::new()));
+    let (a, b, c) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(3));
+    let mut fair = FairGrantState::default();
+    let mut current = None;
+    let publish = |fair: &mut FairGrantState, current: &mut Option<PoolGrants>, minds: &[uuid::Uuid]| {
+        let demands: Vec<_> = minds.iter().map(|mind| Demand {
+            mind: *mind, need: t(50), target: t(50), wish: t(50), in_flight: false, settled: true, ceiling: 100,
+        }).collect();
+        let before = current.clone();
+        owner.fair_publish(fair, &demands, 100, 100, engine(), || before, |next| *current = Some(next)).1
+    };
+    publish(&mut fair, &mut current, &[a, b]);
+    // b serves twice, a once, both mid-act at the evaluation that sees c waiting.
+    for (holder, times) in [(a, 1), (b, 2)] {
+        let lease = current.as_ref().expect("published").lease_for(holder).expect("holder admitted");
+        for _ in 0..times {
+            let request = owner.reserve_against(holder, lease, 40, || Some(lease)).expect("reserved");
+            settle(request, Some(&TerminalReceipt { finish: "stop".into() }));
+        }
+    }
+    let lease_a = current.as_ref().expect("published").lease_for(a).expect("a");
+    let lease_b = current.as_ref().expect("published").lease_for(b).expect("b");
+    let _in_flight_a = owner.reserve_against(a, lease_a, 40, || Some(lease_a)).expect("a mid-act");
+    let _in_flight_b = owner.reserve_against(b, lease_b, 40, || Some(lease_b)).expect("b mid-act");
+    publish(&mut fair, &mut current, &[a, b, c]);
+    let armed: Vec<_> = owner.lock().yield_after.keys().copied().collect();
+    assert_eq!(armed, vec![b], "the holder that served most yields next, not the lowest id");
+}

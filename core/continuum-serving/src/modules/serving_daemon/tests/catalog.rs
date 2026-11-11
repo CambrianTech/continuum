@@ -142,14 +142,14 @@ async fn live_candidates_honors_the_suppress_set() {
     );
 
     // serving/unload: pin it OFF → excluded from candidates → lane frees.
-    daemon.intent.set_suppressed(id, true, true);
+    assert!(daemon.intent.set_suppressed(id, true, true).is_ok());
     assert!(
         !daemon.live_candidates().iter().any(|f| f.model_id == id),
         "a suppressed model is excluded → planner drops it → VRAM frees"
     );
 
     // serving/load: permit it again → returns as a candidate (planner decides).
-    daemon.intent.set_suppressed(id, false, true);
+    assert!(daemon.intent.set_suppressed(id, false, true).is_ok());
     assert!(
         daemon.live_candidates().iter().any(|f| f.model_id == id),
         "an un-suppressed model returns as a candidate"
@@ -200,14 +200,14 @@ async fn ineligible_rows_never_join_the_autonomic_plan_but_pin_bypasses() {
     );
 
     // Explicit pin = operator consent → eligibility is bypassed.
-    daemon.intent.set_pin(Some(id.to_string()), true);
+    assert!(daemon.intent.set_pin(Some(id.to_string()), true).is_ok());
     assert!(
         daemon.live_candidates().iter().any(|f| f.model_id == id),
         "a pinned ineligible model serves — pin is consent"
     );
 
     // Unpin → back off the autonomic plan.
-    daemon.intent.set_pin(None, true);
+    assert!(daemon.intent.set_pin(None, true).is_ok());
     assert!(
         !daemon.live_candidates().iter().any(|f| f.model_id == id),
         "unpin returns the opponent to benchmark-only invisibility"

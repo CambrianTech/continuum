@@ -469,6 +469,9 @@ pub async fn publish_transcript_event(
             } else if let Some((name, payload)) = wall_changed_from_event(event) {
                 bus.publish_async_only(name, payload);
             } else if let Some((name, payload)) = kanban_changed_from_event(event) {
+                // The same change notice for every citizen's board index: the room this core
+                // attached is re-read on each index's next ask, never rebuilt per tick.
+                crate::persona::work_board::board_index::room_changed(event.room_id);
                 bus.publish_async_only(name, payload);
             }
             return Ok(());

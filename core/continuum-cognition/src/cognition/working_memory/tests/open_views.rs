@@ -89,6 +89,24 @@ fn a_code_read_opens_a_view_with_the_range_it_showed() {
     assert!(block.contains(&format!("- {PATH}, 498 lines: read 1-250; not yet read 251-498")), "{block}");
 }
 
+// what this catches (the M5, 2026-11-10: 20 identical re-reads, Atlas read one 666-line file 4
+// times): a whole file read inline left only "(all of it)" once it folded out of her view, with
+// nothing to reopen, and `./x` and `x` were two views. A whole inline read names its handle; one
+// spelling is one view.
+#[test]
+fn a_whole_file_read_inline_names_its_handle_and_one_spelling_is_one_view() {
+    let wm = WorkingMemory::new(3);
+    record(&wm, read(1, 498, 498, None));
+    let views = wm.snapshot().open_views;
+    assert_eq!(views[0].handle.as_deref(), Some("small"), "the whole read is reopenable by its handle");
+    let block = wm.open_views_block().expect("renders");
+    assert!(block.contains("read 1-498 (all of it) (that whole read is saved as output `small`)"), "{block}");
+    let mut again = read(1, 10, 498, None);
+    again.call.input = serde_json::json!({ "file_path": format!("./{PATH}"), "start_line": 1, "end_line": 10 });
+    record(&wm, again);
+    assert_eq!(wm.snapshot().open_views.len(), 1, "./{PATH} is {PATH}");
+}
+
 // what this catches: a second, overlapping page of the same file opening a second
 // view or listing both ranges side by side, so the cursor grows with every page
 // instead of saying how far she has got. Overlapping and touching ranges merge; the
@@ -154,8 +172,8 @@ fn a_view_in_a_checkout_her_hands_left_is_retired_from_her_view() {
     wm.set_scope(Some("/checkouts/a".into()));
     record(&wm, read(1, 40, 498, None));
     let views = crate::cognition::context_streams::open_views::OpenViews { memory: &wm, persona: uuid::Uuid::nil() };
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-    let (mut view, _) = match View::start(Vec::new(), &[&views as &dyn Source<_>], whole) {
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
+    let (mut view, _) = match View::start(&continuum_context::cost::Chars, Vec::new(), &[&views as &dyn Source<_>], whole) {
         Ok(started) => started,
         Err(mismatch) => panic!("test: {mismatch}"),
     };
@@ -187,30 +205,30 @@ fn planning_detail_yields_to_cursor_and_returns_when_granted() {
     record(&wm, read(1, 498, 498, None));
     let source = crate::cognition::context_streams::open_views::OpenViews { memory: &wm, persona: uuid::Uuid::nil() };
     let sources: &[&dyn Source<_>] = &[&source];
-    let cursor_floor = claims(sources)[0].floor_chars;
+    let cursor_floor = claims(&continuum_context::cost::Chars, sources)[0].floor;
     let intent = "I need to inspect the implementation before deciding what to change. ".repeat(64);
     wm.annotate_open_views(&intent);
-    let demand = claims(sources);
-    assert_eq!(demand[0].floor_chars, cursor_floor, "intent is not mandatory input");
-    assert!(demand[0].full_chars > cursor_floor + intent.len());
-    let whole = |claims: &[Claim]| claims.iter().map(|c| c.full_chars).collect();
-    let floor = |claims: &[Claim]| claims.iter().map(|c| c.floor_chars).collect();
-    let (mut view, _) = View::start(Vec::new(), sources, whole).expect("matching grants");
+    let demand = claims(&continuum_context::cost::Chars, sources);
+    assert_eq!(demand[0].floor, cursor_floor, "intent is not mandatory input");
+    assert!(demand[0].full > cursor_floor + intent.len());
+    let whole = |claims: &[Claim]| claims.iter().map(|c| c.full).collect();
+    let floor = |claims: &[Claim]| claims.iter().map(|c| c.floor).collect();
+    let (mut view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), sources, whole).expect("matching grants");
     let text = |view: &View<crate::cognition::context_streams::ContextMessage>| {
         view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n")
     };
     assert!(text(&view).contains(intent.trim()));
-    view.turn_over(Vec::new(), sources, floor).expect("matching grants");
+    view.turn_over(&continuum_context::cost::Chars, Vec::new(), sources, floor).expect("matching grants");
     let reduced = text(&view);
     assert!(reduced.contains(PATH) && reduced.contains("read 1-498 (all of it)"), "{reduced}");
     assert!(reduced.contains("read_file") && reduced.contains("start_line/end_line"), "retrieval remains resolvable: {reduced}");
     assert!(!reduced.contains("I need to inspect"), "pre-read planning must yield: {reduced}");
-    assert_eq!(claims(sources), demand, "allocation does not rewrite stored wants");
+    assert_eq!(claims(&continuum_context::cost::Chars, sources), demand, "allocation does not rewrite stored wants");
 
     // Checkpointing preserves the complete note even while its visible level is a cursor.
     let restored = WorkingMemory::new(3);
     restored.restore(wm.snapshot());
     let restored_source = crate::cognition::context_streams::open_views::OpenViews { memory: &restored, persona: uuid::Uuid::nil() };
-    view.turn_over(Vec::new(), &[&restored_source], whole).expect("matching grants");
+    view.turn_over(&continuum_context::cost::Chars, Vec::new(), &[&restored_source], whole).expect("matching grants");
     assert!(text(&view).contains(intent.trim()), "the allocation never deleted the note");
 }

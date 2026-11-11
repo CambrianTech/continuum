@@ -23,12 +23,12 @@ fn item(levels: &[u32]) -> Rungs {
     Rungs::new(levels.iter().copied()).expect("test: levels") // JUSTIFIED: test fixture
 }
 
-/// Her newest result at `levels`, whole first; none when empty.
-fn newest_at(levels: &[u32]) -> Leveled {
-    Rungs::new(levels.iter().copied()).map_or_else(Leveled::default, Leveled::one) // map_or_else: no levels is no result
+/// Her saved newest result: `whole`, and its least page.
+fn pageable(whole: u32, least: u32) -> Newest {
+    Newest::Pageable { whole, least }
 }
 
-fn claims(window_newest: Leveled, view: Vec<FlexClaim>, reply_priority: u8) -> ActClaims {
+fn claims(window_newest: Newest, view: Vec<FlexClaim>, reply_priority: u8) -> ActClaims {
     ActClaims {
         framing: Head::free(Leveled::one(Rungs::whole(4_000))),
         required: Leveled::one(Rungs::whole(500)),
@@ -38,30 +38,132 @@ fn claims(window_newest: Leveled, view: Vec<FlexClaim>, reply_priority: u8) -> A
         last_move: Leveled::one(Rungs::whole(200)),
         history: Span { floor: 0, min: 0, want: 600 },
         reply: reply(800, 2_400, reply_priority),
-        view,
+        view: view.into_iter().map(ViewClaim::from).collect(),
+        price: ContextPrice::Unmeasured,
+        trained: TrainedContext::Unreported,
     }
 }
 
-// what this catches: the side budget her newest result was sized against, beside the
-// allocation (Kimi on the windows 5090, 2026-10-28, refusal 1eef970d: her result priced against
-// the window less framing and tools, her view's floor then taking its room). It is a claim: whole
-// whenever the window holds it beside every floor, else the largest of its levels that does, and
-// what that level leaves goes to her view, never to a level she is not shown (capacity_and_wire's
-// wire test: as a span her result took every token left and a room update in her view vanished).
+// what this catches (#5917, capacity_and_wire:166): her grounding offered the empty choice whenever
+// anything wanted its room, so a reply wanting more than the window (or a view holding what it held)
+// took the activity's wall away entirely. It leaves only when its handles cannot fit beside every
+// hard limit, her newest result as shown and her reply's floor.
 #[test]
-fn the_newest_result_is_the_largest_of_its_levels_that_fits_and_the_rest_reaches_her_view() {
-    let newest = || newest_at(&[9_000, 2_000, 900]);
+fn her_grounding_leaves_only_when_its_handles_cannot_fit_beside_the_hard_limits() {
+    let mut greedy = claims(Newest::Absent, Vec::new(), 9);
+    greedy.reply = reply(800, 10_000, 9);
+    let plan = allocate(8_000, greedy);
+    assert!(plan.granted(id::GROUNDING) >= 300, "its handles stay: {}", plan.granted(id::GROUNDING));
+}
+
+// what this catches (#5917, capacity_and_wire:137): a room message that reached her during this act
+// dropped to its index beside a page of her older newest result, because her conversation's floor
+// on an act never counted it. Her newest interaction is held whole before the result is paged, when
+// the window holds it beside every hard limit; one larger than that leaves the floor as it was
+// (the index names where it is) and is never a floor past the window.
+#[test]
+fn a_turn_that_arrived_this_act_is_held_whole_before_her_result_pages_when_it_fits() {
+    let with_arrived = |arrived: u32| {
+        let mut source = view_source("conversation", 4, 600, 20_000);
+        source.required = true;
+        let mut claims = claims(pageable(30_000, 900), Vec::new(), 8);
+        claims.view = vec![ViewClaim { claim: source, consumer: Consumer::Context, arrived }];
+        claims
+    };
+    let held = allocate(20_000, with_arrived(400));
+    assert!(held.granted(&format!("{}conversation", id::VIEW)) >= 1_000, "its floor and the arrived turn: {}", held.granted(&format!("{}conversation", id::VIEW)));
+    assert!(matches!(held.newest_shown(), NewestShown::Page { .. }), "her older result pages around it");
+    let unheld = allocate(20_000, with_arrived(50_000));
+    assert!(unheld.granted(&format!("{}conversation", id::VIEW)) >= 600, "an arrived turn past the window leaves the floor as it was");
+    assert!(unheld.searched.is_some(), "and never makes the act short");
+}
+
+// what this catches: the side budget her newest result was sized against, beside the
+// allocation (Kimi on the windows 5090, 2026-10-28, refusal 1eef970d), and a newest result shown
+// as a summary and a handle she must page (the M5, 2026-11-07: 159 times in a day, 52 of the
+// re-reads themselves too large). Whole whenever the window holds it beside every hard limit;
+// past that, its first page cut to the room left beside her reply's whole want, never below its
+// least page.
+#[test]
+fn the_newest_result_is_whole_when_it_fits_else_a_page_of_exactly_the_room_left() {
+    let newest = || pageable(9_000, 900);
     let view = || vec![view_source("conversation", 4, 600, 20_000)];
     let roomy = allocate(40_000, claims(newest(), view(), 8));
-    assert_eq!((roomy.newest_level(), roomy.granted(id::NEWEST)), (0, 9_000), "whole");
-    // Required floors: framing 4,000 + required 500 + tools 1,000 + last move 200 + reply 800 =
-    // 6,500; 12,000 leaves 5,500: the 2,000 level fits, the whole does not.
+    assert_eq!((roomy.newest_shown(), roomy.granted(id::NEWEST)), (NewestShown::Whole, 9_000), "whole");
+    assert!(roomy.view_granted() > 600, "what it leaves reaches her view: {}", roomy.view_granted());
+    // Hard limits: framing 4,000 + required 500 + tools 1,000 + last move 200 + reply 800 =
+    // 6,500; 12,000 leaves 5,500: the whole does not fit, so a page of what is left beside her
+    // reply's whole want (2,400): 12,000 - 5,700 - 2,400 = 3,900.
+    // Her grounding keeps its handles (300) beside it: 3,600.
     let tight = allocate(12_000, claims(newest(), view(), 8));
-    assert_eq!((tight.newest_level(), tight.granted(id::NEWEST)), (1, 2_000), "the largest level that fits");
-    assert!(tight.view_granted() > 600, "what the level leaves reaches her view past its floor: {}", tight.view_granted());
+    assert_eq!((tight.newest_shown(), tight.granted(id::NEWEST)), (NewestShown::Page { tokens: 3_600 }, 3_600), "a page of the room left");
+    assert!(tight.granted(id::REPLY) >= 800, "her reply keeps its need: {}", tight.granted(id::REPLY));
+    assert_eq!(tight.chosen(id::GROUNDING).map(|c| c.cost), Some(300), "grounding at its handles while her result pages");
+    assert_eq!(tight.chosen(id::TOOLS).map(|c| c.cost), Some(1_000), "her tools at their pointers before the page shrinks");
     assert!(tight.irreducible_shortfall().is_none(), "reducible: no growth asked");
-    let floor_only = allocate(7_500, claims(newest(), view(), 8));
-    assert_eq!(floor_only.newest_level(), 2, "nothing larger fits: its coarsest");
+    let floor_only = allocate(7_000, claims(newest(), view(), 8));
+    assert_eq!(floor_only.newest_shown(), NewestShown::Page { tokens: 900 }, "never below its least page");
+}
+
+// what this catches (Cormac on #5840): a page forcing her held head to its hard limit when the
+// held level fits beside her least page. A page needs no particular size, a head level change
+// re-prefills her whole prompt (context is a FIFO with a stable head): the held level stays and
+// the page takes what it leaves. Only a held level that cannot fit beside her least page drops,
+// loudly.
+#[test]
+fn a_page_keeps_a_held_head_level_that_fits_beside_its_least_page() {
+    let act = || ActClaims { tools: Head { held: Some(vec![0]), ..Head::free(Leveled::one(item(&[3_000, 1_000]))) }, ..claims(pageable(9_000, 900), Vec::new(), 8) };
+    // Hard limits 5,700, reply need 800, least page 900, held tools 2,000 above their pointer:
+    // 9,400 fits in 12,000. The page: 12,000 - 5,700 - reply want 2,400 - grounding handles 300
+    // - the held 2,000 = 1,600.
+    let kept = allocate(12_000, act());
+    assert!(!kept.lost(id::TOOLS), "her held tools stay: the prefix is unchanged");
+    assert_eq!(kept.chosen(id::TOOLS).map(|c| c.cost), Some(3_000));
+    assert_eq!(kept.newest_shown(), NewestShown::Page { tokens: 1_600 }, "the page takes what the held level leaves");
+    assert!(kept.irreducible_shortfall().is_none());
+    // 9,000 cannot hold the held level beside her least page (9,400): it drops, said, and the page
+    // is its least.
+    let dropped = allocate(9_000, act());
+    assert!(dropped.lost(id::TOOLS), "a held level that cannot fit beside her least page drops, loudly");
+    assert_eq!(dropped.chosen(id::TOOLS).map(|c| c.cost), Some(1_000), "to its hard limit");
+    assert_eq!(dropped.newest_shown(), NewestShown::Page { tokens: 900 });
+}
+
+// what this catches (card 8a12dcd1, Aiko on the M5, 2026-11-07 17:04Z: her newest result granted
+// 326 tokens while her tools held 3,278; a median result is ~4,230): her hands, grounding or view
+// holding detail while her newest result is shown smaller. Her newest result is irreducible at its
+// whole: on a window that holds it only with her tools at their pointers, her tools collapse and
+// the result is whole.
+#[test]
+fn aikos_newest_result_is_whole_and_her_tools_collapse_around_it() {
+    // context-budget-exempt: Aiko's measured parts (the M5, 2026-11-07), the fixture this test runs.
+    const NEWEST: u32 = 4_230;
+    const TOOLS_HELD: u32 = 3_278;
+    // Her verbs: twenty-two whole, at their summaries, at their names (pointers 23 each).
+    let verbs = || Leveled::new((0..22).map(|_| item(&[TOOLS_HELD / 22, 60, 23])).collect());
+    let tools_whole = verbs().want();
+    let act = || ActClaims {
+        framing: Head::free(Leveled::one(Rungs::whole(2_391))),
+        required: Leveled::one(Rungs::whole(427)),
+        newest: pageable(NEWEST, 120),
+        tools: Head { held: Some(vec![0; 22]), consumer: Consumer::Actionable, ..Head::free(verbs()) },
+        grounding: Leveled::one(item(&[1_500, 200])),
+        last_move: Leveled::one(Rungs::whole(39)),
+        history: Span { floor: 0, min: 0, want: 2_000 },
+        reply: reply(574, 574, 8),
+        view: vec![FlexClaim { required: true, ..view_source("conversation", 4, 1_200, 30_000) }.into()],
+        price: ContextPrice::Unmeasured,
+        trained: TrainedContext::Unreported,
+    };
+    let hard = 2_391 + 427 + 22 * 23 + 39 + 1_200 + 574;
+    // Room for her result whole beside every hard limit, not beside her tools held whole.
+    let window = hard + NEWEST + 100;
+    assert!(window < hard - 22 * 23 + tools_whole + NEWEST, "fixture: her held tools and her result whole do not both fit");
+    let plan = allocate(window, act());
+    assert_eq!((plan.newest_shown(), plan.granted(id::NEWEST)), (NewestShown::Whole, NEWEST), "her newest result whole");
+    assert!(plan.lost(id::TOOLS), "her held tools give way, loudly");
+    assert!(plan.chosen(id::TOOLS).map(|c| c.cost).unwrap_or(u32::MAX) < tools_whole, "her tools collapsed: {:?}", plan.chosen(id::TOOLS)); // unwrap_or: an unchosen part fails the assertion
+    assert!(plan.irreducible_shortfall().is_none());
 }
 
 // what this catches (Cormac on #5779, goal 7: never clip the newest end, shrink oldest-first):
@@ -73,8 +175,8 @@ fn the_newest_result_is_the_largest_of_its_levels_that_fits_and_the_rest_reaches
 #[test]
 fn optional_claims_shed_before_her_newest_result_is_shown_smaller() {
     let view = vec![view_source("conversation", 4, 600, 20_000)];
-    let plan = allocate(15_500, claims(newest_at(&[9_000, 2_000, 900]), view, 8));
-    assert_eq!((plan.newest_level(), plan.granted(id::NEWEST)), (0, 9_000), "whole: it fits beside every required floor");
+    let plan = allocate(15_500, claims(pageable(9_000, 900), view, 8));
+    assert_eq!((plan.newest_shown(), plan.granted(id::NEWEST)), (NewestShown::Whole, 9_000), "whole: it fits beside every required floor");
     assert_eq!(plan.granted(id::LAST_MOVE), 200, "her last move whole");
     let optional = plan.granted(id::HISTORY) + plan.view_granted() + plan.granted(id::GROUNDING);
     assert_eq!(optional, 0, "older history, grounding and her view shed first: the required parts fill 15,500");
@@ -90,7 +192,7 @@ fn optional_claims_shed_before_her_newest_result_is_shown_smaller() {
 fn a_reply_need_past_the_window_keeps_her_view_floor_and_reports_the_shortfall() {
     let mut view = view_source("conversation", 4, 600, 20_000);
     view.required = true; // an act: her view at its collapsed minimum is required
-    let mut act = claims(Leveled::default(), vec![view], 8);
+    let mut act = claims(Newest::Absent, vec![view], 8);
     act.reply = reply(9_000, 9_000, 8);
     let window = 8_192;
     let plan = allocate(window, act);
@@ -140,18 +242,21 @@ fn an_underfunded_required_floor_is_refused_never_minted() {
 
 // what this catches (Codex on Cormac's finding, #5779, goal 7): an off-by-one at the exact
 // required-floor boundary. When the required floors, the reply's floor and the whole newest result
-// equal the window exactly, the whole is chosen; one token less and the next level is.
+// equal the window exactly, the whole is chosen; one token less and a page of the room is.
 #[test]
-fn the_newest_result_is_whole_at_the_exact_boundary_and_the_next_level_one_token_under() {
-    let newest = || newest_at(&[9_000, 2_000, 900]);
+fn the_newest_result_is_whole_at_the_exact_boundary_and_a_page_one_token_under() {
+    let newest = || pageable(9_000, 900);
     let view = || vec![view_source("conversation", 4, 600, 20_000)];
     // Required: framing 4,000 + required 500 + tools 1,000 + last move 200 + reply 800 = 6,500.
     let exact = 6_500 + 9_000;
     let at = allocate(exact, claims(newest(), view(), 8));
-    assert_eq!((at.newest_level(), at.granted(id::NEWEST)), (0, 9_000), "exactly the window: whole");
+    assert_eq!((at.newest_shown(), at.granted(id::NEWEST)), (NewestShown::Whole, 9_000), "exactly the window: whole");
     assert!(at.irreducible_shortfall().is_none());
     let under = allocate(exact - 1, claims(newest(), view(), 8));
-    assert_eq!((under.newest_level(), under.granted(id::NEWEST)), (1, 2_000), "one token under: the next level");
+    // One token under: a page of the room beside her reply's whole want (2,400) and her
+    // grounding's handles (300).
+    let page = exact - 1 - 5_700 - 2_400 - 300;
+    assert_eq!((under.newest_shown(), under.granted(id::NEWEST)), (NewestShown::Page { tokens: page }, page), "one token under: a page of the room");
 }
 
 // what this catches (goal 7: the newest complete interaction is whole; ONE-ACT stage 2; Cormac on
@@ -163,7 +268,7 @@ fn the_newest_result_is_whole_at_the_exact_boundary_and_the_next_level_one_token
 fn on_a_tight_window_her_last_move_and_reply_floor_survive_and_optional_claims_shed() {
     let view = vec![view_source("conversation", 4, 600, 20_000)];
     // Required: framing 4,000 + required 500 + tools 1,000 + last move 200 + reply 800 = 6,500.
-    let plan = allocate(6_600, claims(Leveled::default(), view, 8));
+    let plan = allocate(6_600, claims(Newest::Absent, view, 8));
     assert_eq!(plan.granted(id::LAST_MOVE), 200, "her last move whole");
     assert!(plan.granted(id::REPLY) >= 800, "her reply keeps its floor: {}", plan.granted(id::REPLY));
     assert!(plan.view_granted() < 600, "the optional view source shed below its floor: {}", plan.view_granted());
@@ -175,7 +280,7 @@ fn on_a_tight_window_her_last_move_and_reply_floor_survive_and_optional_claims_s
 // bigger grant on a reducible overflow). Irreducible growth is typed apart.
 #[test]
 fn required_floors_past_the_window_are_an_irreducible_shortfall() {
-    let plan = allocate(5_000, claims(newest_at(&[9_000, 900]), Vec::new(), 8));
+    let plan = allocate(5_000, claims(pageable(9_000, 900), Vec::new(), 8));
     let short = plan.irreducible_shortfall().expect("test: the floors exceed 5,000"); // JUSTIFIED: test fixture
     assert_eq!(short.window, 5_000);
     assert!(short.needed > 5_000, "{short:?}");
@@ -186,7 +291,7 @@ fn required_floors_past_the_window_are_an_irreducible_shortfall() {
 // second allocation with the reply seated at its want used to prevent. One plan, the same start.
 #[test]
 fn a_pass_and_the_act_after_it_start_her_view_alike() {
-    let newest = Leveled::default;
+    let newest = || Newest::Absent;
     let view = || vec![view_source("conversation", 4, 600, 30_000)];
     let pass = allocate(16_384, claims(newest(), view(), 4));
     let act = allocate(16_384, claims(newest(), view(), 10));
@@ -244,13 +349,15 @@ fn every_leveled_claims_floor_is_its_items_hard_limit() {
     let act = || ActClaims {
         framing: Head::free(Leveled::new(vec![Rungs::whole(1_900), item(&[40, 11]), item(&[60, 12])])),
         required: Leveled::one(Rungs::whole(300)),
-        newest: newest_at(&[2_000, 781]),
+        newest: pageable(2_000, 781),
         tools: Head::free(Leveled::new((0..23).map(|_| item(&[480, 120, 25])).collect())),
         grounding: Leveled::new(vec![item(&[900, 200, 30]), item(&[400, 40])]),
         last_move: Leveled::one(Rungs::whole(38)),
         history: Span { floor: 0, min: 0, want: 4_000 },
         reply: reply(446, 2_000, 10),
-        view: vec![FlexClaim { required: true, ..view_source("conversation", 4, 1_500, 9_000) }],
+        view: vec![FlexClaim { required: true, ..view_source("conversation", 4, 1_500, 9_000) }.into()],
+        price: ContextPrice::Unmeasured,
+        trained: TrainedContext::Unreported,
     };
     let limits = 1_900 + 11 + 12 + 300 + 23 * 25 + 38 + 1_500;
     let roomy = allocate(60_000, act());
@@ -278,8 +385,8 @@ fn every_leveled_claims_floor_is_its_items_hard_limit() {
 fn held_head_levels_stay_while_they_fit_are_lost_loudly_and_rise_at_the_next_epoch() {
     let tools = || Leveled::new((0..4).map(|_| item(&[500, 100, 20])).collect());
     let act = |held: Vec<usize>| ActClaims {
-        tools: Head { leveled: tools(), held: Some(held) },
-        ..claims(Leveled::default(), Vec::new(), 8)
+        tools: Head { held: Some(held), ..Head::free(tools()) },
+        ..claims(Newest::Absent, Vec::new(), 8)
     };
     let collapsed = allocate(40_000, act(vec![2, 2, 1, 1]));
     assert_eq!(collapsed.chosen(id::TOOLS).map(|c| c.rungs.clone()), Some(vec![2, 2, 1, 1]), "held while it fits");
@@ -348,18 +455,20 @@ fn output(act: usize, chars: usize) -> String {
 /// or turned over at the start the plan's arithmetic sizes. Answers (prompt tokens, prefill tokens,
 /// turned over).
 fn act_through_the_view(day: &Recorded, view: &mut View<String>, sources: &[&dyn Source<String>], appended_tokens: usize) -> (usize, usize, bool) {
-    let source_claims = view_claims(sources);
-    let as_claim = |claim: &Claim| view_source(&claim.source, claim.priority, tokens(claim.floor_chars) as u32, tokens(claim.full_chars) as u32);
+    let source_claims = view_claims(&crate::cost::Chars, sources);
+    let as_claim = |claim: &Claim| view_source(&claim.source, claim.priority, tokens(claim.floor) as u32, tokens(claim.full) as u32);
     let act_claims = ActClaims {
         framing: Head::free(Leveled::one(Rungs::whole(tokens(day.head_chars.value) as u32))),
         required: Leveled::default(),
-        newest: Leveled::default(),
+        newest: Newest::Absent,
         tools: Head::default(),
         grounding: Leveled::default(),
         last_move: Leveled::default(),
         history: Span::default(),
         reply: reply(day.reply_tokens.value, day.reply_tokens.value, 8),
-        view: source_claims.iter().map(as_claim).collect(),
+        view: source_claims.iter().map(as_claim).map(ViewClaim::from).collect(),
+        price: ContextPrice::Unmeasured,
+        trained: TrainedContext::Unreported,
     };
     let plan = allocate(day.aris_window.value, act_claims);
     assert!(plan.irreducible_shortfall().is_none(), "her working set fits her window: no grant growth");
@@ -369,19 +478,19 @@ fn act_through_the_view(day: &Recorded, view: &mut View<String>, sources: &[&dyn
     }
     let start = plan.start_room();
     let grant_of = |claim: &Claim| plan.plan.of(&format!("{}{}", id::VIEW, claim.source)).cloned();
-    view.turn_over(Vec::new(), sources, |claims: &[Claim]| {
+    view.turn_over(&crate::cost::Chars, Vec::new(), sources, |claims: &[Claim]| {
         let starts: Vec<StartSource> = claims
             .iter()
             .map(|claim| {
                 let grant = grant_of(claim).map_or(0, |a| a.allocated_tokens); // map_or: an unclaimed source starts collapsed
-                StartSource { priority: claim.priority, fixed: false, required: false, floor: tokens(claim.floor_chars) as u32, grant, newest: 0 }
+                StartSource { priority: claim.priority, fixed: false, required: false, floor: tokens(claim.floor) as u32, grant, newest: 0 }
             })
             .collect();
         start_shares(start, &starts)
             .expect("test: no required floor in this start") // JUSTIFIED: test fixture
             .iter()
             .zip(claims)
-            .map(|(&share, claim)| (share as usize * claim.full_chars) / tokens(claim.full_chars).max(1))
+            .map(|(&share, claim)| (share as usize * claim.full) / tokens(claim.full).max(1))
             .collect()
     })
     .expect("test: the grants answer every claim"); // JUSTIFIED: test fixture
@@ -405,8 +514,8 @@ fn reproduction_7_an_overflowing_view_collapses_older_items_and_prompt_tokens_st
     for n in 0..seeds {
         actions.push(&format!("seed{n}"), &output(n, seed_chars / seeds));
     }
-    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full_chars).collect();
-    let (mut view, _) = View::start(Vec::new(), &[&actions as &dyn Source<String>], whole).expect("test: a start"); // JUSTIFIED: test fixture
+    let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&actions as &dyn Source<String>], whole).expect("test: a start"); // JUSTIFIED: test fixture
     let mut verbatim = tokens(day.head_chars.value) + tokens(view.chars());
     let mut rows = Vec::new();
     for act in 0..day.aris_acts.value {

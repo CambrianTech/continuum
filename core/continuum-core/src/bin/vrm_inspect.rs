@@ -11,6 +11,8 @@
 //!   - Mesh bounding boxes (min/max vertex positions)
 //!   - Skin/joint data
 //!   - Bone naming conventions
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::collections::HashMap;
 

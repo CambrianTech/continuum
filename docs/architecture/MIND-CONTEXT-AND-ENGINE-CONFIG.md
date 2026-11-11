@@ -326,8 +326,8 @@ no faculty re-implements them:
 |---|---|---|
 | prompt messages built outside the view and the fresh tail's one renderer (`ChatMessage::text`/`tool_results` in `llm_deliberation_faculty/prompt`) | 13 | the tail's single renderer only |
 | collapse outside the view (`collapse_over` / `collapse_results_over_cap` callers) | 4 | 0: working memory bounds RAM by handle, never what she sees |
-| hand churn labels (`churn_of` callers; production lines, ratchet `hand_churn_labels`) | 3 | 0: `Motion` orders every start |
-| positron `ViewState` kinds that are not context `Source`s | 13; 11 on 2026-11-07 (the kanban and the wall: one keyed item per card and post, `context_streams::blocks`) | 0: one adapter, items with levels and expand handles |
+| hand churn labels (`churn_of` callers; production lines, ratchet `hand_churn_labels`) | 0 since 2026-11-09 (the table is deleted; the ratchet is a zero gate) | 0: `Motion` orders every start |
+| positron `ViewState` kinds that are not context `Source`s | 13; 10 on 2026-11-07 (the kanban, the wall and the roster declare their shape through `continuum_context::nav`; one keyed item per card, post and member) | 0: one adapter, items with levels and expand handles |
 
 **Media is the same codec** (Joel, 2026-10-26: "Should be positron. This is common across so
 much."). A frame (a screen, a camera, a room the minds share, an image in chat) is a positron
@@ -354,10 +354,15 @@ surface, observed back through her eyes and ears.
    `summary` with `continuum_context::levels::summarize(full, Shape::…)` (`Code` with the producer's
    line parser, `Output`, `List`). Its `pointer` names the handle that expands it. A source
    whose items accumulate (her acts) implements `fold` so its floor is one block.
-   A fold, and any group a source folds itself (a board's merged cards, its claimable cards beyond
-   the most recent), is a `continuum_context::nav::Node`: a label, a count and the typed command
-   that opens it, one line whatever the count. Off her focus a group shows its most recently
-   changed `nav::standing(n)` items (the geometric mean of 1 and n) and folds the rest.
+   A view a mind and a person both navigate (a board, a wall, a roster, an activity's controls)
+   declares only its SHAPE as `continuum_context::nav::Entry`s: a typed key, its whole, an optional
+   summary (else derived by `levels`), its pointer, and what it is to her: `Need::Focus`, or a
+   member of a `Group { label, expand, fold }` with its recency. `nav::collapse` does the rest for
+   every view alike: her focus whole and last; each group's most recently changed
+   `nav::standing(n)` entries (the geometric mean of 1 and n) on their own and the rest ONE
+   `nav::Node` (label, count, the typed command that opens it); a `Fold::All` group (history) only
+   its node. A source's folded oldest run is a `Node` too (`Source::fold`). In continuum-mind a
+   view returns its entries and calls `viewstate_rag::rag_items`; it never collapses on its own.
 3. Add the source to the view's source list. Never push a prompt message, never collapse, never
    pick an order: the view appends, levels, admits, orders by measured motion and turns over.
 4. Prove it with a fixture in the source's test mod, then with the replay validator.
@@ -369,6 +374,89 @@ collapse the newest, admission instead of turnovers, a restart order measured pe
 **Owners:** Fable (the view, the adapter, the deletions), Codex (`references()`, head/ensure,
 slot/seed), Cormac (checkpoints at the head boundary and on turnover). The replay validator
 (`continuum-context` `examples/replay.rs`) and the live 15-minute read are the receipts for each slice.
+
+### Revision, 2026-11-11: her act's tail is a source, judged and rendered by the view before it is sent
+
+**The failure.** Her act's tail (the stimulus, her statement and calls, their results, the volatile
+framing, the world state when the room is empty) is built by hand in `prompt/messages.rs` and
+`prompt/view.rs` (`prompt_messages_outside_the_view`: 7 sites), sent, and only then appended to her view
+as opaque blocks (`View::append_sent`, `SENT_TAIL`) that cover the act's item. So the codec never
+governs the one act that matters most: invariant 4 never judged an act on its arrival (three IntelMac
+residents reopened one saved output 20+ times, 2026-11-11; patched by `View::repeat_of_newest`, a
+second entry to the same judgement), levels and admission never apply to it, and every tail defect
+became a leaf fix (the newest-end clip, the head cuts, the repeat label).
+
+**The design.** The tail is one `Source` (`context_streams::tail::Tail`), one renderer of her native
+protocol, its items keyed by what they are:
+- `act/{seq}/call`: her statement and calls as she wrote them (one assistant native message);
+- `act/{seq}/result`: their results as the engine's tool results, cause `Of(call)`, with the act's
+  identity and outcome hash, so `repeat::resolve` judges it on arrival like any item; its
+  `RepeatRun` rides in its rendering;
+- `turn/{key}/stimulus`: the ask, required, whole (the empty room's world state is this item too);
+- `context/{hash}`: the room's working-context block ("[What you are working with right now]"),
+  ahead of the framing, where it sits today;
+- `framing/{hash}`: the act's framing (the `[now ...]` clock, `[In force this turn]`), an item
+  like the rest, in its place before the ask (the parrot-fix order). Revised after the code read
+  (2026-11-11): made the mutable end and never kept, it would break the cached prefix at every act
+  (act k's framing gone from act k+1's prompt re-prefills act k's call and result each time).
+  A framing line was true when sent ("[now 03:12Z]"): kept, it is append-only history, and its
+  growth folds with its act like any item. Prefix stability wins over compactness. Keyed by content
+hash (with `context/{hash}`), an identical line already shown is the same element and is not shown
+twice, which is exactly today's `drop_what_she_was_sent`.
+The newest result's paging (`Newest::Pageable`) becomes a level of its item, `Level::Page`, decided by
+the allocation (`newest.shown`) as today and passed into the view's admission for that one item; the
+source renders it with today's page renderer (`prompt/newest_result.rs`, moved into the source).
+
+**Where it joins: after the allocation, before the send** (the code read, 2026-11-11). The tail is a
+`Source` for rendering, keys, element identity and repeat judgement, but NOT one of the view's start
+sources: `advance` runs before the allocation that decides her result's level (`newest.shown`), a start
+needs one view grant per source and the tail's claims are REQUIRED/NEWEST/LAST_MOVE, and a start must
+never collapse her newest result. It joins the epoch through `View::append_tail(source, levels)` after
+the allocation and `fit_view`: `repeat::resolve` and one-element-one-occurrence run there, the
+allocation's page decision is the result item's level, and today's tail budget and capacity refusal
+stay the admission. A turnover starts from the view's sources, then appends this act's tail. An act is
+rendered several times before one is served (refits, a changed grant, uncounted admission), so judging
+and joining are two steps: `View::judge_tail` judges and renders the tail with no side effect, every
+render calling it afresh (a refit can re-page her result), and `View::append_tail` adds exactly the
+judged items when the request is served (`view_served`, where `append_sent` is today; `sent()` moves
+there too). So `append_sent`'s untyped after-send join becomes a judged, keyed join of the same items.
+Media: a result's text and tool-result parts are its item; its image parts attach at render only while
+it is newest (as today), and the next act holds it as text (`ContextMessage::holdable` refuses media).
+
+**One allocation, no double count.** The arriving tail keeps its own claims in the one allocation:
+REQUIRED (the ask and her statement), NEWEST (her result) and LAST_MOVE, as today. Once sent, its items
+are held view items, counted by the view's claims (their held basis) from the next act on, which is
+exactly today's accounting after `append_sent`. The source keeps that split; it adds no claim.
+`View::advance` appends the tail's new items at the end of the epoch like every source's; the prompt is
+`view.render()`; `sent()` marks them held. One occurrence, one element: the tail's result item and
+her actions source's item for the same act share the element id (`element(persona, Act, seq)`), and the
+view treats an arriving item whose element id the epoch already holds as already shown, so an act never
+shows twice; this typed identity replaces the `covers` bookkeeping. What goes away: `append_sent`,
+`SENT_TAIL`, `covers`, `repeat_of_newest`, and every hand-built prompt message (the ratchet goes 7 -> 0).
+
+**One prompt owner, learning included** (Cormac). The learner's example is already framed from the served
+request's own messages through the same `wire_messages` serving uses (`genome/learner/example.rs`), so
+the learned prefix equals the served prefix by construction; nothing reroutes it. A learn step's restored-tail
+proof (#5905 `served_tail_restored`) compares the tail items' keys and outcome hashes, never byte counts.
+
+**Restart.** A checkpointed view restores her call and result items; the engine's KV for them is gone,
+so her first act after a restart re-prefills them: classified as an intentional cold start (#5188),
+never read as a fast-path miss.
+
+**Proof before deploy.** The faculty replay (`fable/faculty-replay`) runs the captured acts through the
+old and new paths: bytes identical for every act that is not a repeat, the shared prefix between
+consecutive acts no shorter, a repeated reopen arriving as its repeat block, and across a replayed
+restart the render byte-identical to the one before it, framing aside (Cormac). The engine sees
+identical bytes only if the render keeps the exact typed message sequence (Codex, from
+`request_body.rs`, which expands a tool use into assistant `tool_calls` and a tool result into
+`role=tool` with its `tool_call_id`): roles, ordering, content-part boundaries, call ids, names and
+argument bytes, which call each result answers, the framing's position, and no same-role coalescing
+across native tool boundaries. So the replay gates at BOTH the rendered messages and the final wire
+request's token prefix (same tools, template and generation flags), never text length or item hashes
+alone: keys and hashes prove provenance, not that the engine's KV holds the same tail. Then the live read.
+
+**Owners.** Fable (the source, the view, the deletions); Codex (the engine's view of the tail: what
+the KV cache holds across it); Cormac (checkpoints: the tail's items persist as the view's do).
 
 ### Revision, 2026-10-30: causality is in the type, so nothing can loop as if it were progress
 

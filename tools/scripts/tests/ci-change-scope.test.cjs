@@ -9,10 +9,10 @@ const select = (...paths) => {
   return { rust, installer, publication };
 };
 
-// Tested crates a kernel change does not reach: the floor (base, host, git, service) and the leaves
-// that depend on nothing in the workspace (the codec continuum-context, the flow continuum-flow, the
-// proving ground's types continuum-proving-types).
-const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-git', 'continuum-service', 'continuum-context', 'continuum-flow', 'continuum-proving-types'];
+// Tested crates a kernel change does not reach: the floor (base, host, git, service, saved-state) and
+// the leaves that depend on nothing in the workspace (the codec continuum-context, the flow
+// continuum-flow, the proving ground's types continuum-proving-types).
+const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-git', 'continuum-service', 'continuum-saved-state', 'continuum-context', 'continuum-flow', 'continuum-proving-types'];
 
 test('installer repairs run installer checks without unrelated Rust builds', () => {
   for (const file of ['install.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/win-engine.ps1', 'tools/scripts/lib/windows-engine-receipt.ps1', 'tools/scripts/lib/windows-service.ps1', 'tools/scripts/lib/windows-media-reconciliation.ps1', 'tools/scripts/lib/windows-elevation.ps1', 'tools/scripts/tests/windows-process.test.ps1', 'tools/scripts/tests/windows-airc-download.test.ps1', 'tools/scripts/tests/windows-xz.test.ps1', 'tools/scripts/sync-windows-bootstrap.ps1'])

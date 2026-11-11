@@ -40,7 +40,7 @@ use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use uuid::Uuid;
 
-use crate::runtime::arguments::{ArgumentsRefusal, FieldProblem};
+use crate::runtime::arguments::{accepted_shape, ArgumentsRefusal, FieldProblem};
 use crate::runtime::cell_shapes::HandleRef;
 use crate::runtime::command_envelope::{CommandRequest, CommandResponse};
 use crate::runtime::CommandResult;
@@ -58,6 +58,10 @@ pub enum CommandError {
     /// The arguments did not decode as the command's params, or a field failed a check past
     /// its type: which field, and what it needed, typed.
     Arguments(ArgumentsRefusal),
+    /// A refused call with its typed cause and her next moves ([`super::Refusal`]): what every
+    /// refusal she can act on becomes. The three string variants below are its predecessors,
+    /// migrated by the `stringly_command_errors` ratchet.
+    Refused(std::sync::Arc<super::Refusal>),
     /// A decoded request failed validation or a domain precondition.
     Invalid(String),
     /// A referenced resource (handle, id, session) was not found.
@@ -72,6 +76,7 @@ impl CommandError {
     fn category(&self) -> &'static str {
         match self {
             CommandError::Arguments(_) => "arguments",
+            CommandError::Refused(refusal) => refusal.category().as_str(),
             CommandError::Invalid(_) => "invalid",
             CommandError::NotFound(_) => "not_found",
             CommandError::Denied(_) => "denied",
@@ -84,6 +89,7 @@ impl std::fmt::Display for CommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CommandError::Arguments(refusal) => write!(f, "[{}] {refusal}", self.category()),
+            CommandError::Refused(refusal) => write!(f, "[{}] {refusal}", self.category()),
             CommandError::Invalid(m) | CommandError::NotFound(m) | CommandError::Denied(m) | CommandError::Internal(m) => {
                 write!(f, "[{}] {m}", self.category())
             }
@@ -243,8 +249,18 @@ where
     <H::Spec as CommandSpec>::Result: Serialize,
 {
     let name = <H::Spec as CommandSpec>::NAME;
-    let req = CommandRequest::<<H::Spec as CommandSpec>::Params>::from_value(params)
-        .map_err(|e| format!("{name}: {}", CommandError::Arguments(e)))?;
+    // Refusal is the last resort (card 9ed04d88): a call that does not decode as sent is read
+    // against the command's declared schema, the one its offer is generated from, before it
+    // refuses. Every module command is in the registry (`ModuleRegistry::register` refuses one
+    // that is not); an unregistered handler (a test fixture) declares no schema to read against.
+    let decode = CommandRequest::<<H::Spec as CommandSpec>::Params>::decode;
+    let decoded = match super::command_descriptor(name) {
+        Some(descriptor) => {
+            accepted_shape::decode_accepting(name, &descriptor.params_schema, &params, decode).map(|(req, _)| req)
+        }
+        None => decode(&params),
+    };
+    let req = decoded.map_err(|e| format!("{name}: {}", CommandError::Arguments(e)))?;
     let ctx = Ctx {
         handle: req.handle,
         session_id: req.session_id,
@@ -511,9 +527,9 @@ pub mod tests {
     // real dispatch; decoded domain refusals must not share that category.
     #[tokio::test]
     async fn dispatch_bad_params_has_argument_recovery() {
-        let err = dispatch(&BareHandler, serde_json::json!({ "text": 123 }))
+        let err = dispatch(&BareHandler, serde_json::json!({ "text": ["a", "b"] }))
             .await
-            .expect_err("type mismatch must refuse");
+            .expect_err("a list has no one reading as a string: it must refuse");
         assert!(
             err.starts_with("test/echo-bare: [arguments]"),
             "named + categorized: {err}"

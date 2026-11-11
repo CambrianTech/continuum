@@ -47,6 +47,13 @@
 //!
 //! `--acts` is the act inspector (`replay/acts/`): one row per request each resident sent, joined
 //! to the engine log and her view's probes, with her summary; see `replay/acts/mod.rs`.
+//!
+//! `--act-price` measures what holding context costs an act on this node, per model
+//! (`replay/price.rs`, `continuum_context::price`).
+//!
+//! `--allocate` drives each captured act's claims through the one allocation, priced and unpriced:
+//! the allocation's dyno (`replay/allocate.rs`).
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::collections::BTreeMap;
 
@@ -64,6 +71,12 @@ mod append;
 mod outline;
 #[path = "replay/paged.rs"]
 mod paged;
+#[path = "replay/price.rs"]
+mod price;
+#[path = "replay/allocate.rs"]
+mod allocate;
+#[path = "replay/epoch.rs"]
+mod epoch;
 #[path = "replay/sediment.rs"]
 mod sediment;
 use continuum_context::view::View;
@@ -87,11 +100,14 @@ fn priority(source: &str) -> u8 {
 enum Order {
     /// Before 2026-10-24: her conversation, her actions, each block, her thoughts.
     ConversationFirst,
-    /// The core's `view_sources`: the settled blocks (standing and board churn, as
-    /// `deliberation_prompt::churn_of` classes them), her actions, her conversation, the
-    /// blocks that count or change within an epoch (the kanban, recall), her thoughts. A turnover keeps the prefix up to the
-    /// first source whose front changed, and a growing source changes at its front.
+    /// Before 2026-11-09: the settled blocks (standing and board churn, by a hand-written label
+    /// table), her actions, her conversation, the blocks that count or change within an epoch
+    /// (the kanban, recall), her thoughts.
     SettledFirst,
+    /// The core's `view_sources` since the label table went: every block by name, her held
+    /// work, her actions, her conversation, her thoughts. Only a first start's tie: the view
+    /// re-ranks every later start by measured motion (`motion`), as it does here.
+    ByName,
 }
 
 fn order(rule: Order, source: &str) -> u8 {
@@ -111,6 +127,13 @@ fn order(rule: Order, source: &str) -> u8 {
             "working-memory" => 6,
             _ => 5,
         },
+        Order::ByName => match source {
+            "held-work" => 1,
+            "actions" => 2,
+            "conversation" => 3,
+            "working-memory" => 4,
+            _ => 0,
+        },
     }
 }
 
@@ -123,6 +146,10 @@ impl Source<String> for Captured {
     }
     fn items(&self) -> Vec<Item<String>> {
         self.items.clone()
+    }
+
+    fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+        None // a fixture that does not exercise folding
     }
 }
 
@@ -145,7 +172,7 @@ fn captured(key: String, full: String) -> Item<String> {
 /// goes to sources by priority level, highest first, sources of one level sharing in
 /// proportion to what each wants. (In the core this is `flex_allocate`.)
 fn allocate(claims: &[continuum_context::view::Claim], budget: usize) -> Vec<usize> {
-    let mut grants: Vec<usize> = claims.iter().map(|claim| claim.floor_chars).collect();
+    let mut grants: Vec<usize> = claims.iter().map(|claim| claim.floor).collect();
     let mut spare = budget.saturating_sub(grants.iter().sum());
     let mut levels: Vec<u8> = claims.iter().map(|claim| claim.priority).collect();
     levels.sort_unstable_by(|a, b| b.cmp(a));
@@ -153,7 +180,7 @@ fn allocate(claims: &[continuum_context::view::Claim], budget: usize) -> Vec<usi
     for level in levels {
         let wants: Vec<(usize, usize)> = (0..claims.len())
             .filter(|index| claims[*index].priority == level)
-            .map(|index| (index, claims[index].full_chars.saturating_sub(grants[index])))
+            .map(|index| (index, claims[index].full.saturating_sub(grants[index])))
             .collect();
         let wanted: usize = wants.iter().map(|(_, want)| want).sum();
         let given = wanted.min(spare);
@@ -192,7 +219,7 @@ fn start(rule: Rule, claims: &[continuum_context::view::Claim], available: usize
             claims
                 .iter()
                 .zip(granted)
-                .map(|(claim, grant)| if grant >= claim.full_chars { claim.full_chars } else { grant / 2 })
+                .map(|(claim, grant)| if grant >= claim.full { claim.full } else { grant / 2 })
                 .collect()
         }
         Rule::Reserved => reserved(claims, available, per_act, share),
@@ -216,13 +243,13 @@ fn measured(claims: &[continuum_context::view::Claim], available: usize, per_act
     let (_, growable) = growable(claims, available);
     let lowest = claims.iter().map(|claim| claim.priority).min().unwrap_or(0); // unwrap_or: no claims means nothing to grant
     let at: Vec<usize> = (0..claims.len()).filter(|&index| claims[index].priority == lowest).collect();
-    let weighed: Vec<Growing<'_>> = at.iter().map(|&index| claims[index].growing(grants[index], 1.0)).collect();
+    let weighed: Vec<Growing<'_>> = at.iter().map(|&index| claims[index].growing(grants[index])).collect();
     let half: usize = weighed.iter().map(|source| source.share).sum();
     match choose(Room { growable, per_act }, &weighed) {
         Depth::Unmeasured => (grants, None),
         Depth::Chosen(chosen) => {
             for (&index, &chosen_share) in at.iter().zip(&chosen.shares) {
-                grants[index] = chosen_share.max(claims[index].floor_chars).min(claims[index].full_chars);
+                grants[index] = chosen_share.max(claims[index].floor).min(claims[index].full);
             }
             (grants, Some((chosen, half)))
         }
@@ -432,7 +459,14 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
                 Captured { name: name.clone(), items }
             })
             .collect();
-        sources.sort_by_key(|source| order(placed, &source.name));
+        // A stable sort: within one rank a source keeps its captured order, except the blocks of
+        // `ByName`, which the core lays by name.
+        sources.sort_by(|a, b| {
+            order(placed, &a.name).cmp(&order(placed, &b.name)).then_with(|| match placed {
+                Order::ByName => a.name.cmp(&b.name),
+                Order::ConversationFirst | Order::SettledFirst => std::cmp::Ordering::Equal,
+            })
+        });
         let refs: Vec<&dyn Source<String>> = sources.iter().map(|s| s as &dyn Source<String>).collect();
         let tail = cut.tail.join("\n");
         let tail_chars = tail.chars().count();
@@ -456,27 +490,27 @@ fn replay(label: &str, cuts: &[Cut], window: usize, (rule, placed): (Rule, Order
         previous_head = Some(&cut.head);
         let head_chars = cut.head.chars().count();
         let available = window.saturating_sub(head_chars + tail_chars);
-        let whole = |claims: &[continuum_context::view::Claim]| claims.iter().map(|claim| claim.full_chars).collect();
+        let whole = |claims: &[continuum_context::view::Claim]| claims.iter().map(|claim| claim.full).collect();
         let open = match view.as_mut() {
-            None => view.insert(View::start(vec![cut.head.clone()], &refs, whole)?.0),
+            None => view.insert(View::start(&continuum_context::cost::Chars, vec![cut.head.clone()], &refs, whole)?.0),
             Some(open) => {
                 open.advance(&refs);
                 open
             }
         };
         if trace {
-            let whole: usize = continuum_context::view::claims(&refs).iter().map(|c| c.full_chars).sum();
+            let whole: usize = continuum_context::view::claims(&continuum_context::cost::Chars, &refs).iter().map(|c| c.full).sum();
             eprintln!("  act: view {} chars (head included) of {} it may hold; sources whole {whole}, tail {tail_chars}", open.chars(), head_chars + available);
         }
         // Admission first (`View::readmit`, the core's `fit_view`): an arrival too large for
         // what the act grants arrives as its pointer, and only a view still over turns over.
-        if admit && open.chars() > head_chars + available && open.readmit(&refs, head_chars + available, (head_chars + available) / 2).is_some() && open.chars() <= head_chars + available {
+        if admit && open.chars() > head_chars + available && open.readmit(&continuum_context::cost::Chars, &refs, head_chars + available, (head_chars + available) / 2).is_some() && open.chars() <= head_chars + available {
             admitted += 1;
         }
         let turned = open.chars() > head_chars + available;
         if turned {
             let per_act = open.appended_per_act();
-            let begun = open.turn_over(vec![cut.head.clone()], &refs, |claims| start(rule, claims, available, per_act, share))?;
+            let begun = open.turn_over(&continuum_context::cost::Chars, vec![cut.head.clone()], &refs, |claims| start(rule, claims, available, per_act, share))?;
             collapsed_at_starts += begun.collapsed;
             summarized_at_starts += begun.summarized;
             turnovers += 1;
@@ -538,6 +572,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--acts") {
         return acts::main(args.into_iter().filter(|arg| arg != "--acts").collect());
+    }
+    if args.iter().any(|arg| arg == "--act-price") {
+        return price::main(args.into_iter().filter(|arg| arg != "--act-price").collect());
+    }
+    if args.iter().any(|arg| arg == "--allocate") {
+        return allocate::main(args.into_iter().filter(|arg| arg != "--allocate").collect());
     }
     let (mut room, mut purpose, mut keyed_turn, mut trace, mut paths) = (String::new(), String::from("deliberation"), false, false, Vec::new());
     // The growing sources' share of what a start leaves: `start_grants` gives them half.
@@ -652,7 +692,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     if let Some(tps) = append_tps {
         // The core's rule as it renders today, then the same rule with the act loop appended.
-        let today = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
+        let today = replay(&label, &cuts, window, (Rule::Reserved, Order::ByName), keyed_turn, true, trace, share)?;
         let resident = paths.iter().map(|path| path.rsplit('/').next().unwrap_or(path).chars().take(8).collect::<String>()).collect::<Vec<_>>().join("+"); // unwrap_or: rsplit always yields one piece
         let rate = (chars_per_token, tps);
         let whole = append::Options { outline: outline::Mode::Whole, generational: false, paged: false, measured: false };
@@ -690,11 +730,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if let Some(tps) = validate_tps {
-        // The validator: the core's rule (reserved, settled first, admission) at each growing share,
+        // The validator: the core's rule (reserved, by name then motion, admission) at each growing share,
         // one comparable line each. Prefill seconds at the measured rate `tps`.
         let seconds_per_char = 1.0 / (chars_per_token * tps);
         for share in [2usize, 3, 4, 6] {
-            let o = replay(&label, &cuts, window, (Rule::Reserved, Order::SettledFirst), keyed_turn, true, trace, share)?;
+            let o = replay(&label, &cuts, window, (Rule::Reserved, Order::ByName), keyed_turn, true, trace, share)?;
             println!(
                 "VALIDATE {label} share 1/{share}: {} acts, {} turnovers, prefill {:.1} s/act mean ({:.0} chars), re-reads {} held {}",
                 cuts.len(),
@@ -708,7 +748,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     for rule in [Rule::Whole, Rule::Reserved] {
-        for placed in [Order::ConversationFirst, Order::SettledFirst] {
+        for placed in [Order::ConversationFirst, Order::SettledFirst, Order::ByName] {
             for admit in [false, true] {
                 replay(&label, &cuts, window, (rule, placed), keyed_turn, admit, trace, share)?;
             }

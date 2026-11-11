@@ -9,6 +9,11 @@ use std::path::PathBuf;
 pub enum ClaimWorkspace {
     Ready {
         path: String,
+        /// What arriving at the checkout changed that she must know (her work kept under a
+        /// stranded ref, a stale remote branch left as it was); absent when nothing did.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        notice: Option<String>,
     },
     NotRequired,
     Failed {
@@ -21,7 +26,10 @@ pub enum ClaimWorkspace {
 impl From<Staging> for ClaimWorkspace {
     fn from(staging: Staging) -> Self {
         match staging {
-            Staging::Ready { path } => Self::Ready { path: path.to_string_lossy().into_owned() },
+            Staging::Ready { path, arrival } => Self::Ready {
+                path: path.to_string_lossy().into_owned(),
+                notice: arrival.as_ref().and_then(|a| a.notice()),
+            },
             Staging::Ordinary => Self::NotRequired,
             Staging::Failed { stage, error } => Self::Failed {
                 stage: stage.to_owned(), error,
@@ -75,7 +83,7 @@ where
     Fut: std::future::Future<Output = Staging>,
 {
     match existing {
-        Some(path) => Staging::Ready { path },
+        Some(path) => Staging::Ready { path, arrival: None },
         None => stage().await,
     }
 }
@@ -107,13 +115,15 @@ mod tests {
             std::fs::create_dir(&checkout).expect("stage fixture");
             Staging::Ready {
                 path: checkout.clone(),
+                arrival: None,
             }
         })
         .await;
         assert_eq!(
             ready,
             Staging::Ready {
-                path: checkout.clone()
+                path: checkout.clone(),
+                arrival: None,
             }
         );
         let work = checkout.join("uncommitted.txt");

@@ -42,6 +42,7 @@ struct Placed {
     cell: usize,
 }
 
+#[allow(clippy::expect_used)] // the typed error needs its caller gym.rs, whose cache writes come first: #5860
 fn render_png(shapes: &[Placed]) -> Vec<u8> {
     const W: u32 = 320;
     const H: u32 = 320;
@@ -110,17 +111,17 @@ pub fn vision_qa_jsonl() -> &'static str {
                 0 => {
                     // color of a uniquely-shaped item (ensure uniqueness)
                     let target = placed[rng.next(placed.len())].shape;
-                    if placed.iter().filter(|p| p.shape == target).count() != 1 {
+                    let mut same_shape = placed.iter().filter(|p| p.shape == target);
+                    if let (Some(p), None) = (same_shape.next(), same_shape.next()) {
+                        (
+                            format!("What color is the {}?", SHAPES[p.shape]),
+                            COLORS[p.color].1.to_string(),
+                        )
+                    } else {
                         // fall back to counting when not unique
                         (
                             "How many shapes are in the image?".to_string(),
                             n.to_string(),
-                        )
-                    } else {
-                        let p = placed.iter().find(|p| p.shape == target).unwrap(); // uniqueness of the target shape is checked by the branch guard above
-                        (
-                            format!("What color is the {}?", SHAPES[p.shape]),
-                            COLORS[p.color].1.to_string(),
                         )
                     }
                 }

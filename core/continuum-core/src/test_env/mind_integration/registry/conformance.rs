@@ -256,8 +256,13 @@ async fn required_args_missing_fails_loud_across_the_stateless_surface() {
 
 /// One call through the real batch path, by its tool input: (is_error, content, verdict).
 async fn dispatch_input(input: serde_json::Value) -> (Option<bool>, String, crate::sdk_codegen::ActVerdict) {
+    dispatch_call("test/verdict-probe", input).await
+}
+
+/// One call to `name` through the real batch path: (is_error, content, verdict).
+async fn dispatch_call(name: &str, input: serde_json::Value) -> (Option<bool>, String, crate::sdk_codegen::ActVerdict) {
     let exec = stateless_surface_hands();
-    let calls = vec![NativeToolCall { id: "vp".to_string(), name: "test/verdict-probe".to_string(), input }];
+    let calls = vec![NativeToolCall { id: "vp".to_string(), name: name.to_string(), input }];
     let out = exec.execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx()).await.expect("batch itself succeeds");
     let r = out.results.iter().find(|r| r.tool_use_id == "vp").expect("result correlates by tool_use_id");
     let v = out.verdicts.iter().find(|v| v.tool_use_id == "vp").map(|v| v.verdict).unwrap_or_default(); // JUSTIFIED: absence means unprojected
@@ -292,11 +297,41 @@ async fn a_malformed_call_is_refused_as_malformed_never_as_a_missing_field() {
 // field: the executor checks the call against the command's own params before it runs.
 #[tokio::test]
 async fn a_wrong_typed_field_is_refused_before_dispatch_naming_the_field() {
-    let (is_error, content, verdict) = dispatch_input(json!({ "mode": 5 })).await;
+    let (is_error, content, verdict) = dispatch_input(json!({ "mode": ["ok"] })).await;
     assert_eq!(is_error, Some(true));
     assert!(verdict.failed(), "{verdict:?}");
-    assert!(content.contains("`mode` must be a string; you sent a number"), "{content}");
+    assert!(content.contains("`mode` must be a string; you sent a list"), "{content}");
     assert!(content.contains("Here is the correct call"), "her next move carries the manual: {content}");
+}
+
+// what this catches (card 9ed04d88, Sahar's Windows capture): a field wrapped in an object keyed
+// by its own name, the shape a collapsed `{}` offer taught, refused although it had one reading.
+// Through her executor, the registry's declared schema and dispatch, it now runs.
+#[tokio::test]
+async fn a_field_wrapped_in_its_own_name_runs_instead_of_refusing() {
+    let (is_error, content, verdict) = dispatch_input(json!({ "mode": { "mode": "ok" } })).await;
+    assert_ne!(is_error, Some(true), "{content}");
+    assert!(verdict.succeeded(), "the command ran with `ok`: {verdict:?} {content}");
+}
+
+// what this catches (the M5, 2026-11-07, 5 in 15 min): a whole tool call written inside an
+// argument. Naming this command by alias, its arguments run; naming another command in her
+// hands, that call runs and its OWN projector reads the result; naming nothing, it refuses with
+// the inner call as her next call.
+#[tokio::test]
+async fn a_whole_tool_call_inside_an_argument_runs_as_that_call() {
+    let same = json!({ "mode": { "tool_call": { "name": "probe_alias", "arguments": { "mode": "ok" } } } });
+    let (is_error, content, verdict) = dispatch_input(same).await;
+    assert!(is_error != Some(true) && verdict.succeeded(), "same command: {verdict:?} {content}");
+
+    let other = json!({ "token": { "tool_call": { "name": "test/verdict-probe", "arguments": { "mode": "ok" } } } });
+    let (is_error, content, verdict) = dispatch_call("test/effect-probe", other).await;
+    assert!(is_error != Some(true) && verdict.succeeded(), "redirected, read by verdict-probe's projector: {verdict:?} {content}");
+
+    let unknown = json!({ "mode": { "tool_call": { "name": "no_such_tool", "arguments": { "mode": "ok" } } } });
+    let (is_error, content, _) = dispatch_input(unknown).await;
+    assert_eq!(is_error, Some(true));
+    assert!(content.contains(r#"no_such_tool({"mode":"ok"})"#), "{content}");
 }
 
 /// Params of the effect probe: a token naming the run that wrote it.

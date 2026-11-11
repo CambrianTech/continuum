@@ -158,6 +158,6 @@ async fn the_pool_is_the_engines_allocated_tokens_never_the_capped_slot_window()
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let process = LlamaServerProcess::with_root(root);
     assert_eq!(process.served_context_window().await.expect("test: n_ctx"), 32_768);
-    assert_eq!(process.served_pool_tokens().await.expect("test: pool"), 65_536);
+    assert_eq!(process.served_geometry().await.expect("test: geometry").pool_tokens(), Some(65_536));
     server.abort();
 }

@@ -11,6 +11,7 @@ use continuum_client::Connection;
 use crate::persona::work_board::submissions::*;
 
 mod benchmark_adapter;
+pub mod card_pull_request;
 pub use benchmark_adapter::BenchmarkSubmissionAdapter;
 mod latest_submission;
 pub use latest_submission::*;
@@ -20,6 +21,8 @@ pub use next_after_submission::*;
 mod staged_evidence_page;
 pub use staged_evidence_page::*;
 mod work_submission;
+mod submission_handle;
+pub use submission_handle::*;
 
 /// Her credit store, reached as her: the `@persona:` handle resolves through this identity.
 fn credit_connection(

@@ -45,21 +45,204 @@
         assert!(super::followed_room(&[], "017843bb").is_none());
     }
 
-    // what this catches (Kimi, 2026-10-05 12:01Z): a refused submission handle that
-    // names only its shape. The refusal lists the card's submissions as prefixes the
-    // resolver accepts, or says there are none, so the next call can be a real one.
+    // what this catches: `latest` refused as "not a usable submission handle" (19 calls on the M5
+    // in six hours, 2026-11-07). It is a value of the field and its default, in the schema she
+    // sees; an id still decodes as an id; a word that is neither does not decode.
     #[test]
-    fn a_refused_submission_handle_is_told_the_cards_submissions() {
-        let id = uuid::Uuid::parse_str("0a5b96b8-1111-4222-8333-444455556666").expect("test: id");
-        let publisher = uuid::Uuid::parse_str("e2f0e022-04ac-4f66-a26c-7146551745b4").expect("test: publisher");
-        let hint = super::submissions_on_card(&[(id, publisher)]);
-        assert_eq!(hint, "submissions on this card: 0a5b96b8 by e2f0e022");
-        let refused = super::resolve_shown("placeholder", &[id], "submission").expect_err("test: not a handle");
-        let told = super::with_hint(refused, Some(hint));
-        assert!(matches!(&told, super::CommandError::Invalid(m) if m.contains("0a5b96b8 by e2f0e022")), "{told:?}");
-        assert!(super::resolve_shown("0a5b96b8", &[id], "submission").is_ok(), "the listed prefix resolves");
-        assert!(super::submissions_on_card(&[]).contains("work/submit"));
+    fn latest_is_a_value_of_the_submission_handle_and_its_default() -> Result<(), Box<dyn std::error::Error>> {
+        use super::SubmissionHandle;
+        let read = |v: serde_json::Value| serde_json::from_value::<super::WorkSubmissionParams>(v);
+        assert_eq!(read(serde_json::json!({ "card_id": "3a783ea1" }))?.submission_id, SubmissionHandle::Latest);
+        assert_eq!(read(serde_json::json!({ "card_id": "3a783ea1", "submission_id": "latest" }))?.submission_id, SubmissionHandle::Latest);
+        assert!(matches!(read(serde_json::json!({ "card_id": "3a783ea1", "submission_id": "f8896e64" }))?.submission_id, SubmissionHandle::Id(_)));
+        assert!(read(serde_json::json!({ "card_id": "3a783ea1", "submission_id": "auto" })).is_err(), "neither latest nor an id");
+        let schema = serde_json::to_value(schemars::schema_for!(super::WorkSubmissionParams))?;
+        let field = &schema["properties"]["submission_id"];
+        assert_eq!(field["default"], "latest", "{field}");
+        assert_eq!(field["anyOf"][0]["enum"], serde_json::json!(["latest"]), "{field}");
+        assert!(!schema["required"].as_array().ok_or("required")?.contains(&serde_json::json!("submission_id")), "{schema}");
+        Ok(())
     }
+
+    /// The M5's board as the refused calls in `replayed_refusals.json` met it (2026-11-07): Aiko's
+    /// card 3a783ea1 with her submission f8896e64 and its review card 58855348 (Atlas); card
+    /// 48c587c5 with submission 4ed430f0 and its review card 0caefac4 (Atlas); and cards with no
+    /// submission yet (Benchy's be12a016 among them). Built through the real projection.
+    fn replayed_board() -> Result<airc_work::WorkBoardProjection, Box<dyn std::error::Error>> {
+        use airc_core::PeerId;
+        use airc_work::{CardCreated, ClaimId, ClaimOrigin, GitObjectId, Priority, RepoId, SubmissionId, WorkCardClaimed, WorkCardId, WorkEvent, WorkSubmission};
+        let id = |s: &str| uuid::Uuid::parse_str(s);
+        let author = PeerId::from_uuid(id("75ece751-73ec-449c-be9f-66c2e502d9ab")?);
+        let reviewer = PeerId::from_uuid(id("e5f4141d-1d95-4d62-8c19-97b5f8320837")?);
+        let artifact: airc_work::SubmissionArtifact = serde_json::from_value(serde_json::json!({ "hash": "a".repeat(64), "size_bytes": 5 }))?;
+        let mut board = airc_work::WorkBoardProjection::new();
+        let mut events = Vec::new();
+        let mut card = |card: &str, reviews: Option<&str>, owner: PeerId, submission: Option<&str>| -> Result<(), Box<dyn std::error::Error>> {
+            let card_id = WorkCardId::from_uuid(id(card)?);
+            let claim_id = ClaimId::new();
+            events.push(WorkEvent::CardCreated(CardCreated {
+                card_id, repo: RepoId::new("CambrianTech/continuum")?, title: card.into(), body: None, priority: Priority::P2,
+                lane_id: None, created_by: owner, created_at_ms: 1, reviews: reviews.map(id).transpose()?.map(WorkCardId::from_uuid), origin: None,
+            }));
+            events.push(WorkEvent::CardClaimed(WorkCardClaimed {
+                selected_at_ms: None, card_id, claim_id, owner, ttl_ms: 60_000, claimed_at_ms: 2, origin: ClaimOrigin::Explicit,
+            }));
+            if let Some(submission) = submission {
+                events.push(WorkEvent::WorkSubmitted(WorkSubmission {
+                    submission_id: SubmissionId::from_uuid(id(submission)?), card_id, claim_id, instance: card.into(),
+                    base_sha: GitObjectId::new("b".repeat(40))?, head: airc_work::SubmissionHead::At(GitObjectId::new("c".repeat(40))?), artifact: artifact.clone(), publisher: owner, submitted_at_ms: 3,
+                }));
+            }
+            Ok(())
+        };
+        card("3a783ea1-a40a-4278-b2f5-69026de6d889", None, author, Some("f8896e64-e9cd-4f9e-91cf-4774ca68fe90"))?;
+        card("58855348-f6fa-56d7-9d4e-23bec0a81690", Some("3a783ea1-a40a-4278-b2f5-69026de6d889"), reviewer, None)?;
+        card("48c587c5-91fe-4941-97c7-53af8d51690f", None, author, Some("4ed430f0-411f-4599-b7c8-16e6cf946832"))?;
+        card("0caefac4-012e-5861-8371-ae2dfa8bee7c", Some("48c587c5-91fe-4941-97c7-53af8d51690f"), reviewer, None)?;
+        for empty in ["be12a016-ec75-4042-8aa9-02b9f795f242", "d6ec19d7-8b8f-47a4-bec8-ba4d2a6157d2", "e657ea8e-4a74-4fc1-a0ca-d76a8358f0d6", "02c26ccd-0000-4000-8000-000000000001", "4d34acb9-0000-4000-8000-000000000002"] {
+            card(empty, None, author, None)?;
+        }
+        for event in &events {
+            board.apply(event)?;
+        }
+        Ok(board)
+    }
+
+    // what this catches: the refusal loops in the four residents' captures (the M5, 2026-11-07,
+    // six hours; the calls are copied verbatim into `replayed_refusals.json`). Replayed through
+    // the one handle resolver: every `latest` (or omitted) read resolves or is the card's typed
+    // "none yet"; every read on a card with no submission is "none yet", refused with the call that
+    // moves her on (`work/submit` on her own card); a review card reads the submission it reviews
+    // (Atlas named the parent's f8896e64 on review card 58855348); what still misses is a guessed
+    // id, refused by type with `work/submission` at its default as the next call.
+    #[test]
+    fn the_m5s_refused_submission_reads_replay_into_answers() -> Result<(), Box<dyn std::error::Error>> {
+        use super::{SubmissionHandle, SubmissionRead, SubmissionRefusal, UnreadSubmission};
+        use airc_core::shown_id::Shown;
+        let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!("replayed_refusals.json"))?;
+        let board = replayed_board()?;
+        let cards: Vec<airc_work::WorkCardId> = board.snapshot().cards.iter().map(|c| c.card_id).collect();
+        let (mut found, mut none_yet, mut guessed, mut undecodable, mut off_board) = (0, 0, 0, 0, 0);
+        for row in rows.iter().filter(|r| r["verb"] == "work/submission") {
+            let Ok(card_id) = Shown::<airc_work::WorkCardId>::try_from(row["card_id"].as_str().ok_or("card_id")?)?.resolve(cards.iter().copied()) else {
+                off_board += 1; // a card this board never held: refused before any handle is read
+                continue;
+            };
+            let card = board.card(card_id).ok_or("resolved on this board")?;
+            let mut call = serde_json::json!({ "card_id": row["card_id"] });
+            if let Some(handle) = row.get("submission_id") {
+                call["submission_id"] = handle.clone();
+            }
+            let Ok(params) = serde_json::from_value::<super::WorkSubmissionParams>(call) else {
+                undecodable += 1; // `auto`: neither latest nor an id, refused at decode by the schema's own type
+                continue;
+            };
+            match params.submission_id.read(&board, card) {
+                Ok(SubmissionRead::Found { submission, on }) => {
+                    found += 1;
+                    assert_eq!(submission.card_id, on.card_id, "{row}");
+                }
+                Ok(SubmissionRead::NoneYet { on }) => {
+                    none_yet += 1;
+                    assert!(on.submissions.is_empty(), "{row}");
+                }
+                Err(UnreadSubmission::Handle(_)) => {
+                    guessed += 1;
+                    assert_ne!(params.submission_id, SubmissionHandle::Latest, "latest never misses: {row}");
+                }
+                Err(other) => return Err(format!("{row}: {other}").into()),
+            }
+        }
+        // 64 refused reads in the fixture, every one refused before. Now 36 answer (20 found, 16
+        // the card's typed "none yet" with the call that moves her on); 21 guessed ids name no
+        // submission on the card that carries them and are refused with `work/submission` at its
+        // default as the next call; 2 `auto` never decode; 5 named cards outside this board.
+        assert_eq!((found, none_yet, guessed, undecodable, off_board), (20, 16, 21, 2, 5));
+
+        // The "none yet" refusal on her own card names work/submit; on a card she does not hold
+        // (a reviewer waiting on the author) it names work/get; a guessed id names work/submission.
+        let next = |e: crate::sdk_codegen::CommandError| match e {
+            crate::sdk_codegen::CommandError::Refused(refusal) => refusal.next().calls().next().map(|call| call.verb().canonical()),
+            _ => None,
+        };
+        let empty = board.card(airc_work::WorkCardId::from_uuid(uuid::Uuid::parse_str("be12a016-ec75-4042-8aa9-02b9f795f242")?)).ok_or("empty card")?;
+        let author = empty.owner.ok_or("owned")?;
+        let reviewer = airc_core::PeerId::from_uuid(uuid::Uuid::parse_str("e5f4141d-1d95-4d62-8c19-97b5f8320837")?);
+        let at = airc_work::TAKEOVER_ON_RECORD_SINCE_MS;
+        let none = || SubmissionRefusal::NoneYet { card: empty.card_id };
+        assert_eq!(next(super::submission_refused(none(), &SubmissionHandle::Latest, empty.card_id, empty, author, at)), Some("work/submit"));
+        assert_eq!(next(super::submission_refused(none(), &SubmissionHandle::Latest, empty.card_id, empty, reviewer, at)), Some("work/get"));
+        let named = SubmissionHandle::Id(Shown::try_from(airc_work::SubmissionId::new().as_uuid().to_string().as_str())?);
+        let missed = UnreadSubmission::NotOnCard { submission: airc_work::SubmissionId::new(), card: empty.card_id };
+        assert_eq!(next(super::submission_refused(SubmissionRefusal::Unread(missed), &named, empty.card_id, empty, author, at)), Some("work/submission"));
+        Ok(())
+    }
+
+    // what this catches (Cormac, review 1851ee8b of #5821): a refusal whose next call is the read
+    // that was just refused, so taking it loops her. Every cause, with each handle that can reach
+    // it, is walked: the next call is never `work/submission` with the handle she sent. A parent
+    // absent from this board, or the newest refused by the review binding, sends her to `work/get`
+    // on the parent; an id that named nothing sends her to the newest.
+    #[test]
+    fn a_submission_refusal_never_suggests_the_read_it_refused() -> Result<(), Box<dyn std::error::Error>> {
+        use super::{SubmissionHandle, SubmissionRefusal, UnreadSubmission};
+        use airc_core::shown_id::Shown;
+        use airc_work::{SubmissionId, WorkCardId, WorkReviewRejectionReason};
+        use crate::cognition::work_preconditions::{fixture_card, FIXTURE_NOW_MS};
+        let her = airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(1));
+        let parent = WorkCardId::from_u128(7);
+        let review = fixture_card(airc_work::CardState::Claimed, Some(her), Some(parent), "review of a card on another board");
+        let named = SubmissionHandle::Id(Shown::try_from(SubmissionId::from_u128(0xabcd).as_uuid().to_string().as_str())?);
+        let wire = |handle: &SubmissionHandle| serde_json::to_value(handle);
+        let cases = [
+            (UnreadSubmission::ParentAbsent(parent), SubmissionHandle::Latest, "work/get"),
+            (UnreadSubmission::ParentAbsent(parent), named, "work/get"),
+            (UnreadSubmission::Review { parent, reason: WorkReviewRejectionReason::UnknownSubmission }, SubmissionHandle::Latest, "work/get"),
+            (UnreadSubmission::Review { parent, reason: WorkReviewRejectionReason::WrongReviewCard }, named, "work/submission"),
+            (UnreadSubmission::NotOnCard { submission: SubmissionId::from_u128(0xabcd), card: review.card_id }, named, "work/submission"),
+        ];
+        for (cause, asked, expected) in cases {
+            let label = format!("{cause:?} asked {asked:?}");
+            let refused = super::submission_refused(SubmissionRefusal::Unread(cause), &asked, review.card_id, &review, her, FIXTURE_NOW_MS);
+            let crate::sdk_codegen::CommandError::Refused(refusal) = refused else { return Err(format!("{label}: not a typed refusal").into()) };
+            let call = refusal.next().calls().next().ok_or(format!("{label}: no next call"))?;
+            assert_eq!(call.verb().canonical(), expected, "{label}");
+            let repeats = call.verb().canonical() == "work/submission"
+                && call.args().get("submission_id").cloned().unwrap_or(serde_json::json!(super::LATEST)) == wire(&asked)?; // unwrap_or: an omitted handle is `latest`, its default
+            assert!(!repeats, "{label}: the next call is the refused read");
+            if expected == "work/get" {
+                assert_eq!(call.args().get("card_id"), Some(&serde_json::json!(parent.to_string())), "{label}: the parent");
+            }
+        }
+        Ok(())
+    }
+
+    // what this catches: `work/review` called on her own implementation card (22 refusals in the
+    // same captures, "not a review card (it reviews nothing)"). The verb is not offered there: it
+    // declares `OnDemand`, so it is not among her core hands, and her held card puts it in hand
+    // only when that card reviews something. Every card those calls named, held by her in any
+    // working state, leaves it out of hand; a review card she holds puts it in.
+    #[test]
+    fn the_review_verb_is_never_offered_on_her_own_card() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::cognition::work_preconditions::{fixture_card, in_hand, FIXTURE_NOW_MS};
+        use crate::sdk_codegen::ActionCommand;
+        use airc_work::CardState;
+        use continuum_base::tool_disclosure::Disclosure;
+        assert_eq!(<super::WorkReview as ActionCommand>::DISCLOSURE, Disclosure::OnDemand);
+        assert_eq!(<super::WorkSubmission as ActionCommand>::DISCLOSURE, Disclosure::OnDemand);
+        let rows: Vec<serde_json::Value> = serde_json::from_str(include_str!("replayed_refusals.json"))?;
+        let her = airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(1));
+        let reviewed = rows.iter().filter(|r| r["verb"] == "work/review").count();
+        assert_eq!(reviewed, 22, "the replayed calls");
+        for state in [CardState::Open, CardState::Claimed, CardState::InProgress, CardState::Review, CardState::Closed] {
+            let own = fixture_card(state, Some(her), None, "her own card");
+            assert!(!in_hand(&own, her, FIXTURE_NOW_MS).contains(&"work/review"), "{state:?}");
+        }
+        let review = fixture_card(CardState::Claimed, Some(her), Some(airc_work::WorkCardId::from_u128(7)), "a review card");
+        assert!(in_hand(&review, her, FIXTURE_NOW_MS).contains(&"work/review"));
+        Ok(())
+    }
+
     // what this catches (2026-09-17): a submit the citizen could not satisfy by hand —
     // the manual's zero hash is a placeholder and never an artifact; the artifact is
     // the SHA-256 of her patch; a benchmark checkout names its instance from its path
@@ -99,20 +282,33 @@
     fn after_a_submit_the_receipt_says_what_happens_next() {
         use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
         let id = uuid::Uuid::new_v4();
-        let bench = super::next_after_submission(Some(id), &[], true, None).expect("submitted");
+        let bench = super::next_after_submission(Some(id), &[], true, None, None).expect("submitted");
         assert!(bench.contains(&short8(id)) && bench.contains("test oracle grades it now") && bench.contains("verdict in the room"), "{bench}");
         assert!(bench.contains("marking the card done") && !bench.contains("No state"), "never contradicts the bench card's own text: {bench}");
         assert!(bench.contains("failed grade: revise and work/submit again"), "{bench}");
         let handoff = Some(airc_lib::WorkCardId::new());
-        let reviewed = super::next_after_submission(Some(id), &[], false, handoff).expect("submitted");
+        let pr = airc_work::PullRequestRef {
+            repo: airc_work::RepoId::new("CambrianTech/continuum").expect("a valid repo id"),
+            number: 5900,
+            head: airc_work::BranchName::new("e5c80c7f/her-fix").expect("a valid branch"),
+            base: airc_work::BranchName::new("canary").expect("a valid branch"),
+        };
+        let reviewed = super::next_after_submission(Some(id), &[], false, handoff, Some(&pr)).expect("submitted");
         assert!(reviewed.contains("Await the review") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
-        assert_eq!(super::next_after_submission(Some(id), &[Unknown], false, handoff), Some(reviewed.clone()), "an unknown verdict is still waiting");
-        assert!(super::next_after_submission(Some(id), &[], false, None).unwrap().contains("no review handoff is recorded"));
-        let back = super::next_after_submission(Some(id), &[Failed], true, None).expect("sent back");
+        assert!(reviewed.contains("CambrianTech/continuum#5900"), "the pull request carrying it is named: {reviewed}");
+        assert_eq!(super::next_after_submission(Some(id), &[Unknown], false, handoff, Some(&pr)), Some(reviewed.clone()), "an unknown verdict is still waiting");
+        assert!(super::next_after_submission(Some(id), &[], false, None, None).unwrap().contains("no review handoff is recorded"));
+        let back = super::next_after_submission(Some(id), &[Failed], true, None, None).expect("sent back");
         assert!(back.contains("sent submission") && back.contains("work/submit again"), "{back}");
-        let done = super::next_after_submission(Some(id), &[Failed, Passed], false, handoff).expect("passed");
-        assert!(done.contains("passed review") && done.contains("card is done"), "a pass outranks an earlier send-back: {done}");
-        assert_eq!(super::next_after_submission(None, &[], true, None), None, "nothing submitted, nothing to say");
+        let merging = super::next_after_submission(Some(id), &[Failed, Passed], false, handoff, Some(&pr)).expect("passed");
+        assert!(merging.contains("passed review") && merging.contains("CambrianTech/continuum#5900") && !merging.contains("card is done"), "a pass outranks an earlier send-back, and lands through its merge: {merging}");
+        // what this catches (break 2): a pass with no PR linked told her the card was done while
+        // its patch landed nowhere; it names the move that opens and links the PR instead.
+        let unlanded = super::next_after_submission(Some(id), &[Passed], false, handoff, None).expect("passed");
+        assert!(!unlanded.contains("card is done") && unlanded.contains("no pull request is linked") && unlanded.contains("work/submit"), "{unlanded}");
+        let graded = super::next_after_submission(Some(id), &[Passed], true, None, None).expect("passed");
+        assert!(graded.contains("card is done"), "an oracle-graded card finishes on its grade: {graded}");
+        assert_eq!(super::next_after_submission(None, &[], true, None, None), None, "nothing submitted, nothing to say");
     }
 
     // what this catches (Kimi, 2026-09-28): the same patch resubmitted on a card minting a
@@ -292,6 +488,7 @@
                     claim_id,
                     instance: "ordinary".into(),
                     base_sha: base_sha.clone(),
+                    head: airc_work::SubmissionHead::Unrecorded,
                     artifact: artifact.clone(),
                     publisher,
                     submitted_at_ms: 10,
@@ -331,7 +528,7 @@
             "review_card_id": "3f2a91c0", "outcome": "passed", "card_id": "0c4317e1",
             "submission_id": "d61599ff", "review_id": "9a0b1c2d", "review_claim_id": "136f8174"
         }))?;
-        let named = review.submission_id.ok_or("the submission id she sent")?;
+        let super::SubmissionHandle::Id(named) = review.submission_id else { return Err("the submission id she sent".into()) };
         assert_eq!(super::submission_named(&named, Some(&card)), Ok(b));
 
         // A full id still works, and passes without its candidates (a new id she mints).
@@ -592,14 +789,28 @@
         let add = run(&["add", "solution.py"]);
         assert!(add.status.success());
         let card = uuid::Uuid::new_v4();
+        // A submission is a commit (card c3504a71: the merge gate needs its head): an uncommitted
+        // change is refused by name, naming the commit verb.
+        let uncommitted = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.err().expect("an uncommitted change is refused");
+        assert!(uncommitted.to_string().contains("code/git/commit"), "{uncommitted}");
+        assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "solution"]).status.success());
+        let clean_base = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string();
         let derived = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.expect("derive without ambient hands");
         assert_eq!(derived.instance, card.to_string());
         assert_eq!(derived.base_sha, base);
-        let expected = String::from_utf8(run(&["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "HEAD", "--", "solution.py"]).stdout).expect("diff");
+        assert_eq!(derived.head, clean_base, "the submission records the commit its patch ends at");
+        let expected = String::from_utf8(run(&["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", &base, "HEAD", "--", "solution.py"]).stdout).expect("diff");
         assert_eq!(derived.artifact.hash, artifact_of_patch(&expected).hash);
         assert!(derived.artifact.size_bytes > 0);
-        assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "solution"]).status.success());
-        let clean_base = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string();
+        // A commit carrying a path a submission never publishes is refused by name: the gate merges
+        // the commit, so a patch that dropped it would land it unreviewed (Fable on #5824).
+        std::fs::create_dir_all(dir.path().join(".continuum")).expect("substrate dir");
+        std::fs::write(dir.path().join(".continuum/state.json"), "{}").expect("substrate file");
+        assert!(run(&["add", "-f", ".continuum/state.json"]).status.success());
+        assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "substrate"]).status.success());
+        let carried = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.err().expect("a commit carrying substrate is refused");
+        assert!(carried.to_string().contains(".continuum/state.json"), "{carried}");
+        assert!(run(&["reset", "-q", "--hard", &clean_base]).status.success());
         // Regression for Kimi's oversized submissions: advancing the remote default
         // must neither swallow committed work nor change the stored creation base.
         assert!(run(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base, ""]).status.success());
@@ -610,13 +821,10 @@
         assert_eq!(recorded.artifact.size_bytes, derived.artifact.size_bytes);
         let empty = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(clean_base), None, &[]).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
-        // Regression for Aris's loop (2026-10-31, investigation card 3a8a243a): each "no patch"
-        // refusal names the same open way forward, and the empty-card hint does not send her
-        // back to a submit that has nothing to publish.
-        let empty_card = super::submissions_on_card(&[]);
-        for said in [empty.to_string(), empty_card] {
-            assert!(said.contains("work/note") && said.contains("work/state closed"), "{said}");
-        }
+        // Regression for Aris's loop (2026-10-31, investigation card 3a8a243a): a "no patch"
+        // refusal names the open way forward, so it never sends her back to work/submission.
+        let said = empty.to_string();
+        assert!(said.contains("work/note") && said.contains("work/state closed"), "{said}");
         // Regression for 6dd8befa: a valid empty submission is not malformed
         // arguments. The real refusal reaches her without advice to retry its schema.
         let refusal = format!("work/submit: {empty}");
@@ -674,11 +882,12 @@
             claim_id: super::ClaimId::from_uuid(uuid::Uuid::from_u128(4)),
             instance: "card".into(),
             base_sha: airc_work::GitObjectId::new("a".repeat(40)).expect("a full sha"), // expect: 40 hex is a valid sha
+            head: airc_work::SubmissionHead::Unrecorded,
             artifact: artifact_of_patch("diff --git a/x b/x\n").into_artifact().expect("a patch reference"), // expect: a sha-256 reference
             publisher: airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(2)),
             submitted_at_ms: 7,
         };
-        let answer = super::already_submitted(&existing, uuid::Uuid::from_u128(5), &[], false);
+        let answer = super::already_submitted(&existing, uuid::Uuid::from_u128(5), &[], false, None);
         assert_eq!((answer.outcome, answer.submission_id), (super::SubmitOutcome::AlreadySubmitted, uuid::Uuid::from_u128(1)));
         assert!(answer.next.contains("already your submission"), "{}", answer.next);
     }

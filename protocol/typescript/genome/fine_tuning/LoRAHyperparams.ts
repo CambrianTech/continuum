@@ -18,8 +18,7 @@ rank: number,
 /**
  * LoRA alpha — the scaling factor applied during merge
  * (`W' = W + (alpha/rank) * B @ A`). Common heuristic: `alpha =
- * rank * 2`. Setting `alpha == rank` is a common mistake the
- * `genome/job-create` validator warns on.
+ * rank * 2`.
  */
 alpha: number, 
 /**

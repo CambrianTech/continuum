@@ -101,9 +101,7 @@ impl ActionCommand for FocusNudge {
         let persona_id = caller.peer_id.as_uuid();
 
         let handle = focus::registry().handle(persona_id);
-        let mut state = handle
-            .lock()
-            .unwrap();
+        let mut state = super::lock_focus(&handle)?;
 
         if p.reset {
             state.reset_focus();

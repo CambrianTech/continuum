@@ -41,9 +41,10 @@ pub(super) async fn run_turn_cycle(
 ) -> CycleVerdict {
     let TurnTrigger {
         msg,
-        turn_room,
+        room,
         admitted_retry,
     } = trigger;
+    let turn_room = room.as_uuid();
     let CycleInput {
         workspace_burst,
         wake_engram,
@@ -275,12 +276,16 @@ pub(super) async fn run_turn_cycle(
                     outcome.turns_acted += 1;
                     return CycleVerdict::Skip;
                 }
-                crate::cognition::act_observe::SettleStep::ActUnfulfilled { calls, intent, .. } => {
-                    // No hands or the executor errored. Abstain — never a
-                    // fabricated result, never a raw call envelope to the room.
-                    // Every turn ends on a probe (Kimi, 5090, 2026-10-04: a turn on an
-                    // addressed line ended with no outcome on the probe stream, so a
-                    // chosen silence and a failed act read the same).
+                // ActUnfulfilled: no hands or the executor errored. WouldAct: the act was
+                // held back, not executed (the live path permits its one act, so
+                // `from_settled` collapses it into Acted today). Both mean the same thing
+                // here: she chose to act and nothing was carried out. Abstain — never a
+                // fabricated result, never a raw call envelope to the room.
+                // Every turn ends on a probe (Kimi, 5090, 2026-10-04: a turn on an
+                // addressed line ended with no outcome on the probe stream, so a
+                // chosen silence and a failed act read the same).
+                crate::cognition::act_observe::SettleStep::ActUnfulfilled { calls, intent, .. }
+                | crate::cognition::act_observe::SettleStep::WouldAct { calls, intent, .. } => {
                     continuum_base::probe!(
                         class = "persona.turn.act_unfulfilled",
                         persona = %ctx.identity.agent_name,
@@ -291,11 +296,6 @@ pub(super) async fn run_turn_cycle(
                     );
                     outcome.turns_skipped += 1;
                     return CycleVerdict::Skip;
-                }
-                crate::cognition::act_observe::SettleStep::WouldAct { .. } => {
-                    // Unreachable on the live path: `may_act = true` always, so the
-                    // act is executed (→ Acted/ActUnfulfilled), never deferred.
-                    unreachable!("live settle_step always permits its one act");
                 }
                 crate::cognition::act_observe::SettleStep::Passed {
                     reason: pass_reason,
@@ -334,7 +334,7 @@ pub(super) async fn run_turn_cycle(
                         ctx,
                         conversation,
                         msg.lamport,
-                        turn_room,
+                        room,
                         spoke_directed,
                         // A message turn never offers her initiative: the message snapped her beat to
                         // engaged, and that beat (the self-tick) offers it.

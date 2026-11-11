@@ -723,9 +723,9 @@ use super::*;
         }
         let path = volatile_path(failed).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        // Deterministic on Unix and Windows: a directory cannot be overwritten
-        // by the temporary checkpoint file, regardless of user permissions.
-        std::fs::create_dir(path.with_extension("json.tmp")).unwrap();
+        // Deterministic on Unix and Windows: a directory where the checkpoint goes cannot be
+        // replaced by the staged checkpoint file, regardless of user permissions.
+        std::fs::create_dir(&path).unwrap();
         let outcomes = registry.flush_volatile_all();
         assert_eq!(outcomes.len(), 2);
         assert!(outcomes

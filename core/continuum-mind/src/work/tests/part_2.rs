@@ -100,6 +100,8 @@ use super::*;
         )
         .await
         .expect("she claims the slice card");
+        // A raw airc claim, not her verb: mark it as her verb (and her stream's echo) would.
+        crate::persona::work_board::board_index::wrote_card(&airc, held);
         let slice = WorkCreate::create(
             &airc,
             WorkCreateParams {
@@ -127,7 +129,7 @@ use super::*;
     /// merge needed a hand move back to Review. A pass leaves a PR-linked card in Review
     /// for its merge, and a card with no PR still closes on the pass.
     #[tokio::test]
-    pub(super) async fn a_pass_leaves_a_card_with_an_open_pr_mergeable_and_closes_one_without() {
+    pub(super) async fn a_pass_leaves_a_code_card_in_review_with_or_without_its_pr() {
         let home = tempfile::tempdir().expect("temp airc home");
         let airc = Arc::new(
             Airc::open_with_wire_root_for_test(home.path(), home.path())
@@ -177,9 +179,9 @@ use super::*;
             outcomes,
             [
                 (true, CardState::Review, CardState::Review),
-                (false, CardState::Closed, CardState::Closed),
+                (false, CardState::Review, CardState::Review),
             ],
-            "a PR-linked card waits for its merge; a card without one closes on the pass"
+            "a PR-linked card waits for its merge; a code card without one waits in Review for work/submit to open and link it, never closed with nothing landed"
         );
     }
 
@@ -405,6 +407,7 @@ use super::*;
         let submitted = airc.submit_work_in(&current_room, airc_lib::SubmitWork {
             submission_id: airc_work::SubmissionId::new(), card_id: local_card, claim_id: claim,
             instance: "ordinary".into(), base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+            head: airc_work::GitObjectId::new("c".repeat(40)).expect("hex"), // expect: a literal 40-hex id
             artifact: artifact.clone(),
         }).await.unwrap();
         let review_card = airc.create_work_card(CreateWorkCard::new(
@@ -544,6 +547,7 @@ async fn a_pass_closes_superseded_rounds_and_leaves_newer_ones_open() {
                 claim_id: claim,
                 instance: "ordinary".into(),
                 base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+                head: airc_work::GitObjectId::new("c".repeat(40)).expect("hex"), // expect: a literal 40-hex id
                 artifact: artifact.clone(),
             },
         )
@@ -568,6 +572,7 @@ async fn a_pass_closes_superseded_rounds_and_leaves_newer_ones_open() {
                 claim_id: claim,
                 instance: "ordinary".into(),
                 base_sha: airc_work::GitObjectId::new("b".repeat(40)).unwrap(),
+                head: airc_work::GitObjectId::new("c".repeat(40)).expect("hex"), // expect: a literal 40-hex id
                 artifact,
             },
         )
@@ -592,11 +597,11 @@ async fn a_pass_closes_superseded_rounds_and_leaves_newer_ones_open() {
         .expect("a pass on the newest round lands");
     assert_eq!(
         landed,
-        CardState::Closed,
-        "the effective state is the parent's: no PR, so it closes on the pass"
+        CardState::Review,
+        "the effective state is the parent's: a code card with no PR stays in Review on the pass (nothing has landed)"
     );
     let (_, pcard) = card_in_subscribed_rooms(&airc, parent).await.expect("parent on the board");
-    assert_eq!(pcard.state, CardState::Closed, "the parent closed on the pass");
+    assert_eq!(pcard.state, CardState::Review, "the parent waits in Review: no PR linked, nothing landed");
     let (_, r1card) = card_in_subscribed_rooms(&airc, r1)
         .await
         .expect("round 1 on the board");
@@ -658,6 +663,7 @@ async fn a_pass_leaves_rounds_reviewing_newer_work_open() {
                 claim_id: claim,
                 instance: "ordinary".into(),
                 base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+                head: airc_work::GitObjectId::new("c".repeat(40)).expect("hex"), // expect: a literal 40-hex id
                 artifact: artifact.clone(),
             },
         )
@@ -682,6 +688,7 @@ async fn a_pass_leaves_rounds_reviewing_newer_work_open() {
                 claim_id: claim,
                 instance: "ordinary".into(),
                 base_sha: airc_work::GitObjectId::new("b".repeat(40)).unwrap(),
+                head: airc_work::GitObjectId::new("c".repeat(40)).expect("hex"), // expect: a literal 40-hex id
                 artifact,
             },
         )
@@ -706,8 +713,8 @@ async fn a_pass_leaves_rounds_reviewing_newer_work_open() {
         .expect("a pass on the older round lands");
     assert_eq!(
         landed,
-        CardState::Closed,
-        "the effective state is the parent's: no PR, so it closes on the pass"
+        CardState::Review,
+        "the effective state is the parent's: a code card with no PR stays in Review on the pass (nothing has landed)"
     );
     let (_, r1card) = card_in_subscribed_rooms(&airc, r1)
         .await

@@ -69,6 +69,10 @@ pub enum ModuleStopOutcome {
     JoinTimedOut,
     /// `shutdown` returned an error after a successful save.
     JoinFailed { error: String },
+    /// Its `initialize` never returned (it was degraded at boot and still is), so it holds no
+    /// loaded state and was neither drained nor saved: a save could overwrite good durable state
+    /// with an uninitialized module's.
+    NeverInitialized,
 }
 
 impl ModuleStopOutcome {

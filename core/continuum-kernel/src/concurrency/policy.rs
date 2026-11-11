@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::Semaphore;
 
 type SharedResult<V, E> = Shared<BoxFuture<'static, Result<V, E>>>;
 
@@ -61,7 +60,6 @@ where
 {
     in_flight: Mutex<HashMap<K, KeyEntry<V, E>>>,
     in_flight_count: AtomicUsize,
-    limiter: Option<Arc<Semaphore>>,
 }
 
 impl<K, V, E> TokioConcurrencyPolicy<K, V, E>
@@ -74,30 +72,6 @@ where
         Self {
             in_flight: Mutex::new(HashMap::new()),
             in_flight_count: AtomicUsize::new(0),
-            limiter: None,
-        }
-    }
-
-    pub fn with_limit(max_concurrent: usize) -> Self {
-        Self {
-            in_flight: Mutex::new(HashMap::new()),
-            in_flight_count: AtomicUsize::new(0),
-            limiter: Some(Arc::new(Semaphore::new(max_concurrent.max(1)))),
-        }
-    }
-
-    pub async fn bounded<T>(&self, work: BoxFuture<'static, T>) -> T
-    where
-        T: Send + 'static,
-    {
-        if let Some(limiter) = &self.limiter {
-            let _permit = limiter
-                .acquire()
-                .await
-                .expect("concurrency limiter should not be closed"); // JUSTIFIED: the semaphore is private and never close()d, so acquire() cannot fail
-            work.await
-        } else {
-            work.await
         }
     }
 }
@@ -598,37 +572,5 @@ mod tests {
             .await;
         assert_eq!(result, Ok(42), "fresh caller after eviction succeeds");
         assert_eq!(policy.in_flight_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn bounded_caps_concurrent_work() {
-        let policy = Arc::new(TokioConcurrencyPolicy::<String, (), ()>::with_limit(2));
-        let active = Arc::new(AtomicUsize::new(0));
-        let peak = Arc::new(AtomicUsize::new(0));
-
-        let mut tasks = Vec::new();
-        for _ in 0..8 {
-            let policy = Arc::clone(&policy);
-            let active = Arc::clone(&active);
-            let peak = Arc::clone(&peak);
-            tasks.push(tokio::spawn(async move {
-                policy
-                    .bounded(
-                        async move {
-                            let current = active.fetch_add(1, Ordering::AcqRel) + 1;
-                            peak.fetch_max(current, Ordering::AcqRel);
-                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                            active.fetch_sub(1, Ordering::AcqRel);
-                        }
-                        .boxed(),
-                    )
-                    .await;
-            }));
-        }
-
-        for task in tasks {
-            task.await.unwrap();
-        }
-        assert_eq!(peak.load(Ordering::Acquire), 2);
     }
 }

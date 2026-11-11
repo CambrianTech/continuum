@@ -371,25 +371,25 @@ fn create_iosurface_backed_nv12(
 //
 // RwLock allows concurrent reads (multiple Bevy observers) with exclusive writes.
 
-static GPU_BRIDGES: std::sync::OnceLock<std::sync::RwLock<Vec<Option<Arc<IoSurfacePair>>>>> =
+static GPU_BRIDGES: std::sync::OnceLock<parking_lot::RwLock<Vec<Option<Arc<IoSurfacePair>>>>> =
     std::sync::OnceLock::new();
 
-fn bridges() -> &'static std::sync::RwLock<Vec<Option<Arc<IoSurfacePair>>>> {
+fn bridges() -> &'static parking_lot::RwLock<Vec<Option<Arc<IoSurfacePair>>>> {
     GPU_BRIDGES.get_or_init(|| {
         let slots = vec![None; crate::live::video::avatar_types::MAX_AVATAR_SLOTS as usize];
-        std::sync::RwLock::new(slots)
+        parking_lot::RwLock::new(slots)
     })
 }
 
 fn register_bridge(slot: u8, pair: Arc<IoSurfacePair>) {
-    let mut guard = bridges().write().unwrap();
+    let mut guard = bridges().write();
     if let Some(entry) = guard.get_mut(slot as usize) {
         *entry = Some(pair);
     }
 }
 
 fn unregister_bridge(slot: u8) {
-    let mut guard = bridges().write().unwrap();
+    let mut guard = bridges().write();
     if let Some(entry) = guard.get_mut(slot as usize) {
         if entry.take().is_some() {
             clog_info!("📹 GPU bridge unregistered for slot {}", slot);
@@ -400,27 +400,17 @@ fn unregister_bridge(slot: u8) {
 /// Check if a GPU bridge is registered for a given slot.
 /// Used by ensure_continuous_readback to skip Readback for GPU-compute slots.
 pub fn has_bridge(slot_id: u8) -> bool {
-    if let Some(lock) = GPU_BRIDGES.get() {
-        if let Ok(guard) = lock.read() {
-            if let Some(Some(_)) = guard.get(slot_id as usize) {
-                return true;
-            }
-        }
-    }
-    false
+    GPU_BRIDGES
+        .get()
+        .is_some_and(|lock| matches!(lock.read().get(slot_id as usize), Some(Some(_))))
 }
 
 /// Get the IoSurfacePair for a given slot (if registered).
 /// Used by the Metal GPU compute path to access the IOSurface for texture binding.
 pub fn get_bridge_pair(slot_id: u8) -> Option<Arc<IoSurfacePair>> {
-    if let Some(lock) = GPU_BRIDGES.get() {
-        if let Ok(guard) = lock.read() {
-            if let Some(Some(pair)) = guard.get(slot_id as usize) {
-                return Some(pair.clone());
-            }
-        }
-    }
-    None
+    GPU_BRIDGES
+        .get()
+        .and_then(|lock| lock.read().get(slot_id as usize).cloned().flatten())
 }
 
 // =============================================================================

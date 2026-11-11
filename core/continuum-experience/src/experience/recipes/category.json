@@ -1,0 +1,24 @@
+{
+  "id": "ba165731-4c12-4f53-936c-080ef24069d1",
+  "version": 1,
+  "purpose": "category",
+  "regions": [
+    {
+      "name": "messages",
+      "kind": "chat",
+      "scope": "activity",
+      "role": "primary",
+      "slot": "content",
+      "live": true
+    },
+    {
+      "name": "roster",
+      "kind": "roster",
+      "scope": "activity",
+      "role": "peripheral",
+      "slot": "context",
+      "live": true
+    }
+  ],
+  "affordances": []
+}

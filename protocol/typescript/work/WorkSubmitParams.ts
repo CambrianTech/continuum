@@ -27,6 +27,10 @@ instance?: string,
  */
 base_sha?: string, 
 /**
+ * Omit: your checkout's committed HEAD.
+ */
+head?: string, 
+/**
  * Omit: computed from your checkout. Not a git sha.
  */
 artifact?: WorkArtifactReference, 

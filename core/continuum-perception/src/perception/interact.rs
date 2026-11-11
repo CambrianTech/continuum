@@ -146,7 +146,7 @@ impl crate::sdk_codegen::CommandSpec for InteractCommand {
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = InteractParams;
     type Result = InteractResult;
-    fn params_schema() -> serde_json::Value {
+    fn params_schema() -> Result<serde_json::Value, serde_json::Error> {
         crate::sdk_codegen::input_schema::<Self::Params>()
     }
 
@@ -167,7 +167,7 @@ impl crate::sdk_codegen::CommandSpec for SessionCloseCommand {
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = SessionCloseParams;
     type Result = SessionCloseResult;
-    fn params_schema() -> serde_json::Value {
+    fn params_schema() -> Result<serde_json::Value, serde_json::Error> {
         crate::sdk_codegen::input_schema::<Self::Params>()
     }
 

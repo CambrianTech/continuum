@@ -107,7 +107,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         // result was muting citizens outright — 836 refusals, zero acts, 2026-09-10).
         // The fixture property is asserted where it actually lives now.
         assert!(
-            LlmDeliberationFaculty::messages_cost(&[ChatMessage::text(
+            PromptCalibration::default().estimate_all(&[ChatMessage::text(
                 "user",
                 result.clone()
             )]) > crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS,
@@ -122,8 +122,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         // its measured need (the cold prior here). What the fixture must still prove is that
         // the oversized result rides the wire inside the window (asserted below).
         assert!(
-            (LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS..=LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS)
-                .contains(&view.completion_reserve),
+            view.completion_reserve == 1,
             "the reply keeps its floor and claims no more than its need: {}",
             view.completion_reserve
         );
@@ -148,9 +147,9 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
             .any(|message| message.content_text().contains(stimulus)));
         // WHAT IS GUARANTEED ON THE WIRE (FOCUS-CONTRACT rule 4). The 2026-09-10 mute (one
         // `code/read` required whole, 836 refusals) was first cured by a head cut at a window
-        // share (`split_action_result`); that cut is gone. Her newest result is reduced by LEVEL
-        // in the one allocation: whole when it fits, else its summary or pointer, which names
-        // the handle the whole is read through. Either way it is the last thing she reads.
+        // share (`split_action_result`); that cut is gone. Her newest result is irreducible at its
+        // whole in the one allocation: whole when it fits, else its first page, which names the
+        // handle she reads on through. Either way it is the last thing she reads.
         let ending = result
             .rsplit_once('\n')
             .map(|(_, last)| last)
@@ -159,7 +158,7 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         let last = request.messages.last().expect("test: a request has messages").content_text();
         assert!(
             last.ends_with(ending) || last.contains("wire-evidence"),
-            "her newest result is the last thing she reads, whole or at a level naming its handle"
+            "her newest result is the last thing she reads, whole or as a page naming its handle"
         );
 
         // The held card's context reaches her in the assembled-context message after her
@@ -181,13 +180,13 @@ async fn prompt_preserves_stimulus_and_large_action_on_the_wire() {
         );
         let prompt_tokens =
             LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
-                + LlmDeliberationFaculty::messages_cost(&request.messages)
+                + PromptCalibration::default().estimate_all(&request.messages)
                 + schema_tokens;
         // An act's cap is the room its prompt leaves (`request_allowance`), never below the
         // reserve the plan sized her view beside.
         assert_eq!(
             request.max_tokens,
-            request_allowance(TurnKind::Act, view.completion_reserve, window, prompt_tokens).ok(),
+            request_allowance(TurnKind::Act, true, view.completion_reserve, window, prompt_tokens).ok(),
             "the act's cap is the window's room after its prompt"
         );
         assert!(request.max_tokens.unwrap() >= view.completion_reserve);
@@ -540,9 +539,10 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
     turns.push(BurstTurn::attributed(false, "Peer", "What changed?", Some(41)));
     let view = faculty.prompt_view(&Workspace::new(Burst::from_turns(room, turns)));
     assert!(view.budget_fault.is_none(), "{:?}", view.budget_fault);
-    assert!(view.messages.first().is_some_and(|m| m.content_text().contains("turn_0 ")), "her view leads the prompt");
+    let in_view = |v: &DeliberationPromptView| v.messages[..v.refit.grounding_at].iter().any(|m| m.content_text().contains("turn_0 "));
+    assert!(in_view(&view), "her view leads the prompt");
     let framing = LlmDeliberationFaculty::framing_cost(&view.system);
-    let tools = view.estimated_prompt_tokens - framing - LlmDeliberationFaculty::messages_cost(&view.messages);
+    let tools = view.estimated_prompt_tokens - framing - PromptCalibration::default().estimate_all(&view.messages);
     let charged = view.estimated_prompt_tokens + view.completion_reserve as usize;
     let ledger = |context_window: usize| BudgetLedger {
         context_window: context_window as u32,
@@ -562,7 +562,7 @@ fn an_over_budget_prompt_is_a_budget_fault_never_a_clipped_prompt() {
     assert!(faculty.budget_violation(&ledger(charged)).is_none(), "at its window the prompt complies");
     let fault = faculty.budget_violation(&ledger(charged - 1)).expect("one token over is a budget fault");
     assert!(fault.contains("prompt budget violated"), "{fault}");
-    assert!(view.messages.first().is_some_and(|m| m.content_text().contains("turn_0 ")), "nothing was cut to comply");
+    assert!(in_view(&view), "nothing was cut to comply");
 }
 
 // what this catches (Codex on #5491): a tail her destination can no longer take, either silently
@@ -643,10 +643,11 @@ async fn an_allocator_answering_for_the_wrong_sources_refuses_the_turn_before_di
 #[test]
 fn an_acts_cap_is_its_windows_room_and_a_pass_keeps_its_grant() {
     let (window, prompt, reserve) = (40_960u32, 25_000usize, 700u32);
-    assert_eq!(request_allowance(TurnKind::Act, reserve, window, prompt), Ok(window - prompt as u32 - 1));
-    assert_eq!(request_allowance(TurnKind::Pass, reserve, window, prompt), Ok(reserve), "a pass carries its grant");
+    assert_eq!(request_allowance(TurnKind::Act, true, reserve, window, prompt), Ok(window - prompt as u32 - 1));
+    assert_eq!(request_allowance(TurnKind::Pass, true, reserve, window, prompt), Ok(reserve), "a measured pass carries its grant");
+    assert_eq!(request_allowance(TurnKind::Pass, false, reserve, window, prompt), Ok(window - prompt as u32 - 1), "an unmeasured pass carries the room its prompt leaves, once");
     assert!(
-        request_allowance(TurnKind::Act, reserve, window, window as usize).is_err(),
+        request_allowance(TurnKind::Act, true, reserve, window, window as usize).is_err(),
         "a prompt that leaves less than the reserve is refused, never a cap past the window"
     );
 }
@@ -654,7 +655,7 @@ fn an_acts_cap_is_its_windows_room_and_a_pass_keeps_its_grant() {
 // what this catches: the same M5 receipt (2026-11-04) end to end. On a 40,960 window a mind whose
 // measured need is read-sized (700 tokens; Aiko's acts carried 676-701) sends an act whose
 // max_tokens is the room past her prompt, while the reserve her view is sized beside stays her
-// measured need; a pass on the same window and need still sends its grant verbatim.
+// measured need; a mind with no hands (a pass) on the same window and need sends its grant verbatim.
 #[tokio::test]
 async fn an_act_on_a_large_window_with_a_small_need_sends_the_room() {
     use crate::cognition::working_set::{EmissionStop, WorkingSetRegistry};
@@ -666,14 +667,14 @@ async fn an_act_on_a_large_window_with_a_small_need_sends_the_room() {
     for tick in 1..=3 {
         reg.record_emission_in_memory(persona, 700, 400, EmissionStop::Landed, tick);
     }
-    for deliverable in [true, false] {
+    for hands in [true, false] {
         let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Stop, "PASS", None)]));
         let faculty = LlmDeliberationFaculty::new(persona, "Aiko", "You are Aiko.", adapter.clone())
             .with_context_window(window)
-            .with_tools(vec![read_tool()])
+            .with_tools(if hands { vec![read_tool()] } else { Vec::new() })
             .with_working_set(reg.clone());
-        let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 40, deliverable);
-        assert_eq!(faculty.turn_kind(&ws) == TurnKind::Act, deliverable, "precondition: the turn's kind");
+        let ws = writing_workspace(crate::identity::ActivityRoom::mint(), 40, false);
+        assert_eq!(faculty.turn_kind(&ws) == TurnKind::Act, hands, "precondition: a mind with hands acts, one without passes");
         let view = faculty.prompt_view(&ws);
         assert!(view.completion_reserve <= 700, "precondition: a read-sized grant: {}", view.completion_reserve);
         let contribution = faculty.contribute(&ws).await.expect("a verdict or named fault");
@@ -681,10 +682,10 @@ async fn an_act_on_a_large_window_with_a_small_need_sends_the_room() {
         let seen = adapter.seen.lock().unwrap();
         let request = &seen[0];
         let prompt = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_ref().unwrap())
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
-            + crate::cognition::tool_surface::tool_surface_tokens_of(request.tools.as_ref().unwrap());
+            + PromptCalibration::default().estimate_all(&request.messages)
+            + request.tools.as_ref().map_or(0, |tools| crate::cognition::tool_surface::tool_surface_tokens_of(tools)); // map_or: a mind with no hands sends no schemas
         let cap = request.max_tokens.expect("the reply is bounded");
-        if deliverable {
+        if hands {
             assert!(cap as usize >= window as usize - prompt - 1, "an act's cap is the window's room: {cap}");
             assert!(cap > view.completion_reserve, "and larger than her read-sized grant");
             assert!(prompt + (cap as usize) < window as usize, "inside the window, under strict admission");
@@ -707,7 +708,7 @@ async fn an_acts_room_refusal_shrinks_the_cap_and_keeps_her_view() {
     *adapter.on_request.lock().unwrap() = Some(Box::new(move |request| {
         let excess = excess.take()?;
         let prompt = LlmDeliberationFaculty::framing_cost(request.system_prompt.as_deref().unwrap_or_default()) // unwrap_or_default: test fixture, no system prompt costs none
-            + LlmDeliberationFaculty::messages_cost(&request.messages)
+            + PromptCalibration::default().estimate_all(&request.messages)
             + request.tools.as_deref().map_or(0, crate::cognition::tool_surface::tool_surface_tokens_of); // map_or: no tools, no schemas
         Some(InferenceError::ContextExceeded { requested: prompt as u32 + excess, available: window })
     }));

@@ -45,7 +45,7 @@ pub enum HoldCause {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/serving/HeldWork.ts")]
 pub struct HeldWork {
-    /// The job (`JobHandle::local_id`).
+    /// The job the work belongs to.
     #[ts(type = "string")]
     pub job: Uuid,
     /// The governed reservation's consumer, e.g. `genome-train:<job>`.

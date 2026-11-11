@@ -1,53 +1,38 @@
-//! Boot phase 16: bind the primary Unix socket and announce IPC readiness.
+//! Boot phase 16: bind the primary IPC endpoint and announce IPC readiness.
 
 use super::*;
 
-/// Unix: bind the primary Unix-domain socket (Windows binds its TCP loopback
-/// listener in `accept_loop` instead).
-#[cfg(unix)]
-pub(super) fn bind_unix_listener(
+/// Bind the primary IPC endpoint through `continuum_host::core_ipc`: the Unix-domain socket at
+/// `socket_path` (world read-write, #1008), or on Windows the TCP loopback listener at
+/// CONTINUUM_CORE_BIND (default 127.0.0.1) and the core's TCP port. The OS difference lives in that
+/// capability; this is the same bind on every OS.
+pub(super) fn bind_ipc_listener(
     socket_path: &str,
     phase_started: std::time::Instant,
-) -> std::io::Result<UnixListener> {
-    // Unix: bind the primary Unix-domain socket. On Windows this is skipped
-    // entirely — the server's primary IPC is the TCP loopback listener in the
-    // accept section below (Windows has no Unix-domain sockets).
-    // Everything between init's end and the bind call: signal handlers and every
-    // module's periodic loop start (IntelMac's review of #3714 — the row is named
-    // for what it measures, and the bind itself gets its own instant). The
-    // `#[cfg(unix)]` sits on the BIND, not on the probe before it: an attribute
-    // gates exactly one statement, and gating the probe left the Unix bind
-    // compiling on Windows (the windows-msvc check caught it on the rebase).
+) -> std::io::Result<continuum_host::core_ipc::Listener> {
+    // Everything between initialize's START and the bind call (initialize no longer has to end
+    // first: it settles beside the bound socket). The row is named for what it measures
+    // (IntelMac's review of #3714), and the bind itself gets its own instant. Before this was one
+    // bind, the Windows path had no row at all for the stretch where BigMama's boot spent 108
+    // unattributed seconds (2026-09-05).
     continuum_base::probe!(
         class = "boot.phase",
-        phase = "post_init_to_bind",
+        phase = "init_started_to_bind",
         ms = phase_started.elapsed().as_millis() as u64,
         "pre-bind phase"
     );
+    let bind_host = std::env::var("CONTINUUM_CORE_BIND").unwrap_or_else(|_| "127.0.0.1".to_string()); // unwrap_or_else: unset = loopback only, the endpoint's documented default
+    let tcp_addr = format!("{bind_host}:{}", endpoint_paths::core_tcp_port());
+    let endpoint = continuum_host::core_ipc::Endpoint { socket_path: std::path::Path::new(socket_path), tcp_addr: &tcp_addr };
     let bind_started = std::time::Instant::now();
-    let listener = UnixListener::bind(socket_path)?;
+    let listener = continuum_host::core_ipc::Listener::bind(&endpoint)?;
     continuum_base::probe!(
         class = "boot.phase",
         phase = "bind",
         ms = bind_started.elapsed().as_millis() as u64,
-        "the bind call itself — the socket exists after this"
+        "the bind call itself: the endpoint exists after this"
     );
-    // Make the socket world-rw so callers running under a different UID
-    // than the server can connect. Concrete failure (#1008): on Windows
-    // WSL2 + Docker Desktop, continuum-core runs as root inside the
-    // container and binds the socket; the host-side jtag (running as
-    // the WSL user, uid 1000) gets EACCES connecting to the root-owned
-    // socket. Mac/Linux dev mode (server + caller both run as the same
-    // user) is unaffected. 0o666 is appropriate for an IPC substrate
-    // socket that lives in a path the caller can already see — same
-    // blast radius as anything reading /tmp. Failing-loud (no `?` here
-    // would suppress the error; let it propagate) is intentional per
-    // the global "evidence is for the debugger" rule. Caught live by
-    // continuum-b69f 2026-05-02 during Carl-OOTB Windows Phase 4.
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666))?;
-    }
+    log_info!("ipc", "server", "IPC endpoint bound: {}", listener.describe());
     Ok(listener)
 }
 

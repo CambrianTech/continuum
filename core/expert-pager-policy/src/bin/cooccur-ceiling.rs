@@ -19,6 +19,7 @@
 //!
 //! Usage:
 //!   cooccur-ceiling --trace <file> --synth-layers <n> [--train-frac 0.6]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

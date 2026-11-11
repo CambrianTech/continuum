@@ -5,21 +5,21 @@ pub(super) struct InMemorySeenContent(pub(super) Mutex<HashMap<String, Uuid>>);
 
 impl SeenContentLookup for InMemorySeenContent {
     fn find_by_content_hash(&self, hash: &str) -> Option<Uuid> {
-        self.0.lock().unwrap().get(hash).copied()
+        self.0.lock().get(hash).copied()
     }
 }
 
 impl InMemorySeenContent {
     pub(super) fn record(&self, hash: String, engram_id: Uuid) {
-        self.0.lock().unwrap().insert(hash, engram_id);
+        self.0.lock().insert(hash, engram_id);
     }
     /// Snapshot the dedup map for an eval-isolation checkpoint.
     pub(super) fn snapshot(&self) -> HashMap<String, Uuid> {
-        self.0.lock().unwrap().clone()
+        self.0.lock().clone()
     }
     /// Restore the dedup map to a prior snapshot (rewind a measurement window).
     pub(super) fn restore(&self, snap: HashMap<String, Uuid>) {
-        *self.0.lock().unwrap() = snap;
+        *self.0.lock() = snap;
     }
 }
 
@@ -28,21 +28,21 @@ pub(super) struct InMemorySeenEvents(pub(super) Mutex<HashMap<String, u64>>);
 
 impl SeenEventLookup for InMemorySeenEvents {
     fn first_seen_ms(&self, event_id: &str) -> Option<u64> {
-        self.0.lock().unwrap().get(event_id).copied()
+        self.0.lock().get(event_id).copied()
     }
 }
 
 impl InMemorySeenEvents {
     pub(super) fn record(&self, event_id: String, when_ms: u64) {
-        self.0.lock().unwrap().insert(event_id, when_ms);
+        self.0.lock().insert(event_id, when_ms);
     }
     /// Snapshot the replay-protection map for an eval-isolation checkpoint.
     pub(super) fn snapshot(&self) -> HashMap<String, u64> {
-        self.0.lock().unwrap().clone()
+        self.0.lock().clone()
     }
     /// Restore the replay-protection map to a prior snapshot.
     pub(super) fn restore(&self, snap: HashMap<String, u64>) {
-        *self.0.lock().unwrap() = snap;
+        *self.0.lock() = snap;
     }
 }
 

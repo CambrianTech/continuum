@@ -19,6 +19,7 @@ pub mod fitness_ledger;
 pub mod examiner;
 pub mod gene_residency;
 pub mod gene_trial;
+pub mod learner;
 pub mod composer;
 pub mod signature;
 pub mod recall;

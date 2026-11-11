@@ -643,12 +643,21 @@ pub struct EndpointSlots {
     /// (card 6b28a445). On the endpoint because the pool does not outlive the engine;
     /// retention is bounded by [`DiscardLog`].
     pub(super) discarded: Mutex<DiscardLog>,
+    /// The endpoint's aggregate decode permits, sized from its generation (card 23069702).
+    pub(super) concurrency: Arc<super::EndpointConcurrency>,
 }
 
 pub struct EndpointAdmission {
     pub(super) endpoint: Arc<EndpointSlots>,
     pub(super) _guard: tokio::sync::OwnedRwLockReadGuard<()>,
     pub pool: Option<Arc<KvSlotPool>>,
+}
+
+impl EndpointSlots {
+    /// The endpoint's aggregate decode permits: every pooled admission at this server takes one.
+    pub fn concurrency(&self) -> &super::EndpointConcurrency {
+        &self.concurrency
+    }
 }
 
 impl EndpointAdmission {

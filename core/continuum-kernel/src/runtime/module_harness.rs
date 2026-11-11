@@ -112,6 +112,9 @@ impl ModuleHarness {
         for module in modules {
             registry.register(module);
         }
+        if let Err(defects) = registry.check_wiring() {
+            panic!("ModuleHarness: {defects}");
+        }
 
         let ctx = ModuleContext::new(
             registry.clone(),

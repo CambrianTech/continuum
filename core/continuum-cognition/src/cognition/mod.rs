@@ -32,6 +32,9 @@ pub mod channel_element;
 pub mod channel_substrate;
 pub use continuum_prompt::context_budget;
 pub mod deferred_faculty;
+// Lock follow-up #5856: its speech-ring unwraps are fixed once its sized constants have
+// owners (the self_sized rule forbids touching the file before then).
+#[allow(clippy::unwrap_used)]
 pub mod deliberation_budget;
 pub mod deliberation_parse;
 pub mod deliberation_prompt;
@@ -66,6 +69,9 @@ pub use continuum_prompt::prompt_prefix;
 pub use continuum_capture::prompt_capture;
 pub mod rag_source_faculty;
 pub mod rate_proposals;
+// Lock follow-up #5856: its focus-lock expect is fixed once its sized constants have
+// owners (the self_sized rule forbids touching the file before then).
+#[allow(clippy::expect_used)]
 pub mod recall_faculty;
 pub mod recent_message;
 pub use continuum_prompt::audience;

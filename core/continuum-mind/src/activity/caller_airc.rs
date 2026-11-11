@@ -64,6 +64,15 @@ pub struct ActivitySpawnParams {
     pub params: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+/// What opening an activity's path did: a new room from its recipe, or the existing one again
+/// (brought back to live if it was archived; its records and pipeline are not repeated).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ActivityOpened {
+    Created,
+    Resumed,
+}
+
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct ActivitySpawnResult {
     /// The airc channel id of the new room — the id every surface addresses it by.
@@ -90,6 +99,12 @@ pub struct ActivitySpawnResult {
     /// a choice.
     #[ts(type = "string")]
     pub binding_post_id: uuid::Uuid,
+    /// The room's place in the room tree: its URI is `airc://room:<path>`. (`name` is the airc
+    /// channel behind it, which `room/join` and `activity/invite` take today.)
+    #[ts(type = "string")]
+    pub path: crate::experience::room_path::RoomPath,
+    /// Whether this opening created the activity or resumed one that already stood at its path.
+    pub opened: ActivityOpened,
     /// What the recipe's PIPELINE did when this room was born (S3), or `None` when
     /// the recipe declares none — the ordinary page. A held run (`held_at`) is a
     /// human's turn, not a failure.

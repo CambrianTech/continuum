@@ -16,6 +16,8 @@ build = "../continuum-core/build.rs"
 # re-exports every moved module under its old path.
 
 [dependencies]
+parking_lot.workspace = true # the engine learning lock's holder record (in_place/engine_lock.rs)
+futures = { workspace = true }  # join every bucket's learning pass at once (training_trigger::in_place)
 continuum-mind = { path = "../continuum-mind" }
 continuum-academy = { path = "../continuum-academy" }
 continuum-genome = { path = "../continuum-genome" }
@@ -48,6 +50,7 @@ continuum-client = { path = "../../client/continuum-client", features = ["test-f
 airc-core.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }  # live-engine-tests: the fixture prints its probes
 
 [features]
 default = []
@@ -55,4 +58,7 @@ metal = ["continuum-mind/metal"]
 cuda = ["continuum-mind/cuda"]
 vulkan = ["continuum-mind/vulkan"]
 stress-tests = ["continuum-mind/stress-tests"]
+# The trigger learning in place on a live engine named by CONTINUUM_LEARN_ENGINE=<pid>:<port>
+# serving CONTINUUM_LEARN_BASE (card 4114a2c6). Compile-time gated like stress-tests.
+live-engine-tests = []
 test-fixtures = ["continuum-mind/test-fixtures", "continuum-kernel/test-fixtures", "continuum-genome/test-fixtures"]

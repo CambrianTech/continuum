@@ -234,7 +234,7 @@
             .map(|n| format!("L{n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let inv = investigate(&body, None, 0, Some((10, 12)), 50, 8000).expect("ok");
+        let inv = investigate(&body, None, 0, Some(LineRange { start: 10, end: Some(12) }), 50, 8000).expect("ok");
         assert!(inv.rendered.contains("    10 L10"));
         assert!(inv.rendered.contains("    12 L12"));
         assert!(!inv.rendered.contains("L13"));
@@ -296,7 +296,7 @@
     #[test]
     fn long_unselected_lines_are_counted_without_materialization() {
         let body = format!("{}\n{}", "x".repeat(10000), "short\n".repeat(100));
-        let range = investigate(&body, None, 0, Some((2, 3)), 50, 256).unwrap();
+        let range = investigate(&body, None, 0, Some(LineRange { start: 2, end: Some(3) }), 50, 256).unwrap();
         assert_eq!(range.total_lines, 101);
         assert_eq!(range.total_bytes, body.len());
         assert!(range.rendered.contains("     2 short"));
@@ -392,7 +392,7 @@
     // what this catches: a board with no count cap reaching her as one line, or as a level that
     // drops her first card or the board's counts. work/list lists every match (its default count
     // is gone); the result goes on one card per line, and the level the one allocation shows when
-    // the board outgrows the window (`operation_level`, `prompt/newest_result.rs`) keeps the first
+    // the board outgrows the window (`operation_level`, for a result older than her newest) keeps the first
     // card whole, the counts after the list, and the marker that reopens the rest.
     #[test]
     fn a_board_larger_than_the_window_shows_its_first_card_whole_and_the_rest_behind_a_handle() {
@@ -446,7 +446,7 @@
         let path = resolve_in(&class(dir.path()), persona, &handle).unwrap();
         assert_eq!(path, persona_dir(dir.path(), persona).join(format!("{handle}.log")), "filed under her directory of the class");
         assert_eq!(fs::read_to_string(&path).unwrap(), body, "reopens byte-identical");
-        let page = investigate_file(&path, None, 0, Some((1, 2)), Some(10), Allowance::Chars(4096)).unwrap();
+        let page = investigate_file(&path, None, 0, Some(LineRange { start: 1, end: Some(2) }), Some(10), Allowance::Chars(4096)).unwrap();
         assert!(page.rendered.contains("     1 line one") && page.rendered.contains("     2 line two"), "{}", page.rendered);
     }
 

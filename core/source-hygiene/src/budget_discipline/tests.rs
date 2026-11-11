@@ -18,10 +18,8 @@ const MIND: &str = "core/continuum-cognition/src/cognition/recall.rs";
 /// Count `rule` over the tree, hold it against the base, and judge the change's files.
 fn judge(rule: &dyn SourceRule, instead: &str) {
     let violations = scan(&[rule]);
-        let advice = || format!("{instead} The contract: docs/architecture/ONE-BUDGET.md.");
-    crate::ratchet::touched_clean(rule.name(), &violations, advice);
     let count = violations.len();
-    crate::ratchet::hold_sites(rule.name(), &violations, || {
+    crate::ratchet::hold_sites(rule.name(), &violations, crate::ratchet::Touched::EndsClean, || {
         format!(
             "{} {instead} The contract: docs/architecture/ONE-BUDGET.md.\nFirst {} of {count} (not necessarily new):\n{}",
             rule.name(),
@@ -110,6 +108,7 @@ fn a_write_outside_a_class_is_found_and_the_owners_are_not() {
     assert_eq!(found(&WritesOutsideAClass, CONSUMER, "let f = File::create(path)?;"), 1);
     assert_eq!(found(&WritesOutsideAClass, CONSUMER, "let f = OpenOptions::new().append(true).open(p)?;"), 1);
     assert_eq!(found(&WritesOutsideAClass, "core/continuum-kernel/src/orm/sqlite/file.rs", "std::fs::write(&path, bytes)?;"), 0);
+    assert_eq!(found(&WritesOutsideAClass, "core/continuum-host/src/read_pin/windows.rs", "OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(path)"), 0, "the read pin owns share-mode opens");
     assert_eq!(found(&WritesOutsideAClass, CONSUMER, "let text = std::fs::read_to_string(p)?;"), 0, "a read is not a write");
 }
 

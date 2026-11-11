@@ -10,38 +10,14 @@
 
 use uuid::Uuid;
 
-use crate::inference::engine_residency::{Liveness, ProcessProbe};
-
-/// The process a close belongs to, by pid and OS start time (a reused pid is another process).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HandoffOwner {
-    pub pid: u32,
-    pub started_s: u64,
-}
-
-impl HandoffOwner {
-    /// The process `pid` as it runs now; `None` when its start time cannot be read, since a close
-    /// whose owner can never be verified dead could never be released by its death.
-    pub fn of(pid: u32) -> Option<Self> {
-        crate::inference::engine_residency::process_start_s(pid).map(|started_s| Self { pid, started_s })
-    }
-
-    /// PURE but for `probe`: whether the owner still runs. Unreadable is not dead.
-    pub fn liveness_with(&self, probe: impl Fn(u32) -> ProcessProbe) -> Liveness {
-        match probe(self.pid) {
-            ProcessProbe::Absent => Liveness::Dead,
-            ProcessProbe::Present(s) if s == self.started_s => Liveness::Alive,
-            ProcessProbe::Present(0) | ProcessProbe::Unreadable => Liveness::Unknown,
-            ProcessProbe::Present(_) => Liveness::Dead, // the pid was reused by a later process
-        }
-    }
-}
+use crate::inference::engine_residency::{Liveness, ProcessIncarnation, ProcessProbe};
 
 /// One handoff's close: the token that reopens it and the process it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandoffClose {
     pub token: Uuid,
-    pub owner: HandoffOwner,
+    /// The process the close belongs to (a reused pid is another process).
+    pub owner: ProcessIncarnation,
 }
 
 /// What an admission does about the current close, if any.
@@ -75,7 +51,7 @@ mod tests {
     // its real owner still runs.
     #[test]
     fn only_a_verified_dead_owner_releases_a_close() {
-        let close = HandoffClose { token: Uuid::from_u128(1), owner: HandoffOwner { pid: 4242, started_s: 1_793_160_000 } };
+        let close = HandoffClose { token: Uuid::from_u128(1), owner: ProcessIncarnation { pid: 4242, started_s: 1_793_160_000 } };
         assert_eq!(verdict(None, |_| ProcessProbe::Absent), CloseVerdict::Open);
         assert_eq!(verdict(Some(&close), |_| ProcessProbe::Present(1_793_160_000)), CloseVerdict::Closed, "its owner runs");
         assert_eq!(verdict(Some(&close), |_| ProcessProbe::Absent), CloseVerdict::OwnerGone, "its owner exited");

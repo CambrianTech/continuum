@@ -1,0 +1,8 @@
+core/
+Cargo.toml
+Cargo.lock
+rust-toolchain.toml
+tools/scripts/lib/
+tools/scripts/shared/cargo-features.sh
+tools/scripts/start-livekit-windows.ps1
+tools/scripts/generated/manifest.windows.ps1

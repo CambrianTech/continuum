@@ -276,19 +276,19 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     // Her view carries the inventory whole while the window holds it; nothing collapses at
     // fit time any more (her view collapses at an epoch start, `prompt/epoch.rs`).
     let roomy = faculty.messages_unfitted(&ws, None);
-    let full_cost = roomy.required_tokens() + LlmDeliberationFaculty::messages_cost(&roomy.history);
+    let full_cost = roomy.required_tokens() + PromptCalibration::default().estimate_all(&roomy.history);
     let roomy = faculty.fit_messages(roomy, full_cost).unwrap();
     assert!(roomy.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
     // Exact-refusal correction reuses saved alternatives and keeps the
     // entire required native batch, without re-reading working memory.
-    let estimate = LlmDeliberationFaculty::messages_cost(&roomy.messages);
+    let estimate = PromptCalibration::default().estimate_all(&roomy.messages);
     let snapshot = DeliberationPromptView {
         refit: roomy.refit, system: String::new(), input_identity: [0; 32],
-        estimated_prompt_tokens: estimate, completion_reserve: 0,
+        estimated_prompt_tokens: estimate, pricing: PromptCalibration::default(), completion_reserve: 0,
         capacity_error: None, budget_fault: None, protocol_error: None, segments: Vec::new(),
         newest_result_reduced: false, newest_result_tokens: 0, allocation: None,
         messages: roomy.messages, tools: crate::cognition::tool_surface::SelectedSurface::none(), tools_grant: 0,
-        act_room: crate::cognition::working_set::ActRoom::Unmeasured, output_shortfall: None, tail_covers: Vec::new(),
+        act_room: crate::cognition::working_set::ActRoom::Unmeasured, output_shortfall: None, judged_tail: Vec::new(),
     };
     let corrected = faculty.refit_rejected_prompt(snapshot, estimate as u32 + 1, estimate as u32, 0).unwrap();
     assert!(corrected.estimated_prompt_tokens < estimate);
@@ -475,7 +475,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     let view = faculty.prompt_view(&ws);
     let reserve = view.completion_reserve as usize;
     let prompt =
-        estimate_guard_tokens(&view.system) + LlmDeliberationFaculty::messages_cost(&view.messages);
+        estimate_guard_tokens(&view.system) + PromptCalibration::default().estimate_all(&view.messages);
 
     // This assertion used to demand that framing + the FULL tool surface + the
     // reply reserve all fit an 8192 window. That is arithmetically impossible and
@@ -501,7 +501,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     assert!(
         faculty.describe_tool_tokens()
             + faculty.framing_floor_tokens() as usize
-            + LlmDeliberationFaculty::COMPLETION_FLOOR_TOKENS as usize // the reply's flex floor — the smallest grant production gives a reply
+            + 1 // the engine's one free cell, the least room a reply needs to begin
             <= needed as usize,
         "min_window_for_agentic_surface({needed}) must clear its own arithmetic"
     );
@@ -749,7 +749,16 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // handle names. Its description was cut to one line, its param docs to a few words each and
     // its filter enum's docs removed (it measured 18757 first); the 441 left are its ten params,
     // the reach itself. Measured locally at 17927.
-    const AGENTIC_SURFACE_CEILING: u32 = 17927;
+    // 17927 -> 17956 (#5824, 2026-11-07): work/submit gains `head`, the commit her patch ends at,
+    // which the merge gate requires (airc #1660); without it a typed submit fell back to deriving
+    // from a checkout. Its doc was cut to "Omit: your checkout's committed HEAD." (it measured 17969
+    // first); the 29 left are the param itself. Measured in CI at 6b5069c06 (job 128439607272).
+    // 17956 -> 17986 (2026-11-07, the M5: 19 `submission_id=latest` reads refused in six hours):
+    // work/submission's and work/review's submission_id is the typed handle, `latest` (default) or
+    // an id, so the schema carries the value she means; its pattern was dropped and its docs cut.
+    // Both verbs now declare `OnDemand`, so neither schema rides her prompt unless a held card puts
+    // it in hand: this registry total grows, her act's surface shrinks. Measured locally at 17986.
+    const AGENTIC_SURFACE_CEILING: u32 = 17986;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(

@@ -44,14 +44,9 @@ impl LlmDeliberationFaculty {
         Self::is_own_move(message) || Self::is_move_result(message)
     }
 
-    /// What this conversation costs whole, with no budget applied — the conversational
-    /// half of a turn's demand ([`super::super::super::working_set`]).
-    pub fn messages_cost(messages: &[ChatMessage]) -> usize {
-        messages.iter().map(Self::message_cost).sum()
-    }
-
-    /// A message's estimate: its text, a lower bound calibrated by the provider's measured prompt
-    /// count (her density, which carries the chat template's tokens around each message too).
+    /// A message's TEXT estimate alone: the part [`PromptCalibration::estimate`] builds on (it adds the
+    /// engine-measured template share of the message's kind). Never a message's price by itself: every
+    /// prompt, fit and refit prices through [`PromptCalibration::estimate`].
     /// Never count base64 characters as image tokens. Native images require the finalized-body
     /// image quote before local generation.
     pub fn message_cost(message: &ChatMessage) -> usize {
@@ -73,7 +68,7 @@ impl LlmDeliberationFaculty {
         // valid provider request. Preserve its newest whole context or fault.
         let ambient_tokens = if required_tokens == 0 {
             match prompt.history.last() {
-                Some(message) => Self::message_cost(message),
+                Some(message) => prompt.pricing.estimate(message),
                 None => 0, // no history and no required payload: assembly supplies the quiet world-state
             }
         } else {
@@ -93,8 +88,8 @@ impl LlmDeliberationFaculty {
         // outcome cost, so the drop below can refuse to reach them.
         let evidence = prompt.recent_move_evidence();
         let messages = &prompt.history;
-        // Each message at `messages_cost`'s estimate, so measurement and fitting charge identically.
-        let costs: Vec<usize> = messages.iter().map(Self::message_cost).collect();
+        // Each message at the one estimate her view and the refit price with, so they charge identically.
+        let costs: Vec<usize> = messages.iter().map(|message| prompt.pricing.estimate(message)).collect();
         let total: usize = costs.iter().sum();
         let mut start = 0usize;
         if total > history_budget {
@@ -102,7 +97,7 @@ impl LlmDeliberationFaculty {
             // oldest message's own size. A quantized drop (chunks of a budget fraction) once kept
             // the conversation's front byte-stable across acts; her view's epoch owns that now,
             // and what this fits (this act's fresh tail, or this act's refused prompt) is never
-            // the next act's prefix (a sent tail joins her view in the bytes it was sent).
+            // the next act's prefix (her served tail joins her view as her view judged it).
             let min_drop = total - history_budget;
             let mut dropped = 0usize;
             // Only optional history yields. Stimulus and action payload are typed
@@ -228,6 +223,7 @@ impl LlmDeliberationFaculty {
         prompt.history.drain(..start);
         let grounding_at = prompt.grounding_at.saturating_sub(start);
         let refit = PromptRefit {
+            view_len: 0,
             history_len: prompt.history.len(),
             grounding_at,
             grounding_len: 0,
@@ -282,30 +278,52 @@ impl LlmDeliberationFaculty {
             .div_ceil(measured as u128)).min(usize::MAX as u128) as usize;
         if reduction == 0 { return Err(refusal()); }
         let input_budget = old_estimate.saturating_sub(reduction);
-        let fixed_tokens = old_estimate.saturating_sub(Self::messages_cost(&view.messages));
-        let grounding: Vec<_> = view.messages.drain(
-            view.refit.grounding_at..view.refit.grounding_at + view.refit.grounding_len
-        ).collect();
-        let required = view.messages.split_off(view.refit.history_len);
-        let frozen_grounding_tokens = Self::messages_cost(&grounding);
+        let fixed_tokens = old_estimate.saturating_sub(view.pricing.estimate_all(&view.messages));
+        // HER VIEW IS NOT THE REFIT'S TO CUT, as it is not the first fit's (`prompt/view.rs`): its
+        // leading messages are held out whole and spliced back, so a refit trims only her fresh
+        // tail. Handed the whole list, the refit's oldest-first drop cut whichever blocks led her
+        // view (window_feedback: the frozen grounding block gone after a refit, 0 of 1). When the
+        // tail cannot absorb the deficit the refit refuses, and the caller re-renders her view at
+        // the engine's measured price, where her view's own allocation collapses oldest first.
+        let view_len = view.refit.view_len.min(view.messages.len());
+        let held: Vec<_> = view.messages.drain(..view_len).collect();
+        let held_tokens = view.pricing.estimate_all(&held);
+        let (held_pointers, tail_pointers): (Vec<_>, Vec<_>) =
+            view.refit.result_pointers.into_iter().partition(|(index, _)| *index < view_len);
+        let tail_pointers: Vec<_> = tail_pointers.into_iter().map(|(index, pointer)| (index - view_len, pointer)).collect();
+        let grounding_at = view.refit.grounding_at.saturating_sub(view_len);
+        let grounding: Vec<_> = view.messages.drain(grounding_at..grounding_at + view.refit.grounding_len).collect();
+        let required = view.messages.split_off(view.refit.history_len.saturating_sub(view_len));
+        let frozen_grounding_tokens = view.pricing.estimate_all(&grounding);
+        let tail_reductions = view.messages.len().saturating_add(tail_pointers.len());
         let prompt = PromptMessages {
             streams: Default::default(),
             input_identity: view.input_identity,
             history: view.messages,
-            result_pointers: view.refit.result_pointers,
-            grounding_at: view.refit.grounding_at,
+            result_pointers: tail_pointers,
+            grounding_at,
             stimulus: None,
             latest_result: required,
             action_statement: None,
+            pricing: view.pricing,
         };
         let mut fitted = self.fit_messages(prompt, input_budget
-            .saturating_sub(fixed_tokens).saturating_sub(frozen_grounding_tokens))?;
-        if fitted.refit.remaining_reductions() >= old_reductions {
+            .saturating_sub(fixed_tokens).saturating_sub(frozen_grounding_tokens).saturating_sub(held_tokens))?;
+        if tail_reductions == 0 || fitted.refit.remaining_reductions() >= tail_reductions {
             return Err(refusal());
         }
         fitted.refit.grounding_len = grounding.len();
         fitted.messages.splice(fitted.grounding_at..fitted.grounding_at, grounding);
-        let estimate = fixed_tokens.saturating_add(Self::messages_cost(&fitted.messages));
+        fitted.messages.splice(0..0, held);
+        fitted.grounding_at += view_len;
+        fitted.refit.grounding_at = fitted.grounding_at;
+        fitted.refit.history_len += view_len;
+        fitted.refit.view_len = view_len;
+        for (index, _) in &mut fitted.refit.result_pointers {
+            *index += view_len;
+        }
+        fitted.refit.result_pointers.splice(0..0, held_pointers);
+        let estimate = fixed_tokens.saturating_add(view.pricing.estimate_all(&fitted.messages));
         if estimate >= old_estimate { return Err(refusal()); }
         view.messages = fitted.messages;
         view.refit = fitted.refit;

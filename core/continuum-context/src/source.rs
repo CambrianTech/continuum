@@ -3,9 +3,9 @@
 //! A source renders its current state as ITEMS under stable keys (one result, one open
 //! file, one notice), never as one block. The epoch appends only the items whose rendering
 //! changed, so a source that grows by one item costs one item, not a re-render of all of
-//! them. A source that cannot key its state (the clock, this act's ask) is not a source:
-//! it rides the act's tail after the epoch, and the tail joins the epoch in the bytes it was
-//! sent (`view::View::append_sent`), so even it never moves once sent.
+//! them. Even the act's tail (the clock, the ask, her call and its result) is a source, keyed by
+//! what each item is: judged by the view before the send and joining the epoch once served
+//! (`view::View::judge_tail`, `view::View::append_tail`), so it never moves once sent.
 
 use crate::cause::{Act, Cause, Content, ContentHash, ElementId};
 use crate::epoch::Block;
@@ -152,6 +152,12 @@ pub trait Source<T: Block> {
         false
     }
 
+    /// What it is to her ([`crate::ladder::Consumer`]): context she reads unless she acts through
+    /// it (her held card), which a choice never shows below its whole.
+    fn consumer(&self) -> crate::ladder::Consumer {
+        crate::ladder::Consumer::Context
+    }
+
     /// The source's current items, oldest first. An item that left the source's state (a
     /// result that aged out) is simply absent: what the view already holds stays until the
     /// next turnover.
@@ -195,10 +201,11 @@ pub trait Source<T: Block> {
     /// (never a list of ids). It reads only the run's ends, O(1) in the run: a start asks once
     /// per item it raises. The view folds the run only when this block is smaller than the
     /// run's pointers, so a source's floor stops growing with every item it ever held. Fixed
-    /// for the epoch it starts. The default cannot fold: its items floor at their pointers.
-    fn fold(&self, _folded: &[Item<T>]) -> Option<T> {
-        None
-    }
+    /// for the epoch it starts. REQUIRED, never defaulted: a source that does not decide floors
+    /// every item it ever held at its pointer, and a growing one then outgrows any window (her
+    /// thoughts had no fold: Benchy's floor was 2,536 thought pointers, 78,755 tokens, and every
+    /// act was refused, the M5, 2026-11-09). `None` is a decision a source states and justifies.
+    fn fold(&self, folded: &[Item<T>]) -> Option<T>;
 
     /// The block `item` renders as when the view finds it repeats `ancestor` (MIND-CONTEXT
     /// invariant 4: the same request to a tool that only observes, with the same outcome). The
@@ -208,12 +215,6 @@ pub trait Source<T: Block> {
     fn repeat(&self, _item: &Item<T>, _ancestor: &Item<T>) -> Option<T> {
         None
     }
-}
-
-/// What an item's whole level costs: its stored size when the whole is not resident, else
-/// the resident text's size. The allocation prices from this and never reads a stored body.
-pub fn whole_chars<T: Block>(item: &Item<T>) -> usize {
-    item.stored.as_ref().map_or_else(|| item.full.chars(), |stored| stored.chars) // map_or_else: a resident item is priced by its own text
 }
 
 /// The item at its whole level: a stored body loaded through its source, else what is resident.

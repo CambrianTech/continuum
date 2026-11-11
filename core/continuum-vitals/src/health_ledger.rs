@@ -344,6 +344,9 @@ pub struct MindHour {
     pub gate_refused: u64,
     pub acts: u64,
     pub writes: u64,
+    /// Her calls a command or the argument check refused this hour: over `acts`, the live gauge of
+    /// refusals per act (card 9ed04d88; Aiko 32 refused results in 33 acts, the M5 2026-11-07).
+    pub refused: u64,
     /// Serving lanes granted to her this hour — the "least served" order.
     pub lane_grants: u64,
     /// Her reviewed credit's outcomes this hour, by type (`learning`).
@@ -371,6 +374,17 @@ pub fn note_act_of(persona: uuid::Uuid, wrote: bool) {
     if wrote {
         m.writes += 1;
     }
+}
+
+/// One of her calls was refused (the executor's `persona.act.refused` seam).
+pub fn note_refused_of(persona: uuid::Uuid) {
+    MINDS.entry(persona).or_default().refused += 1;
+}
+
+/// Her (acts, refused calls) this hour so far: the refusals-per-act gauge `persona.act.observed`
+/// carries on every act.
+pub fn acts_and_refused_of(persona: uuid::Uuid) -> (u64, u64) {
+    MINDS.get(&persona).map_or((0, 0), |m| (m.acts, m.refused)) // map_or: no row this hour = no act and no refusal, the truth
 }
 
 /// THE SLOW CLIP (card ef25bf6c; Joel: dormant is not off, every mind gets a slow clip at
@@ -864,5 +878,17 @@ mod tests {
         assert_eq!(peek.cut_think, 1);
         assert_eq!(stops.read(|c| c.swap(0, Ordering::Relaxed)).cut_think, 1);
         assert_eq!(stops.read(|c| c.load(Ordering::Relaxed)), StopCounts::default());
+    }
+
+    // what this catches: the refusals-per-act gauge reading another mind's counts, or a
+    // refusal counted as an act. Card 9ed04d88: Aiko's 32 refusals in 33 acts must read as hers.
+    #[test]
+    fn refusals_per_act_are_counted_per_mind() {
+        let (aiko, aris) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        note_act_of(aiko, false);
+        note_refused_of(aiko);
+        note_refused_of(aiko);
+        assert_eq!(acts_and_refused_of(aiko), (1, 2));
+        assert_eq!(acts_and_refused_of(aris), (0, 0));
     }
 }

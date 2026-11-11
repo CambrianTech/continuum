@@ -121,16 +121,15 @@ pub struct PersonaDemand {
     /// Next slot to overwrite in `recent`.
     #[serde(default)]
     pub recent_next: u8,
-    /// The last [`RECENT_TURNS`] post-fit sizes of turns the fit HELD — her NEED, as
-    /// opposed to `recent` (her WISH, the untrimmed assembly). A turn counts here only
-    /// when `fit_messages` kept the source's truthful minimum and something survived
-    /// the fit: dropping optional history is the fit working, not starvation. The
-    /// allocator GATES on the median of this ring (no headroom — she was served at
-    /// that size) and TARGETS the wish (card 70706a9e: Kimi's wish 99k × 1.25 read as
-    /// "over the grid" at a 75,776 seat her turns were fitting into every time).
-    /// Legacy files read empty → no need known → the wish stands in, as before. Each slot is
-    /// typed exact or censored ([`NeedSample`]): a turn whose view overflowed its grant records
-    /// what she would have held as a lower bound, never as a size.
+    /// The last [`RECENT_TURNS`] windows her held turns' allocations CHOSE (the priced optimum,
+    /// `continuum_context::allocation::need`) — her NEED, as opposed to `recent` (her WISH, the
+    /// untrimmed assembly). A turn counts here only when `fit_messages` kept the source's
+    /// truthful minimum and something survived the fit, and its act time was priced. The
+    /// allocator GATES on the median of this ring and TARGETS the wish (card 70706a9e: Kimi's
+    /// wish 99k × 1.25 read as "over the grid" at a 75,776 seat her turns were fitting into
+    /// every time). Legacy files read empty → no need known → the wish stands in, as before.
+    /// Each slot is typed exact or censored ([`NeedSample`]): an optimum past her grant is a
+    /// lower bound, never a size.
     #[serde(default)]
     pub need_recent: [NeedSample; RECENT_TURNS],
     /// Next slot to overwrite in `need_recent`.
@@ -690,6 +689,30 @@ impl WorkingSetRegistry {
         })
     }
 
+    /// Her need, or, before her own first landed turn, the need the minds on this node measured
+    /// (each channel's median across them): a measurement, never a prior. `None` only on a node
+    /// where no mind has landed a turn.
+    pub fn need_or_pooled(&self, persona: Uuid) -> Option<OutputNeed> {
+        self.need_of(persona).or_else(|| self.pooled_need())
+    }
+
+    fn pooled_need(&self) -> Option<OutputNeed> {
+        // Keys first, so no map guard is held while each need is read.
+        let minds: Vec<Uuid> = self.emitted.iter().map(|entry| *entry.key()).collect();
+        let needs: Vec<OutputNeed> = minds.into_iter().filter_map(|mind| self.need_of(mind)).collect();
+        let median = |mut values: Vec<u32>| -> Option<u32> {
+            values.sort_unstable();
+            values.get(values.len() / 2).copied()
+        };
+        Some(OutputNeed {
+            reasoning: median(needs.iter().map(|n| n.reasoning).collect())?,
+            answer: median(needs.iter().map(|n| n.answer).collect())?,
+            turns: 0, // none of them hers
+            reasoning_at_least: None,
+            answer_at_least: None,
+        })
+    }
+
     fn save(&self, persona: Uuid, demand: &PersonaDemand) {
         self.persist(persona, DEMAND_FILE, serde_json::to_vec(demand).map_err(std::io::Error::from), "working-set demand"); // BOUNDARY: disk — the per-persona working-set.json durable format
     }
@@ -829,12 +852,12 @@ pub fn requirements_for(
         .iter()
         .map(|p| {
             let demand = working_set.demand_of(*p);
-            use crate::inference::planning::window_allocator::{observed::Observed, LaneRequirement, Tokens};
+            use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
             // Measured or not, as a type: no turn yet is unmeasured, never a zero standing in for one.
             let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d)));
-            // Residency is sized from what held, never from a censored bound: an overflow is
-            // reducible by her view's collapse (ONE-ACT stage 3, `resident_need`).
-            let need = demand.as_ref().and_then(resident_need).and_then(Tokens::new).map(Observed::Exact);
+            // Her need as measured, a bound kept a bound: an overflow is reducible by her view's
+            // collapse, so admission clamps it to what one sequence holds (`resident_need`).
+            let need = demand.as_ref().and_then(resident_need);
             // Her parked training examples' reservation, carried beside her conversational target
             // and need (card ea157b1a): the allocator grows toward it only from spare budget.
             let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();

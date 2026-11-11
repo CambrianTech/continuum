@@ -1,7 +1,7 @@
 //! A capacity refusal answered in the same turn, when what it measured shrinks her newest result.
 //!
 //! Aris (the M5, 2026-10-26/27): her newest result was a 340,832-char `work/submission` answer.
-//! `fit_newest_result` (#5505) shows such a result at its summary plus handle, but only at a
+//! `fit_newest_result` shows such a result as its first page, but only at a
 //! MEASURED density; right after a restart there is none, the bytes/3 estimate says the result
 //! fits, and the request goes whole. The engine refused it ("request (214671 tokens) exceeds the
 //! slot's available context size (187136 tokens)") at 03:54, 04:12 and 04:29Z, once per restart,
@@ -22,7 +22,7 @@
 //! (about 1.8 chars a token against the estimate's 3). Charging the whole excess to the result
 //! (every other part at its estimate) prices it at what it can at most cost given the count, so
 //! it stays whole only when dropping optional input covers the deficit. Overpricing errs the safe
-//! way: shown at its summary she loses nothing, its handle reopens it whole.
+//! way: shown as its first page she loses nothing, reading on is named.
 
 use super::*;
 
@@ -62,13 +62,13 @@ impl LlmDeliberationFaculty {
             newest_result_estimate = refused.newest_result_tokens,
             refit_estimate = refit.estimated_prompt_tokens,
             "the engine refused her request; at the density it measured her newest result \
-             comes in at its summary with its handle: resending once"
+             comes in as its first page: resending once"
         );
         Some(refit)
     }
 
     /// The resend at her measured density was refused too: she parks on the refusal, never
-    /// resent again this turn. Loud, because a summary that still cannot fit is a defect in
+    /// resent again this turn. Loud, because a first page that still cannot fit is a defect in
     /// what the window leaves her, not a wait.
     pub(super) fn newest_refit_refused(
         &self,
@@ -82,7 +82,7 @@ impl LlmDeliberationFaculty {
             requested_tokens = requested,
             available_tokens = available,
             allowance,
-            "her newest result at its summary was refused too: parking on the refusal, no second resend"
+            "her newest result as its first page was refused too: parking on the refusal, no second resend"
         );
         crate::cognition::workspace::PromptCapacityError {
             required_tokens: (requested as usize).saturating_add(allowance as usize),

@@ -409,8 +409,7 @@ pub(super) fn remote_override_for(
 ) -> Option<crate::persona::model_override::PersonaModelOverride> {
     let by_name = crate::identity::citizen_path::citizen_home_path(
         &crate::paths::continuum_root(),
-        crate::identity::IdentityKind::Persona,
-        None,
+        crate::identity::citizen_path::CitizenKind::Persona,
         persona_name,
     )
     .parent()

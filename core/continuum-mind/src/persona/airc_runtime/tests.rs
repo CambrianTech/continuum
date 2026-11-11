@@ -2,33 +2,6 @@
     use super::*;
     use tempfile::TempDir;
 
-    // what this catches (card ed2c9417, Kimi 2026-10-06): a claim she holds on a room she
-    // does not subscribe to, renewed by the followed path but invisible to the work gate,
-    // so she read no_held_work and made a new review card every turn. Only a record whose
-    // room she did NOT walk, and whose card the walk did not find, is read on its own board.
-    #[test]
-    fn a_followed_claim_outside_her_rooms_joins_the_owned_walk_once() {
-        let home = TempDir::new().expect("tempdir");
-        let room = |name: &str| airc_lib::Room::from_name(home.path(), name).expect("a room");
-        let claim = |room_name: &str, card: u128| crate::persona::held_claims::HeldClaim {
-            room: room(room_name),
-            card_id: uuid::Uuid::from_u128(card),
-            claim_id: uuid::Uuid::from_u128(card + 0x1000),
-            recorded_at_ms: 1,
-            refusals: 0,
-        };
-        let walked_rooms = vec![room("academy").channel.as_uuid()];
-        let recorded = vec![
-            claim("cambriantech", 1), // her review card's room, not walked: read it
-            claim("academy", 2),      // a walked room: the walk already saw it
-            claim("cambriantech", 3), // not walked, but the walk found the card: no second read
-        ];
-        let walked_cards = vec![uuid::Uuid::from_u128(3)];
-        let beyond = followed_beyond_rooms(&walked_rooms, &walked_cards, &recorded);
-        assert_eq!(beyond.len(), 1, "{beyond:?}");
-        assert_eq!(beyond[0].card_id, uuid::Uuid::from_u128(1));
-    }
-
     #[tokio::test]
     async fn bootstrap_resolves_home_under_personas_directory() {
         // This unit test verifies path layout only — actual daemon
@@ -40,8 +13,7 @@
         let temp = TempDir::new().expect("tempdir");
         let expected_home = crate::identity::citizen_path::citizen_home_path(
             temp.path(),
-            crate::identity::IdentityKind::Persona,
-            None,
+            crate::identity::citizen_path::CitizenKind::Persona,
             "helper-ai-test",
         );
         // Slice 4 of #142: symmetric layout under

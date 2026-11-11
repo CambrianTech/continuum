@@ -86,11 +86,6 @@ fn settlement_trail_preserves_corrections_and_later_repeated_reports() {
     assert!(texts[3].ends_with(passed), "the later repeat, kept as its own entry: {}", texts[3]);
 }
 
-// what this catches: loop-awareness — `note_action_fingerprint` counts repeats of the
-// IDENTICAL call so the act→observe step can surface "you've issued this N times." A
-// different call resets to 1; the count rises only on exact repeats. This is the explicit
-// proprioception that breaks a smaller model out of the search-loop the glass box caught.
-// (Stray duplicate #[test] removed 2026-07-12 — it made the next test run twice.)
 // what this catches: the investigation-shape fact's source of truth — the
 // verb tally aggregates fingerprints by tool name, most-used first, so
 // "9 acts, all code/search" is derivable as pure structure (SWE flask-4045
@@ -275,6 +270,7 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         context_view: None,
         receipt_children: Default::default(),
         open_views: Vec::new(),
+        act_times: Default::default(),
     });
     assert!(quiet.recent().is_empty(), "an empty snapshot restores an empty window");
     let q = quiet.pinned_facts();

@@ -56,17 +56,7 @@ use std::time::Instant;
 /// "local" → device-filtered local-GPU selection logic).
 pub const LLAMACPP_PROVIDER_ID: &str = "llamacpp-local";
 
-/// The embed lane's identity on the resource board — the `consumer_id` on both
-/// its per-call VRAM leases and its standing reservation floor.
-pub const EMBED_LANE_CONSUMER_ID: &str = "embed";
-
-/// The embed lane's working VRAM: the bounded Metal embedding context (~1.2 GiB
-/// compute buffer + ~224 MiB KV) plus headroom. ONE constant, two uses: the
-/// per-call lease in [`create_embedding`], and the standing FLOOR the embedder
-/// reserves on the board at resolve so serving's plan can never grow into it
-/// (#225 — measured 2026-08-08: the grown window left 604 MiB governed-available
-/// against this 1792 MiB need, and embedding went fully dead on the box).
-pub const EMBED_LANE_VRAM_BYTES: u64 = 1792 * 1024 * 1024;
+pub use super::embed_lane_memory::EMBED_LANE_CONSUMER_ID;
 
 /// Overlay live runtime metadata (throughput) on top of the registry's
 /// declared ModelInfo. Context-window still flows from `backend.n_ctx_train()`
@@ -214,7 +204,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .read()
             .as_ref()
             .map(|b| b.n_ctx_train())
-            .unwrap_or(0);
+            .unwrap_or(0); // unwrap_or: no backend loaded yet; 0 is the capabilities contract's "ask the model" (model_metadata)
         let capabilities = match self.generation {
             GenerationSupport::EmbeddingOnly => vec![Capability::Embedding],
             GenerationSupport::Enabled { .. } => vec![
@@ -403,7 +393,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             let log = runtime::logger("llamacpp");
             log.info(&format!(
                 "generate_text request: model={} messages={} (text={} parts={}; parts contain text={} image={} audio={} other={})",
-                request.model.as_deref().unwrap_or("?"),
+                request.model.as_deref().unwrap_or("?"), // unwrap_or: a log line names an unnamed model "?"
                 request.messages.len(),
                 text_msgs,
                 parts_msgs,
@@ -423,10 +413,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // fingerprint without grepping logs.
             continuum_base::probe!(
                 class = "inference.generate.enter",
-                model = request.model.as_deref().unwrap_or("?"),
-                persona_id = request.persona_id.as_deref().unwrap_or(""),
+                model = request.model.as_deref().unwrap_or("?"), // unwrap_or: the probe names an unnamed model "?"
+                persona_id = request.persona_id.as_deref().unwrap_or(""), // unwrap_or: a request for no persona probes an empty id
                 msg_count = request.messages.len(),
-                max_tokens = request.max_tokens.unwrap_or(0),
+                max_tokens = ?request.max_tokens,
                 has_system_prompt = request.system_prompt.is_some(),
                 parts_image = parts_image,
                 parts_audio = parts_audio,
@@ -506,7 +496,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let max_tokens = request
             .max_tokens
             .map(|n| n as usize)
-            .unwrap_or_else(|| backend.n_ctx_train() as usize);
+            .unwrap_or_else(|| backend.n_ctx_train() as usize); // unwrap_or_else: a caller with no cap decodes to the model's trained context, never a guessed one
         let sampling = sampling_config_from_request(&request);
         // Stop sequences = caller-supplied + model's registry-declared
         // text-form stops. Some GGUFs (the forged qwen3.5 included) carry
@@ -515,7 +505,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // same answer until max_tokens. The registry's stop_sequences
         // field carries the correct strings (e.g. `<|im_end|>`) that the
         // scheduler matches against streamed output.
-        let mut stop_owned: Vec<String> = request.stop_sequences.clone().unwrap_or_default();
+        let mut stop_owned: Vec<String> = request.stop_sequences.iter().flatten().cloned().collect();
         if let Some(model_meta) =
             crate::model_registry::try_global().and_then(|reg| reg.model(backend.model_id()))
         {
@@ -548,19 +538,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // context-level before decode. Empty in the common base case.
         let requested_genes: Vec<(String, std::path::PathBuf, f32)> = request
             .active_adapters
-            .as_ref()
-            .map(|v| {
-                v.iter()
-                    .map(|a| {
-                        (
-                            a.name.clone(),
-                            std::path::PathBuf::from(&a.path),
-                            a.scale as f32,
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+            .iter()
+            .flatten()
+            .map(|a| (a.name.clone(), std::path::PathBuf::from(&a.path), a.scale as f32))
+            .collect();
 
         let result: Result<(String, usize), String> = if collected_media.is_empty() {
             // Pure-text path: scheduler-managed continuous batching.
@@ -631,7 +612,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     kinds.join(", ")
                 ));
             }
-            let (kind, media_bytes) = collected_media.into_iter().next().unwrap();
+            let Some((kind, media_bytes)) = collected_media.into_iter().next() else {
+                return Err("llamacpp_adapter: the media path was taken with no media item".into());
+            };
             // RTOS timing probe: mtmd path runs single-flight (no
             // scheduler batching for media) so the timing here is
             // direct end-to-end. Separate seam from the text path so
@@ -763,105 +746,14 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // Wait without a memory claim. The admitted worker owns both through context teardown,
         // even when the request future is cancelled after spawn_blocking starts.
         let embedding = backend.admit_embedding().await?;
-        // The embedding forward pass allocates a bounded Metal context (a 2048-token
-        // embedding context: ~1.2 GiB compute buffer — quadratic in n_ubatch=2048 —
-        // plus ~224 MiB KV). UNGOVERNED, it grabbed that context behind the governor's
-        // back and competed with the serving lane for VRAM; under pressure the Metal
-        // command buffer OOM'd and the decode returned an ALL-ZERO vector — the
-        // "degenerate embedding" that silently broke semantic recall. Lease the VRAM
-        // from the ResourceGovernor FIRST: granted ⇒ the bytes are reserved for the
-        // life of the guard and the decode has room to succeed; refused ⇒ fail LOUD
-        // here instead of allocating a doomed context that emits garbage. Embeddings
-        // are GPU-only ([[gpu-is-non-negotiable-every-component-no-cpu-fallback]]), so
-        // unlike the eval lane there is NO CPU spill — the honest degrade is a named
-        // refusal the caller ([`NeuralEmbeddingProvider::embed`]) already surfaces as
-        // "no signal", never a zero vector.
-        //
-        // Const, not env-tunable — substrate policy lives in code (concurrency guide).
-        // Only the per-call CONTEXT is leased here; the embed lane's standing FLOOR on
-        // the board (so serving can never grow into this slice — Joel 2026-08-08: "the
-        // budgeter just has all its parts figure it out") is claimed at embedder
-        // resolve via [`crate::resources::ResourceDaemon::reserve`], from the same
-        // module-level constants below.
-        const EMBED_LANE_LEASE_TTL_MS: u64 = 60_000; // SIGKILL backstop; the RAII guard frees on drop
-        let _vram_lease = {
-            use crate::resources::{
-                LeaseError, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind,
-            };
-            match ResourceDaemon::global() {
-                Some(daemon) => {
-                    let req = LeaseRequest {
-                        consumer_id: EMBED_LANE_CONSUMER_ID.to_string(),
-                        kind: ResourceKind::Vram,
-                        bytes: EMBED_LANE_VRAM_BYTES,
-                        // A bounded, sub-second forward pass is not yanked mid-embed;
-                        // the guard returns the bytes the instant it finishes.
-                        ttl_ms: EMBED_LANE_LEASE_TTL_MS,
-                        reclaim_policy: ReclaimPolicy::Pinned,
-                    };
-                    // ONE bounded retry on a capacity refusal (never a loop —
-                    // [[brittleness-is-the-highest-priority-work-there-is]]): with
-                    // the standing floor reserved at resolve, a refusal here means
-                    // a TRANSIENT over-commit (a lane mid-relaunch, a burst), and
-                    // relief lands within a governor tick. The second refusal is
-                    // the honest failure.
-                    let mut refused: Option<u64> = None;
-                    let mut granted = None;
-                    for attempt in 0..2u8 {
-                        match daemon.acquire_guarded(&req) {
-                            Ok(guard) => {
-                                continuum_base::probe!(
-                                    class = "embed.vram.leased",
-                                    consumer = EMBED_LANE_CONSUMER_ID,
-                                    bytes = EMBED_LANE_VRAM_BYTES,
-                                    texts = texts.len(),
-                                    retried = (attempt > 0),
-                                    "embedding lane acquired a governed VRAM lease"
-                                );
-                                granted = Some(guard);
-                                break;
-                            }
-                            Err(LeaseError::InsufficientCapacity { available, .. }) => {
-                                continuum_base::probe!(
-                                    class = "embed.vram.refused",
-                                    requested = EMBED_LANE_VRAM_BYTES,
-                                    available = available,
-                                    attempt = attempt,
-                                    "embedding VRAM lease refused — failing loud, NOT emitting degenerate zeros"
-                                );
-                                refused = Some(available);
-                                if attempt == 0 {
-                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                }
-                            }
-                            Err(e) => {
-                                return Err(format!(
-                                    "embed: VRAM lease error ({e:?}) — refusing to embed ungoverned"
-                                ));
-                            }
-                        }
-                    }
-                    match granted {
-                        Some(guard) => Some(guard),
-                        None => {
-                            let available = refused.unwrap_or(0);
-                            return Err(format!(
-                                "embed: VRAM lease refused twice — {} MiB requested, {} MiB governed-available. \
-                                 Refusing to allocate an OOM-doomed embedding context (it would decode to \
-                                 degenerate zeros). Free VRAM (tier down serving) and retry.",
-                                EMBED_LANE_VRAM_BYTES / (1024 * 1024),
-                                available / (1024 * 1024),
-                            ));
-                        }
-                    }
-                }
-                // Ungoverned node (no ResourceDaemon::global()): behavior unchanged —
-                // the backend's own new_context allocation is the only gate, as before.
-                None => None,
-            }
-        };
-
-        let embeddings = embedding.run(texts, _vram_lease).await?;
+        // Tokenized first, so the context's memory is known before it exists: the lease is what THIS
+        // request allocates, in the pool the context resides in (`embed_lane_memory`). Ungoverned, a
+        // context grabbed memory behind the governor's back and, under pressure, decoded to an
+        // all-zero vector that silently broke recall; a fixed 1,792 MiB bound refused 91% of short
+        // texts on the M5 (26960c09d, 758 of 834 in 3 h).
+        let batch = embedding.tokenize(&texts)?;
+        let lease = super::embed_lane_memory::lease(batch.context_bytes(backend.placement()), texts.len()).await?;
+        let embeddings = embedding.run(batch, lease).await?;
         Ok(EmbeddingResponse {
             embeddings,
             model: model_id,

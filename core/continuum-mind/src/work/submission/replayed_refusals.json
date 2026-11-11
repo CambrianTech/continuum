@@ -1,0 +1,582 @@
+[
+ {
+  "persona": "Aiko",
+  "verb": "work/review",
+  "review_card_id": "3a783ea1",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is open now (revision 1794023545804); you can: work/claim, work/note, work/state, work/submission"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/review",
+  "review_card_id": "3a783ea1",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is open now (revision 1794023545804); you can: work/claim, work/note, work/state, work/submission"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/review",
+  "review_card_id": "3a783ea1-a40a-4278-b2f5-69026de6d889",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is open now (revision 1794023545804); you can: work/claim, work/note, work/state, work/submission"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/review",
+  "review_card_id": "3a783ea1-a40a-4278-b2f5-69026de6d889",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is open now (revision 1794023545804); you can: work/claim, work/note, work/state, work/submission"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/review",
+  "review_card_id": "3a783ea1-a40a-4278-b2f5-69026de6d889",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is open now (revision 1794023545804); you can: work/claim, work/note, work/state, work/submission"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/review",
+  "review_card_id": "48c587c5",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is closed now (revision 1793463416592); you can: work/note, work/state, work/submission"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/review",
+  "review_card_id": "4d34acb9",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is claimed now (revision 1794048995504); you can: work/claim, work/heartbeat, work/note, work/release, wor"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/review",
+  "review_card_id": "e2c7d457",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is review now (revision 1789410701194); you can: work/note, work/state"
+ },
+ {
+  "persona": "Aris",
+  "verb": "work/review",
+  "review_card_id": "e5c80c7f",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is review now (revision 1794041098997); you can: work/heartbeat, work/note, work/release, work/state, work"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "52aa43a8",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is review now (revision 1794021197299); you can: work/note, work/state, work/submission"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "52aa43a8",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is review now (revision 1794021197299); you can: work/note, work/state, work/submission"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "83736d78-bf79-47f5-b420-642e141192f7",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is open now (revision 1794036957415); you can: work/claim, work/note, work/state"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "b51f4b59",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is review now (revision 1794040020192); you can: work/heartbeat, work/note, work/release, work/state, work"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "b51f4b59",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is review now (revision 1794047156916); you can: work/heartbeat, work/note, work/release, work/state, work"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "be12a016",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is claimed now (revision 1794039658636); you can: work/claim, work/heartbeat, work/note, work/release, wor"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "be12a016",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is claimed now (revision 1794041816644); you can: work/claim, work/heartbeat, work/note, work/release, wor"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "be12a016",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is claimed now (revision 1794043262435); you can: work/claim, work/heartbeat, work/note, work/release, wor"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "be12a016",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is claimed now (revision 1794046797264); you can: work/claim, work/heartbeat, work/note, work/release, wor"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "be12a016",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is claimed now (revision 1794048957884); you can: work/claim, work/heartbeat, work/note, work/release, wor"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "be12a016",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is claimed now (revision 1794051118943); you can: work/claim, work/heartbeat, work/note, work/release, wor"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "be12a016",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is claimed now (revision 1794051478772); you can: work/claim, work/heartbeat, work/note, work/release, wor"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/review",
+  "review_card_id": "d9a406fb",
+  "refused": "work/review: [invalid] the card you named is not a review card (it reviews nothing). The card is closed now (revision 1793110053991); you can: work/note, work/state"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "0278c677",
+  "refused": "work/submission: [invalid] no card matches \"0278c677\" among 1714: check the id you were shown",
+  "submission_id": "48996783"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "02c26ccd",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. this card has no submissions yet: work/submit publishes one once your che",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "041d008b",
+  "refused": "work/submission: [invalid] no submission matches id prefix '48996783' — available submission ids: c88bf229, 30f85ade, 2f1c335a, 48a8c65b. submissions on this card: c88bf229 by 75ece751, 30f85ade by 75",
+  "submission_id": "48996783"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "041d008b",
+  "refused": "work/submission: [not_found] submission is absent from this card and room — this verb inspects a SUBMISSION by submission_id; to read the card itself use work/get {card_id}, to publish yours use work/",
+  "submission_id": "f8896e64-e9cd-4f9e-91cf-4774ca68fe90"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "3a783ea1",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: f8896e64 by 75ece751",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "3a783ea1-a40a-4278-b2f5-69026de6d889",
+  "refused": "work/submission: [invalid] no submission matches id prefix '48996783' — available submission ids: f8896e64. submissions on this card: f8896e64 by 75ece751",
+  "submission_id": "48996783"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "3a783ea1-a40a-4278-b2f5-69026de6d889",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: f8896e64 by 75ece751",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "4d34acb9",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. this card has no submissions yet: work/submit publishes one once your che",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [not_found] submission is absent from this card and room — this verb inspects a SUBMISSION by submission_id; to read the card itself use work/get {card_id}, to publish yours use work/",
+  "submission_id": "f8896e64-e9cd-4f9e-91cf-4774ca68fe90"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. this card has no submissions yet: work/submit publishes one once your che",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "58855348-f6fa-56d7-9d4e-23bec0a81690",
+  "refused": "work/submission: [not_found] submission is absent from this card and room — this verb inspects a SUBMISSION by submission_id; to read the card itself use work/get {card_id}, to publish yours use work/",
+  "submission_id": "f8896e64-e9cd-4f9e-91cf-4774ca68fe90"
+ },
+ {
+  "persona": "Aiko",
+  "verb": "work/submission",
+  "card_id": "e657ea8e",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. this card has no submissions yet: work/submit publishes one once your che",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "069c25747",
+  "refused": "work/submission: [invalid] no card matches \"069c25747\" among 2317: check the id you were shown",
+  "submission_id": "069c25747"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "0caefac4",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '43870f56' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "43870f56"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "0caefac4",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '43870f56' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "43870f56"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "0caefac4",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '48996783' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "48996783"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "0caefac4",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '48996783' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "48996783"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "0caefac4",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '48996783' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "48996783"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "0caefac4",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '4ed430f0' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "4ed430f0"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "0caefac4",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'a7d92f9e' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "a7d92f9e"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "0caefac4",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'b3025eaf' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "b3025eaf"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "0caefac4",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'd8a29a71' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "d8a29a71"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "0caefac4",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'e1c10f6f' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "e1c10f6f"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "0caefac4",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'e1c10f6f' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "e1c10f6f"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "3a783ea1",
+  "refused": "work/submission: [invalid] 'auto' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: f8896e64 by 75ece751",
+  "submission_id": "auto"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "3a783ea1",
+  "refused": "work/submission: [invalid] no submission matches id prefix 'c88bf229' — available submission ids: f8896e64. submissions on this card: f8896e64 by 75ece751",
+  "submission_id": "c88bf229"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "3a783ea1",
+  "refused": "work/submission: [invalid] no submission matches id prefix 'e2f0d96b' — available submission ids: f8896e64. submissions on this card: f8896e64 by 75ece751",
+  "submission_id": "e2f0d96b"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "3a783ea1",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: f8896e64 by 75ece751",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "3a783ea1",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: f8896e64 by 75ece751",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "3a783ea1",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: f8896e64 by 75ece751",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "3a783ea1",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: f8896e64 by 75ece751",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "3a783ea1",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: f8896e64 by 75ece751",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "48c587c5",
+  "refused": "work/submission: [invalid] no submission matches id prefix '0caefac4' — available submission ids: 4ed430f0. submissions on this card: 4ed430f0 by 8044b75b",
+  "submission_id": "0caefac4"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "48c587c5",
+  "refused": "work/submission: [invalid] no submission matches id prefix 'd06b974b' — available submission ids: 4ed430f0. submissions on this card: 4ed430f0 by 8044b75b",
+  "submission_id": "d06b974b"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "48c587c5",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: 4ed430f0 by 8044b75b",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "48c587c5",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: 4ed430f0 by 8044b75b",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "48c587c5",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: 4ed430f0 by 8044b75b",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "48c587c5",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. submissions on this card: 4ed430f0 by 8044b75b",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "4d0ed8f9",
+  "refused": "work/submission: [invalid] no submission matches id prefix '4d0ed8f9' — available submission ids: 83ddb864. submissions on this card: 83ddb864 by e5f4141d",
+  "submission_id": "4d0ed8f9"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '48996783' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "48996783"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '48996783' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "48996783"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'a7d92f9e' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "a7d92f9e"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'b3025eaf' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "b3025eaf"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'b3025eaf' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "b3025eaf"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'e2a01f69' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "e2a01f69"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [not_found] submission is absent from this card and room — this verb inspects a SUBMISSION by submission_id; to read the card itself use work/get {card_id}, to publish yours use work/",
+  "submission_id": "f8896e64-e9cd-4f9e-91cf-4774ca68fe90"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [not_found] submission is absent from this card and room — this verb inspects a SUBMISSION by submission_id; to read the card itself use work/get {card_id}, to publish yours use work/",
+  "submission_id": "f8896e64-e9cd-4f9e-91cf-4774ca68fe90"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [not_found] submission is absent from this card and room — this verb inspects a SUBMISSION by submission_id; to read the card itself use work/get {card_id}, to publish yours use work/",
+  "submission_id": "f8896e64-e9cd-4f9e-91cf-4774ca68fe90"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [not_found] submission is absent from this card and room — this verb inspects a SUBMISSION by submission_id; to read the card itself use work/get {card_id}, to publish yours use work/",
+  "submission_id": "f8896e64-e9cd-4f9e-91cf-4774ca68fe90"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "58855348",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. this card has no submissions yet: work/submit publishes one once your che",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "d6ec19d7",
+  "refused": "work/submission: [invalid] 'auto' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. this card has no submissions yet: work/submit publishes one once your check",
+  "submission_id": "auto"
+ },
+ {
+  "persona": "Atlas",
+  "verb": "work/submission",
+  "card_id": "d6ec19d7",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'd6ec19d7' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout ",
+  "submission_id": "d6ec19d7"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '1794043262435' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your chec",
+  "submission_id": "1794043262435"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '1794043262435' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your chec",
+  "submission_id": "1794043262435"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '1794043262435' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your chec",
+  "submission_id": "1794043262435"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '1794043262435' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your chec",
+  "submission_id": "1794043262435"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '1794043262435' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your chec",
+  "submission_id": "1794043262435"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '1794043262435' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your chec",
+  "submission_id": "1794043262435"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix '1794043262435' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your chec",
+  "submission_id": "1794043262435"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'be12' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout has ",
+  "submission_id": "be12"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] no submissions exist to match id prefix 'be12' — there are none to choose from right now. this card has no submissions yet: work/submit publishes one once your checkout has ",
+  "submission_id": "be12"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. this card has no submissions yet: work/submit publishes one once your che",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. this card has no submissions yet: work/submit publishes one once your che",
+  "submission_id": "latest"
+ },
+ {
+  "persona": "Benchy",
+  "verb": "work/submission",
+  "card_id": "be12a016",
+  "refused": "work/submission: [invalid] 'latest' is not a usable submission handle — give a full UUID or at least 4 leading hex characters. this card has no submissions yet: work/submit publishes one once your che",
+  "submission_id": "latest"
+ }
+]

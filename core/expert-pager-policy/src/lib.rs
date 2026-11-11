@@ -5,6 +5,7 @@
 //! law. continuum-core re-exports these modules under
 //! `capacity::{expert_decay_policy, plan_file, bandit_plan_controller}`
 //! — same paths as before the extraction.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod controller;
 pub mod decay;

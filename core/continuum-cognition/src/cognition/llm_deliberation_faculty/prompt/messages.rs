@@ -130,9 +130,12 @@ impl LlmDeliberationFaculty {
         // never displaces what her view already holds (Benchy, the M5, 2026-10-18 16:16Z: reuse
         // fell to the system prompt the turn a `[pattern]` notice landed ahead of the ring).
         let mut perceived: Vec<crate::cognition::context_streams::facts::Fact> = Vec::new();
-        let mut stimulus_key = None;
         for (index, turn) in ws.turns.iter().enumerate() {
-            let role = if turn.is_self { "assistant" } else { "user" };
+            let role = if turn.is_self {
+                crate::cognition::context_streams::Role::Assistant
+            } else {
+                crate::cognition::context_streams::Role::User
+            };
             let line = turn_message_line_addressed(turn, &participants, &self.persona_name);
             // A room turn is its event (unique, and what her read receipt names); a turn without
             // one keys by time and author, an opaque stimulus by its position.
@@ -148,29 +151,26 @@ impl LlmDeliberationFaculty {
                 continue;
             }
             if Some(index) == stimulus_index {
-                // The event time and addressed author are required provenance too.
+                // The event time and addressed author are required provenance too. Her act's tail
+                // carries it, under its turn's element, held out of her conversation while it is the ask.
                 field(&mut input, line.as_bytes());
-                stimulus = Some(ChatMessage::text(role, line));
-                stimulus_key = Some(key);
+                stimulus = Some(crate::cognition::context_streams::tail::Ask { key, role, line });
                 continue;
             }
-            let role = if turn.is_self {
-                crate::cognition::context_streams::Role::Assistant
-            } else {
-                crate::cognition::context_streams::Role::User
-            };
             turns.push(crate::cognition::context_streams::conversation::Turn { key, role, line, pointer: None });
         }
         // Messages that reached her room during this turn are conversation too, after the
         // burst, keyed by their event: in her view they append like any turn, and one
         // already in the burst keeps its place. They rode the fresh tail as required input
         // under a quarter-of-the-window share (ROOM_UPDATE_SHARE_DENOM), a second budget.
+        let mut arrived = None;
         for update in ws.room_updates.iter() {
             let key = update.event_id.to_string();
             if turns.iter().any(|turn| turn.key == key) {
                 continue;
             }
             let line = update.render_room_update();
+            arrived = Some(key.clone());
             turns.push(crate::cognition::context_streams::conversation::Turn { key, role: crate::cognition::context_streams::Role::User, line, pointer: None });
         }
         // One line after them that never collapses: how many arrived and where the rest
@@ -189,8 +189,6 @@ impl LlmDeliberationFaculty {
                 line,
             });
         }
-        // What follows the view in this act's prompt: facts, the clock, demoted payloads.
-        let mut messages: Vec<ChatMessage> = Vec::new();
 
         // PERCEPTION FACTS (docs/architecture/PERCEPTION-FACTS.md slice 2b):
         // own-repetition (#134), peer-echo (#152), [context] bounds (#152),
@@ -341,8 +339,6 @@ impl LlmDeliberationFaculty {
             .map(|c| c.faculty.as_str())
             .collect();
         let blocks = self.carry_held_blocks(ws.activity_room_id, blocks, &ended);
-        let result_pointers = Vec::new();
-        let grounding_at = 0;
 
         // The facts are her view's (`context_streams::facts`): appended where they fire, after
         // everything her view held and before this act's tail, so they stay ahead of the ask
@@ -353,121 +349,124 @@ impl LlmDeliberationFaculty {
         // message until 2026-09-01, where its per-act mutation (the [now]
         // minute tick, DIRECTED↔SILENCE) invalidated the KV prefix behind it
         // on nearly every act — hit_rate 0.0 with per-resident slots and a
-        // server whose reuse measured perfect the same hour.
-        if let Some(framing) = trailing_framing {
-            messages.push(ChatMessage::text("user", framing.to_string()));
-        }
+        // server whose reuse measured perfect the same hour. It is an item of her
+        // act's tail, named by what it says, so a line she already holds is not sent again.
+        let framing = trailing_framing.map(str::to_owned);
         // Use the actual received action payload. The old pinned block clipped
         // its head before this fitter clipped its tail: the two cuts could leave
         // only a truncation notice. Oversized output paging belongs to the
         // existing spill/tool-output producer, never to a generic byte reducer.
         input.update(b"active_result");
-        let mut statement_in_call = false;
-        let mut latest_act = None;
-        let latest_result = match self.working_memory.as_ref() {
-            None => Vec::new(),
-            Some(wm) => match wm.active_action_full() {
-                None => Vec::new(),
-                Some((seq, full)) => {
-                    latest_act = Some(seq);
-                    let message = wm.full_result_message(seq, &full);
-                    // Provenance remains part of request identity. Typed calls and
-                    // producer payloads below additionally identify the native exchange.
-                    field(&mut input, message.as_bytes());
-                    let observations = wm.active_action_observations(seq);
-                    let calls = wm.active_action_native_calls(seq);
-                    let mut group = if calls.is_empty() {
-                        // Legacy receipts have no native IDs to echo. Whole: the one allocation
-                        // reduces it by level when it alone exceeds her window
-                        // (`fit_newest_result`), never a head cut here (FOCUS-CONTRACT rule 4).
-                        vec![ChatMessage::text("user", message)]
-                    } else {
-                        let results: Vec<_> = observations.iter().map(|o| o.output.result.clone()).collect();
-                        for observation in &observations {
-                            field(&mut input, observation.output.result.tool_use_id.as_bytes());
-                            field(&mut input, observation.output.result.content.as_bytes());
-                            input.update([match observation.output.result.is_error { None => 0, Some(false) => 1, Some(true) => 2 }]);
-                        }
-                        for call in &calls {
-                            field(&mut input, call.id.as_bytes());
-                            field(&mut input, call.name.as_bytes());
-                            field(&mut input, call.input.to_string().as_bytes());
-                        }
-                        let mut calls = ChatMessage::assistant_tool_use(&calls);
-                        // HER TURN AS SHE WROTE IT: her words, then her calls, one assistant message
-                        // (the template renders it `words\n\n<tool_call>…`, as she generated it).
-                        // Two messages rendered an `<|im_end|>` and a second assistant header
-                        // between them that she never wrote.
-                        if let (Some(words), crate::ai::types::MessageContent::Parts(parts)) = (wm.statement_of_act(seq, ws.activity_room_id), &mut calls.content) {
-                            parts.insert(0, crate::ai::types::ContentPart::Text { text: words });
-                            statement_in_call = true;
-                        }
-                        let mut results = ChatMessage::tool_results(&results);
-                        // Preserve producer-owned whole-or-pointer payloads, never expand
-                        // spill handles or reconstruct native protocol from receipt prose.
-                        if let crate::ai::types::MessageContent::Parts(parts) = &mut results.content {
-                            parts.push(crate::ai::types::ContentPart::Text { text: wm.result_label(seq) });
-                        }
-                        // This entire required group survives fitting or faults together.
-                        vec![calls, results]
-                    };
-                    if let Some(visual) = visual.filter(|v| v.seq == seq && !observations.is_empty()) {
-                        // Legacy checkpoints can still own pixels without original
-                        // native call provenance. Preserve either representation.
-                        if let Some(result) = group.last_mut() {
-                            let mut parts = match std::mem::replace(&mut result.content, crate::ai::types::MessageContent::Parts(Vec::new())) {
-                                crate::ai::types::MessageContent::Text(text) => vec![crate::ai::types::ContentPart::Text { text }],
-                                crate::ai::types::MessageContent::Parts(parts) => parts,
-                            };
-                            for (hash, part) in &visual.parts {
-                                field(&mut input, hash.as_bytes());
-                                match part {
-                                    crate::ai::types::ContentPart::Text { text } => field(&mut input, text.as_bytes()),
-                                    _ => field(&mut input, b"native-image"),
-                                }
-                                parts.push(part.clone());
-                            }
-                            result.content = crate::ai::types::MessageContent::Parts(parts);
-                        }
-                    }
-                    group
+        let acted = self.working_memory.as_ref().and_then(|wm| {
+            let (seq, full) = wm.active_action_full()?;
+            let message = wm.full_result_message(seq, &full);
+            // Provenance remains part of request identity. Typed calls and
+            // producer payloads below additionally identify the native exchange.
+            field(&mut input, message.as_bytes());
+            let observations = wm.active_action_observations(seq);
+            let calls = wm.active_action_native_calls(seq);
+            use crate::cognition::context_streams::tail::Results;
+            let results = if calls.is_empty() {
+                // Legacy receipts have no native IDs to echo. Whole: the one allocation
+                // pages it only past what her window holds beside every other hard limit
+                // (`fit_newest_result`), never a head cut here (FOCUS-CONTRACT rule 4).
+                Results::Receipt(message)
+            } else {
+                for observation in &observations {
+                    field(&mut input, observation.output.result.tool_use_id.as_bytes());
+                    field(&mut input, observation.output.result.content.as_bytes());
+                    input.update([match observation.output.result.is_error { None => 0, Some(false) => 1, Some(true) => 2 }]);
                 }
-            },
-        };
+                for call in &calls {
+                    field(&mut input, call.id.as_bytes());
+                    field(&mut input, call.name.as_bytes());
+                    field(&mut input, call.input.to_string().as_bytes());
+                }
+                // Producer-owned whole-or-pointer payloads, never spill handles expanded or
+                // native protocol reconstructed from receipt prose.
+                Results::Native { results: observations.iter().map(|o| o.output.result.clone()).collect(), label: wm.result_label(seq) }
+            };
+            // HER TURN AS SHE WROTE IT: her words, then her calls, one assistant message
+            // (the template renders it `words\n\n<tool_call>…`, as she generated it).
+            // Two messages rendered an `<|im_end|>` and a second assistant header
+            // between them that she never wrote.
+            let words = if calls.is_empty() { None } else { wm.statement_of_act(seq, ws.activity_room_id) };
+            // Legacy checkpoints can still own pixels without original native call
+            // provenance. Either representation carries them while it is newest.
+            let mut attachments = Vec::new();
+            if let Some(visual) = visual.filter(|v| v.seq == seq && !observations.is_empty()) {
+                for (hash, part) in &visual.parts {
+                    field(&mut input, hash.as_bytes());
+                    match part {
+                        crate::ai::types::ContentPart::Text { text } => field(&mut input, text.as_bytes()),
+                        _ => field(&mut input, b"native-image"),
+                    }
+                    attachments.push(part.clone());
+                }
+            }
+            let actions = crate::cognition::context_streams::actions::Actions { memory: wm, persona: self.persona_id };
+            Some(crate::cognition::context_streams::tail::Acted {
+                seq,
+                newest: actions.newest(),
+                words,
+                calls,
+                results,
+                // The run it ends, whatever its effect (a shell command too): the count moves
+                // every repeat, so her input never equals her last.
+                run: wm.repeat_run(seq).map(|run| run.to_string()),
+                attachments,
+            })
+        });
+        let statement_in_call = acted.as_ref().is_some_and(|acted| acted.words.is_some());
 
         // An empty conversation is a legitimate state (a quiet room on a
         // self-initiated tick): the situation lives in the system prompt's assembled
         // context, not in a conversation turn. Adapters still require ≥1 message, so
-        // emit the rendered world-state projection as one user message — the exact
+        // the rendered world-state projection is the ask — the exact
         // single-message shape the faculty sent before this refactor. NOT a fallback
         // hiding a defect ([[fallbacks-are-illegal-fail-loud]]): zero turns is a
         // real, valid input, and this is its faithful representation.
-        if messages.is_empty() && facts.is_empty() && stimulus.is_none() && latest_result.is_empty() {
+        let world = (framing.is_none() && facts.is_empty() && stimulus.is_none() && acted.is_none()).then(|| {
             field(&mut input, ws.world_state.as_bytes());
-            stimulus = Some(ChatMessage::text("user", ws.world_state.clone()));
-        }
-        input.update([(!latest_result.is_empty()) as u8]);
+            ws.world_state.clone()
+        });
+        input.update([acted.is_some() as u8]);
         let statement = self.working_memory.as_ref().and_then(|memory| memory.action_statement(ws.activity_room_id));
         if let Some(text) = &statement {
             field(&mut input, text.as_bytes());
         }
-        // Rendered on its own only when it is not already her words in her newest call.
-        let action_statement = statement.filter(|_| !statement_in_call).map(|text| ChatMessage::text("assistant", text));
-        PromptMessages {
+        let tail = crate::cognition::context_streams::tail::Tail::of(
+            self.persona_id,
+            crate::cognition::context_streams::tail::Parts {
+                framing,
+                ask: stimulus,
+                world,
+                // Its own message only when it is not already her words in her newest call.
+                statement: statement.filter(|_| !statement_in_call),
+                acted,
+            },
+        );
+        let mut prompt = PromptMessages {
             input_identity: input.finalize().into(),
-            history: messages,
+            history: Vec::new(),
             streams: super::types::Streams {
-                conversation: crate::cognition::context_streams::conversation::Conversation { persona: self.persona_id, turns, stimulus: stimulus_key },
+                conversation: crate::cognition::context_streams::conversation::Conversation { persona: self.persona_id, turns, arrived },
                 blocks,
                 held: crate::cognition::context_streams::held_work::HeldWorkStream { persona: self.persona_id, work: std::sync::Arc::clone(&ws.held) },
                 facts: crate::cognition::context_streams::facts::Facts { persona: self.persona_id, facts },
-                latest_act,
+                tail,
             },
-            result_pointers,
-            grounding_at,
-            stimulus,
-            latest_result,
-            action_statement,
-        }
+            result_pointers: Vec::new(),
+            grounding_at: 0,
+            stimulus: None,
+            latest_result: Vec::new(),
+            action_statement: None,
+            // The one price of a message, for the engine her request reaches (its measured template).
+            pricing: self.prompt_fit(&self.binding.load()).1,
+        };
+        // Her tail whole until her view, once placed, judges it (`judge_tail`).
+        let whole = continuum_context::view::Judged::unheld(&prompt.streams.tail, |_| continuum_context::level::Level::Full);
+        prompt.place_tail(whole);
+        prompt
     }
 }

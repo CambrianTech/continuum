@@ -73,7 +73,7 @@ async fn an_empty_plan_takes_the_live_lane_down_once() {
     );
     assert_eq!(idles.load(Ordering::SeqCst), 0);
     let superseded = daemon.reconcile_to_plan().expect("queued idle");
-    daemon.intent.set_pin(None, true);
+    assert!(daemon.intent.set_pin(None, true).is_ok());
     superseded.await.unwrap();
     assert_eq!(
         idles.load(Ordering::SeqCst),
@@ -321,7 +321,7 @@ async fn reconcile_brings_planned_model_up() {
     let preparing = resolver.clone();
     let intent = daemon.intent.clone();
     daemon.set_model_resolver(Arc::new(move |id| {
-        intent.set_pin(Some(id.to_string()), true);
+        assert!(intent.set_pin(Some(id.to_string()), true).is_ok());
         preparing(id).map(|mut model| {
             model.gguf_local_path = Some(candidate.clone());
             model
@@ -362,7 +362,7 @@ async fn reconcile_brings_planned_model_up() {
     let mut server = FakeServer::healthy(serves.clone(), true);
     server.active = Some("coder-14b".into());
     server.probe_effect = Some(Arc::new(move || {
-        changed.set_pin(Some("coder-14b".into()), true);
+        assert!(changed.set_pin(Some("coder-14b".into()), true).is_ok());
     }));
     let mut stale = daemon_with(Arc::new(server));
     stale.intent = intent;
@@ -500,7 +500,10 @@ async fn reconcile_is_noop_when_already_serving() {
         reads > 0,
         "same-model retention considers original provenance"
     );
-    daemon.intent.set_pin(Some("other-model".into()), true);
+    assert!(daemon
+        .intent
+        .set_pin(Some("other-model".into()), true)
+        .is_ok());
     let revision = daemon.intent.snapshot().revision;
     daemon.plan_tx.send_modify(|snapshot| {
         snapshot.intent_revision = revision;

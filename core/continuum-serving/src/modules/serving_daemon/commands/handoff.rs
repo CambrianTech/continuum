@@ -7,7 +7,8 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::inference::serving_lifecycle::{HandoffCloseOutcome, HandoffOwner, LifecycleGate};
+use crate::inference::engine_residency::ProcessIncarnation;
+use crate::inference::serving_lifecycle::{HandoffCloseOutcome, LifecycleGate};
 
 /// Params for `serving/handoff-close`: the process performing the handoff, which owns the close
 /// (its death releases it).
@@ -51,7 +52,7 @@ crate::action_command! {
     output: ServingHandoffClose,
     run(_this, _ctx, p) => {
         let Some(gate) = LifecycleGate::global() else { return Ok(ServingHandoffClose::NoServing) };
-        let owner = HandoffOwner::of(p.owner_pid).ok_or_else(|| crate::sdk_codegen::CommandError::Invalid(format!(
+        let owner = ProcessIncarnation::of(p.owner_pid).ok_or_else(|| crate::sdk_codegen::CommandError::Invalid(format!(
             "process {} has no readable start time, so its death could never release the close", p.owner_pid
         )))?;
         Ok(match gate.close_for_handoff(owner) {

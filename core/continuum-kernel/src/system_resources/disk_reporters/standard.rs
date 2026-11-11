@@ -183,7 +183,8 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         kept(continuum, "progress"),
         kept(continuum, "probes"),
         // Every tool result, saved whole under its content address, one directory per persona
-        // (`cognition::tool_executor::spill`), written through this class.
+        // (`cognition::tool_executor::spill`), written through this class; and each persona's
+        // archive of acts that left RAM (`<persona>/archive/`, `cognition::working_memory::archive`).
         kept(continuum, "tool-output"),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
         // (~31 GB logical each). RAII drop removes them on every in-process return
@@ -209,6 +210,14 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // left by a crashed run (a finished one moves into its job dir). Registered with
         // the flag itself (2026-09-26) so it is never an unweighed writer.
         cached(continuum, "engine-train"),
+        // Saved state (`continuum_saved_state`): each kind's envelope files, one per key, bounded
+        // by the keys its Retention names. `state/` holds the node's measured serving state
+        // (decode knee, prefill rate, serving rates, lane footprint) beside the other node state
+        // written there; training demand is one file per persona, the training rate one file.
+        // Written for months without a row (docs/architecture/SAVED-STATE.md, inventory 1a/1c).
+        kept(continuum, "state"),
+        TrackedDir::new("training-demand", continuum.join("genome/training-demand")),
+        TrackedDir::with_companions("training-rate", continuum.join("genome/training-rate.json"), &[]),
     ];
     // Present only when its real location is KNOWN (see the warn above). Kept
     // CONDITIONAL rather than defaulted: fabricating a path here is how a class

@@ -23,7 +23,7 @@
 //! primitive + its honoring semantics, which are not blocked on that store.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use uuid::Uuid;
 
@@ -221,9 +221,9 @@ impl FocusState {
     /// concentration ([[no-hardcoded-heuristics-to-steer-cognition]]).
     pub fn allocate(&self, threads: &[(Uuid, f32)], now_ms: u64) -> Vec<ThreadShare> {
         // gain = the softmax inverse-temperature. β=0 → 0 (every score collapses to
-        // exp(0)=1 → uniform → maximally associative); β=1 → MAX_GAIN (the top score
+        // exp(0)=1 → uniform → maximally associative); β=1 → FULL_FOCUS_GAIN (the top score
         // dominates → peaked). Monotonic in the scalar, so concentration rises smoothly.
-        let gain = MAX_GAIN * self.focus;
+        let gain = FULL_FOCUS_GAIN * self.focus;
 
         // Score each thread: base relevance + a cursor proximity bonus (binary today —
         // "is this the lane she settled on"; a semantic thread-distance can replace the
@@ -285,7 +285,7 @@ impl FocusState {
 /// and a unit [`CURSOR_BONUS`], a gain of 8 makes the focused lane dominate by ≈ e⁸
 /// (~3000×) — effectively heads-down — while `β = 0.5` (gain 4, ~55×) keeps the others
 /// present. Tuned to the relevance scale, not a magic constant: change it with the scale.
-const MAX_GAIN: f32 = 8.0;
+const FULL_FOCUS_GAIN: f32 = 8.0;
 
 /// The score bonus the sticky cursor lane receives, on the same scale as base relevance.
 /// Unity means "as salient as a maximally-relevant thread" — so once she settles a
@@ -314,28 +314,27 @@ pub struct ThreadShare {
 /// state; it is the single home for focus, the same way `persona_workspace::global()`
 /// is the single home for a persona's mind. #89 (airc per-(persona,room) state)
 /// persists behind this same handle later; the in-memory authority lives here.
+///
+/// The map is a `DashMap`: its shard locks carry no poison state, so resolving a handle has no
+/// failure case. A panic while one persona's `FocusState` is held still poisons that persona's
+/// own mutex, and its callers see it there.
 #[derive(Default)]
 pub struct FocusRegistry {
-    states: Mutex<HashMap<Uuid, Arc<Mutex<FocusState>>>>,
+    states: DashMap<Uuid, Arc<Mutex<FocusState>>>,
 }
 
 impl FocusRegistry {
     pub fn new() -> Self {
-        Self {
-            states: Mutex::new(HashMap::new()),
-        }
+        Self { states: DashMap::new() }
     }
 
     /// Resolve (get-or-create) the persona's focus handle. Idempotent: the first
     /// caller for a persona installs a default `FocusState` (balanced, no mutes — the
     /// correct birth posture, not a silent fallback over a missing precondition); every
     /// later caller — serve loop, tool — gets the SAME `Arc`, so her steering and the
-    /// wake floor read one state. A poisoned lock is a prior panic mid-mutation and is
-    /// propagated (fail loud), never swallowed.
+    /// wake floor read one state.
     pub fn handle(&self, persona_id: Uuid) -> Arc<Mutex<FocusState>> {
         self.states
-            .lock()
-            .expect("focus registry mutex poisoned by a prior panic")
             .entry(persona_id)
             .or_insert_with(|| Arc::new(Mutex::new(FocusState::new())))
             .clone()
@@ -343,11 +342,7 @@ impl FocusRegistry {
 
     /// Peek the handle without creating one — `None` if she has never touched focus.
     pub fn get(&self, persona_id: &Uuid) -> Option<Arc<Mutex<FocusState>>> {
-        self.states
-            .lock()
-            .expect("focus registry mutex poisoned by a prior panic")
-            .get(persona_id)
-            .cloned()
+        self.states.get(persona_id).map(|entry| Arc::clone(entry.value()))
     }
 }
 

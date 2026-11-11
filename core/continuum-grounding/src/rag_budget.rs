@@ -34,6 +34,7 @@
 //! - `EngramSource`: one engram
 //! - `CodeSource`: one function / one snippet
 //! - `ToolSource`: one tool description
+//!
 //! The allocator never knows what a "complete unit" looks like —
 //! it only deals in token counts.
 //!

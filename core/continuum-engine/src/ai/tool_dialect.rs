@@ -107,35 +107,6 @@ fn command_names() -> &'static HashSet<&'static str> {
     NAMES.get_or_init(|| command_registry_live().iter().map(|d| d.name).collect())
 }
 
-/// A verb's purpose and what to use instead, shared with error feedback without erasing the
-/// real failure or declaring a discoverable command impossible to use. Guidance, NOT
-/// authorization.
-pub struct WithheldVerb {
-    pub why: &'static str,
-    pub instead: &'static str,
-}
-
-/// What the executor tells a caller who reached a verb aimed at someone else's work (a peer's
-/// diff, a review verdict): its purpose and the verb for her own work. Guidance only; whether a
-/// verb is among her hands is the value its command declares (`CommandSpec::DISCLOSURE`).
-pub fn withheld_from_hands(name: &str) -> Option<WithheldVerb> {
-    match name.replace('_', "/").as_str() {
-        "work/review" => Some(WithheldVerb {
-            why: "`work/review` records a reviewer's verdict under a REVIEW claim for someone else's work. It does not inspect or submit your own implementation card.",
-            instead: "For your own card: `work/get` to read it, `work/note` to record progress, `work/submit` to hand it in. To give a review word on a peer's PR, say it in the room: \"APPROVED at <sha>\" or \"CHANGES REQUESTED at <sha>: <why>\".",
-        }),
-        "work/submission" => Some(WithheldVerb {
-            why: "`work/submission` inspects a submitted artifact for review; use `work/get` to inspect your own card.",
-            instead: "For your own card: `work/get` to read it, `work/submit` to hand it in (that IS the submission).",
-        }),
-        "code/git/apply" => Some(WithheldVerb {
-            why: "`code/git/apply` applies a peer's unified diff; it is not the command for authoring your own edits.",
-            instead: "Your edits land with `code/edit` and `code/write`; commit them with `code/git/commit`.",
-        }),
-        _ => None,
-    }
-}
-
 /// What sat in the tool NAME field when it was not a verb at all. The executor's
 /// did-you-mean answers a NEAR verb; these two are not near anything, and before this
 /// the receipt was "call `commands/help`" — a turn spent with no lesson (card b579a9c7,
@@ -328,12 +299,10 @@ pub fn normalize_call(call: &mut crate::ai::types::ToolCall) -> Option<String> {
     let mut merged = 0usize;
     if let Some(from_name) = parsed {
         if !from_name.is_empty() {
-            let obj = match call.input.as_object_mut() {
-                Some(o) => o,
-                None => {
-                    call.input = serde_json::Value::Object(serde_json::Map::new());
-                    call.input.as_object_mut().expect("just set to an object")
-                }
+            // An input that is not an object carried no named fields; the recovered ones become it.
+            let mut obj = match std::mem::take(&mut call.input) {
+                serde_json::Value::Object(o) => o,
+                _ => serde_json::Map::new(),
             };
             for (k, v) in from_name {
                 if !obj.contains_key(&k) {
@@ -341,6 +310,7 @@ pub fn normalize_call(call: &mut crate::ai::types::ToolCall) -> Option<String> {
                     merged += 1;
                 }
             }
+            call.input = serde_json::Value::Object(obj);
         }
     }
 

@@ -249,12 +249,12 @@ impl LlmDeliberationFaculty {
             persona_id,
             persona_name: persona_name.into(),
             system_prompt: system_prompt.into(),
-            // A private throwaway binding at the runnable floor — the live spawn
-            // path immediately REPLACES it with the shared handle via
+            // A private binding at the window her adapter reports (0 when it has none yet) — the
+            // live spawn path immediately REPLACES it with the shared handle via
             // `with_model_binding` (so a `serving/pin` re-home is seen here), and
             // `with_model`/`with_context_window` mutate it for tests. Mirrors how
             // `new` builds an `empty_genome()` that `with_genome` then shares in.
-            binding: model_binding(adapter, None, crate::inference::planning::MIN_SERVE_CTX),
+            binding: model_binding(Arc::clone(&adapter), None, adapter.capabilities().max_context_window.unwrap_or(0)), // unwrap_or: an adapter that reports no window binds none (nothing fits, so an unreplaced binding refuses loudly instead of serving on an invented floor); the spawn replaces it
             prompt_feedback: ArcSwapOption::empty(),
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
@@ -353,11 +353,16 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    /// Is this turn an ACT with her hands (a deliverable, or her own initiative) rather
-    /// than a message turn? Asked by the ACT output cap and the lane priority, so it lives
-    /// in one place. Never by the tool surface: that is the same on every kind of turn.
-    fn is_work_turn(&self, ws: &Workspace) -> bool {
-        (ws.workspace_deliverable || ws.initiative) && !self.surface.hands().is_empty()
+    /// Every turn she has hands for is an ACT: a mind is for thinking and doing (Joel,
+    /// 2026-11-09: "Minds aren't for cards, they're for thinking and doing, period"), so what she
+    /// may produce is bounded by her measured need and her window, never by a class the system
+    /// picks from a card, a deliverable or who spoke. A message turn was a PASS capped at a short
+    /// reply's ~400 tokens while her hands were the same, so a write she began there hit the cap
+    /// before its call committed and the act was discarded: 394 of Atlas's acts and 277 of
+    /// Aiko's (the M5, 2026-11-09, `tools/<cut at the output limit>`). A mind with no hands
+    /// can only speak: that turn is a pass. Asked by the output cap and the lane priority.
+    fn is_work_turn(&self, _ws: &Workspace) -> bool {
+        !self.surface.hands().is_empty()
     }
 
     /// What kind of turn this is, for its allowance: a work turn is an ACT; anything
@@ -399,16 +404,15 @@ impl LlmDeliberationFaculty {
     /// exceeds the bare floor and context is what yields. Treat this as "you are definitely
     /// broken below here", never "you are fine above it".
     ///
-    /// `fixed prompt cost + reply floor`, derived, never a magic number: the surface is
-    /// measured off the specs actually offered, and the reply floor is the same
-    /// [`Self::COMPLETION_FLOOR_TOKENS`] the reply's flex claim floors at ([`reply_claim`]).
+    /// `fixed prompt cost + one cell`, derived, never a magic number: the surface is measured off
+    /// the specs actually offered, and a reply needs at least the engine's one free cell to begin.
     /// It used to be `fixed × D/(D-1)` for a reply SHARE of `1/D`; the reply is now a
     /// claimant in the window's one allocation, so its smallest grant is what the bound
     /// must close against, not a fraction.
     pub fn min_window_for_agentic_surface(&self) -> u32 {
         (self.describe_tool_tokens() as u32)
             .saturating_add(self.framing_floor_tokens())
-            .saturating_add(Self::COMPLETION_FLOOR_TOKENS)
+            .saturating_add(1) // the fork's one free cell: the least room a reply needs to begin
     }
 
     /// The irreducible framing cost, MEASURED — never a constant.
@@ -426,36 +430,6 @@ impl LlmDeliberationFaculty {
         estimate_guard_tokens(&bare) as u32
     }
 
-    /// What an UNMEASURED mind's reply wants ([`reply_claim`]'s max): a reply-sized
-    /// constant, never a fraction of the window.
-    ///
-    /// The prior used to be a `window / 2` share, on the reasoning
-    /// that the most generous defensible ask is the safe default. Measured on one citizen,
-    /// same question, 28 minutes apart (2026-09-18, Cormac, `delib.context.render`):
-    ///
-    /// | seat | window | reserve | context rendered | answer |
-    /// |------|--------|---------|------------------|--------|
-    /// | remote 27B | 16,384 | 2,817 (measured) | ~11k | "Tracing the dream/memory-consolidation path through `dream_consolidation.rs`…" |
-    /// | home | 32,768 | **16,384** (the share) | **297** | "As an AI assistant, I am currently not actively engaged in any specific project…" |
-    ///
-    /// A BIGGER window gave her LESS context. Half of it was held back for a reply she
-    /// would never write, framing took 2,727 of the remainder, and the 12k of conversation
-    /// did not fit at all — she was asked who she is with 297 tokens of world in front of
-    /// her, and the stub is the CORRECT answer to that prompt. She was not erased by a weak
-    /// model; she was handed nothing.
-    ///
-    /// The same fraction on the other end of the range is the 5090's 101,120-token window
-    /// licensing a 100k think-only turn that wrote nothing. One defect, two faces: the
-    /// reserve was sized to the WINDOW instead of to the REPLY. On a big window that is a
-    /// licence to spin; on a small one the person does not fit.
-    ///
-    /// `MIN_SERVE_CTX` and not a new literal, deliberately: the smallest window the serving
-    /// stack hands out. It is only the unmeasured WANT of the reply's claim; measurement
-    /// replaces it with her need, and a turn cut inside its answer records that channel as
-    /// its lower bound, so an act that really needs more room has it on the next turn. What no
-    /// claim takes is her view's room, never the reply's (ONE-BUDGET.md slice 6: a runaway
-    /// cap claimed above her context brought this defect back on 2026-10-30).
-    const COMPLETION_COLD_PRIOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX;
 
     /// The TIME term's budgets, in seconds, per turn kind — `budget × her measured
     /// decode rate` is a FLOOR the allowance may rise to on a fast lane (the 5090 at
@@ -464,22 +438,12 @@ impl LlmDeliberationFaculty {
     /// small on purpose: a floor that is too low costs nothing when the need is
     /// measured and is not consulted when it is not; a bound that is too low ended
     /// turns inside the reasoning channel (the M5, 2026-09-20).
+    // derived-or-floor: a floor the measured need overrides; a floor too low costs nothing (the M5, 2026-09-20)
     pub const ACT_LATENCY_BUDGET_SECS: f64 = 150.0;
 
+    // derived-or-floor: the pass's floor, overridden by her measured need like the act's
     pub const PASS_LATENCY_BUDGET_SECS: f64 = 60.0;
 
-    /// Floor so a tiny window still yields a usable reply, and the same term the prompt
-    /// floor uses for a minimum burst.
-    ///
-    /// DERIVED from `MIN_SERVE_CTX`, not declared: an eighth of the smallest window the
-    /// serving stack will ever hand out. A bare `256` here was caught by
-    /// `context_budget::no_new_hardcoded_context_or_prompt_size_constant_anywhere_in_the_crate`
-    /// — correctly, and the catch is worth recording: the constant carries `TOKENS` in its
-    /// name, the guard keys on exactly that, and every prompt-shaping test stayed GREEN
-    /// while it was wrong. Only the full suite sees this guard. Deriving it also means the
-    /// floor tracks the substrate floor for free if `MIN_SERVE_CTX` ever moves, instead of
-    /// becoming a second opinion about how small a window can get.
-    pub const COMPLETION_FLOOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX / 8;
 
     /// Does she hold a card IN PROGRESS this tick? Typed claim state, read once by the cycle
     /// (`Workspace::held`), never decoded from rendered text. Drives the working-presence
@@ -489,9 +453,6 @@ impl LlmDeliberationFaculty {
         ws.held.holds_in_progress()
     }
 
-    /// Does this workspace name a card she HOLDS (Claimed or InProgress)? The lane
-    /// gate's key for `LanePriority::Work` — wider than `holds_live_work`, which keys
-    /// the working-presence contract on InProgress only.
     /// This mind's next call's bound on the lane: prefill of the prompt she did not have
     /// cached last turn at this box's measured prefill rate, plus her last output at its
     /// measured decode rate. Read from her LAST turn's shape (`LAST_TURN_SHAPE`) — the
@@ -521,10 +482,6 @@ impl LlmDeliberationFaculty {
             );
         }
         bound
-    }
-
-    fn holds_work_card(ws: &Workspace) -> bool {
-        ws.held.holds_a_working_card()
     }
 }
 
@@ -620,7 +577,7 @@ impl LlmDeliberationFaculty {
                             image: ImageInput {
                                 url: None,
                                 base64: Some(
-                                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                                    base64::engine::general_purpose::STANDARD.encode(bytes), // boundary: the image crosses to the model's wire as base64
                                 ),
                                 mime_type: Some(image.mime),
                             },
@@ -805,6 +762,12 @@ pub mod test_support {
         fn name(&self) -> &str {
             "scripted"
         }
+        fn capabilities(&self) -> crate::ai::adapter::AdapterCapabilities {
+            // The scripted model reports the window these tests were written against, as a real
+            // adapter reports its own: a faculty with no reported window binds none.
+            crate::ai::adapter::AdapterCapabilities { max_context_window: Some(2048), ..crate::ai::adapter::AdapterCapabilities::text_only() }
+        }
+
         fn default_model(&self) -> &str {
             "scripted"
         }

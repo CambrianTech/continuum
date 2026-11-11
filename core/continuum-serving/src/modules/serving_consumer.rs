@@ -356,15 +356,15 @@ impl ServingConsumer {
     /// Add `id` to the suppress set (COW insert), so the daemon's reconcile
     /// unloads it. Idempotent — re-suppressing an already-suppressed id is a
     /// no-op the daemon ignores.
-    fn suppress_model(&self, id: &str) {
-        self.intent.set_suppressed(id, true, false);
+    fn suppress_model(&self, id: &str) -> Result<(), super::serving_daemon::IntentRevisionExhausted> {
+        self.intent.set_suppressed(id, true, false).map(|_| ())
     }
 
     /// Force-pin `id` (the re-home target), so the daemon's reconcile intersects
     /// its candidates to that one model and swaps to it — the tier-down carry-out.
     /// Unlike suppress this does NOT go dark: the daemon serves the smaller model.
-    fn pin_model(&self, id: &str) {
-        self.intent.set_pin(Some(id.to_string()), false);
+    fn pin_model(&self, id: &str) -> Result<(), super::serving_daemon::IntentRevisionExhausted> {
+        self.intent.set_pin(Some(id.to_string()), false).map(|_| ())
     }
 }
 
@@ -631,7 +631,9 @@ impl ResourceConsumer for ServingConsumer {
                 // down" (fail loud by declining to the honest full unload).
                 if !td.target_model.is_empty() && td.resident_after < current {
                     let freed = current - td.resident_after;
-                    self.pin_model(&td.target_model);
+                    if let Err(error) = self.pin_model(&td.target_model) {
+                        return ReclaimOutcome::refused(error.to_string());
+                    }
                     self.pending.lock().insert(
                         active.clone(),
                         Pending {
@@ -654,7 +656,9 @@ impl ResourceConsumer for ServingConsumer {
 
         // No tier-down → unload the active model to free its whole footprint.
         // Whole-lease-granular: serving's lease IS the active model.
-        self.suppress_model(&active);
+        if let Err(error) = self.suppress_model(&active) {
+            return ReclaimOutcome::refused(error.to_string());
+        }
         self.pending.lock().insert(
             active.clone(),
             Pending {

@@ -124,10 +124,18 @@ pub struct EntitySchema {
     pub archive: Option<ArchiveConfig>,
 }
 
-// Top-level file metadata fields (`$schemaVersion`, `$generatedAt`,
-// `$sha256`) are not bound to a struct — we parse the JSON as a Value once
-// for SHA verification, then re-deserialize only the `entities` subtree
-// into typed structs. See `parse_and_verify` below.
+/// The file's top level: its version and hash are required by this type, so a file without
+/// them fails to parse rather than being checked field by field. `entities` stays a `Value`
+/// so it is hashed exactly as TS emitted it (no Serialize derives on the typed structs just
+/// for hashing), then re-deserialized into typed structs. `$generatedAt` is not read.
+#[derive(Deserialize)]
+struct EntitySchemasFile {
+    #[serde(rename = "$schemaVersion")]
+    schema_version: u64,
+    #[serde(rename = "$sha256")]
+    sha256: String,
+    entities: Value,
+}
 
 // ─── JSON shipping + loading ──────────────────────────────────────────────
 
@@ -142,32 +150,28 @@ pub struct EntitySchema {
 const ENTITY_SCHEMAS_JSON: &str =
     include_str!("../../../protocol/typescript/entity_schemas.json");
 
+/// The embedded `entity_schemas.json` did not load: malformed JSON, an unsupported
+/// schema version, or a SHA mismatch. A build-time invariant broken at runtime; the
+/// caller refuses its operation with this error rather than serving an empty map.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("entity_schemas.json failed to load: {0}. This is a build-time invariant. Try: npm run build:ts")]
+pub struct EntitySchemasUnavailable(String);
+
 /// Lazy-load the entity schemas. First caller triggers parse + SHA check;
-/// subsequent callers get the cached map. Panics (with a clear message) on
-/// malformed JSON, unsupported schema version, or SHA mismatch — these are
-/// build-time invariants that should never fail at runtime, so a panic is
-/// the right signal.
+/// subsequent callers get the cached map, or the cached load error.
 ///
 /// Design intentionally rejects silent degradation: an empty or wrong map
-/// would cause `ensure_schema` to succeed for bogus collections. Fail loud
-/// so the user rebuilds TS.
-pub fn get_entity_schemas() -> &'static HashMap<String, EntitySchema> {
-    static CACHE: OnceLock<HashMap<String, EntitySchema>> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        parse_and_verify().unwrap_or_else(|e| {
-            panic!(
-                "entity_schemas.json failed to load: {}\n\
-                 This is a build-time invariant. Try: npm run build:ts",
-                e
-            )
-        })
-    })
+/// would cause `ensure_schema` to succeed for bogus collections. A failed load
+/// is an error every caller returns, so the user rebuilds TS.
+pub fn get_entity_schemas() -> Result<&'static HashMap<String, EntitySchema>, &'static EntitySchemasUnavailable> {
+    static CACHE: OnceLock<Result<HashMap<String, EntitySchema>, EntitySchemasUnavailable>> = OnceLock::new();
+    CACHE.get_or_init(|| parse_and_verify().map_err(EntitySchemasUnavailable)).as_ref()
 }
 
-/// Resolve one collection to its schema. Separate helper so callers don't
-/// have to touch the top-level HashMap API.
-pub fn resolve(collection: &str) -> Option<&'static EntitySchema> {
-    get_entity_schemas().get(collection)
+/// Resolve one collection to its schema (`None`: not a TS-declared entity). Separate
+/// helper so callers don't have to touch the top-level HashMap API.
+pub fn resolve(collection: &str) -> Result<Option<&'static EntitySchema>, &'static EntitySchemasUnavailable> {
+    Ok(get_entity_schemas()?.get(collection))
 }
 
 /// Convert an EntitySchema (the decorator-sourced shape) to the
@@ -226,36 +230,18 @@ pub fn to_collection_schema(es: &EntitySchema) -> crate::orm::types::CollectionS
 }
 
 fn parse_and_verify() -> Result<HashMap<String, EntitySchema>, String> {
-    // First pass: parse as untyped Value so we can canonicalize + hash the
-    // `entities` subtree exactly as TS emitted it. Avoids needing Serialize
-    // derives on our typed structs just for hashing.
-    let raw: Value =
+    let EntitySchemasFile { schema_version, sha256: embedded_sha, entities: entities_value } =
         serde_json::from_str(ENTITY_SCHEMAS_JSON).map_err(|e| format!("parse error: {}", e))?;
-
-    // Validate schema version + extract sha256 from the top level.
-    let schema_version = raw
-        .get("$schemaVersion")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| "$schemaVersion missing or not a number".to_string())?;
     if schema_version != 1 {
         return Err(format!(
             "unsupported $schemaVersion: {} (this build expects 1)",
             schema_version
         ));
     }
-    let embedded_sha = raw
-        .get("$sha256")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "$sha256 missing or not a string".to_string())?
-        .to_string();
-    let entities_value = raw
-        .get("entities")
-        .ok_or_else(|| "`entities` key missing".to_string())?;
-
     // Recompute SHA-256 over canonical `{ "entities": <entities> }`.
     // Canonicalization: sort object keys, preserve array order. Must match
     // the TS codegen's `canonicalize()` helper for the hash to agree.
-    let wrapped = serde_json::json!({ "entities": entities_value });
+    let wrapped = Value::Object(serde_json::Map::from_iter([("entities".to_string(), entities_value.clone())]));
     let canonical_value = canonicalize_value(&wrapped);
     let canonical_str = serde_json::to_string(&canonical_value)
         .map_err(|e| format!("canonical serialize failed: {}", e))?;
@@ -267,14 +253,14 @@ fn parse_and_verify() -> Result<HashMap<String, EntitySchema>, String> {
         return Err(format!(
             "SHA-256 drift: embedded={}, computed={}. \
              Someone hand-edited entity_schemas.json; re-run npm run build:ts",
-            &embedded_sha[..16],
-            &computed[..16],
+            embedded_sha,
+            computed,
         ));
     }
 
     // Second pass: now that the hash checks out, deserialize into typed
     // structs for consumers.
-    let entities: HashMap<String, EntitySchema> = serde_json::from_value(entities_value.clone())
+    let entities: HashMap<String, EntitySchema> = serde_json::from_value(entities_value)
         .map_err(|e| format!("typed parse of entities failed: {}", e))?;
 
     Ok(entities)
@@ -317,7 +303,7 @@ mod tests {
     /// disagrees between TS and Rust.
     #[test]
     fn entity_schemas_load() {
-        let schemas = get_entity_schemas();
+        let schemas = get_entity_schemas().expect("entity_schemas.json loads");
         assert!(
             !schemas.is_empty(),
             "ENTITY_REGISTRY walk yielded no entities"
@@ -332,7 +318,7 @@ mod tests {
     /// The `users` entity should have at least the BaseEntity fields.
     #[test]
     fn users_has_base_fields() {
-        let users = resolve("users").expect("users entity");
+        let users = resolve("users").expect("entity_schemas.json loads").expect("users entity");
         let names: Vec<&str> = users.fields.iter().map(|f| f.field_name.as_str()).collect();
         for base in ["id", "createdAt", "updatedAt", "version"] {
             assert!(

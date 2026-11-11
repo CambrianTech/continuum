@@ -74,7 +74,7 @@ mod tests {
     fn the_excess_test_mod_count_never_rises() {
         let violations = scan(&[&TestModSingularity]);
                 let count = violations.len();
-                crate::ratchet::hold_sites("excess_test_mods", &violations, || {
+                crate::ratchet::hold_sites("excess_test_mods", &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
             "excess test mods rose to {count}.\n\
              One `#[cfg(test)] mod` per file — new themes nest INSIDE it as \

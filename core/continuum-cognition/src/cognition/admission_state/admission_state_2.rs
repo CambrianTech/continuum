@@ -24,7 +24,7 @@ impl AdmissionState {
             return Vec::new();
         }
 
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
 
         // 1. Score every engram. apply_decay brings salience up to
         // `now_ms` for the engram (honors novelty protection +
@@ -56,7 +56,7 @@ impl AdmissionState {
         // persistence sink so the disk row keeps pace. NoopSink
         // (default) does nothing; OrmPersistenceSink upserts the
         // engram_recall_metadata row through tokio::spawn.
-        let sink = self.persistence.read().unwrap().clone();
+        let sink = self.persistence.read().clone();
         for (engram, _) in &scored {
             self.recall_metadata.record_recall_hit(engram.id, now_ms);
             if let Some(updated) = self.recall_metadata.get(engram.id) {
@@ -89,7 +89,7 @@ impl AdmissionState {
         // The owning persona's id (if bound) — for the own-authored-chat gate below.
         // Snapshotted once, outside the per-engram closure.
         let owner = self.owner_id_snapshot();
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         // Enumerate in insertion order: `idx` is a monotonic recency rank
         // (higher == more recently admitted), used as the tiebreaker below.
         let mut scored: Vec<(usize, Engram, f32)> = engrams
@@ -171,7 +171,7 @@ impl AdmissionState {
     /// on a specific set of engram ids — the memories a caller actually surfaced.
     /// The write half of the [`recall_candidates`] → re-rank → record loop.
     pub fn record_recall_hits(&self, ids: &[Uuid], now_ms: u64) {
-        let sink = self.persistence.read().unwrap().clone();
+        let sink = self.persistence.read().clone();
         for id in ids {
             self.recall_metadata.record_recall_hit(*id, now_ms);
             if let Some(updated) = self.recall_metadata.get(*id) {
@@ -183,7 +183,7 @@ impl AdmissionState {
     /// Recall a specific engram by id. None if not present in the store
     /// (either never admitted, or evicted in a future GC pass).
     pub fn recall_by_id(&self, id: Uuid) -> Option<Engram> {
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         engrams.iter().find(|e| e.id == id).cloned()
     }
 
@@ -200,7 +200,7 @@ impl AdmissionState {
             return Vec::new();
         }
         let needle = keyword.to_lowercase();
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         engrams
             .iter()
             .rev()
@@ -218,7 +218,7 @@ impl AdmissionState {
         if limit == 0 {
             return Vec::new();
         }
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         engrams
             .iter()
             .rev()

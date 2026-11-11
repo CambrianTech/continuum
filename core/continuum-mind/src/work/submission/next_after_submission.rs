@@ -76,8 +76,11 @@ impl ActionCommand for WorkSubmit {
         // A complete, real artifact she wrote herself is honoured as-is; anything less
         // — an omitted part, or the manual's zero hash read back as a value — is read
         // off her checkout, and a placeholder says so in the ledger.
+        // A card its oracle grades lands by its grade; every other card lands through its PR.
+        let bench = crate::recipe::benchmark_catalog::graded_at_submit(&card.title);
         let typed_in_full = matches!(&p.artifact, Some(a) if !is_placeholder_hash(&a.hash))
             && p.base_sha.is_some()
+            && p.head.is_some()
             && p.instance.is_some();
         if matches!(&p.artifact, Some(a) if is_placeholder_hash(&a.hash)) {
             continuum_base::probe!(
@@ -86,10 +89,25 @@ impl ActionCommand for WorkSubmit {
                 "artifact.hash was a placeholder (zeros / a manual blank) — deriving the real one from her checkout"
             );
         }
-        let (instance, base_sha_text, artifact_ref) = if typed_in_full {
+        // Her checkout: what a derived submission reads, and what its pull request is pushed from.
+        // A typed submission uses a checkout already here and never stages one.
+        // A checkout off its creation anchor is staged again: airc re-allocates an anchorless one or
+        // refuses naming what it holds, and arrival puts an anchored one back on its anchor (cards
+        // 7f824214, f76005e8); never submitted from as found.
+        let found = match crate::persona::card_checkout::checkout_path_for(&runtime.persona_id(), card) {
+            Some(path) if crate::persona::card_checkout::off_creation_anchor(&path).await => None,
+            found => found,
+        };
+        let checkout = match (typed_in_full, found) {
+            (_, Some(path)) => Some(path),
+            (true, None) => None,
+            (false, None) => Some(stage_for_owner_on_demand(&runtime, card).await?),
+        };
+        let (instance, base_sha_text, head_text, artifact_ref) = if typed_in_full {
             (
                 p.instance.clone().unwrap_or_default(), // unwrap_or: guarded by typed_in_full
                 p.base_sha.clone().unwrap_or_default(), // unwrap_or: guarded by typed_in_full
+                p.head.clone().unwrap_or_default(), // unwrap_or: guarded by typed_in_full
                 p.artifact.clone().unwrap_or(WorkArtifactReference { hash: String::new(), size_bytes: 0, mime: None }), // unwrap_or: guarded by typed_in_full
             )
         } else {
@@ -101,19 +119,17 @@ impl ActionCommand for WorkSubmit {
             // submit refusals, 3 claim refusals, 29 of 42 board calls failed). The
             // owner's submit stages the same way her claim does; staging is the
             // substrate's job whenever she needs her hands, never a verb she must find.
-            let checkout = match crate::persona::card_checkout::checkout_path_for(&runtime.persona_id(), card) {
-                Some(path) => path,
-                None => stage_for_owner_on_demand(&runtime, card).await?,
-            };
+            let checkout = checkout.as_deref().ok_or_else(|| CommandError::Internal("a derived submission resolved no checkout".into()))?;
             let listed = p.submodules.as_deref().unwrap_or_default(); // unwrap_or_default: none listed is an empty list
-            let d = derive_submission(self.benchmark.as_ref(), &checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo), listed).await?;
-            (d.instance, d.base_sha, d.artifact)
+            let d = derive_submission(self.benchmark.as_ref(), checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo), listed).await?;
+            (d.instance, d.base_sha, d.head, d.artifact)
         };
         continuum_base::probe!(
             class = "work.submit.shaped",
             card = %card_uuid,
             instance = %instance,
             base = %base_sha_text,
+            head = %head_text,
             size_bytes = artifact_ref.size_bytes,
             derived = !typed_in_full,
             "the submission as it goes to the board"
@@ -130,6 +146,8 @@ impl ActionCommand for WorkSubmit {
         }
         let base_sha = airc_work::GitObjectId::new(base_sha_text)
             .map_err(|e| CommandError::Invalid(format!("base_sha: {e}")))?;
+        let head = airc_work::GitObjectId::new(head_text)
+            .map_err(|e| CommandError::Invalid(format!("head: {e}")))?;
         // THE SAME PATCH, SUBMITTED AGAIN, is refused by name (Kimi, 2026-09-28: her
         // handoff said "do not re-make it", she resubmitted, and two identical
         // submissions sat on the card with credit ambiguous between them). Only when she
@@ -161,7 +179,15 @@ impl ActionCommand for WorkSubmit {
             // same patch on a new base, is a new submission and publishes below.
             if let Some(existing) = same_submission(earlier, &this).and_then(|id| card.submissions.iter().find(|s| s.submission_id.as_uuid() == id)) {
                 let outcomes: Vec<_> = board.submission_reviews_for(existing.submission_id).filter(|review| review.card_id == card_id).map(|review| review.outcome).collect();
-                return Ok(already_submitted(existing, room.channel.as_uuid(), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title)));
+                // The same patch again is how she retries a pull request that did not go up: it is
+                // ensured here too, at the submitted head.
+                let landing = super::card_pull_request::land_submission(airc, &room, card, super::card_pull_request::Submitted {
+                    checkout: checkout.as_deref(), head: &existing.head, submission: existing.submission_id.as_uuid(), patch_hash: existing.artifact.hash.to_string(),
+                }, bench, ctx).await;
+                let linked = landing.as_ref().and_then(|l| l.as_ref().ok()).map(|e| e.pull_request.clone()).or_else(|| card.pull_request.clone());
+                let mut result = already_submitted(existing, room.channel.as_uuid(), &outcomes, bench, linked.as_ref());
+                result.next = super::card_pull_request::with_pull_request(result.next, landing.as_ref());
+                return Ok(result);
             }
         }
         // A retry names her submission as she was shown it (Benchy, M5 2026-11-04 17:51:56Z:
@@ -176,6 +202,7 @@ impl ActionCommand for WorkSubmit {
             claim_id,
             instance,
             base_sha,
+            head: airc_work::SubmissionHead::At(head.clone()),
             artifact,
             publisher: airc.peer_id(),
             submitted_at_ms: continuum_base::time::EpochMs::now().millis(),
@@ -183,13 +210,20 @@ impl ActionCommand for WorkSubmit {
         candidate
             .validate_for_card(card)
             .map_err(|e| CommandError::Invalid(format!("submission refused: {e}")))?;
-        if p.staged_revision_id.is_some() && p.generation_request_id.is_some() {
-            return Err(CommandError::Invalid(
-                "select staged_revision_id or generation_request_id, not both".into(),
-            ));
-        }
+        // At most one credit selection, bound once: the binding below matches this value,
+        // so there is no third "neither" case for it to meet.
+        let selection = match (p.generation_request_id.as_deref(), p.staged_revision_id) {
+            (Some(_), Some(_)) => {
+                return Err(CommandError::Invalid(
+                    "select staged_revision_id or generation_request_id, not both".into(),
+                ));
+            }
+            (Some(generation), None) => Some(CreditSelection::Generation(generation)),
+            (None, Some(revision)) => Some(CreditSelection::Revision(revision)),
+            (None, None) => None,
+        };
         let mut bound_staged_revision_id = None;
-        if p.staged_revision_id.is_some() || p.generation_request_id.is_some() {
+        if let Some(selection) = selection {
             if self.registry.get(runtime.persona_id()).is_none()
                 || runtime.persona_id() != airc.peer_id().as_uuid()
             {
@@ -198,8 +232,8 @@ impl ActionCommand for WorkSubmit {
                 ));
             }
             let conn = credit_connection(self.executor_slot.cloned(), runtime.persona_id())?;
-            let binding = if let Some(generation) = p.generation_request_id.as_deref() {
-                reviewed::bind_submission_generation(
+            let binding = match selection {
+                CreditSelection::Generation(generation) => reviewed::bind_submission_generation(
                     &conn,
                     runtime.agent_name(),
                     runtime.persona_id(),
@@ -207,9 +241,8 @@ impl ActionCommand for WorkSubmit {
                     &candidate,
                     generation,
                 )
-                .await
-            } else if let Some(revision) = p.staged_revision_id {
-                reviewed::bind_submission(
+                .await,
+                CreditSelection::Revision(revision) => reviewed::bind_submission(
                     &conn,
                     runtime.agent_name(),
                     runtime.persona_id(),
@@ -224,9 +257,7 @@ impl ActionCommand for WorkSubmit {
                         artifact: candidate.artifact.clone(),
                     },
                 )
-                .await
-            } else {
-                unreachable!("credit selection checked above")
+                .await,
             }
             .map_err(|e| match e {
                 reviewed::CreditBindingError::Storage(source) => {
@@ -266,13 +297,20 @@ impl ActionCommand for WorkSubmit {
             })?;
         }
         let grade_title = card.title.clone();
-        let bench = crate::recipe::benchmark_catalog::graded_at_submit(&grade_title);
         let grade_patch = candidate.artifact.clone();
+        let published_head = head;
         let published = airc.submit_work_in(&room, airc_lib::SubmitWork {
             submission_id: candidate.submission_id, card_id, claim_id: candidate.claim_id,
-            instance: candidate.instance, base_sha: candidate.base_sha, artifact: candidate.artifact,
+            instance: candidate.instance, base_sha: candidate.base_sha, head: published_head.clone(), artifact: candidate.artifact,
         }).await.map_err(|e| CommandError::Internal(format!(
             "submission {submission_id} publication was not acknowledged; retry with submission_id={submission_id} and the same selection: {e}")))?;
+        crate::persona::work_board::board_index::wrote(airc, &room);
+        // Her work reaches the merger only through a pull request linked to the card: ensured
+        // here, at the head just published, so the reviewed head and the PR head are one.
+        let landing = super::card_pull_request::land_submission(airc, &room, card, super::card_pull_request::Submitted {
+            checkout: checkout.as_deref(), head: &airc_work::SubmissionHead::At(published_head), submission: published.submission_id.as_uuid(), patch_hash: published.artifact.hash.to_string(),
+        }, bench, ctx).await;
+        let linked = landing.as_ref().and_then(|l| l.as_ref().ok()).map(|e| e.pull_request.clone()).or_else(|| card.pull_request.clone());
         let handoff = if bench {
             Ok(None)
         } else {
@@ -303,7 +341,10 @@ impl ActionCommand for WorkSubmit {
             submitted_at_ms: published.submitted_at_ms,
             bound_staged_revision_id,
             next: match handoff {
-                Ok(review) => next_after_submission(Some(published.submission_id.as_uuid()), &outcomes, bench, review).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+                Ok(review) => super::card_pull_request::with_pull_request(
+                    next_after_submission(Some(published.submission_id.as_uuid()), &outcomes, bench, review, linked.as_ref()).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+                    landing.as_ref(),
+                ),
                 Err(error) => format!("Submission {} is retained, but review handoff failed: {error}. Retry work/submit with this same submission_id; do not create a new candidate to retry handoff.", published.submission_id),
             },
         })
@@ -382,11 +423,10 @@ pub struct WorkReviewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "string")]
     pub card_id: Option<String>,
-    /// Submission; defaults to latest.
+    /// `latest` (default) or a submission id.
     #[serde(default)]
-    #[ts(optional, type = "string")]
-    #[schemars(with = "Option<String>")]
-    pub submission_id: Option<Shown<airc_work::SubmissionId>>,
+    #[ts(optional, type = "\"latest\" | string")]
+    pub submission_id: SubmissionHandle,
     /// Artifact; defaults to board.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -445,6 +485,9 @@ impl From<&airc_work::WorkSubmissionReview> for WorkReviewResult {
 #[async_trait]
 impl ActionCommand for WorkReview {
     const NAME: &'static str = "work/review";
+    // In hand only on a review card she holds (`work_preconditions::in_hand`): never offered on
+    // her own implementation card, where it can only be refused.
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str = "Verdict under a reviewer claim, not training completion. Own work: work/submit.";
@@ -511,16 +554,17 @@ impl ActionCommand for WorkReview {
             now_ms,
         )
         .map_err(super::super::refused)?;
-        // The parent's submissions are the ones a review can name (Benchy's short id,
-        // M5 2026-11-04 17:51:56Z, is the form the board shows).
-        let requested = p
-            .submission_id
-            .as_ref()
-            .map(|shown| submission_named(shown, board.card(card_id)))
-            .transpose()
-            .map_err(shown_refused)?;
-        let submission = board.candidate_for_review(review_card.card_id, requested)
-            .map_err(|e| CommandError::Invalid(format!("review candidate: {e}")))?;
+        // The parent's submissions are the ones a review can name, through the one handle
+        // resolver `work/submission` reads by too (Benchy's short id, M5 2026-11-04 17:51:56Z).
+        let submission = match p.submission_id.read(&board, review_card) {
+            Ok(SubmissionRead::Found { submission, .. }) => submission,
+            Ok(SubmissionRead::NoneYet { on }) => {
+                return Err(submission_refused(SubmissionRefusal::NoneYet { card: on.card_id }, &p.submission_id, review_card.card_id, on, airc.peer_id(), now_ms))
+            }
+            Err(unread) => {
+                return Err(submission_refused(SubmissionRefusal::Unread(unread), &p.submission_id, review_card.card_id, review_card, airc.peer_id(), now_ms))
+            }
+        };
         // SELF-REVIEW IS THE ROOM'S CALL (card fa4aaaaa). The author reviewing her own
         // submission is admitted only where the room's policy says `self`; a room that
         // declares no policy keeps today's behaviour. Refused up front, by name, rather
@@ -555,7 +599,7 @@ impl ActionCommand for WorkReview {
             review_card = %short8(review_uuid),
             card = %card_id,
             submission = %submission.submission_id,
-            derived = p.submission_id.is_none() || p.artifact.is_none() || p.review_claim_id.is_none() || p.card_id.is_none(),
+            derived = p.submission_id == SubmissionHandle::Latest || p.artifact.is_none() || p.review_claim_id.is_none() || p.card_id.is_none(),
             "the review as it goes to the board"
         );
         let review = airc
@@ -610,6 +654,13 @@ impl ActionCommand for WorkReview {
 
 crate::register_command!(WorkReview);
 
+/// The one credit a submission explicitly selects: the generation that produced it, or a
+/// staged revision. Parsed from the two optional params, which may not both be set.
+enum CreditSelection<'p> {
+    Generation(&'p str),
+    Revision(Uuid),
+}
+
 /// May the author PUBLISH a review of her own submission, given the ONE policy read the
 /// command took? A declared `self: false` refuses; a policy that could not be read refuses
 /// (it was admitted on a read failure); a room that declares none keeps today's behaviour.
@@ -639,7 +690,8 @@ pub struct WorkSubmission {
     pub executor_slot: Arc<LateBound<CommandExecutor>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+// Serialize: a refusal names `work/submission` as her next call with these params.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/work/WorkSubmissionParams.ts"
@@ -649,12 +701,13 @@ pub struct WorkSubmissionParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub room: Option<String>,
-    /// Parent card — board handle or full UUID.
+    /// Card (a review card reads its parent) — handle or UUID.
     #[ts(type = "string")]
     pub card_id: String,
-    /// The submission to read — handle or full UUID.
-    #[ts(type = "string")]
-    pub submission_id: String,
+    /// `latest` (default) or a submission id.
+    #[serde(default)]
+    #[ts(optional, type = "\"latest\" | string")]
+    pub submission_id: SubmissionHandle,
     /// Inspect only: no binding/training. Answers a summary; rows only with evidence_limit.
     #[serde(default)]
     pub include_staged_evidence: bool,

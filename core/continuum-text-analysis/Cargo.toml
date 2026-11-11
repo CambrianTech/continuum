@@ -9,4 +9,6 @@ serde = { workspace = true }
 ts-rs = { workspace = true }
 uuid = { workspace = true }
 dashmap = { workspace = true }
-regex = { workspace = true }
+
+[dev-dependencies]
+regex = { workspace = true }  # the oracle: each hand matcher is tested against the regex it replaced

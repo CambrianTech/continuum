@@ -9,15 +9,50 @@
 //! engine's marker, and was refused as "missing field `file_path`", a story about a field she had
 //! written. The parse error and her raw text were dropped on the way (Benchy, the M5, 2026-11-05).
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 use crate::ai::types::{CallEnding, ToolCall, UnparsedArguments};
 use crate::sdk_codegen::{command_descriptor, AccessLevel, ArgumentsRefusal};
+use continuum_kernel::runtime::arguments::accepted_shape::wrapped_call::{self, wrapped_call, WrappedCall};
 
-/// Why a committed call to `canonical` must not run with `input`, or `None` when it may: its
-/// arguments decoded as the command's own params, through the same decoder its dispatch uses.
-pub(crate) fn refusal_before_dispatch(canonical: &str, input: &Value) -> Option<ArgumentsRefusal> {
-    command_descriptor(canonical)?.arguments.check(input).err()
+/// A committed call as it runs: the command (`Some` when her arguments wrapped a call to another
+/// command, which is the call she meant) and the arguments it runs with.
+pub(crate) struct AcceptedCall<'a> {
+    pub(crate) redirect: Option<&'static str>,
+    pub(crate) input: Cow<'a, Value>,
+}
+
+/// The call a committed call to `canonical` runs as, or why it must not run: decoded as the
+/// command's own params through the same decoder its dispatch uses, and when they do not decode
+/// as sent, read once against the command's declared schema (refusal is the last resort, card
+/// 9ed04d88), or, when they hold a whole tool call, that inner call. A command with no descriptor
+/// is checked by its own dispatch.
+pub(crate) fn accept_before_dispatch<'a>(canonical: &str, input: &'a Value) -> Result<AcceptedCall<'a>, ArgumentsRefusal> {
+    let Some(descriptor) = command_descriptor(canonical) else {
+        return Ok(AcceptedCall { redirect: None, input: Cow::Borrowed(input) });
+    };
+    let refusal = match descriptor.accept(input) {
+        Ok(input) => return Ok(AcceptedCall { redirect: None, input }),
+        Err(refusal) => refusal,
+    };
+    // A name she wrote resolves the one way every name she writes does (`tool_dialect`).
+    let resolve = |name: &str| command_descriptor(&crate::ai::tool_dialect::resolve_wire_name(name));
+    match wrapped_call(canonical, input, resolve) {
+        None => Err(refusal),
+        Some(WrappedCall::Same { property, arguments }) => {
+            let input = descriptor.accept(arguments)?;
+            wrapped_call::record(canonical, descriptor.name, property);
+            Ok(AcceptedCall { redirect: None, input })
+        }
+        Some(WrappedCall::Other { property, command, arguments }) => {
+            let input = command.accept(arguments)?;
+            wrapped_call::record(canonical, command.name, property);
+            Ok(AcceptedCall { redirect: Some(command.name), input })
+        }
+        Some(WrappedCall::Unknown(unknown)) => Err(unknown.refusal()),
+    }
 }
 
 /// Why a held call never ran: the engine's marker when it wrote one, else the classifier's
@@ -43,7 +78,7 @@ pub(crate) fn refusal_of_held(call: &ToolCall, ending: CallEnding) -> ArgumentsR
 pub(crate) fn manual_for(name: &str) -> Option<String> {
     command_descriptor(name)
         .filter(|d| d.access_level == AccessLevel::AiSafe)
-        .map(|d| crate::sdk_codegen::ai_help::render_ai_help(d.name, d.description, &d.params_schema))
+        .map(crate::sdk_codegen::ai_help::render_ai_help)
 }
 
 /// What she reads for a refused call: what was wrong, then her next move. A retry carries the

@@ -20,12 +20,12 @@
 //! marked as TS-shim concerns.
 
 use crate::cognition::generate_recipe::types::RecipeDefinitionShape;
-use once_cell::sync::Lazy;
-use regex::Regex;
 
-/// Mirror of the TS regex `/^[a-z0-9-]+$/` for uniqueId format.
-static KEBAB_CASE_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^[a-z0-9-]+$").expect("static regex compiles"));
+/// The TS regex `/^[a-z0-9-]+$/` for uniqueId format: non-empty, every byte a lowercase
+/// ASCII letter, a digit or `-`.
+fn is_kebab_case(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
 
 /// Valid `conversationPattern` values from `RecipeStrategy`. Mirrors TS array
 /// at line 297 exactly. Drift here = false-positive validation rejections of
@@ -123,7 +123,7 @@ pub fn validate_recipe_structure(
     }
 
     // ── uniqueId format ────────────────────────────────────────────
-    if !recipe.unique_id.is_empty() && !KEBAB_CASE_RE.is_match(&recipe.unique_id) {
+    if !recipe.unique_id.is_empty() && !is_kebab_case(&recipe.unique_id) {
         errors.push(ValidationError::InvalidFormat {
             field: "uniqueId",
             value: recipe.unique_id.clone(),

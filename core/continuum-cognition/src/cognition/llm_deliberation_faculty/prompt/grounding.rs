@@ -209,8 +209,11 @@ impl<'a> GroundingOffer<'a> {
             let levels = GroundingPiece::levels(c);
             // The header renders with the block, so the most important item carries it.
             let with_header = |tokens: usize| if index + 1 == count { tokens + header } else { tokens };
-            // Below its last level it leaves the turn, unless that level is its handle.
-            let leaves = levels.last().is_some_and(|last| last.body != Body::Handle).then_some((0, None));
+            // Below its last level it leaves the turn, unless that level is its handle or it is
+            // standing grounding, whose last level is its minimum: a greedier, more important item
+            // taking one more unit must never drop the activity's wall (the M5 work-tools change:
+            // two schemas fewer in her hands let the roster take a unit and the wall left).
+            let leaves = (!c.standing_grounding && levels.last().is_some_and(|last| last.body != Body::Handle)).then_some((0, None));
             let smaller = levels.iter().enumerate().skip(1).map(|(level, piece)| (charge(with_header(piece.tokens)), Some(level))).chain(leaves);
             let (rungs, map) = Rungs::kept(charge(with_header(levels[0].tokens)), Some(0), smaller);
             items.push(rungs);

@@ -61,6 +61,15 @@ const CODE_EDIT: VerbRef<CodeEdit> = VerbRef::in_hands();
 const CODE_LIST: VerbRef<CodeList> = VerbRef::in_hands();
 const CODE_SHELL: VerbRef<CodeShell> = VerbRef::in_hands();
 
+/// `code/read` of `path` as her offered call: typed params through the one call renderer.
+fn read_call(path: &str) -> String {
+    let params = continuum_hands::modules::code_commands::CodeReadParams { file_path: path.to_owned(), start_line: None, end_line: None };
+    match crate::sdk_codegen::NextCall::new(CODE_READ, &params, "reads it") {
+        Ok(call) => call.call(),
+        Err(unserializable) => unserializable.to_string(),
+    }
+}
+
 /// Routes a persona's native tool calls to core commands through the uniform
 /// `continuum_client` [`Connection`] over the local [`InProcessTransport`]. The
 /// persona's hands — the same client every other citizen uses.
@@ -337,12 +346,17 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     }
 
     if note == Some(ReportedNote::CutAtLimit) {
+        // Name WHERE her draft is, never 'noted in your working memory': pointing nowhere, it sent
+        // Delia (IntelMac, 2026-11-11, 45+ min) reopening saved outputs to find it, each reopen
+        // nesting the last. The draft is the fact `cut_act_fact` records, by its exact opening words.
         return "Your last generation reached the output limit before a tool call was \
                 committed, so NOTHING ran and nothing changed — the act did not land. \
-                What you were composing is noted in your working memory. Do not \
-                re-check or redo earlier work that already landed. Commit the call \
-                first, with a smaller payload: state only what changed, not the full \
-                history, or split a large note across calls."
+                Your draft is already in front of you: the line in your own thoughts that \
+                begins \"my last act was CUT at the output limit\" quotes what you were \
+                composing. It is not in any saved output, so do not open outputs to find it. \
+                Do not re-check or redo earlier work that already landed. Commit the call \
+                now, with a smaller payload: state only what changed, not the full history, \
+                or split a large note across calls."
             .to_string();
     }
 
@@ -351,10 +365,11 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
             "You emitted tool ARGUMENTS with no tool NAME, so nothing ran:\n{raw}\n\n\
              The arguments look right — they just need a tool in front of them. The form is:\n\
              `tool/name({{\"arg\": \"value\"}})`\n\n\
-             For example: `{CODE_READ}({{\"file_path\": \"src/main.rs\"}})`.\n\
+             For example: `{}`.\n\
              Naming the tool in prose (\"I will release the card\") does not call it — the \
              name has to be in the call itself. Call `commands/help` with no arguments for \
-             the list of tools you can name, then retry with the same arguments."
+             the list of tools you can name, then retry with the same arguments.",
+            read_call("src/main.rs")
         );
     }
 
@@ -364,7 +379,9 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     // Omission from the default menu is not an authorization failure. These verbs
     // remain discoverable; preserve the actual refusal (or transport failure) so
     // a legitimate reviewer can recover, alongside purpose/own-work guidance.
-    if let Some(withheld) = crate::ai::tool_dialect::withheld_from_hands(&normalized) {
+    // The command declares why it is withheld and what to use instead, beside its disclosure.
+    let declared = command_registry().into_iter().find(|d| d.name == normalized || d.aliases.iter().any(|a| a.replace('_', "/") == normalized));
+    if let Some(withheld) = declared.and_then(|d| d.withheld) {
         return format!("{raw}\n{}\n{}", withheld.why, withheld.instead); // the status line already says it was refused
     }
 
@@ -412,9 +429,10 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
                 crate::ai::tool_dialect::NotAVerb::Path => format!(
                     "`{attempted}` is a PATH, not a tool — you put the path where the tool \
                      NAME goes, so nothing ran. A path is an argument; the verb goes first:\n\
-                     `{CODE_READ}({{\"file_path\": \"{attempted}\"}})` to read it, `{CODE_WRITE}` or \
+                     `{}` to read it, `{CODE_WRITE}` or \
                      `{CODE_EDIT}` to change it, `{CODE_LIST}` for a directory, `{CODE_SHELL}` with \
-                     `cwd` to run a command there. Retry with the verb in front."
+                     `cwd` to run a command there. Retry with the verb in front.",
+                    read_call(attempted)
                 ),
                 crate::ai::tool_dialect::NotAVerb::Identifier => format!(
                     "`{attempted}` is not a tool, and is not near one — it reads like a symbol \
@@ -603,17 +621,21 @@ impl ToolExecutor for CommandToolExecutor {
                 // day (M5, 09-16). Each verb refused in its own words and she tried again.
                 // One seam names the FIELD and what belongs in it, and never dispatches.
                 let canonical = crate::ai::tool_dialect::resolve_wire_name(&call.name);
-                if let Some(refusal) = super::arguments::refusal_before_dispatch(&canonical, &call.input) {
-                    continuum_base::probe!(
-                        class = "tool.call.arguments_refused",
-                        persona = %ctx.persona_name,
-                        command = %canonical,
-                        refusal = %refusal,
-                        "a tool call's arguments did not decode as its command's params — refused before it ran"
-                    );
-                    return (call.id.clone(), Err(Refused::Arguments { canonical, refusal }));
-                }
-                let outcome: Result<Value, Refused> = match manual_blanks_in(&call.input) {
+                let accepted = match super::arguments::accept_before_dispatch(&canonical, &call.input) {
+                    Ok(accepted) => accepted,
+                    Err(refusal) => {
+                        continuum_base::probe!(
+                            class = "tool.call.arguments_refused",
+                            persona = %ctx.persona_name,
+                            command = %canonical,
+                            refusal = %refusal,
+                            "a tool call's arguments did not decode as its command's params — refused before it ran"
+                        );
+                        return (call.id.clone(), Err(Refused::Arguments { canonical, refusal }));
+                    }
+                };
+                // Ok carries the command a wrapped call redirected to, so its own projector reads it.
+                let outcome: Result<(Value, Option<&'static str>), Refused> = match manual_blanks_in(&call.input) {
                     // A reported note is answered here, before the router: never a command path to
                     // permission-check or resolve, and her teacher text is the whole result.
                     _ if is_reported_sentinel(&call.name) => Err(Refused::Client(ClientError::Refused {
@@ -648,8 +670,9 @@ impl ToolExecutor for CommandToolExecutor {
                     }
                     _ => {
                         conn.commands()
-                            .execute_value(command.as_ref(), call.input.clone())
+                            .execute_value(accepted.redirect.unwrap_or(command.as_ref()), accepted.input.into_owned()) // unwrap_or: no redirect = the call runs as she named it
                             .await
+                            .map(|value| (value, accepted.redirect))
                             .map_err(Refused::Client)
                     }
                 };
@@ -665,7 +688,7 @@ impl ToolExecutor for CommandToolExecutor {
             // Each result is its call's: zipped, never indexed, so a result can never lack one.
             .zip(batch.entries().iter().map(Disposed::call))
             .map(|((tool_use_id, outcome), call)| match outcome {
-                Ok(mut value) => {
+                Ok((mut value, redirect)) => {
                     // THE TOOL'S OWN VERDICT, derived HERE — before the fold, from
                     // the FULL value. Ordering is the contract, not an accident: the
                     // fold below can spill and truncate the rendered text, and the
@@ -682,10 +705,14 @@ impl ToolExecutor for CommandToolExecutor {
                     // command that DID opt in but whose own declared `Output` no
                     // longer decodes projects `Undecodable` — schema drift, a defect,
                     // and never silently a success (Astra, #4352 review).
-                    let canonical =
-                        crate::ai::tool_dialect::resolve_wire_name(&call.name);
+                    let canonical = match redirect {
+                        Some(ran) => ran.to_string(),
+                        None => crate::ai::tool_dialect::resolve_wire_name(&call.name),
+                    };
                     let (verdict, dispatch_handle) =
                         crate::sdk_codegen::project_result(&canonical, &value);
+                    // Read before the value is rendered: a reopen's custody is the output it reopened.
+                    let reopened = super::tool_output::reopened_source(&canonical, &value);
                     if verdict == ActVerdict::Undecodable {
                         continuum_base::probe!(
                             class = "tool.call.outcome_undecodable",
@@ -740,8 +767,12 @@ impl ToolExecutor for CommandToolExecutor {
                         // fragment. The HANDLE rides the result type-level so working
                         // memory can leave a queryable pointer when this result is later
                         // evicted (collapse, never delete — 2026-08-24).
-                        let (content, custody) =
-                            pin.whole_or_handle(full, ctx.persona_id).into_parts();
+                        // A reopen's result is a VIEW of the output it reopened: that output is its
+                        // custody, never a new save of the selection (`reopened_source`).
+                        let (content, custody) = match reopened {
+                            Some(source) => (full, crate::ai::types::ResultCustody::Whole { handle: source }),
+                            None => pin.whole_or_handle(full, ctx.persona_id).into_parts(),
+                        };
                         NativeToolResult {
                             tool_use_id,
                             content,
@@ -793,6 +824,7 @@ impl ToolExecutor for CommandToolExecutor {
                             reason = %raw,
                             "a command refused her act"
                         );
+                        crate::cognition::health_ledger::note_refused_of(ctx.persona_id);
                     }
                     // A transport failure IS a failure, and the typed carrier must
                     // say the same thing `is_error` does — a receipt that reads one

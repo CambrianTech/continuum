@@ -10,7 +10,6 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::genome::competence::GeneRef;
-use crate::genome::fine_tuning::types::JobHandle;
 
 /// Present only after this destination has durably accepted the immutable batch.
 /// This does not attest that training ran, or deduplicate a different destination.
@@ -128,26 +127,10 @@ pub struct SubmitOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub outcome: Option<String>,
-    /// BatchAppended: examples now pending in the bucket.
+    /// BatchAppended: examples now pending in the bucket, not yet learned in place.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub current_count: Option<u32>,
-    /// BatchAppended: the bucket's fire threshold.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub threshold: Option<u32>,
-    /// JobDispatched: examples carried into the dispatched job.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub examples_used: Option<u32>,
-    /// JobDispatched: the provider the coordinator selected.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub selected_provider: Option<String>,
-    /// JobDispatched: the created job's handle.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub job_handle: Option<JobHandle>,
     /// BatchAppended after a fill that was HELD: what the examples wait for (a job of
     /// hers already training this competence, a trial judging a gene for it, or the
     /// gene this fill adopted for trial).
@@ -172,43 +155,20 @@ impl SubmitOutcome {
             acceptance: None,
             outcome: None,
             current_count: None,
-            threshold: None,
-            examples_used: None,
-            selected_provider: None,
-            job_handle: None,
             held_by: None,
             error: None,
             error_kind: None,
         }
     }
 
-    pub fn batch_appended(current_count: u32, threshold: u32) -> Self {
-        Self {
-            outcome: Some("BatchAppended".into()),
-            current_count: Some(current_count),
-            threshold: Some(threshold),
-            ..Self::base(true)
-        }
+    pub fn batch_appended(current_count: u32) -> Self {
+        Self { outcome: Some("BatchAppended".into()), current_count: Some(current_count), ..Self::base(true) }
     }
 
     /// A fill held without a job of its own: appended, and the outcome names what the
     /// examples wait for.
-    pub fn batch_held(current_count: u32, threshold: u32, took: Took) -> Self {
-        Self { held_by: Some(took), ..Self::batch_appended(current_count, threshold) }
-    }
-
-    pub fn job_dispatched(
-        examples_used: u32,
-        selected_provider: String,
-        job_handle: JobHandle,
-    ) -> Self {
-        Self {
-            outcome: Some("JobDispatched".into()),
-            examples_used: Some(examples_used),
-            selected_provider: Some(selected_provider),
-            job_handle: Some(job_handle),
-            ..Self::base(true)
-        }
+    pub fn batch_held(current_count: u32, took: Took) -> Self {
+        Self { held_by: Some(took), ..Self::batch_appended(current_count) }
     }
 
     pub fn refused(kind: &str, error: String) -> Self {

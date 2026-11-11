@@ -1,5 +1,5 @@
 //! Reading a card's submissions: what its holder does next. The latest candidate is
-//! `cognition::card_holder::latest_submission`.
+//! airc's `WorkCard::latest_submission`, the one owner of "newest".
 
 use airc_lib::WorkCardId;
 use uuid::Uuid;
@@ -23,10 +23,25 @@ use crate::cognition::card_facts::short8;
 /// - any other card is ordinary work, never graded: it is done when a peer's review passes it.
 /// A `Failed` review sends either kind back. An oracle FAIL is not yet a WorkReview (card
 /// 2c756670), so for a bench card the room's grade line is named as the verdict to read.
-pub fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool, review: Option<WorkCardId>) -> Option<String> {
+///
+/// A passed code card is NOT done on the pass: it lands when its pull request merges
+/// (`pull_request`, the card's link). With none linked she is told the move that opens and links
+/// it, never that the work is done (the finishing chain's break 2, 2026-11-08).
+pub fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool, review: Option<WorkCardId>, pull_request: Option<&airc_work::PullRequestRef>) -> Option<String> {
     let submission = short8(latest?);
+    let pr = pull_request.map(|pr| format!("{}#{}", pr.repo, pr.number));
     Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
-        format!("Submission {submission} passed review: the card is done. Nothing more to do on it.")
+        match (graded_at_submit, &pr) {
+            (true, _) => format!("Submission {submission} passed review: the card is done. Nothing more to do on it."),
+            (false, Some(pr)) => format!(
+                "Submission {submission} passed review. Pull request {pr} merges through the room's merger, and the card \
+                 finishes as Merged; nothing more to do unless a refused merge comes back to you."
+            ),
+            (false, None) => format!(
+                "Submission {submission} passed review, but no pull request is linked, so nothing can merge yet. \
+                 work/submit again (the same patch): it opens the pull request for your branch and links it to the card."
+            ),
+        }
     } else if outcomes.contains(&airc_work::WorkReviewOutcome::Failed) {
         format!("A reviewer sent submission {submission} back (see reviews). Revise the work and work/submit again.")
     } else if graded_at_submit {
@@ -36,9 +51,13 @@ pub fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkRe
              A passed grade: nothing more to do."
         )
     } else if let Some(review) = review {
+        let landing = match &pr {
+            Some(pr) => format!("Pull request {pr} carries it; a pass lets the merger land it"),
+            None => "No pull request is linked yet; work/submit again (the same patch) opens and links it".to_string(),
+        };
         format!(
-            "Submitted as {submission}. Review card {review} is available to its reviewer. Await the review: a pass \
-             completes it; a send-back appears in its reviews. Do not submit again unless it is sent back."
+            "Submitted as {submission}. Review card {review} is available to its reviewer. {landing}. Await the review: \
+             a send-back appears in its reviews. Do not submit again unless it is sent back."
         )
     } else {
         format!("Submission {submission} is retained, but no review handoff is recorded. Retry work/submit with this same submission_id to establish review; do not publish a new candidate just to retry handoff.")

@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn tenant_identity_in_production_code_never_rises() {
         let violations = scan(&[&NoTenantIdentityInProduction]);
-        crate::ratchet::hold_sites("tenant_lines", &violations, || {
+        crate::ratchet::hold_sites("tenant_lines", &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
             "production lines naming our own org rose to {}.\n\
              This repo is for other people and their orgs: derive the identity from the \

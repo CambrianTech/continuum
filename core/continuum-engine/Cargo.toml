@@ -17,6 +17,7 @@ uuid.workspace = true
 continuum-base = { path = "../continuum-base" }
 continuum-service = { path = "../continuum-service" }  # the resident alarm a node beacons (card 1c157668)
 continuum-host = { path = "../continuum-host" }
+continuum-saved-state = { path = "../continuum-saved-state" } # the measured rate stores save and load through the one contract
 schemars = { workspace = true }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
@@ -62,8 +63,19 @@ metal = { workspace = true }
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }                   # Temp directories for code module tests
+continuum-saved-state = { path = "../continuum-saved-state", features = ["test-fixtures"] } # every kind runs the one round trip
 airc-protocol = { workspace = true }
 futures = { workspace = true }
+
+
+# The llama crate's backend follows the machine, so a plain `cargo check` / `cargo test` builds the
+# right engine: Metal on Apple Silicon; the CPU profile on an Intel Mac, where ggml-metal device init
+# hangs (#129). No `--features metal` to remember, and no CPU-only build on an M-series by accident.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+llama = { path = "../llama", features = ["metal"] }
+
+[target.'cfg(all(target_os = "macos", target_arch = "x86_64"))'.dependencies]
+llama = { path = "../llama", features = ["mac-cpu-only"] }
 
 [features]
 default = []

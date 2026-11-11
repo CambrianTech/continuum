@@ -42,11 +42,15 @@ impl LlmDeliberationFaculty {
             crate::ai::provenance::PromptAdmission::Estimated
         };
         let feedback = self.prompt_feedback.load();
-        let (window, calibration) = feedback.as_ref().filter(|f| f.applies_to(binding)).map_or(
-            (window, PromptCalibration::default()),
-            |f| (window.min(f.available), f.calibration),
-        );
-        (window, calibration.behind(admission))
+        // Her window is the binding's live one, her grant: never a copy of a past act's window. A
+        // stored minimum ratcheted her down forever: one refusal at 49,025 fitted every later act
+        // at 49,025 while she held a 112,925 grant (Aiko on the M5, 2026-11-11 13:00-14:30Z: her view
+        // turned over every few acts and her plans collapsed to pointers). A refusal's smaller figure
+        // shapes only the retry of the act it refused (`contribute`), and the engine refuses again if
+        // the grant really is smaller.
+        let calibration = feedback.as_ref().filter(|f| f.applies_to(binding)).map_or(PromptCalibration::default(), |f| f.calibration);
+        // The template overhead of the engine this request reaches, measured there (never a constant).
+        (window, calibration.behind(admission).with_template(super::template::TemplateEstimate::from_measurement(&binding.adapter.template_overhead(binding.requested_model()))))
     }
 
     /// The window this faculty's turn is fitted to (its binding's served window): the shares
@@ -75,10 +79,22 @@ impl LlmDeliberationFaculty {
         binding: &Arc<ModelBinding>,
         view: &DeliberationPromptView,
         engine_prompt_tokens: u32,
-        engine_cached_tokens: u32,
-        available: u32,
+        timing: Option<&crate::ai::types::GenerationTiming>,
         served: &str,
     ) {
+        // No timing on the reply = nothing measured as reused = nothing rides free.
+        let engine_cached_tokens = timing.map_or(0, |t| t.cached_tokens); // map_or: no timing reused nothing
+        // Her act's engine timing joins what holding context costs her on this engine and model.
+        if let (Some(t), Some(memory)) = (timing, self.working_memory.as_deref()) {
+            memory.observe_act(Self::served_by(binding), &continuum_context::price::ActSample {
+                input: engine_prompt_tokens,
+                cached: t.cached_tokens,
+                fresh: t.prefill_tokens,
+                prefill_ms: t.prefill_ms,
+                output: t.decode_tokens,
+                decode_ms: t.decode_ms,
+            });
+        }
         let Some((density, calibration, reading)) =
             self.density_on(binding).observe(view.estimated_prompt_tokens, engine_prompt_tokens, served)
         else {
@@ -87,7 +103,6 @@ impl LlmDeliberationFaculty {
         self.prompt_feedback.store(Some(Arc::new(PromptFeedback {
             binding: Arc::clone(binding),
             calibration,
-            available,
             density,
         })));
         continuum_base::probe!(
@@ -101,8 +116,37 @@ impl LlmDeliberationFaculty {
             // next prompt is priced at.
             density_mean_milli = reading.mean_milli,
             density_bound_milli = reading.bound_milli,
+            // The chat template's tokens around each message, as the estimate counted them:
+            // measured from the engine, or unmeasured (her density then carries them).
+            template = ?super::template::TemplateEstimate::from_measurement(&binding.adapter.template_overhead(binding.requested_model())),
             "the engine's count of this prompt, retained in her density; the next prompt is fitted at its bound"
         );
+    }
+
+    /// The engine and model `binding` reaches: the key her act time is measured under, whatever
+    /// her window (seconds per held token are the engine's and the model's, never her window's).
+    /// A need past the model's trained context (`what`: her irreducible window, or the priced
+    /// point): no lane of this model can hold it, so it is a measurement defect, named, never
+    /// recorded (card bf3b6d68).
+    fn probe_need_beyond_trained(&self, what: &'static str, beyond: continuum_context::allocation::BeyondTrained) {
+        continuum_base::probe!(
+            class = "persona.need.beyond_trained",
+            persona = %self.persona_name,
+            what,
+            needed = beyond.needed,
+            trained = beyond.trained.get(),
+            "a need past the model's trained context: a measurement defect, never recorded as her need (card bf3b6d68)"
+        );
+    }
+
+    fn served_by(binding: &ModelBinding) -> crate::cognition::working_memory::act_times::ServedBy {
+        crate::cognition::working_memory::act_times::ServedBy { provider: binding.adapter.provider_id().to_owned(), model: binding.requested_model().to_owned() }
+    }
+
+    /// Her acts' timing fit on the engine and model `binding` reaches, kept across window changes
+    /// and restarts with her working memory; empty with no working memory (nothing measured).
+    pub(in super::super) fn act_time_on(&self, binding: &ModelBinding) -> continuum_context::price::ActTimeFit {
+        self.working_memory.as_deref().map_or_else(Default::default, |memory| memory.act_time(&Self::served_by(binding))) // map_or_else: a faculty with no working memory has measured nothing
     }
 
     /// Her measured density on `binding`: the ring her last feedback carried when it applies to
@@ -139,7 +183,7 @@ impl LlmDeliberationFaculty {
             .map_or(0, |wm| wm.pending_emission_peak(ws.activity_room_id));
         let kind = self.turn_kind(ws);
         let time_term = kind.time_term(crate::inference::decode_knee::rate_for(self.binding.load().requested_model()).tps);
-        let need = self.working_set.as_ref().and_then(|reg| reg.need_of(self.persona_id));
+        let need = self.working_set.as_ref().and_then(|reg| reg.need_or_pooled(self.persona_id));
         let act_room = crate::cognition::working_set::ActRoom::of(need);
         let reply = reply_claim(
             kind,
@@ -174,11 +218,15 @@ impl LlmDeliberationFaculty {
             crate::cognition::context_streams::blocks::Grounding::atomic(self.persona_id, contract.name, contract.body)
         }));
         // Her view leads the history: this act appends to it, and everything after it (the clock,
-        // the ask, her newest act) is this act's tail, which joins her view once it is sent.
+        // the ask, her newest act) is this act's tail, judged by her view now (what the allocation
+        // prices) and joining it once served.
         let view = self.place_view(&mut all_messages);
+        self.judge_tail(&mut all_messages, false);
 
         let input_identity = all_messages.input_identity;
         let calibration = calibration.for_input(input_identity);
+        // One price for every message of this act: her view's start, the fit and a refit.
+        all_messages.pricing = calibration;
         // Her view already carries every block that rides the conversation. Measured BEFORE her
         // newest result is levelled: demand is the sum of wants (FOCUS-CONTRACT rule 5), so a
         // result shown at a smaller level still asks for its whole, or the window never grows for it.
@@ -188,7 +236,8 @@ impl LlmDeliberationFaculty {
         // "Flexbox is the right way. It's like the governor: if you don't use it for literally
         // everything it doesn't work." Every part of her prompt is a claim in it, in the
         // allocation's unit (engine-calibrated tokens), and it runs ONCE: framing, the required
-        // input, her newest result (the largest of its levels that fits beside every other floor), her
+        // input, her newest result (irreducible at its whole; its first page only past what the
+        // window holds beside every other hard limit), her
         // hands, the standing grounding, the fresh history, the reply and each source of her view.
         // Nothing is sized beside it: the room her newest result gets, the grounding's budget and
         // her view's start are all its grants or arithmetic on them. (Before: three side budgets
@@ -202,13 +251,9 @@ impl LlmDeliberationFaculty {
         // than the standing grounding (enrichment, its own optional claim): the stimulus and her
         // action statement.
         let required_tokens = required.stimulus.saturating_add(required.action_statement);
-        let newest_levels = self.newest_result_levels(&all_messages);
         use continuum_context::ladder::{Leveled, Rungs};
-        // Her newest result's levels in the allocation's unit, each rung with the level it is
-        // (`Rungs::kept`); `None` when this act carries no result.
-        let newest = newest_levels.split_first().map(|(&whole, smaller)| {
-            Rungs::kept(claim(whole), 0, smaller.iter().enumerate().map(|(level, &cost)| (claim(cost), level + 1)))
-        });
+        // Her newest result whole and at its least page, in the allocation's unit (`newest_result.rs`).
+        let newest = self.newest_result_claim(&all_messages);
         // Her hands and her framing (the head of her prompt), and her grounding: each a consumer
         // whose levels come from its items' shapes and whose hard limit is derived from them.
         let tools_offer = self.tools_offer(ws, &claim);
@@ -221,11 +266,11 @@ impl LlmDeliberationFaculty {
         // demoted payloads) is the optional `history` claim and sheds first. Her view's sources
         // claim for themselves.
         let evidence = all_messages.recent_move_evidence();
-        let view_tokens = Self::messages_cost(&all_messages.history[..view.len()]);
+        let view_tokens = calibration.estimate_all(&all_messages.history[..view.len()]);
         let optional_history = all_messages.tokens().saturating_sub(required.total()).saturating_sub(view_tokens);
         // A quiet self-tick (no required input) still sends her newest whole message.
         let quiet_minimum = if required.total() == 0 {
-            all_messages.history.last().map_or(0, Self::message_cost) // map_or: no history = nothing to keep
+            all_messages.history.last().map_or(0, |message| calibration.estimate(message)) // map_or: no history = nothing to keep
         } else {
             0
         };
@@ -238,22 +283,25 @@ impl LlmDeliberationFaculty {
         // typed IrreducibleShortfall (Cormac on #5779). On a pass her view's optional sources shed
         // first as before.
         let acting = kind == TurnKind::Act;
-        let view_claims: Vec<_> = self.view_claims(&all_messages.streams).into_iter().map(|mut source| {
-            source.floor_tokens = claim(source.floor_tokens as usize);
-            source.min_tokens = source.floor_tokens;
-            source.max_tokens = claim(source.max_tokens as usize).max(source.floor_tokens);
-            source.required = source.required || acting;
+        // Already in the allocation's tokens: her view's allocation estimate charges each block at this calibration.
+        let view_claims: Vec<_> = self.view_claims(&all_messages.streams, super::epoch::AllocationEstimate(calibration)).into_iter().map(|mut source| {
+            source.claim.max_tokens = source.claim.max_tokens.max(source.claim.floor_tokens);
+            source.claim.required = source.claim.required || acting;
             source
         }).collect();
         let reply_need = reply.floor_tokens;
+        // Her price and the model's trained context from the one binding snapshot this act is
+        // priced on.
+        let binding = self.binding.load();
+        let trained = binding.trained_context();
         let started = std::time::Instant::now();
         let act = continuum_context::allocation::allocate(
             context_window,
             continuum_context::allocation::ActClaims {
-                framing: continuum_context::allocation::Head { leveled: framing_offer.leveled.clone(), held: framing_offer.held.clone() },
+                framing: continuum_context::allocation::Head { held: framing_offer.held.clone(), ..continuum_context::allocation::Head::free(framing_offer.leveled.clone()) },
                 // Input she must read: its whole is its hard limit.
                 required: Leveled::one(Rungs::whole(claim(required_tokens))),
-                newest: newest.as_ref().map_or_else(Leveled::default, |(rungs, _)| Leveled::one(rungs.clone())), // map_or_else: no result this act
+                newest: newest.charged(&claim),
                 tools: tools_offer.head(),
                 grounding: grounding_offer.leveled.clone(),
                 // The newest complete interaction is whole (goal 7): its whole is its hard limit.
@@ -261,6 +309,11 @@ impl LlmDeliberationFaculty {
                 history: continuum_context::allocation::Span { floor: 0, min: 0, want: claim(optional_history.saturating_sub(history_floor)) },
                 reply,
                 view: view_claims,
+                // What holding context costs her act on this binding, measured from her own acts:
+                // the allocation holds the window where her value per second peaks.
+                price: self.act_time_on(&binding).price(),
+                // The most her need can be: the window the price chooses never passes it.
+                trained,
             },
         );
         let allocation_us = started.elapsed().as_micros() as u64;
@@ -284,12 +337,12 @@ impl LlmDeliberationFaculty {
             output_room: None,
         });
 
-        // Her newest result at the level the allocation chose: whole when the window holds it,
-        // else the largest of its levels that fits, never a bare pointer (goal 7, `newest_result.rs`).
-        let newest_level = newest.as_ref().map(|(_, levels)| levels[act.newest_level()]);
-        let newest_result_reduced = match newest_level.and_then(|level| newest_levels.get(level)) {
-            Some(&level_cost) => self.fit_newest_result(&mut all_messages, level_cost),
-            None => false, // no result this act
+        // Her newest result as the allocation showed it: whole, or its first page (content with
+        // reading on named, never a summary or a bare handle, goal 7), cut below once her view is
+        // fitted, to the room its grant gives and the fit actually has beside it.
+        let newest_page = match act.newest_shown() {
+            continuum_context::allocation::NewestShown::Page { tokens } => Some(calibration.prompt_budget(tokens as usize)),
+            continuum_context::allocation::NewestShown::Whole | continuum_context::allocation::NewestShown::Absent => None,
         };
         // The grounding at the levels the allocation chose: less of each under pressure, then
         // handles, never refusing the turn (`grounding.rs`).
@@ -303,13 +356,16 @@ impl LlmDeliberationFaculty {
         // is a state, not a number). Recorded held or refused, so a turn short by 123 tokens raises
         // her need by them. A record, never a grant: the governor sizes residency from it
         // (`requirements_for`) or she waits.
+        // Past the model's trained context it is a measurement defect, never a floor.
         if let Some(reg) = &self.working_set {
-            let irreducible_window = act.irreducible().saturating_add(reply_need);
-            reg.record_floor(
-                self.persona_id,
-                irreducible_window,
-                ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps the newest, not a time series)
-            );
+            match continuum_context::allocation::NeedWindow::within(act.irreducible().saturating_add(reply_need), trained) {
+                Ok(irreducible_window) => reg.record_floor(
+                    self.persona_id,
+                    irreducible_window.tokens(),
+                    ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps the newest, not a time series)
+                ),
+                Err(beyond) => self.probe_need_beyond_trained("irreducible", beyond),
+            }
         }
         // IRREDUCIBLE growth, typed apart from a view that outgrew its grant (reducible, a turnover):
         // KEEP THE OVERFLOW, by part, so a turn over its window says which part and by how much.
@@ -331,7 +387,7 @@ impl LlmDeliberationFaculty {
                 stimulus_tokens = required.stimulus,
                 action_statement_tokens = required.action_statement,
                 latest_result_tokens = required.latest_result,
-                latest_result_levels = newest_levels.len(),
+                latest_result_least = newest.least(),
                 latest_results = required.latest_result_count,
                 "every part at its hard limit still does not fit the served window: growth no collapse can make, by this much, the binding part named"
             );
@@ -343,7 +399,6 @@ impl LlmDeliberationFaculty {
         let framing_tokens = Self::framing_cost(
             &self.compose_system_split(&tools_choice.menu, ws.directed_at_self(), ws.self_initiated, ws.now_ms, holds_live_work).stable,
         );
-        let budget_floor = act.held_need();
         // Her reply's grant is her measured need from the one allocation, the reserve her view is
         // sized beside (a pass's `max_tokens`; an act's cap is its room, `request_allowance`).
         // What no claim took is her view's to grow into by appends (`fit_view`), never the
@@ -365,6 +420,8 @@ impl LlmDeliberationFaculty {
             tools_limit = act.hard_limit(claim_id::TOOLS).unwrap_or(0), // unwrap_or: tools are always a leveled part
             searched_cells = act.searched.as_ref().map_or(0, |s| s.cells), // map_or: no search when every hard limit together did not fit
             search_refined = act.searched.as_ref().is_some_and(|s| s.refined),
+            // The window the time price of context held (or why none: unmeasured, window binds).
+            priced = ?act.priced,
             allocation_us,
             reply_priority = reply_claimed.map_or(0, |r| r.priority), // map_or: the reply is always claimed; 0 reads as absent
             reply_floor = reply_claimed.map_or(0, |r| r.floor_tokens), // map_or: as above
@@ -396,25 +453,23 @@ impl LlmDeliberationFaculty {
         // Her view within what the allocation granted its sources (`epoch.rs`): the only place
         // it is ever collapsed. A broken allocator contract refuses the turn (`budget_fault`),
         // never a prompt sent anyway. An overflow also says how far beyond its grant her view would
-        // have held: a reducible overflow, recorded as her censored need, never a grant.
+        // have held: a reducible overflow, collapsed at the next start, never her need.
         // A start the plan did not fund (a required floor underfunded or past the room) is this
         // turn's CAPACITY refusal, typed, never a sent prompt and never budget minted; distinct
         // from the reply-only IrreducibleShortfall, with which an act proceeds at what is left.
         let head_growth = tools_choice.next.as_ref().map_or(0, |next| next.growth); // map_or: no next head adds nothing
-        let (view_beyond, head_funded, view_fault, start_refusal) =
+        let (head_funded, view_fault, start_refusal) =
             match self.fit_view(&mut all_messages, view, &act, calibration, head_growth) {
-                Ok(fitted) => (fitted.beyond, fitted.head_funded, None, None),
+                Ok(fitted) => (fitted.head_funded, None, None),
                 Err(super::epoch::ViewSizing::Start(start)) => {
                     let (needed, had) = start.needed_and_had();
-                    (None, false, None, Some(crate::cognition::workspace::PromptCapacityError { required_tokens: needed as usize, budget_tokens: had as usize }))
+                    (false, None, Some(crate::cognition::workspace::PromptCapacityError { required_tokens: needed as usize, budget_tokens: had as usize }))
                 }
-                Err(mismatch) => (None, false, Some(format!("her view could not be sized: {mismatch}")), None),
+                Err(mismatch) => (false, Some(format!("her view could not be sized: {mismatch}")), None),
             };
-        // What a sent tail already showed her is in her view now: never sent twice. Then what this
-        // tail shows that her sources also render, for her view to cover once it is sent.
-        self.drop_what_she_was_sent(&mut all_messages);
-        let tail_covers = Self::tail_covers(&all_messages);
-        self.view_sent();
+        // Her tail judged against her view as fitted: a turnover re-renders from her sources, so
+        // what her tail showed before it arrives whole again, and a repeat needs its whole held now.
+        self.judge_tail(&mut all_messages, false);
         // The surface this act sends: her head's held set and levels, or, when this act started an
         // epoch of her view that funded it, the next head (`tools_epoch.rs`).
         let (selected, menu) = self.retain_tools(tools_choice, start_refusal.is_some(), head_funded);
@@ -482,13 +537,34 @@ impl LlmDeliberationFaculty {
         let (view_pointers, tail_pointers): (Vec<_>, Vec<_>) =
             std::mem::take(&mut all_messages.result_pointers).into_iter().partition(|(index, _)| *index < view_len);
         all_messages.result_pointers = tail_pointers.into_iter().map(|(index, pointer)| (index - view_len, pointer)).collect();
-        let tail_budget = msg_budget.saturating_sub(Self::messages_cost(&view_messages));
+        let tail_budget = msg_budget.saturating_sub(calibration.estimate_all(&view_messages));
+        // The page is cut to the space actually available: its grant, and never more than the
+        // tail's budget leaves beside the rest of the required input, her last move and her
+        // granted history (what her view holds is fitted already and may sit above its grant
+        // until its next start). Without the history grant the page grew into the room the one
+        // allocation gave her conversation, and the fit dropped the room message that arrived
+        // during this turn (capacity_and_wire: the update gone beside a 51,689-char page).
+        let newest_result_reduced = match newest_page {
+            Some(granted) => {
+                let newest_now = calibration.estimate_all(&all_messages.latest_result);
+                let beside = all_messages
+                    .required_tokens()
+                    .saturating_sub(newest_now)
+                    .saturating_add(calibration.prompt_budget(act.granted(claim_id::LAST_MOVE) as usize))
+                    .saturating_add(calibration.prompt_budget(act.granted(claim_id::HISTORY) as usize));
+                self.fit_newest_result(&mut all_messages, granted.min(tail_budget.saturating_sub(beside)))
+            }
+            None => false,
+        };
+        // Her tail as this prompt sends it: what joins her view once it is served.
+        let mut judged_tail = std::mem::take(&mut all_messages.streams.tail.judged);
         let (mut fitted, capacity_error) = match self.fit_messages(all_messages, tail_budget) {
             Ok(mut fitted) => {
                 fitted.messages.splice(0..0, view_messages);
                 fitted.grounding_at += view_len;
                 fitted.refit.grounding_at += view_len;
                 fitted.refit.history_len += view_len;
+                fitted.refit.view_len = view_len;
                 for (index, _) in &mut fitted.refit.result_pointers {
                     *index += view_len;
                 }
@@ -529,7 +605,7 @@ impl LlmDeliberationFaculty {
         // so a 25k working set no longer provisions a 137k slot (2026-09-13).
         if let Some(reg) = &self.working_set {
             let sent = framing_tokens
-                .saturating_add(Self::messages_cost(&fitted.messages))
+                .saturating_add(calibration.estimate_all(&fitted.messages))
                 .saturating_add(desired_reply);
             // At a window that TRIMMED this turn the post-fit size is the window's
             // echo, not the turn's — the untrimmed demand is what the plan must hear
@@ -544,43 +620,61 @@ impl LlmDeliberationFaculty {
                 sample,
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
             );
-            // HER NEED, the allocator's gate (card 70706a9e): the BUDGETER'S FLOOR on a held
-            // turn, never its post-fit size, which the flexbox grows to any window (the M5,
-            // 10-18: ~48.6k on a 102k lane refused a second lane; 4 residents on 1 slot).
+            // HER NEED, the allocator's gate (card 70706a9e): the window her act's allocation CHOSE
+            // (`continuum_context::allocation::need`), the priced optimum between what she must
+            // hold and the model's trained context. Never every claim's floor (sizes each part
+            // requested), never her post-fit size (the flexbox grows it to any window), and never the
+            // window plus what her view lacked uncollapsed: Aiko recorded 902,158 on a 262,144-token
+            // model (the M5, 2026-11-07 16:21Z), where her view's whole files and folded navigation
+            // are collapsed, not needed. Learned only from a turn the fit held.
             let sent_tokens = sent.min(u32::MAX as usize) as u32;
             let framing = framing_tokens.min(u32::MAX as usize) as u32;
             let fit_ok = capacity_error.is_none();
-            // HER VIEW OVERFLOWED ITS GRANT: this turn's need is censored by the window, so what she
-            // would have held (the window plus what her view lacked, `overflow_beyond`) is recorded
-            // as a lower bound in place of the size the fit held her at. Measured only from held
-            // sizes, her need could never exceed her grant (Aris on the M5, 2026-11-04: 55,672
-            // granted of a 654,336 pool, a turnover on most acts, the same files re-read).
             use crate::cognition::working_set::NeedSample;
-            let censored = view_beyond.map(|beyond| {
-                let at_least = (context_window as usize).saturating_add(beyond).min(u32::MAX as usize) as u32;
-                continuum_base::probe!(
-                    class = "persona.need.censored",
-                    persona = %self.persona_name,
-                    context_window,
-                    beyond_grant = beyond,
-                    at_least,
-                    "her view overflowed its grant: her need is recorded as at least the window plus what her view lacked to hold this act and the next one's appends"
-                );
-                NeedSample::AtLeast { at_least }
-            });
-            let held = crate::cognition::working_set::need_sample(sent_tokens, framing, fit_ok).map(|_| NeedSample::Exact(budget_floor));
-            match censored.or(held) {
-                Some(need) => reg.record_need(
+            use continuum_context::allocation::ActNeed;
+            let held = crate::cognition::working_set::need_sample(sent_tokens, framing, fit_ok).is_some();
+            let chosen = match act.need {
+                ActNeed::Chosen(window) => Some(NeedSample::Exact(window.tokens())),
+                ActNeed::Censored(window) => {
+                    continuum_base::probe!(
+                        class = "persona.need.censored",
+                        persona = %self.persona_name,
+                        context_window,
+                        at_least = window.tokens(),
+                        priced = ?act.priced,
+                        "the priced point lies past her grant: her need is recorded as at least the window her act would have chosen"
+                    );
+                    Some(NeedSample::AtLeast { at_least: window.tokens() })
+                }
+                ActNeed::Unpriced => {
+                    continuum_base::probe!(
+                        class = "persona.need.unpriced",
+                        persona = %self.persona_name,
+                        context_window,
+                        priced = ?act.priced,
+                        "no priced point this act (act time unmeasured, or no window inside its measured contexts): no need recorded; her irreducible window stands"
+                    );
+                    None
+                }
+                ActNeed::BeyondTrained(beyond) => {
+                    self.probe_need_beyond_trained("priced", beyond);
+                    None
+                }
+            };
+            match (held, chosen) {
+                (true, Some(need)) => reg.record_need(
                     self.persona_id,
                     need,
                     ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
                 ),
+                // Held, with no priced point: said above, by its cause.
+                (true, None) => {}
                 // THE UNHELD TURN IS SAID, not skipped (card 39822816): a mind the
                 // allocator labels `wish:` after a deploy carrying #4325 must be
                 // distinguishable, from the ledger alone, between "every turn was
                 // starved", "every turn emptied to the framing", and "this seam was
                 // never reached". One row per unheld turn, with the reason.
-                None => continuum_base::probe!(
+                (false, _) => continuum_base::probe!(
                     class = "persona.need.unheld",
                     persona = %self.persona_name,
                     sent_tokens,
@@ -596,7 +690,7 @@ impl LlmDeliberationFaculty {
 
         // The assembled context at the levels the one allocation chose; its header and message
         // wrapper are priced in its most important item (`grounding.rs`).
-        let used_msg_tokens = Self::messages_cost(&messages);
+        let used_msg_tokens = calibration.estimate_all(&messages);
         let context = self.render_grounding(
             ws,
             grounding_offer,
@@ -616,12 +710,15 @@ impl LlmDeliberationFaculty {
         // the system message and the engine re-prefilled her whole view behind it
         // (pages keyed per room restored ~7.4k tokens across a switch on the M5). It is
         // a room's, so it rides the fresh tail after her view, with the grounding the
-        // refit keeps frozen; grounding sources themselves are her view's blocks.
-        if let Some(block) = deliberation_prompt::working_context_message(&context).map(|block| ChatMessage::text("user", block)) {
-            if !self.view_holds_sent(&block) {
-                messages.insert(grounding_at + refit.grounding_len, block);
+        // refit keeps frozen; grounding sources themselves are her view's blocks. It is the first
+        // item of her act's tail, named by what it says: a block she already holds is not sent again.
+        if let Some(block) = deliberation_prompt::working_context_message(&context) {
+            let judged = self.judge_context(block);
+            for item in &judged {
+                messages.insert(grounding_at + refit.grounding_len, item.text.to_chat());
                 refit.grounding_len += 1;
             }
+            judged_tail.splice(0..0, judged);
         }
 
         // #266 KV-cache fix, THE SPLIT ACTUALLY APPLIED. The split composer
@@ -646,8 +743,12 @@ impl LlmDeliberationFaculty {
         // This is the native request estimate, not a backend tokenizer count.
         // Adapters may add model-specific framing; live acceptance still checks
         // their captured request/usage rather than assuming this estimate exact.
-        let estimated_prompt_tokens = Self::framing_cost(&system)
-            .saturating_add(Self::messages_cost(&messages))
+        // The system message and every message after it carry the template's share around them,
+        // by kind, when the engine measured it: then the density this estimate is learned against
+        // calibrates the rest, as her view's allocation estimate prices it (`epoch/allocation_estimate.rs`).
+        let estimated_prompt_tokens = calibration
+            .estimate_system(&system)
+            .saturating_add(messages.iter().map(|message| calibration.estimate(message)).sum::<usize>())
             .saturating_add(selected.tokens);
         // THE ONE BUDGET'S INVARIANT (`budget.rs`), at the one place the messages are final.
         // A required input that cannot fit is a capacity refusal, decided by the fit above.
@@ -678,6 +779,7 @@ impl LlmDeliberationFaculty {
             system,
             input_identity,
             estimated_prompt_tokens,
+            pricing: calibration,
             completion_reserve: completion_reserve as u32,
             capacity_error,
             budget_fault,
@@ -691,7 +793,7 @@ impl LlmDeliberationFaculty {
             tools_grant,
             act_room,
             output_shortfall,
-            tail_covers,
+            judged_tail,
         }
     }
 

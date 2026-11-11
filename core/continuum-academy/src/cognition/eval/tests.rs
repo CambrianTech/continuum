@@ -842,7 +842,6 @@
         {
             let map = &*WARM_EVAL_LANES;
             map.lock()
-                .unwrap()
                 .insert(key.clone(), std::sync::Weak::new());
         }
         assert!(
@@ -850,7 +849,7 @@
             "dead Weak must not satisfy"
         );
         assert!(
-            !WARM_EVAL_LANES.lock().unwrap().contains_key(&key),
+            !WARM_EVAL_LANES.lock().contains_key(&key),
             "dead entry must be pruned on the miss"
         );
     }

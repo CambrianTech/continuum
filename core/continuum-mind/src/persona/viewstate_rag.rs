@@ -93,30 +93,11 @@ use continuum_positron::Substrate;
 
 use crate::cognition::rag_budget::{room_scope_allows, RagContext, RagDelivery, RagItem, RagSource};
 
-/// One atomic projection: visible text and its machine-readable provenance are
-/// admitted together. Metadata must describe this unit. The adapter alone computes
-/// token costs.
-#[derive(Debug)]
-pub struct RagRenderUnit {
-    /// Stable for the unit's life (a peer id, a card id): what her view keys it by.
-    pub key: String,
-    pub content: String,
-    pub metadata: serde_json::Map<String, serde_json::Value>,
-    /// What the unit is and how to reopen it once collapsed; `None` when a collapsed
-    /// unit may leave her view entirely.
-    pub pointer: Option<String>,
-}
-
-impl RagRenderUnit {
-    pub fn new(key: impl Into<String>, content: impl Into<String>) -> Self {
-        Self {
-            key: key.into(),
-            content: content.into(),
-            metadata: serde_json::Map::new(),
-            pointer: None,
-        }
-    }
-}
+/// One subject of a view as the view declares it: its typed key, its renderings and what it is to
+/// her (`continuum_context::nav::Entry`), with its provenance as metadata. A kind declares only this
+/// shape; how it collapses (focus, standing entries, navigation nodes) is `nav::collapse`'s, and
+/// its levels and supersede-on-key are her view's.
+pub type RagRenderUnit = continuum_context::nav::Entry<serde_json::Map<String, serde_json::Value>>;
 
 /// A positron `ViewState` rendered for a mind. Kinds own atomic projections;
 /// token counting and delivery belong to the shared adapter.
@@ -254,7 +235,7 @@ pub trait RoomScopedView: RagRenderable {}
 ///     const KIND: &'static str = "node-temperature";
 ///     const BLOCK: &'static str = "node temperature";
 ///     const EXPAND: Option<&'static str> = None;
-///     fn units(&self, _viewer: uuid::Uuid) -> Vec<RagRenderUnit> { vec![RagRenderUnit::new("celsius", format!("{} C", self.celsius))] }
+///     fn units(&self, _viewer: uuid::Uuid) -> Vec<RagRenderUnit> { vec![RagRenderUnit::new("celsius", format!("{} C", self.celsius), Default::default())] }
 /// }
 /// impl NodeScopedView for NodeTemperature {}
 /// let _ = ViewStateRagSource::<NodeTemperature>::new(Substrate::new());
@@ -349,21 +330,36 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
             Some(v) if room_scope_allows(v.room(), ctx, V::KIND) => v.units(ctx.persona_id),
             _ => Vec::new(),
         };
-        let items = units.into_iter().map(|unit| rag_item(unit, V::KIND, V::BLOCK)).collect();
-        RagDelivery::of(V::KIND, items, false)
+        RagDelivery::of(V::KIND, rag_items(units), false)
     }
 }
 
-/// One rendered unit as the item her view keys and levels: the ONE conversion, shared by every
-/// ViewState source and the required roster.
-pub(crate) fn rag_item(mut unit: RagRenderUnit, kind: &str, block: &str) -> RagItem {
-    unit.metadata.insert("kind".into(), serde_json::json!(kind));
-    unit.metadata.insert("block".into(), serde_json::json!(block));
-    let item = RagItem::whole(unit.key, unit.content, serde_json::Value::Object(unit.metadata));
-    match unit.pointer {
-        Some(pointer) => item.with_pointer(pointer),
-        None => item,
+/// A view's declared shape as the items her view keys and levels: collapsed by the ONE contract
+/// (`continuum_context::nav::collapse`), each unit converted once. Shared by every ViewState
+/// source, the board, the wall and the required roster: none collapses on its own.
+pub(crate) fn rag_items(units: Vec<RagRenderUnit>) -> Vec<RagItem> {
+    continuum_context::nav::collapse(units).into_iter().map(rag_item).collect()
+}
+
+fn rag_item(unit: continuum_context::nav::Unit<serde_json::Map<String, serde_json::Value>>) -> RagItem {
+    use continuum_context::nav::Origin;
+    let metadata = match unit.origin {
+        Origin::Entry(metadata) => metadata,
+        Origin::Node { group, count } => {
+            let mut node = serde_json::Map::new();
+            node.insert("kind".into(), serde_json::json!("nav"));
+            node.insert("group".into(), serde_json::json!(group));
+            node.insert("count".into(), serde_json::json!(count));
+            node
+        }
+    };
+    let mut item = RagItem::whole(unit.key, unit.full, serde_json::Value::Object(metadata));
+    item.summary = unit.summary;
+    item.pointer = unit.pointer;
+    if unit.tally {
+        item = item.as_tally();
     }
+    item
 }
 
 // ─────────────────────── OUTLIER A: the roster (people) ───────────────────────

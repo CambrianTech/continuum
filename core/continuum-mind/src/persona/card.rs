@@ -40,7 +40,7 @@
 //! `gender_from_identity(id)` and genesis collapses to pure `project_persona(id)`.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use std::collections::BTreeMap;
 
@@ -141,7 +141,6 @@ pub fn register(card: PersonaCard) {
     crate::live::avatar::selection::register_card_gender(&key, card.gender);
     CARD_REGISTRY
         .lock()
-        .unwrap()
         .get_or_insert_with(HashMap::new)
         .insert(key, card);
 }
@@ -150,7 +149,6 @@ pub fn register(card: PersonaCard) {
 pub fn get(identity: &str) -> Option<PersonaCard> {
     CARD_REGISTRY
         .lock()
-        .unwrap()
         .as_ref()
         .and_then(|m| m.get(identity).cloned())
 }
@@ -163,7 +161,6 @@ pub fn get(identity: &str) -> Option<PersonaCard> {
 pub fn ids() -> Vec<Uuid> {
     CARD_REGISTRY
         .lock()
-        .unwrap()
         .as_ref()
         .map(|m| m.values().map(|c| c.persona_id).collect())
         .unwrap_or_default()
@@ -172,7 +169,7 @@ pub fn ids() -> Vec<Uuid> {
 /// Drop a persona's card from the live registry (test isolation + despawn).
 #[cfg(any(test, feature = "test-fixtures"))]
 pub fn remove(identity: &str) {
-    if let Some(m) = CARD_REGISTRY.lock().unwrap().as_mut() {
+    if let Some(m) = CARD_REGISTRY.lock().as_mut() {
         m.remove(identity);
     }
     crate::live::avatar::selection::forget_card_gender(identity);

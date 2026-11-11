@@ -77,6 +77,7 @@ pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::
                     slot = ?pinned.as_ref().map(|p| p.slot),
                     endpoint = ?pinned.as_ref().map(|p| p.root.as_str()),
                     dispatched = abandoned.dispatched,
+                    stage = abandoned.stage.map_or("unnamed", |(name, _)| name),
                     extensions = extensions as u64,
                     "the engine was condemned mid-act: ending the act now, so the relaunch's drain is not held to its next checkpoint"
                 );
@@ -121,11 +122,15 @@ pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Abandoned {
     pub(super) dispatched: bool,
+    /// The named await the step was inside when it ended, and how long it had been there
+    /// (card 5e79e1c1): `None` when it was between named stages.
+    pub(super) stage: Option<(&'static str, std::time::Duration)>,
 }
 
 impl Abandoned {
     fn at(clock: &tokio::sync::watch::Receiver<crate::cognition::llm_deliberation_faculty::admission_clock::QueueTime>) -> Self {
-        Self { dispatched: clock.borrow().dispatched }
+        let state = clock.borrow();
+        Self { dispatched: state.dispatched, stage: state.stage.map(|(name, entered)| (name, entered.elapsed())) }
     }
 }
 
@@ -188,14 +193,15 @@ pub(crate) enum ActClass {
     LaneStarved,
 }
 
-/// PURE: classify one settle iteration. `model_ms` is the act's generation wall-time;
+/// PURE: classify one settle iteration. `model_ms` is the act's generation wall-time (`None` when
+/// the step carried no metrics);
 /// `generations` is how many generation receipts the step dispatched.
 ///
 /// A FAULTED call still pushes a receipt (`GenerationReceipt::faulted`), so a model
 /// that answered badly is an act that reached the model — never a starve. Only an
 /// iteration that dispatched NOTHING is a wait.
-pub(crate) fn classify_act(model_ms: u64, generations: usize) -> ActClass {
-    if model_ms == 0 && generations == 0 {
+pub(crate) fn classify_act(model_ms: Option<u64>, generations: usize) -> ActClass {
+    if generations == 0 && model_ms.is_none_or(|ms| ms == 0) {
         ActClass::LaneStarved
     } else {
         ActClass::Act

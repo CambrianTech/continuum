@@ -19,9 +19,18 @@ pub enum Disclosure {
     /// head holds it, so a rarely used verb never takes her view's window.
     OnDemand,
     /// Never in her hands: a verb whose misuse costs more than its reach (its guidance says why and
-    /// what to use instead, `tool_dialect::withheld_from_hands`). It stays callable through the
-    /// catalog.
+    /// what to use instead, [`WithheldGuidance`], declared by the command itself). It stays callable
+    /// through the catalog.
     Withheld,
+}
+
+/// Why a verb is withheld from her hands and what to use instead: declared by the command beside
+/// its disclosure (`CommandSpec::WITHHELD`), and read from its descriptor when she reaches for it,
+/// never from a list of names someone keeps by hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WithheldGuidance {
+    pub why: &'static str,
+    pub instead: &'static str,
 }
 
 impl Disclosure {

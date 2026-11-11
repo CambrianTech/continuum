@@ -16,6 +16,7 @@
 //!   give a sensitivity table each.
 //! - `--budget-tokens`: the most schema the head may hold: the core's tool share of the served
 //!   window (`ContextBudget::tool_surface_tokens`).
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

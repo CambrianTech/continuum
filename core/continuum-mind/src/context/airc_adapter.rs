@@ -148,7 +148,11 @@ impl crate::persona::held_work::AircWorkReader for AircHandleAdapter {
             .into_iter()
             .find(|r| r.peer == me)
             .map(|r| r.active_claims)
-            .unwrap_or_default())
+            .unwrap_or_default()) // the roster has no row for her: she holds no claims, the fact rather than a guess
+    }
+
+    async fn boards(&self) -> Result<Vec<std::sync::Arc<airc_work::BoardSnapshot>>, AircError> {
+        crate::persona::work_board::board_index::boards(self.inner.as_ref()).await
     }
 }
 
@@ -190,5 +194,13 @@ impl AircCitizen for AircHandleAdapter {
 
     async fn say_in(&self, room_id: Uuid, text: &str) -> Result<EventId, AircError> {
         crate::persona::airc_citizen::publish_text_in_room(&self.inner, room_id, text).await
+    }
+
+    async fn held_cards(&self) -> Result<Vec<(Uuid, airc_lib::WorkCard)>, AircError> {
+        Ok(crate::persona::work_board::board_index::scoped_board_held_by(&self.inner)
+            .await?
+            .into_iter()
+            .map(|(room, card)| (room.channel.as_uuid(), card))
+            .collect())
     }
 }

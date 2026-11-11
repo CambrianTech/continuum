@@ -271,7 +271,7 @@ const CLASS: &str = "tool-output";
 
 /// The writer of the tool-output class. Refused before boot installs the registry: there is no
 /// directory to guess, and a result that cannot be saved is handed back whole as `Unsaved`.
-fn store() -> std::io::Result<ClassWriter> {
+pub(crate) fn store() -> std::io::Result<ClassWriter> {
     LIFE_START.get_or_init(std::time::SystemTime::now);
     ClassWriter::of(CLASS)
 }
@@ -665,7 +665,7 @@ pub fn read_extent(path: &Path, offset: u64, length: Option<usize>, allowance: A
         );
     }
     let len = length
-        .unwrap_or(capacity)
+        .unwrap_or(capacity) // unwrap_or: no length asked for reads as much as the encoding budget holds
         .min(capacity)
         .min((total_bytes - offset).min(usize::MAX as u64) as usize);
     let mut bytes = vec![0; len];
@@ -698,6 +698,21 @@ pub struct ByteExtent {
     pub next_byte_offset: Option<u64>,
 }
 
+/// The lines a range read selects (1-based): from `start` through `end`, or through the output's
+/// last line when `end` is `None` (an end she left out is the output's own, never a guess).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineRange {
+    pub start: usize,
+    pub end: Option<usize>,
+}
+
+impl LineRange {
+    fn holds(self, number: usize) -> bool {
+        let start = self.start.max(1);
+        number >= start && self.end.is_none_or(|end| number <= end.max(start))
+    }
+}
+
 /// File-backed investigation. Three bounded streaming passes replace the whole
 /// file, line-index and match-index allocations. The count pass examines every
 /// line; the other two render the requested windows with streaming lookahead.
@@ -709,7 +724,7 @@ pub fn investigate_file(
     path: &Path,
     pattern: Option<&str>,
     context_lines: usize,
-    range: Option<(usize, usize)>,
+    range: Option<LineRange>,
     max_matches: Option<usize>,
     allowance: Allowance,
 ) -> Result<Investigation, String> {
@@ -805,7 +820,7 @@ fn investigate_readers<R: std::io::BufRead>(
     lookahead: R,
     pattern: Option<&str>,
     context: usize,
-    range: Option<(usize, usize)>,
+    range: Option<LineRange>,
     max_matches: usize,
     budget: usize,
 ) -> Result<Investigation, String> {
@@ -893,8 +908,8 @@ fn investigate_readers<R: std::io::BufRead>(
         let selected = if regex.is_some() {
             previous.is_some_and(|n| n.saturating_add(context) >= number)
                 || next.is_some_and(|n| n <= number.saturating_add(context))
-        } else if let Some((start, end)) = range {
-            number >= start.max(1) && number <= end.max(start.max(1))
+        } else if let Some(range) = range {
+            range.holds(number)
         } else {
             number >= tail_from
         };
@@ -940,7 +955,7 @@ fn investigate(
     content: &str,
     pattern: Option<&str>,
     context: usize,
-    range: Option<(usize, usize)>,
+    range: Option<LineRange>,
     max_matches: usize,
     budget: usize,
 ) -> Result<Investigation, String> {

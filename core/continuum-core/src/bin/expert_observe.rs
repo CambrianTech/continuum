@@ -24,6 +24,8 @@
 //!
 //! Usage:
 //!   cargo run --release -p continuum-core --features metal,accelerate --bin expert_observe -- <model.gguf> [n_gen_per_prompt]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
