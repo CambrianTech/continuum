@@ -186,22 +186,6 @@ pub fn still_present(set: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
         .collect()
 }
 
-/// What reading one process's accumulated CPU time found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CpuTime {
-    /// That process (pid AND start time) has used this much CPU, user + system, since it started.
-    Used(std::time::Duration),
-    /// That process still runs, but this OS gave no reading: unknown, never zero.
-    Unreadable,
-    /// It exited, is a zombie, or its pid now names another process.
-    Gone,
-}
-
-/// The CPU time `who` has accumulated, fenced by pid AND start time. The counter is read FIRST
-/// and the identity checked AFTER: a process that still holds the pid with the same start time
-/// after the read held it continuously since it started, so the reading was its own. A reused
-/// pid is `Gone`, never another process's CPU read as "busy". The OS call is
-
 /// What the process table lists for one pid, read alone: a liveness probe's first question.
 /// Not listed is NOT absence; the probe asks the OS kernel for positive evidence next
 /// (`continuum_host::process_presence`).
@@ -229,6 +213,21 @@ pub fn listed(pid: u32) -> Listed {
     }
 }
 
+/// What reading one process's accumulated CPU time found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuTime {
+    /// That process (pid AND start time) has used this much CPU, user + system, since it started.
+    Used(std::time::Duration),
+    /// That process still runs, but this OS gave no reading: unknown, never zero.
+    Unreadable,
+    /// It exited, is a zombie, or its pid now names another process.
+    Gone,
+}
+
+/// The CPU time `who` has accumulated, fenced by pid AND start time. The counter is read FIRST
+/// and the identity checked AFTER: a process that still holds the pid with the same start time
+/// after the read held it continuously since it started, so the reading was its own. A reused
+/// pid is `Gone`, never another process's CPU read as "busy". The OS call is
 /// [`continuum_host::process_usage::cpu_time`]'s adapter.
 pub fn cpu_time(who: ProcessIdentity) -> CpuTime {
     let used = continuum_host::process_usage::cpu_time(who.pid);
