@@ -141,9 +141,11 @@ runs:
       shell: bash
       run: |
         start=$SECONDS
-        room() { df --output=avail -B1G /ci-target | tail -1 | tr -d ' '; }
-        while ps -p "$FREE_TOOLCHAINS_PID" > /dev/null && [ "$(room)" -lt 29 ]; do sleep 2; done
-        echo "::notice title=room for the restore::waited $((SECONDS - start)) s; /ci-target free $(room)G"
+        # bytes, never df's rounded-up gigabytes (28 GiB + 1 byte would print 29 and pass; Codex on #5685)
+        need=$((29 * 1024 * 1024 * 1024))
+        room() { df --output=avail -B1 /ci-target | tail -1 | tr -d ' '; }
+        while ps -p "$FREE_TOOLCHAINS_PID" > /dev/null && [ "$(room)" -lt "$need" ]; do sleep 2; done
+        echo "::notice title=room for the restore::waited $((SECONDS - start)) s; /ci-target free $(( $(room) / 1024 / 1024 / 1024 )) GiB (needs 29)"
 
     - name: Restore the shared target cache
       id: target-cache
