@@ -258,14 +258,14 @@ impl LlmDeliberationFaculty {
                 "deliberation prompt — what the model sees this turn"
             );
             // This view's cap ([`request_allowance`]): a pass's grant, an act's window room after
-            // the prompt as the calibration prices it (the engine's own count after a refusal).
+            // the prompt at its input's price: a refusal's count for the same input, fresh for a changed one.
             let measured = self.working_set.as_ref().and_then(|reg| reg.need_or_pooled(self.persona_id)).is_some();
             let allowance = match request_allowance(
                 kind,
                 measured,
                 view.completion_reserve,
                 fit_window,
-                calibration.charge(view.estimated_prompt_tokens),
+                calibration.for_input(view.input_identity).charge(view.estimated_prompt_tokens),
             ) {
                 Ok(allowance) => allowance,
                 // The room is below the reply's grant: never sent past a bound (`act_room.rs`).

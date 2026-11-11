@@ -92,6 +92,9 @@ struct MindState {
     published: u32,
     completed_since_grant: bool,
     owed_since: Option<u64>,
+    /// She held a seat across the last publication with nothing in custody: an unused seat, which
+    /// yields to a waiter whether or not she completed a turn since her grant (`fair_publish`).
+    idle_at_last_publish: bool,
 }
 
 impl MindState {
@@ -136,7 +139,7 @@ impl World {
         let states = order.iter().zip(minds).map(|(id, (name, need))| {
             (*id, MindState {
                 name: name.to_string(), need: *need, phase: Phase::Idle, quoted: None, reservation: None, reserved_on: None,
-                unresolved: 0, resident: 0, published: 0, completed_since_grant: false, owed_since: None,
+                unresolved: 0, resident: 0, published: 0, completed_since_grant: false, owed_since: None, idle_at_last_publish: false,
             })
         }).collect();
         Self {
@@ -218,7 +221,7 @@ impl World {
                 // a reservation and a handoff ticket made against it stay with their holders: a
                 // late reserve or receipt for them is exactly what must be refused or ignored.
                 for s in self.minds.values_mut() {
-                    (s.resident, s.unresolved, s.published, s.completed_since_grant) = (0, 0, 0, false);
+                    (s.resident, s.unresolved, s.published, s.completed_since_grant, s.idle_at_last_publish) = (0, 0, 0, false, false);
                 }
                 Applied::default()
             }
@@ -337,7 +340,7 @@ impl World {
             if s.owns_request() {
                 self.violations.push((self.steps, Step::Publish, Violation::TicketWithCustody { mind, phase: s.phase, unresolved: s.unresolved }));
             }
-            if !s.completed_since_grant {
+            if !s.completed_since_grant && !(s.idle_at_last_publish && !s.owns_request()) {
                 self.violations.push((self.steps, Step::Publish, Violation::TicketWithoutCompletion { mind }));
             }
             applied.tickets.push(self.order.iter().position(|m| *m == mind).expect("test: a ticket names a mind"));
@@ -353,6 +356,7 @@ impl World {
                 self.first_served.entry(mind).or_insert(publication);
                 applied.newly_served.push(index);
             }
+            s.idle_at_last_publish = s.published > 0 && granted > 0 && !s.owns_request();
             s.published = granted;
             let eligible = s.need <= self.ceiling.min(self.pool);
             // A mind whose publication is retiring still holds her cells: she is owed service
@@ -366,7 +370,11 @@ impl World {
             Ok(o @ Opportunity::Grant { waiter, need, .. }) if next.grant_for(waiter).unwrap_or(0) < need => { // unwrap_or: not granted
                 self.violations.push((self.steps, Step::Publish, Violation::MissedOpportunity { publication, opportunity: o }));
             }
-            Ok(o @ Opportunity::Reclaim { .. }) if applied.tickets.is_empty() && !retiring => {
+            // A reclaim is taken when the waiter is served at this publication: by a ticket to the
+            // holder, or by an unused seat withdrawn without a handoff (an idle holder that never
+            // served holds no KV here; `fair_publish`'s unused-seat rule).
+            Ok(o @ Opportunity::Reclaim { waiter, .. })
+                if applied.tickets.is_empty() && !retiring && next.grant_for(waiter).unwrap_or(0) < self.minds[&waiter].need => { // unwrap_or: not granted
                 self.violations.push((self.steps, Step::Publish, Violation::MissedOpportunity { publication, opportunity: o }));
             }
             _ => {}
