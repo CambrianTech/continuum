@@ -93,6 +93,13 @@ Outcome {
 kind = Form | Build | Test | Lint | Run | Review   // open: a new kind is a new variant, never prose
 ```
 
+**Built on the owners that exist, never beside them.** A command already declares its effect class
+once (`continuum_base::tool_effect::ToolEffect`: Observes, Changes, Reopens, Undeclared; read by the
+view's repeat rule), and a refusal already carries `NextMoves`. The outcome extends those: a `Changes`
+command also declares which evidence kinds its effect invalidates, beside `EFFECT` on its spec; the
+evidence kinds live on the floor next to `ToolEffect` so the kernel and the view both read them; the
+per-call `effect` above is the instance of that declared class.
+
 **Rendered once.** One renderer turns an `Outcome` into her text (her text is rendered from typed
 data, never authored prose). "Build: unverified" is printed because the field is there, so no tool can
 word a syntax pass as "the file is fine".
