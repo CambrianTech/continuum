@@ -938,8 +938,9 @@ mod tests {
         // measured — the post-fit size her held turns fitted into — not her wish. Wish
         // 99,096 × 1.25 = 123,870 named her at a 75,776 grid her turns were fitting into
         // every time. With a need of 74,000 she is served there; with a need of 80,000
-        // she is still named — the need gates in both directions. A need above the
-        // target is clamped to the target (a floor cannot exceed what it floors).
+        // she is still named — the need gates in both directions. An exact need above a
+        // stale target raises the target, never the reverse (#5931, SERVING-ENGINE section 8):
+        // what her turns cannot be sent below is the truth the grid names.
         let kimi = Uuid::new_v4();
         let wish = vec![LaneRequirement::wished(kimi, t(99_096), 1.25)];
         assert_eq!(minds_over_the_grid(&wish, 75_776), vec![(kimi, 123_870)], "no need known: the wish gates, as before");
@@ -948,7 +949,7 @@ mod tests {
         let over = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::window_allocator::observed::Observed::Exact(t(80_000)))];
         assert_eq!(minds_over_the_grid(&over, 75_776), vec![(kimi, 80_000)], "a need the grid cannot hold still names her, by the need");
         let clamped = vec![LaneRequirement::wished(kimi, t(60_000), 1.0).held(crate::inference::planning::window_allocator::observed::Observed::Exact(t(90_000)))];
-        assert!(minds_over_the_grid(&clamped, 60_000).is_empty(), "need clamps to the target");
+        assert_eq!(minds_over_the_grid(&clamped, 60_000), vec![(kimi, 90_000)], "an exact need past a stale target is her need: named, never hidden under the wish");
         let bound = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::window_allocator::observed::Observed::AtLeast { at_least: t(99_096) })];
         assert!(minds_over_the_grid(&bound, 75_776).is_empty(), "a bound past the widest window is not unservable (Cormac on #5773)");
     }
