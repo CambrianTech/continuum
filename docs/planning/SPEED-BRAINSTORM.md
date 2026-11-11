@@ -217,6 +217,17 @@ between acts 2.0 s (so prefill-ahead per mind has little to hide in; the cache i
 - **Never a miss for a file read once:** a whole file read inline names its handle, so she reopens
   it instead of re-reading (20 identical re-reads, 2,876 s in 6 h).
 
+## Collapse pricing on the dyno (2026-11-11, branch fable/collapse-pricing-dyno)
+
+`replay --allocate` now carries each resident's epoch (5601c6660). Over 972 acts of 2026-11-10, the
+warm-only fresh fit plus `priced::collapse` against the live code: predicted seconds per act
+Atlas 325 -> 194, Aris 134.5 -> 111.5, Benchy 134 -> 99, Aiko 99.5 -> 106; turnovers per act
+Atlas 0.01 -> 0.24, Aris 0.05 -> 0.16, Benchy 0.10 -> 0.51, Aiko 0.03 -> 0.05. It pays for three of
+four, but Benchy thrashes: each collapse is amortized over a regrowth horizon the next act already
+breaks. Next: hysteresis (a collapse commits to the horizon it was priced on; her epoch's age
+reaches the price), then re-run the dyno; deploy only when turnovers stay rare and time falls for
+every resident.
+
 ## Open: newer input is never paged out (found 2026-11-10, capacity_and_wire)
 
 A room message that arrives during her act is newer than her newest result, but it rides her view's
