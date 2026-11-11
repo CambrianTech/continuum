@@ -22,6 +22,7 @@ use crate::source::{Item, Source};
 mod allot;
 mod log;
 mod repeat;
+mod tail;
 
 use allot::{allot, rank};
 pub use crate::level::Level;
@@ -468,8 +469,8 @@ impl<T: Block> View<T> {
                     view.summarized.remove(&id);
                 }
                 let text = match level {
-                    // A start re-renders every item as itself: no repeat is allotted here.
-                    Level::Full | Level::Repeat { .. } => {
+                    // A start re-renders every item as itself: no repeat or page is allotted here.
+                    Level::Full | Level::Repeat { .. } | Level::Page => {
                         oldest = false;
                         Some(crate::source::whole(&**source, item))
                     }
@@ -727,6 +728,11 @@ impl<T: Block> View<T> {
                 if self.folded.contains(&id) || self.covered.contains(&id) || self.withheld.contains(&id) {
                     continue;
                 }
+                // One element, one occurrence: an item whose element her epoch already shows under
+                // another key (her act's tail showed act k; her actions now offer it as `#k`).
+                if !self.epoch.holds(&id) && self.epoch.holds_element(item.id()) {
+                    continue;
+                }
                 // An item with no pointer would leave her view entirely if collapsed (a peer's
                 // new turn), so it always arrives whole: admission never drops what she has
                 // not seen.
@@ -761,7 +767,7 @@ impl<T: Block> View<T> {
                 let element = item.id();
                 let text = match level {
                     Level::Full | Level::Repeat { .. } => Some(crate::source::whole(&**source, item)),
-                    Level::Summary => item.summary.or(item.pointer),
+                    Level::Summary | Level::Page => item.summary.or(item.pointer),
                     Level::Pointer | Level::Folded => item.pointer,
                 };
                 if let Some(text) = text {

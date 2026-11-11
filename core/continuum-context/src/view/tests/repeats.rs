@@ -164,9 +164,9 @@ fn a_rendering_already_sent_is_never_turned_into_a_repeat() {
 // what this catches (IntelMac, 2026-11-11: one saved output reopened 20+ times, each arriving
 // byte-identical, her input equal to her last): an identical reopen whose whole is in front of her
 // arriving whole again. It is the repeat; the FIRST reopen still arrives whole (a reopen never
-// answers another repeat), and her newest act is judged the same way before it rides whole.
+// answers another repeat).
 #[test]
-fn reopening_the_same_output_again_is_the_repeat_and_the_newest_act_is_judged_too() {
+fn reopening_the_same_output_again_is_the_repeat() {
     let mut acts = Acts(Vec::new());
     let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
     acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, &body("saved"));
@@ -174,14 +174,81 @@ fn reopening_the_same_output_again_is_the_repeat_and_the_newest_act_is_judged_to
     assert!(view.renders("acts", "1"));
     acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, &body("saved"));
     assert_eq!(view.advance(&[&acts]).repeats, 1, "reopening it again, its whole in front of her, is the repeat");
+}
 
-    // Her newest act rides whole after her view, outside its sources: the view judges it too.
-    let mut newest = Acts(acts.0.clone());
-    newest.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, &body("saved"));
-    let item = newest.items().pop().expect("the act just pushed");
-    let block = view.repeat_of_newest(&acts, item).expect("her newest identical reopen is a repeat");
-    assert!(block.contains("repeat of #1"), "{block}");
-    let mut changed = Acts(acts.0.clone());
-    changed.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, "a different body");
-    assert!(view.repeat_of_newest(&acts, changed.items().pop().expect("pushed")).is_none(), "a changed outcome arrives whole");
+/// Her act's tail as a source of its own: one item per entry, keyed apart from her actions but
+/// carrying an act's element, cause and identity as given.
+struct Tail(Vec<Item<String>>);
+
+impl Source<String> for Tail {
+    fn name(&self) -> &str {
+        "tail"
+    }
+    fn priority(&self) -> u8 {
+        9
+    }
+    fn items(&self) -> Vec<Item<String>> {
+        self.0.clone()
+    }
+    fn repeat(&self, item: &Item<String>, ancestor: &Item<String>) -> Option<String> {
+        Some(format!("[tail #{} repeat of #{}]", item.key(), ancestor.key()))
+    }
+    fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+        None // a fixture that does not exercise folding
+    }
+}
+
+/// Act `seq` of `acts` as her tail renders it: the same element, cause and identity, its own key.
+fn tail_item(acts: &Acts, seq: usize) -> Item<String> {
+    let mut item = acts.items().remove(seq - 1);
+    item.key = format!("act/{seq}/result");
+    item
+}
+
+// what this catches: her act shown twice, once as her tail showed it and again as her actions offer
+// it next act (`#k`), the duplicate `covers` used to prevent: one element, one occurrence.
+#[test]
+fn an_item_whose_element_the_epoch_shows_under_another_key_is_not_appended() {
+    let mut acts = Acts(Vec::new());
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
+    acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
+    let tail = Tail(vec![tail_item(&acts, 1)]);
+    assert_eq!(view.append_tail(&tail, &Acts(Vec::new()), |_| Level::Full).items, 1, "the tail shows act 1");
+    assert_eq!(view.advance(&[&acts]).items, 0, "her actions offer act 1 again: already shown");
+    assert!(!view.renders("acts", "1") && view.renders("tail", "act/1/result"));
+}
+
+// what this catches (IntelMac, 2026-11-11: one saved output reopened 20+ times, each arriving
+// byte-identical): her newest act riding whole after her view, never judged. Through her tail it is
+// judged on arrival against what her history shows whole, and a changed outcome arrives whole.
+#[test]
+fn her_tail_judges_her_newest_act_against_her_history() {
+    let mut acts = Acts(Vec::new());
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
+    acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, &body("saved"));
+    view.advance(&[&acts]);
+    acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, &body("saved"));
+    let history = Acts(acts.0[..1].to_vec());
+    let appended = view.append_tail(&Tail(vec![tail_item(&acts, 2)]), &history, |_| Level::Full);
+    assert_eq!(appended.repeats, 1, "reopening it again, its whole in front of her, is the repeat");
+    let last = view.render().last().cloned().expect("the tail appended");
+    assert!(last.contains("repeat of #1"), "{last}");
+    acts.push("tool/output", r#"{"outputId":"255452cef96d2177"}"#, ToolEffect::Reopens, "a different body");
+    let changed = view.append_tail(&Tail(vec![tail_item(&acts, 3)]), &Acts(acts.0[..2].to_vec()), |_| Level::Full);
+    assert_eq!((changed.items, changed.repeats), (1, 0), "a changed outcome arrives whole");
+}
+
+// what this catches: her newest result paged by the act's allocation arriving whole anyway, or as a
+// summary: it arrives at its page, as its source rendered it.
+#[test]
+fn a_paged_result_arrives_at_its_page() {
+    let mut acts = Acts(Vec::new());
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
+    acts.push("code/read", r#"{"path":"big.rs"}"#, ToolEffect::Observes, &body("big.rs"));
+    let mut item = tail_item(&acts, 1);
+    item.summary = Some("[page 1 of big.rs: lines 1-40 of 61; read on with tool/output act=1 startLine=41]".to_owned());
+    view.append_tail(&Tail(vec![item]), &Acts(Vec::new()), |_| Level::Page);
+    let event = view.epoch.events().last().expect("the page appended");
+    assert_eq!(event.level, Level::Page);
+    assert!(event.text.starts_with("[page 1 of big.rs"), "{}", event.text);
 }
