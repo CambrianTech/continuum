@@ -248,12 +248,12 @@ impl InPlace {
             }
         };
         let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
-        match (stopped, workspace) {
-            (Released::Confirmed, Released::Confirmed | Released::NotHers) => continuum_base::probe!(class = "training.in_place.paged_out",
+        match paged_out(stopped, workspace) {
+            true => continuum_base::probe!(class = "training.in_place.paged_out",
                 persona = %key.persona_id, seat_ms = ms(cost.seat), restore_ms = ms(cost.restore), learn_ms = ms(cost.learn),
                 attempts = u64::from(cost.attempts), learned = u64::from(cost.learned), page_out_ms = ms(began.elapsed()),
                 workspace = ?workspace, "her learner paged out at the end of her pass, confirmed: what seating, restoring and paging out cost against what she learned"),
-            _ => continuum_base::probe!(class = "training.in_place.page_out_unconfirmed", persona = %key.persona_id, stop = ?stopped,
+            false => continuum_base::probe!(class = "training.in_place.page_out_unconfirmed", persona = %key.persona_id, stop = ?stopped,
                 workspace = ?workspace, page_out_ms = ms(began.elapsed()),
                 "her page-out was attempted and not confirmed; custody holds what the engine did not release, and no cost receipt is taken from it"),
         }
@@ -655,6 +655,12 @@ impl InPlace {
 fn memory_short(key: &BucketKey, wait: &crate::inference::training_admission::TrainingWait) {
     continuum_base::probe!(class = "training.in_place.memory_short", persona = %key.persona_id, wait = %wait,
         "her learning memory was not free; the pass ends holding nothing and the next pass asks again");
+}
+
+/// PURE: whether a page-out is confirmed, so its cost receipt may be taken: her stop confirmed, and
+/// the workspace released with her or not hers to release. A failure is never success evidence.
+fn paged_out(stopped: Released, workspace: Released) -> bool {
+    matches!((stopped, workspace), (Released::Confirmed, Released::Confirmed | Released::NotHers))
 }
 
 /// Stop `key`'s learner; whatever it still holds stays in custody until the engine confirms it.
