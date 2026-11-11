@@ -95,9 +95,10 @@ pub enum Standing<'a> {
 }
 
 /// Where `kind` stands for `at`: only evidence bound to exactly `at` counts, and the last such
-/// piece is the current one. A pass for an older revision leaves the newer one `Unverified`.
-pub fn standing(evidence: &[Evidence], kind: EvidenceKind, at: Revision) -> Standing<'_> {
-    match evidence.iter().rev().find(|e| e.kind == kind && e.subject == at) {
+/// piece from the requested checker is the current one. A different command or configuration
+/// cannot verify this check, even when the content revision is identical.
+pub fn standing<'a>(evidence: &'a [Evidence], kind: EvidenceKind, at: Revision, checker: &CheckerRun) -> Standing<'a> {
+    match evidence.iter().rev().find(|e| e.kind == kind && e.subject == at && &e.checker == checker) {
         None => Standing::Unverified,
         Some(e) => match &e.verdict {
             Verdict::Passed => Standing::Passed(e),
@@ -112,8 +113,12 @@ pub fn standing(evidence: &[Evidence], kind: EvidenceKind, at: Revision) -> Stan
 mod tests {
     use super::*;
 
+    fn checker() -> CheckerRun {
+        CheckerRun { command: vec!["cargo".into(), "check".into()], config: Revision::of_bytes(b"default") }
+    }
+
     fn evidence(kind: EvidenceKind, subject: Revision, verdict: Verdict) -> Evidence {
-        let checker = CheckerRun { command: vec!["cargo".into(), "check".into()], config: Revision::of_bytes(b"default") };
+        let checker = checker();
         Evidence { kind, subject, checker, verdict, output: None }
     }
 
@@ -128,9 +133,9 @@ mod tests {
             evidence(EvidenceKind::Form, after, Verdict::Passed),
             evidence(EvidenceKind::Build, before, Verdict::Passed),
         ];
-        assert!(matches!(standing(&all, EvidenceKind::Form, after), Standing::Passed(_)));
-        assert_eq!(standing(&all, EvidenceKind::Build, after), Standing::Unverified, "the old build pass is not this edit's");
-        assert_eq!(standing(&all, EvidenceKind::Test, after), Standing::Unverified, "nothing ran the tests");
+        assert!(matches!(standing(&all, EvidenceKind::Form, after, &checker()), Standing::Passed(_)));
+        assert_eq!(standing(&all, EvidenceKind::Build, after, &checker()), Standing::Unverified, "the old build pass is not this edit's");
+        assert_eq!(standing(&all, EvidenceKind::Test, after, &checker()), Standing::Unverified, "nothing ran the tests");
     }
 
     // what this catches: an interrupted check reported as a failure of the content, or left as a
@@ -141,10 +146,23 @@ mod tests {
         let at = Revision::of_bytes(b"x");
         let task = uuid::Uuid::from_u128(7);
         let mut all = vec![evidence(EvidenceKind::Test, at, Verdict::Running(task))];
-        assert!(matches!(standing(&all, EvidenceKind::Test, at), Standing::Running(_)));
+        assert!(matches!(standing(&all, EvidenceKind::Test, at, &checker()), Standing::Running(_)));
         all.push(evidence(EvidenceKind::Test, at, Verdict::Inconclusive(Inconclusive::Lost)));
-        assert!(matches!(standing(&all, EvidenceKind::Test, at), Standing::Inconclusive(_)), "lost, not failed");
+        assert!(matches!(standing(&all, EvidenceKind::Test, at, &checker()), Standing::Inconclusive(_)), "lost, not failed");
         all.push(evidence(EvidenceKind::Test, at, Verdict::Failed("1 test failed".into())));
-        assert!(matches!(standing(&all, EvidenceKind::Test, at), Standing::Failed(_)));
+        assert!(matches!(standing(&all, EvidenceKind::Test, at, &checker()), Standing::Failed(_)));
     }
+    #[test]
+    fn identical_content_does_not_transfer_a_pass_between_checkers() {
+        let at = Revision::of_bytes(b"same tree");
+        let all = vec![evidence(EvidenceKind::Build, at, Verdict::Passed)];
+        let mut requested = checker();
+        requested.config = Revision::of_bytes(b"different features and environment");
+        assert_eq!(standing(&all, EvidenceKind::Build, at, &requested), Standing::Unverified);
+        requested = checker();
+        requested.command.push("--all-targets".into());
+        assert_eq!(standing(&all, EvidenceKind::Build, at, &requested), Standing::Unverified);
+        assert!(matches!(standing(&all, EvidenceKind::Build, at, &checker()), Standing::Passed(_)));
+    }
+
 }
