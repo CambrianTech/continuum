@@ -90,3 +90,23 @@ fn a_fresh_line_that_cannot_decide_prices_cold() {
     let ContextPrice::Measured(time) = fit.price() else { panic!("decode and prefill measured: priced, never unmeasured") };
     assert_eq!(time.fresh_at(30_000.0), 30_000.0, "cold: every held token is fresh");
 }
+
+// what this catches (Aris, the M5, 2026-11-11): decode and prefill per-token slopes inside their own
+// errors (contention hides the per-token trend) left the price Unmeasured and his view unbounded,
+// though his whole act's seconds rose measurably with context. The whole-act curve prices him; it
+// is a measurement, never a guess, and a whole act that is noise too stays unmeasured.
+#[test]
+fn a_measured_whole_act_prices_when_its_parts_are_noise() {
+    let flat_decode = |_: f64| 0.06;
+    let flat_prefill = |_: f64| 0.008;
+    let mut fit = ActTimeFit::default();
+    // Output grows with context, so the whole act's seconds do; the per-token lines are flat and
+    // her fresh tokens wander.
+    for (input, fresh, output) in [(10_000u32, 3_000u32, 200u32), (20_000, 500, 400), (35_000, 2_500, 700), (50_000, 800, 1_000), (75_000, 2_000, 1_500)] {
+        fit.observe(&act(input, fresh, output, flat_decode, flat_prefill));
+    }
+    let ContextPrice::Measured(time) = fit.price() else { panic!("a measured whole act prices") };
+    assert_eq!(time.curve, Curve::Whole, "{time:?}");
+    assert!((time.seconds_per_token(40_000.0) - time.observed.slope).abs() < 1e-12);
+    assert!(time.seconds(60_000.0) > time.seconds(20_000.0), "the act costs more holding more");
+}

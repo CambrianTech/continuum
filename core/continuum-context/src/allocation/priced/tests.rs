@@ -1,7 +1,7 @@
 use super::*;
 use crate::allocation::{allocate, ActNeed, Head, Leveled, NeedWindow, Newest, NewestShown, Rungs, Span, TrainedContext, ViewClaim};
 use crate::flex::FlexClaim;
-use crate::price::Line;
+use crate::price::{Curve, Line};
 
 /// The M5's measured contexts (`replay --act-price`, 2026-11-06T13Z..2026-11-07T13Z).
 const MEASURED: (u32, u32) = (10_840, 145_858);
@@ -19,6 +19,7 @@ fn m5_over(context: (u32, u32)) -> ActTime {
         fresh: line(5_421.0, 0.13209, context),
         observed: line(28.97, 3.7327e-3, context),
         output: 276.0,
+        curve: Curve::Composed,
     }
 }
 
