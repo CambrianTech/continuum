@@ -149,99 +149,80 @@ pub fn is_not_a_contribution(text: &str) -> Option<&'static str> {
 /// never a spoken line.
 fn opens_with_tool_envelope(t: &str) -> bool {
     if let Some(rest) = t.strip_prefix('[') {
-        // Three bracket dialects reach the room, and each was found the hard way.
-        // The SECOND: while the first version of this gate was compiling, a citizen
-        // posted `[code/read] {"file_path":"src/main.rs"}` — verb closed by `]`, object
-        // after a space — which the comma form below does not match. A predicate that
-        // catches one spelling of a two-spelling failure is a gate with a hole in it:
-        //
-        //   [verb,{…}]     the verb runs to a comma, object follows
-        //   [verb] {…}     the verb is closed by `]`, object follows the bracket
-        //   [verb]         NO object at all — see below
+
+        // Unified bracket handling using two complementary scans.
+        // Scan A (split on `]`) handles comma-with-bracket form, stage-word+call,
+        // and bare namespaced brackets. Scan B (split on `(`) handles paren-object
+        // form (JSON or kwargs) and labelled calls like [call form: code/read({…})].
+        // This replaces the five-branch enumeration with a single predicate.
+
         let verb_ok = |v: &str| {
             !v.is_empty()
                 && v.len() <= 64
                 && v.chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "/_-.".contains(c))
         };
-        if let Some((verb, after)) = rest.split_once(',') {
-            if verb_ok(verb) && after.trim_start().starts_with('{') {
+
+        // Scan A: split on `]` — handles comma-with-bracket, stage-word+call, bare namespaced.
+        if let Some((before_close, after_close)) = rest.split_once(']') {
+            let trimmed_after = after_close.trim_start();
+
+            // Comma-with-bracket form: [ns/verb,{…}] — object is inside bracket after comma.
+            if let Some((comma_verb, _comma_rest)) = before_close.split_once(',') {
+                if verb_ok(comma_verb) && comma_verb.contains('/')
+                    && _comma_rest.trim_start().starts_with('{')
+                {
+                    return true;
+                }
+            }
+
+            // Space-separated form: [ns/verb] {…} — object is after bracket.
+            if !before_close.contains(',') && verb_ok(before_close) && before_close.contains('/')
+                && trimmed_after.starts_with('{')
+            {
                 return true;
             }
-        }
-        if let Some((verb, after)) = rest.split_once(']') {
-            if verb_ok(verb) && after.trim_start().starts_with('{') {
-                return true;
-            }
-            // `[execute] code/read(code=…` (0d5c1ffa, #academy, 2026-09-16 23:5xZ): the
-            // bracket holds a STAGE WORD and the namespaced CALL follows it. The call is
-            // the discriminator — a namespaced verb, then `(` or `{` — so `[answer] the
-            // code/read verb is fine` (no call) stays speech.
-            let a = after.trim_start();
+
+            // Stage word + namespaced call: [stage] callee(obj or {obj})
+            let a = after_close.trim_start();
             let call_len = a.find(['(', '{', ' ', '\n']).unwrap_or(a.len());
-            let callee = &a[..call_len];
-            if verb_ok(verb)
-                && verb_ok(callee)
-                && callee.contains('/')
+            if call_len > 0
+                && verb_ok(before_close)
+                && verb_ok(&a[..call_len])
                 && matches!(a[call_len..].chars().next(), Some('(') | Some('{'))
             {
                 return true;
             }
-            // THE THIRD DIALECT, and by 2026-09-15 the DOMINANT one: no object
-            // follows at all. Measured over 24h across the 8 citizens on IntelMac —
-            // 241 spoken lines, 48 opening with a `[verb]` bracket, of which the two
-            // object-bearing forms above caught 16. The other 32 open like this:
-            //
-            //   [code/run]
-            //   [work/list]
-            //   [code/run]\n[invalid] command_run: unsupported lang '…' — supported: rust, python.
-            //   [code/run]\n\n# Code executed successfully. …
-            //
-            // A bare verb cannot be matched on SHAPE alone, because the same shape
-            // carries things that ARE speech and must survive: `[answer]`, `[pass]`,
-            // and `[repetition] your last message and …` (the perception brick) all
-            // satisfy `verb_ok`. What separates them is the NAMESPACE — every command
-            // in this system is `namespace/verb`, which is what the command system IS,
-            // so the slash is a property of the command surface and not a phrase list.
-            // Of the 48 bracket-openers, this takes the gate 16 → 33; the 15 it still
-            // leaves alone are exactly the verdict dialect and the brick, which are
-            // other gates' business (#4067) and must not be silenced here.
-            //
-            // I audited all 17 lines this newly catches before writing it: code/run
-            // ×14, work/list ×2, command/run ×1, every one a tool envelope posted where
-            // prose belongs, no false positive among them. Still ANCHORED — only a
-            // LEADING bracket counts, so a citizen writing about a tool mid-sentence is
-            // untouched, which is the `framing_echo` lesson (un-anchoring silences the
-            // citizens who REPORT the problem).
-            if verb_ok(verb) && verb.contains('/') {
+
+            // Bare namespaced: [ns/verb] with nothing object-like after ]
+            if !before_close.contains(',') && verb_ok(before_close) && before_close.contains('/') && !trimmed_after.starts_with('{')
+            {
                 return true;
             }
         }
-        // THE FIFTH DIALECT (Saoirse, Intel Mac, 2026-09-16 23:0xZ, into #cambriantech):
-        // the CALL written inside the bracket — `[code/read({"file_path":"src/main.rs"})]`
-        // then `Result:` and a fenced echo of a peer's line. Neither the comma nor the
-        // `]` split above sees a verb (the `(` and the object are in the way), and the
-        // fence rule below needs a leading fence. Same discriminator as the fourth
-        // dialect: a namespaced verb CALLED with an object, `ns/verb({`, here at the
-        // lead. Anchored on the bracket; a citizen writing "I ran [code/read(...)]"
-        // mid-sentence is untouched.
-        // The object is a JSON object — or the KWARGS spelling of one, `cmd=…, lang=…`
-        // (0051cdcf, #academy, the same hour: `[code/shell(cmd=code/read(…), lang=rust))]`).
-        if let Some((verb, after)) = rest.split_once('(') {
-            let a = after.trim_start();
-            let kwargs = a
-                .split_once('=')
-                .is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
-            if verb_ok(verb) && verb.contains('/') && (a.starts_with('{') || kwargs) {
+
+        // Scan B: split on `(` — handles paren-object and labelled-call forms.
+        if let Some((before_paren, after_paren)) = rest.split_once('(') {
+            let a = after_paren.trim_start();
+
+            let has_json = a.starts_with('{');
+            let has_kwargs = a.split_once('=').is_some_and(|(k, _)| {
+                !k.is_empty()
+                    && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            });
+
+            // Direct namespaced call: [ns/verb({…})] or [ns/verb(kwargs=…)]
+            if verb_ok(before_paren) && before_paren.contains('/') && (has_json || has_kwargs)
+            {
                 return true;
             }
-            // THE LABELLED CALL: `[call form: code/read({"file_path":…})]` (0051cdcf,
-            // #academy, 2026-09-17 06:5xZ) — a label, then the namespaced call, all
-            // inside the lead bracket. The call is still the discriminator: the last
-            // whitespace-separated token before `(` is a namespaced verb.
-            let callee = verb.rsplit([' ', ':']).next().unwrap_or(""); // unwrap_or: rsplit always yields one piece; unreachable
-            if callee != verb && verb_ok(callee) && callee.contains('/') && (a.starts_with('{') || kwargs) {
-                return true;
+
+            // Labelled call: scan tokens in label text for namespaced callee.
+            for token in before_paren.split(|c: char| c.is_whitespace() || c == ':') {
+                if verb_ok(token) && token.contains('/') && (has_json || has_kwargs)
+                {
+                    return true;
+                }
             }
         }
     }
