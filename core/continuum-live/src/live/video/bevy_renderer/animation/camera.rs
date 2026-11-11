@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 
-use super::super::skeleton::{camera_z_for_head, REFERENCE_HEAD_Y};
+use super::super::skeleton::{camera_z_for_head, torso_target_y, REFERENCE_HEAD_Y};
 use super::components::*;
 
 /// Lock each camera to its own avatar's head-Y.
@@ -31,32 +31,21 @@ pub(in crate::live::video::bevy_renderer) fn animate_idle(
         let head_y = lock.head_y.unwrap_or(REFERENCE_HEAD_Y);
         let cam_z = camera_z_for_head(head_y);
 
-        // Derive look target from actual bone positions discovered at instantiation:
-        // spine entity → neck entity → proportional fallback (mid-spine ≈ 60% of head height).
-        let mut look_target_y: f32 = head_y * 0.6; // default: mid-torso proportion
+        // ONE OWNER: derive torso Y from spine bone when available, documented proportion otherwise.
+        let mut spine_y: Option<f32> = None;
         for (skeleton, skel_slot) in &skeleton_query {
-            if skel_slot.0 != cam_slot.0 {
-                continue;
-            }
-            // Primary: spine bone position (actual measurement of torso height)
+            if skel_slot.0 != cam_slot.0 { continue; }
             if let Some(ref spine) = skeleton.spine {
-                if let Ok(global_spine) = global_transforms.get(spine.entity) {
-                    look_target_y = global_spine.translation().y;
-                    break;
+                if let Ok(g) = global_transforms.get(spine.entity) {
+                    spine_y = Some(g.translation().y);
                 }
             }
-            // Secondary: neck bone position as fallback
-            if let Some(ref neck) = skeleton.neck {
-                if let Ok(global_neck) = global_transforms.get(neck.entity) {
-                    look_target_y = global_neck.translation().y;
-                    break;
-                }
-            }
+            break;
         }
+        // torso_target_y is the single owner of mid-torso Y: measured bone or documented proportion.
+        let look_target_y = skeleton::torso_target_y(head_y, spine_y);
 
-        // Camera Y: positioned midway between head and look target for natural downward angle.
-        // This ensures the camera frames both head and torso without manual offsets.
-        let cam_y = (head_y + look_target_y) / 2.0;
+        // Camera Y: midway between head and torso for natural downward angle.
 
         transform.translation.x = 0.0;
         transform.translation.y = cam_y;

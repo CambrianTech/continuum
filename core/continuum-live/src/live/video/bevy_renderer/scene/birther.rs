@@ -54,13 +54,16 @@ pub fn birth_scene_for_identity(
     // Look target targets mid-spine (head_y / 2), halfway between head top
     // and feet — this places it in the upper-torso region for any avatar height.
     // The camera Z is derived from FOV math and scales proportionally at runtime.
+    let torso_y = skeleton::torso_target_y(skeleton::REFERENCE_HEAD_Y, None);
+    // Camera Y: midway between head top and mid-torso for natural downward angle.
+    let cam_y = (skeleton::REFERENCE_HEAD_Y + torso_y) / 2.0;
+
     let camera_xf: TransformDesc = Transform::from_xyz(
-        0.0,
-        skeleton::REFERENCE_HEAD_Y * 2.0 / 3.0, // Y ≈ 1.0 — chest height (VRM: head≈1.5 m → chest≈1.0 m)
-        skeleton::REFERENCE_CAMERA_Z,            // Z = -1.4 — full-body distance (FOV-derived, see skeleton.rs)
+        0.0, cam_y,
+        skeleton::REFERENCE_CAMERA_Z, // Z = -1.4 — full-body distance (FOV-derived, see skeleton.rs)
     )
     .looking_at(
-        Vec3::new(0.0, skeleton::REFERENCE_HEAD_Y / 2.0, 0.0), // look at mid-spine ≈ Y=0.75 (VRM: head≈1.5 m → spine≈0.9 m)
+        Vec3::new(0.0, torso_y, 0.0), // look at mid-torso — ONE OWNER via torso_target_y
         Vec3::Y,
     )
     .into();

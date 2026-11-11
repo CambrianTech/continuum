@@ -64,6 +64,16 @@ pub(super) fn camera_z_for_head(head_y: f32) -> f32 {
     REFERENCE_CAMERA_Z * scale
 }
 
+/// Compute the torso Y position for camera look-target and framing.
+///
+/// Returns spine-world-y when a measured bone is available (runtime),
+/// otherwise one documented proportion of head height — mid-torso ≈ 60 %
+/// of head_y in standard VRM models.  This single function is the owner
+/// of that fact; both birther.rs and animate_idle call it.
+pub(super) fn torso_target_y(head_y: f32, spine_y: Option<f32>) -> f32 {
+    spine_y.unwrap_or_else(|| head_y * 0.6)
+}
+
 /// Find a bone entity by matching against a list of known names.
 pub(super) fn find_bone_by_name(
     root: Entity,
