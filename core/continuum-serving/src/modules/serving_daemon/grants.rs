@@ -169,8 +169,18 @@ fn demand_of(
     trained: crate::inference::planning::window_allocator::Tokens,
     per_sequence_cap: u32,
 ) -> Result<Demand<uuid::Uuid>, Excluded> {
-    // A bound is clamped to what one sequence holds (`Observed::within`); an exact need is not.
-    let need = r.measure.observed_need().ok_or(Excluded::NeedUnobserved)?.map(|need| need.min(trained)).within(per_sequence_cap);
+    // A bound is clamped to what one sequence holds (`Observed::within`); an exact need is not. A wish
+    // no held turn has measured is no floor, only the most she might need: clamped to what one
+    // sequence holds, so she is granted it and her first held turn measures her. Read as exact, a wish
+    // above the ceiling was never granted, never held, never measured: every act refused for good
+    // (BigMama, Sahar on 10523b95e: 'NeedAboveCeiling need127103 ceiling58112' while her fit was
+    // 28,928). A declared size stays a hard floor (an authored requirement), and the wish never enters
+    // `Observed`, so no ring reader can take it for a sample (Codex).
+    let observed = r.measure.observed_need().ok_or(Excluded::NeedUnobserved)?.map(|need| need.min(trained));
+    let need = match (r.measure, crate::inference::planning::window_allocator::Tokens::new(per_sequence_cap)) {
+        (crate::inference::planning::window_allocator::Measure::Wished { .. }, Some(ceiling)) => observed.value().min(ceiling),
+        _ => observed.within(per_sequence_cap),
+    };
     // Her target is room to grow over what her turns hold (her held need with the sent
     // headroom), never her untrimmed demand: every held token slows every act (the M5,
     // 2026-11-07: targets of 150-557k grew grants to 197k, 71 acts vs 158; 7b7a696a).
@@ -189,4 +199,38 @@ fn demand_of(
         settled: false,
         ceiling: per_sequence_cap,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inference::planning::window_allocator::{observed::Observed, LaneRequirement, Tokens};
+
+    fn t(n: u32) -> Tokens {
+        Tokens::new(n).expect("test: a nonzero size") // expect: every size here is a positive literal
+    }
+
+    // what this catches (BigMama, Sahar on 10523b95e, 2026-11-11: 'NeedAboveCeiling need127103
+    // ceiling58112', 0 acts while her rendered fit was 28,928): her wish, never measured by a held
+    // turn, was read as an exact need, so above the ceiling she was never granted, never held a turn,
+    // and never measured the floor that would have seated her. A wish is granted the ceiling and a wish
+    // within it is untouched; a floor a held turn measured above it still waits (#5773), and so does a
+    // declared size, an authored floor (Codex on #5926).
+    #[test]
+    fn an_unheld_wish_above_the_ceiling_is_granted_the_ceiling_and_a_held_floor_still_waits() {
+        let (ceiling, pool, trained) = (58_112, 116_224, t(262_144));
+        let her = uuid::Uuid::from_u128(1);
+        let wished = demand_of(&LaneRequirement::wished(her, t(127_103), 1.0), trained, ceiling).expect("test: a wish is a demand"); // expect: a wished requirement always has a need, target and wish
+        assert_eq!(wished.need.get(), ceiling, "her wish is granted all one sequence holds");
+        assert!(!matches!(waiting_reason(&wished, pool, None), Waiting::NeedAboveCeiling { .. }), "never parked above the ceiling");
+        let held = LaneRequirement::wished(her, t(127_103), 1.0).held(Observed::Exact(t(100_000)));
+        let held = demand_of(&held, trained, ceiling).expect("test: a held need is a demand"); // expect: a held requirement always has a need
+        assert_eq!(held.need.get(), 100_000, "a floor her turns measured is her need");
+        assert!(matches!(waiting_reason(&held, pool, None), Waiting::NeedAboveCeiling { .. }), "a measured floor past the ceiling still waits, as before");
+        let below = demand_of(&LaneRequirement::wished(her, t(20_000), 1.0), trained, ceiling).expect("test: a wish is a demand"); // expect: a wished requirement always has a need, target and wish
+        assert_eq!(below.need.get(), 20_000, "a wish within the ceiling is untouched");
+        let declared = demand_of(&LaneRequirement::declared(her, t(100_000)), trained, ceiling).expect("test: a declaration is a demand"); // expect: a declared requirement always has a need, target and wish
+        assert_eq!(declared.need.get(), 100_000, "a declared size is an authored floor, never clamped");
+        assert!(matches!(waiting_reason(&declared, pool, None), Waiting::NeedAboveCeiling { .. }), "a declared floor past the ceiling waits, as an authored requirement");
+    }
 }
