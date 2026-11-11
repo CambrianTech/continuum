@@ -852,7 +852,7 @@ pub fn requirements_for(
         .iter()
         .map(|p| {
             let demand = working_set.demand_of(*p);
-            use crate::inference::planning::window_allocator::{observed::Observed, LaneRequirement, Tokens};
+            use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
             // Measured or not, as a type: no turn yet is unmeasured, never a zero standing in for one.
             let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d)));
             // Her need as measured, a bound kept a bound: an overflow is reducible by her view's
