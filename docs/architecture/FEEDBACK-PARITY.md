@@ -117,6 +117,29 @@ author because it is addressed to her (card 759556ba), not because someone found
 2026-11-11 three verdicts sent on airc never reached the residents (Benchy's ledger, 11 minutes later:
 "unknown: whether Fable passes").
 
+**The contract's invariants** (Codex's review of this design, 2026-11-11 17:00Z; each is pinned by the
+outliers' tests before any migration):
+1. **Evidence binds what it checked**: the exact file or tree revision, the checker's command, config,
+   environment and scope. A result for an older revision never marks a newer edit verified. Verdicts
+   are `Passed | Failed(fault) | Running(handle) | Inconclusive(cause)`: a cancelled, lost or
+   infrastructure-failed check (a runner's DNS, a dead checker process) is Inconclusive, never Failed
+   and never a quiet Running.
+2. **The effect reports partial and unknown changes too**: a tool that fails partway says what it
+   changed and what it cannot tell, not only what succeeded.
+3. **Raw output is never deleted**: stdout, stderr, exit status and artifacts stay reachable by handle;
+   the renderer wraps evidence, and migrating a tool never drops what it used to show.
+4. **A pass proves its check, nothing more**: Build/Test passed means that declared check passed, not
+   that the change is correct, good, or free of dead code. The renderer says which check.
+5. **No new scheduler**: checks run under the existing task and resource authority (the same handles
+   her shell work uses); a check superseded by a newer edit is cancelled with its process custody
+   preserved (owner-lost vs confirmed-dead, card ce191b8c).
+6. **A submission's evidence is Pending until the exact head's checks are terminal**: published at
+   once as Draft/Pending, never as verified; "a failure reaches her before a reviewer" holds only when
+   the review waits on terminal evidence. A workspace with no checker, or docs only, is Unverified,
+   never Failed. A manifest alone does not declare a command (pyproject.toml does not mean pytest):
+   a checker is declared by the recipe or the workspace, or detected only where the manifest itself
+   names it.
+
 **Build order** (outliers first, per the methodical process):
 1. Outlier A: `code/edit` on a Rust project, `Form` (syn) + `Build` (cargo) evidence.
 2. Outlier B, maximally different: a Python project with no build step (`Form` + `Test` via pytest)
