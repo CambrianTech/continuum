@@ -375,6 +375,39 @@ collapse the newest, admission instead of turnovers, a restart order measured pe
 slot/seed), Cormac (checkpoints at the head boundary and on turnover). The replay validator
 (`continuum-context` `examples/replay.rs`) and the live 15-minute read are the receipts for each slice.
 
+### Revision, 2026-11-11: her act's tail is a source, judged and rendered by the view before it is sent
+
+**The failure.** Her act's tail (the stimulus, her statement and calls, their results, the volatile
+framing, the world state when the room is empty) is built by hand in `prompt/messages.rs` and
+`prompt/view.rs` (`prompt_messages_outside_the_view`: 7 sites), sent, and only then appended to her view
+as opaque blocks (`View::append_sent`, `SENT_TAIL`) that cover the act's item. So the codec never
+governs the one act that matters most: invariant 4 never judged an act on its arrival (three IntelMac
+residents reopened one saved output 20+ times, 2026-11-11; patched by `View::repeat_of_newest`, a
+second entry to the same judgement), levels and admission never apply to it, and every tail defect
+became a leaf fix (the newest-end clip, the head cuts, the repeat label).
+
+**The design.** The tail is one `Source` (`context_streams::tail::Tail`), one renderer of her native
+protocol, its items keyed by what they are:
+- `act/{seq}/call`: her statement and calls as she wrote them (one assistant native message);
+- `act/{seq}/result`: their results as the engine's tool results, cause `Of(call)`, with the act's
+  identity and outcome hash, so `repeat::resolve` judges it on arrival like any item; its
+  `RepeatRun` rides in its rendering;
+- `turn/{key}/stimulus`: the ask, required, whole;
+- `framing/{hash}`: the volatile framing (clock, presence flip), a standing item whose new version
+  supersedes the old at the tail, never mid-prefix.
+The newest result's paging (`Newest::Pageable`) becomes the item's levels (whole, then its first page
+naming its handle), so the one allocation still sees it as irreducible at whole while it fits.
+`View::advance` appends the tail's new items at the end of the epoch like every source's; the prompt is
+`view.render()`; `sent()` marks them held. What goes away: `append_sent`, `SENT_TAIL`, `covers`,
+`repeat_of_newest`, and every hand-built prompt message (the ratchet goes 7 -> 0).
+
+**Proof before deploy.** The faculty replay (`fable/faculty-replay`) runs the captured acts through the
+old and new paths: bytes identical for every act that is not a repeat, the shared prefix between
+consecutive acts no shorter, and a repeated reopen arriving as its repeat block. Then the live read.
+
+**Owners.** Fable (the source, the view, the deletions); Codex (the engine's view of the tail: what
+the KV cache holds across it); Cormac (checkpoints: the tail's items persist as the view's do).
+
 ### Revision, 2026-10-30: causality is in the type, so nothing can loop as if it were progress
 
 **The failure.** On the M5 (build ab0466601, 2026-10-30) residents read the same file up to 8 times an hour
