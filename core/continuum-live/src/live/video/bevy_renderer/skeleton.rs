@@ -53,8 +53,7 @@ pub(super) fn dump_bone_names(
 pub(super) const REFERENCE_HEAD_Y: f32 = 1.50;
 
 /// Baseline camera Z distance for the reference head height.
-pub(super) const REFERENCE_CAMERA_Z: f32 = -0.55;
-
+pub(super) const REFERENCE_CAMERA_Z: f32 = -1.8;
 /// Compute camera Z distance from head world-Y position.
 pub(super) fn camera_z_for_head(head_y: f32) -> f32 {
     let scale = (head_y / REFERENCE_HEAD_Y).clamp(0.5, 2.0);

@@ -43,17 +43,17 @@ pub fn birth_scene_for_identity(
 ) -> SceneDescription {
     let backdrop = room_color_from_identity(identity).into();
 
-    // Default portrait framing — matches the pre-data-driven `build_scene`
-    // default: eye-level, pulled back on -Z, looking at just below the head.
-    // Computed with Bevy's `looking_at` then projected to the neutral
-    // `TransformDesc` so the framing is baked into the description as data.
+    // Default full-body framing — the avatar's camera pulls back far enough
+    // (REFERENCE_CAMERA_Z) and aims at mid-torso so the entire figure fits
+    // within Bevy's ~59° vertical FOV. Previously this was a tight headshot
+    // that excluded the body entirely.
     let camera_xf: TransformDesc = Transform::from_xyz(
         0.0,
-        skeleton::REFERENCE_HEAD_Y,
-        skeleton::REFERENCE_CAMERA_Z,
+        skeleton::REFERENCE_HEAD_Y * 0.67, // Y ≈ 1.0 — chest height for natural downward angle
+        skeleton::REFERENCE_CAMERA_Z,      // Z = -1.8 — pulled back for full-body FOV
     )
     .looking_at(
-        Vec3::new(0.0, skeleton::REFERENCE_HEAD_Y - 0.02, 0.0),
+        Vec3::new(0.0, skeleton::REFERENCE_HEAD_Y * 0.5, 0.0), // look at mid-body ≈ Y=0.75
         Vec3::Y,
     )
     .into();

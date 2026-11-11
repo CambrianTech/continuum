@@ -35,7 +35,7 @@ pub(in crate::live::video::bevy_renderer) fn animate_idle(
         transform.translation.x = 0.0;
         transform.translation.y = eye_y + 0.02;
         transform.translation.z = cam_z;
-        let look_target = Vec3::new(0.0, eye_y, 0.0);
+        let look_target = Vec3::new(0.0, eye_y - 0.4, 0.0);
         *transform = transform.looking_at(look_target, Vec3::Y);
     }
 }
