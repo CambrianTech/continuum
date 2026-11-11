@@ -235,6 +235,18 @@ cycle, not the act. Keep costs her sent view plus one act's growth; collapse is 
 pays one rebuild every N acts, N from her measured growth per act; compare the two cycles' value
 per second. Gate: dyno shows lower time and rare turnovers for every resident.
 
+Dyno fidelity, 2026-11-11 ~03Z (each step changed the verdict, which is why the gate is the dyno):
+- the dyno reports VALUE beside seconds; value per second is the price's own objective;
+- `--fit pooled`: one fit per model over every resident's EARLIER acts (causal). Act time is the
+  engine's and model's, never one mind's; fits are moments and merge exactly, so production can
+  price from the merged fit of the node's residents with no new store;
+- charging a collapse one standard error of its saving changed nothing for Aiko and cost Atlas
+  his gain: reverted;
+- the epoch now freezes her head inside an epoch as the core does: 12 growing-window acts of
+  Aiko's had replayed cold (7% of her seconds), an artifact.
+Variant vs live on the faithful dyno (value/s, main segments): Atlas +18%, Benchy +5%, Aiko -1%,
+Aris -6%. Not yet every resident; next: Aris's act-by-act diff, as Aiko's found the head artifact.
+
 ## Open: newer input is never paged out (found 2026-11-10, capacity_and_wire)
 
 A room message that arrives during her act is newer than her newest result, but it rides her view's
