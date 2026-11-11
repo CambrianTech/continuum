@@ -131,14 +131,21 @@ runs:
 
     # A 26.04 runner with a 72G disk started with 19G free, and the restore (24 GB unpacked beside
     # its 5 GiB download) filled it 43 s after the deletion began, still running (#5681's
-    # continuum-dreaming job, run 41261287633, ubuntu26 20261018.50.1, 2026-11-01 01:32Z). The
-    # room the deletion makes is only room once it has finished.
-    - name: Wait for the freed toolchains
+    # continuum-dreaming job, run 41261287633, ubuntu26 20261018.50.1, 2026-11-01 01:32Z). Waiting
+    # for the whole deletion cost 66 s on a runner whose 87G was room already (warm run
+    # 41280912785, ubuntu26 20261026.180.1, 2026-11-01 06:29Z), so the restore waits only until
+    # the disk it unpacks onto has the room it takes: 29 GB, its 24 GB unpacked beside its 5 GiB
+    # download (run 41261287633 above). The rest of the deletion keeps freeing room in the
+    # background while the restore runs, so the build that follows has it too.
+    - name: Wait until the cache restore has room
       shell: bash
       run: |
         start=$SECONDS
-        while ps -p "$FREE_TOOLCHAINS_PID" > /dev/null; do sleep 2; done
-        echo "::notice title=toolchains freed::waited $((SECONDS - start)) s; / free $(df -h --output=avail / | tail -1 | tr -d ' ')"
+        # bytes, never df's rounded-up gigabytes (28 GiB + 1 byte would print 29 and pass; Codex on #5685)
+        need=$((29 * 1024 * 1024 * 1024))
+        room() { df --output=avail -B1 /ci-target | tail -1 | tr -d ' '; }
+        while ps -p "$FREE_TOOLCHAINS_PID" > /dev/null && [ "$(room)" -lt "$need" ]; do sleep 2; done
+        echo "::notice title=room for the restore::waited $((SECONDS - start)) s; /ci-target free $(( $(room) / 1024 / 1024 / 1024 )) GiB (needs 29)"
 
     - name: Restore the shared target cache
       id: target-cache
