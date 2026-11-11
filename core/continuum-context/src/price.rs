@@ -116,11 +116,18 @@ impl Line {
 pub struct ActTimeFit {
     decode: Moments,
     prefill: Moments,
-    /// Absent in a fit saved by a build that kept warm acts apart (0b1450291, reverted): it loads
-    /// empty and refills, never refusing her whole checkpoint (it did: every seat failed with
-    /// "missing field `fresh`", the M5, 2026-11-11 00:43Z).
+    /// Fresh tokens per act by prompt tokens over every act: the line her price fell back to before
+    /// she had warm acts. Absent in a fit saved without it: loads empty and refills.
     #[serde(default)]
     fresh: Moments,
+    /// Fresh tokens per act by prompt tokens, from WARM acts only (most of the prompt cached): what
+    /// an act prefills when her epoch extends. A cold or turnover act re-prefills everything; fitted
+    /// in, it priced context as if every act recomputed it (the M5, 2026-11-10). The price reads
+    /// this line once it is determined, the all-acts line until then (never unmeasured for hours
+    /// while it fills: 0b1450291 reset it and her views grew unbounded). A collapse's own re-prefill
+    /// is priced apart (`allocation::priced`).
+    #[serde(default)]
+    warm: Moments,
     observed: Moments,
     acts: u32,
     output: f64,
@@ -134,6 +141,9 @@ impl ActTimeFit {
         self.output += f64::from(act.output);
         let input = f64::from(act.input);
         self.fresh.observe(input, f64::from(act.fresh), 1.0);
+        if act.cached >= act.fresh {
+            self.warm.observe(input, f64::from(act.fresh), 1.0);
+        }
         self.observed.observe(input, (act.decode_ms + act.prefill_ms) / 1_000.0, 1.0);
         if act.output > 0 {
             let over = input + f64::from(act.output) / 2.0;
@@ -154,11 +164,15 @@ impl ActTimeFit {
     /// marginal seconds at her mean context are within one standard error of none (a few acts'
     /// noise is never a price: it would collapse her on a slope nobody measured).
     pub fn price(&self) -> ContextPrice {
-        let (Some(decode), Some(prefill), Some(fresh), Some(observed)) = (self.decode.line(), self.prefill.line(), self.fresh.line(), self.observed.line()) else {
+        let (fresh_line, fresh_moments) = match self.warm.line() {
+            Some(line) => (Some(line), &self.warm),
+            None => (self.fresh.line(), &self.fresh),
+        };
+        let (Some(decode), Some(prefill), Some(fresh), Some(observed)) = (self.decode.line(), self.prefill.line(), fresh_line, self.observed.line()) else {
             return ContextPrice::Unmeasured;
         };
         let time = ActTime { decode, prefill, fresh, observed, output: self.output / f64::from(self.acts) };
-        let typical = self.fresh.mean_x;
+        let typical = fresh_moments.mean_x;
         if time.seconds_per_token(typical) > time.seconds_per_token_se(typical) {
             ContextPrice::Measured(time)
         } else {
