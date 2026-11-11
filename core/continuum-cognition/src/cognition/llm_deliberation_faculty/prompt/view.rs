@@ -42,10 +42,13 @@ impl LlmDeliberationFaculty {
             crate::ai::provenance::PromptAdmission::Estimated
         };
         let feedback = self.prompt_feedback.load();
-        let (window, calibration) = feedback.as_ref().filter(|f| f.applies_to(binding)).map_or(
-            (window, PromptCalibration::default()),
-            |f| (window.min(f.available), f.calibration),
-        );
+        // Her window is the binding's live one, her grant: never a copy of a past act's window. A
+        // stored minimum ratcheted her down forever: one refusal at 49,025 fitted every later act
+        // at 49,025 while she held a 112,925 grant (Aiko on the M5, 2026-11-11 13:00-14:30Z: her view
+        // turned over every few acts and her plans collapsed to pointers). A refusal's smaller figure
+        // shapes only the retry of the act it refused (`contribute`), and the engine refuses again if
+        // the grant really is smaller.
+        let calibration = feedback.as_ref().filter(|f| f.applies_to(binding)).map_or(PromptCalibration::default(), |f| f.calibration);
         // The template overhead of the engine this request reaches, measured there (never a constant).
         (window, calibration.behind(admission).with_template(super::template::TemplateEstimate::from_measurement(&binding.adapter.template_overhead(binding.requested_model()))))
     }
@@ -77,7 +80,6 @@ impl LlmDeliberationFaculty {
         view: &DeliberationPromptView,
         engine_prompt_tokens: u32,
         timing: Option<&crate::ai::types::GenerationTiming>,
-        available: u32,
         served: &str,
     ) {
         // No timing on the reply = nothing measured as reused = nothing rides free.
@@ -101,7 +103,6 @@ impl LlmDeliberationFaculty {
         self.prompt_feedback.store(Some(Arc::new(PromptFeedback {
             binding: Arc::clone(binding),
             calibration,
-            available,
             density,
         })));
         continuum_base::probe!(
