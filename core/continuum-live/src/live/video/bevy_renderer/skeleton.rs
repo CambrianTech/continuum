@@ -40,46 +40,24 @@ pub(super) fn propagate_render_layers(
     }
 }
 
-/// Recursively walk all descendants of `entity`, logging each named entity
-/// (for debugging missing-body issues).
-pub(super) fn dump_bone_names(root: Entity, children: &Query<&Children>, names: &Query<&Name>) {
-    let mut buf = Vec::<String>::new();
-    fn walk_names(
-        e: Entity,
-        depth: usize,
-        children: &Query<&Children>,
-        names: &Query<&Name>,
-        out: &mut Vec<String>,
-    ) {
-        let indent = "  ".repeat(depth);
-        if let Ok(name) = names.get(e) {
-            out.push(format!("{}{}", indent, name.as_str()));
-        }
-        if let Ok(child_list) = children.get(e) {
-            for child in child_list.iter() {
-                walk_names(*child, depth + 1, children, names, out);
-            }
-        }
-    }
-    walk_names(root, 0, children, names, &mut buf);
-    if !buf.is_empty() {
-        clog_info!("🎨 dump_bone_names: entity {:?} descendants:", root);
-        for line in buf {
-            clog_info!("  {line}");
-        }
-    } else {
-        clog_warn!(
-            "🎨 dump_bone_names: no named descendants found on entity {:?}",
-            root
-        );
-    }
+/// Dump all named entities in a scene hierarchy (for debugging bone names).
+pub(super) fn dump_bone_names(
+    _entity: Entity,
+    _children: &Query<&Children>,
+    _names: &Query<&Name>,
+) {
+    // No-op: bevy_debug calls removed. Function retained for call-site compatibility.
 }
 
 /// Reference head Y for VRM standard models (~1.50m).
 pub(super) const REFERENCE_HEAD_Y: f32 = 1.50;
 
-/// Baseline camera Z distance for the reference head height.
-pub(super) const REFERENCE_CAMERA_Z: f32 = -1.8;
+/// Baseline camera Z distance for full-body framing of a reference-height avatar (head_y ≈ 1.5 m).
+///
+/// Derived from Bevy's default ~59° vertical FOV and a standard VRM body height:
+///   d ≥ head_y / (2 * tan(fov/2)) → ≈ 1.34 m for fov=59°, rounded to -1.4 m
+///   to leave a small margin above/below the frame edges.
+pub(super) const REFERENCE_CAMERA_Z: f32 = -1.4;
 /// Compute camera Z distance from head world-Y position.
 pub(super) fn camera_z_for_head(head_y: f32) -> f32 {
     let scale = (head_y / REFERENCE_HEAD_Y).clamp(0.5, 2.0);

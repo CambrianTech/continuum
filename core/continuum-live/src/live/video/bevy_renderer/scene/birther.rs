@@ -47,13 +47,20 @@ pub fn birth_scene_for_identity(
     // (REFERENCE_CAMERA_Z) and aims at mid-torso so the entire figure fits
     // within Bevy's ~59° vertical FOV. Previously this was a tight headshot
     // that excluded the body entirely.
+    //
+    // Camera Y is set to ~chest height (head_y * 2/3): in a standard VRM model
+    // the head top is at ~1.5 m and the chest midpoint sits around 1.0 m,
+    // giving a natural downward angle toward the torso.
+    // Look target targets mid-spine (head_y / 2), halfway between head top
+    // and feet — this places it in the upper-torso region for any avatar height.
+    // The camera Z is derived from FOV math and scales proportionally at runtime.
     let camera_xf: TransformDesc = Transform::from_xyz(
         0.0,
-        skeleton::REFERENCE_HEAD_Y * 0.67, // Y ≈ 1.0 — chest height for natural downward angle
-        skeleton::REFERENCE_CAMERA_Z,      // Z = -1.8 — pulled back for full-body FOV
+        skeleton::REFERENCE_HEAD_Y * 2.0 / 3.0, // Y ≈ 1.0 — chest height (VRM: head≈1.5 m → chest≈1.0 m)
+        skeleton::REFERENCE_CAMERA_Z,            // Z = -1.4 — full-body distance (FOV-derived, see skeleton.rs)
     )
     .looking_at(
-        Vec3::new(0.0, skeleton::REFERENCE_HEAD_Y * 0.5, 0.0), // look at mid-body ≈ Y=0.75
+        Vec3::new(0.0, skeleton::REFERENCE_HEAD_Y / 2.0, 0.0), // look at mid-spine ≈ Y=0.75 (VRM: head≈1.5 m → spine≈0.9 m)
         Vec3::Y,
     )
     .into();

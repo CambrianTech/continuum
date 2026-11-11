@@ -29,13 +29,39 @@ pub(in crate::live::video::bevy_renderer) fn animate_idle(
         }
 
         let head_y = lock.head_y.unwrap_or(REFERENCE_HEAD_Y);
-        let eye_y = head_y + 0.06;
         let cam_z = camera_z_for_head(head_y);
 
+        // Derive look target from actual bone positions discovered at instantiation:
+        // spine entity → neck entity → proportional fallback (mid-spine ≈ 60% of head height).
+        let mut look_target_y: f32 = head_y * 0.6; // default: mid-torso proportion
+        for (skeleton, skel_slot) in &skeleton_query {
+            if skel_slot.0 != cam_slot.0 {
+                continue;
+            }
+            // Primary: spine bone position (actual measurement of torso height)
+            if let Some(ref spine) = skeleton.spine {
+                if let Ok(global_spine) = global_transforms.get(spine.entity) {
+                    look_target_y = global_spine.translation().y;
+                    break;
+                }
+            }
+            // Secondary: neck bone position as fallback
+            if let Some(ref neck) = skeleton.neck {
+                if let Ok(global_neck) = global_transforms.get(neck.entity) {
+                    look_target_y = global_neck.translation().y;
+                    break;
+                }
+            }
+        }
+
+        // Camera Y: positioned midway between head and look target for natural downward angle.
+        // This ensures the camera frames both head and torso without manual offsets.
+        let cam_y = (head_y + look_target_y) / 2.0;
+
         transform.translation.x = 0.0;
-        transform.translation.y = eye_y + 0.02;
+        transform.translation.y = cam_y;
         transform.translation.z = cam_z;
-        let look_target = Vec3::new(0.0, eye_y - 0.4, 0.0);
+        let look_target = Vec3::new(0.0, look_target_y, 0.0);
         *transform = transform.looking_at(look_target, Vec3::Y);
     }
 }
