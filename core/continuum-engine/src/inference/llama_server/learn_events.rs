@@ -38,6 +38,8 @@ struct Pending {
     /// ticket and may finish the task before the HTTP reply carrying its id is read). Each is
     /// claimed within the same call that posted it; all go when the stream ends.
     early: HashMap<i64, TicketOutcome>,
+    /// Why the stream ended, once it has: a handle that asks afterwards is answered at once.
+    ended: Option<String>,
 }
 
 /// One engine incarnation's learning event stream, shared by every ticket posted to it.
@@ -77,13 +79,15 @@ impl LearnEvents {
         }
         let events = Arc::new(Self { pending: parking_lot::Mutex::new(Pending::default()) });
         streams().lock().insert(engine, Arc::clone(&events));
-        let reader = Arc::clone(&events);
+        let mut reader = Subscription {
+            engine,
+            events: Arc::clone(&events),
+            why: "the learning event stream's reader was cancelled with the runtime that ran it".to_owned(),
+        };
         tokio::spawn(async move {
-            let why = reader.read(body, frames).await;
-            continuum_base::probe!(class = "learn.events.ended", engine = ?engine, reason = %why,
+            reader.why = reader.events.read(body, frames).await;
+            continuum_base::probe!(class = "learn.events.ended", engine = ?engine, reason = %reader.why,
                 "the learning event stream ended: every waiting ticket is unknown, the next mutation resubscribes");
-            streams().lock().remove(&engine);
-            reader.end(&why);
         });
         Ok(events)
     }
@@ -95,6 +99,9 @@ impl LearnEvents {
             let mut pending = self.pending.lock();
             if let Some(early) = pending.early.remove(&ticket) {
                 return early;
+            }
+            if let Some(why) = &pending.ended {
+                return TicketOutcome::Unknown(why.clone());
             }
             let (sender, receiver) = tokio::sync::oneshot::channel();
             pending.waiting.insert(ticket, sender);
@@ -142,10 +149,35 @@ impl LearnEvents {
 
     fn end(&self, why: &str) {
         let mut pending = self.pending.lock();
+        pending.ended = Some(why.to_owned());
         pending.early.clear();
         for (_, waiting) in pending.waiting.drain() {
             drop(waiting.send(TicketOutcome::Unknown(why.to_owned())));
         }
+    }
+}
+
+/// A live subscription's reader: however it stops, the stream closing or its task cancelled with
+/// the runtime that ran it, its drop retires the subscription. Cleanup written after the read's
+/// `await` never runs for a cancelled task, which left a dead subscription in the map and every
+/// later ticket waiting on it forever (the IntelMac's live-engine run, 2026-11-11 18:13Z: the
+/// second test seated a learner, posted its ticket and waited an hour at 0% CPU).
+struct Subscription {
+    engine: EngineIncarnation,
+    events: Arc<LearnEvents>,
+    why: String,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        {
+            let mut streams = streams().lock();
+            // a newer subscription for the same incarnation is not this one's to retire
+            if streams.get(&self.engine).is_some_and(|live| Arc::ptr_eq(live, &self.events)) {
+                streams.remove(&self.engine);
+            }
+        }
+        self.events.end(&self.why);
     }
 }
 
@@ -236,5 +268,32 @@ mod tests {
         assert!(futures::poll!(&mut waiting).is_pending(), "no result yet: the handle waits on the event");
         events.end("the engine closed the learning event stream");
         assert!(matches!(waiting.await, TicketOutcome::Unknown(_)), "the stream ended: unconfirmed, never success");
+    }
+
+    // what this catches: a reader cancelled with the runtime that ran it (one test's runtime, or a
+    // core shutting down) leaving a dead subscription in the process-wide map, so every later
+    // ticket waits on it forever: the IntelMac's live-engine run hung an hour this way, 2026-11-11.
+    #[test]
+    fn a_reader_cancelled_with_its_runtime_retires_its_subscription() {
+        let engine = EngineIncarnation { pid: 4243, started_s: 1_793_000_001, port: 1 };
+        let events = Arc::new(LearnEvents { pending: parking_lot::Mutex::new(Pending::default()) });
+        streams().lock().insert(engine, Arc::clone(&events));
+        let reader = Subscription { engine, events: Arc::clone(&events), why: "cancelled".to_owned() };
+        let readers = tokio::runtime::Builder::new_current_thread().build().expect("test: a runtime"); // test fixture
+        readers.spawn(async move {
+            let _reader = reader;
+            std::future::pending::<()>().await
+        });
+        readers.block_on(tokio::task::yield_now()); // the reader is running
+        let waiters = tokio::runtime::Builder::new_current_thread().enable_time().build().expect("test: a runtime"); // test fixture
+        let mut waiting = Box::pin(events.outcome(9));
+        assert!(waiters.block_on(async { futures::poll!(&mut waiting) }).is_pending(), "no result yet");
+        drop(readers);
+        assert!(!streams().lock().contains_key(&engine), "the dead subscription left the map: the next ticket resubscribes");
+        // derived-or-floor: a bound on a test that hung for an hour; the answer is immediate
+        let bound = std::time::Duration::from_secs(10);
+        let answered = waiters.block_on(async { tokio::time::timeout(bound, waiting).await }).expect("the waiter is answered, not left hanging");
+        assert!(matches!(answered, TicketOutcome::Unknown(_)), "a cancelled reader's tickets are unknown, never success");
+        assert!(matches!(waiters.block_on(events.outcome(10)), TicketOutcome::Unknown(_)), "a handle asking after the end is answered at once");
     }
 }
