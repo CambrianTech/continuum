@@ -568,7 +568,24 @@ usage and prediction).
 - Wish versus held versus declared as separate admission paths, the target/headroom shaping and the
   clamps between them: one need type, one rule.
 
-### 8.4 Gate
+### 8.4 Expand first, collapse second: memory ebbs and flows with the minds' demand
+
+Joel, 2026-11-11: "If context switching and caching of tokens already translated is fast and using a
+graphics pipelined approach, the cost of taking more of the pool should be negligible, if it's
+necessary to solve the problem. Yeah collapsing is important too, very much per our flexbox, but as
+you know, pulling off disk cache is ms fast. It ebbs and flows as the demand of the minds require."
+
+So "available" in 8.2 is not only the free cells: it is the free cells plus everything held by minds
+that are not acting now, because their state pages to RAM or disk (`llama_state_seq_*`, the page
+store) and back in milliseconds, and their prefix stays cached. When her need exceeds the free cells,
+the owner pages out the coolest holders (by measured activity temperature, goal 9: aging means none is
+starved) until her need fits, and she is granted it. Her view collapses only when the minds holding
+memory are all acting at once and the pool still cannot hold her need: a flexbox grows items into free
+space first and shrinks them only when the container is full. The cost of a page-out and its later
+page-in is measured per node and is the only thing that can make collapsing cheaper than expanding.
+
+### 8.5 Gate
 
 On BigMama and the M5 over an hour: capacity refusals 0; every mind with a turn asked takes an act;
-no grant below a mind's irreducible part; the admission code is smaller than before it.
+no grant below a mind's irreducible part; no view collapsed while another mind's idle state held
+the memory she needed; the admission code is smaller than before it.
