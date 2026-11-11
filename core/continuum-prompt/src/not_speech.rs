@@ -778,4 +778,28 @@ mod tests {
             assert_eq!(is_not_speech(ok), None, "false positive on: {ok:?}");
         }
     }
+
+    // Regression tests for Codex review (submission 9282003d): checked-in proofs that the two
+    // corrected cases stay fixed before merging.
+
+    // Stage-word + brace delimiter: [execute] code/read({…}) must be caught as a tool envelope;
+    // this was broken in cd198e2e when only the paren delimiter was checked, missing the brace form.
+    #[test]
+    fn regression_stage_word_brace_call() {
+        assert_eq!(
+            is_not_speech("[execute] code/read({\"file_path\":\"src/main.rs\"})"),
+            Some("tool_envelope")
+        );
+    }
+
+    // Labelled-call gate narrowing: only the last whitespace/colon-separated token before ( counts
+    // as callee; earlier namespaced tokens in explanatory text must NOT trigger labelled-call.
+    #[test]
+    fn regression_labelled_call_prose_negative() {
+        // "ns/verb" appears early in label but is not the last token — should not match.
+        assert_eq!(
+            is_not_speech("[note on ns/verb usage ({code example})]"),
+            None
+        );
+    }
 }
