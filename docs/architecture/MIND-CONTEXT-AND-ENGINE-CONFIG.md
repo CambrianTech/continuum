@@ -393,14 +393,16 @@ protocol, its items keyed by what they are:
   identity and outcome hash, so `repeat::resolve` judges it on arrival like any item; its
   `RepeatRun` rides in its rendering;
 - `turn/{key}/stimulus`: the ask, required, whole (the empty room's world state is this item too);
-- `act/{seq}/context`: the room's working-context block ("[What you are working with right now]"),
+- `context/{hash}`: the room's working-context block ("[What you are working with right now]"),
   ahead of the framing, where it sits today;
-- `act/{seq}/framing`: the act's framing (the `[now ...]` clock, `[In force this turn]`), an item
+- `framing/{hash}`: the act's framing (the `[now ...]` clock, `[In force this turn]`), an item
   like the rest, in its place before the ask (the parrot-fix order). Revised after the code read
   (2026-11-11): made the mutable end and never kept, it would break the cached prefix at every act
   (act k's framing gone from act k+1's prompt re-prefills act k's call and result each time).
   A framing line was true when sent ("[now 03:12Z]"): kept, it is append-only history, and its
-  growth folds with its act like any item. Prefix stability wins over compactness.
+  growth folds with its act like any item. Prefix stability wins over compactness. Keyed by content
+hash (with `context/{hash}`), an identical line already shown is the same element and is not shown
+twice, which is exactly today's `drop_what_she_was_sent`.
 The newest result's paging (`Newest::Pageable`) becomes a level of its item, `Level::Page`, decided by
 the allocation (`newest.shown`) as today and passed into the view's admission for that one item; the
 source renders it with today's page renderer (`prompt/newest_result.rs`, moved into the source).
@@ -412,8 +414,14 @@ needs one view grant per source and the tail's claims are REQUIRED/NEWEST/LAST_M
 never collapse her newest result. It joins the epoch through `View::append_tail(source, levels)` after
 the allocation and `fit_view`: `repeat::resolve` and one-element-one-occurrence run there, the
 allocation's page decision is the result item's level, and today's tail budget and capacity refusal
-stay the admission. A turnover starts from the view's sources, then appends this act's tail. So
-`append_sent`'s after-send join becomes a before-send keyed append.
+stay the admission. A turnover starts from the view's sources, then appends this act's tail. An act is
+rendered several times before one is served (refits, a changed grant, uncounted admission), so judging
+and joining are two steps: `View::judge_tail` judges and renders the tail with no side effect, every
+render calling it afresh (a refit can re-page her result), and `View::append_tail` adds exactly the
+judged items when the request is served (`view_served`, where `append_sent` is today; `sent()` moves
+there too). So `append_sent`'s untyped after-send join becomes a judged, keyed join of the same items.
+Media: a result's text and tool-result parts are its item; its image parts attach at render only while
+it is newest (as today), and the next act holds it as text (`ContextMessage::holdable` refuses media).
 
 **One allocation, no double count.** The arriving tail keeps its own claims in the one allocation:
 REQUIRED (the ask and her statement), NEWEST (her result) and LAST_MOVE, as today. Once sent, its items
