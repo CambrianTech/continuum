@@ -131,8 +131,11 @@ outliers' tests before any migration):
    are `Passed | Failed(fault) | Running(handle) | Inconclusive(cause)`: a cancelled, lost or
    infrastructure-failed check (a runner's DNS, a dead checker process) is Inconclusive, never Failed
    and never a quiet Running.
-2. **The effect reports partial and unknown changes too**: a tool that fails partway says what it
-   changed and what it cannot tell, not only what succeeded.
+2. **The effect reports partial, unknown and NO change too**: a tool that fails partway says what it
+   changed and what it cannot tell; a call that changed nothing says so and is never `ok` with a write.
+   Twice on 2026-11-11 a `search_replace` whose search and replace were identical answered `ok`,
+   rewrote the same bytes, and was taken as a fix (Benchy 16:01Z; Aiko 16:52Z, who then spent twelve
+   minutes believing a missing `if` header was restored).
 3. **Raw output is never deleted**: stdout, stderr, exit status and artifacts stay reachable by handle;
    the renderer wraps evidence, and migrating a tool never drops what it used to show.
 4. **A pass proves its check, nothing more**: Build/Test passed means that declared check passed, not
