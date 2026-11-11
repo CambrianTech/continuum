@@ -405,6 +405,16 @@ The newest result's paging (`Newest::Pageable`) becomes a level of its item, `Le
 the allocation (`newest.shown`) as today and passed into the view's admission for that one item; the
 source renders it with today's page renderer (`prompt/newest_result.rs`, moved into the source).
 
+**Where it joins: after the allocation, before the send** (the code read, 2026-11-11). The tail is a
+`Source` for rendering, keys, element identity and repeat judgement, but NOT one of the view's start
+sources: `advance` runs before the allocation that decides her result's level (`newest.shown`), a start
+needs one view grant per source and the tail's claims are REQUIRED/NEWEST/LAST_MOVE, and a start must
+never collapse her newest result. It joins the epoch through `View::append_tail(source, levels)` after
+the allocation and `fit_view`: `repeat::resolve` and one-element-one-occurrence run there, the
+allocation's page decision is the result item's level, and today's tail budget and capacity refusal
+stay the admission. A turnover starts from the view's sources, then appends this act's tail. So
+`append_sent`'s after-send join becomes a before-send keyed append.
+
 **One allocation, no double count.** The arriving tail keeps its own claims in the one allocation:
 REQUIRED (the ask and her statement), NEWEST (her result) and LAST_MOVE, as today. Once sent, its items
 are held view items, counted by the view's claims (their held basis) from the next act on, which is
