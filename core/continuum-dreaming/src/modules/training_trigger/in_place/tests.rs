@@ -165,6 +165,15 @@ fn only_a_confirmed_page_out_takes_a_cost_receipt() {
     assert!(!paged_out(NotHers, NotHers), "nothing of hers was stopped");
 }
 
+// what this catches (BigMama 2026-11-11, 7 seated learners for 20+ minutes with no page-out): a
+// seated learner waiting out her act holding her shadow, its optimizer and her leases. She waits
+// for her act only while nothing of hers is seated.
+#[test]
+fn only_an_unseated_learner_waits_for_her_act() {
+    assert!(waits_for_her_act(false), "unseated, she holds nothing: her act comes first");
+    assert!(!waits_for_her_act(true), "seated, she yields instead of waiting it out");
+}
+
 // what this catches: a restored learner re-teaching examples its generation already holds, when the
 // journal row was read before the generation's positions were projected onto it (Codex on 76f829e2b).
 #[test]
