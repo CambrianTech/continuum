@@ -615,12 +615,13 @@ fn the_product_limit_p90_is_the_landed_p90_without_cuts_and_only_rises_with_them
     assert_eq!(need::reasoning_at_least(&landed, &[1_100, 1_200], 1_200), None, "only where higher");
 }
 
-// what this catches: (the M5, 2026-11-04) a censored bound reaching the grant AS a bound, which
-// `within` gave all one sequence holds (125,696 -> {Aiko: 114,592}, three residents dark 20 min);
-// and (the M5, 2026-11-09) censored needs dropped from her residency, which pinned a mind whose own
-// price chose more than her grant at that grant forever. A censored need is her act's PRICED
-// window (time weighed, never an uncollapsed overflow, #5833): her residency is granted its value,
-// never a whole sequence, and contention is the allocator's proportional share.
+// what this catches: (the M5, 2026-11-04) a censored bound granted all one sequence holds
+// (125,696 -> {Aiko: 114,592}, three residents dark 20 min; `within` now clamps a bound to its
+// value); (the M5, 2026-11-09) censored needs dropped from her residency, which pinned a mind whose
+// own price chose more than her grant at that grant forever; and (BigMama, 2026-11-11) a bound read
+// as an exact need, never granted above the ceiling, so Sahar parked for good. A censored need is
+// her act's PRICED window: her residency is granted its value, never a whole sequence, and a bound
+// past the ceiling is granted the ceiling, never parked.
 #[test]
 fn a_censored_need_raises_her_residency_by_its_value_never_to_a_whole_sequence() {
     use crate::inference::planning::window_allocator::Measure;
@@ -635,13 +636,15 @@ fn a_censored_need_raises_her_residency_by_its_value_never_to_a_whole_sequence()
     }
     let demand = reg.demand_of(aiko).expect("recorded");
     assert_eq!(need_tokens(&demand), Some(NeedSample::AtLeast { at_least: would_have_held }), "the measurement keeps the bound, typed as one");
-    assert_eq!(resident_need(&demand), Some(would_have_held), "residency reads her need, censored samples included");
+    assert_eq!(resident_need(&demand).map(|need| need.value().get()), Some(would_have_held), "residency reads her need, censored samples included");
     let requirement = &requirements_for(&[aiko], &reg)[0];
     assert_eq!(requirement.wish.map(|w| w.get()), Some(48_000), "the bound raises no wish");
     let Measure::Held { need, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
-    assert!(!need.is_bound(), "no bound reaches the grant, where `within` hands it a whole sequence: {need:?}");
+    assert!(need.is_bound(), "a bound stays a bound, so admission can clamp it: {need:?}");
     // granted its value, within her wish with the sent headroom (48,000 x 1.25), never a sequence
     assert_eq!(need.value().get(), 60_000, "granted its value up to her wish");
+    assert_eq!(need.within(262_144).get(), 60_000, "under a roomy ceiling: its value, never a whole sequence");
+    assert_eq!(need.within(58_112).get(), 58_112, "past the ceiling: the ceiling, never parked (Sahar)");
 }
 
 // what this catches (the M5, 2026-11-04): a deliberate start or a turnover within the grant

@@ -82,10 +82,18 @@ pub fn need_tokens(d: &PersonaDemand) -> Option<NeedSample> {
 /// the allocator's, which shares what remains in proportion to what each mind still needs, so no
 /// mind's need leaves another dark (`capacity::window_grant`). `None` until a sample or a floor is
 /// measured; the allocator then gates on the wish.
-pub fn resident_need(d: &PersonaDemand) -> Option<u32> {
-    // the one reading of her need, as a number: a bound's value is granted as that value, never as
-    // a bound (`Observed::within` would hand a bound a whole sequence)
-    need_tokens(d).map(NeedSample::value)
+pub fn resident_need(d: &PersonaDemand) -> Option<crate::inference::planning::window_allocator::observed::Observed<crate::inference::planning::window_allocator::Tokens>> {
+    use crate::inference::planning::window_allocator::{observed::Observed, Tokens};
+    // A bound stays a bound: admission reads it through `Observed::within`, at most its value and at
+    // most what one sequence holds, so above the ceiling she is granted the ceiling and her view
+    // collapses to fit it. Read as exact, a bound past the ceiling was never granted, never held, and
+    // never measured again: every act parked for good (BigMama, Sahar on dc01d9563, 2026-11-11
+    // 09:19-11:59Z: 'NeedAboveCeiling 116240/58112' at fit 29,056; Codex traced it here). Only an
+    // irreducible floor (her newest turn cannot be sent below it) is exact, and it waits for room.
+    match need_tokens(d)? {
+        NeedSample::Exact(need) => Tokens::new(need).map(Observed::Exact),
+        NeedSample::AtLeast { at_least } => Tokens::new(at_least).map(|at_least| Observed::AtLeast { at_least }),
+    }
 }
 
 /// Her need ring's observed slots, split into exact sizes and censored bounds.
