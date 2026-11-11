@@ -176,6 +176,21 @@ impl LlmDeliberationFaculty {
         calibration: PromptCalibration,
         visual: Option<&ActiveVisualFeedback>,
     ) -> DeliberationPromptView {
+        self.prompt_view_priced(ws, context_window, calibration, None, visual)
+    }
+
+    /// Her view with her newest result priced on its own: `newest` is the density a refusal
+    /// measured for that result alone, so it prices the result's claim and page and nothing else.
+    /// Framing, tools, history and her view keep `calibration` (Sahar, 2026-11-08 19:48: a
+    /// result-only 7.57x price passed as the shared one repriced framing 16,968 and tools 33,692).
+    pub(in super::super) fn prompt_view_priced(
+        &self,
+        ws: &Workspace,
+        context_window: u32,
+        calibration: PromptCalibration,
+        newest: Option<PromptCalibration>,
+        visual: Option<&ActiveVisualFeedback>,
+    ) -> DeliberationPromptView {
         // THE REPLY'S CLAIM ([`reply_claim`]): what she is expected to write, at the
         // priority this turn gives it. It competes in the window's one allocation below;
         // its grant travels with the view into `build_request_within` as `max_tokens`.
@@ -227,6 +242,8 @@ impl LlmDeliberationFaculty {
         let calibration = calibration.for_input(input_identity);
         // One price for every message of this act: her view's start, the fit and a refit.
         all_messages.pricing = calibration;
+        // Her newest result alone may carry a refusal's own price (`prompt_view_priced`).
+        let newest_pricing = newest.map_or(calibration, |price| price.for_input(input_identity));
         // Her view already carries every block that rides the conversation. Measured BEFORE her
         // newest result is levelled: demand is the sum of wants (FOCUS-CONTRACT rule 5), so a
         // result shown at a smaller level still asks for its whole, or the window never grows for it.
@@ -245,6 +262,9 @@ impl LlmDeliberationFaculty {
         // was one of them disagreeing with another: her result priced against the window less
         // framing and tools, her view's floor then taking its room.)
         let claim = |tokens: usize| calibration.charge(tokens).min(u32::MAX as usize) as u32;
+        // Her newest result's claim alone is charged at its own price (`prompt_view_priced`); its
+        // page grant is converted back at the same one below.
+        let newest_claim = |tokens: usize| newest_pricing.charge(tokens).min(u32::MAX as usize) as u32;
         let required = all_messages.required_parts();
         let newest_result_tokens = required.latest_result;
         // The required input other than her newest result (which claims for itself) and other
@@ -301,7 +321,7 @@ impl LlmDeliberationFaculty {
                 framing: continuum_context::allocation::Head { held: framing_offer.held.clone(), ..continuum_context::allocation::Head::free(framing_offer.leveled.clone()) },
                 // Input she must read: its whole is its hard limit.
                 required: Leveled::one(Rungs::whole(claim(required_tokens))),
-                newest: newest.charged(&claim),
+                newest: newest.charged(&newest_claim),
                 tools: tools_offer.head(),
                 grounding: grounding_offer.leveled.clone(),
                 // The newest complete interaction is whole (goal 7): its whole is its hard limit.
@@ -341,7 +361,7 @@ impl LlmDeliberationFaculty {
         // reading on named, never a summary or a bare handle, goal 7), cut below once her view is
         // fitted, to the room its grant gives and the fit actually has beside it.
         let newest_page = match act.newest_shown() {
-            continuum_context::allocation::NewestShown::Page { tokens } => Some(calibration.prompt_budget(tokens as usize)),
+            continuum_context::allocation::NewestShown::Page { tokens } => Some(newest_pricing.prompt_budget(tokens as usize)),
             continuum_context::allocation::NewestShown::Whole | continuum_context::allocation::NewestShown::Absent => None,
         };
         // The grounding at the levels the allocation chose: less of each under pressure, then
