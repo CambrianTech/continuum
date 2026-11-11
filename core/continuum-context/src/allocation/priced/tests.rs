@@ -26,6 +26,18 @@ fn m5() -> ContextPrice {
     ContextPrice::Measured(m5_over(MEASURED))
 }
 
+/// Acts whose seconds do not grow with the context held (a fresh tail of a constant size, decode
+/// and prefill rates flat): holding more never costs her a second, so a collapse never repays.
+fn context_free() -> ActTime {
+    ActTime {
+        decode: line(0.07, 0.0, MEASURED),
+        prefill: line(0.01, 0.0, MEASURED),
+        fresh: line(1_500.0, 0.0, MEASURED),
+        observed: line(40.0, 0.0, MEASURED),
+        output: 276.0,
+    }
+}
+
 fn item(levels: &[u32]) -> Rungs {
     Rungs::new(levels.iter().copied()).expect("test: levels") // JUSTIFIED: test fixture
 }
@@ -247,7 +259,9 @@ fn the_price_never_holds_less_than_her_view_already_sent() {
     let window = 755_456;
     let free = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
     let Priced::Held { held: free_held, .. } = free.priced else { panic!("fixture: priced {:?}", free.priced) };
-    let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, m5());
+    // Where holding more costs her nothing per act, she keeps all she sent (a collapse is priced
+    // apart: `she_collapses_only_when_the_rebuild_repays`).
+    let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(context_free()));
     let sent = free_held + 20_000;
     claims.view[1].claim.min_tokens = sent; // her conversation: what the engine already holds
     let plan = allocate(window, claims);
@@ -260,8 +274,8 @@ fn the_price_never_holds_less_than_her_view_already_sent() {
 #[test]
 fn her_need_carries_her_views_growth() {
     let window = 755_456;
-    let bare = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, m5()));
-    let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, m5());
+    let bare = allocate(window, act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(context_free())));
+    let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(context_free()));
     let sent = 30_000;
     claims.view[1].claim.min_tokens = claims.view[1].claim.floor_tokens + sent;
     let grown = allocate(window, claims);
@@ -275,8 +289,8 @@ fn her_need_carries_her_views_growth() {
 
 // what this catches (the M5, 2026-11-10: decode at 9-10 tok/s with 65-88k held, against ~15 at
 // 20-30k): a view kept whole however much it slows every act, or collapsed on a whim. Collapsing
-// costs a rebuild spread over the acts until it regrows: with warm acts (a small fresh tail) it
-// repays and she collapses; when each act re-prefills a lot, it regrows at once and she keeps.
+// costs a rebuild spread over the acts until it regrows: where context slows her acts and they are
+// warm, it repays and she collapses; where holding more costs her nothing, she keeps.
 #[test]
 fn she_collapses_only_when_the_rebuild_repays() {
     let window = 755_456;
@@ -290,6 +304,6 @@ fn she_collapses_only_when_the_rebuild_repays() {
     warm.fresh = line(1_500.0, 0.0, MEASURED);
     let collapsed = with_sent(warm);
     assert!(held(&collapsed) < sent, "warm acts repay the rebuild: she collapses ({} held)", held(&collapsed));
-    let kept = with_sent(m5_over(MEASURED));
-    assert!(held(&kept) >= sent, "re-prefilling acts regrow at once: she keeps ({} held)", held(&kept));
+    let kept = with_sent(context_free());
+    assert!(held(&kept) >= sent, "context that costs nothing is kept ({} held)", held(&kept));
 }
