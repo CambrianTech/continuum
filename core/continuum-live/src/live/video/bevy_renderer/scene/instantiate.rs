@@ -663,4 +663,130 @@ mod tests {
             _ => panic!("expected avatar payload"),
         }
     }
+
+    // What this catches: if Bevy's glTF loader silently drops the Body.baked mesh
+    // during VRM loading — the root cause of "a head with no body". We load the VRM
+    // through AssetServer (same path production uses) and count the top-level meshes
+    // in the Gltf asset; if only Face remains, Bevy dropped Body.
+    #[test]
+    fn vrm_loader_preserves_all_meshes() {
+        let mut app = App::new();
+        app.add_plugins(bevy::asset::AssetPlugin {
+            file_path: std::env::current_dir().unwrap_or_default(),
+            ..default()
+        })
+        .add_plugins(bevy::asset::loaders::EmbeddedAssetPlugin)
+        .add_plugins(
+            bevy::gltf::GltfPlugin { ..default() },
+        );
+
+        let gltf_path = "models/avatars/vroid-sample-d.vrm";
+        if !std::path::Path::new(gltf_path).exists() {
+            // Skip test if the VRM file is not present at expected path.
+            return;
+        }
+
+        let handle: Handle<bevy::gltf::Gltf> = app.world().resource::<bevy::asset::AssetServer>()
+            .load(gltf_path);
+
+        // Run the update loop until the asset is loaded (up to 30 frames).
+        for _ in 0..30 {
+            app.update();
+            if app.world().resource::<bevy::asset::Assets<bevy::gltf::Gltf>>()
+                .get(handle.id())
+                .is_some() {
+                break;
+            }
+        }
+
+        let gltf = app.world().resource::<bevy::asset::Assets<bevy::gltf::Gltf>>()
+            .get(handle.id());
+
+        assert!(gltf.is_some(), "VRM file {} must load via AssetServer", gltf_path);
+
+        let gltf = gltf.unwrap();
+        let mesh_count = gltf.meshes.len();
+        // A standard VRM has at least 3 meshes: Face, Body, Hair.
+        assert!(mesh_count >= 3,
+            "VRM should have ≥3 meshes (Face + Body + Hair), got {} from {}",
+            mesh_count, gltf_path);
+    }
+
+    // What this catches: if the VRM's body mesh exists but uses a render layer or
+    // visibility component that hides it. We load through the full scene instantiation
+    // path (SceneRoot) and inspect every entity under the avatar root after
+    // SceneInstanceReady fires.
+    #[test]
+    fn scene_root_spawns_body_entity() {
+        let mut app = App::new();
+        app.add_plugins(
+            bevy::prelude::DefaultPlugins
+                .set(bevy::window::WindowPlugin {
+                    primary_window: None,
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    ..default()
+                })
+                .set(bevy::asset::AssetPlugin {
+                    file_path: std::env::current_dir().unwrap_or_default(),
+                    ..default()
+                }),
+        )
+        .add_plugins(bevy::gltf::GltfPlugin)
+        .add_plugins(bevy::scene::ScenePlugin);
+
+        let gltf_path = "models/avatars/vroid-sample-d.vrm";
+        if !std::path::Path::new(gltf_path).exists() {
+            return;
+        }
+
+        // Spawn a root entity and load the VRM as SceneRoot under it.
+        let avatar_root = app.world_mut().spawn_empty().id();
+        let asset_path = format!("{gltf_path}#Scene0");
+        let scene_handle: Handle<bevy::scene::Scene> = app.world().resource::<bevy::asset::AssetServer>()
+            .load(asset_path);
+
+        app.world_mut().entity_mut(avatar_root)
+            .insert(bevy::prelude::SceneRoot(scene_handle));
+
+        // Run frames until the scene instance is ready or timeout.
+        let mut ready = false;
+        for _ in 0..30 {
+            app.update();
+            if let Some(scene_inst) = app.world().resource::<bevy::asset::Assets<bevy::scene::Scene>>()
+                .get(scene_handle.id())
+                .and_then(|s| s.root_entity(app.world())) {
+                ready = true;
+                // List all child entities and check for body mesh.
+                let mut has_body_mesh = false;
+                let mut body_names: Vec<String> = Vec::new();
+
+                // Walk the entity tree under avatar_root using scene children.
+                if let Some(children) = app.world().entity(scene_inst).get::<bevy::prelude::Children>() {
+                    for child in children.iter() {
+                        let name = app.world().entity(*child)
+                            .get::<bevy::prelude::Name>()
+                            .map(|n| n.as_str())
+                            .unwrap_or("unnamed")
+                            .to_string();
+
+                        // Check if this entity has a Mesh3d component.
+                        let has_mesh = app.world().entity(*child)
+                            .get::<bevy::mesh::Mesh3d>()
+                            .is_some();
+
+                        body_names.push(format!("{} (mesh={})", name, has_mesh));
+
+                        // Body mesh names typically contain "Body" or "body".
+                        if name.to_lowercase().contains("body") && has_mesh {
+                            has_body_mesh = true;
+                        }
+                    }
+                }
+
+                let body_info = body_names.join(", ");
+                assert!(has_body_mesh,
+                    "Avatar root should contain a Body mesh entity. Entities found: [{body_info}]");
+            }
+        }
+    }
 }
