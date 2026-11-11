@@ -134,10 +134,29 @@ impl LlmDeliberationFaculty {
     }
 
     /// Show her newest result as the allocation granted it: its first page within `room` (this
-    /// prompt's estimate). Answers whether it was shown short of whole
-    /// (`DeliberationPromptView::newest_result_reduced`).
+    /// prompt's estimate), carried as her tail's result item's summary and judged at `Level::Page`
+    /// (`judge_tail`), so the page is what is sent and what joins her view. Answers whether it was
+    /// shown short of whole (`DeliberationPromptView::newest_result_reduced`).
     pub(in super::super) fn fit_newest_result(&self, prompt: &mut PromptMessages, room: usize) -> bool {
-        self.page_newest(prompt.pricing, &mut prompt.latest_result, room, true)
+        // Only a result her view sends whole is paged: a repeat block is its whole, and a result she
+        // already holds is not sent.
+        let tail = &prompt.streams.tail;
+        let whole = tail.judged.iter().any(|item| Some(item.element()) == tail.result() && item.level() == continuum_context::level::Level::Full);
+        if !whole {
+            return false;
+        }
+        // Cut from her result as her tail renders it whole; its attachments ride beside the page.
+        let mut group = tail.result_group();
+        let attached = prompt.pricing.estimate_all(&prompt.latest_result).saturating_sub(prompt.pricing.estimate_all(&group));
+        if !self.page_newest(prompt.pricing, &mut group, room.saturating_sub(attached), true) {
+            return false;
+        }
+        let Some(Ok(page)) = group.last().map(crate::cognition::context_streams::ContextMessage::from_chat) else {
+            return false; // her result renders as text or protocol, so its page does too
+        };
+        prompt.streams.tail.page_result(page);
+        self.judge_tail(prompt, true);
+        true
     }
 
     /// `group` (her newest result's messages) cut to `room`: its largest slot first, each to its

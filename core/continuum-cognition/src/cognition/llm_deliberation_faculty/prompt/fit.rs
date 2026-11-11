@@ -97,7 +97,7 @@ impl LlmDeliberationFaculty {
             // oldest message's own size. A quantized drop (chunks of a budget fraction) once kept
             // the conversation's front byte-stable across acts; her view's epoch owns that now,
             // and what this fits (this act's fresh tail, or this act's refused prompt) is never
-            // the next act's prefix (a sent tail joins her view in the bytes it was sent).
+            // the next act's prefix (her served tail joins her view as her view judged it).
             let min_drop = total - history_budget;
             let mut dropped = 0usize;
             // Only optional history yields. Stimulus and action payload are typed

@@ -12,7 +12,7 @@
 //! every class is a state of this source, appended where it fired and ended when it stops; none
 //! is true only for the request that carries it (the bounds fact counts the turns the room
 //! offered, and changes only when that count does). The clock is the one line true only now; it
-//! rides the act's tail, which joins her view as sent (`View::append_sent`), so no class is ever
+//! rides the act's tail (`tail::Tail`), which joins her view once served, so no class is ever
 //! dropped from a sent prompt. A perception turn is an event: it stays what happened.
 
 use continuum_context::cause::{Cause, Origin};

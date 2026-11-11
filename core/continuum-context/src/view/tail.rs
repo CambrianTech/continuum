@@ -35,13 +35,21 @@ pub struct Judged<T> {
 
 impl<T: Block> Judged<T> {
     /// Her tail with no view to judge it against (none could start, or her view is not placed
-    /// yet): every item whole, as a view that holds nothing judges it.
-    pub fn whole(tail: &dyn Source<T>) -> Vec<Self> {
-        let name = tail.name().to_owned();
-        tail.items()
-            .into_iter()
-            .map(|item| Self { id: key(&name, &item.key), element: item.id(), level: Level::Full, text: crate::source::whole(tail, item) })
-            .collect()
+    /// yet): every item at `level`, as a view that holds nothing judges it (nothing is held, so
+    /// nothing is a repeat or already shown).
+    pub fn unheld(tail: &dyn Source<T>, level: impl Fn(&Item<T>) -> Level) -> Vec<Self> {
+        tail.items().into_iter().map(|item| Self::at(tail, item, level(&item))).collect()
+    }
+
+    /// `item` of `tail` at `level`: a page is the item's summary (the page the act's allocation cut).
+    fn at(tail: &dyn Source<T>, item: Item<T>, level: Level) -> Self {
+        let id = key(tail.name(), &item.key);
+        let element = item.id();
+        let text = match level {
+            Level::Page => item.summary.clone().unwrap_or_else(|| crate::source::whole(tail, item.clone())), // JUSTIFIED: a page the source did not render is her whole result: the newest is never cut by a missing page
+            _ => crate::source::whole(tail, item),
+        };
+        Self { id, element, level, text }
     }
 
     /// The occurrence it shows: which item of her tail it is.
@@ -79,20 +87,14 @@ impl<T: Block> View<T> {
         );
         let mut judged = Vec::new();
         for (item, repeat_of) in items.into_iter().zip(repeats).skip(earlier_n) {
-            let id = key(&name, &item.key);
-            let element = item.id();
-            if self.epoch.holds(&id) || self.epoch.holds_element(element) {
+            if self.epoch.holds(&key(&name, &item.key)) || self.epoch.holds_element(item.id()) {
                 continue;
             }
             let level = match repeat_of {
                 Some(of) => Level::Repeat { of },
                 None => level(&item),
             };
-            let text = match level {
-                Level::Page => item.summary.clone().unwrap_or_else(|| crate::source::whole(tail, item.clone())), // JUSTIFIED: a page the source did not render is her whole result: the newest is never cut by a missing page
-                _ => crate::source::whole(tail, item),
-            };
-            judged.push(Judged { id, element, level, text });
+            judged.push(Judged::at(tail, item, level));
         }
         judged
     }

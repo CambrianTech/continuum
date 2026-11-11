@@ -27,9 +27,6 @@ use crate::cognition::working_memory::WorkingMemory;
 /// The prefix of a view source's claim id in the window's one allocation.
 const VIEW_CLAIM: &str = continuum_context::allocation::id::VIEW;
 
-/// The source a sent prompt's tail joins her view under (`view_served`).
-const SENT_TAIL: &str = "sent";
-
 /// What fitting her view decided: whether a start funded her head's next epoch. What her view lacked
 /// past its grant is collapsed at the next start, never her need (`allocation::need`).
 #[derive(Clone, Copy, Debug)]
@@ -317,86 +314,70 @@ impl LlmDeliberationFaculty {
         Some(Self::render(held.as_ref()))
     }
 
-    /// The prompt built on this act's view is final and about to be sent: nothing may rewind
-    /// the act it appended any more ([`View::sent`]).
-    pub(in super::super) fn view_sent(&self) {
-        if let Some(view) = self.context_view.lock().as_mut() {
-            view.sent();
-        }
-    }
-
-    /// Whether her view already shows `source`'s item `item`, in the bytes a sent tail showed it.
-    pub(in super::super) fn view_covers(&self, source: &str, item: &str) -> bool {
-        self.context_view.lock().as_ref().is_some_and(|view| view.covers(source, item))
-    }
-
-    /// Whether a sent tail already showed her `message`, byte for byte: not sent again.
-    pub(in super::super) fn view_holds_sent(&self, message: &ChatMessage) -> bool {
-        let Ok(held) = ContextMessage::from_chat(message) else {
-            return false; // a message her view cannot hold as sent was never held
-        };
-        self.context_view.lock().as_ref().is_some_and(|view| view.holds_sent(SENT_TAIL, &held))
-    }
-
-    /// Drop from this act's tail what a sent tail already showed her (the same ask, the same clock
-    /// line, her same statement): it is in her view, byte for byte, where it was sent. Asked after
-    /// her view is sized: a start covers nothing, so after a turnover everything is sent again.
-    pub(in super::super) fn drop_what_she_was_sent(&self, prompt: &mut PromptMessages) {
-        let asked = prompt.streams.conversation.stimulus.as_deref().is_some_and(|key| self.view_covers("conversation", key));
-        if asked || prompt.stimulus.as_ref().is_some_and(|message| self.view_holds_sent(message)) {
-            prompt.stimulus = None;
-        }
-        if prompt.action_statement.as_ref().is_some_and(|message| self.view_holds_sent(message)) {
-            prompt.action_statement = None;
-        }
-        let view_len = prompt.grounding_at.min(prompt.history.len());
-        let mut tail = prompt.history.split_off(view_len);
-        tail.retain(|message| !self.view_holds_sent(message));
-        prompt.history.append(&mut tail);
-    }
-
-    /// What this act's tail shows her that her sources also render: the ask (her conversation's
-    /// held-out turn) and her newest act (held out of her actions while newest).
-    pub(in super::super) fn tail_covers(prompt: &PromptMessages) -> Vec<(&'static str, String)> {
-        let asked = prompt.stimulus.as_ref().and(prompt.streams.conversation.stimulus.clone()).map(|key| ("conversation", key));
-        let acted = (!prompt.latest_result.is_empty()).then_some(prompt.streams.latest_act).flatten().map(|seq| ("actions", seq.to_string()));
-        asked.into_iter().chain(acted).collect()
-    }
-
-    /// The prompt built on `view` was served: its tail (what follows her view: the clock, the ask,
-    /// her call and its result) joins her view in the bytes it was sent ([`View::append_sent`]), so
-    /// her next act's prompt is this one plus what is new, and the engine resumes at its end
-    /// (`DeliberationPromptView::resumes_at`). A tail carrying media is not held as sent: it
-    /// re-renders from its producers next act, as every tail did before.
-    pub(in super::super) fn view_served(&self, view: &DeliberationPromptView) {
-        let kept: Result<Vec<ContextMessage>, _> = view.tail().iter().map(ContextMessage::from_chat).collect();
-        let tail = match kept {
-            Ok(tail) => tail,
-            Err(not_kept) => {
-                continuum_base::probe!(
-                    class = "delib.view.tail_not_kept",
-                    persona = %self.persona_name,
-                    reason = ?not_kept,
-                    "her sent tail carries what her view cannot hold as sent: it re-renders next act"
-                );
-                return;
+    /// Her act's tail as her view judges it now (`View::judge_tail`), placed in `prompt`'s slots
+    /// (`PromptMessages::place_tail`): a repeat of an act whose whole she holds is its repeat block,
+    /// an item her view already shows (the same ask, clock line or statement, her act once held) is
+    /// not sent again, and her newest result is at its page when the act's allocation `paged` it.
+    /// Pure: every render judges afresh (a refit, a moved grant, a turnover), and nothing joins her
+    /// view until the prompt is served (`view_served`).
+    pub(in super::super) fn judge_tail(&self, prompt: &mut PromptMessages, paged: bool) {
+        let judged = {
+            let tail = &prompt.streams.tail;
+            let result = tail.result();
+            let level = |item: &continuum_context::source::Item<ContextMessage>| {
+                if paged && Some(item.id()) == result { continuum_context::level::Level::Page } else { continuum_context::level::Level::Full }
+            };
+            let memory = self.working_memory.as_deref();
+            let actions = memory.map(|memory| crate::cognition::context_streams::actions::Actions { memory, persona: self.persona_id });
+            // Her earlier acts are what a repeat points at; with no memory she has none.
+            let none = crate::cognition::context_streams::tail::Tail::default();
+            let history: &dyn Source<ContextMessage> = match &actions {
+                Some(actions) => actions,
+                None => &none,
+            };
+            match self.context_view.lock().as_ref() {
+                Some(view) => view.judge_tail(tail, history, level),
+                // No view placed or none could start: a view that holds nothing judges it.
+                None => continuum_context::view::Judged::unheld(tail, level),
             }
         };
-        let covers: Vec<(&str, &str)> = view.tail_covers.iter().map(|(source, key)| (*source, key.as_str())).collect();
+        prompt.place_tail(judged);
+    }
+
+    /// Her working-context `block` as her view judges it (an identical block she already holds is
+    /// not sent again): the item to send ahead of her framing, or nothing.
+    pub(in super::super) fn judge_context(&self, block: String) -> Vec<continuum_context::view::Judged<ContextMessage>> {
+        let context = crate::cognition::context_streams::tail::Tail::context(self.persona_id, block);
+        let none = crate::cognition::context_streams::tail::Tail::default();
+        match self.context_view.lock().as_ref() {
+            Some(view) => view.judge_tail(&context, &none, |_| continuum_context::level::Level::Full),
+            None => continuum_context::view::Judged::unheld(&context, |_| continuum_context::level::Level::Full),
+        }
+    }
+
+    /// The prompt built on `view` was served: its tail (what follows her view: her working context,
+    /// the clock, the ask, her call and its result) joins her view as her view judged it
+    /// ([`View::append_tail`]), only what was sent and in its order, so her next act's prompt is this
+    /// one plus what is new and the engine resumes where it stops matching
+    /// (`DeliberationPromptView::resumes_at`); then nothing may rewind this act ([`View::sent`]).
+    /// Her result's attachments are never held: the next act shows it as text.
+    pub(in super::super) fn view_served(&self, view: &DeliberationPromptView) {
+        let sent: Vec<_> = view.sent_tail().into_iter().map(|(item, _)| item.clone()).collect();
         let memory = self.working_memory.as_deref();
         let mut held = self.context_view.lock();
         let Some(context) = held.as_mut() else {
-            return; // no view (no working memory): nothing holds the tail
+            return; // no view (none could start): nothing holds the tail
         };
-        let appended = context.append_sent(SENT_TAIL, tail, &covers);
+        let appended = context.append_tail(sent);
+        context.sent();
         continuum_base::probe!(
             class = "delib.view.tail_kept",
             persona = %self.persona_name,
             epoch = context.epoch_id(),
-            messages = appended.items,
+            items = appended.items,
             chars = appended.chars,
-            covers = covers.len(),
-            "her sent tail joined her view as sent: her next prompt extends this one"
+            repeats = appended.repeats,
+            "her served tail joined her view as judged: her next prompt extends this one"
         );
         if let Some(memory) = memory {
             memory.keep_view(held.clone());

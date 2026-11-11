@@ -46,9 +46,10 @@ impl Actions<'_> {
         }
     }
 
-    /// Her newest act (the one in flight, which rides whole after her view) as this source's item,
-    /// following the act before it in its room: what her view judges on its arrival
-    /// (`View::repeat_of_newest`, MIND-CONTEXT invariant 4). `None` with no act in flight.
+    /// Her newest act (the one in flight, which her act's tail carries) as this source's item,
+    /// following the act before it in its room: its element, cause, identity and outcome hash are
+    /// what her tail's result item carries, so her view judges it on its arrival
+    /// (`tail::Tail`, MIND-CONTEXT invariant 4). `None` with no act in flight.
     pub(crate) fn newest(&self) -> Option<Item<ContextMessage>> {
         let act = self.memory.in_flight_rendering()?;
         let (earlier, _) = self.memory.action_renderings();
@@ -59,6 +60,19 @@ impl Actions<'_> {
             .map_or(Cause::Root(Origin::ActivityStart), |before| Cause::Of(self.act(before.seq)));
         Some(self.item(act, cause))
     }
+}
+
+/// How act `seq` (`item`) reads when it repeats `ancestor`, one of her earlier acts (keyed by its
+/// `#n`): her actions and her act's tail word a repeat the same way. `None` when the ancestor is
+/// not an act.
+pub(super) fn repeat_line(seq: &str, item: &Item<ContextMessage>, ancestor: &Item<ContextMessage>) -> Option<String> {
+    let earlier: u64 = ancestor.key().parse().ok()?;
+    let reopened = item.act().is_some_and(|act| matches!(act.effect, continuum_base::tool_effect::ToolEffect::Reopens));
+    Some(if reopened {
+        format!("[result #{seq}: repeat of #{earlier}, the same saved output, unchanged; its whole is #{earlier} above]")
+    } else {
+        format!("[result #{seq}: repeat of #{earlier}, outcome unchanged; reopen with {}]", Reopen::Act(earlier))
+    })
 }
 
 impl Source<ContextMessage> for Actions<'_> {
@@ -159,13 +173,7 @@ impl Source<ContextMessage> for Actions<'_> {
     /// names that whole and never invites a further reopen: the reopen was the repeat (IntelMac,
     /// 2026-11-11: one saved output reopened 20+ times, each arriving byte-identical).
     fn repeat(&self, item: &Item<ContextMessage>, ancestor: &Item<ContextMessage>) -> Option<ContextMessage> {
-        let earlier: u64 = ancestor.key().parse().ok()?;
-        let reopened = item.act().is_some_and(|act| matches!(act.effect, continuum_base::tool_effect::ToolEffect::Reopens));
-        Some(ContextMessage::user(if reopened {
-            format!("[result #{}: repeat of #{earlier}, the same saved output, unchanged; its whole is #{earlier} above]", item.key())
-        } else {
-            format!("[result #{}: repeat of #{earlier}, outcome unchanged; reopen with {}]", item.key(), Reopen::Act(earlier))
-        }))
+        repeat_line(item.key(), item, ancestor).map(ContextMessage::user)
     }
 
     /// Once she has acted, the void said earlier in this epoch is superseded, never edited:

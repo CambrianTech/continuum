@@ -283,9 +283,9 @@ pub(in super::super) struct Streams {
     pub(in super::super) held: crate::cognition::context_streams::held_work::HeldWorkStream,
     /// What her situation shows now: the perception facts, keyed (`context_streams::facts`).
     pub(in super::super) facts: crate::cognition::context_streams::facts::Facts,
-    /// The act whose native call and result this act's tail carries (`latest_result`), held out
-    /// of her actions while it is her newest: a sent tail covers it (`View::append_sent`).
-    pub(in super::super) latest_act: Option<u64>,
+    /// Her act's tail (`context_streams::tail`): what follows her view, judged by it before the
+    /// send and joining it once served. Never one of her view's start sources.
+    pub(in super::super) tail: crate::cognition::context_streams::tail::Tail,
 }
 
 /// Prompt roles are provider-facing; these slots retain the substrate's meaning
@@ -387,6 +387,31 @@ impl RecentMove {
 }
 
 impl PromptMessages {
+    /// Her act's tail as `judged` (by her view, or every item whole before her view is placed), in
+    /// its slots: the framing follows her view in the history (the fit's optional tail); the ask, her
+    /// statement, her call and her newest result (with its attachments) are the required input. The
+    /// slots are only ever filled here, from her tail, never pushed by hand.
+    pub(in super::super) fn place_tail(&mut self, judged: Vec<continuum_context::view::Judged<crate::cognition::context_streams::ContextMessage>>) {
+        use crate::cognition::context_streams::tail::Part;
+        self.history.truncate(self.grounding_at);
+        self.stimulus = None;
+        self.action_statement = None;
+        self.latest_result.clear();
+        for item in &judged {
+            let message = item.text.to_chat();
+            match self.streams.tail.part(item.element()) {
+                Some(Part::Framing) => self.history.push(message),
+                Some(Part::Stimulus) => self.stimulus = Some(message),
+                Some(Part::Statement) => self.action_statement = Some(message),
+                Some(Part::Call) => self.latest_result.push(message),
+                Some(Part::Result) => self.latest_result.push(self.streams.tail.attach(message)),
+                // Her working context joins after the fit that sizes it (`Tail::context`).
+                Some(Part::Context) | None => {}
+            }
+        }
+        self.streams.tail.judged = judged;
+    }
+
     /// The suffix that carries her OWN most recent move and its outcome: from the turn
     /// that OPENED the cluster through the end of the history.
     ///
@@ -631,29 +656,37 @@ pub struct DeliberationPromptView {
     /// An ACT whose required floors and measured output need do not fit her window
     /// (`ActPlan::irreducible_shortfall`): refused, never sent with a cap below her need.
     pub output_shortfall: Option<continuum_context::allocation::IrreducibleShortfall>,
-    /// What a sent tail of this view shows her that her sources also render (`(source, key)`): her
-    /// newest act, the stimulus. They do not arrive again from their sources (`View::append_sent`).
-    pub tail_covers: Vec<(&'static str, String)>,
+    /// Her act's tail as her view judged it for this prompt, in its order (`context_streams::tail`):
+    /// what joins her view once the prompt is served (`LlmDeliberationFaculty::view_served`).
+    pub judged_tail: Vec<continuum_context::view::Judged<crate::cognition::context_streams::ContextMessage>>,
 }
 
 impl DeliberationPromptView {
-    /// Her tail: what follows her view in this prompt (the clock, the ask, her call and its result).
-    pub(in super::super) fn tail(&self) -> &[ChatMessage] {
-        &self.messages[self.refit.grounding_at.min(self.messages.len())..]
-    }
-
-    /// Whether her view will hold this tail exactly as sent once it is served
-    /// (`LlmDeliberationFaculty::view_served`): every message is text or native protocol.
-    pub(in super::super) fn tail_holdable(&self) -> bool {
-        self.tail().iter().all(|message| crate::cognition::context_streams::ContextMessage::holdable(message).is_ok())
+    /// Her tail as sent: each message after her view with the judged item it shows, in order, and
+    /// whether it shows it exactly (none of her result's attachments, which her view never holds).
+    /// An item the fit dropped (her framing is optional history) is not among them.
+    pub(in super::super) fn sent_tail(&self) -> Vec<(&continuum_context::view::Judged<crate::cognition::context_streams::ContextMessage>, bool)> {
+        let start = self.refit.grounding_at.min(self.messages.len());
+        let mut judged = self.judged_tail.iter();
+        let mut sent = Vec::new();
+        for message in &self.messages[start..] {
+            let Some(item) = judged.by_ref().find(|item| item.text.sent_as(message)) else {
+                break; // a message no judged item shows: nothing after it is known to her view
+            };
+            let exact = crate::cognition::context_streams::ContextMessage::from_chat(message).is_ok_and(|held| held == item.text);
+            sent.push((item, exact));
+        }
+        sent
     }
 
     /// Where her next act's prompt stops matching this one, in messages: the engine checkpoints her
-    /// state there and her saved page keeps it (`view_messages`). Her whole prompt when its tail
-    /// joins her view as sent, so the next act resumes at its end; else where her view ends.
+    /// state there and her saved page keeps it (`view_messages`). Her tail joins her view once
+    /// served, so the next act resumes past every message her view will hold exactly as sent: her
+    /// whole prompt, or up to her newest result when attachments rode it.
     pub fn resumes_at(&self) -> Option<u32> {
-        let at = if self.tail_holdable() { self.messages.len() } else { self.refit.grounding_at };
-        u32::try_from(at).ok().filter(|len| *len > 0)
+        let start = self.refit.grounding_at.min(self.messages.len());
+        let held = self.sent_tail().iter().take_while(|(_, exact)| *exact).count();
+        u32::try_from(start + held).ok().filter(|len| *len > 0)
     }
 
     /// The conversation rendered as flat text — the role-tagged thread joined for

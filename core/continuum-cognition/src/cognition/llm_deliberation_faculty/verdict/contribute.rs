@@ -511,7 +511,7 @@ impl LlmDeliberationFaculty {
                         fit_window,
                         &response.model,
                     );
-                    self.view_served(&view); // her tail joins her view as sent: the next prompt extends this one
+                    self.view_served(&view); // her tail joins her view as judged: the next prompt extends this one
                     break (view, response);
                 }
             }

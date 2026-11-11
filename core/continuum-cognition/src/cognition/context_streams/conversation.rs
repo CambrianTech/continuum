@@ -21,10 +21,9 @@ pub(crate) struct Turn {
 pub(crate) struct Conversation {
     /// Whose conversation this is (its turns' ids, `super::element`).
     pub persona: uuid::Uuid,
+    /// Every turn but the act's ask (the newest external speech), which her act's tail carries
+    /// (`tail::Tail`) under the same element, so once it is held there it never arrives here again.
     pub turns: Vec<Turn>,
-    /// The key of the turn held out of `turns` as this act's ask (the newest external speech, the
-    /// stimulus): a sent tail that carried it covers it (`View::append_sent`).
-    pub stimulus: Option<String>,
 }
 
 impl Source<ContextMessage> for Conversation {

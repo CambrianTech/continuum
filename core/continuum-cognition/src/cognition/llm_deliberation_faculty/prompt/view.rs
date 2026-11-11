@@ -217,8 +217,10 @@ impl LlmDeliberationFaculty {
             crate::cognition::context_streams::blocks::Grounding::atomic(self.persona_id, contract.name, contract.body)
         }));
         // Her view leads the history: this act appends to it, and everything after it (the clock,
-        // the ask, her newest act) is this act's tail, which joins her view once it is sent.
+        // the ask, her newest act) is this act's tail, judged by her view now (what the allocation
+        // prices) and joining it once served.
         let view = self.place_view(&mut all_messages);
+        self.judge_tail(&mut all_messages, false);
 
         let input_identity = all_messages.input_identity;
         let calibration = calibration.for_input(input_identity);
@@ -464,11 +466,9 @@ impl LlmDeliberationFaculty {
                 }
                 Err(mismatch) => (false, Some(format!("her view could not be sized: {mismatch}")), None),
             };
-        // What a sent tail already showed her is in her view now: never sent twice. Then what this
-        // tail shows that her sources also render, for her view to cover once it is sent.
-        self.drop_what_she_was_sent(&mut all_messages);
-        let tail_covers = Self::tail_covers(&all_messages);
-        self.view_sent();
+        // Her tail judged against her view as fitted: a turnover re-renders from her sources, so
+        // what her tail showed before it arrives whole again, and a repeat needs its whole held now.
+        self.judge_tail(&mut all_messages, false);
         // The surface this act sends: her head's held set and levels, or, when this act started an
         // epoch of her view that funded it, the next head (`tools_epoch.rs`).
         let (selected, menu) = self.retain_tools(tools_choice, start_refusal.is_some(), head_funded);
@@ -551,6 +551,8 @@ impl LlmDeliberationFaculty {
             }
             None => false,
         };
+        // Her tail as this prompt sends it: what joins her view once it is served.
+        let mut judged_tail = std::mem::take(&mut all_messages.streams.tail.judged);
         let (mut fitted, capacity_error) = match self.fit_messages(all_messages, tail_budget) {
             Ok(mut fitted) => {
                 fitted.messages.splice(0..0, view_messages);
@@ -702,12 +704,15 @@ impl LlmDeliberationFaculty {
         // the system message and the engine re-prefilled her whole view behind it
         // (pages keyed per room restored ~7.4k tokens across a switch on the M5). It is
         // a room's, so it rides the fresh tail after her view, with the grounding the
-        // refit keeps frozen; grounding sources themselves are her view's blocks.
-        if let Some(block) = deliberation_prompt::working_context_message(&context).map(|block| ChatMessage::text("user", block)) {
-            if !self.view_holds_sent(&block) {
-                messages.insert(grounding_at + refit.grounding_len, block);
+        // refit keeps frozen; grounding sources themselves are her view's blocks. It is the first
+        // item of her act's tail, named by what it says: a block she already holds is not sent again.
+        if let Some(block) = deliberation_prompt::working_context_message(&context) {
+            let judged = self.judge_context(block);
+            for item in &judged {
+                messages.insert(grounding_at + refit.grounding_len, item.text.to_chat());
                 refit.grounding_len += 1;
             }
+            judged_tail.splice(0..0, judged);
         }
 
         // #266 KV-cache fix, THE SPLIT ACTUALLY APPLIED. The split composer
@@ -782,7 +787,7 @@ impl LlmDeliberationFaculty {
             tools_grant,
             act_room,
             output_shortfall,
-            tail_covers,
+            judged_tail,
         }
     }
 
