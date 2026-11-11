@@ -192,9 +192,14 @@ impl LlamaServerControl for FakeControl {
         // check is a no-op unless a test deliberately floors it.
         Ok(self.served_window)
     }
-    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
-        // The fake's pool: its window over its lanes (at least one), as an engine reports it.
-        Ok(self.served_window.saturating_mul(self.served_lanes.max(1)))
+    async fn served_geometry(&self) -> Result<crate::inference::weight_residency::ContextGeometry, LlamaServerError> {
+        // The fake's geometry: fixed slots, each its window, as an engine reports it.
+        let lanes = self.served_lanes.max(1);
+        Ok(crate::inference::weight_residency::ContextGeometry {
+            allocated_tokens: u64::from(self.served_window.saturating_mul(lanes)),
+            max_tokens_per_sequence: u64::from(self.served_window),
+            sequence_capacity: u64::from(lanes),
+        })
     }
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
         // The slot count the fake's /props reports (configurable via

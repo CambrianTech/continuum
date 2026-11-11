@@ -116,9 +116,12 @@ impl ServingDaemonModule {
             .and_then(|id| (self.model_resolver)(id))
             .and_then(|model| crate::inference::planning::window_allocator::Tokens::new(model.context_window))
             .ok_or(NoGrants::ModelUnresolved)?;
-        let per_sequence_cap = match self.on_shared_pool().ok_or(NoGrants::PoolKindUnknown)? {
-            true => pool_tokens.min(trained.get()),
-            false => live.served_context_window,
+        // The most one sequence may hold, as the engine reports it (one slot under fixed slots, the
+        // pool under a shared one), never a division read off how it was launched (SERVING-ENGINE
+        // section 8; BigMama 2026-11-11: Sahar parked at 58,112, half the pool, every act refused).
+        let per_sequence_cap = match self.served_sequence.load(Ordering::Relaxed) {
+            0 => return Err(NoGrants::PoolZero),
+            reported => reported.min(trained.get()),
         };
         // Only a measured mind has a demand: an unmeasured one has no number to grant (her first view
         // measures her), never the population's or anyone else's. The model's trained window is the one
@@ -134,19 +137,6 @@ impl ServingDaemonModule {
             }
         }
         Ok(GrantInputs { demands, pool: pool_tokens, cap: per_sequence_cap, excluded })
-    }
-
-    /// Whether the running engine is on the shared pool, read off its argv once per process.
-    fn on_shared_pool(&self) -> Option<bool> {
-        let pid = crate::inference::lane_pidfile::read()?;
-        if let Some((known, shared)) = *self.shared_pool_of.lock() {
-            if known == pid {
-                return Some(shared);
-            }
-        }
-        let shared = self.server.pool_launch()?.kv_shared();
-        *self.shared_pool_of.lock() = Some((pid, shared));
-        Some(shared)
     }
 }
 

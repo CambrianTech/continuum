@@ -136,9 +136,9 @@ impl LlamaServerControl for FakeServer {
         // so the reconcile publishes a READY snapshot carrying a real window.
         Ok(11008)
     }
-    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
+    async fn served_geometry(&self) -> Result<crate::inference::weight_residency::ContextGeometry, LlamaServerError> {
         // One sequence's worth of the fixed window above: the share these tests publish.
-        Ok(11008)
+        Ok(crate::inference::weight_residency::ContextGeometry { allocated_tokens: 11008, max_tokens_per_sequence: 11008, sequence_capacity: 1 })
     }
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
         // 0 = "this fake's /props names no slot count", i.e. nothing to compare
