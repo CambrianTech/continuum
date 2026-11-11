@@ -392,7 +392,9 @@ protocol, its items keyed by what they are:
 - `act/{seq}/result`: their results as the engine's tool results, cause `Of(call)`, with the act's
   identity and outcome hash, so `repeat::resolve` judges it on arrival like any item; its
   `RepeatRun` rides in its rendering;
-- `turn/{key}/stimulus`: the ask, required, whole;
+- `turn/{key}/stimulus`: the ask, required, whole (the empty room's world state is this item too);
+- `act/{seq}/context`: the room's working-context block ("[What you are working with right now]"),
+  ahead of the framing, where it sits today;
 - `act/{seq}/framing`: the act's framing (the `[now ...]` clock, `[In force this turn]`), an item
   like the rest, in its place before the ask (the parrot-fix order). Revised after the code read
   (2026-11-11): made the mutable end and never kept, it would break the cached prefix at every act
@@ -408,12 +410,15 @@ REQUIRED (the ask and her statement), NEWEST (her result) and LAST_MOVE, as toda
 are held view items, counted by the view's claims (their held basis) from the next act on, which is
 exactly today's accounting after `append_sent`. The source keeps that split; it adds no claim.
 `View::advance` appends the tail's new items at the end of the epoch like every source's; the prompt is
-`view.render()`; `sent()` marks them held. What goes away: `append_sent`, `SENT_TAIL`, `covers`,
-`repeat_of_newest`, and every hand-built prompt message (the ratchet goes 7 -> 0).
+`view.render()`; `sent()` marks them held. One occurrence, one element: the tail's result item and
+her actions source's item for the same act share the element id (`element(persona, Act, seq)`), and the
+view treats an arriving item whose element id the epoch already holds as already shown, so an act never
+shows twice; this typed identity replaces the `covers` bookkeeping. What goes away: `append_sent`,
+`SENT_TAIL`, `covers`, `repeat_of_newest`, and every hand-built prompt message (the ratchet goes 7 -> 0).
 
-**One prompt owner, learning included** (Cormac). The learner's example (her served conversation ending
-in the reply she learns) is the same view items through the same `view.render()`, never a second
-builder, so the learned prefix equals the served prefix by construction. A learn step's restored-tail
+**One prompt owner, learning included** (Cormac). The learner's example is already framed from the served
+request's own messages through the same `wire_messages` serving uses (`genome/learner/example.rs`), so
+the learned prefix equals the served prefix by construction; nothing reroutes it. A learn step's restored-tail
 proof (#5905 `served_tail_restored`) compares the tail items' keys and outcome hashes, never byte counts.
 
 **Restart.** A checkpointed view restores her call and result items; the engine's KV for them is gone,
