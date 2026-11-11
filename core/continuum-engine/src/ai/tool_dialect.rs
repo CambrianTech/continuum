@@ -299,12 +299,10 @@ pub fn normalize_call(call: &mut crate::ai::types::ToolCall) -> Option<String> {
     let mut merged = 0usize;
     if let Some(from_name) = parsed {
         if !from_name.is_empty() {
-            let obj = match call.input.as_object_mut() {
-                Some(o) => o,
-                None => {
-                    call.input = serde_json::Value::Object(serde_json::Map::new());
-                    call.input.as_object_mut().expect("just set to an object")
-                }
+            // An input that is not an object carried no named fields; the recovered ones become it.
+            let mut obj = match std::mem::take(&mut call.input) {
+                serde_json::Value::Object(o) => o,
+                _ => serde_json::Map::new(),
             };
             for (k, v) in from_name {
                 if !obj.contains_key(&k) {
@@ -312,6 +310,7 @@ pub fn normalize_call(call: &mut crate::ai::types::ToolCall) -> Option<String> {
                     merged += 1;
                 }
             }
+            call.input = serde_json::Value::Object(obj);
         }
     }
 

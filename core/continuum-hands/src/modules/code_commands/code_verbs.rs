@@ -73,7 +73,7 @@ impl ActionCommand for CodeList {
 
     async fn run(&self, ctx: &Ctx, p: CodeListParams) -> Result<ListResult, CommandError> {
         let engine = engine!(self, ctx);
-        let requested = p.path.as_deref().unwrap_or(".");
+        let requested = p.path.as_deref().unwrap_or("."); // unwrap_or: no path lists the workspace root
         // Ergonomic recovery: models trained on SWE-agent scaffolds reflexively
         // reach for `list_files("**/*.rs")` — a recursive GLOB where code/list
         // wants a single directory. list_dir rightly fails that (it's a flat
@@ -107,7 +107,7 @@ impl ActionCommand for CodeList {
             }
             return Ok(result);
         }
-        match engine.list_dir(requested, p.include_hidden.unwrap_or(false)) {
+        match engine.list_dir(requested, p.include_hidden.unwrap_or(false)) { // unwrap_or: hidden entries show only when she asks for them
             Ok(listing) => Ok(listing),
             // A miss on a NON-glob path is the "empty workspace" confabulation source
             // (glass-boxed 2026-07-13: a persona reached for `src/persona.rs` — no such
@@ -171,7 +171,7 @@ pub(super) fn list_result_from_glob(pattern: &str, glob: GlobResult) -> ListResu
         .matches
         .iter()
         .map(|path| DirEntry {
-            name: path.rsplit('/').next().unwrap_or(path).to_string(),
+            name: path.rsplit('/').next().unwrap_or(path).to_string(), // unwrap_or: rsplit yields at least the whole path, so the name is its last segment
             path: path.clone(),
             kind: FsEntryKind::File,
             size_bytes: None,
@@ -285,12 +285,12 @@ impl ActionCommand for CodeTree {
         // idiom-forgiveness (redundant "workspace/" prefix, leading '/') and honest,
         // actionable errors live there, not hand-rolled here. No path → the whole tree.
         let target = engine
-            .resolve_dir(p.path.as_deref().unwrap_or("."))
+            .resolve_dir(p.path.as_deref().unwrap_or(".")) // unwrap_or: no path is the whole tree from the workspace root
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         Ok(tree::generate_tree(
             &target,
-            p.max_depth.unwrap_or(10),
-            p.include_hidden.unwrap_or(false),
+            p.max_depth.unwrap_or(10), // unwrap_or: a guessed depth cap; card 67580505 makes absent mean whole, sized by custody
+            p.include_hidden.unwrap_or(false), // unwrap_or: hidden entries show only when she asks for them
         ))
     }
 }
@@ -341,7 +341,7 @@ impl ActionCommand for CodeSearch {
 
     async fn run(&self, ctx: &Ctx, p: CodeSearchParams) -> Result<SearchResult, CommandError> {
         let engine = engine!(self, ctx);
-        let max = p.max_results.unwrap_or(100);
+        let max = p.max_results.unwrap_or(100); // unwrap_or: a guessed result cap; card 67580505 makes absent mean whole, sized by custody
 
         // FORGIVENESS: models routinely conflate code/search (grep file CONTENTS — `pattern`
         // is the search TERM, `file_glob` filters which files) with code/glob (find files BY
@@ -432,7 +432,7 @@ impl ActionCommand for CodeSearch {
                         .filter(|n| !n.starts_with('.') && n != "target" && n != "node_modules")
                         .collect()
                 })
-                .unwrap_or_default();
+                .unwrap_or_default(); // unwrap_or_default: an unreadable root names no directories; the message still names the root itself
             // Every top-level directory: the layout is the grounding, and the shared executor's
             // whole-or-handle custody sizes what she is handed (no count cut here).
             tops.sort();
@@ -440,7 +440,7 @@ impl ActionCommand for CodeSearch {
                 "No files matched glob {:?}. Workspace root is {} and all paths are \
                  relative to it; its top-level directories are: [{}]. Re-check the \
                  glob against this actual layout.",
-                p.file_glob.as_deref().unwrap_or(""),
+                p.file_glob.as_deref().unwrap_or(""), // unwrap_or: the miss message quotes her glob, empty when she gave none
                 root.display(),
                 tops.join(", "),
             ));
@@ -561,7 +561,7 @@ impl ActionCommand for CodeShell {
         // handle when the window elapses — never block past wait_ms. No DashMap
         // lock held across the await.
         let deadline =
-            Instant::now() + Duration::from_millis(p.wait_ms.unwrap_or(DEFAULT_SHELL_WAIT_MS));
+            Instant::now() + Duration::from_millis(p.wait_ms.unwrap_or(DEFAULT_SHELL_WAIT_MS)); // unwrap_or: no wait_ms takes the default inline window before the handle
         loop {
             let notify = {
                 let s = state_arc

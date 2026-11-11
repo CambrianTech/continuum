@@ -163,7 +163,7 @@ pub trait CommandSpec {
 /// Reflect a typed input contract for any command wire shape, including external
 /// adapters. Keep schema generation identical for native and provided commands.
 pub fn input_schema<P: schemars::JsonSchema>() -> Result<serde_json::Value, serde_json::Error> {
-    let mut schema = serde_json::to_value(schemars::schema_for!(P))?;
+    let mut schema = serde_json::to_value(schemars::schema_for!(P))?; // boundary: the JSON Schema is the command's published wire contract, read by every driver and codegen
     flatten_singleton_all_of(&mut schema);
     Ok(schema)
 }
@@ -243,7 +243,7 @@ pub(super) fn module_of(output_path: &Path) -> String {
         None => normalized
             .rsplit('/')
             .next()
-            .unwrap_or(&normalized)
+            .unwrap_or(&normalized) // unwrap_or: rsplit yields at least the whole path, so this is its last segment
             .to_string(),
     }
 }
