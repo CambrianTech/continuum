@@ -272,24 +272,3 @@ fn her_need_carries_her_views_growth() {
     let (Some(before), Some(after)) = (tokens(bare.need), tokens(grown.need)) else { panic!("fixture: priced needs {:?} {:?}", bare.need, grown.need) };
     assert!(after >= before + sent, "her need grows by what she sent: {before} -> {after}");
 }
-
-// what this catches (the M5, 2026-11-10: decode at 9-10 tok/s with 65-88k held, against ~15 at
-// 20-30k): a view kept whole however much it slows every act, or collapsed on a whim. Collapsing
-// costs a rebuild spread over the acts until it regrows: with warm acts (a small fresh tail) it
-// repays and she collapses; when each act re-prefills a lot, it regrows at once and she keeps.
-#[test]
-fn she_collapses_only_when_the_rebuild_repays() {
-    let window = 755_456;
-    let sent = 110_000;
-    let with_sent = |time: ActTime| {
-        let mut claims = act(Newest::Pageable { whole: 6_000, least: 600 }, ContextPrice::Measured(time));
-        claims.view[1].claim.min_tokens = claims.view[1].claim.floor_tokens + sent;
-        allocate(window, claims)
-    };
-    let mut warm = m5_over(MEASURED);
-    warm.fresh = line(1_500.0, 0.0, MEASURED);
-    let collapsed = with_sent(warm);
-    assert!(held(&collapsed) < sent, "warm acts repay the rebuild: she collapses ({} held)", held(&collapsed));
-    let kept = with_sent(m5_over(MEASURED));
-    assert!(held(&kept) >= sent, "re-prefilling acts regrow at once: she keeps ({} held)", held(&kept));
-}

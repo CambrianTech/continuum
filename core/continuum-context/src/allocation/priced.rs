@@ -206,8 +206,6 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
     if !best.is_finite() {
         return outside;
     }
-    // Keep or collapse: she collapses only when it pays (`collapse`).
-    let plan = collapse(window, &claims, &time, &plan).unwrap_or(plan);
     // Her need carries her view's growth: a reserve as large as what it already sent, as her
     // view's start leaves one, so her next acts append into a granted window instead of turning
     // her epoch over (the M5, 2026-11-10: Aris granted ~45k with her view at its edge, an epoch
@@ -223,51 +221,6 @@ pub(super) fn hold(window: u32, claims: ActClaims) -> ActPlan {
     // The hard limits a receipt and her irreducible window read are her claims' own, never the
     // price's floor.
     ActPlan { priced, need, limits: served.limits, hard_limits: served.hard_limits, ..plan }
-}
-
-/// Keep what her view sent, or collapse it: holding it costs its measured seconds every act;
-/// collapsing to a smaller window costs that window's seconds plus re-prefilling it once, spread
-/// over the acts until her view grows back (the size difference over her fresh tokens per act, all
-/// measured). The higher value per second wins, so a long-lived view that slows every decode (the
-/// M5, 2026-11-10: 9-10 tok/s at 65-88k held against ~15 at 20-30k) collapses when the saving
-/// repays the rebuild, and never on a whim. `None` keeps `keep`.
-fn collapse(window: u32, claims: &ActClaims, time: &ActTime, keep: &ActPlan) -> Option<ActPlan> {
-    if view_sent(claims) == 0 {
-        return None;
-    }
-    let keep_held = f64::from(held_context(keep));
-    let keep_seconds = time.seconds(keep_held);
-    let keep_rate = keep.searched.as_ref().map(|found| found.value / keep_seconds).filter(|_| keep_seconds > 0.0)?;
-    let mut free = claims.clone();
-    for view in &mut free.view {
-        view.claim.min_tokens = view.claim.floor_tokens;
-    }
-    let free = choosable(&free);
-    let measured = time.measured();
-    let lo = least(&free).max(measured.0);
-    let hi = window.min(measured.1.saturating_add(free.reply.max_tokens));
-    if lo > hi {
-        return None;
-    }
-    let probe = |w: u32| {
-        let plan = plan_at(w, free.clone());
-        let held = f64::from(held_context(&plan));
-        let rate = plan
-            .searched
-            .as_ref()
-            .filter(|_| held < keep_held)
-            .map(|found| {
-                let rebuild = held * time.prefill.at(held / 2.0);
-                let acts = ((keep_held - held) / time.fresh_at(held).max(1.0)).max(1.0);
-                found.value / (time.seconds(held) + rebuild / acts)
-            })
-            .unwrap_or(f64::NEG_INFINITY); // unwrap_or: a window that holds no less than she keeps is never a collapse
-        (rate, plan)
-    };
-    match peak(lo, hi, probe) {
-        (rate, Some(smaller)) if rate > keep_rate => Some(smaller),
-        _ => None,
-    }
 }
 
 /// The windows past `window` her need may reach: above the served window, up to the largest
