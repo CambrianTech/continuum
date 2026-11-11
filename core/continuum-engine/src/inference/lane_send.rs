@@ -418,6 +418,7 @@ fn measured_reply(
     if requested == 0 {
         return Ok((builder, requested));
     }
+    // PromptCount::check and the engine reject totals >= the window; one below is the exact edge.
     let remaining = grant.checked_sub(prompt).and_then(|n| n.checked_sub(1))
         .filter(|n| *n > 0)
         .ok_or(InferenceError::ContextExceeded { requested: prompt, available: grant })?;
@@ -432,7 +433,7 @@ fn measured_reply(
     let output = value.as_object_mut().and_then(|object| object.get_mut("max_tokens"))
         .ok_or_else(|| InferenceError::Protocol("explicit reply allowance has no max_tokens field".into()))?;
     *output = serde_json::Value::from(reply);
-    let bytes = serde_json::to_vec(&value)
+    let bytes = serde_json::to_vec(&value) // boundary: OpenAI-compatible HTTP POST body sent to the engine
         .map_err(|error| InferenceError::Protocol(format!("reply pricing encoding: {error}")))?;
     Ok((builder.body(bytes), reply))
 }
