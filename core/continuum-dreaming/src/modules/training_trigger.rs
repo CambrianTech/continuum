@@ -311,6 +311,27 @@ impl ServiceModule for TrainingTriggerModule {
         self
     }
 
+    /// Stop admitting passes and report the learning operations still running: a step in flight
+    /// is counted, never reported as drained.
+    async fn drain(&self) -> Result<u32, String> {
+        self.serving_wake.stop().await;
+        let in_flight = self.state.stop_admitting().await;
+        u32::try_from(in_flight).map_err(|_| format!("{in_flight} learning operations in flight do not fit the drain count"))
+    }
+
+    /// Publish and page out every learner whose engine is idle; a learner mid-step is left to her
+    /// step (her progress since her newest generation is learned again from the journal if the
+    /// join does not reach it). Fails, naming the count, when a learner's progress was not published.
+    async fn save_state(&self) -> Result<(), String> {
+        let quiesced = self.state.in_place.quiesce(&self.state, in_place::Busy::Skip).await;
+        continuum_base::probe!(class = "training.in_place.saved", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
+            unconfirmed = quiesced.unconfirmed, busy = quiesced.busy, "at save, every idle engine's learners published and paged out; a busy engine is left to its step");
+        match quiesced.unpublished {
+            0 => Ok(()),
+            unpublished => Err(format!("{unpublished} learners' progress since their newest generation was not published; the journal still holds it")),
+        }
+    }
+
     async fn shutdown(&self) -> Result<(), String> {
         self.serving_wake.stop().await;
         self.state.drain_operations().await
