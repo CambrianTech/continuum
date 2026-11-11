@@ -91,7 +91,7 @@ pub struct EngineMemory {
 impl EngineMemory {
     /// `None` when the engine predates the field (channel unavailable) or it does not parse.
     pub fn from_props(props: &serde_json::Value) -> Option<Self> {
-        serde_json::from_value(props.clone()).ok()
+        <Self as serde::Deserialize>::deserialize(props).ok()
     }
 
     /// The bytes BEYOND the weights on accelerators: KV cache + compute buffers on every buffer

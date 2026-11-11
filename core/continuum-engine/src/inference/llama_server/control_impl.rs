@@ -190,14 +190,16 @@ impl LlamaServerControl for LlamaServerProcess {
                 resp.status()
             )));
         }
-        let body: serde_json::Value = resp
+        /// The one `/props` field this probe reads; absent means the engine publishes no modalities.
+        #[derive(serde::Deserialize)]
+        struct Props {
+            modalities: Option<MultimodalSupport>,
+        }
+        let props: Props = resp
             .json()
             .await
             .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
-        Ok(body.get("modalities").map(|m| MultimodalSupport {
-            vision: m.get("vision").and_then(|v| v.as_bool()).unwrap_or(false),
-            audio: m.get("audio").and_then(|v| v.as_bool()).unwrap_or(false),
-        }))
+        Ok(props.modalities)
     }
 
     async fn decode_smoke_ok(&self) -> bool {
@@ -338,7 +340,7 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     fn owns_child(&self) -> bool {
-        self.child.lock().unwrap().is_some()
+        self.child.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some() // unwrap_or_else: a poisoned lock still holds the child handle; whether one exists is a plain read
     }
 
     async fn record_observed_placement(&self) {
