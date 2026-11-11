@@ -21,6 +21,21 @@ never assume.
 | Time: it knows how long it has been and is told when it has gone quiet | verify | verify |
 | It starts helpers in parallel and their results arrive as notifications | verify | verify |
 
+**Status has two columns, kept apart** (Codex, 2026-11-11): *implemented* (the code exists) and
+*proved live* (measured on a live node in an ordinary activity). A row closes only when proved live;
+an unknown stays open until measured.
+
+- A completion push existing is not parity: it must reliably reach her, name the activity that owns
+  the work, and survive a restart, or report the loss with its cause.
+- A correction becoming a gene is "better" only when an independent evaluation shows the improvement,
+  her unrelated abilities stay intact, and the adoption survives a restart. Unproven today.
+
+**The live acceptance test** combines the channels in one ordinary activity, not one test per row: she
+starts background work, switches to another activity, receives a failure or an interruption, inspects
+its evidence, revises her plan and finishes, with her plan and work continuous across a turnover and
+a core restart. Done means she noticed, investigated and recovered by herself, on the same feedback
+Claude relies on.
+
 Better than Claude, where we can: the outcome of every channel is typed (a refusal names its cause
 and next moves), the record of her own mind is one call away for her and for any other mind, and a
 lesson from a correction becomes a gene, not a note.
