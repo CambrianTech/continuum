@@ -74,6 +74,7 @@ impl ServiceModule for VoiceModule {
             "voice/snapshot-participant" => self.cmd_snapshot_participant(&p).await,
             "voice/resource-status" => self.cmd_resource_status(&p).await,
             "voice/resource-unload" => self.cmd_resource_unload(&p).await,
+            "voice/list-calls" => self.cmd_list_calls(&p).await,
 
             _ => Err(format!("Unknown voice command: {command}")),
         }
