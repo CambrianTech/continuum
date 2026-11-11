@@ -109,10 +109,10 @@ impl LlamaServerControl for LlamaServerProcess {
             })
     }
 
-    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
+    async fn served_geometry(&self) -> Result<crate::inference::weight_residency::ContextGeometry, LlamaServerError> {
         let body = self.props_json().await?;
         crate::inference::weight_residency::ContextGeometry::from_props(&body)
-            .and_then(|geometry| u32::try_from(geometry.allocated_tokens).ok())
+            .filter(|geometry| geometry.pool_tokens().is_some())
             .ok_or_else(|| {
                 LlamaServerError::Unreachable(
                     "/props has no valid context_geometry: the engine is not our fork's (refusing \

@@ -180,6 +180,18 @@ pub struct ContextGeometry {
 }
 
 impl ContextGeometry {
+    /// The whole pool, in the grants' token width; `None` past it.
+    pub fn pool_tokens(&self) -> Option<u32> {
+        u32::try_from(self.allocated_tokens).ok()
+    }
+
+    /// The most ONE sequence may hold, as the engine reports it: one slot under fixed slots, the
+    /// pool under a shared one. The one limit a mind's grant reads (SERVING-ENGINE section 8), never
+    /// a launch-time division read off argv. `None` past the grants' token width.
+    pub fn sequence_tokens(&self) -> Option<u32> {
+        u32::try_from(self.max_tokens_per_sequence).ok()
+    }
+
     /// `None` when the engine reports no geometry (not our fork) or one that does not hold
     /// together: zero tokens, no sequence, or one sequence allowed more than the pool.
     pub fn from_props(props: &serde_json::Value) -> Option<Self> {

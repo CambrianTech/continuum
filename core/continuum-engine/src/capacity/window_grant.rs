@@ -171,8 +171,6 @@ pub enum NoGrants {
     PoolZero,
     /// The served model is not in the registry, so its trained window is unknown.
     ModelUnresolved,
-    /// The engine's pool kind cannot be read: no lane pidfile, or no recorded launch.
-    PoolKindUnknown,
 }
 
 /// Why a measured mind's requirement entered no demand on one evaluation.
