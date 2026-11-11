@@ -162,21 +162,26 @@ impl ActTimeFit {
         let (Some(decode), Some(prefill), Some(observed)) = (self.decode.line(), self.prefill.line(), self.observed.line()) else {
             return ContextPrice::Unmeasured;
         };
-        // Her fresh tokens per act, or, before she has measured them, every held token fresh: the
-        // dearest reading, replaced by her own once her acts fill the line. Unmeasured here left
-        // her view unpriced and filling her window, so her acts grew too slow to finish and the
-        // line never filled (Aris on the M5, 2026-11-11: a 59k-token prompt, no act completed in
-        // four hours after the line was added empty).
-        let (fresh, typical) = match self.fresh.line() {
-            Some(line) => (line, self.fresh.mean_x),
-            None => (Line::cold(observed.context), self.observed.mean_x),
-        };
-        let time = ActTime { decode, prefill, fresh, observed, output: self.output / f64::from(self.acts) };
-        if time.seconds_per_token(typical) > time.seconds_per_token_se(typical) {
-            ContextPrice::Measured(time)
-        } else {
-            ContextPrice::Unmeasured
+        // Her fresh tokens per act when that line is measured and significant, else every held
+        // token fresh: the dearest honest reading, replaced by her own once it is. A price that
+        // cannot decide is never "unpriced": unpriced served her the whole window, her view grew
+        // to its ceiling and her acts were refused there (the M5, 2026-11-11: Aris with an empty
+        // line, then Atlas and Aiko with lines whose cold and warm acts left the slope noise, at
+        // 100k-token prompts in 104,857-token windows).
+        // The cold reading answers only an unknown FRESH line: seconds per token held must be
+        // measured themselves (decode and prefill slopes outside their own error), or noise would
+        // be priced as if it were the engine's cost.
+        let output = self.output / f64::from(self.acts);
+        let fitted = self.fresh.line().map(|line| (line, self.fresh.mean_x));
+        let measured_cost = decode.slope > decode.slope_se && prefill.slope > prefill.slope_se;
+        let cold = measured_cost.then(|| (Line::cold(observed.context), self.observed.mean_x));
+        for (fresh, typical) in fitted.into_iter().chain(cold) {
+            let time = ActTime { decode, prefill, fresh, observed, output };
+            if time.seconds_per_token(typical) > time.seconds_per_token_se(typical) {
+                return ContextPrice::Measured(time);
+            }
         }
+        ContextPrice::Unmeasured
     }
 }
 

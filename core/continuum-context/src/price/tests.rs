@@ -75,3 +75,18 @@ fn an_empty_fresh_line_prices_every_held_token_as_fresh() {
     assert_eq!(time.fresh_at(30_000.0), 30_000.0, "cold: every held token is fresh");
     assert!(time.seconds_per_token(30_000.0) > 0.0);
 }
+
+// what this catches (the M5, 2026-11-11): a fresh line whose cold and warm acts leave its slope
+// noise (here falling with context) made the price Unmeasured, so her view went unpriced and filled
+// her window; it prices cold instead, every held token charged as prefilled.
+#[test]
+fn a_fresh_line_that_cannot_decide_prices_cold() {
+    let decode = |c: f64| 0.05 + 2e-6 * c;
+    let prefill = |c: f64| 0.004 + 1e-7 * c;
+    let mut fit = ActTimeFit::default();
+    for (input, fresh) in [(10_000u32, 10_000u32), (20_000, 8_000), (35_000, 2_000), (50_000, 1_000), (75_000, 500)] {
+        fit.observe(&act(input, fresh, 400, decode, prefill));
+    }
+    let ContextPrice::Measured(time) = fit.price() else { panic!("decode and prefill measured: priced, never unmeasured") };
+    assert_eq!(time.fresh_at(30_000.0), 30_000.0, "cold: every held token is fresh");
+}
