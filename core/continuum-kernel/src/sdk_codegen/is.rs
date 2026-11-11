@@ -131,6 +131,8 @@ pub trait CommandSpec {
     /// (Joel, 2026-11-04: "values associated with the tool just like perms"). Defaults to `Core`;
     /// read only for a `NATIVE` command.
     const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::Core;
+    /// For a `Withheld` verb: why, and what to use instead, shown when she reaches for it.
+    const WITHHELD: Option<continuum_base::tool_disclosure::WithheldGuidance> = None;
     /// The handler's ACTUAL wire convention — decides whether the generated
     /// surface is enveloped or bare. MUST match what the handler really does
     /// (a mismatch is a type that lies about the wire).
@@ -274,6 +276,8 @@ pub struct CommandDescriptor {
     pub effect: continuum_base::tool_effect::ToolEffect,
     /// Where its verb sits in a mind's hands (from [`CommandSpec::DISCLOSURE`]).
     pub disclosure: continuum_base::tool_disclosure::Disclosure,
+    /// Why a withheld verb is withheld and what to use instead (from [`CommandSpec::WITHHELD`]).
+    pub withheld: Option<continuum_base::tool_disclosure::WithheldGuidance>,
     pub params: TypeRef,
     /// The params' JSON Schema (from [`CommandSpec::params_schema`]) — the
     /// canonical input contract every SDK/interface adapts from. `Null` when the
@@ -317,6 +321,7 @@ impl CommandDescriptor {
             aliases: C::ALIASES,
             effect: C::EFFECT,
             disclosure: C::DISCLOSURE,
+            withheld: C::WITHHELD,
             params,
             params_schema,
             result,

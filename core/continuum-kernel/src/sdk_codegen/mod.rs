@@ -278,6 +278,7 @@ macro_rules! action_command {
         $(aliases: $aliases:expr,)?
         $(effect: $effect:ident,)?
         $(disclosure: $disclosure:ident,)?
+        $(withheld: $why:expr => $instead:expr,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
@@ -285,7 +286,7 @@ macro_rules! action_command {
         $(#[doc = $doc])*
         #[derive(::std::default::Default)]
         $vis struct $cmd;
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], [$($disclosure)?], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], [$($disclosure)?], [$($why => $instead)?], $params, $output, $this, $ctx, $p, $body);
         $($crate::action_command!(@outcome $cmd, $native);)?
         $crate::register_stateless_command!($cmd);
     };
@@ -301,13 +302,14 @@ macro_rules! action_command {
         $(aliases: $aliases:expr,)?
         $(effect: $effect:ident,)?
         $(disclosure: $disclosure:ident,)?
+        $(withheld: $why:expr => $instead:expr,)?
         params: $params:ty,
         output: $output:ty,
         run($this:ident, $ctx:ident, $p:ident) => $body:block
     ) => {
         $(#[doc = $doc])*
         $vis struct $cmd { $($(#[$field_meta])* pub $field: $fty),+ }
-        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], [$($disclosure)?], $params, $output, $this, $ctx, $p, $body);
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], [$($disclosure)?], [$($why => $instead)?], $params, $output, $this, $ctx, $p, $body);
         $($crate::action_command!(@outcome $cmd, $native);)?
         // Register the DESCRIPTOR (type-only — no instance needed) so the command
         // appears in `command_registry()`, the persona tool surface, the ACL, and
@@ -324,7 +326,7 @@ macro_rules! action_command {
     (@outcome $cmd:ident, false) => {};
 
     // ── Internal: the shared `ActionCommand` impl both forms expand to. ──
-    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:tt)?], [$($aliases:expr)?], [$($effect:ident)?], [$($disclosure:ident)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
+    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:tt)?], [$($aliases:expr)?], [$($effect:ident)?], [$($disclosure:ident)?], [$($why:expr => $instead:expr)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
         #[::async_trait::async_trait]
         impl $crate::sdk_codegen::ActionCommand for $cmd {
             const NAME: &'static str = $name;
@@ -346,6 +348,10 @@ macro_rules! action_command {
             // Optional `disclosure: <Disclosure variant>,` clause ⟹ DISCLOSURE (where the verb sits
             // in her hands: `Core`, `OnDemand` or `Withheld`). Absent ⇒ the trait default, `Core`.
             $(const DISCLOSURE: $crate::sdk_codegen::Disclosure = $crate::sdk_codegen::Disclosure::$disclosure;)?
+            // Optional `withheld: "why" => "instead",` clause ⟹ WITHHELD: the guidance a withheld
+            // verb gives when she reaches for it, declared beside its disclosure.
+            $(const WITHHELD: ::std::option::Option<continuum_base::tool_disclosure::WithheldGuidance> =
+                ::std::option::Option::Some(continuum_base::tool_disclosure::WithheldGuidance { why: $why, instead: $instead });)?
             type Params = $params;
             type Output = $output;
             async fn run(

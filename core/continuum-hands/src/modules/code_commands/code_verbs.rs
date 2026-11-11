@@ -506,7 +506,7 @@ pub(super) fn shell_response(s: &crate::code::shell_session::ExecutionState) -> 
         exit_code: s.exit_code,
         next: (s.status == ShellExecutionStatus::Running).then(|| {
             format!(
-                "still running: its result is delivered to you when it finishes; read its progress now with code/shell-poll execution_id={}",
+                "still running as task {}: its end is delivered to you in your [tasks] when it finishes; carry on with other work meanwhile",
                 s.id
             )
         }),
@@ -606,7 +606,16 @@ pub struct CodeShellPollParams {
 impl ActionCommand for CodeShellPoll {
     const NAME: &'static str = "code/shell-poll";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
-    const NATIVE: bool = true; // follow a long command (install, build, server), like Claude's
+    const NATIVE: bool = true;
+    // Never in her hands: a command's end is pushed to her (her `[tasks]` item, an interrupt), so a
+    // read of a running one only invites the next read (Benchy on the M5, 2026-11-11: 7 of 16 calls,
+    // each 'still running', while the end was already being delivered). Joel: "never polling. Use
+    // handles and interrupts."
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::Withheld;
+    const WITHHELD: Option<continuum_base::tool_disclosure::WithheldGuidance> = Some(continuum_base::tool_disclosure::WithheldGuidance {
+        why: "A command you started is never read by polling: its end (exit, crash or loss) is delivered to you in your [tasks], whatever else you are doing.",
+        instead: "Carry on with any other work; when it ends, its result is in your [tasks] item, and its whole output reopens with tool/output by its handle.",
+    });
     const DESCRIPTION: &'static str =
         "Poll a shell execution by its execution_id handle: current status, accumulated \
          stdout/stderr, and exit_code once finished. The non-blocking way to follow a long command.";

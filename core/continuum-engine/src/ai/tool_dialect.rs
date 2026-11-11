@@ -107,27 +107,6 @@ fn command_names() -> &'static HashSet<&'static str> {
     NAMES.get_or_init(|| command_registry_live().iter().map(|d| d.name).collect())
 }
 
-/// A verb's purpose and what to use instead, shared with error feedback without erasing the
-/// real failure or declaring a discoverable command impossible to use. Guidance, NOT
-/// authorization.
-pub struct WithheldVerb {
-    pub why: &'static str,
-    pub instead: &'static str,
-}
-
-/// What the executor tells a caller who reached a verb aimed at someone else's work (a peer's
-/// diff, a review verdict): its purpose and the verb for her own work. Guidance only; whether a
-/// verb is among her hands is the value its command declares (`CommandSpec::DISCLOSURE`).
-pub fn withheld_from_hands(name: &str) -> Option<WithheldVerb> {
-    match name.replace('_', "/").as_str() {
-        "code/git/apply" => Some(WithheldVerb {
-            why: "`code/git/apply` applies a peer's unified diff; it is not the command for authoring your own edits.",
-            instead: "Your edits land with `code/edit` and `code/write`; commit them with `code/git/commit`.",
-        }),
-        _ => None,
-    }
-}
-
 /// What sat in the tool NAME field when it was not a verb at all. The executor's
 /// did-you-mean answers a NEAR verb; these two are not near anything, and before this
 /// the receipt was "call `commands/help`" — a turn spent with no lesson (card b579a9c7,
