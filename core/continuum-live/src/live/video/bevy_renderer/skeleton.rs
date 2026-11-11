@@ -52,14 +52,12 @@ pub(super) fn dump_bone_names(
 /// Reference head Y for VRM standard models (~1.50m).
 pub(super) const REFERENCE_HEAD_Y: f32 = 1.50;
 
-/// Baseline camera Z distance for the reference head height.
-pub(super) const REFERENCE_CAMERA_Z: f32 = -0.55;
-
-/// Compute camera Z distance from head world-Y position.
-pub(super) fn camera_z_for_head(head_y: f32) -> f32 {
-    let scale = (head_y / REFERENCE_HEAD_Y).clamp(0.5, 2.0);
-    REFERENCE_CAMERA_Z * scale
-}
+/// Baseline camera Z distance for full-body framing of a reference-height avatar (head_y ≈ 1.5 m).
+///
+/// Derived from Bevy's default ~59° vertical FOV and a standard VRM body height:
+/// `d ≥ head_y / (2 * tan(fov/2))` → ≈ 1.34 m for fov=59°, rounded to -1.4 m
+/// to leave a small margin above/below the frame edges.
+pub(super) const REFERENCE_CAMERA_Z: f32 = -1.4;
 
 /// Find a bone entity by matching against a list of known names.
 pub(super) fn find_bone_by_name(
