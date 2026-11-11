@@ -534,3 +534,25 @@
         assert_eq!(who.trim().lines().last().expect("git log printed a line"), format!("{0}|{1}|{0}|{1}", her.name(), her.email()));
     }
 
+    // what this catches (Benchy on the M5, 2026-11-11: four reads of one build, each "still
+    // running"): a read of a running command answering at once with nothing new, which invites
+    // the next read. It waits on the real notifier for the command's next output, and a finished
+    // command reads at once.
+    #[test]
+    fn a_read_of_a_running_command_waits_for_its_next_output() {
+        let (dir, rt) = setup_workspace();
+        let mut session = ShellSession::new("test", "p1", dir.path()).unwrap();
+        let id = session.execute("sleep 0.3; echo first; sleep 0.3; echo second", Some(10_000), rt.handle()).unwrap();
+        let state = session.get_execution_state(&id).unwrap();
+        let read = rt.block_on(read_when_new(state.clone())).unwrap();
+        let first = read.lock().unwrap().stdout_lines.clone();
+        assert_eq!(first, vec!["first".to_string()], "the read returned at the first new line, not before it");
+        rt.block_on(async {
+            while state.lock().unwrap().status == ShellExecutionStatus::Running {
+                read_when_new(state.clone()).await.unwrap();
+            }
+        });
+        let done = rt.block_on(read_when_new(state.clone())).unwrap();
+        assert_eq!(done.lock().unwrap().stdout_lines, vec!["first".to_string(), "second".to_string()], "a finished command reads at once, whole");
+    }
+

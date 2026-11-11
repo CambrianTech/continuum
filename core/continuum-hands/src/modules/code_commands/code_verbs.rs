@@ -506,7 +506,7 @@ pub(super) fn shell_response(s: &crate::code::shell_session::ExecutionState) -> 
         exit_code: s.exit_code,
         next: (s.status == ShellExecutionStatus::Running).then(|| {
             format!(
-                "still running: its result is delivered to you when it finishes; read its progress now with code/shell-poll execution_id={}",
+                "still running: its end is delivered to you when it finishes; reading it again with code/shell-poll execution_id={} returns at its next output",
                 s.id
             )
         }),
@@ -608,8 +608,9 @@ impl ActionCommand for CodeShellPoll {
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const NATIVE: bool = true; // follow a long command (install, build, server), like Claude's
     const DESCRIPTION: &'static str =
-        "Poll a shell execution by its execution_id handle: current status, accumulated \
-         stdout/stderr, and exit_code once finished. The non-blocking way to follow a long command.";
+        "Read a shell execution by its execution_id handle: its accumulated stdout/stderr, and \
+         exit_code once finished. Like reading a pipe, a read of a running command waits for its \
+         next output or its end, so every read brings something new.";
     type Params = CodeShellPollParams;
     type Output = ShellExecuteResponse;
 
@@ -624,9 +625,10 @@ impl ActionCommand for CodeShellPoll {
             .state
             .with_execution(&hands_of(&self.state, ctx), &p.execution_id, |s, id| s.get_execution_state(id))
             .map_err(execution_lookup_error)?;
-        let s = state_arc
-            .lock()
-            .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
+        // A read of a running command waits for its next output or its end, never a bare
+        // "running" that invites another read (`read_when_new`).
+        let state_arc = crate::code::shell_session::read_when_new(state_arc).await.map_err(CommandError::Internal)?;
+        let s = state_arc.lock().map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
         Ok(shell_response(&s))
     }
 }

@@ -551,6 +551,29 @@ pub async fn watch_execution(
     }
 }
 
+/// Read an execution like a pipe: a finished one at once; a running one when its next output
+/// line arrives or it ends (`output_notify` fires on both), never a bare "running" that invites
+/// another read and another (Benchy on the M5, 2026-11-11: 4 reads of one build in 16 calls, each
+/// "still running"). The state returned is read under its lock, after the change. Any program.
+pub async fn read_when_new(exec_state: Arc<Mutex<ExecutionState>>) -> Result<Arc<Mutex<ExecutionState>>, String> {
+    let lines = |s: &ExecutionState| (s.stdout_lines.len(), s.stderr_lines.len());
+    let (seen, notify) = {
+        let s = exec_state.lock().map_err(|e| format!("Lock poisoned: {e}"))?;
+        (lines(&s), s.output_notify.clone())
+    };
+    loop {
+        {
+            let s = exec_state.lock().map_err(|e| format!("Lock poisoned: {e}"))?;
+            if s.status != ShellExecutionStatus::Running || lines(&s) != seen {
+                break;
+            }
+        }
+        // The lock is released before the await; `notify_one` keeps a permit if it fired between.
+        notify.notified().await;
+    }
+    Ok(exec_state)
+}
+
 /// Collect new output lines since the cursors and classify them through sentinel rules.
 pub(super) fn collect_and_classify(state: &mut ExecutionState) -> Vec<ClassifiedLine> {
     let mut lines = Vec::new();
