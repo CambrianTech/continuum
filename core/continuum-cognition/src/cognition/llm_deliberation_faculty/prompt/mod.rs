@@ -20,6 +20,9 @@ mod newest_result;
 mod tools_epoch;
 mod framing;
 pub(super) mod grounding;
+// What a replay of her real prompt path reads between acts (`tests/faculty_replay`).
+#[cfg(any(test, feature = "test-fixtures"))]
+mod replay_probe;
 pub(super) use self::tools_epoch::ToolsEpoch;
 #[cfg(test)]
 pub(super) use self::tools_epoch::ToolsChoice;
