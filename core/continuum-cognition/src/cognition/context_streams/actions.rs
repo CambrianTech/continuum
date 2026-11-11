@@ -11,7 +11,7 @@ use continuum_context::cause::{Cause, Content, Origin};
 use continuum_context::source::{Item, Source, StoredWhole};
 
 use super::{element, priority, ContextMessage, Producer};
-use crate::cognition::working_memory::WorkingMemory;
+use crate::cognition::working_memory::{ActRendering, WorkingMemory};
 use crate::cognition::tool_executor::tool_output::Reopen;
 
 /// The source's name: her view's fold edge for it is what bounds her resident log
@@ -31,6 +31,33 @@ impl Actions<'_> {
 
     fn act(&self, seq: u64) -> continuum_context::cause::ElementId {
         element(self.persona, Producer::Act, &seq.to_be_bytes())
+    }
+
+    /// One act as this source's item, following `cause`: every act's the same way.
+    fn item(&self, act: ActRendering, cause: Cause) -> Item<ContextMessage> {
+        let stored = act.stored.map(|(chars, handle)| StoredWhole { chars, handle, content: Content::Absent });
+        let item = Item::rendered(self.act(act.seq), cause, act.seq.to_string(), ContextMessage::user(act.full), act.content)
+            .with_summary(act.summary.map(ContextMessage::user))
+            .with_pointer(ContextMessage::user(act.pointer))
+            .with_stored(stored);
+        match act.act {
+            Some(identity) => item.with_act(identity),
+            None => item,
+        }
+    }
+
+    /// Her newest act (the one in flight, which rides whole after her view) as this source's item,
+    /// following the act before it in its room: what her view judges on its arrival
+    /// (`View::repeat_of_newest`, MIND-CONTEXT invariant 4). `None` with no act in flight.
+    pub(crate) fn newest(&self) -> Option<Item<ContextMessage>> {
+        let act = self.memory.in_flight_rendering()?;
+        let (earlier, _) = self.memory.action_renderings();
+        let cause = earlier
+            .iter()
+            .rev()
+            .find(|before| before.room == act.room)
+            .map_or(Cause::Root(Origin::ActivityStart), |before| Cause::Of(self.act(before.seq)));
+        Some(self.item(act, cause))
     }
 }
 
@@ -92,15 +119,7 @@ impl Source<ContextMessage> for Actions<'_> {
         let mut last_in_room: std::collections::HashMap<Option<uuid::Uuid>, u64> = std::collections::HashMap::new();
         for act in acts {
             let cause = last_in_room.insert(act.room, act.seq).map_or(Cause::Root(Origin::ActivityStart), |prev| Cause::Of(self.act(prev)));
-            let stored = act.stored.map(|(chars, handle)| StoredWhole { chars, handle, content: Content::Absent });
-            let item = Item::rendered(self.act(act.seq), cause, act.seq.to_string(), ContextMessage::user(act.full), act.content)
-                .with_summary(act.summary.map(ContextMessage::user))
-                .with_pointer(ContextMessage::user(act.pointer))
-                .with_stored(stored);
-            items.push(match act.act {
-                Some(identity) => item.with_act(identity),
-                None => item,
-            });
+            items.push(self.item(act, cause));
         }
         items
     }
@@ -136,13 +155,17 @@ impl Source<ContextMessage> for Actions<'_> {
     /// An act the view found repeats an earlier one whose whole she has in front of her (the same
     /// request to a command that only observes, the same outcome): one line naming it and how to
     /// reopen it, never a second copy of the whole (MIND-CONTEXT invariant 4).
+    /// A repeated reopen (the same saved output reopened again, its whole still in front of her)
+    /// names that whole and never invites a further reopen: the reopen was the repeat (IntelMac,
+    /// 2026-11-11: one saved output reopened 20+ times, each arriving byte-identical).
     fn repeat(&self, item: &Item<ContextMessage>, ancestor: &Item<ContextMessage>) -> Option<ContextMessage> {
         let earlier: u64 = ancestor.key().parse().ok()?;
-        Some(ContextMessage::user(format!(
-            "[result #{}: repeat of #{earlier}, outcome unchanged; reopen with {}]",
-            item.key(),
-            Reopen::Act(earlier)
-        )))
+        let reopened = item.act().is_some_and(|act| matches!(act.effect, continuum_base::tool_effect::ToolEffect::Reopens));
+        Some(ContextMessage::user(if reopened {
+            format!("[result #{}: repeat of #{earlier}, the same saved output, unchanged; its whole is #{earlier} above]", item.key())
+        } else {
+            format!("[result #{}: repeat of #{earlier}, outcome unchanged; reopen with {}]", item.key(), Reopen::Act(earlier))
+        }))
     }
 
     /// Once she has acted, the void said earlier in this epoch is superseded, never edited:

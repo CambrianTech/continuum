@@ -78,6 +78,22 @@ impl crate::sdk_codegen::RefusalCause for ActOutputRefusal {
     }
 }
 
+/// Her newest act's run of identical requests with identical outcomes ([`ActionLog::repeat_run`]):
+/// a fact about her hands that moves with every repeat, so her newest input never equals her last
+/// (Cormac on the IntelMac loops, 2026-11-11: a grep 6 times, a missing file read 32 times, then
+/// one saved output reopened 20+ times). Rendered into her newest result only, never stored, so a
+/// stored outcome keeps its content identity. Never a directive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RepeatRun {
+    pub times: usize,
+}
+
+impl std::fmt::Display for RepeatRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[the same request {} times in a row; its output byte-identical each time]", self.times)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ActionRecord {
     pub seq: u64,
@@ -139,6 +155,11 @@ pub(crate) struct ActionRecord {
 }
 
 impl ActionRecord {
+    /// What the act returned, as its hash: of the resident result, or kept from when it left RAM.
+    fn outcome(&self) -> Option<continuum_context::cause::ContentHash> {
+        self.result.as_deref().map(continuum_context::cause::ContentHash::of).or(self.stored_content)
+    }
+
     /// The key its per-call dependencies are filed under: its saved handle, or `seq:N` for
     /// a result whose save failed.
     pub fn receipt_key(&self) -> String {
@@ -235,6 +256,23 @@ impl ActionLog {
     pub fn get_mut(&mut self, seq: u64) -> Option<&mut ActionRecord> {
         let index = self.records.binary_search_by_key(&seq, |record| record.seq).ok()?;
         self.records.get_mut(index)
+    }
+
+    /// Her act `seq`'s run: how many of her acts in its room, ending with it, made this exact
+    /// request (`cause::Act`: call and declared effect, undeclared included) and got a
+    /// byte-identical outcome. `None` for a run of one.
+    pub fn repeat_run(&self, seq: u64) -> Option<RepeatRun> {
+        let newest = self.get(seq)?;
+        let act = newest.act?;
+        let outcome = newest.outcome()?;
+        let earlier = self
+            .records
+            .iter()
+            .rev()
+            .filter(|record| record.seq < seq && record.room == newest.room)
+            .take_while(|record| record.act == Some(act) && record.outcome() == Some(outcome))
+            .count();
+        (earlier > 0).then_some(RepeatRun { times: earlier + 1 })
     }
 
     /// Every record, oldest first.

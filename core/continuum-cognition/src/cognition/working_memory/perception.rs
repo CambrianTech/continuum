@@ -269,6 +269,18 @@ impl WorkingMemory {
     /// `stored` is the whole's rendered length and handle once its body left RAM for its
     /// handle (`evict_resident_results_over`, the memory owner's shed): `full` is then the
     /// pointer, and the view prices and loads the whole through the source (`continuum_context::StoredWhole`).
+    /// Her act in flight (her newest, riding whole after her view) rendered as every other act is:
+    /// what her view judges on its arrival (MIND-CONTEXT invariant 4). `None` with none in flight.
+    pub(crate) fn in_flight_rendering(&self) -> Option<ActRendering> {
+        let seq = self.in_flight_action_seq()?;
+        self.actions.lock().get(seq).map(act_rendering)
+    }
+
+    /// Her act `seq`'s run of identical requests with identical outcomes, for her newest result.
+    pub(crate) fn repeat_run(&self, seq: u64) -> Option<action_log::RepeatRun> {
+        self.actions.lock().repeat_run(seq)
+    }
+
     pub(crate) fn action_renderings(&self) -> (Vec<ActRendering>, bool) {
         let active = self.in_flight_action_seq();
         let actions = self.actions.lock();
@@ -276,38 +288,7 @@ impl WorkingMemory {
         let renderings = actions
             .records()
             .filter(|record| Some(record.seq) != active)
-            .map(|record| {
-                let attribution = ResultAttribution::of(record);
-                let workspace = workspace_label(record.scope.as_deref());
-                let whole = record.result.as_deref().map(|result| format!("[result {attribution}{workspace}] {result}"));
-                let pointer = match (CollapsedReceipt::of(record), &whole, &record.head) {
-                    (Some(receipt), _, _) => receipt.to_string(),
-                    // Retained but never saved: no handle could reopen a collapsed line, so it stays
-                    // whole (goal 7: the full result stays reachable; Cormac on #5255).
-                    (None, Some(whole), _) => whole.clone(),
-                    (None, None, Some(head)) => head.clone(),
-                    // Unsaved and off the ledger: what it was, which never collapses anyway.
-                    (None, None, None) => format!("[action #{}] {}", record.seq, record.operation),
-                };
-                // Loaded back from the body's own saved copy when the memory owner named one.
-                let stored = match (&record.result, record.body.as_ref().or(record.handle.as_ref()), record.stored_chars) {
-                    (None, Some(handle), Some(chars)) => {
-                        let label = format!("[result {attribution}{workspace}] ").chars().count();
-                        Some((label + chars, handle.clone()))
-                    }
-                    _ => None,
-                };
-                let full = whole.unwrap_or_else(|| pointer.clone()); // JUSTIFIED: a body out of RAM renders its pointer; its whole is the stored one, loaded when granted
-                let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary] {summary}"));
-                // Resident, its body's hash; evicted, the hash it kept as it left RAM: an evicted
-                // read is still the occurrence a re-read matches (`ActionRecord::stored_content`).
-                let content = match (record.result.as_deref(), record.stored_content) {
-                    (Some(result), _) => continuum_context::cause::Content::Hashed(continuum_context::cause::ContentHash::of(result)),
-                    (None, Some(hash)) => continuum_context::cause::Content::Hashed(hash),
-                    (None, None) => continuum_context::cause::Content::Absent,
-                };
-                ActRendering { seq: record.seq, room: record.room, full, summary, pointer, stored, content, act: record.act }
-            })
+            .map(act_rendering)
             .collect();
         (renderings, in_flight)
     }
@@ -533,4 +514,39 @@ impl WorkingMemory {
     pub fn is_empty(&self) -> bool {
         self.entries.lock().is_empty() && self.thoughts.lock().is_empty()
     }
+}
+
+/// One act as her view renders it: whole, summary, pointer, stored whole, outcome hash and identity.
+/// Every act's the same way, the one in flight included.
+fn act_rendering(record: &action_log::ActionRecord) -> ActRendering {
+    let attribution = ResultAttribution::of(record);
+    let workspace = workspace_label(record.scope.as_deref());
+    let whole = record.result.as_deref().map(|result| format!("[result {attribution}{workspace}] {result}"));
+    let pointer = match (CollapsedReceipt::of(record), &whole, &record.head) {
+        (Some(receipt), _, _) => receipt.to_string(),
+        // Retained but never saved: no handle could reopen a collapsed line, so it stays
+        // whole (goal 7: the full result stays reachable; Cormac on #5255).
+        (None, Some(whole), _) => whole.clone(),
+        (None, None, Some(head)) => head.clone(),
+        // Unsaved and off the ledger: what it was, which never collapses anyway.
+        (None, None, None) => format!("[action #{}] {}", record.seq, record.operation),
+    };
+    // Loaded back from the body's own saved copy when the memory owner named one.
+    let stored = match (&record.result, record.body.as_ref().or(record.handle.as_ref()), record.stored_chars) {
+        (None, Some(handle), Some(chars)) => {
+            let label = format!("[result {attribution}{workspace}] ").chars().count();
+            Some((label + chars, handle.clone()))
+        }
+        _ => None,
+    };
+    let full = whole.unwrap_or_else(|| pointer.clone()); // JUSTIFIED: a body out of RAM renders its pointer; its whole is the stored one, loaded when granted
+    let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary] {summary}"));
+    // Resident, its body's hash; evicted, the hash it kept as it left RAM: an evicted
+    // read is still the occurrence a re-read matches (`ActionRecord::stored_content`).
+    let content = match (record.result.as_deref(), record.stored_content) {
+        (Some(result), _) => continuum_context::cause::Content::Hashed(continuum_context::cause::ContentHash::of(result)),
+        (None, Some(hash)) => continuum_context::cause::Content::Hashed(hash),
+        (None, None) => continuum_context::cause::Content::Absent,
+    };
+    ActRendering { seq: record.seq, room: record.room, full, summary, pointer, stored, content, act: record.act }
 }

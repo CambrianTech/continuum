@@ -11,14 +11,38 @@
 //! repeat is chosen for an act's first arrival in an epoch, and only when the occurrence it
 //! repeats is held WHOLE in that epoch, so it was in the context she was sent. An ancestor that is
 //! folded, collapsed, summarized or gone with a turnover gives no repeat: she needs the content
-//! again and it arrives whole. A turnover re-renders every item as itself, and a reopen is never a
-//! repeat ([`ToolEffect::Reopens`]).
+//! again and it arrives whole. A turnover re-renders every item as itself. A reopen
+//! ([`ToolEffect::Reopens`]) repeats only an identical reopen whose whole is held: a first reopen,
+//! after a repeat's pointer, always arrives whole, while reopening the same saved output again
+//! with its whole in front of her is the repeat (IntelMac, 2026-11-11: 20+ identical reopens).
+//!
+//! Her newest act is judged the same way ([`View::repeat_of_newest`]): it rides whole after her
+//! view, outside its sources, and only an act judged on its own arrival can be seen as a repeat.
 
 use std::collections::HashMap;
 
 use crate::cause::{Cause, Content, ContentHash, ElementId, Fingerprint, ToolEffect};
 use crate::epoch::Block;
 use crate::source::{Item, Source};
+
+impl<T: Block> super::View<T> {
+    /// The block her newest act `newest` arrives as when it repeats an earlier act of `source`
+    /// whose whole this epoch holds (a sent tail included): the same judgement every arriving item
+    /// gets (`resolve`). `None` when it repeats none: it arrives whole.
+    pub fn repeat_of_newest(&self, source: &dyn Source<T>, newest: Item<T>) -> Option<T> {
+        let name = source.name();
+        let mut items = source.items();
+        items.push(newest);
+        let (mut items, repeats) = resolve(
+            source,
+            items,
+            |earlier| self.holds_whole(&super::key(name, &earlier.key)),
+            |item| !self.epoch.holds(&super::key(name, &item.key)),
+        );
+        repeats.last().copied().flatten()?;
+        items.pop().map(|item| item.full)
+    }
+}
 
 /// `items` with each repeat replaced by its source's repeat block, and for each item the
 /// occurrence it repeats (`None` when it is not one). `whole` answers whether an earlier item
@@ -98,7 +122,7 @@ fn ancestors<T>(
 fn observed<T>(item: &Item<T>) -> Option<(Fingerprint, ContentHash)> {
     let act = item.act?;
     match (act.effect, item.content) {
-        (ToolEffect::Observes, Content::Hashed(hash)) => Some((act.fingerprint, hash)),
+        (ToolEffect::Observes | ToolEffect::Reopens, Content::Hashed(hash)) => Some((act.fingerprint, hash)),
         _ => None,
     }
 }

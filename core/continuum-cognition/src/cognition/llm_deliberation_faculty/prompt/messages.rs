@@ -382,7 +382,22 @@ impl LlmDeliberationFaculty {
                         // (`fit_newest_result`), never a head cut here (FOCUS-CONTRACT rule 4).
                         vec![ChatMessage::text("user", message)]
                     } else {
-                        let results: Vec<_> = observations.iter().map(|o| o.output.result.clone()).collect();
+                        let mut results: Vec<_> = observations.iter().map(|o| o.output.result.clone()).collect();
+                        // Her newest act, judged by her view as every arriving act is: a repeat of
+                        // one whose whole she holds arrives as its repeat block, never a second
+                        // copy (MIND-CONTEXT invariant 4; IntelMac, 2026-11-11: one saved output
+                        // reopened 20+ times, each arriving byte-identical, her input equal to her
+                        // last). A batch's identity is the batch's: only a one-call act is judged.
+                        if let [only] = results.as_mut_slice() {
+                            if let Some(block) = self.newest_repeat(wm) {
+                                only.content = block;
+                            }
+                            // And the run it ends, whatever its effect (a shell command too): the
+                            // count moves every repeat, so her input never equals her last.
+                            if let Some(run) = wm.repeat_run(seq) {
+                                only.content = format!("{run}\n{}", only.content);
+                            }
+                        }
                         for observation in &observations {
                             field(&mut input, observation.output.result.tool_use_id.as_bytes());
                             field(&mut input, observation.output.result.content.as_bytes());
@@ -471,5 +486,16 @@ impl LlmDeliberationFaculty {
             // The one price of a message, for the engine her request reaches (its measured template).
             pricing: self.prompt_fit(&self.binding.load()).1,
         }
+    }
+}
+
+impl LlmDeliberationFaculty {
+    /// Her newest act's repeat block, when her view judges it repeats an act whose whole it holds
+    /// (`View::repeat_of_newest`); `None` when it arrives whole.
+    fn newest_repeat(&self, memory: &crate::cognition::working_memory::WorkingMemory) -> Option<String> {
+        let actions = crate::cognition::context_streams::actions::Actions { memory, persona: self.persona_id };
+        let newest = actions.newest()?;
+        let view = self.context_view.lock();
+        view.as_ref()?.repeat_of_newest(&actions, newest).map(|block| block.text)
     }
 }

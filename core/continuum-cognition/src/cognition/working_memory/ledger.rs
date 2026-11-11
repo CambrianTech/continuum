@@ -84,7 +84,6 @@ impl WorkingMemory {
             dispatched: Mutex::new(HashMap::new()),
             next_action_seq: AtomicU64::new(1),
             action_fps: Mutex::new(VecDeque::new()),
-            action_fp_counts: Mutex::new(HashMap::new()),
             actions: Mutex::new(Default::default()),
             thoughts: Mutex::new(Default::default()),
             view: Mutex::new(None),
@@ -126,32 +125,15 @@ impl WorkingMemory {
             .map(|e| e.peak_tokens).max().unwrap_or(0) // JUSTIFIED: no pending emission retains no peak; 0 is the identity of the max the reply claim folds it into
     }
 
-    /// Record a fingerprint (tool name + args) of the action the hands just took, and return
-    /// how many times THIS exact call now appears in the recent window (including this one).
-    /// `≥ 2` means the mind is re-issuing an identical call — proprioception the act→observe
-    /// step renders EXPLICITLY so a looping mind perceives its own redundancy and moves on.
-    /// Reports a TRUE fact about her hands; it never dictates what to do instead (that would
-    /// be steering — [[no-hardcoded-heuristics-to-steer-cognition]]). The returned count is
-    /// DURABLE across the spawn (see `action_fp_counts`) so a loop that recurs amid other
-    /// acts escalates honestly instead of pinning at the tiny recency-window size.
-    pub fn note_action_fingerprint(&self, fingerprint: &str) -> usize {
+    /// Record a fingerprint (tool name + args) of the action the hands just took, into the
+    /// recent window the verb tally reads.
+    pub fn note_action_fingerprint(&self, fingerprint: &str) {
         self.touch();
-        // Windowed push feeds `action_verb_tally` (the RECENT investigation shape) — that
-        // one WANTS the rolling `capacity` window, so leave it bounded here.
-        {
-            let mut fps = self.action_fps.lock();
-            fps.push_back(fingerprint.to_string());
-            while fps.len() > self.capacity {
-                fps.pop_front();
-            }
+        let mut fps = self.action_fps.lock();
+        fps.push_back(fingerprint.to_string());
+        while fps.len() > self.capacity {
+            fps.pop_front();
         }
-        // The repeat COUNT is durable across the spawn — NOT clipped to the tiny recency
-        // window — so an identical call interleaved with other acts still climbs 3→38
-        // rather than resetting every time it falls out of the `capacity`-deep window.
-        let mut counts = self.action_fp_counts.lock();
-        let c = counts.entry(fingerprint.to_string()).or_insert(0);
-        *c += 1;
-        *c
     }
 
     /// Tally of recent actions BY TOOL NAME (the part of the fingerprint before
