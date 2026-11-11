@@ -16,10 +16,6 @@ use serde::{Deserialize, Serialize};
 
 const FILE: &str = "served-window.json";
 
-/// How long a candidate must sit on disk before it can be promoted to observed.
-/// A transient boot may serve prompts and look stable for a few reconcile ticks,
-/// but only geometry that survives the full steady-state window earns promotion.
-const CANDIDATE_STABILIZATION_MS: u64 = 30_000;
 
 /// Geometry observed under the endpoint owner's generation lease, not a planner proposal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,10 +43,12 @@ pub struct StoredServedWindow {
     #[serde(default)]
     pub observed_prompt_tokens: Option<u32>,
     pub set_at_ms: u64,
+    /// Geometry observed under this generation lease that has not yet been
+    /// promoted into the main record. Does not replace the last observed
+    /// geometry until successful usage from this exact generation observes it.
     #[serde(default)]
     pub candidate: Option<ServedGeometry>,
     /// Epoch milliseconds when the current candidate was first recorded.
-    /// `observe_to` only promotes to observed after this exceeds CANDIDATE_STABILIZATION_MS.
     #[serde(default)]
     pub candidate_set_at_ms: u64,
 }
@@ -161,32 +159,25 @@ fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
 }
 
 /// Record usage only for the settled generation that produced it. Successful
-/// service does not certify that this geometry satisfies future workloads.
+    /// service does not certify that this geometry satisfies future workloads.
 fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
     let Some(mut stored) = load_from(path) else { return };
-    let Some(_) = stored.candidate.as_ref().filter(|c| *c == geometry) else { return };
-    if tokens == 0 || tokens > geometry.per_slot_window || geometry.lanes == 0
+    // Only promote candidates that were recorded under the same generation lease.
+    if !stored.candidate.as_ref().is_some_and(|c| *c == *geometry) {
+        return;
+    }
+    if tokens == 0 || tokens > geometry.per_slot_window || geometry.lanes == 0 {
+        return;
+    }
+    // Idempotent: already recorded this exact observation.
+    if stored.model_id == geometry.model_id
+        && stored.per_slot_window == geometry.per_slot_window
+        && stored.lanes == geometry.lanes
+        && stored.observed_prompt_tokens == Some(tokens)
     {
         return;
     }
-    if stored.model_id == geometry.model_id && stored.per_slot_window == geometry.per_slot_window
-        && stored.lanes == geometry.lanes && stored.observed_prompt_tokens == Some(tokens)
-    {
-        return;
-    }
-    let now = continuum_base::time::EpochMs::now().millis();
-    let stabilized = stored.candidate_set_at_ms > 0
-        && (now - stored.candidate_set_at_ms) >= CANDIDATE_STABILIZATION_MS;
-
-    if !stabilized {
-        // Candidate hasn't survived the stabilization window yet.
-        // Update token tracking but don't promote geometry fields or clear candidate.
-        stored.typical_prompt_tokens = tokens;
-        stored.observed_prompt_tokens = Some(tokens);
-        write_record(path, &stored);
-        return;
-    }
-
+    // Steady-state observed — promote immediately (no time gate).
     stored.model_id = geometry.model_id.clone();
     stored.per_slot_window = geometry.per_slot_window;
     stored.lanes = geometry.lanes;
@@ -312,31 +303,39 @@ mod tests {
         assert!(load_from(&path).is_none());
     }
 
-    /// A transient one-lane launch settles first and gets observed, then a steady two-lane
-    /// settlement on the same model replaces it.  The stored cache must reflect lanes=2,
-    /// proving that state-based promotion (generation change + higher lane count) overrides
-    /// any earlier transient observation.
+    /// A transient one-lane launch (settled_now=false) stores no candidate,
+    /// so observe_to is a no-op.  A steady two-lane settlement
+    /// (settled_now=true) records the candidate; observing it with real tokens
+    /// promotes through observe_to's generation-identity gate, yielding lanes=2.
     #[test]
     fn steady_settlement_overrides_transient_observation() {
         let home = tempfile::tempdir().unwrap();
         let path = home.path().join("window.json");
         let model_id = "llama-3b".to_string();
 
-        // --- transient one-lane launch settles (generation A) ---
+        // --- transient one-lane launch (not steady) → no candidate stored ---
         let gen_a = ServedGeometry {
             model_id: model_id.clone(),
             generation: uuid::Uuid::new_v4(),
             per_slot_window: 8_000,
             lanes: 1,
         };
-        record_reconciled_to(&path, gen_a.clone(), true, None);
+        record_reconciled_to(&path, gen_a.clone(), false, None);
 
-        // --- usage from the transient launch arrives → promotes to observed (lanes=1) ---
+        // observe with tokens on the transient launch does nothing
+        // (no candidate exists for observe_to to match against)
         let tokens = 5_000u32;
-        record_reconciled_to(&path, gen_a.clone(), false, Some(tokens));
-        assert_eq!(load_from(&path).unwrap().cache_geometry(), Some((8_000, 1)));
+        observe_to(&path, &gen_a, tokens);
 
-        // --- steady two-lane launch settles on the same model (generation B) ---
+        let stored = load_from(&path).unwrap();
+        assert!(stored.candidate.is_none(), "transient must not store a candidate");
+        assert_eq!(
+            stored.cache_geometry(),
+            None,
+            "cache must remain empty before steady settlement + usage"
+        );
+
+        // --- steady two-lane launch → candidate stored ---
         let gen_b = ServedGeometry {
             model_id: model_id.clone(),
             generation: uuid::Uuid::new_v4(),
@@ -345,14 +344,20 @@ mod tests {
         };
         record_reconciled_to(&path, gen_b.clone(), true, None);
 
-        // State-based promotion: the new settlement has more lanes than what we observed,
-        // so `save_candidate_to` pushes it into the cache fields.
-        let restarted = load_from(&path).unwrap();
-        assert_eq!(restarted.lanes, 2, "steady settlement should promote observed lanes to 2");
+        // observe with real tokens on the steady generation promotes via observe_to
+        let steady_tokens = 6_000u32;
+        observe_to(&path, &gen_b, steady_tokens);
+
+        let after_steady = load_from(&path).unwrap();
+        assert_eq!(after_steady.lanes, 2, "steady settlement + usage must promote lanes to 2");
         assert_eq!(
-            restarted.cache_geometry(),
+            after_steady.cache_geometry(),
             Some((8_000, 2)),
-            "restart cache must remember the steady two-lane geometry"
+            "cache geometry must reflect the steady two-lane layout"
         );
+
+        // --- restart survives: cache remembers the steady geometry ---
+        let restarted = load_from(&path).unwrap();
+        assert_eq!(restarted.cache_geometry(), Some((8_000, 2)));
     }
 }
