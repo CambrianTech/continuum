@@ -9,8 +9,13 @@
 //! her previous act (at least its floor); after the plan, [`Epoch::record`] keeps what the plan
 //! granted each source as the next basis, counts a turnover when any source was granted less than
 //! its basis, and predicts the act's fresh tokens:
-//! - her first act, or an act whose heads (framing, tools) changed: the whole prompt (cold);
-//! - a turnover: everything after the heads (the view and her act loop re-prefill);
+//! - her first act: the whole prompt (cold);
+//! - a turnover: a new epoch, which adopts the plan's heads (framing, tools): everything after the
+//!   heads re-prefills, the heads too when they changed;
+//! - inside an epoch her heads stay frozen at what it adopted, as the live core freezes them
+//!   (`fit_view`'s `head_funded && view.started`): a window that grows changes the plan's head
+//!   grants, never her cache (Aiko on the dyno, 2026-11-11: 12 acts of a growing window replayed
+//!   cold, 7% of her seconds);
 //! - otherwise the new tail: the prompt less the heads, each view source's basis (at most its
 //!   grant), and, inside one turn (the same ask), her act loop as the previous act held it.
 
@@ -31,7 +36,8 @@ pub fn kept(plan: &ActPlan) -> u32 {
 pub struct Epoch {
     /// Each view source's basis: what the plan kept of it on her previous act.
     held: HashMap<String, u32>,
-    /// The heads' grants (framing, tools) her cache holds; `None` before her first act.
+    /// The heads' grants (framing, tools) her cache holds, frozen for the epoch; `None` before her
+    /// first act.
     heads: Option<(u32, u32)>,
     /// Her turn (a key of its ask) and what her act loop held on the previous act of it.
     turn: Option<(u64, u32)>,
@@ -69,8 +75,7 @@ impl Epoch {
     /// predict what it prefilled.
     pub fn record(&mut self, plan: &ActPlan, ask: u64, sent: u32) -> Step {
         let kept = kept(plan).min(sent);
-        let heads = (plan.granted(id::FRAMING), plan.granted(id::TOOLS));
-        let warm = self.heads == Some(heads);
+        let planned = (plan.granted(id::FRAMING), plan.granted(id::TOOLS));
         let (mut turnover, mut view_resident) = (false, 0u32);
         let mut held = HashMap::new();
         for claim in plan.claims().iter().filter(|claim| claim.source_id.starts_with(id::VIEW)) {
@@ -85,6 +90,16 @@ impl Epoch {
         let carried = match self.turn {
             Some((key, before)) if key == ask => before.min(looped),
             _ => 0,
+        };
+        // Inside an epoch the heads stay frozen; a turnover starts a new epoch, which adopts the
+        // plan's heads (resident only if they did not change).
+        let warm = match self.heads {
+            None => false,
+            Some(frozen) => !turnover || frozen == planned,
+        };
+        let heads = match self.heads {
+            Some(frozen) if !turnover => frozen,
+            _ => planned,
         };
         let head_tokens = heads.0.saturating_add(heads.1);
         let resident = match (warm, turnover) {
@@ -151,5 +166,20 @@ mod tests {
         let over = epoch.record(&allocate(700, tight), 1, u32::MAX);
         assert!(over.turnover, "a window below the basis turns the epoch over");
         assert_eq!(over.fresh, over.kept - 50, "a turnover re-prefills everything after the heads");
+    }
+
+    // what this catches: a window that grows inside an epoch changing the plan's head grants and
+    // the dyno replaying that act cold, though the live core keeps her head frozen until a new
+    // epoch (Aiko, 2026-11-11: 12 growing-window acts replayed cold, 7% of her seconds).
+    #[test]
+    fn a_growing_window_inside_an_epoch_keeps_her_head_warm() {
+        let mut epoch = Epoch::default();
+        let first = epoch.record(&allocate(10_000, act(1_000)), 1, u32::MAX);
+        // The next plan grants her framing more (as a grown window does); her epoch has not turned.
+        let mut grown = ActClaims { framing: Head::free(Leveled::one(Rungs::whole(80))), ..act(1_200) };
+        epoch.hold(&mut grown);
+        let next = epoch.record(&allocate(10_000, grown), 1, u32::MAX);
+        assert!(!next.turnover);
+        assert!(next.fresh < next.kept, "her frozen head and sent view stay resident: first kept {}, next {next:?}", first.kept);
     }
 }
