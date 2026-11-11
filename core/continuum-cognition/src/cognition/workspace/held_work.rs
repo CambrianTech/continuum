@@ -27,6 +27,64 @@ pub struct HeldWork {
     /// board's typed reviews, submissions and review cards. Informational: never a tool
     /// restriction, never an assignment.
     pub awaiting: Vec<AwaitingResubmission>,
+    /// Her latest submission on each of her own cards: the files it changes against its base and
+    /// the newest verdict on it, side by side (card 1e9774cc). A review that names a file then
+    /// points at a path she can see, and she reads the reviewer's words, not her paraphrase.
+    pub submissions: Vec<SubmissionChanges>,
+}
+
+/// What one submission changes against its recorded base, and the newest verdict on it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubmissionChanges {
+    pub card: WorkCardId,
+    pub title: String,
+    pub submission: airc_work::SubmissionId,
+    pub base: String,
+    pub head: String,
+    /// Read from her card's checkout; `Err` says why it could not be, so she is told what to do
+    /// rather than shown nothing.
+    pub files: Result<Vec<ChangedFile>, ChangesUnread>,
+    pub verdict: Option<SubmissionVerdict>,
+}
+
+/// One file a submission changes. `added`/`deleted` are `None` for a binary file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangedFile {
+    pub path: String,
+    pub change: FileChange,
+    pub added: Option<u64>,
+    pub deleted: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileChange {
+    Added,
+    Deleted,
+    Modified,
+    Renamed { from: String },
+    /// A copy: its source still exists.
+    Copied { from: String },
+}
+
+/// Why a submission's changed files could not be read, typed so her view says what she can do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChangesUnread {
+    /// Her card has no checkout on this node.
+    NoCheckout,
+    /// The submission's commits are not in her checkout (fetch them).
+    CommitsAbsent { base: String, head: String },
+    /// Git refused the diff, in its own words.
+    GitRefused { detail: String },
+    /// Git answered in a shape the reader does not understand.
+    Unparsable { detail: String },
+}
+
+/// The newest verdict on a submission, with the reviewer's own words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubmissionVerdict {
+    pub reviewer: airc_core::PeerId,
+    pub outcome: airc_work::WorkReviewOutcome,
+    pub evidence: Option<String>,
 }
 
 /// A card whose newest submission she failed. Until its author resubmits there is nothing for her
