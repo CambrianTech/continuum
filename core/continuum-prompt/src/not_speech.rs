@@ -180,7 +180,9 @@ fn opens_with_tool_envelope(t: &str) -> bool {
             }
 
             // Space-separated form: [ns/verb] {…} — object is after bracket.
-            if !before_close.contains(',') && verb_ok(before_close) && before_close.contains('/')
+            // No slash required on the verb; canary caught any verb_ok + brace
+            // structure (card 4b1e245c measurement: 33 cases, all valid envelopes).
+            if !before_close.contains(',') && verb_ok(before_close)
                 && trimmed_after.starts_with('{')
             {
                 return true;
@@ -202,8 +204,10 @@ fn opens_with_tool_envelope(t: &str) -> bool {
                     }
                 }
 
-            // Space-separated form: [verb] {obj} or [verb](args) — no slash required for the verb itself.
-            if !before_close.contains(',') && verb_ok(before_close) && (trimmed_after.starts_with('{') || trimmed_after.starts_with('('))
+            // Space-separated form with `(` — namespaced verbs only; prevents `[answer] note(x)` from matching.
+            if !before_close.contains(',') && verb_ok(before_close)
+                && trimmed_after.starts_with('(')
+                && before_close.contains('/')
             {
                 return true;
             }
