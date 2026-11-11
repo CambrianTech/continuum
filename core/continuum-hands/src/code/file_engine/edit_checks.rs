@@ -313,9 +313,11 @@ pub(super) fn repair_hint(abs_path: &std::path::Path, old_content: &str, edit_mo
         return GENERAL.to_string();
     };
 
-    // The line that closes the construct lies inside the construct she started in, so its
-    // measured span bounds the search: never past it into unrelated code.
-    for candidate in (end_line + 1)..=*construct_span(old_content, *start_line).end() {
+    // The tail her range cut into lies inside the construct her END line sits in (a string's
+    // lines need not follow the opener's indent: sympy-22005's `'\'')` closes the `raise` block),
+    // so that measured span bounds the search: never past it into unrelated code.
+    let old_lines: Vec<&str> = old_content.lines().collect();
+    for candidate in (end_line + 1)..=*construct_span(old_content, *end_line).end() {
         let widened = EditMode::LineRange {
             start_line: *start_line,
             end_line: candidate,
@@ -326,13 +328,20 @@ pub(super) fn repair_hint(abs_path: &std::path::Path, old_content: &str, edit_mo
         };
         if parses_clean(abs_path, &text) {
             let extra = candidate - end_line;
+            // A parse can not tell a dropped tail from destroyed code, so the hint SHOWS what the
+            // wider range also removes, verbatim, and she decides. On the M5, 2026-11-11, a hint
+            // that parsed would have deleted a `for` loop's header (Aiko, not_speech.rs 259-260).
+            let removed: Vec<String> = ((end_line + 1)..=candidate)
+                .filter_map(|n| old_lines.get((n - 1) as usize).map(|l| format!("{n:>6} | {l}")))
+                .collect();
             return format!(
                 "THE FIX: use end_line={candidate} instead of {end_line}. Your range stopped \
-                 {extra} line(s) short — lines {}..{candidate} are the tail of a construct your \
-                 replacement re-opens and closes itself, so the original's tail survived after \
-                 it. The SAME new_content with end_line={candidate} parses clean; re-issue the \
-                 edit with that one number changed.",
-                end_line + 1
+                 {extra} line(s) short; with end_line={candidate} the SAME new_content parses \
+                 clean. That wider range ALSO REMOVES these lines as they stand now:\n{}\n\
+                 Use it only if every one of them is a tail your replacement re-supplies or text \
+                 you mean to drop; if any is code you meant to keep, keep your range and add the \
+                 missing closer to your new_content instead.",
+                removed.join("\n")
             );
         }
     }

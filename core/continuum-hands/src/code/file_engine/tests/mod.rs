@@ -600,6 +600,12 @@
             err.contains("THE FIX: use end_line=9 instead of 7"),
             "the refusal must compute and name the end line that works, got:\n{err}"
         );
+        // what this catches (Aiko, the M5, 2026-11-11): a hint that parses can still delete code
+        // she meant to keep, so it shows every line the wider range removes, verbatim.
+        assert!(
+            err.contains("ALSO REMOVES") && err.contains("(finite number of solutions)") && err.contains("     9 |"),
+            "the hint must show the lines it also removes, got:\n{err}"
+        );
         assert!(
             err.contains("stopped 2 line(s) short"),
             "and quantify how far off she was, got:\n{err}"
