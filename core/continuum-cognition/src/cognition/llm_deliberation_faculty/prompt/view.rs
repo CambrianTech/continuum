@@ -538,15 +538,19 @@ impl LlmDeliberationFaculty {
         all_messages.result_pointers = tail_pointers.into_iter().map(|(index, pointer)| (index - view_len, pointer)).collect();
         let tail_budget = msg_budget.saturating_sub(calibration.estimate_all(&view_messages));
         // The page is cut to the space actually available: its grant, and never more than the
-        // tail's budget leaves beside the rest of the required input and her last move (what her
-        // view holds is fitted already and may sit above its grant until its next start).
+        // tail's budget leaves beside the rest of the required input, her last move and her
+        // granted history (what her view holds is fitted already and may sit above its grant
+        // until its next start). Without the history grant the page grew into the room the one
+        // allocation gave her conversation, and the fit dropped the room message that arrived
+        // during this turn (capacity_and_wire: the update gone beside a 51,689-char page).
         let newest_result_reduced = match newest_page {
             Some(granted) => {
                 let newest_now = calibration.estimate_all(&all_messages.latest_result);
                 let beside = all_messages
                     .required_tokens()
                     .saturating_sub(newest_now)
-                    .saturating_add(calibration.prompt_budget(act.granted(claim_id::LAST_MOVE) as usize));
+                    .saturating_add(calibration.prompt_budget(act.granted(claim_id::LAST_MOVE) as usize))
+                    .saturating_add(calibration.prompt_budget(act.granted(claim_id::HISTORY) as usize));
                 self.fit_newest_result(&mut all_messages, granted.min(tail_budget.saturating_sub(beside)))
             }
             None => false,
@@ -559,6 +563,7 @@ impl LlmDeliberationFaculty {
                 fitted.grounding_at += view_len;
                 fitted.refit.grounding_at += view_len;
                 fitted.refit.history_len += view_len;
+                fitted.refit.view_len = view_len;
                 for (index, _) in &mut fitted.refit.result_pointers {
                     *index += view_len;
                 }

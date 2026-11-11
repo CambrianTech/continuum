@@ -551,6 +551,9 @@ impl RequiredParts {
 /// stays frozen at its original position; required messages remain one intact tail.
 #[derive(Debug, Clone, Default)]
 pub struct PromptRefit {
+    /// How many leading messages are her view: a refit never drops them (it shrinks only her
+    /// fresh tail); her view shrinks only by its own allocation, at a re-render.
+    pub(in super::super) view_len: usize,
     pub(in super::super) history_len: usize,
     pub(in super::super) grounding_at: usize,
     pub(in super::super) grounding_len: usize,

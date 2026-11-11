@@ -194,6 +194,8 @@ impl LlmDeliberationFaculty {
         let mut room_resized_at: Option<u32> = None;
         // Re-rendered once against a grant that moved between render and dispatch.
         let mut grant_rerendered = false;
+        // Re-rendered once at the engine's measured price when a refit had no tail left to trim.
+        let mut view_rerendered_at_measured_price = false;
         // Correct only frozen admitted input, consuming a finite optional unit on
         // every retry. Exact measured progress is required too. No accepted cognition
         // is replayed, and no working-memory or RAG source is re-read or refilled.
@@ -441,6 +443,12 @@ impl LlmDeliberationFaculty {
                     let reserve = view.completion_reserve;
                     view = match self.refit_rejected_prompt(view, requested, available, reserve) {
                         Ok(view) => view,
+                        // No tail left to trim, and a refit never cuts her view: rendered again ONCE at
+                        // the measured price, so her view's own allocation collapses oldest first.
+                        Err(_) if !view_rerendered_at_measured_price => {
+                            view_rerendered_at_measured_price = true;
+                            self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref())
+                        }
                         Err(error) => {
                             return Some(
                                 Contribution::prompt_capacity_refused(error)
