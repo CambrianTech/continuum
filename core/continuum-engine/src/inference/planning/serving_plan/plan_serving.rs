@@ -608,9 +608,13 @@ fn plan_serving_at_rest_into(
     // than the roster needs leaves minds cold that were warm — not an upgrade,
     // whatever it scores. (BigMama, card a374c014: this compares FOOTPRINTS, so a
     // stale weights_bytes on a long-running core lies to it — fix the input there.)
-    let inc_lanes = plan_serving_into(&at_rest, std::slice::from_ref(inc), &demand, &mut None)
-        .map(|p| p.lanes as u32)
-        .unwrap_or(0); // unwrap_or: an incumbent that cannot plan at all has no lanes to protect
+    let mut incumbent_growth = None;
+    let retained = plan_serving_into(at_rest, std::slice::from_ref(inc), demand, &mut incumbent_growth);
+    let Some(retained) = retained else {
+        *training_growth = fresh_growth;
+        return fresh;
+    };
+    let inc_lanes = retained.lanes as u32;
     let upgrade_worth_it = fresh.as_ref().is_some_and(|fresh_plan| {
         let f = &fresh_plan.base_model;
         let fresh_lanes = fresh_plan.lanes as u32;
@@ -623,15 +627,11 @@ fn plan_serving_at_rest_into(
         *training_growth = fresh_growth;
         return fresh;
     }
-    // Keep the incumbent: re-rank it to the top so `plan_serving` selects it and
-    // recomputes lanes + resident against the AT-REST budget (so its own residency
-    // doesn't shrink its own window/lanes) — reusing all the fit/lane/pack logic
-    // instead of duplicating it here.
-    let mut promoted: Vec<ModelFootprint> = candidates.to_vec();
-    if let Some(m) = promoted.iter_mut().find(|m| m.model_id == inc_id) {
-        m.capability_rank = u8::MAX;
-    }
-    plan_serving_into(&at_rest, &promoted, &demand, training_growth)
+    // Retention is a selection decision, not evidence of greater capability.
+    // Reuse the incumbent's admitted plan and its matching growth decision without
+    // publishing a fabricated maximum rank to the grid and access consumers.
+    *training_growth = incumbent_growth;
+    Some(retained)
 }
 
 pub(super) fn bytes_gb(bytes: u64) -> f64 {

@@ -438,6 +438,8 @@ use super::*;
             stable.base_model.model_id, "small",
             "hysteresis keeps incumbent — no flap"
         );
+        assert_eq!(stable.base_model.capability_rank, pair()[0].capability_rank,
+            "retention must preserve the incumbent's actual capability evidence");
         assert!(
             stable.lanes >= 1,
             "lanes still re-tracked for the kept model"
