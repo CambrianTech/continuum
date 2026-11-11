@@ -96,7 +96,7 @@ pub fn write_replace_keeping(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut staged = Staging::new_in(dir)?;
     staged.write_all(bytes)?;
     match std::fs::metadata(&target) {
-        Ok(old) => staged.file().set_permissions(old.permissions())?,
+        Ok(old) => staged.file().set_permissions(cap_std::fs::Permissions::from_std(old.permissions()))?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e),
     }
