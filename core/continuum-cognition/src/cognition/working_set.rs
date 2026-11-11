@@ -852,12 +852,12 @@ pub fn requirements_for(
         .iter()
         .map(|p| {
             let demand = working_set.demand_of(*p);
-            use crate::inference::planning::window_allocator::{observed::Observed, LaneRequirement, Tokens};
+            use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
             // Measured or not, as a type: no turn yet is unmeasured, never a zero standing in for one.
             let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d)));
-            // Residency is sized from what held, never from a censored bound: an overflow is
-            // reducible by her view's collapse (ONE-ACT stage 3, `resident_need`).
-            let need = demand.as_ref().and_then(resident_need).and_then(Tokens::new).map(Observed::Exact);
+            // Her need as measured, a bound kept a bound: an overflow is reducible by her view's
+            // collapse, so admission clamps it to what one sequence holds (`resident_need`).
+            let need = demand.as_ref().and_then(resident_need);
             // Her parked training examples' reservation, carried beside her conversational target
             // and need (card ea157b1a): the allocator grows toward it only from spare budget.
             let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();

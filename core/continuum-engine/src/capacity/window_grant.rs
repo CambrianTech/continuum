@@ -773,4 +773,15 @@ mod tests {
         assert_eq!(Observed::AtLeast { at_least: t(4_096) }.within(ceiling), t(4_096), "a bound within the ceiling is untouched");
     }
 
+
+    // what this catches: a floored need crossing a JSON boundary (requirements to the serving
+    // daemon) read back as a bare bound with its floor dropped, because untagged reads try variants
+    // in order and ignore unknown fields; and a bare bound or exact size no longer reading as before.
+    #[test]
+    fn every_need_shape_survives_a_json_round_trip() {
+        for need in [Observed::Exact(t(30_000)), Observed::AtLeast { at_least: t(116_240) }, Observed::Floored { at_least: t(116_240), floor: t(60_000) }] {
+            let json = serde_json::to_string(&need).expect("test: a need serializes"); // expect: plain numbers always serialize
+            assert_eq!(serde_json::from_str::<Observed<Tokens>>(&json).expect("test: it reads back"), need, "{json}"); // expect: written by the line above
+        }
+    }
 }
