@@ -21,6 +21,8 @@ use crate::inference::planning::window_allocator::Tokens;
 mod lease;
 pub(crate) use lease::{record_reclaimed_grant, record_refused_grant};
 pub use lease::is_grant_retiring;
+#[cfg(test)]
+pub(crate) use lease::dyno_seam;
 pub use lease::{publish_fair_grants, FairGrantState, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
 
 /// One publication of one mind's grant: monotonic and never reused in this process. A grant that
@@ -253,11 +255,15 @@ pub enum Ungranted {
 }
 
 impl Ungranted {
-    /// Her turn comes once room opens: she is queued behind others, her grant is being reclaimed, or
-    /// the engine is relaunching. She waits for a later evaluation, never fails her turn (Joel,
-    /// 2026-11-09: "get what it needs and wait its turn"). Every other reason names a defect.
+    /// Her turn comes once room opens: she is queued behind others, or the engine is relaunching.
+    /// She waits for a later evaluation, never fails her turn (Joel, 2026-11-09: "get what it needs
+    /// and wait its turn"). A grant being RECLAIMED is not waited out inside her turn: the reclaim
+    /// takes her mind's turn lock (`MindTurn::reclaim`), so a turn waiting on it waits on itself
+    /// (the M5, d0abbddd1, 2026-11-10: Aris parked to the 1,500 s tick deadline, five times, while
+    /// her seat never came back). Her turn ends, the reclaim proceeds, and she is regranted.
+    /// Every other reason names a defect.
     pub fn awaits_room(&self) -> bool {
-        matches!(self, Self::Waiting(Waiting::Queued { .. } | Waiting::Reclaiming) | Self::Nobody(NoGrants::NotReady))
+        matches!(self, Self::Waiting(Waiting::Queued { .. }) | Self::Nobody(NoGrants::NotReady))
     }
 }
 

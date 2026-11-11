@@ -1,11 +1,9 @@
-//! macOS: the seatbelt adapter. The profile renderer is pure (rendered and tested on every
-//! platform); the spawn under `sandbox-exec` exists on macOS only.
+//! The seatbelt profile: pure, rendered and tested on every platform (the spawn under
+//! `sandbox-exec` is the macOS adapter, `macos.rs`).
 
 use std::path::Path;
 
 use super::AllowList;
-#[cfg(target_os = "macos")]
-use super::{Confinement, Enforcement};
 
 /// The two operation classes every rule is written in. NEVER the `file*` wildcard:
 /// measured on macOS 26.5, a `(deny file* …)` written AFTER an `(allow file-read* …)`
@@ -99,17 +97,4 @@ fn deny_credentials(out: &mut String, list: &AllowList) {
 
 fn sbpl_string(p: &Path) -> String {
     p.display().to_string().replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn confined_command_with(
-    confinement: &Confinement,
-    list: &AllowList,
-    program: &Path,
-    args: &[std::ffi::OsString],
-) -> (tokio::process::Command, Enforcement) {
-    let profile = seatbelt_profile(&confinement.home, list);
-    let mut cmd = tokio::process::Command::new("/usr/bin/sandbox-exec");
-    cmd.arg("-p").arg(profile).arg(program).args(args);
-    (cmd, Enforcement::Enforced { mechanism: "seatbelt" })
 }

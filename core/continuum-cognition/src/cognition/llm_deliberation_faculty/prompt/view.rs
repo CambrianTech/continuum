@@ -182,7 +182,7 @@ impl LlmDeliberationFaculty {
             .map_or(0, |wm| wm.pending_emission_peak(ws.activity_room_id));
         let kind = self.turn_kind(ws);
         let time_term = kind.time_term(crate::inference::decode_knee::rate_for(self.binding.load().requested_model()).tps);
-        let need = self.working_set.as_ref().and_then(|reg| reg.need_of(self.persona_id));
+        let need = self.working_set.as_ref().and_then(|reg| reg.need_or_pooled(self.persona_id));
         let act_room = crate::cognition::working_set::ActRoom::of(need);
         let reply = reply_claim(
             kind,
@@ -217,8 +217,10 @@ impl LlmDeliberationFaculty {
             crate::cognition::context_streams::blocks::Grounding::atomic(self.persona_id, contract.name, contract.body)
         }));
         // Her view leads the history: this act appends to it, and everything after it (the clock,
-        // the ask, her newest act) is this act's tail, which joins her view once it is sent.
+        // the ask, her newest act) is this act's tail, judged by her view now (what the allocation
+        // prices) and joining it once served.
         let view = self.place_view(&mut all_messages);
+        self.judge_tail(&mut all_messages, false);
 
         let input_identity = all_messages.input_identity;
         let calibration = calibration.for_input(input_identity);
@@ -464,11 +466,9 @@ impl LlmDeliberationFaculty {
                 }
                 Err(mismatch) => (false, Some(format!("her view could not be sized: {mismatch}")), None),
             };
-        // What a sent tail already showed her is in her view now: never sent twice. Then what this
-        // tail shows that her sources also render, for her view to cover once it is sent.
-        self.drop_what_she_was_sent(&mut all_messages);
-        let tail_covers = Self::tail_covers(&all_messages);
-        self.view_sent();
+        // Her tail judged against her view as fitted: a turnover re-renders from her sources, so
+        // what her tail showed before it arrives whole again, and a repeat needs its whole held now.
+        self.judge_tail(&mut all_messages, false);
         // The surface this act sends: her head's held set and levels, or, when this act started an
         // epoch of her view that funded it, the next head (`tools_epoch.rs`).
         let (selected, menu) = self.retain_tools(tools_choice, start_refusal.is_some(), head_funded);
@@ -538,25 +538,32 @@ impl LlmDeliberationFaculty {
         all_messages.result_pointers = tail_pointers.into_iter().map(|(index, pointer)| (index - view_len, pointer)).collect();
         let tail_budget = msg_budget.saturating_sub(calibration.estimate_all(&view_messages));
         // The page is cut to the space actually available: its grant, and never more than the
-        // tail's budget leaves beside the rest of the required input and her last move (what her
-        // view holds is fitted already and may sit above its grant until its next start).
+        // tail's budget leaves beside the rest of the required input, her last move and her
+        // granted history (what her view holds is fitted already and may sit above its grant
+        // until its next start). Without the history grant the page grew into the room the one
+        // allocation gave her conversation, and the fit dropped the room message that arrived
+        // during this turn (capacity_and_wire: the update gone beside a 51,689-char page).
         let newest_result_reduced = match newest_page {
             Some(granted) => {
                 let newest_now = calibration.estimate_all(&all_messages.latest_result);
                 let beside = all_messages
                     .required_tokens()
                     .saturating_sub(newest_now)
-                    .saturating_add(calibration.prompt_budget(act.granted(claim_id::LAST_MOVE) as usize));
+                    .saturating_add(calibration.prompt_budget(act.granted(claim_id::LAST_MOVE) as usize))
+                    .saturating_add(calibration.prompt_budget(act.granted(claim_id::HISTORY) as usize));
                 self.fit_newest_result(&mut all_messages, granted.min(tail_budget.saturating_sub(beside)))
             }
             None => false,
         };
+        // Her tail as this prompt sends it: what joins her view once it is served.
+        let mut judged_tail = std::mem::take(&mut all_messages.streams.tail.judged);
         let (mut fitted, capacity_error) = match self.fit_messages(all_messages, tail_budget) {
             Ok(mut fitted) => {
                 fitted.messages.splice(0..0, view_messages);
                 fitted.grounding_at += view_len;
                 fitted.refit.grounding_at += view_len;
                 fitted.refit.history_len += view_len;
+                fitted.refit.view_len = view_len;
                 for (index, _) in &mut fitted.refit.result_pointers {
                     *index += view_len;
                 }
@@ -702,12 +709,15 @@ impl LlmDeliberationFaculty {
         // the system message and the engine re-prefilled her whole view behind it
         // (pages keyed per room restored ~7.4k tokens across a switch on the M5). It is
         // a room's, so it rides the fresh tail after her view, with the grounding the
-        // refit keeps frozen; grounding sources themselves are her view's blocks.
-        if let Some(block) = deliberation_prompt::working_context_message(&context).map(|block| ChatMessage::text("user", block)) {
-            if !self.view_holds_sent(&block) {
-                messages.insert(grounding_at + refit.grounding_len, block);
+        // refit keeps frozen; grounding sources themselves are her view's blocks. It is the first
+        // item of her act's tail, named by what it says: a block she already holds is not sent again.
+        if let Some(block) = deliberation_prompt::working_context_message(&context) {
+            let judged = self.judge_context(block);
+            for item in &judged {
+                messages.insert(grounding_at + refit.grounding_len, item.text.to_chat());
                 refit.grounding_len += 1;
             }
+            judged_tail.splice(0..0, judged);
         }
 
         // #266 KV-cache fix, THE SPLIT ACTUALLY APPLIED. The split composer
@@ -782,7 +792,7 @@ impl LlmDeliberationFaculty {
             tools_grant,
             act_room,
             output_shortfall,
-            tail_covers,
+            judged_tail,
         }
     }
 

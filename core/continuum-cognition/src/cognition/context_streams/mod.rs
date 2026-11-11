@@ -15,6 +15,7 @@ pub(crate) mod held_work;
 pub(crate) mod native;
 pub(crate) mod notices;
 pub(crate) mod open_views;
+pub(crate) mod tail;
 pub(crate) mod tasks;
 pub(crate) mod thoughts;
 
@@ -40,6 +41,9 @@ pub(crate) enum Producer {
     Work,
     /// A perception fact about her situation (`facts`).
     Fact,
+    /// A line of her act's tail named by what it says (`tail`): her framing, her working context,
+    /// her statement, an empty room's world state, her call. Last, so no earlier id moves.
+    Tail,
 }
 
 /// An occurrence's id from its producer's own stable identity: whose (`persona`), which producer,
@@ -144,6 +148,9 @@ pub(crate) mod priority {
     /// What her situation shows now (a repetition, how many turns the room offered): grounding
     /// for this act, weighed like her conversation.
     pub const FACTS: u8 = 5;
+    /// Her act's tail (`tail`): never a start source, so this weighs nothing in a start; its
+    /// claims are the act's own (required input, her newest result, her last move).
+    pub const TAIL: u8 = 10;
 }
 
 #[cfg(test)]

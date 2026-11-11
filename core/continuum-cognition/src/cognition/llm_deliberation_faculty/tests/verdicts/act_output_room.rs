@@ -6,7 +6,6 @@
 
 use super::*;
 use crate::ai::provenance::PromptAdmission;
-use crate::ai::types::ThinkBudget;
 use crate::cognition::working_set::{EmissionStop, WorkingSetRegistry};
 
 /// A mind whose acts measured `reasoning` + `answer` (three landed acts).
@@ -37,23 +36,21 @@ fn the_live_cut_caps_become_her_measured_room_behind_the_engines_count() {
         .expect("a measured reply");
     // The old path sent `.max(reserve)`, 80 tokens past a prompt priced over the window: now that
     // is a typed refusal (re-render), never a cap past the bound.
-    let old = request_allowance(TurnKind::Act, clipped_grant, window, price.charge(estimate));
+    let old = request_allowance(TurnKind::Act, true, clipped_grant, window, price.charge(estimate));
     assert!(old.is_err(), "at the raw estimate the room is below her grant: refused, not 80 tokens past it");
     let counted_price = price.behind(PromptAdmission::EngineCounted);
-    let new = request_allowance(TurnKind::Act, clipped_grant, window, counted_price.charge(estimate)).expect("room");
+    let new = request_allowance(TurnKind::Act, true, clipped_grant, window, counted_price.charge(estimate)).expect("room");
     assert_eq!(new, window - counted - 1, "the engine's count leaves the room");
     // A grant smaller than the slot (Atlas: leased 40,282 on a 148,822 slot): her window is the
     // smaller of the two, so the cap is bounded by the grant, never by the slot.
     let (leased, slot, prompt) = (40_282u32, 148_822u32, 30_000usize);
-    let bounded = request_allowance(TurnKind::Act, 434, leased.min(slot), prompt).expect("room");
+    let bounded = request_allowance(TurnKind::Act, true, 434, leased.min(slot), prompt).expect("room");
     assert_eq!(bounded, leased - prompt as u32 - 1);
     assert!(prompt as u32 + bounded < leased, "prompt plus cap strictly inside her grant");
     let need = crate::cognition::working_set::OutputNeed { reasoning: 338, answer: 96, turns: 3, reasoning_at_least: None, answer_at_least: None };
     let claim = reply_claim(TurnKind::Act, Some(need), 0, true, false, None);
     assert_eq!(claim.floor_tokens, 434, "her floor is think plus answer, never the answer alone");
     assert!(new >= claim.floor_tokens);
-    assert_eq!(act_reasoning_budget(crate::cognition::working_set::ActRoom::of(Some(need)), 434), ThinkBudget(338), "the answer keeps its measured room");
-    assert_eq!(act_reasoning_budget(crate::cognition::working_set::ActRoom::of(Some(need)), 96), ThinkBudget(0), "a grant that holds only her answer: zero, never unbounded");
     assert_eq!(
         reply_claim(TurnKind::Act, None, 0, true, false, None).floor_tokens,
         0,
@@ -94,16 +91,16 @@ async fn an_act_carries_her_measured_room_the_guard_and_its_receipt() {
     assert!(cap >= 434, "her measured think plus answer: {cap}");
     assert!(cap >= view.completion_reserve, "never below the reply's grant");
     let terms = *adapter.terms_seen.lock().unwrap().last().expect("dispatched under terms"); // JUSTIFIED: test fixture lock, never poisoned
-    let budget = terms.think.budget().expect("an act's think is bounded by her need").0;
-    assert!(budget >= 338 && budget + 96 <= cap, "the answer keeps its room inside the cap: {budget} of {cap}");
-    // A large write with a bounded thought: the cap allows the long answer, the think stays at its budget.
-    assert!(cap >= budget + 1_000, "room for a write far past her measured answer: think {budget}, cap {cap}");
+    // what this catches: a think budget sized from her past thinks, which cut her thought and forced
+    // her to act mid-thought (the M5, 2026-11-09: median 536 tokens). No budget is sent: she thinks
+    // until she is done, inside her room.
+    assert_eq!(terms.think, crate::ai::types::Think::ModelDefault, "her thinking is never budgeted for her");
     let admission = terms.admission.expect("every request carries the admission it was rendered under");
     assert_eq!((admission.window, admission.priced), (window, PromptAdmission::EngineCounted), "priced below the estimate only behind the engine's count");
     let allocation = receipts.last().and_then(|r| r.allocation.as_ref()).expect("the receipt names its allocation");
     assert_eq!(allocation.revision, env!("CONTINUUM_BUILD_GIT_SHA"), "the build that sized it");
     let room = allocation.output_room.as_ref().expect("an act's output room rides its receipt");
-    assert_eq!((room.cap, room.need, room.reasoning_budget), (cap, Some(434), Some(budget)));
+    assert_eq!((room.cap, room.need, room.reasoning_budget), (cap, Some(434), None));
     assert_eq!(room.model, request.model.clone().unwrap_or_default()); // unwrap_or_default: test fixture, the model the request named
     assert_eq!(room.admission, PromptAdmission::EngineCounted);
     assert!(room.density_measured as u64 * 100 <= room.density_estimated * 84, "priced at her measured density: {room:?}");
@@ -297,4 +294,21 @@ async fn a_prompt_that_eats_the_reserve_is_re_rendered_or_refused_never_sent_pas
             "re-rendered smaller, never the same prompt with the reserve stacked past the window"
         );
     }
+}
+
+// what this catches: a turn class picked by the system capping what she may produce. A message
+// turn was a PASS at a short reply's ~400 tokens though her hands were the same, so a write she
+// began hit the cap before its call committed and the act was discarded (the M5, 2026-11-09: 394
+// of Atlas's acts and 277 of Aiko's, `tools/<cut at the output limit>`). Every turn she has hands
+// for is an act, card or no card; only a mind with no hands takes a pass.
+#[test]
+fn every_turn_she_has_hands_for_is_an_act() {
+    let adapter = || -> Arc<dyn AIProviderAdapter> { Arc::new(HeuristicInferenceAdapter::new()) };
+    let with_hands = LlmDeliberationFaculty::new(Uuid::new_v4(), "Atlas", "You are Atlas.", adapter())
+        .with_context_window(65_536)
+        .with_tools(vec![read_tool()]);
+    let message = writing_workspace(crate::identity::ActivityRoom::mint(), 4, false);
+    assert_eq!(with_hands.turn_kind(&message), TurnKind::Act, "a message turn, no card, no deliverable: still hers to act in");
+    let no_hands = LlmDeliberationFaculty::new(Uuid::new_v4(), "Atlas", "You are Atlas.", adapter()).with_context_window(65_536);
+    assert_eq!(no_hands.turn_kind(&message), TurnKind::Pass, "a mind with no hands can only speak");
 }

@@ -176,7 +176,7 @@ impl Leveled {
         use crate::level::Level;
         let rank = |level: Level| match level {
             Level::Full | Level::Repeat { .. } => 2u8,
-            Level::Summary => 1,
+            Level::Summary | Level::Page => 1,
             Level::Pointer | Level::Folded => 0,
         };
         let mut rungs: Vec<usize> = self.items.iter().map(|item| item.costs().len() - 1).collect();

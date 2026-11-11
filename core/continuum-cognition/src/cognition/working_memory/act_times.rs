@@ -50,6 +50,7 @@ impl super::WorkingMemory {
 
     /// Fold one of her completed acts, served by `served`, into her act time.
     pub fn observe_act(&self, served: ServedBy, act: &ActSample) {
+        self.touch();
         self.act_times.lock().observe(served, act);
     }
 }

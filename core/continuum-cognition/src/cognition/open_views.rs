@@ -129,8 +129,8 @@ impl OpenViews {
         };
         let Some(path) = header
             .as_ref()
-            .and_then(|h| h.get("file_path")?.as_str().map(str::to_owned))
-            .or_else(|| act.call.input.get("file_path")?.as_str().map(str::to_owned))
+            .and_then(|h| h.get("file_path")?.as_str().map(one_spelling))
+            .or_else(|| act.call.input.get("file_path")?.as_str().map(one_spelling))
         else {
             return false;
         };
@@ -153,7 +153,16 @@ impl OpenViews {
         if let Some(range) = shown {
             merge_range(&mut view.seen, range);
         }
-        view.handle = result.custody.is_pointer().then(|| result.custody.handle().map(str::to_owned)).flatten();
+        // A paged read names the handle its rest is saved under; an inline read that showed the
+        // WHOLE file names its own, so a file folded out of her view is reopened, never read again
+        // (the M5, 2026-11-10: 20 identical re-reads, 2,876 s; Atlas read one 666-line file 4x).
+        // A partial inline read keeps the handle already named: its own covers only its range.
+        let whole_file = shown.zip(field_u32("total_lines")).is_some_and(|((start, end), total)| start <= 1 && end >= total);
+        view.handle = match (&result.custody, whole_file) {
+            (ResultCustody::Pointer { handle }, _) => Some(handle.clone()),
+            (ResultCustody::Whole { handle }, true) => Some(handle.clone()),
+            _ => view.handle.take(),
+        };
         true
     }
 
@@ -315,6 +324,17 @@ fn view_key(view: &OpenView) -> String {
     }
 }
 
+/// One spelling per file: `./core/x` and `core/x` are the same file, so they are one view (the
+/// M5, 2026-11-10: her ledger listed one file under both spellings).
+fn one_spelling(path: &str) -> String {
+    std::path::Path::new(path)
+        .components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .collect::<std::path::PathBuf>()
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn render_cursor(view: &OpenView) -> String {
     let mut line = match &view.subject {
         ViewSubject::File { path } => path.clone(),
@@ -328,12 +348,12 @@ fn render_cursor(view: &OpenView) -> String {
     if view.seen.is_empty() {
         line.push_str("not yet read past what was first shown");
     } else {
-        let unread = view.total_lines.map(|total| unread_ranges(&view.seen, total)).unwrap_or_default();
         line.push_str("read ");
         line.push_str(&ranges(&view.seen));
-        match view.total_lines {
-            Some(_) if unread.is_empty() => line.push_str(" (all of it)"),
-            Some(_) => {
+        // An unknown length leaves what is unread unknown: nothing is claimed about it.
+        match view.total_lines.map(|total| unread_ranges(&view.seen, total)) {
+            Some(unread) if unread.is_empty() => line.push_str(" (all of it)"),
+            Some(unread) => {
                 line.push_str("; not yet read ");
                 line.push_str(&ranges(&unread));
             }

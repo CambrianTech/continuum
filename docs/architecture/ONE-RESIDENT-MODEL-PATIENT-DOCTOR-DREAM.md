@@ -307,3 +307,30 @@ Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learn
 3. The credit path (the patient's passing turns and the doctor's lessons as arrivals with provenance), feeding §9's session.
 4. The containment test: a round runs, and the diff of her real workspace, memory and rooms shows only the declared learning arrivals.
 5. Retire the listed code once the round runs a lesson end to end. Acceptance, per Codex: the same scenario through the normal path and through coursework has the same canonical turn inputs except the declared fields.
+
+## 11. A correction of real work becomes examinable (drafted 2026-11-11)
+
+**Why this section exists.** A month after in-place learning landed, no gene had been trained, judged and kept (M5, 2026-11-11). Three stalls, each with a card:
+- **Memory:** serving's attribution held all governed VRAM, a 13.7 GB host prompt cache included, so a 4 MB shadow never seated (494c99f1, Codex).
+- **Stranded rows:** submissions sat on a dispatch the batch path closed (997f7177, fixed on #5917).
+- **No exam:** this section. The examiner sits a gene on **unseen tasks of its correction's family** (`eval/gene_exam.rs`). A correction of ordinary work names no graded task, so its family came only from a hand-kept registry, `docs/genome/correction-families.json`, which declared one card. Every other correction was `Unexaminable`, and Aris's code/owner gene served unjudged for 55 h (efcf6afb).
+
+**The rule.** The lesson is known at the review, so the review names it. The doctor (§10, a seated mind on her base) turns it into related tasks that the world grades. The exam draws its unseen tasks from those. No registry is kept by hand, and no model judges.
+
+**The path, each step an existing primitive:**
+1. **The review names the lesson.** It is a typed field on the review verdict that a FAIL or a corrected PASS carries: the lesson in one sentence (what to do differently, never the patch) and the evidence (the submission, the reviewer's file:line). It is stored with the training credit's provenance (`training_producer/reviewed/correction.rs`). Aiko, #5923, 2026-11-11: *a file named in feedback that is not where you looked is searched for in the tree or in your submission's diff before you conclude it is gone.*
+2. **The doctor writes the family.** A coursework turn in a room (§10.2) has the doctor read the lesson and write N tasks that exercise it in other settings. Each task carries an oracle the world checks:
+   - a scratch repository fixture with a file placed where the lesson says;
+   - the expected answer;
+   - the test that grades it.
+
+   The tasks are generic, never facts about our repo: a mind is examined on the habit, not on trivia about the codebase she trained in. The set is content-addressed (`lesson-<sha12>`, the coursework set convention of §10.4), so the family has a task identity the judge invariant reads.
+3. **The family resolves from data.** `correction_families::declared` reads the lesson sets recorded with the correction's provenance. `correction-families.json` becomes the fixture for its one historical card and is then deleted.
+4. **The exam is unchanged.** With-gene and without-gene arms run on the live lane, on unseen tasks of the family and on `lc-unrelated` for retention, plus the re-sit after a restart. The family's tasks the gene trained on are excluded by task identity (`held_out`).
+5. **An exam that cannot run is never final.** An `Unexaminable` receipt is re-sat in a later core process (done, #5917), and a gene with no verdict is held, not served. Holding is a follow-up on efcf6afb: the exam builds her genome from the genes she may run, so the with-gene arm must name the trial gene explicitly first.
+
+**Gates:**
+- **Fixture:** a review with a lesson leads to a doctor turn (the heuristic adapter as the doctor), then a lesson set with oracles, then `correction_family` resolves it, then `due` owes the exam.
+- **Live (M5, after 494c99f1):** Aiko's lesson produces one gene, trained in place. It gets a verdict on the lesson's unseen tasks, keeps `lc-unrelated` intact, and holds after a restart. That is goal 8's acceptance test, on real work.
+
+**Owner:** Fable. The doctor's seat and slot affinity are §10.4 step 2, built in this order.

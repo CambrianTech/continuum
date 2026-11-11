@@ -102,10 +102,11 @@ mod tests {
     }
 
     // what this catches: a restart order by label; the roster was labelled stable and changed with
-    // every room switch (5 of 12 turnovers kept 3-6%).
+    // every room switch (5 of 12 turnovers kept 3-6%). The churn table is deleted, so it reads 0:
+    // a zero gate once a base tree reads 0 too (the runner measures the base with these rules).
     #[test]
     fn hand_churn_labels_never_increase() {
-        hold(&HandChurnLabels, "The view orders a start by measured motion (continuum_context::motion).");
+        hold(&HandChurnLabels, "The view orders a start by measured motion (continuum_context::motion); order by name within an epoch.");
     }
 
     // what this catches: the predicates that make the rules useful rather than noise.

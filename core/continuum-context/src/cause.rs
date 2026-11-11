@@ -108,8 +108,9 @@ pub enum Content {
 }
 
 /// The hash of an element's whole, computed once where the whole is held or stored, so a deferred
-/// whole is compared without being read again.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// whole is compared without being read again. Serialized so a record whose body left RAM keeps
+/// it across a checkpoint (`ActionRecord::stored_content`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ContentHash([u8; 32]);
 
 impl ContentHash {

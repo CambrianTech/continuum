@@ -57,8 +57,6 @@ mod convergence_attempt;
 mod reconcile;
 mod shared_pool;
 pub use shared_pool::PoolLaunch;
-mod pool_growth;
-pub use pool_growth::{end_hold_if_decided, end_stale_hold, growth_requested, request_pool_growth};
 pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
 
 mod smoke;
@@ -102,9 +100,8 @@ mod template_overhead;
 pub use template_overhead::{probe_messages, serving_template_overhead, MessageKind, MessageShape, TemplateMeasurement, TemplateSample};
 pub use engine_features::serving_engine_takes_tail_tools;
 use engine_features::{observe_served_engine, serving_lane_evidence, LaunchedEvidence, ServedEvidence};
-#[cfg(windows)]
-pub(crate) use engine_install::engine_override;
 pub(crate) use engine_install::{installed_engine_commit, lane_runs_installed_engine};
+pub use engine_install::engine_override;
 pub use engine_install::engine_stale;
 use engine_install::{
     mark_engine_proven, roll_back_engine_after_failed_launch, server_bin, ENGINE_CONVERGE_TRIED,

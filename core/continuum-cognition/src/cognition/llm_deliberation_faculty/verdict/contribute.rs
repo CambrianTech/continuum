@@ -188,10 +188,14 @@ impl LlmDeliberationFaculty {
         let mut sent_reasoning_budget: Option<u32>;
         let kind = self.turn_kind(ws);
         // An act's cap follows its prompt's room, so a refusal its reserve would have passed is
-        // re-sent once at the engine's measured prompt, with the same view (never a refit of her view).
-        let mut room_resized = false;
+        // re-sent at the engine's measured prompt, with the same view (never a refit of her view),
+        // each time the engine's count rises: the count is bounded by the window, so this ends, and
+        // an act whose reply still fits is never given up after one try.
+        let mut room_resized_at: Option<u32> = None;
         // Re-rendered once against a grant that moved between render and dispatch.
         let mut grant_rerendered = false;
+        // Re-rendered once at the engine's measured price when a refit had no tail left to trim.
+        let mut view_rerendered_at_measured_price = false;
         // Correct only frozen admitted input, consuming a finite optional unit on
         // every retry. Exact measured progress is required too. No accepted cognition
         // is replayed, and no working-memory or RAG source is re-read or refilled.
@@ -256,12 +260,14 @@ impl LlmDeliberationFaculty {
                 "deliberation prompt — what the model sees this turn"
             );
             // This view's cap ([`request_allowance`]): a pass's grant, an act's window room after
-            // the prompt as the calibration prices it (the engine's own count after a refusal).
+            // the prompt at its input's price: a refusal's count for the same input, fresh for a changed one.
+            let measured = self.working_set.as_ref().and_then(|reg| reg.need_or_pooled(self.persona_id)).is_some();
             let allowance = match request_allowance(
                 kind,
+                measured,
                 view.completion_reserve,
                 fit_window,
-                calibration.charge(view.estimated_prompt_tokens),
+                calibration.for_input(view.input_identity).charge(view.estimated_prompt_tokens),
             ) {
                 Ok(allowance) => allowance,
                 // The room is below the reply's grant: never sent past a bound (`act_room.rs`).
@@ -402,10 +408,10 @@ impl LlmDeliberationFaculty {
                     // the measured room (the calibration above now prices this prompt at the
                     // engine's count) and her view is sent unchanged.
                     if kind == TurnKind::Act
-                        && !room_resized
+                        && room_resized_at.is_none_or(|previous| requested > previous)
                         && requested.saturating_add(view.completion_reserve) < available
                     {
-                        room_resized = true;
+                        room_resized_at = Some(requested);
                         continue;
                     }
                     if newest_refit_sent {
@@ -437,6 +443,12 @@ impl LlmDeliberationFaculty {
                     let reserve = view.completion_reserve;
                     view = match self.refit_rejected_prompt(view, requested, available, reserve) {
                         Ok(view) => view,
+                        // No tail left to trim, and a refit never cuts her view: rendered again ONCE at
+                        // the measured price, so her view's own allocation collapses oldest first.
+                        Err(_) if !view_rerendered_at_measured_price => {
+                            view_rerendered_at_measured_price = true;
+                            self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref())
+                        }
                         Err(error) => {
                             return Some(
                                 Contribution::prompt_capacity_refused(error)
@@ -507,7 +519,7 @@ impl LlmDeliberationFaculty {
                         fit_window,
                         &response.model,
                     );
-                    self.view_served(&view); // her tail joins her view as sent: the next prompt extends this one
+                    self.view_served(&view); // her tail joins her view as judged: the next prompt extends this one
                     break (view, response);
                 }
             }

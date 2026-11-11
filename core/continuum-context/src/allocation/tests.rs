@@ -44,6 +44,40 @@ fn claims(window_newest: Newest, view: Vec<FlexClaim>, reply_priority: u8) -> Ac
     }
 }
 
+// what this catches (#5917, capacity_and_wire:166): her grounding offered the empty choice whenever
+// anything wanted its room, so a reply wanting more than the window (or a view holding what it held)
+// took the activity's wall away entirely. It leaves only when its handles cannot fit beside every
+// hard limit, her newest result as shown and her reply's floor.
+#[test]
+fn her_grounding_leaves_only_when_its_handles_cannot_fit_beside_the_hard_limits() {
+    let mut greedy = claims(Newest::Absent, Vec::new(), 9);
+    greedy.reply = reply(800, 10_000, 9);
+    let plan = allocate(8_000, greedy);
+    assert!(plan.granted(id::GROUNDING) >= 300, "its handles stay: {}", plan.granted(id::GROUNDING));
+}
+
+// what this catches (#5917, capacity_and_wire:137): a room message that reached her during this act
+// dropped to its index beside a page of her older newest result, because her conversation's floor
+// on an act never counted it. Her newest interaction is held whole before the result is paged, when
+// the window holds it beside every hard limit; one larger than that leaves the floor as it was
+// (the index names where it is) and is never a floor past the window.
+#[test]
+fn a_turn_that_arrived_this_act_is_held_whole_before_her_result_pages_when_it_fits() {
+    let with_arrived = |arrived: u32| {
+        let mut source = view_source("conversation", 4, 600, 20_000);
+        source.required = true;
+        let mut claims = claims(pageable(30_000, 900), Vec::new(), 8);
+        claims.view = vec![ViewClaim { claim: source, consumer: Consumer::Context, arrived }];
+        claims
+    };
+    let held = allocate(20_000, with_arrived(400));
+    assert!(held.granted(&format!("{}conversation", id::VIEW)) >= 1_000, "its floor and the arrived turn: {}", held.granted(&format!("{}conversation", id::VIEW)));
+    assert!(matches!(held.newest_shown(), NewestShown::Page { .. }), "her older result pages around it");
+    let unheld = allocate(20_000, with_arrived(50_000));
+    assert!(unheld.granted(&format!("{}conversation", id::VIEW)) >= 600, "an arrived turn past the window leaves the floor as it was");
+    assert!(unheld.searched.is_some(), "and never makes the act short");
+}
+
 // what this catches: the side budget her newest result was sized against, beside the
 // allocation (Kimi on the windows 5090, 2026-10-28, refusal 1eef970d), and a newest result shown
 // as a summary and a handle she must page (the M5, 2026-11-07: 159 times in a day, 52 of the

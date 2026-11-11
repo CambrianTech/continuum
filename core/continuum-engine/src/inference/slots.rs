@@ -82,6 +82,8 @@ pub use placement::*;
 pub(crate) mod page_io;
 pub(crate) use page_io::admit as admit_page_io;
 pub use page_io::PageIoSettle;
+mod page_store_pool;
+pub use page_store_pool::KvPageStorePool;
 
 #[cfg(test)]
 mod tests;

@@ -21,6 +21,13 @@ pub(super) static BACKEND_INIT: Once = Once::new();
 /// linker can't strip, forcing the Metal backend to load and register
 /// before the first model is read. Same defensive pattern for CUDA on
 /// Linux + Vulkan on Linux when those features are enabled.
+/// Whether this build of llama offloads to any GPU backend (Metal, CUDA, Vulkan, ROCm): a context
+/// whose model offloads no layer, or a build with none, resides in host memory.
+pub fn supports_gpu_offload() -> bool {
+    backend_init();
+    unsafe { sys::llama_supports_gpu_offload() }
+}
+
 pub fn backend_init() {
     BACKEND_INIT.call_once(|| {
         unsafe {

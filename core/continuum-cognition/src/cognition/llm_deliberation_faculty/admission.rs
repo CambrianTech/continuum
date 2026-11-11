@@ -109,14 +109,12 @@ impl LlmDeliberationFaculty {
         // the park held no lane, so abandoning it costs nothing, and the loop
         // head drains the line next (`cognition::directed_pending`). A `None`
         // here is her CHOICE to answer first, named by the probe — not a fault.
-        // A held card, or her initiative turn with her hands, outranks a musing turn for
-        // the non-directed budget (`LanePriority::Work`): the lane goes to the mind that
-        // may write, whether or not a card named the work.
+        // A turn she has hands for takes the non-directed Work priority: a mind is for
+        // thinking and doing, so no card or deliverable decides it (`is_work_turn`).
         let lane_wait_started = std::time::Instant::now();
         let priority = if ws.attention.requires_priority() {
             crate::inference::resource_admission::LanePriority::Directed
-        } else if self.is_work_turn(ws) || Self::holds_work_card(ws) {
-            // The turn shape and held-card window share the existing Work priority.
+        } else if self.is_work_turn(ws) {
             crate::inference::resource_admission::LanePriority::Work
         } else {
             crate::inference::resource_admission::LanePriority::Ambient

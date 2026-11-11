@@ -106,6 +106,11 @@ pub struct Line {
 }
 
 impl Line {
+    /// Fresh tokens per act when every held token is fresh: a cold act, over `context`.
+    pub fn cold(context: (u32, u32)) -> Self {
+        Line { intercept: 0.0, slope: 1.0, slope_se: 0.0, intercept_se: 0.0, acts: 0, context }
+    }
+
     pub fn at(&self, context: f64) -> f64 {
         self.intercept + self.slope * context
     }
@@ -116,6 +121,10 @@ impl Line {
 pub struct ActTimeFit {
     decode: Moments,
     prefill: Moments,
+    /// Absent in a fit saved by a build that kept warm acts apart (0b1450291, reverted): it loads
+    /// empty and refills, never refusing her whole checkpoint (it did: every seat failed with
+    /// "missing field `fresh`", the M5, 2026-11-11 00:43Z).
+    #[serde(default)]
     fresh: Moments,
     observed: Moments,
     acts: u32,
@@ -150,17 +159,45 @@ impl ActTimeFit {
     /// marginal seconds at her mean context are within one standard error of none (a few acts'
     /// noise is never a price: it would collapse her on a slope nobody measured).
     pub fn price(&self) -> ContextPrice {
-        let (Some(decode), Some(prefill), Some(fresh), Some(observed)) = (self.decode.line(), self.prefill.line(), self.fresh.line(), self.observed.line()) else {
+        let (Some(decode), Some(prefill), Some(observed)) = (self.decode.line(), self.prefill.line(), self.observed.line()) else {
             return ContextPrice::Unmeasured;
         };
-        let time = ActTime { decode, prefill, fresh, observed, output: self.output / f64::from(self.acts) };
-        let typical = self.fresh.mean_x;
-        if time.seconds_per_token(typical) > time.seconds_per_token_se(typical) {
-            ContextPrice::Measured(time)
-        } else {
-            ContextPrice::Unmeasured
+        // Her fresh tokens per act when that line is measured and significant, else every held
+        // token fresh: the dearest honest reading, replaced by her own once it is. A price that
+        // cannot decide is never "unpriced": unpriced served her the whole window, her view grew
+        // to its ceiling and her acts were refused there (the M5, 2026-11-11: Aris with an empty
+        // line, then Atlas and Aiko with lines whose cold and warm acts left the slope noise, at
+        // 100k-token prompts in 104,857-token windows).
+        // The cold reading answers only an unknown FRESH line: seconds per token held must be
+        // measured themselves (decode and prefill slopes outside their own error), or noise would
+        // be priced as if it were the engine's cost.
+        let output = self.output / f64::from(self.acts);
+        let fitted = self.fresh.line().map(|line| (line, self.fresh.mean_x));
+        let measured_cost = decode.slope > decode.slope_se && prefill.slope > prefill.slope_se;
+        let cold = measured_cost.then(|| (Line::cold(observed.context), self.observed.mean_x));
+        let composed = fitted.into_iter().chain(cold).map(|(fresh, typical)| (ActTime { decode, prefill, fresh, observed, output, curve: Curve::Composed }, typical));
+        // When the parts are noise but her whole act's seconds rise with context measurably, that
+        // curve prices her: contention hides the per-token trend, never the act's (Aris on the M5,
+        // 2026-11-11: decode and prefill slopes inside their errors over 1,340 acts, the whole act
+        // 1.26 s per 1k tokens held, +/- 0.21).
+        let whole = (ActTime { decode, prefill, fresh: Line::cold(observed.context), observed, output, curve: Curve::Whole }, self.observed.mean_x);
+        for (time, typical) in composed.chain([whole]) {
+            if time.seconds_per_token(typical) > time.seconds_per_token_se(typical) {
+                return ContextPrice::Measured(time);
+            }
         }
+        ContextPrice::Unmeasured
     }
+}
+
+/// Which of her measured curves an act's seconds come from: the most specific one measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Curve {
+    /// Decode, prefill and fresh tokens composed: what each held token costs, part by part.
+    Composed,
+    /// Her whole act's seconds against the context held, when its parts are noise and the whole
+    /// is measured.
+    Whole,
 }
 
 /// An act's seconds as a function of the context it holds.
@@ -176,6 +213,8 @@ pub struct ActTime {
     pub observed: Line,
     /// Her mean output tokens per act.
     pub output: f64,
+    /// Which curve its seconds come from.
+    pub curve: Curve,
 }
 
 impl ActTime {
@@ -190,15 +229,26 @@ impl ActTime {
         self.fresh.at(context).clamp(0.0, context.max(0.0))
     }
 
-    /// Seconds one act spends holding `context` tokens.
+    /// Seconds one act spends holding `context` tokens, at her fitted fresh tokens per act.
     pub fn seconds(&self, context: f64) -> f64 {
-        let fresh = self.fresh_at(context);
+        match self.curve {
+            Curve::Composed => self.seconds_prefilling(context, self.fresh_at(context)),
+            Curve::Whole => self.observed.at(context),
+        }
+    }
+
+    /// Seconds one act spends holding `context` tokens when `fresh` of them are prefilled: the
+    /// allocation dyno's epoch knows each act's fresh tokens (its tail, or a turnover's re-prefill).
+    pub fn seconds_prefilling(&self, context: f64, fresh: f64) -> f64 {
         self.output * self.decode.at(context + self.output / 2.0) + fresh * self.prefill.at(context - fresh / 2.0)
     }
 
     /// The marginal seconds one more held token costs one act at `context`: d(seconds per act) /
     /// d(context tokens), the derivative of [`Self::seconds`].
     pub fn seconds_per_token(&self, context: f64) -> f64 {
+        if self.curve == Curve::Whole {
+            return self.observed.slope;
+        }
         let fresh = self.fresh_at(context);
         let fresh_slope = if fresh <= 0.0 {
             0.0
@@ -215,6 +265,9 @@ impl ActTime {
     /// One standard error of [`Self::seconds_per_token`] at `context`, from the three slopes'
     /// errors (the lines are fitted independently).
     pub fn seconds_per_token_se(&self, context: f64) -> f64 {
+        if self.curve == Curve::Whole {
+            return self.observed.slope_se;
+        }
         let fresh = self.fresh_at(context);
         let terms = [
             self.output * self.decode.slope_se,

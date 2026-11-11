@@ -16,6 +16,9 @@ pub struct FairGrantState {
     /// Each mind's receipt revision when her grant last changed: she is settled (her grant may
     /// shrink toward her share) once a receipt past it says she served on it.
     changed: BTreeMap<uuid::Uuid, u64>,
+    /// Holders with no request in custody at the last evaluation: one still idle at the next has
+    /// an unused seat, which yields to a waiter whether or not she served since her grant.
+    idle: BTreeSet<uuid::Uuid>,
     diagnosis: Option<diagnosis::QueueDiagnosis>,
 }
 
@@ -41,7 +44,7 @@ pub fn publish_fair_grants<R>(
 }
 
 impl Reservations {
-    fn fair_publish<R>(
+    pub(super) fn fair_publish<R>(
         &self,
         fair: &mut FairGrantState,
         demands: &[Demand<uuid::Uuid>],
@@ -122,6 +125,13 @@ impl Reservations {
         for mind in reclaimed.iter().chain(state.retiring.keys()) {
             held_for_policy.remove(mind);
         }
+        // A seat held idle across two evaluations by a mind that never served on this engine holds
+        // no KV here to reclaim: while anyone waits, it is withdrawn without a physical handoff.
+        if !fair.waiters.is_empty() {
+            for mind in fair.idle.iter().filter(|mind| !state.entries.contains_key(mind) && !state.receipts.contains_key(mind)) {
+                held_for_policy.remove(mind);
+            }
+        }
         let mut ordered = demands.to_vec();
         ordered.sort_by_key(|d| fair.waiters.iter().position(|mind| *mind == d.mind));
         // Option sorts None first; explicitly put queued waiters ahead of non-waiters.
@@ -190,9 +200,13 @@ impl Reservations {
                         return None;
                     }
                     let (_, revision) = state.receipts.get(mind)?;
-                    if *revision <= fair.baseline.get(mind).copied().unwrap_or(0) { // no grant baseline means no prior completed service
+                    // Served since her grant, or idle across two evaluations: an unused seat yields
+                    // too (the M5, 2026-11-10: two residents queued ten minutes behind holders that
+                    // were idle or slow, because only fresh service made a holder a candidate).
+                    let served = *revision > fair.baseline.get(mind).copied().unwrap_or(0); // no grant baseline means no prior completed service
+                    if !served && !fair.idle.contains(mind) {
                         return None;
-                    } // no service since grant
+                    }
                     let lease = current.as_ref()?.lease_for(*mind)?;
                     Some((*mind, lease, *revision))
                 });
@@ -241,15 +255,29 @@ impl Reservations {
         stamp_revisions(current.as_ref(), &mut next);
         // Arm one holder only after its stamped publication is known. Reserve checks this
         // under the same mutex as terminal settlement, including between publisher ticks.
+        // The holder armed is the one that has served most since her baseline, never the first by id:
+        // arming by id order pinned one holder, and when she was slow or idle no seat ever turned.
         state.yield_after.clear();
         if !fair.waiters.is_empty() && state.retiring.is_empty() && engine.is_some() {
-            if let Some((mind, lease)) = next.by_mind.keys().find_map(|mind| {
-                (!fair.waiters.contains(mind)).then(|| next.lease_for(*mind).map(|lease| (*mind, lease))).flatten()
-            }) {
+            let served_since = |mind: &uuid::Uuid| {
+                let served = state.receipts.get(mind).map_or(0, |(_, revision)| *revision); // no receipt: no service
+                served.saturating_sub(fair.baseline.get(mind).copied().unwrap_or(0)) // no baseline: every receipt counts
+            };
+            if let Some((mind, lease)) = next
+                .by_mind
+                .keys()
+                .filter(|mind| !fair.waiters.contains(mind))
+                .max_by_key(|mind| served_since(mind))
+                .and_then(|mind| next.lease_for(*mind).map(|lease| (*mind, lease)))
+            {
                 let baseline = fair.baseline.get(&mind).copied().unwrap_or(0); // first grant has no completed service
                 state.yield_after.insert(mind, (lease, baseline));
             }
         }
+        // Who held a seat from before this evaluation and still has nothing in custody, for the next
+        // one's unused-seat rule: a seat granted at this evaluation is never idle yet (she is building
+        // her prompt).
+        fair.idle = next.by_mind.keys().filter(|mind| held.contains_key(mind) && !state.entries.contains_key(mind)).copied().collect();
         diagnosis::observe(fair, &state, &next);
         (publish(next), tickets)
     }

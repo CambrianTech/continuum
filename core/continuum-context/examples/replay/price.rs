@@ -22,8 +22,8 @@ use crate::acts::{default_paths, utc};
 use crate::captures::{self, Window};
 
 /// One act's sample from its terminal row; `None` for a row that is not a completed act with the
-/// engine's timing.
-fn sample(row: &Value) -> Option<ActSample> {
+/// engine's timing. The allocation dyno reads its acts through this too.
+pub fn sample(row: &Value) -> Option<ActSample> {
     if row["event"].as_str() != Some("completed") {
         return None;
     }

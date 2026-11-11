@@ -23,7 +23,17 @@
 //! Ages are bucketed by powers of two (0, 1-2, 3-6, 7-14, ...): resolution where her behaviour
 //! changes fastest, a handful of buckets over a whole session. Each start halves every tally, so the
 //! measurement has a half-life of one of her epochs, her own time scale, and follows what she does
-//! now.
+//! now. A bucket that half-life leaves thin is read against her own rate over every age
+//! ([`Hazard::per_act`]), never against a chance of one: re-requests are rare (3 to 14 counted in
+//! 1,800 to 3,000 acts per resident on the M5, 2026-11-10) and her epochs short (3 or 4 acts), so
+//! every bucket held a few exposures and no event, and one assumed event priced each at 0.15 to 0.43
+//! per act, a hundred times her own rate.
+//!
+//! An occurrence she no longer holds (a start dropped it from her view) stays indexed, exposed at
+//! each act, out to the oldest age her view still holds: asking for it again is the costliest
+//! re-request there is, and when a start drained the index to what her sources still offered, it
+//! was never counted (half her file reads on the M5 repeated one from the same hour while the
+//! measurement counted almost none).
 //!
 //! Every age is read off ONE clock, her acts as this measurement counts them: an occurrence's
 //! birth is the act at which her view first held it, stamped there ([`Rereads::act`] for an
@@ -53,17 +63,20 @@ pub struct Tally {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Hazard {
     Unmeasured,
-    Measured(Tally),
+    /// The bucket's tally, and her rate over every age (`prior`), what a thin bucket is read against.
+    Measured { tally: Tally, prior: f64 },
 }
 
 impl Hazard {
-    /// The chance per act that an occurrence of this age is asked for again: (events + 1) /
-    /// (exposure + 1), one more event than seen, so a bucket that saw none on few exposures still
-    /// prices a re-read (a small sample errs toward keeping her history, never toward collapsing it).
+    /// The chance per act that an occurrence of this age is asked for again: (events + prior) /
+    /// (exposure + 1), one more exposure than seen at her own rate over every age, so a bucket that
+    /// saw none on few exposures still prices a re-read at what she does, and one with many reads
+    /// its own. Her rate carries one more event than she made ([`Rereads::hazard`]), so a mind with
+    /// no history prices one in one, keeping her history until she shows otherwise.
     pub fn per_act(self) -> Option<f64> {
         match self {
             Hazard::Unmeasured => None,
-            Hazard::Measured(tally) => Some((tally.events + 1.0) / (tally.exposure + 1.0)),
+            Hazard::Measured { tally, prior } => Some((tally.events + prior) / (tally.exposure + 1.0)),
         }
     }
 
@@ -71,7 +84,7 @@ impl Hazard {
     pub fn observed(self) -> Option<f64> {
         match self {
             Hazard::Unmeasured => None,
-            Hazard::Measured(tally) => Some(tally.events / tally.exposure),
+            Hazard::Measured { tally, .. } => Some(tally.events / tally.exposure),
         }
     }
 }
@@ -84,8 +97,8 @@ pub fn bucket(age: u64) -> usize {
 /// Per source, per age bucket.
 pub type Curves = BTreeMap<String, Vec<Tally>>;
 
-/// Her latest occurrence of one request.
-#[derive(Clone, Debug)]
+/// Her latest occurrence of one request, kept with her view after it leaves it (module doc).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Held {
     source: String,
     key: String,
@@ -119,7 +132,9 @@ pub struct Rereads {
     /// drained at each start to what the sources still offer.
     #[serde(default)]
     births: BTreeMap<ElementId, u64>,
-    #[serde(skip)]
+    /// Her latest occurrence of each request, those her view still holds and those it dropped, out
+    /// to the oldest age it holds. Kept with her view: a dropped one has no item to rebuild it from.
+    #[serde(default)]
     index: Vec<Held>,
     #[serde(skip)]
     primed: bool,
@@ -170,6 +185,15 @@ impl Rereads {
                 if latest.get(&fingerprint).is_none_or(|was| was.born <= born) {
                     latest.insert(fingerprint, held);
                 }
+            }
+        }
+        // What her view dropped stays, out to the oldest age it still holds (a bucket past it):
+        // its re-request is the one a collapse should fear most, and only the index can count it.
+        let oldest = births.values().min().map_or(0, |born| self.acts.saturating_sub(*born)); // map_or: an empty view holds no age, so nothing dropped is kept past the youngest bucket
+        let horizon = bucket(oldest) + 1;
+        for held in std::mem::take(&mut self.index) {
+            if bucket(self.acts.saturating_sub(held.born)) <= horizon && !latest.contains_key(&held.fingerprint) {
+                latest.insert(held.fingerprint, held);
             }
         }
         self.index = latest.into_values().collect();
@@ -237,10 +261,14 @@ impl Rereads {
     /// Her re-request chance at `age`, over every source: the propensity is hers, whichever source
     /// renders the occurrence.
     pub fn hazard(&self, age: u64) -> Hazard {
+        let sum = |a: Tally, t: &Tally| Tally { exposure: a.exposure + t.exposure, events: a.events + t.events };
         let at = bucket(age);
-        let tally = self.any.values().filter_map(|curve| curve.get(at)).fold(Tally::default(), |sum, t| Tally { exposure: sum.exposure + t.exposure, events: sum.events + t.events });
+        let tally = self.any.values().filter_map(|curve| curve.get(at)).fold(Tally::default(), sum);
+        // Her rate over every age, decayed alike, with one more event than she made.
+        let every = self.any.values().flatten().fold(Tally::default(), sum);
+        let prior = (every.events + 1.0) / (every.exposure + 1.0);
         if tally.exposure > 0.0 {
-            Hazard::Measured(tally)
+            Hazard::Measured { tally, prior }
         } else {
             Hazard::Unmeasured
         }
@@ -304,7 +332,7 @@ mod tests {
         assert_eq!(any["actions"][bucket(3)].events, 1.0, "re-requested at age 3");
         assert_eq!(collapsed["actions"][bucket(3)].events, 1.0, "and it was held collapsed");
         assert_eq!(rereads.totals(), (1, 1));
-        assert!(matches!(rereads.hazard(0), Hazard::Measured(_)), "the newest age is measured although none collapsed");
+        assert!(matches!(rereads.hazard(0), Hazard::Measured { .. }), "the newest age is measured although none collapsed");
         // Edited: the same request with a new outcome is a new observation, not a re-read.
         items.push(read(6, "a.rs", "fn a() { edited }"));
         rereads.act(&[&Reads(items.clone()) as &dyn Source<String>], |_, _| true);
@@ -373,5 +401,55 @@ mod tests {
         let before = restored.curves().0["actions"][bucket(10)].exposure;
         acts(&mut restored, &items, 1);
         assert_eq!(restored.curves().0["actions"][bucket(10)].exposure - before, 1.0, "exposed at its true age");
+    }
+
+    // what this catches (the M5, 2026-11-10: half her file reads repeated one from the same hour,
+    // the measurement counted 3 to 14 in 2,000 acts): a start draining the index to what her
+    // sources still offer, so asking again for a read her view dropped was never counted. It is
+    // counted at its age, kept across a restart; past the oldest age her view holds, it drains.
+    #[test]
+    fn asking_again_for_a_read_her_view_dropped_counts_at_its_age() {
+        let mut rereads = Rereads::default();
+        let first = read(1, "a.rs", "fn a() {}");
+        let mut items = vec![first.clone()];
+        rereads.start::<String>(&[("actions", &items)]);
+        for seq in 2..=5 {
+            items.push(read(seq, &format!("{seq}.rs"), "x"));
+            acts(&mut rereads, &items, 1);
+        }
+        // A start drops a.rs from her view; she keeps the four younger reads.
+        items.remove(0);
+        rereads.start::<String>(&[("actions", &items)]);
+        let saved = serde_json::to_string(&rereads).expect("test: the measurement serializes"); // JUSTIFIED: test fixture
+        let mut rereads: Rereads = serde_json::from_str(&saved).expect("test: and restores"); // JUSTIFIED: test fixture
+        acts(&mut rereads, &items, 1);
+        items.push(read(6, "a.rs", "fn a() {}"));
+        acts(&mut rereads, &items, 1);
+        assert_eq!(rereads.totals().0, 1, "the dropped read, asked for again, is a re-request");
+        assert_eq!(rereads.curves().0["actions"][bucket(5)].events, 1.0, "at its age, 5 acts");
+        // Hundreds of acts later, a view of only this act's reads drains everything older.
+        let old: Vec<_> = (100..104).map(|seq| read(seq, &format!("{seq}.rs"), "y")).collect();
+        acts(&mut rereads, &old, 300);
+        let young: Vec<_> = (200..204).map(|seq| read(seq, &format!("{seq}.rs"), "z")).collect();
+        acts(&mut rereads, &young, 1);
+        rereads.start::<String>(&[("actions", &young)]);
+        assert_eq!(rereads.index.len(), young.len(), "drained to her view's horizon");
+    }
+
+    // what this catches (the M5, 2026-11-10): a thin bucket priced at one assumed event (0.15 to
+    // 0.43 per act at 1 to 6 acts old) when she re-requested almost nothing at any age. A thin
+    // bucket reads her own rate; a mind with no history still keeps her history.
+    #[test]
+    fn a_thin_bucket_reads_her_own_rate_not_one_assumed_event() {
+        let mut rereads = Rereads::default();
+        let items: Vec<_> = (1..=20).map(|seq| read(seq, &format!("{seq}.rs"), "x")).collect();
+        rereads.start::<String>(&[("actions", &items)]);
+        acts(&mut rereads, &items, 60);
+        let young = rereads.hazard(1).per_act().expect("measured");
+        assert!(young < 0.01, "no re-request in 1,200 item-acts: {young}");
+        let mut fresh = Rereads::default();
+        fresh.start::<String>(&[("actions", &items[..1])]);
+        acts(&mut fresh, &items[..1], 1);
+        assert_eq!(fresh.hazard(0).per_act(), Some(0.25), "one exposure, no history: her rate is one in two, over two");
     }
 }

@@ -158,7 +158,7 @@ fn next_evaluation(
 /// Decide her window. An ungranted mind is MEASURED once (`measure` builds her view, which records
 /// her wish, so the next grants evaluation can grant her), then waits for the first evaluation that
 /// began after her measure (Cormac on #5752). Granted there, she decides again. Waiting for room
-/// ([`Ungranted::awaits_room`]: queued, reclaiming, the engine relaunching), she waits for the next
+/// ([`Ungranted::awaits_room`]: queued, or the engine relaunching), she waits for the next
 /// evaluation with her demand standing: on the M5 (26960c09d) each queued turn was refused and
 /// re-measured instead, 186 failed turns an hour. Any other reason refuses her turn with the
 /// evaluation's own words, so a defect is named within one publisher cadence, never parked (card
@@ -182,7 +182,18 @@ where
                 let evaluation = evaluation_after(std::time::Instant::now())?.await?;
                 match evaluation.ungranted(persona) {
                     Some(why) if !why.awaits_room() => return Err(WindowRefused::Ungranted(why)),
-                    _ => {}
+                    Some(why) => continuum_base::probe!(
+                        class = "delib.window.waiting",
+                        persona = %persona,
+                        reason = %why,
+                        "her turn waits for a later grants evaluation"
+                    ),
+                    // Her grant is listed but she is ungranted: it is yielding to a waiter (yield_after).
+                    // The handoff needs her turn to end, so the turn ends; never waited inside it.
+                    None => match decide() {
+                        MindWindow::Decided(decided) => return Ok(decided),
+                        MindWindow::Ungranted => return Err(WindowRefused::Ungranted(super::window_grant::Ungranted::Waiting(super::window_grant::Waiting::Reclaiming))),
+                    },
                 }
             }
         }
@@ -334,6 +345,7 @@ mod tests {
         assert_eq!(measured.get(), 1, "her demand stood while she waited: measured once");
         assert!(Ungranted::Waiting(Waiting::Queued { position: 2, of: 3 }).awaits_room());
         assert!(!Ungranted::Waiting(Waiting::NeedAbovePool { need: 9, pool: 8 }).awaits_room(), "a need above the pool is a defect, named");
+        assert!(!Ungranted::Waiting(Waiting::Reclaiming).awaits_room(), "a reclaim needs her turn to end: never waited inside it");
         let absent = evaluation(std::time::Instant::now(), grants(&[]), None).expect("evaluation");
         assert_eq!(absent.ungranted(her), Some(Ungranted::NotADemand), "no demand of hers reached it");
     }
