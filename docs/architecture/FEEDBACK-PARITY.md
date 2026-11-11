@@ -11,7 +11,7 @@ never assume.
 | A command's whole outcome: stdout, stderr, exit status | Shell result; large output kept as an expandable handle | none |
 | A long command returns a handle at once; ANY end of it (exit, crash, kill) wakes the agent | A completion push exists (`ExecutionState.handed_back` -> `command:completed`); Benchy read a running build 4 times instead; a core restart lost her command with `not_found` | ce191b8c |
 | Any stream as events (a growing log, a process it did not start, a message bus), each new line delivered, the stream's failure delivered | Nothing equivalent | ce191b8c |
-| Messages from others arrive between its steps, also mid-task | Her rooms' messages arrive; mid-act delivery: verify | verify |
+| Messages from others arrive between its steps, also mid-task | Her rooms' messages arrive; a peer's DIRECT message (`airc msg --to <her id>`) never reached her prompt (Aiko, 2026-11-11 14:10Z: absent from her next request; she rebased anyway); mid-act delivery: verify | direct messages reach her: card |
 | The human interrupts mid-task, and is answered | Typed asks through positron; as an interrupt: verify | verify |
 | A failure carries its evidence (raw output, path, line, what to try) | Typed refusals with next moves for some; bare strings for many (`stringly_command_errors` ratchet) | d1ab6ea3 |
 | Working state survives a context restart (a summary carries the plan and the files in hand) | A view turnover drops her plan and what she read; she re-reads (Aiko, Aris: 0 edits in 14 acts) | 89655d88 |
