@@ -852,12 +852,12 @@ mod tests {
         assert!(matches!(act.on_deploy_wanted(&req_a, false, NOW), ActuateOutcome::Spawned { attempt: 1, .. }));
         assert_eq!(spawner.plans.lock().len(), 1);
 
-        // Write a claim file with PID 1 (init — always alive on Unix).
+        // Write a claim file with an alive PID (our own process — always checkable on Unix and Windows).
         let run_dir = dir.path().join("home").join(".continuum").join("run");
         std::fs::create_dir_all(&run_dir).unwrap(); // unwrap: the test's own dir
         std::fs::write(
             run_dir.join("deploy.claim"),
-            r#"{"pid":1,"started_ms":0}"#,
+            &format!(r#"{{"pid":{},"started_ms":0}}"#, std::process::id()),
         ).unwrap(); // unwrap: the test's own file
 
         // Now a second request for a different tip is blocked.
