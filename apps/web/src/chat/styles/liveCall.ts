@@ -111,9 +111,10 @@ export const liveCallStyles = css`
     .live-grid {
       flex: 1;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
       gap: var(--spacing-md);
-      align-content: center;
+      /* Columns and rows are set inline by renderLive via data-count; the CSS
+         fallback uses auto columns with no fixed minimum so tiles can shrink. */
+      overflow: hidden;
     }
     /* PANEL composition — TikTok's host-focused layout: the ACTIVE SPEAKER
        takes the full bleed, everyone else shrinks to a right rail (the
@@ -233,7 +234,6 @@ export const liveCallStyles = css`
     }
     .live-tile {
       position: relative;
-      aspect-ratio: 16 / 10;
       border-radius: var(--radius-lg);
       overflow: hidden;
       display: grid;
