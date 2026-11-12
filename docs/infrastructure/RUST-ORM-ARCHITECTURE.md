@@ -1,5 +1,39 @@
 # Rust ORM Architecture
 
+## Current direction — 2026-11-12
+
+Joel's direction is ORM-only access with SeaORM as the relational implementation.
+The historical design below is not a description of the current implementation:
+`continuum-kernel::orm` currently owns `OrmStore`, `StorageQuery`, and a handwritten
+rusqlite adapter; `continuum-store` resolves application handles to that owner.
+SeaORM is declared in workspace dependencies but has not replaced this backend yet.
+
+Entity declarations own field types, nullability, relationships and indexes. Existing
+Rust `OrmEntity` registrations and the generated TS entity schema must feed the same
+provider translation; do not add independently maintained table definitions. Shared
+dependency versions live in the workspace, while consuming owners select coherent
+provider/runtime feature groups.
+
+Migration acceptance belongs at the storage boundary:
+
+- Preserve identities and existing rows across open, migration and restart. Failed
+  transactions and cancelled callers must preserve the existing commit contracts.
+- Exercise inner/left joins, unmatched rows, projection, ordering and cardinality.
+  A provider must never advertise a capability it silently ignores.
+- Preserve exact integers, strings that look like JSON, nullability and declared JSON
+  through one consistent codec. Measure row materialization separately from database
+  execution and typed decoding; avoid copying a generic tree into another owned tree.
+- Positron badges use count operations; views request only their projected fields.
+  Cursor pages apply filtering, stable ordering and limits in storage. Never retrieve
+  all bodies to count them or clip an unbounded result after materialization.
+- Prove declared indexes and relationships in provider integration tests, plus the
+  same public query semantics on each supported provider. Query construction uses the
+  ORM's typed APIs, not SQL strings in callers or repair tools.
+
+Replace the backend under these existing interfaces in verified slices, then remove
+the superseded implementation. Do not create a second live pool or schema owner as a
+compatibility path. Performance and semantic parity are required before live adoption.
+
 > **⚠️ ARCHITECTURE UPDATE**: The data-daemon worker has been absorbed into `continuum-core` as
 > `DataModule` (Phase 4e). The socket is now `/tmp/continuum-core.sock`. TypeScript uses
 > `ORM.ts` → `ORMRustClient.ts` → `DataModule` for all database operations.

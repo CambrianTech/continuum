@@ -13,7 +13,7 @@ impl StorageAdapter for SqliteAdapter {
             supports_indexing: true,
             supports_full_text_search: false,
             supports_vector_search: false,
-            supports_joins: true,
+            supports_joins: false,
             supports_batch: true,
             max_record_size: 1_000_000_000,
         }
@@ -76,6 +76,11 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
+        // Until the provider implements relational semantics, never return base rows
+        // as if an inner/left join had been applied. Both query entry points use this gate.
+        if query.joins.as_ref().is_some_and(|joins| !joins.is_empty()) {
+            return StorageResult::err("SQLite adapter does not implement joins".to_string());
+        }
         let request_started = std::time::Instant::now();
         if let Some(dummy) = projection_dummy(&query.select) {
             let writer = match self.get_writer() {

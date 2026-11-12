@@ -58,6 +58,34 @@
         assert_eq!(data.data["name"], "test-user");
     }
 
+    // A join request used to return unrelated base rows successfully. Neither entry
+    // point may claim relational results until the backend implements the contract.
+    #[tokio::test]
+    async fn unsupported_joins_never_return_unfiltered_base_rows() {
+        use crate::orm::query::{JoinSpec, JoinType, QueryBuilder};
+        let (adapter, _dir) = setup_adapter().await;
+        adapter.create(DataRecord {
+            id: "unmatched".into(), collection: "parents".into(),
+            data: json!({"childId": "missing"}), metadata: RecordMetadata::default(),
+        }).await.into_result().expect("test: base row");
+        assert!(!adapter.capabilities().supports_joins);
+        for join_type in [JoinType::Inner, JoinType::Left] {
+            let query = QueryBuilder::new("parents").join(JoinSpec {
+                collection: "children".into(), alias: "child".into(),
+                local_field: "childId".into(), foreign_field: "id".into(),
+                join_type, select: None,
+            }).build();
+            for result in [adapter.query(query.clone()).await, adapter.query_with_join(query).await] {
+                assert!(!result.success, "unimplemented join must refuse, not return base rows");
+                assert!(result.data.is_none());
+                assert!(result.error.is_some_and(|error| error.contains("does not implement joins")));
+            }
+        }
+        let plain = adapter.query(QueryBuilder::new("parents").build()).await
+            .into_result().expect("test: ordinary query remains supported");
+        assert_eq!(plain.len(), 1);
+    }
+
     // what this catches: a batch that HALF-APPLIES while reporting success. Until this
     // test, `batch` was a plain loop of individually autocommitting create/update calls
     // that folded each failure into a {"success": false} JSON element and returned
