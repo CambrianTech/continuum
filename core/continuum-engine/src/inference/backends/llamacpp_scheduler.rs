@@ -284,10 +284,7 @@ fn driver_loop(
         // ── Phase 1: Accept new requests into free slots ──
         // If nothing is active, block on the first request (avoid spinning).
         // Otherwise non-blocking try_recv to keep the decode loop hot.
-        loop {
-            if free_seqs.is_empty() {
-                break;
-            }
+        while let Some(seq_id) = free_seqs.pop() {
             let recv = if active.is_empty() {
                 match request_rx.recv() {
                     Ok(r) => Ok(r),
@@ -301,7 +298,6 @@ fn driver_loop(
             };
             match recv {
                 Ok(req) => {
-                    let seq_id = free_seqs.pop().unwrap();
                     match start_request(&model, seq_id, req) {
                         Ok(seq) => {
                             log.info(&format!(
@@ -333,7 +329,10 @@ fn driver_loop(
                         }
                     }
                 }
-                Err(()) => break,
+                Err(()) => {
+                    free_seqs.push(seq_id);
+                    break;
+                }
             }
         }
 
@@ -354,35 +353,29 @@ fn driver_loop(
         // first seq with work (lowest seq_id) defines the group; seqs wanting
         // a different gene are deferred to a later iteration so a seq is never
         // decoded under another seq's adapter.
-        let mut batch_lora_sig: Option<String> = None;
-        let mut batch_lora_rep: Option<i32> = None;
+        let mut batch_gene: Option<(String, Vec<(Arc<LoraAdapter>, f32)>)> = None;
 
         // Iterate sorted by seq_id for determinism in tests/logs.
-        let seq_ids: Vec<i32> = {
-            let mut v: Vec<i32> = active.keys().copied().collect();
-            v.sort_unstable();
-            v
-        };
+        let mut sequences: Vec<_> = active.iter_mut().collect();
+        sequences.sort_unstable_by_key(|(seq_id, _)| **seq_id);
 
-        for seq_id in seq_ids {
+        for (&seq_id, seq) in sequences {
             let room = n_batch.saturating_sub(tokens_in_batch);
             if room == 0 {
                 break;
             }
-            let seq = active.get_mut(&seq_id).expect("seq present");
 
-            // Gene-group gate (see batch_lora_sig above). A seq with no work
+            // Gene-group gate (see batch_gene above). A seq with no work
             // this iteration is skipped without claiming the group.
             let has_work = seq.prefill_pos < seq.prompt_tokens.len() || seq.next_token.is_some();
             if !has_work {
                 continue;
             }
-            match batch_lora_sig {
+            match &batch_gene {
                 None => {
-                    batch_lora_sig = Some(seq.lora_sig.clone());
-                    batch_lora_rep = Some(seq_id);
+                    batch_gene = Some((seq.lora_sig.clone(), seq.active_loras.clone()));
                 }
-                Some(ref sig) if *sig != seq.lora_sig => continue,
+                Some((sig, _)) if *sig != seq.lora_sig => continue,
                 Some(_) => {}
             }
 
@@ -425,32 +418,26 @@ fn driver_loop(
             }
         }
 
-        if tokens_in_batch == 0 {
-            // Nothing to do this iteration — yield briefly.
+        let Some((desired_sig, adapters)) = batch_gene else {
+            // No sequence supplied work, so no gene group was selected.
             std::thread::sleep(std::time::Duration::from_millis(1));
             continue;
-        }
+        };
 
         // ── Phase 3: Apply this batch's gene group, then decode ──
         // Context-level LoRA. The homogeneity gate guarantees every seq in
-        // this batch shares `batch_lora_sig`, and a seq is only ever decoded
+        // this batch shares the selected gene signature, and a seq is only ever decoded
         // under its own gene, so its KV history stays consistent. We only call
         // set_loras/clear_loras when the desired group differs from what's
         // already on the context (the cheap hot-swap). A set_loras failure is
         // routed through the same fan-out as a decode failure — never decode
         // under the wrong gene (Rule 2).
-        let desired_sig = batch_lora_sig.clone().unwrap_or_default();
         let lora_apply: Result<(), String> = if desired_sig == current_ctx_lora_sig {
             Ok(())
         } else if desired_sig.is_empty() {
             ctx.clear_loras()
         } else {
-            let rep =
-                batch_lora_rep.expect("non-empty gene signature must have a representative seq");
-            let refs: Vec<(&LoraAdapter, f32)> = active
-                .get(&rep)
-                .expect("representative seq present")
-                .active_loras
+            let refs: Vec<(&LoraAdapter, f32)> = adapters
                 .iter()
                 .map(|(a, s)| (a.as_ref(), *s))
                 .collect();
