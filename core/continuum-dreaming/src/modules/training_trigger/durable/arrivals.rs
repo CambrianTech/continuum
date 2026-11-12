@@ -69,10 +69,10 @@ impl DurableStore {
         let mut unlearned = 0u32;
         let mut after = 0u64;
         loop {
-            let page = self.arrival_page(Some(key), after, 256).await?;
+            let page = self.pending_counts(Some(key), after, 256).await?;
             let full = page.len() == 256;
             for row in &page {
-                if &row.key == key { unlearned = unlearned.saturating_add((row.examples.len() as u32).saturating_sub(row.learned)); }
+                if &row.key == key { unlearned = unlearned.checked_add(row.unlearned).ok_or("pending example count exceeds u32")?; }
                 after = after.max(row.sequence);
             }
             if !full {
@@ -135,6 +135,7 @@ pub(super) mod tests {
             trait_kind: "code".into(),
             base_model: base_model.into(),
             arrival_summary: Some(crate::modules::training_trigger::durable::arrival_summary::ArrivalSummary::of(&batch)),
+            pending_count: Some(crate::modules::training_trigger::durable::pending_counts::PendingCount::of(&batch)),
             batch,
             is_pending: true,
             dispatch_id: None,

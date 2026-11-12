@@ -1,4 +1,4 @@
-//! Durable discovery metadata; lived training payload stays in the submission journal.
+//! Signature inputs without lived payload; count-only readers use pending_counts.
 use super::*;
 use crate::genome::fine_tuning::types::{LoRAHyperparams, ScheduleParams, TrainingExample};
 

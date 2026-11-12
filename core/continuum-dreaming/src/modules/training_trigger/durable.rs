@@ -25,6 +25,7 @@ mod acceptance_receipt;
 pub(in crate::modules::training_trigger) use acceptance_receipt::*;
 mod arrivals;
 mod arrival_summary;
+mod pending_counts;
 pub(crate) use arrivals::Arrival;
 mod learn_checkpoint;
 mod reclaim;
