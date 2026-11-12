@@ -831,7 +831,7 @@ mod tests {
         assert_eq!(spawner.plans.lock().len(), 1, "concurrent claim prevents a second spawn");
 
         // Remove the claim → actuation resumes.
-        std::fs::remove_file(run_dir.join("deploy.claim")).unwrap(); // unwrap: the test's own file
+        std::fs::remove_file(root.join("run").join("deploy.claim")).unwrap(); // unwrap: the test's own file
         assert!(matches!(act.on_deploy_wanted(&req_b, false, NOW + 6_000), ActuateOutcome::Spawned { attempt: 1, .. }));
         assert_eq!(spawner.plans.lock().len(), 2);
 
@@ -844,7 +844,7 @@ mod tests {
             renewed_ms: 0,                          // never renewed → expired on silent
             progress_ms: 0,
         };
-        continuum_cli_lifecycle::deploy_claim::write(run_dir.as_path(), &claim_dead).unwrap(); // unwrap: the test's own file
+        continuum_cli_lifecycle::deploy_claim::write(&root, &claim_dead).unwrap(); // unwrap: the test's own file
 
         let req_c = DeployRequest::new("cccccccccc33", NOW + 7_000);
         assert!(matches!(act.on_deploy_wanted(&req_c, false, NOW + 7_000), ActuateOutcome::Spawned { attempt: 1, .. }));
