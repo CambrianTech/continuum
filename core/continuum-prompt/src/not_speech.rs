@@ -451,10 +451,10 @@ fn opens_with_wrapped_peer_id(t: &str) -> bool {
     false
 }
 
-/// How many stacked substrate wrappers to peel before giving up. Four covers every
-/// depth observed in live traffic with headroom; the point of the ceiling is that
-/// the loop stays bounded, not that deeper stacks are legitimate.
-const MAX_WRAPPER_DEPTH: usize = 4;
+/// How many stacked substrate wrappers to peel before giving up. This ceiling keeps the
+/// loop bounded on adversarial input; it is not a limit on what legitimate traffic looks
+/// like — every real stack observed so far fits within double digits.
+const MAX_WRAPPER_DEPTH: usize = 10;
 
 /// A delivery header naming a peer, as this substrate renders it: `peer <uuid>`.
 /// Requiring the literal keyword — not merely "a uuid appears in the brackets" —
