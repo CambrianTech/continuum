@@ -331,6 +331,15 @@ pub(super) fn do_create(conn: &Connection, record: DataRecord, types: Option<&Ha
     }
 }
 
+// SQLite reports several prepare failures with the same error code. Consult
+// schema metadata to distinguish an absent collection without parsing Display.
+fn collection_absent(conn: &Connection, table: &str) -> bool {
+    matches!(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = ? AND type IN ('table','view'))",
+        [table], |row| row.get::<_, bool>(0),
+    ), Ok(false))
+}
+
 pub(super) fn do_read(
     conn: &Connection,
     collection: &str,
@@ -344,7 +353,7 @@ pub(super) fn do_read(
         Ok(s) => s,
         Err(e) => {
             // If table doesn't exist, return "not found" instead of error
-            if e.to_string().contains("no such table") {
+            if collection_absent(conn, &table) {
                 return StorageResult::err(format!("Record not found: {}", id));
             }
             return StorageResult::err(format!("Prepare failed: {}", e));
@@ -392,7 +401,7 @@ pub(super) fn do_query(
         Ok(s) => s,
         Err(e) => {
             // Table doesn't exist → empty results (not an error)
-            if e.to_string().contains("no such table") {
+            if collection_absent(conn, &table) {
                 return StorageResult::ok(Vec::new());
             }
             return StorageResult::err(format!("Prepare failed: {}", e));
@@ -436,7 +445,7 @@ pub(super) fn do_count(conn: &Connection, query: StorageQuery) -> StorageResult<
         Ok(count) => StorageResult::ok(count as usize),
         Err(e) => {
             // Table doesn't exist → count is 0 (not an error)
-            if e.to_string().contains("no such table") {
+            if collection_absent(conn, &table) {
                 return StorageResult::ok(0);
             }
             StorageResult::err(format!("Count failed: {}", e))
@@ -681,6 +690,22 @@ pub(super) fn cascade_rule_sql(rule: super::super::types::CascadeRule) -> &'stat
 #[cfg(test)]
 mod mutation_projection_tests {
     use super::*;
+
+    #[test]
+    fn absent_collection_is_empty_but_invalid_existing_schema_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = Connection::open_in_memory()?;
+        let query = || StorageQuery {
+            collection: "evidence".into(), select: Some(vec!["body".into()]),
+            limit: Some(1), ..Default::default()
+        };
+        let absent = do_query(&conn, query(), None);
+        assert!(absent.success);
+        assert!(absent.data.is_some_and(|rows| rows.is_empty()));
+        conn.execute_batch("CREATE TABLE evidence (id TEXT PRIMARY KEY)")?;
+        assert!(!collection_absent(&conn, "evidence"));
+        assert!(!do_query(&conn, query(), None).success);
+        Ok(())
+    }
 
     // A batch flag mutation must never decode the untouched body. The deliberately
     // undecodable declared-number body makes eager read-back fail deterministically.
