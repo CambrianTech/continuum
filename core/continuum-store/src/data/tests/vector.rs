@@ -2,6 +2,15 @@
 //! Vector indexing, ranking and cache behavior on the shared SQLite fixture.
 use super::*;
 
+#[tokio::test]
+async fn backfill_rejects_zero_batch_before_opening_an_embedder() {
+    let module = DataModule::new(no_substrate_entities);
+    let result = module.state.backfill_vectors(
+        "main", "test_vectors", "content", 0, None, None,
+    ).await;
+    assert!(matches!(result, Err(ref error) if error == "vector/backfill: batch_size must be positive"));
+}
+
 #[test]
 fn malformed_embedding_is_not_silently_shortened_or_emptied() -> Result<(), String> {
     for valid in [json!([1.0, 2.0]), json!("[1.0,2.0]")] {

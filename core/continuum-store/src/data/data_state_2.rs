@@ -4,8 +4,6 @@ impl DataState {
 
     /// Backfill vectors - generate embeddings for records missing them
     ///
-    /// Uses batch embedding generation for efficiency (10x faster than single).
-    /// Processes in configurable batch sizes to manage memory.
     /// Generate embeddings for records in a collection that lack one, in batches.
     /// `text_field` names the field to embed; `filter` narrows the records;
     /// `model` is advisory (the gateway selects the served embed model).
@@ -22,6 +20,9 @@ impl DataState {
         require_public_collection(collection)?;
         require_field_name(text_field)?;
         require_query_fields(&filter, &None, &None)?;
+        if batch_size == 0 {
+            return Err("vector/backfill: batch_size must be positive".into());
+        }
         use std::time::Instant;
         let start = Instant::now();
 
@@ -49,21 +50,8 @@ impl DataState {
 
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
-        // Query all records from collection
-        let query = StorageQuery {
-            collection: collection.to_string(),
-            filter: filter.clone(),
-            ..Default::default()
-        };
-        let query_result = adapter.query(query).await;
-        if !query_result.success {
-            return Err(query_result
-                .error
-                .unwrap_or_else(|| "Query failed".to_string()));
-        }
-
-        let records = query_result.data.unwrap_or_default();
-        let total = records.len();
+        let mut cursor = None;
+        let mut total = 0usize;
         let mut processed = 0usize;
         let mut failed = 0usize;
         let mut skipped = 0usize;
@@ -71,13 +59,30 @@ impl DataState {
         log_info!(
             "data",
             "vector/backfill",
-            "Starting backfill for {} records in {}",
-            total,
+            "Starting paged backfill in {}",
             collection
         );
 
-        // Process in batches for memory efficiency
-        for chunk in records.chunks(batch_size) {
+        // Read only the caller's batch at a time. An id cursor remains valid
+        // when writing an embedding removes a row from the caller's filter.
+        // This is a live scan, not a database snapshot across model calls.
+        loop {
+            let query = StorageQuery {
+                collection: collection.to_string(),
+                filter: filter.clone(),
+                sort: Some(vec![SortSpec { field: "id".into(), direction: SortDirection::Asc }]),
+                limit: Some(batch_size),
+                cursor: cursor.take(),
+                ..Default::default()
+            };
+            let chunk = adapter.query(query).await.into_result()?;
+            let Some(last) = chunk.last() else { break };
+            cursor = Some(crate::orm::query::Cursor {
+                field: "id".into(),
+                value: json!(last.id),
+                direction: crate::orm::query::CursorDirection::After,
+            });
+            total += chunk.len();
             // Collect texts that need embeddings
             let mut texts_to_embed: Vec<(usize, &str)> = Vec::new();
 
@@ -136,6 +141,8 @@ impl DataState {
 
                 if update_result.success {
                     processed += 1;
+                    // Keep completed writes visible even if a later page fails.
+                    self.vector_cache.invalidate(&scope, collection);
                 } else {
                     failed += 1;
                 }
