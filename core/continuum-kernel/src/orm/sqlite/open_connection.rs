@@ -383,7 +383,22 @@ pub(super) fn do_query(
     types: Option<&HashMap<String, FieldType>>,
 ) -> StorageResult<Vec<DataRecord>> {
     let table = naming::to_table_name(&query.collection);
-    let (where_clause, where_params) = build_where_clause(&query.filter);
+    let (mut where_clause, mut where_params) = build_where_clause(&query.filter);
+    if let Some(cursor) = &query.cursor {
+        if cursor.field.is_empty()
+            || !cursor.field.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || !matches!(cursor.value, Value::String(_) | Value::Number(_) | Value::Bool(_))
+        {
+            return StorageResult::err("Invalid query cursor field or value");
+        }
+        let comparison = match cursor.direction {
+            super::super::query::CursorDirection::After => ">",
+            super::super::query::CursorDirection::Before => "<",
+        };
+        let conjunction = if where_clause.is_empty() { "WHERE" } else { "AND" };
+        where_clause.push_str(&format!(" {conjunction} \"{}\" {comparison} ?", naming::to_snake_case(&cursor.field)));
+        where_params.push(cursor.value.clone());
+    }
     let order_clause = build_order_clause(&query.sort);
 
     let select_clause = build_select_clause(&query.select);
@@ -696,6 +711,31 @@ pub(super) fn cascade_rule_sql(rule: super::super::types::CascadeRule) -> &'stat
 #[cfg(test)]
 mod mutation_projection_tests {
     use super::*;
+
+    #[test]
+    fn cursor_filters_before_limit_and_survives_processed_row_removal() -> Result<(), Box<dyn std::error::Error>> {
+        use super::super::super::query::{Cursor, CursorDirection, SortDirection, SortSpec};
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch("CREATE TABLE evidence (id TEXT PRIMARY KEY, created_at TEXT,
+            updated_at TEXT, version INTEGER, flag INTEGER);
+            INSERT INTO evidence VALUES ('a','2026-01-01','2026-01-01',1,0),
+              ('b','2026-01-01','2026-01-01',1,0), ('c','2026-01-01','2026-01-01',1,1);")?;
+        let query = |direction| StorageQuery {
+            collection: "evidence".into(),
+            filter: Some(HashMap::from([("flag".into(), FieldFilter::Value(json!(0)))])),
+            cursor: Some(Cursor { field: "id".into(), value: json!("a"), direction }),
+            sort: Some(vec![SortSpec { field: "id".into(), direction: SortDirection::Asc }]),
+            limit: Some(1), ..Default::default()
+        };
+        conn.execute("UPDATE evidence SET flag=1 WHERE id='a'", [])?;
+        let rows = do_query(&conn, query(CursorDirection::After), None).into_result()?;
+        assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["b"]);
+        assert!(do_query(&conn, query(CursorDirection::Before), None).into_result()?.is_empty());
+        let mut invalid = query(CursorDirection::After);
+        invalid.cursor = Some(Cursor { field: "id OR 1=1".into(), value: json!("a"), direction: CursorDirection::After });
+        assert!(!do_query(&conn, invalid, None).success);
+        Ok(())
+    }
 
     #[test]
     fn absent_collection_is_empty_but_invalid_existing_schema_is_an_error() -> Result<(), Box<dyn std::error::Error>> {
