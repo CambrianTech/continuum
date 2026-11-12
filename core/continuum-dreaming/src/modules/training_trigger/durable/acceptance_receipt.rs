@@ -18,6 +18,9 @@ pub(in crate::modules::training_trigger) struct Submission {
     pub(super) base_model: String,
     #[entity(json)]
     pub(super) batch: PendingBatch,
+    /// Payload-free projection. None identifies a row requiring explicit migration.
+    #[entity(json)]
+    pub(super) arrival_summary: Option<super::arrival_summary::ArrivalSummary>,
     pub(super) is_pending: bool,
     pub(super) dispatch_id: Option<Uuid>,
     /// Withdrawn before any dispatch by `genome/training-trigger/retire`: the

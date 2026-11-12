@@ -24,6 +24,7 @@ use crate::orm::{
 mod acceptance_receipt;
 pub(in crate::modules::training_trigger) use acceptance_receipt::*;
 mod arrivals;
+mod arrival_summary;
 pub(crate) use arrivals::Arrival;
 mod learn_checkpoint;
 mod reclaim;

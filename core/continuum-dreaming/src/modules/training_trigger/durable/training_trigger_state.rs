@@ -238,6 +238,7 @@ impl TrainingTriggerState {
             persona_id: key.persona_id,
             trait_kind: key.trait_kind.clone(),
             base_model: key.base_model.clone(),
+            arrival_summary: Some(super::arrival_summary::ArrivalSummary::of(&batch)),
             batch,
             is_pending: true,
             dispatch_id: None,
