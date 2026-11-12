@@ -32,7 +32,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use continuum_cli_lifecycle::deploy_tracker::{same_commit, DeployRequest, STRANDED_GRACE_MS};
+use continuum_cli_lifecycle::deploy_tracker::{in_flight, same_commit, DeployGate, DeployRequest, STRANDED_GRACE_MS};
 
 /// The receipt, beside the request it answered: `<state>/deploy-actuation.json`.
 pub(crate) const ACTUATION_FILE: &str = "deploy-actuation.json";
@@ -491,7 +491,7 @@ impl DeployActuator {
             return ActuateOutcome::Deferred(owner);
         }
         // A deploy from another tip holds the claim on this node — serialise against it.
-        if concurrent_claim(&self.root) {
+        if in_flight(&self.root, now_ms).excludes_deploy() {
             continuum_base::probe!(
                 class = "deploy.actuate.concurrent_claim",
                 tip = req.tip_sha.as_str(),
@@ -632,52 +632,6 @@ impl DeployActuator {
                 self.write_receipt(&r);
             }
         }
-    }
-}
-
-/// Path to the CLI lifecycle's deploy claim file.
-pub(crate) fn claim_path(root: &Path) -> PathBuf {
-    root.join("run").join("deploy.claim")
-}
-
-/// Whether a deploy from another tip is currently in flight on this node.
-/// Returns true only when the claim file exists AND its PID is still alive;
-/// stale claims (dead process, no file) do not block — we are not serialising
-/// against ghosts.
-pub(crate) fn concurrent_claim(root: &Path) -> bool {
-    let path = claim_path(root);
-    if !path.exists() {
-        return false;
-    }
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(_) => return false, // unreadable claim — not a live deploy
-    };
-    #[derive(serde::Deserialize)]
-    struct Claim { pid: u32 }
-    let claim: Claim = match serde_json::from_str(&text) {
-        Ok(c) => c,
-        Err(_) => return false, // malformed claim — not a live deploy
-    };
-    pid_alive(claim.pid)
-}
-
-/// Check if a process with this PID is still alive.
-pub(crate) fn pid_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        unsafe { libc::kill(pid as i32, 0) == 0 }
-    }
-    #[cfg(windows)]
-    {
-        use std::process::{Command, Stdio};
-        Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
     }
 }
 
@@ -838,10 +792,11 @@ mod tests {
         assert_eq!(act.receipt().unwrap().boot_outcome.as_deref(), Some("landed")); // unwrap: the receipt stands
     }
 
-    // what this catches: CONCURRENT CLAIMS — when a deploy from a different tip is in flight,
-    // the actuator does not launch another consumer even if stranded. The claim file at
-    // root/run/deploy.claim with an alive PID blocks; stale claims (dead process, no file)
-    // do not.
+    // what this catches: CONCURRENT CLAIMS — when another deploy-consume holds an active
+    // claim (via the CLI lifecycle's DeployClaim schema), the actuator defers even if
+    // stranded. Uses `in_flight` + `excludes_deploy` from deploy_tracker, which correctly
+    // handles renewal, abandoned-owner, and waiting-marker semantics instead of broken
+    // platform-specific PID probes.
     #[test]
     fn concurrent_claim_blocks_actuation() {
         let dir = tempfile::tempdir().unwrap(); // unwrap: the test's own dir
@@ -852,15 +807,19 @@ mod tests {
         assert!(matches!(act.on_deploy_wanted(&req_a, false, NOW), ActuateOutcome::Spawned { attempt: 1, .. }));
         assert_eq!(spawner.plans.lock().len(), 1);
 
-        // Write a claim file with an alive PID (our own process — always checkable on Unix and Windows).
+        // Write a proper DeployClaim with an alive PID (the test's own process) and recent renewal.
         let run_dir = dir.path().join("home").join(".continuum").join("run");
         std::fs::create_dir_all(&run_dir).unwrap(); // unwrap: the test's own dir
-        std::fs::write(
-            run_dir.join("deploy.claim"),
-            &format!(r#"{{"pid":{},"started_ms":0}}"#, std::process::id()),
-        ).unwrap(); // unwrap: the test's own file
+        let claim = DeployClaim {
+            pid: std::process::id() as i32,  // alive right now — in_flight(owner_alive) → true
+            started_ms: NOW.saturating_sub(60_000),
+            target_sha: "bbbbbbbbb222".to_string(),
+            renewed_ms: NOW,                  // recent renewal → not expired
+            progress_ms: 0,
+        };
+        continuum_cli_lifecycle::deploy_claim::write(run_dir.as_path(), &claim).unwrap(); // unwrap: the test's own file
 
-        // Now a second request for a different tip is blocked.
+        // Now a second request for a different tip is blocked by in_flight().excludes_deploy()
         let req_b = DeployRequest::new("bbbbbbbbb222", NOW + 5_000);
         assert!(matches!(
             act.on_deploy_wanted(&req_b, false, NOW + 5_000),
@@ -868,9 +827,24 @@ mod tests {
         ));
         assert_eq!(spawner.plans.lock().len(), 1, "concurrent claim prevents a second spawn");
 
-        // Remove the stale claim → actuation resumes.
+        // Remove the claim → actuation resumes.
         std::fs::remove_file(run_dir.join("deploy.claim")).unwrap(); // unwrap: the test's own file
         assert!(matches!(act.on_deploy_wanted(&req_b, false, NOW + 6_000), ActuateOutcome::Spawned { attempt: 1, .. }));
         assert_eq!(spawner.plans.lock().len(), 2);
+
+        // A dead-owner claim does NOT block — decide() returns Abandoned,
+        // excludes_deploy is false for Abandoned (the machine must not wedge).
+        let claim_dead = DeployClaim {
+            pid: 999_999_999,                       // definitely not alive
+            started_ms: NOW.saturating_sub(7 * 60 * 60 * 1000), // > CLAIM_HARD_CAP_MS
+            target_sha: "cccccccccc33".to_string(),
+            renewed_ms: 0,                          // never renewed → expired on silent
+            progress_ms: 0,
+        };
+        continuum_cli_lifecycle::deploy_claim::write(run_dir.as_path(), &claim_dead).unwrap(); // unwrap: the test's own file
+
+        let req_c = DeployRequest::new("cccccccccc33", NOW + 7_000);
+        assert!(matches!(act.on_deploy_wanted(&req_c, false, NOW + 7_000), ActuateOutcome::Spawned { attempt: 1, .. }));
+        assert_eq!(spawner.plans.lock().len(), 3, "dead-owner claim does not block");
     }
 }
