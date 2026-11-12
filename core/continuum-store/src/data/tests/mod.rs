@@ -34,8 +34,8 @@ use crate::orm::types::CollectionSchema;
         // adapter owner must open independently and reuse its resolved backend.
         // The held home guard supplies isolation through both adapter awaits.
         let state = DataState::new();
-        assert_eq!(state.resolve_handle("@node").unwrap(),
-            node.path().join(".continuum/database/node.db").to_str().unwrap());
+        assert_eq!(std::path::PathBuf::from(state.resolve_handle("@node").unwrap()),
+            node.path().join(".continuum/database/node.db"));
         assert!(state.context.get().is_none());
         let first = state.get_adapter("@node").await.unwrap();
         let second = state.get_adapter("@node").await.unwrap();

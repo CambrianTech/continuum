@@ -199,6 +199,9 @@ impl DataState {
     /// - Server-owned page state (currently OFFSET-based; not a keyset cursor)
     /// - DashMap for concurrent query state (lock-free reads)
     pub(super) async fn handle_query_open(&self, params: QueryOpenParams) -> Result<CommandResult, String> {
+        if params.page_size == 0 || params.page_size.checked_add(1).is_none() {
+            return Err("data/query-open: pageSize must be positive and leave room for the next-row probe".into());
+        }
         require_public_collection(&params.collection)?;
         require_query_fields(&params.filter, &params.sort, &params.select)?;
         use std::time::Instant;
@@ -304,8 +307,8 @@ impl DataState {
     /// either the typed envelope's `handle` (new canonical) or the
     /// legacy `queryId` field (back-compat).
     ///
-    /// Uses keyset pagination (WHERE id > cursor) instead of OFFSET for performance.
-    /// For sorted queries, combines sort column(s) with id for deterministic ordering.
+    /// Uses server-owned OFFSET pagination. Concurrent writes can change page membership;
+    /// this is not yet a stable keyset cursor.
     pub(super) async fn handle_query_next(
         &self,
         req: CommandRequest<QueryNextParams>,
@@ -384,12 +387,17 @@ impl DataState {
         // formula `offset + items_count < total_count`, which was both
         // wrong under concurrent inserts (total_count goes stale mid-iter)
         // and required the open-time COUNT(*) we just stopped paying for.
-        let offset = current_page * page_size;
+        let offset = current_page.checked_mul(page_size)
+            .ok_or("data/query-next: page offset exceeds the supported range")?;
+        let probe_limit = page_size.checked_add(1)
+            .ok_or("data/query-next: page size cannot include the next-row probe")?;
+        let next_page = current_page.checked_add(1)
+            .ok_or("data/query-next: page number exceeds the supported range")?;
         let query = StorageQuery {
             collection: collection.clone(),
             filter: filter.clone(),
             sort: sort.clone(),
-            limit: Some(page_size + 1),
+            limit: Some(probe_limit),
             offset: Some(offset),
             select,
             ..Default::default()
@@ -409,7 +417,7 @@ impl DataState {
         // `MutexGuard` from the top of the function, so this write is
         // atomic with the read above. No second DashMap lookup needed;
         // the per-cursor mutex held the whole window.
-        state.current_page += 1;
+        state.current_page = next_page;
         state.cursor_id = new_cursor_id;
         state.has_more = new_has_more;
         drop(state);

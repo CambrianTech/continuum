@@ -206,6 +206,20 @@ use super::*;
     }
 
     #[tokio::test]
+    async fn cursor_refuses_nonprogressing_and_overflowing_page_sizes() {
+        let module = DataModule::new(no_substrate_entities);
+        for page_size in [0, usize::MAX] {
+            let result = module.handle_command("data/query-open", json!({
+                "dbPath": "must-not-open",
+                "collection": "test_handle_cursor",
+                "pageSize": page_size,
+            })).await;
+            let error = result.expect_err("invalid page size must fail before opening storage");
+            assert!(error.contains("pageSize"), "unexpected error: {error}");
+        }
+    }
+
+    #[tokio::test]
     pub(super) async fn query_open_returns_handle_alongside_legacy_query_id() {
         let (module, _tmp, db_path) = setup_paginated_for_handle_tests("handle_open", 3).await;
         let response = open_cursor(&module, &db_path, 10).await;
