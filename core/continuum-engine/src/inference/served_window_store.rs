@@ -14,9 +14,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Geometry observed under the endpoint owner's generation lease, not a planner proposal.
-const FILE: &str = "window.json";
+const FILE: &str = "served-window.json";
 
+/// Geometry observed under the endpoint owner's generation lease, not a planner proposal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServedGeometry {
     pub model_id: String,
@@ -60,6 +60,21 @@ impl StoredServedWindow {
             return None;
         }
         Some((self.per_slot_window, self.lanes))
+    }
+
+    /// Explicit initial record created when no prior store exists.
+    /// Lanes=0 because this launch has no successful observation yet; the candidate
+    /// geometry is stored separately and promoted only after terminal usage confirms it.
+    pub fn initial(model_id: String, per_slot_window: u32) -> Self {
+        Self {
+            model_id,
+            per_slot_window,
+            lanes: 0,
+            typical_prompt_tokens: 0,
+            observed_prompt_tokens: None,
+            set_at_ms: continuum_base::time::EpochMs::now().millis(),
+            candidate: None,
+        }
     }
 }
 
@@ -132,15 +147,10 @@ fn record_reconciled_to(path: &Path, geometry: ServedGeometry, settled_now: bool
 }
 
 fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
-    let mut stored = load_from(path).unwrap_or_else(|| StoredServedWindow {
-        model_id: geometry.model_id.clone(),
-        per_slot_window: geometry.per_slot_window,
-        lanes: 0, // This launch has no successful observation yet.
-        typical_prompt_tokens: 0,
-        observed_prompt_tokens: None,
-        set_at_ms: continuum_base::time::EpochMs::now().millis(),
-        candidate: None,
-    });
+    let mut stored = match load_from(path) {
+        Some(s) => s,
+        None => StoredServedWindow::initial(geometry.model_id.clone(), geometry.per_slot_window),
+    };
     let candidate = geometry;
     // Settlement repeats; a later tick cannot rewrite an owned generation's shape.
     if stored.candidate.as_ref().is_some_and(|old| old.generation == candidate.generation) {
