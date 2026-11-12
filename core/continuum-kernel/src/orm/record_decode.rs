@@ -15,7 +15,7 @@ impl DataRecord {
 }
 
 pub fn decode_row<T: DeserializeOwned>(data: Value) -> Result<T, serde_json::Error> {
-    serde_json::from_value(data)
+    serde_json::from_value(data) // storage boundary: consume the provider's owned row into its declared entity
 }
 
 #[cfg(test)]
