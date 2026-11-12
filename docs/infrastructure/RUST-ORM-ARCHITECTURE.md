@@ -54,6 +54,26 @@ compatibility path. Performance and semantic parity are required before live ado
 
 ### Schema-owned lifecycle and shared reclamation
 
+### AIRC authority boundary — Joel, 2026-11-12
+
+AIRC owns room membership, peer identity and authenticated chat provenance.
+The ORM stores local projections, import watermarks and publication obligations;
+it must not mint substitute identities, choose another room when an explicit room
+is unavailable, or treat a local row as independent membership authority.
+Resolve and authorize through AIRC, preserving the requested room and peer IDs.
+
+Audit finding: the shared generic-data gate consults `ProtectedCollection`, but
+chat messages, arrivals, watermarks and publication obligations are not registered
+there. Generic writes are privileged, not unrestricted, but this still leaves an
+owner bypass for trusted callers. Chat itself currently uses generic `data/*`
+commands, so merely marking these tables protected would also break its importer.
+Move chat's internal storage access behind its typed owner interface, then protect
+the collections and test generic-write refusal alongside normal AIRC import/replay.
+Publication attribution already checks the exact relay, room, sender and digest;
+those checks must survive this migration. This gap is not yet closed.
+
+### Continuous reclamation
+
 The ORM is a consumer of the existing governor interface, not a separate resource
 authority. Continuous draining means reclaiming caches, idle connections and
 transient materializations, or moving eligible information to cheaper tiers. It is
