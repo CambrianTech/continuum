@@ -2,6 +2,17 @@
 //! Vector indexing, ranking and cache behavior on the shared SQLite fixture.
 use super::*;
 
+#[test]
+fn malformed_embedding_is_not_silently_shortened_or_emptied() -> Result<(), String> {
+    for valid in [json!([1.0, 2.0]), json!("[1.0,2.0]")] {
+        assert_eq!(DataState::parse_embedding(&valid)?, vec![1.0, 2.0]);
+    }
+    for invalid in [json!([1.0, "bad", 2.0]), json!("broken"), json!("[1,null]"), Value::Null] {
+        assert!(DataState::parse_embedding(&invalid).is_err());
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_vector_index_and_stats() {
     let module = DataModule::new(no_substrate_entities);

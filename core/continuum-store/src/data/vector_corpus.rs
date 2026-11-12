@@ -37,7 +37,8 @@ impl DataState {
                 let mut vectors = Vec::new();
                 for record in records {
                     if let Some(embedding) = record.data.get("embedding") {
-                        let embedding = Self::parse_embedding(embedding);
+                        let embedding = Self::parse_embedding(embedding)
+                            .map_err(|e| format!("vector corpus record {}: {e}", record.id))?;
                         if !embedding.is_empty() {
                             vectors.push(CachedVector {
                                 id: record.id,

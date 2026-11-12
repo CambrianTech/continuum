@@ -388,14 +388,15 @@ impl DataState {
     // =========================================================================
 
     /// Parse embedding from record data (supports BLOB and JSON array)
-    pub(super) fn parse_embedding(value: &Value) -> Vec<f64> {
+    pub(super) fn parse_embedding(value: &Value) -> Result<Vec<f64>, String> {
         match value {
-            Value::Array(arr) => arr.iter().filter_map(|v| v.as_f64()).collect(),
+            Value::Array(arr) => arr.iter().map(|v| v.as_f64()
+                .ok_or_else(|| "Embedding contains a non-numeric component".to_string())).collect(),
             Value::String(s) => {
-                // Try parsing as JSON array
-                serde_json::from_str(s).unwrap_or_default()
+                // Serialized vectors are decoded only after the embedding field is selected.
+                serde_json::from_str(s).map_err(|e| format!("Invalid stored embedding: {e}"))
             }
-            _ => Vec::new(),
+            _ => Err("Embedding must be a numeric array or its JSON encoding".into()),
         }
     }
 
@@ -521,7 +522,8 @@ impl DataState {
         if let Some(records) = result.data {
             for record in &records {
                 if let Some(embedding) = record.data.get("embedding") {
-                    let vec = Self::parse_embedding(embedding);
+                    let vec = Self::parse_embedding(embedding)
+                        .map_err(|e| format!("vector stats record {}: {e}", record.id))?;
                     if !vec.is_empty() {
                         records_with_vectors += 1;
                         if vector_dimensions == 0 {
