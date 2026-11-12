@@ -217,10 +217,16 @@ pub(super) fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) 
 pub(super) fn evolve_table_schema(conn: &Connection, table: &str, data: &Value, types: Option<&HashMap<String, FieldType>>) -> bool {
     // Get existing columns
     let existing: Vec<String> = match conn.prepare(&format!("PRAGMA table_info({})", table)) {
-        Ok(mut stmt) => stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .map(|rows| rows.filter_map(|r| r.ok()).collect())
-            .unwrap_or_default(),
+        Ok(mut stmt) => {
+            let rows = match stmt.query_map([], |row| row.get::<_, String>(1)) {
+                Ok(rows) => rows,
+                Err(_) => return false,
+            };
+            match rows.collect::<Result<Vec<_>, _>>() {
+                Ok(columns) => columns,
+                Err(_) => return false,
+            }
+        }
         Err(_) => return false,
     };
 
