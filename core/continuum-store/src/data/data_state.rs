@@ -507,10 +507,10 @@ impl DataState {
         let total_records = total_result.into_result()
             .map_err(|e| format!("vector stats count for {collection}: {e}"))?;
 
-        // Query to count records WITH embeddings
-        // We need to query and check which have embedding field
+        // Read only vectors; unrelated document bodies are not needed for statistics.
         let query = StorageQuery {
             collection: collection.to_string(),
+            select: Some(vec!["embedding".into()]),
             limit: Some(10000), // Reasonable limit
             ..Default::default()
         };
@@ -519,16 +519,16 @@ impl DataState {
         let mut records_with_vectors = 0;
         let mut vector_dimensions = 0;
 
-        if let Some(records) = result.data {
-            for record in &records {
-                if let Some(embedding) = record.data.get("embedding") {
-                    let vec = Self::parse_embedding(embedding)
-                        .map_err(|e| format!("vector stats record {}: {e}", record.id))?;
-                    if !vec.is_empty() {
-                        records_with_vectors += 1;
-                        if vector_dimensions == 0 {
-                            vector_dimensions = vec.len();
-                        }
+        let records = result.into_result()
+            .map_err(|e| format!("vector stats query for {collection}: {e}"))?;
+        for record in &records {
+            if let Some(embedding) = record.data.get("embedding").filter(|value| !value.is_null()) {
+                let vec = Self::parse_embedding(embedding)
+                    .map_err(|e| format!("vector stats record {}: {e}", record.id))?;
+                if !vec.is_empty() {
+                    records_with_vectors += 1;
+                    if vector_dimensions == 0 {
+                        vector_dimensions = vec.len();
                     }
                 }
             }

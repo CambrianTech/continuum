@@ -20,6 +20,7 @@ impl DataState {
                 let result = adapter
                     .query(StorageQuery {
                         collection: collection.to_owned(),
+                        select: Some(vec!["embedding".into()]),
                         ..Default::default()
                     })
                     .await;
@@ -36,7 +37,7 @@ impl DataState {
                 })?;
                 let mut vectors = Vec::new();
                 for record in records {
-                    if let Some(embedding) = record.data.get("embedding") {
+                    if let Some(embedding) = record.data.get("embedding").filter(|value| !value.is_null()) {
                         let embedding = Self::parse_embedding(embedding)
                             .map_err(|e| format!("vector corpus record {}: {e}", record.id))?;
                         if !embedding.is_empty() {

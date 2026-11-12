@@ -72,6 +72,15 @@ async fn test_vector_index_and_stats() {
         panic!("Create failed");
     };
 
+    // A nullable embedding means this document has not been indexed yet.
+    let before = module.state.vector_stats(&db_path, "test_vectors").await;
+    assert!(before.is_ok(), "{before:?}");
+    if let Ok(stats) = before {
+        assert_eq!(stats.records_with_vectors, 0);
+    }
+    let corpus = module.state.vector_corpus(&db_path, "test_vectors").await;
+    assert!(matches!(corpus, Ok(ref vectors) if vectors.is_empty()));
+
     // Index a vector for this record
     let test_embedding: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
     let index_result = index_via_state(
