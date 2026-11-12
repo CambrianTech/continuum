@@ -461,7 +461,13 @@ const MAX_WRAPPER_DEPTH: usize = 4;
 /// keeps a citizen's own `[re: <room-uuid>] …` aside out of the predicate.
 fn header_names_a_peer(header: &str) -> bool {
     let Some(at) = header.find("peer ") else { return false };
-    continuum_kernel::identity::is_uuid_shape(header[at + "peer ".len()..].trim_start().get(..36).unwrap_or(""))
+    let rest = header[at + "peer ".len()..].trim_start();
+    // Express the 36-char UUID check through an explicit match — don't pass empty
+    // string as a fallback, which silently masks short headers.
+    match rest.get(..36) {
+        Some(uuid_candidate) => continuum_kernel::identity::is_uuid_shape(uuid_candidate),
+        None => false,
+    }
 }
 
 #[cfg(test)]
