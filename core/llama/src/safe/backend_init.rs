@@ -424,6 +424,7 @@ impl Model {
             KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
         };
         ffi.embeddings = params.embeddings;
+        ffi.embeddings_only = params.embeddings_only;
         ffi.pooling_type = match params.pooling_type {
             PoolingType::None => sys::llama_pooling_type_LLAMA_POOLING_TYPE_NONE,
             PoolingType::Mean => sys::llama_pooling_type_LLAMA_POOLING_TYPE_MEAN,

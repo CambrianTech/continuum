@@ -261,6 +261,7 @@ impl LlamaCppBackend {
                 type_k: self.config.type_k,
                 type_v: self.config.type_v,
                 embeddings: false,
+                embeddings_only: false,
                 pooling_type: llama::PoolingType::None,
                 // MoE expert-selection observer — None for now; the K3 serving path
                 // sets a LiveExpertObserver here to feed the residency PGO tally.
