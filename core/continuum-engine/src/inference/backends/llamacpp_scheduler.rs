@@ -130,15 +130,15 @@ impl Scheduler {
     /// Spawn the driver thread and return a handle. The thread runs until
     /// the last `Scheduler` clone is dropped (channel closed) AND no
     /// active sequences remain.
-    pub fn spawn(model: Arc<Model>, config: SchedulerConfig) -> Self {
+    pub fn spawn(model: Arc<Model>, config: SchedulerConfig) -> Result<Self, String> {
         let (request_tx, request_rx) = std::sync::mpsc::channel();
         let model_for_thread = model.clone();
         let cfg = config.clone();
         std::thread::Builder::new()
             .name("llamacpp-scheduler".to_string())
             .spawn(move || driver_loop(model_for_thread, cfg, request_rx))
-            .expect("failed to spawn scheduler thread");
-        Self { request_tx }
+            .map_err(|e| format!("failed to spawn scheduler thread: {e}"))?;
+        Ok(Self { request_tx })
     }
 
     /// Enqueue a request. Returns Err if the scheduler thread has exited.

@@ -252,7 +252,7 @@ pub struct LlamaCppBackend {
     pub(super) caps: ModelCapabilities,
     /// Lazy-spawned scheduler. Lives behind OnceLock because spawning
     /// touches the Model Arc and we want a single instance per backend.
-    pub(super) scheduler: OnceLock<(GenerationAllocation, Scheduler)>,
+    pub(super) scheduler: OnceLock<Result<(GenerationAllocation, Scheduler), String>>,
     /// Lazy-loaded multimodal projector. Built on first `generate_with_image`
     /// call from `config.mmproj_path` (so text-only backends pay zero cost).
     /// Sits behind a Mutex<Option<...>> so concurrent first-call requests
