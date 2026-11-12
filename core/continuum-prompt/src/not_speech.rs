@@ -312,6 +312,17 @@ fn opens_with_tool_envelope(t: &str) -> bool {
     is_name_arguments_envelope(t)
 }
 
+/// A namespaced call serialized inside a markdown fence.
+fn is_name_arguments_envelope(t: &str) -> bool {
+    let body = match t.strip_prefix("```") {
+        Some(b) => b,
+        None => return false,
+    };
+    // Check if trimmed body starts with the name/arguments JSON prefix — no truncation cap.
+    let trimmed = body.trim_start();
+    trimmed.starts_with("{\"name") && t.contains("\"arguments\"")
+}
+
 /// A namespaced command CALLED at the very start of `t`: `ns/verb(` or a deeper path
 /// (`collaboration/chat/send(`), with a JSON object, kwargs (`cmd=…`), or no arguments.
 fn opens_with_bare_call(t: &str) -> bool {
