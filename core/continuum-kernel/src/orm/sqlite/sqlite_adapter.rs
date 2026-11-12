@@ -76,6 +76,7 @@ impl StorageAdapter for SqliteAdapter {
     }
 
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
+        let request_started = std::time::Instant::now();
         if let Some(dummy) = projection_dummy(&query.select) {
             let writer = match self.get_writer() {
                 Ok(c) => c,
@@ -83,10 +84,22 @@ impl StorageAdapter for SqliteAdapter {
             };
             let table = naming::to_table_name(&query.collection);
             let types = self.declared_types(&query.collection);
+            let queued = std::time::Instant::now();
             let ensure_result = tokio::task::spawn_blocking(move || {
+                let queue_ms = queued.elapsed().as_millis() as u64;
+                let waiting = std::time::Instant::now();
                 let conn = writer.lock().map_err(|e| format!("SQLite writer lock poisoned: {e}"))?;
+                let writer_wait_ms = waiting.elapsed().as_millis() as u64;
+                let schema_started = std::time::Instant::now();
                 ensure_table_exists(&conn, &table, &dummy)?;
                 evolve_table_schema(&conn, &table, &dummy, types.as_deref());
+                let schema_ms = schema_started.elapsed().as_millis() as u64;
+                drop(conn);
+                if queued.elapsed().as_millis() > 100 {
+                    continuum_base::probe!(class = "orm.sqlite.projection_schema",
+                        table = %table, queue_ms, writer_wait_ms, schema_ms,
+                        "projection schema admission and execution timings");
+                }
                 Ok::<(), String>(())
             })
             .await
@@ -103,20 +116,28 @@ impl StorageAdapter for SqliteAdapter {
         let pressure = self.last_pressure_check.clone();
         let collection_name = query.collection.clone();
         let types = self.declared_types(&query.collection);
+        let queued = std::time::Instant::now();
         tokio::task::spawn_blocking(move || {
+            let queue_ms = queued.elapsed().as_millis() as u64;
+            let waiting = std::time::Instant::now();
             let conn = match conn.lock() {
                 Ok(conn) => conn,
                 Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
             };
+            let reader_wait_ms = waiting.elapsed().as_millis() as u64;
+            let pressure_started = std::time::Instant::now();
             apply_memory_pressure(&conn, &pressure);
+            let pressure_ms = pressure_started.elapsed().as_millis() as u64;
             let start = std::time::Instant::now();
             let result = do_query(&conn, query, types.as_deref());
-            if start.elapsed().as_millis() > 100 {
-                clog_warn!(
-                    "SLOW query on {}: {}ms",
-                    collection_name,
-                    start.elapsed().as_millis()
-                );
+            let sql_ms = start.elapsed().as_millis() as u64;
+            drop(conn);
+            let total_ms = request_started.elapsed().as_millis() as u64;
+            if total_ms > 100 {
+                continuum_base::probe!(class = "orm.sqlite.query_latency",
+                    collection = %collection_name, queue_ms, reader_wait_ms,
+                    pressure_ms, sql_ms, total_ms,
+                    "query latency includes schema admission and connection waits");
             }
             result
         })
