@@ -20,6 +20,18 @@ compatibility is not a reason to retain fallback implementations or legacy codec
 Protect AIRC identity/key authority and unrelated work. Switch callers and delete
 superseded paths rather than running two backends for compatibility.
 
+The shared row decoder now consumes the owned JSON value once. It refuses NULL
+for non-nullable fields rather than removing all NULL fields and retrying with
+defaults. Missing fields still follow their declared serde schema. Before deploying
+this change to existing homes, explicitly migrate historical non-nullable columns;
+the known `training_trigger_submissions.learned` NULL rows require the documented
+pre-learning value of zero. Do not apply that substitution to nullable fields or
+unknown progress. This migration has not yet been run on the fleet.
+The offline tool `tools/migrations/2026-11-12-training-learned.py DATABASE`
+reports affected counts read-only; with serving stopped, `--apply` updates only
+the historical NULL progress in one transaction. It refuses invalid non-NULL
+progress and does not discover databases, touch AIRC keys or rewrite bodies.
+
 Migration acceptance belongs at the storage boundary:
 
 - Verify the intended identities and migrated rows across open and restart. Failed
