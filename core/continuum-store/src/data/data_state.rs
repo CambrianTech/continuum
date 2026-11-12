@@ -180,7 +180,7 @@ impl DataState {
                 .collect::<Vec<_>>()
         });
 
-        require_query_fields(&filter, &sort, &None)?;
+        require_query_fields(&filter, &sort, &params.select)?;
         let adapter = self.get_adapter(handle).await?;
 
         // Accurate total: SQL COUNT over the same filter, independent of paging.
@@ -205,6 +205,7 @@ impl DataState {
                 collection: params.collection.clone(),
                 filter,
                 sort,
+                select: params.select,
                 limit: params.limit.map(|n| n as usize),
                 offset: params.offset.map(|n| n as usize),
                 ..Default::default()

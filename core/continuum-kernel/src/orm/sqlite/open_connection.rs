@@ -452,6 +452,22 @@ pub(super) fn do_update(
     increment_version: bool,
     types: Option<&HashMap<String, FieldType>>,
 ) -> StorageResult<DataRecord> {
+    match update_fields(conn, collection, id, data, increment_version, types) {
+        Ok(()) => do_read(conn, collection, id, types),
+        Err(error) => StorageResult::err(error),
+    }
+}
+
+// Mutation acknowledgements must not hydrate an unrelated historical payload.
+// Full-record update callers explicitly read back above; batches only need success.
+fn update_fields(
+    conn: &Connection,
+    collection: &str,
+    id: &UUID,
+    data: Value,
+    increment_version: bool,
+    types: Option<&HashMap<String, FieldType>>,
+) -> Result<(), String> {
     let table = naming::to_table_name(collection);
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -478,18 +494,18 @@ pub(super) fn do_update(
     let params_ref: Vec<&dyn rusqlite::ToSql> = values.iter().map(|b| b.as_ref()).collect();
 
     match conn.execute(&sql, params_ref.as_slice()) {
-        Ok(rows) if rows > 0 => do_read(conn, collection, id, types),
-        Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+        Ok(rows) if rows > 0 => Ok(()),
+        Ok(_) => Err(format!("Record not found: {}", id)),
         Err(e) => {
             let err_msg = e.to_string();
             if err_msg.contains("has no column named") || err_msg.contains("no such column") {
                 let table = naming::to_table_name(collection);
                 if evolve_table_schema(conn, &table, &data, types) {
                     match conn.execute(&sql, params_ref.as_slice()) {
-                        Ok(rows) if rows > 0 => return do_read(conn, collection, id, types),
-                        Ok(_) => return StorageResult::err(format!("Record not found: {}", id)),
+                        Ok(rows) if rows > 0 => return Ok(()),
+                        Ok(_) => return Err(format!("Record not found: {}", id)),
                         Err(e2) => {
-                            return StorageResult::err(format!(
+                            return Err(format!(
                                 "Update failed after schema evolution: {}",
                                 e2
                             ))
@@ -497,7 +513,7 @@ pub(super) fn do_update(
                     }
                 }
             }
-            StorageResult::err(format!("Update failed: {}", e))
+            Err(format!("Update failed: {}", e))
         }
     }
 }
@@ -557,12 +573,8 @@ pub(super) fn do_batch_one(
             let (Some(id), Some(data)) = (op.id, op.data) else {
                 return Err("update requires both id and data".to_string());
             };
-            let r = do_update(conn, &op.collection, &id, data, true, declared.get(&op.collection).map(|t| t.as_ref()));
-            if r.success {
-                Ok(json!({"success": true}))
-            } else {
-                Err(r.error.unwrap_or_else(|| "update failed".to_string())) // the adapter reported failure without detail; the operation still failed
-            }
+            update_fields(conn, &op.collection, &id, data, true, declared.get(&op.collection).map(|t| t.as_ref()))?;
+            Ok(json!({"success": true}))
         }
         BatchOperationType::Ensure => {
             let (Some(id), Some(data)) = (op.id, op.data) else {
@@ -663,5 +675,35 @@ pub(super) fn cascade_rule_sql(rule: super::super::types::CascadeRule) -> &'stat
         CascadeRule::Cascade => "CASCADE",
         CascadeRule::SetNull => "SET NULL",
         CascadeRule::NoAction => "NO ACTION",
+    }
+}
+
+#[cfg(test)]
+mod mutation_projection_tests {
+    use super::*;
+
+    // A batch flag mutation must never decode the untouched body. The deliberately
+    // undecodable declared-number body makes eager read-back fail deterministically.
+    #[test]
+    fn batch_update_ack_does_not_deserialize_body() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch("CREATE TABLE evidence (id TEXT PRIMARY KEY, created_at TEXT,
+            updated_at TEXT, version INTEGER, flag INTEGER, body TEXT);
+            INSERT INTO evidence VALUES ('row','2026-01-01','2026-01-01',1,0,'not-a-number');")?;
+        let types = HashMap::from([("body".to_string(), FieldType::Number)]);
+        let declared = HashMap::from([("evidence".to_string(), Arc::new(types))]);
+        let operation = |id: &str, flag| BatchOperation {
+            operation_type: BatchOperationType::Update, collection: "evidence".into(),
+            id: Some(id.into()), data: Some(json!({"flag": flag})),
+        };
+        let updated = do_batch(&conn, vec![operation("row", 1)], &declared);
+        assert!(updated.success, "{:?}", updated.error);
+        let flag: i64 = conn.query_row("SELECT flag FROM evidence WHERE id='row'", [], |r| r.get(0))?;
+        assert_eq!(flag, 1);
+        let refused = do_batch(&conn, vec![operation("row", 2), operation("missing", 3)], &declared);
+        assert!(!refused.success);
+        let flag: i64 = conn.query_row("SELECT flag FROM evidence WHERE id='row'", [], |r| r.get(0))?;
+        assert_eq!(flag, 1, "a failed batch still rolls back all preceding mutations");
+        Ok(())
     }
 }

@@ -450,6 +450,19 @@ pub struct StagedCreditEvidence {
     pub predates_submission: bool,
 }
 
+/// Projection of selection/provenance only: never materialize historical prompts
+/// or lived calls to enumerate the evidence attached to a submission.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StagedEvidenceRow {
+    id: Uuid,
+    card_id: Uuid,
+    claim_id: Option<Uuid>,
+    owner: Option<Uuid>,
+    staged_at_ms: u64,
+    receipts: Vec<crate::ai::provenance::GenerationReceipt>,
+}
+
 /// The existing credit owner projects its own rows. Consumers never receive the
 /// prompt/completion, and an incomplete store response is an error, not "no work".
 pub async fn staged_evidence<T: Transport>(
@@ -466,10 +479,18 @@ pub async fn staged_evidence<T: Transport>(
                 "collection": StagedCredit::COLLECTION,
                 "dbPath": format!("@persona:{persona_name}"),
                 "filter": {"cardId": submitted.card_id.as_uuid().to_string()},
+                "select": ["cardId", "claimId", "owner", "stagedAtMs", "receipts"],
             }),
         )
         .await?;
-    let rows = staged_credit_from_list(value)?;
+    let listed: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // Decode the projected storage response.
+    if listed.items.len() != listed.total as usize {
+        return Err(ClientError::Transport("staged evidence list is incomplete".into()));
+    }
+    let rows = listed.items.into_iter().map(|value| {
+        let record: crate::orm::types::DataRecord = serde_json::from_value(value)?; // Decode the ORM envelope.
+        record.decode::<StagedEvidenceRow>()
+    }).collect::<Result<Vec<_>, _>>()?;
     let mut evidence = Vec::with_capacity(rows.len());
     for row in rows {
         if row.card_id != submitted.card_id.as_uuid() {

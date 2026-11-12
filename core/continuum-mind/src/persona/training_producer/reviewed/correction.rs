@@ -13,9 +13,28 @@
 
 use super::*;
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RejectionRow {
+    id: Uuid,
+    rejected_at_ms: Option<u64>,
+}
+
+fn rejection_rows(value: serde_json::Value) -> Result<Vec<RejectionRow>, ClientError> {
+    let listed: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // Decode projected storage rows.
+    if listed.items.len() != listed.total as usize {
+        return Err(ClientError::Transport("rejection list is incomplete".into()));
+    }
+    listed.items.into_iter().map(|value| {
+        let record: crate::orm::types::DataRecord = serde_json::from_value(value)?; // Decode the record envelope.
+        Ok(record.decode()?) // Only identity and rejection state are materialized.
+    }).collect()
+}
+
+
 /// Her staged rows on `card_id`, read through the substrate; `None` when they cannot be read
 /// (named by the probe; the caller then settles as before).
-async fn card_rows(persona_name: &str, card_id: Uuid) -> Option<(Connection<InProcessTransport>, Vec<StagedCredit>)> {
+async fn card_rows(persona_name: &str, card_id: Uuid) -> Option<(Connection<InProcessTransport>, Vec<RejectionRow>)> {
     let executor = EXECUTOR.cloned()?;
     let substrate = substrate_connection(&executor);
     let listed = substrate
@@ -26,10 +45,11 @@ async fn card_rows(persona_name: &str, card_id: Uuid) -> Option<(Connection<InPr
                 "collection": StagedCredit::COLLECTION,
                 "dbPath": format!("@persona:{persona_name}"),
                 "filter": { "cardId": card_id.to_string() },
+                "select": ["rejectedAtMs"],
             }),
         )
         .await
-        .and_then(staged_credit_from_list);
+        .and_then(rejection_rows);
     match listed {
         Ok(rows) => Some((substrate, rows)),
         Err(error) => {
@@ -49,7 +69,7 @@ async fn card_rows(persona_name: &str, card_id: Uuid) -> Option<(Connection<InPr
 /// passing review settles as a correction (and the rejected rows never train as passing).
 pub(super) async fn reject_on_failed_review(persona_name: &str, card_id: Uuid) {
     if let Some((substrate, rows)) = card_rows(persona_name, card_id).await {
-        mark_rejected(&substrate, persona_name, card_id, &rows).await;
+        mark_rejected(&substrate, persona_name, card_id, &rows.iter().map(|r| (r.id, r.rejected_at_ms)).collect::<Vec<_>>()).await;
     }
 }
 
@@ -65,8 +85,8 @@ pub(super) async fn passing_verdict(persona_name: &str, card_id: Uuid, revision:
 }
 
 /// PURE: the rule [`passing_verdict`] applies to her rows.
-fn corrected_or_passed(rows: &[StagedCredit], revision: Uuid) -> CardVerdict {
-    let rejected = |row: &StagedCredit| row.rejected_at_ms.is_some();
+fn corrected_or_passed(rows: &[RejectionRow], revision: Uuid) -> CardVerdict {
+    let rejected = |row: &RejectionRow| row.rejected_at_ms.is_some();
     let revision_rejected = rows.iter().any(|row| row.id == revision && rejected(row));
     if !revision_rejected && rows.iter().any(rejected) {
         CardVerdict::Corrected
@@ -79,14 +99,8 @@ fn corrected_or_passed(rows: &[StagedCredit], revision: Uuid) -> CardVerdict {
 mod tests {
     use super::*;
 
-    fn row(rejected: Option<u64>) -> StagedCredit {
-        let mut row: StagedCredit = serde_json::from_value(json!({
-            "id": Uuid::new_v4(), "cardId": Uuid::from_u128(0x5c0), "claimId": null, "owner": null,
-            "role": null, "receipts": [], "served": null, "prompt": "p", "completion": "c", "stagedAtMs": 1,
-        }))
-        .expect("a minimal staged row"); // expect: the literal above is a complete StagedCredit
-        row.rejected_at_ms = rejected;
-        row
+    fn row(rejected: Option<u64>) -> RejectionRow {
+        RejectionRow { id: Uuid::new_v4(), rejected_at_ms: rejected }
     }
 
     // what this catches: the live review path settling a reviewed correction as a plain pass

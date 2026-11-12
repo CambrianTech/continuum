@@ -96,7 +96,7 @@ pub async fn settle_card_credit_bound(
             // store, and her own connection resolves to Trusted, where data/update is refused
             // (modules/grid/acl.rs; card fd47a804). Through her identity every mark failed and a
             // later pass trained the rejected rows anyway.
-            mark_rejected(&substrate, &persona_name, card_id, &rows).await;
+            mark_rejected(&substrate, &persona_name, card_id, &rows.iter().map(|r| (r.id, r.rejected_at_ms)).collect::<Vec<_>>()).await;
             rows
         };
         let mut submitted = 0usize;
@@ -483,28 +483,29 @@ pub(crate) fn pass_admits(rows: &[StagedCredit]) -> PassAdmits {
 /// identity resolves to Trusted, where data/update is refused. A row already marked keeps its first mark (a second failure doesn't move it).
 /// A write that fails is named; that row may then train on a later pass, which is the
 /// old behaviour, never a new one.
-pub(super) async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[StagedCredit]) {
+pub(super) async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[(Uuid, Option<u64>)]) {
     let now = EpochMs::now().millis();
-    for row in rows.iter().filter(|r| r.rejected_at_ms.is_none()) {
+    for (id, _) in rows.iter().copied().filter(|(_, rejected)| rejected.is_none()) {
         let marked = conn
             .commands()
             .execute_value(
-                "data/update",
+                "data/batch",
                 json!({
-                    "collection": StagedCredit::COLLECTION,
-                    "id": row.id,
-                    "data": { "rejectedAtMs": now },
+                    "operations": [{
+                        "operationType": "update", "collection": StagedCredit::COLLECTION,
+                        "id": id, "data": { "rejectedAtMs": now }
+                    }],
                     "dbPath": format!("@persona:{persona_name}"),
                 }),
             )
             .await
-            .and_then(|result| storage_ok(&result, "data/update", StagedCredit::COLLECTION));
+            .and_then(|result| storage_ok(&result, "data/batch", StagedCredit::COLLECTION));
         if let Err(error) = marked {
             continuum_base::probe!(
                 class = "training.credit.reject_mark_failed",
                 persona = %persona_name,
                 card = %card_id,
-                submission = %row.id,
+                submission = %id,
                 error = %error,
                 "a row the failure rejected could not be marked; a later pass may still train it"
             );

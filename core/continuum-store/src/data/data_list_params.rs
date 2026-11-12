@@ -20,6 +20,11 @@ pub struct DataListParams {
     #[ts(optional)]
     #[ts(optional, type = "Record<string, unknown>")]
     pub filter: Option<serde_json::Value>,
+    /// Fields to materialize in storage. ORM identity metadata is always included.
+    /// Omit for full records; metadata consumers should name only their fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub select: Option<Vec<String>>,
     /// Optional ordering clauses, applied in order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
