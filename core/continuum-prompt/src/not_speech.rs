@@ -257,7 +257,7 @@ fn opens_with_tool_envelope(t: &str) -> bool {
 
             // Labelled call: the callee is the last whitespace/colon-separated token before `(`.
             // [call form: code/read({"file_path":"src/main.rs"})] (#0051cdcf, Intel Mac).
-            let callee = before_paren.trim().rsplit(|c: char| c.is_whitespace() || c == ':').next().unwrap_or("");
+            let callee = before_paren.trim().rsplit(|c: char| c.is_whitespace() || c == ':').next().unwrap();
             if callee != before_paren.trim() && verb_ok(callee) && callee.contains('/') && (has_json || has_kwargs) {
                 return true;
             }
@@ -305,36 +305,11 @@ fn opens_with_tool_envelope(t: &str) -> bool {
     // (`ns/verb(` with a JSON or kwargs object) AND a `Result:` line after it. Either alone
     // stays speech — a citizen writing "code/shell(cmd=…) is how you'd list it" has no Result
     // line, and prose that mentions a "Result:" does not open with a call.
-    if opens_with_bare_call(t) && t.contains("\nResult:") {
-        return true;
-    }
     // The canonical envelope, with or without leading whitespace inside the object.
-    let compact: String = t.chars().take(24).filter(|c| !c.is_whitespace()).collect();
-    if compact.starts_with("{\"tool_call\"") {
+    if t.trim().starts_with("{\"tool_call\"") {
         return true;
     }
-    // THE SEVENTH DIALECT (Saoirse, Intel Mac, qwen2.5-coder-1.5b, into #cambriantech,
-    // 2026-10-02): the model's NATIVE call format — `{"name": …, "arguments": {…}}` —
-    // as the whole reply, bare or inside one fence. 20 of her 34 non-receipt posts that
-    // day: `{"name": "error", "arguments": {"message": "forbidden: …"}}`, `git_pull`,
-    // `read`, `status`, and `code/run` with a backtick string that is not JSON. The
-    // lifter rightly refuses every one (no slash in the name since #4587, or no parse),
-    // and a refused call fell through to speech. Shape, not parse, for that reason: the
-    // malformed ones are the ones that reach here. Anchored on the object OPENING the
-    // reply (after at most a fence line), so prose that quotes the envelope is speech.
     is_name_arguments_envelope(t)
-}
-
-/// The reply opens — directly or on the line after a fence — with an object whose first
-/// key is `"name"` and that carries an `"arguments"` key: a tool call in the model's own
-/// format, emitted where prose belongs.
-fn is_name_arguments_envelope(t: &str) -> bool {
-    let body = match t.strip_prefix("```") {
-        Some(fenced) => fenced.split_once('\n').map_or("", |(_, rest)| rest),
-        None => t,
-    };
-    let compact: String = body.chars().take(48).filter(|c| !c.is_whitespace()).collect();
-    compact.starts_with("{\"name\":\"") && body.contains("\"arguments\"")
 }
 
 /// A namespaced command CALLED at the very start of `t`: `ns/verb(` or a deeper path
@@ -782,12 +757,19 @@ mod tests {
     // Regression tests for Codex review (submission 9282003d): checked-in proofs that the two
     // corrected cases stay fixed before merging.
 
-    // Stage-word + brace delimiter: [execute] code/read({…}) must be caught as a tool envelope;
-    // this was broken in cd198e2e when only the paren delimiter was checked, missing the brace form.
+    // Stage-word + brace delimiter: both [execute] code/read({…}) and the brace-only
+    // form [execute] code/read{…} must be caught as tool envelopes. The original gate
+    // accepted both delimiters (split on '(' or '{'); cd198e2e preserved that coverage.
     #[test]
     fn regression_stage_word_brace_call() {
+        // Both brace+paren and brace-only forms are valid stage-word calls.
         assert_eq!(
             is_not_speech("[execute] code/read({\"file_path\":\"src/main.rs\"})"),
+            Some("tool_envelope")
+        );
+        // Brace-only: no opening paren, brace directly after the callee.
+        assert_eq!(
+            is_not_speech("[execute] code/read{\"file_path\":\"src/main.rs\"}"),
             Some("tool_envelope")
         );
     }
