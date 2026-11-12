@@ -811,8 +811,8 @@ mod tests {
         assert_eq!(spawner.plans.lock().len(), 1);
 
         // Write a proper DeployClaim with an alive PID (the test's own process) and recent renewal.
-        let run_dir = dir.path().join("run");
-        std::fs::create_dir_all(&run_dir).unwrap(); // unwrap: the test's own dir
+        let root = dir.path().join("home").join(".continuum"); // same as actuator's self.root
+        std::fs::create_dir_all(root.join("run")).unwrap(); // unwrap: the test's own dir
         let claim = DeployClaim {
             pid: std::process::id() as i32,  // alive right now — in_flight(owner_alive) → true
             started_ms: NOW.saturating_sub(60_000),
@@ -820,7 +820,7 @@ mod tests {
             renewed_ms: NOW,                  // recent renewal → not expired
             progress_ms: 0,
         };
-        continuum_cli_lifecycle::deploy_claim::write(run_dir.as_path(), &claim).unwrap(); // unwrap: the test's own file
+        continuum_cli_lifecycle::deploy_claim::write(&root, &claim).unwrap(); // unwrap: the test's own file
 
         // Now a second request for a different tip is blocked by in_flight().excludes_deploy()
         let req_b = DeployRequest::new("bbbbbbbbb222", NOW + 5_000);
