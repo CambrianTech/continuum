@@ -491,12 +491,12 @@ impl DeployActuator {
             }
             return ActuateOutcome::Deferred(owner);
         }
-        // A deploy from another tip holds the claim on this node — serialise against it.
+        // Any live deploy owns this root, including one waiting for publication.
         if in_flight(&self.root, now_ms).excludes_deploy() {
             continuum_base::probe!(
                 class = "deploy.actuate.concurrent_claim",
                 tip = req.tip_sha.as_str(),
-                "a deploy is in flight for a different tip; this request waits"
+                "a deploy owns this root; this request waits"
             );
             return ActuateOutcome::Skipped(ActuateDecision::ConcurrentClaim);
         }
@@ -790,12 +790,11 @@ mod tests {
         assert_eq!((r.boot_outcome.as_deref(), r.booted_ms), (Some("stale"), Some(NOW + 1)));
         assert_eq!(act.report_boot_outcome("c2344d758", NOW + 2), BootOutcome::Landed);
         assert_eq!(act.receipt().unwrap().boot_outcome.as_deref(), Some("landed")); // unwrap: the receipt stands
-        assert_eq!(act.receipt().unwrap().boot_outcome.as_deref(), Some("landed")); // unwrap: the receipt stands
     }
 
     // what this catches: CONCURRENT CLAIMS — when another deploy-consume holds an active
     // claim (via the CLI lifecycle's DeployClaim schema), the actuator defers even if
-    // stranded. Uses `in_flight` + `excludes_deploy` from deploy_tracker, which correctly
+    // stranded. Uses `in_flight` + `excludes_deploy` from deploy_claim, which correctly
     // handles renewal, abandoned-owner, and waiting-marker semantics instead of broken
     // platform-specific PID probes.
     #[test]
@@ -829,6 +828,22 @@ mod tests {
             ActuateOutcome::Skipped(ActuateDecision::ConcurrentClaim)
         ));
         assert_eq!(spawner.plans.lock().len(), 1, "concurrent claim prevents a second spawn");
+
+        // Waiting releases serving, but must retain exclusive deployment custody.
+        continuum_cli_lifecycle::deploy_claim::mark_waiting(
+            &root, std::process::id() as i32, NOW + 5_500,
+        ).unwrap(); // unwrap: the test's own marker
+        let gate = in_flight(&root, NOW + 5_500);
+        assert!(!gate.blocks(), "publication wait permits serving");
+        assert!(gate.excludes_deploy(), "publication wait retains deploy custody");
+        assert!(matches!(
+            act.on_deploy_wanted(&req_b, true, NOW + 5_500),
+            ActuateOutcome::Skipped(ActuateDecision::ConcurrentClaim)
+        ));
+        assert_eq!(spawner.plans.lock().len(), 1, "waiting must not spawn another consumer");
+        continuum_cli_lifecycle::deploy_claim::clear_waiting(
+            &root, std::process::id() as i32,
+        ).unwrap(); // unwrap: the test's own marker
 
         // Remove the claim → actuation resumes.
         std::fs::remove_file(root.join("run").join("deploy.claim")).unwrap(); // unwrap: the test's own file
