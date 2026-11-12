@@ -19,6 +19,11 @@ collection: string,
  */
 filter?: Record<string, unknown>, 
 /**
+ * Fields to materialize in storage. ORM identity metadata is always included.
+ * Omit for full records; metadata consumers should name only their fields.
+ */
+select?: Array<string>, 
+/**
  * Optional ordering clauses, applied in order.
  */
 sort?: Array<OrderByClause>, 
