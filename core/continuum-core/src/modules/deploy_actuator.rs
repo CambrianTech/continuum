@@ -146,6 +146,8 @@ pub(crate) enum ActuateDecision {
     /// [`ACTUATE_MAX_ATTEMPTS`] launches did not land this tip here. Stop; the
     /// tracker's `deploy.stranded` is the standing receipt and a new tip resets this.
     GaveUp { attempts: u32 },
+    /// Another deploy-consume build holds the claim on this node — serialise against it.
+    ConcurrentClaim,
 }
 
 /// How long after an actuation a stranded request may be re-actuated: the tracker's own
@@ -488,6 +490,15 @@ impl DeployActuator {
             }
             return ActuateOutcome::Deferred(owner);
         }
+        // A deploy from another tip holds the claim on this node — serialise against it.
+        if concurrent_claim(&self.root) {
+            continuum_base::probe!(
+                class = "deploy.actuate.concurrent_claim",
+                tip = req.tip_sha.as_str(),
+                "a deploy is in flight for a different tip; this request waits"
+            );
+            return ActuateOutcome::Skipped(ActuateDecision::ConcurrentClaim);
+        }
         let prev = self.receipt();
         let decision = decide_actuation(prev.as_ref(), req, stranded, now_ms);
         let attempt = match decision.clone() {
@@ -518,6 +529,14 @@ impl DeployActuator {
                 return ActuateOutcome::Skipped(decision);
             }
             ActuateDecision::AlreadyActuated { .. } => return ActuateOutcome::Skipped(decision),
+            ActuateDecision::ConcurrentClaim => {
+                continuum_base::probe!(
+                    class = "deploy.actuate.concurrent_claim",
+                    tip = req.tip_sha.as_str(),
+                    "another deploy-consume holds an active claim for this root — skipping to avoid lock contention"
+                );
+                return ActuateOutcome::Skipped(decision);
+            }
         };
         let plan = SpawnPlan {
             cli: locate_cli(&self.user_home),
@@ -613,6 +632,52 @@ impl DeployActuator {
                 self.write_receipt(&r);
             }
         }
+    }
+}
+
+/// Path to the CLI lifecycle's deploy claim file.
+pub(crate) fn claim_path(root: &Path) -> PathBuf {
+    root.join("run").join("deploy.claim")
+}
+
+/// Whether a deploy from another tip is currently in flight on this node.
+/// Returns true only when the claim file exists AND its PID is still alive;
+/// stale claims (dead process, no file) do not block — we are not serialising
+/// against ghosts.
+pub(crate) fn concurrent_claim(root: &Path) -> bool {
+    let path = claim_path(root);
+    if !path.exists() {
+        return false;
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return false, // unreadable claim — not a live deploy
+    };
+    #[derive(serde::Deserialize)]
+    struct Claim { pid: u32 }
+    let claim: Claim = match serde_json::from_str(&text) {
+        Ok(c) => c,
+        Err(_) => return false, // malformed claim — not a live deploy
+    };
+    pid_alive(claim.pid)
+}
+
+/// Check if a process with this PID is still alive.
+pub(crate) fn pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        use std::process::{Command, Stdio};
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
 }
 
@@ -770,5 +835,42 @@ mod tests {
         assert_eq!((r.boot_outcome.as_deref(), r.booted_ms), (Some("stale"), Some(NOW + 1)));
         assert_eq!(act.report_boot_outcome("c2344d758", NOW + 2), BootOutcome::Landed);
         assert_eq!(act.receipt().unwrap().boot_outcome.as_deref(), Some("landed")); // unwrap: the receipt stands
+        assert_eq!(act.receipt().unwrap().boot_outcome.as_deref(), Some("landed")); // unwrap: the receipt stands
+    }
+
+    // what this catches: CONCURRENT CLAIMS — when a deploy from a different tip is in flight,
+    // the actuator does not launch another consumer even if stranded. The claim file at
+    // root/run/deploy.claim with an alive PID blocks; stale claims (dead process, no file)
+    // do not.
+    #[test]
+    fn concurrent_claim_blocks_actuation() {
+        let dir = tempfile::tempdir().unwrap(); // unwrap: the test's own dir
+        let req_a = DeployRequest::new("aaaaaaaaaa11", NOW);
+        let (act, spawner) = actuator(dir.path(), None, Some(42));
+
+        // No claim file → acts normally.
+        assert!(matches!(act.on_deploy_wanted(&req_a, false, NOW), ActuateOutcome::Spawned { attempt: 1, .. }));
+        assert_eq!(spawner.plans.lock().len(), 1);
+
+        // Write a claim file with PID 1 (init — always alive on Unix).
+        let run_dir = dir.path().join("home").join(".continuum").join("run");
+        std::fs::create_dir_all(&run_dir).unwrap(); // unwrap: the test's own dir
+        std::fs::write(
+            run_dir.join("deploy.claim"),
+            r#"{"pid":1,"started_ms":0}"#,
+        ).unwrap(); // unwrap: the test's own file
+
+        // Now a second request for a different tip is blocked.
+        let req_b = DeployRequest::new("bbbbbbbbb222", NOW + 5_000);
+        assert!(matches!(
+            act.on_deploy_wanted(&req_b, false, NOW + 5_000),
+            ActuateOutcome::Skipped(ActuateDecision::ConcurrentClaim)
+        ));
+        assert_eq!(spawner.plans.lock().len(), 1, "concurrent claim prevents a second spawn");
+
+        // Remove the stale claim → actuation resumes.
+        std::fs::remove_file(run_dir.join("deploy.claim")).unwrap(); // unwrap: the test's own file
+        assert!(matches!(act.on_deploy_wanted(&req_b, false, NOW + 6_000), ActuateOutcome::Spawned { attempt: 1, .. }));
+        assert_eq!(spawner.plans.lock().len(), 2);
     }
 }
