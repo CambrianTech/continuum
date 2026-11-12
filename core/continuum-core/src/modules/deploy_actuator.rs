@@ -32,7 +32,8 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use continuum_cli_lifecycle::deploy_tracker::{in_flight, same_commit, DeployGate, DeployRequest, STRANDED_GRACE_MS};
+use continuum_cli_lifecycle::deploy_tracker::{same_commit, DeployRequest, STRANDED_GRACE_MS};
+use continuum_cli_lifecycle::deploy_claim::in_flight;
 
 /// The receipt, beside the request it answered: `<state>/deploy-actuation.json`.
 pub(crate) const ACTUATION_FILE: &str = "deploy-actuation.json";
@@ -800,6 +801,8 @@ mod tests {
     #[test]
     fn concurrent_claim_blocks_actuation() {
         let dir = tempfile::tempdir().unwrap(); // unwrap: the test's own dir
+        use continuum_cli_lifecycle::deploy_claim::DeployClaim;
+
         let req_a = DeployRequest::new("aaaaaaaaaa11", NOW);
         let (act, spawner) = actuator(dir.path(), None, Some(42));
 
