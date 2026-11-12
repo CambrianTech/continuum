@@ -477,20 +477,18 @@ pub async fn boards(airc: &Airc) -> Result<Vec<Arc<BoardSnapshot>>, AircError> {
 }
 
 /// The board of one subscribed room, through her index. `None` names the scope's current room.
-/// A room she is not subscribed to falls back to the scope's current room with a probe, never another room's board.
+/// A room she is not subscribed to is `NotSubscribed`, never another room's board.
 pub async fn room_board(airc: &Airc, room: Option<uuid::Uuid>) -> Result<Arc<BoardSnapshot>, AircError> {
     let room = match room {
-        Some(id) => {
-            let found = subscribed_rooms(airc).await?.into_iter().find(|r| r.channel.as_uuid() == id);
-            if let Some(room) = found { room } else {
-                continuum_base::probe!(
-                    class = "board.index.room_not_subscribed",
-                    room = %id,
-                    "requested room not in subscribed set; falling back to current room"
-                );
-                airc.current_room().await?
-            }
-        },
+        Some(id) => subscribed_rooms(airc)
+            .await?
+            .into_iter()
+            .find(|r| r.channel.as_uuid() == id)
+            .ok_or_else(|| {
+                AircError::NotSubscribed(format!(
+                    "work board requested for room {id}, which this scope is not subscribed to; refusing to substitute the default room's board"
+                ))
+            })?,
         None => airc.current_room().await?,
     };
     let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: leases read as not yet crossed
