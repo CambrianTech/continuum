@@ -191,14 +191,10 @@ impl DataState {
                 ..Default::default()
             })
             .await;
-        if !count_res.success {
-            return Err(format!(
-                "data/list: count failed for '{}' — {}",
-                params.collection,
-                count_res.error.unwrap_or_else(|| "unknown error".into())
-            ));
-        }
-        let total = count_res.data.unwrap_or(0) as u32;
+        let total = count_res.into_result()
+            .map_err(|e| format!("data/list: count failed for '{}' - {e}", params.collection))?;
+        let total = u32::try_from(total)
+            .map_err(|_| "data/list: count exceeds response representation".to_string())?;
 
         let res = adapter
             .query(StorageQuery {
@@ -211,15 +207,8 @@ impl DataState {
                 ..Default::default()
             })
             .await;
-        if !res.success {
-            return Err(format!(
-                "data/list: query failed for '{}' — {}",
-                params.collection,
-                res.error.unwrap_or_else(|| "unknown error".into())
-            ));
-        }
-
-        let records = res.data.unwrap_or_default();
+        let records = res.into_result()
+            .map_err(|e| format!("data/list: query failed for '{}' - {e}", params.collection))?;
         let mut items = Vec::with_capacity(records.len());
         for r in records {
             items.push(
@@ -514,7 +503,8 @@ impl DataState {
             ..Default::default()
         };
         let total_result = adapter.count(total_query).await;
-        let total_records = total_result.data.unwrap_or(0);
+        let total_records = total_result.into_result()
+            .map_err(|e| format!("vector stats count for {collection}: {e}"))?;
 
         // Query to count records WITH embeddings
         // We need to query and check which have embedding field

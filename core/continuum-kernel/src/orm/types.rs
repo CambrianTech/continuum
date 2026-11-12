@@ -210,6 +210,15 @@ pub struct StorageResult<T> {
 }
 
 impl<T> StorageResult<T> {
+    /// Validate the storage receipt before exposing its payload to a caller.
+    pub fn into_result(self) -> Result<T, String> {
+        match (self.success, self.data, self.error) {
+            (true, Some(data), None) => Ok(data),
+            (false, None, Some(error)) => Err(error),
+            _ => Err("Invalid storage receipt: success, data, and error disagree".into()),
+        }
+    }
+
     pub fn ok(data: T) -> Self {
         Self {
             success: true,
@@ -325,6 +334,25 @@ pub struct BatchOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_receipt_rejects_missing_or_contradictory_payloads() {
+        assert_eq!(StorageResult::ok(0usize).into_result(), Ok(0));
+        assert_eq!(StorageResult::<usize>::err("database unavailable").into_result(),
+            Err("database unavailable".into()));
+        for success in [false, true] {
+            for data in [None, Some(7usize)] {
+                for error in [None, Some("failure".to_string())] {
+                    let valid = (success && data.is_some() && error.is_none())
+                        || (!success && data.is_none() && error.is_some());
+                    let receipt = StorageResult { success, data, error, metadata: None };
+                    if !valid {
+                        assert!(receipt.into_result().is_err());
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_storage_result_ok() {
