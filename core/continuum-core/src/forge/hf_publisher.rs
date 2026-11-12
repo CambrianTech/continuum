@@ -162,9 +162,9 @@ fn revision_and_path(location: &str) -> Option<(&str, &str)> {
     rest.split_once('/')
 }
 
-/// HF's API token: `HF_TOKEN`, else the token the `hf` CLI stored at login.
+/// HF's API token: `HF_TOKEN` from config.env, else the token the `hf` CLI stored at login.
 fn hf_token() -> Option<String> {
-    std::env::var("HF_TOKEN").ok().filter(|t| !t.trim().is_empty()).or_else(|| {
+    continuum_base::config_env::read("HF_TOKEN").filter(|t| !t.trim().is_empty()).or_else(|| {
         let home = std::env::var("HF_HOME")
             .map(std::path::PathBuf::from)
             .ok()

@@ -116,8 +116,8 @@ ort_dylib() {
 # ORT set, core exec'd in the FOREGROUND so the supervisor owns its lifecycle.
 #
 # Secrets (HF_TOKEN etc.) are NOT exported here — they live only in config.env on
-disk and must be read via config_env::read() by Rust code. This prevents citizen
-shells from dumping them into room messages.
+# disk and must be read via config_env::read() by Rust code. This prevents citizen
+# shells from dumping them into room messages.
 core_wrapper() {
   # if/then/fi (not `&&`) so the string is valid XML unescaped inside the task XML.
   echo "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:\$PATH\"; if [ -f \"$DATA/config.env\" ]; then filter_env_vars \"$DATA/config.env\" | source /dev/stdin; fi; export ORT_DYLIB_PATH=\"\${ORT_DYLIB_PATH:-$(ort_dylib)}\"; exec \"$1\" \"$SOCKET\""
@@ -170,10 +170,9 @@ linux_install() {
     echo "  (boot-without-login: 'sudo loginctl enable-linger $SVC_USER', or use --system)"
   fi
 }
-}
 
 linux_uninstall() {
-  sudo systemctl disable --now continuum-core.service 2>/dev/null || true; sudo rm -f "$(linux_system_unit)" 2>/dev/null || true; sudo systemctl daemon-reload 2>/dev/null || true
+  sudo systemctl disable --now continuum-core.service 2>/dev/null || true; sudo rm -f "$(linux_system_unit)" 2>/dev/null || true; rm -f "$DATA/config-safe.env" 2>/dev/null || true; sudo systemctl daemon-reload 2>/dev/null || true
   systemctl --user disable --now continuum-core.service 2>/dev/null || true; rm -f "$(linux_user_unit)"; systemctl --user daemon-reload 2>/dev/null || true
   echo "✓ removed continuum-core service (both scopes)"
 }
