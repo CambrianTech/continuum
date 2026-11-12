@@ -64,26 +64,70 @@ resolve_core_bin() {
   return 1
 }
 
+# ── Secret filtering ────────────────────────────────────────────────
+# config.env may contain secrets (HF_TOKEN, GH_TOKEN, etc.). We must
+# never source them into the core process environment — citizen shells
+# inherit that env and can dump it. This function reads config.env and
+# only exports vars whose names do NOT match the secret denylist.
+#
+# Denylist: any underscore-segment matching TOKEN|SECRET|PASSWORD|KEY
+# (case-insensitive). Matches is_secret_env_name in run_shell_command.rs.
+is_secret_env_var() {
+  local name="$1"
+  # Split by underscore and check each segment
+  local IFS='_'
+  for seg in $name; do
+    local upper
+    upper="${seg^^}"  # bash uppercase
+    case "$upper" in
+      TOKEN|SECRET|PASSWORD|KEY) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# Read config.env and export only safe (non-secret) vars. Writes them
+# to stdout as "export KEY=VALUE" lines, suitable for sourcing.
+filter_env_vars() {
+  local env_file="$1"
+  [ -f "$env_file" ] || return 0
+  while IFS= read -r line; do
+    # Skip comments and blank lines
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    # Extract the key (everything before first '=')
+    local key="${line%%=*}"
+    # Trim whitespace from key
+    key="$(echo "$key" | xargs)"
+    [ -z "$key" ] && continue
+    if ! is_secret_env_var "$key"; then
+      echo "export $line"
+    fi
+  done < "$env_file"
+}
+
 ort_dylib() {
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*|Windows_NT) cygpath -w "$PAYLOAD_ROOT/lib/onnxruntime.dll" ;;
     *) echo "$PAYLOAD_ROOT/lib/libonnxruntime.so" ;;
   esac
 }
-
 # The wrapper command the supervisor runs: airc + toolchain on PATH so the core
-# finds airc at boot (no blocking install), config.env sourced, ORT set, core
-# exec'd in the FOREGROUND so the supervisor owns its lifecycle.
+# finds airc at boot (no blocking install), non-secret config.env vars sourced,
+# ORT set, core exec'd in the FOREGROUND so the supervisor owns its lifecycle.
+#
+# Secrets (HF_TOKEN etc.) are NOT exported here — they live only in config.env on
+disk and must be read via config_env::read() by Rust code. This prevents citizen
+shells from dumping them into room messages.
 core_wrapper() {
   # if/then/fi (not `&&`) so the string is valid XML unescaped inside the task XML.
-  echo "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:\$PATH\"; if [ -f \"$DATA/config.env\" ]; then set -a; . \"$DATA/config.env\"; set +a; fi; export ORT_DYLIB_PATH=\"\${ORT_DYLIB_PATH:-$(ort_dylib)}\"; exec \"$1\" \"$SOCKET\""
+  echo "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:\$PATH\"; if [ -f \"$DATA/config.env\" ]; then filter_env_vars \"$DATA/config.env\" | source /dev/stdin; fi; export ORT_DYLIB_PATH=\"\${ORT_DYLIB_PATH:-$(ort_dylib)}\"; exec \"$1\" \"$SOCKET\""
 }
 
 # ════════════════════════ Linux ════════════════════════
 linux_user_unit() { echo "$HOME/.config/systemd/user/continuum-core.service"; }
 linux_system_unit() { echo "/etc/systemd/system/continuum-core.service"; }
 
-linux_unit_body() { # $1=bin  $2=User line (system only)
+linux_unit_body() { # $1=bin  $2=User line (system only)  $3=safe-env-path
   cat <<UNIT
 [Unit]
 Description=Continuum headless core (reboot-surviving)
@@ -91,7 +135,7 @@ After=network.target
 
 [Service]
 Type=simple
-${2:-}EnvironmentFile=-$DATA/config.env
+${2:-}EnvironmentFile=${3:--$DATA/config.env-safe}
 Environment=ORT_DYLIB_PATH=$(ort_dylib)
 Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$HOME/.cargo/bin
 WorkingDirectory=$DATA
@@ -104,25 +148,28 @@ Restart=on-failure
 RestartSec=2
 
 [Install]
-WantedBy=${3:-default.target}
+WantedBy=${4:-default.target}
 UNIT
 }
 
 linux_install() {
   local bin; bin="$(resolve_core_bin)" || { echo "✗ no continuum-core-server binary — build/install it or set CONTINUUM_CORE_BIN." >&2; exit 1; }
   mkdir -p "$LOG_DIR"
+  # Generate safe-filtered env file for systemd (excludes secret-bearing variables)
+  filter_env_vars > "$DATA/config-safe.env" 2>/dev/null || true
   if [ "$SCOPE" = "system" ]; then
     linux_unit_body "$bin" "User=$SVC_USER
-" "multi-user.target" | sudo tee "$(linux_system_unit)" >/dev/null
+" "multi-user.target" "$DATA/config-safe.env" | sudo tee "$(linux_system_unit)" >/dev/null
     sudo systemctl daemon-reload; sudo systemctl enable --now continuum-core.service
     echo "✓ installed systemd SYSTEM service (survives logout) → $bin $SOCKET"
   else
     mkdir -p "$(dirname "$(linux_user_unit)")"
-    linux_unit_body "$bin" "" "default.target" > "$(linux_user_unit)"
+    linux_unit_body "$bin" "" "default.target" "$DATA/config-safe.env" > "$(linux_user_unit)"
     systemctl --user daemon-reload; systemctl --user enable --now continuum-core.service
     echo "✓ installed systemd --user service (crash + reboot-login) → $bin $SOCKET"
     echo "  (boot-without-login: 'sudo loginctl enable-linger $SVC_USER', or use --system)"
   fi
+}
 }
 
 linux_uninstall() {
