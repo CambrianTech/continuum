@@ -217,7 +217,7 @@ impl DataState {
                 filter: params.filter.clone(),
                 ..Default::default()
             };
-            adapter.count(count_query).await.data.unwrap_or(0) as u64
+            adapter.count(count_query).await.into_result()? as u64
         } else {
             0
         };
@@ -392,12 +392,7 @@ impl DataState {
             ..Default::default()
         };
 
-        let result = adapter.query(query).await;
-        if !result.success {
-            return Err(result.error.unwrap_or_else(|| "Query failed".to_string()));
-        }
-
-        let mut records = result.data.unwrap_or_default();
+        let mut records = adapter.query(query).await.into_result()?;
         let new_has_more = records.len() > page_size;
         if new_has_more {
             records.truncate(page_size);

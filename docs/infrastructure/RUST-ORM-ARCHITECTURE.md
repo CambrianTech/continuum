@@ -14,9 +14,15 @@ provider translation; do not add independently maintained table definitions. Sha
 dependency versions live in the workspace, while consuming owners select coherent
 provider/runtime feature groups.
 
+This is a development migration with effectively no users. Joel authorizes
+handwritten one-time migration scripts and best-effort preservation of local data;
+compatibility is not a reason to retain fallback implementations or legacy codecs.
+Protect AIRC identity/key authority and unrelated work. Switch callers and delete
+superseded paths rather than running two backends for compatibility.
+
 Migration acceptance belongs at the storage boundary:
 
-- Preserve identities and existing rows across open, migration and restart. Failed
+- Verify the intended identities and migrated rows across open and restart. Failed
   transactions and cancelled callers must preserve the existing commit contracts.
 - Exercise inner/left joins, unmatched rows, projection, ordering and cardinality.
   A provider must never advertise a capability it silently ignores.
