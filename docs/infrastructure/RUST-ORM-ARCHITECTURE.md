@@ -72,6 +72,21 @@ the collections and test generic-write refusal alongside normal AIRC import/repl
 Publication attribution already checks the exact relay, room, sender and digest;
 those checks must survive this migration. This gap is not yet closed.
 
+Joel also confirms that AIRC metadata is an intended extension point for fields
+needed by Continuum and other integrations. The pinned AIRC protocol (`a3a7396`)
+already defines namespaced headers (`airc.*`, `forge.*`, `continuum.*`, and other
+consumer namespaces), opaque JSON/binary bodies, and content-addressed media.
+Reuse those contracts before adding parallel local schema machinery. Header-based
+routing must not require decoding the body. A local indexed projection may serve
+counts and cursor pages while retaining the source event identity and provenance.
+
+Extension fields supplement the consumer's schema; they do not override AIRC's
+authenticated sender/client, channel, ordering or authoritative reply threading.
+Use typed consumer codecs with explicit schema/version identification where needed,
+and preserve metadata through import/export and replay. Verify unknown extensions
+survive round trips and that conflicting authority fields are refused. These are
+integration acceptance requirements, not a claim that every current path meets them.
+
 ### Continuous reclamation
 
 The ORM is a consumer of the existing governor interface, not a separate resource
