@@ -811,7 +811,7 @@ mod tests {
         assert_eq!(spawner.plans.lock().len(), 1);
 
         // Write a proper DeployClaim with an alive PID (the test's own process) and recent renewal.
-        let run_dir = dir.path().join("home").join(".continuum").join("run");
+        let run_dir = dir.path().join("run");
         std::fs::create_dir_all(&run_dir).unwrap(); // unwrap: the test's own dir
         let claim = DeployClaim {
             pid: std::process::id() as i32,  // alive right now — in_flight(owner_alive) → true
