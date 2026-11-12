@@ -257,9 +257,16 @@ fn opens_with_tool_envelope(t: &str) -> bool {
 
             // Labelled call: the callee is the last whitespace/colon-separated token before `(`.
             // [call form: code/read({"file_path":"src/main.rs"})] (#0051cdcf, Intel Mac).
-            let callee = before_paren.trim().rsplit(|c: char| c.is_whitespace() || c == ':').next().unwrap();
-            if callee != before_paren.trim() && verb_ok(callee) && callee.contains('/') && (has_json || has_kwargs) {
-                return true;
+            let mut labelled_callee = None;
+            for c in before_paren.trim().rsplit(|ch: char| ch.is_whitespace() || ch == ':') {
+                labelled_callee = Some(c);
+                break;
+            }
+            if let Some(callee) = labelled_callee {
+                if callee != before_paren.trim() && verb_ok(callee) && callee.contains('/') && (has_json || has_kwargs)
+                {
+                    return true;
+                }
             }
         }
     }
