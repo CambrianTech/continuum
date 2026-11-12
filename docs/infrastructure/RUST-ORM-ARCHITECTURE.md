@@ -40,6 +40,26 @@ Replace the backend under these existing interfaces in verified slices, then rem
 the superseded implementation. Do not create a second live pool or schema owner as a
 compatibility path. Performance and semantic parity are required before live adoption.
 
+### Schema-owned lifecycle and shared reclamation
+
+The ORM is a consumer of the existing governor interface, not a separate resource
+authority. Continuous draining means reclaiming caches, idle connections and
+transient materializations, or moving eligible information to cheaper tiers. It is
+distinct from shutdown admission closure and waiting for in-flight operations.
+
+Entity/field declarations should express durability (authoritative, derived or
+disposable), reconstruction dependencies, retention conditions, permitted tiers and
+relationship constraints. Access frequency, actual bytes and reconstruction cost
+come from runtime measurements. These declarations belong beside shape, indexes
+and joins so the concern's author can review the whole lifecycle in one place.
+
+When asked to downsize, the storage owner selects eligible resources within those
+constraints and reports actual reclaimed bytes after completion. It must not delete
+durable knowledge merely because it is rarely read, discard referenced state, or
+release custody before a transfer finishes. Remove old cleanup jobs and redundant
+tables as their owners migrate; decorators must replace scattered mechanisms rather
+than add another policy layer. This lifecycle integration remains implementation work.
+
 > **⚠️ ARCHITECTURE UPDATE**: The data-daemon worker has been absorbed into `continuum-core` as
 > `DataModule` (Phase 4e). The socket is now `/tmp/continuum-core.sock`. TypeScript uses
 > `ORM.ts` → `ORMRustClient.ts` → `DataModule` for all database operations.

@@ -86,6 +86,14 @@
         assert_eq!(plain.len(), 1);
     }
 
+    #[tokio::test]
+    async fn collection_stats_does_not_turn_a_failed_count_into_zero() {
+        let result = SqliteAdapter::new().collection_stats("unopened").await;
+        assert!(!result.success);
+        assert!(result.data.is_none());
+        assert!(result.error.is_some_and(|error| error.contains("not initialized")));
+    }
+
     // what this catches: a batch that HALF-APPLIES while reporting success. Until this
     // test, `batch` was a plain loop of individually autocommitting create/update calls
     // that folded each failure into a {"success": false} JSON element and returned
