@@ -196,11 +196,11 @@ impl DataState {
     ///
     /// Advantages over the TypeScript path:
     /// - No IPC overhead per page (state is Rust-side)
-    /// - Cursor-based pagination using last ID (faster than OFFSET for large datasets)
+    /// - Server-owned page state (currently OFFSET-based; not a keyset cursor)
     /// - DashMap for concurrent query state (lock-free reads)
     pub(super) async fn handle_query_open(&self, params: QueryOpenParams) -> Result<CommandResult, String> {
         require_public_collection(&params.collection)?;
-        require_query_fields(&params.filter, &params.sort, &None)?;
+        require_query_fields(&params.filter, &params.sort, &params.select)?;
         use std::time::Instant;
         let start = Instant::now();
 
@@ -245,6 +245,7 @@ impl DataState {
             collection: params.collection.clone(),
             filter: params.filter,
             sort: params.sort,
+            select: params.select,
             page_size: params.page_size,
             total_count,
             current_page: 0,
@@ -357,6 +358,7 @@ impl DataState {
         let collection = state.collection.clone();
         let filter = state.filter.clone();
         let sort = state.sort.clone();
+        let select = state.select.clone();
         let page_size = state.page_size;
         let total_count = state.total_count;
         let current_page = state.current_page;
@@ -389,6 +391,7 @@ impl DataState {
             sort: sort.clone(),
             limit: Some(page_size + 1),
             offset: Some(offset),
+            select,
             ..Default::default()
         };
 

@@ -85,6 +85,7 @@ pub(super) struct PaginatedQueryState {
     pub(super) collection: String,
     pub(super) filter: Option<std::collections::HashMap<String, FieldFilter>>,
     pub(super) sort: Option<Vec<crate::orm::query::SortSpec>>,
+    pub(super) select: Option<Vec<String>>,
     pub(super) page_size: usize,
     /// Exact row count from the open-time COUNT(*). Only populated when the
     /// caller passed `count_exact: true`; otherwise 0 means "not requested",
@@ -92,7 +93,7 @@ pub(super) struct PaginatedQueryState {
     /// the caller only needs has_more, which is derived from LIMIT N+1).
     pub(super) total_count: u64,
     pub(super) current_page: usize,
-    /// Cursor: last ID from previous page for efficient keyset pagination
+    /// Last returned ID; page execution currently uses OFFSET, not this value.
     pub(super) cursor_id: Option<String>,
     pub(super) has_more: bool,
     /// Creation time for future TTL-based cleanup of stale queries
@@ -416,6 +417,9 @@ pub(super) struct QueryOpenParams {
     pub(super) filter: Option<std::collections::HashMap<String, FieldFilter>>,
     #[serde(default)]
     pub(super) sort: Option<Vec<crate::orm::query::SortSpec>>,
+    /// Fields to materialize for every page; identity metadata remains included.
+    #[serde(default)]
+    pub(super) select: Option<Vec<String>>,
     #[serde(default = "default_page_size")]
     pub(super) page_size: usize,
     /// Opt in to a SELECT COUNT(*) at open time so callers that show

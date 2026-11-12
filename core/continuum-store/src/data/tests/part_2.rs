@@ -243,6 +243,30 @@ use super::*;
     }
 
     #[tokio::test]
+    async fn cursor_projection_is_kept_on_every_page_and_count_is_exact() {
+        let (module, _tmp, db_path) = setup_paginated_for_handle_tests("projected_cursor", 5).await;
+        let opened = module.handle_command("data/query-open", json!({
+            "dbPath": db_path, "collection": "test_handle_cursor", "pageSize": 3,
+            "select": ["id"], "countExact": true,
+        })).await.expect("test: open projected cursor");
+        let CommandResult::Json(opened) = opened else { panic!("test: JSON response") };
+        assert_eq!(opened["data"]["totalCount"], 5);
+        for (count, more) in [(3, true), (2, false)] {
+            let page = module.handle_command("data/query-next", json!({"handle": opened["handle"]}))
+                .await.expect("test: projected page");
+            let CommandResult::Json(page) = page else { panic!("test: JSON response") };
+            let items = page["data"]["items"].as_array().expect("test: items");
+            assert_eq!(items.len(), count);
+            assert_eq!(page["data"]["hasMore"], more);
+            assert_eq!(page["data"]["totalCount"], 5);
+            for item in items {
+                assert!(item["data"]["id"].is_string());
+                assert!(item["data"].get("name").is_none(), "unselected field was materialized");
+            }
+        }
+    }
+
+    #[tokio::test]
     pub(super) async fn query_next_accepts_handle_in_envelope() {
         let (module, _tmp, db_path) = setup_paginated_for_handle_tests("handle_next", 5).await;
         let open = open_cursor(&module, &db_path, 3).await;
