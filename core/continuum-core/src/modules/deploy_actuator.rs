@@ -33,7 +33,7 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 
 use continuum_cli_lifecycle::deploy_tracker::{same_commit, DeployRequest, STRANDED_GRACE_MS};
-use continuum_cli_lifecycle::deploy_claim::in_flight;
+use continuum_cli_lifecycle::deploy_claim::{in_flight, DeployClaim};
 
 /// The receipt, beside the request it answered: `<state>/deploy-actuation.json`.
 pub(crate) const ACTUATION_FILE: &str = "deploy-actuation.json";
