@@ -175,12 +175,14 @@ win_write_task_xml() { # $1=bin  -> Task Scheduler XML on stdout
   who="${USERDOMAIN:+$USERDOMAIN\\}${USERNAME:-$SVC_USER}"
   bash_exe="$(win_path "$(command -v bash)")"
   if [ "$SCOPE" = "system" ]; then
-    # Boot trigger + highest privileges: survives LOGOUT and boot-without-login,
+    # Boot trigger + S4U principal: survives LOGOUT and boot-without-login,
     # the same reason --system exists on the other two platforms.
     trigger="<BootTrigger><Enabled>true</Enabled></BootTrigger>"
+    logon_type="<LogonType>S4U</LogonType>"
     principal="<RunLevel>HighestAvailable</RunLevel>"
   else
     trigger="<LogonTrigger><Enabled>true</Enabled></LogonTrigger>"
+    logon_type="<LogonType>InteractiveToken</LogonType>"
     principal="<RunLevel>LeastPrivilege</RunLevel>"
   fi
   # `core_wrapper` is shared with Linux and is already written with
@@ -191,7 +193,7 @@ win_write_task_xml() { # $1=bin  -> Task Scheduler XML on stdout
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>Continuum headless core (reboot-surviving)</Description></RegistrationInfo>
   <Triggers>$trigger</Triggers>
-  <Principals><Principal id="Author"><UserId>$who</UserId><LogonType>InteractiveToken</LogonType>$principal</Principal></Principals>
+  <Principals><Principal id="Author"><UserId>$who</UserId>$logon_type$principal</Principal></Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <!-- A grid node on a laptop must still come up. The Windows DEFAULTS for both
