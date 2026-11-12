@@ -2568,7 +2568,7 @@ function Mod-LlamaServer {
         $freshCli = Join-Path $freshRuntime 'continuum.exe'
         [IO.File]::WriteAllText($freshCli, 'fixture CLI')
         $freshNames = Join-Path $freshRuntime 'bootstrap-runtime-libs.txt'
-        Copy-CoreRuntimeClosure -Directory $freshRuntime -Executables @($freshCli) -Inspector $inspector -RuntimeDirectories @($platform) -OutputNames $freshNames
+        Copy-CoreRuntimeClosure -Directory $freshRuntime -Executables @($freshCli) -Inspector $inspector -RuntimeDirectories @($platform) -MsvcDirectories @($platform) -OutputNames $freshNames
         if (@(Get-Content $freshNames) -notcontains 'vcomp140.dll' -or
             (Get-FileHash (Join-Path $freshRuntime 'vcomp140.dll')).Hash -cne (Get-FileHash (Join-Path $platform 'vcomp140.dll')).Hash) {
             throw 'Runtime publisher did not preserve toolchain OpenMP bytes and bootstrap membership.'
@@ -2592,6 +2592,7 @@ function Mod-LlamaServer {
             $env:VCToolsRedistDir = $redist
             $selectedCuda = Join-Path $scratch 'selected-cuda/bin'
             New-Item -ItemType Directory -Force $selectedCuda | Out-Null
+            [IO.File]::WriteAllText((Join-Path $selectedCuda 'vcomp140.dll'), 'different CUDA-bundled OpenMP')
             $cudaRoots = @(Get-CoreRuntimeDirectories -Cuda -CMakeCache ("CUDAToolkit_BIN_DIR:PATH="+$selectedCuda+"`n"))
             if ($cudaRoots.Count -ne 2 -or $cudaRoots -notcontains $selectedCuda) {
                 throw 'Engine runtime must come from its configured CUDA toolkit.'
@@ -2611,7 +2612,7 @@ function Mod-LlamaServer {
             [IO.File]::WriteAllText($inspector, ("@echo off`r`nif /I `%~nx2`==libssl-3-x64.dll goto vc`r`nif /I `%~nx2`==libcrypto-3-x64.dll goto vc`r`n"+$tlsInspection+"exit /b 0`r`n:vc`r`n"+$vcInspection), [Text.Encoding]::ASCII)
             function Invoke-InstallerProcess { param($FilePath,$ArgumentList,[switch]$OwnProcessTree) & $cmakePath @ArgumentList }
             $tlsNames = Join-Path $tlsStage 'runtime-imports.txt'
-            Copy-CoreRuntimeClosure -Directory $tlsStage -Executables @($tlsExe) -Inspector $inspector -RuntimeDirectories $roots -OutputNames $tlsNames
+            Copy-CoreRuntimeClosure -Directory $tlsStage -Executables @($tlsExe) -Inspector $inspector -RuntimeDirectories @($roots + $selectedCuda) -MsvcDirectories @(Get-CoreRuntimeDirectories -MsvcOnly) -OutputNames $tlsNames
             foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) {
                 if (@(Get-Content $tlsNames) -notcontains $name -or (Get-FileHash (Join-Path $tlsStage $name)).Hash -cne (Get-FileHash (Join-Path $tlsBin $name)).Hash) { throw 'TLS runtime was not captured and hashed from the configured package.' }
             }
@@ -2627,6 +2628,7 @@ function Mod-LlamaServer {
             $damaged = Join-Path $tlsStage 'vcruntime140.dll'
             [IO.File]::WriteAllText($damaged, 'wrong runtime bytes')
             $tlsArgs = @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$inspector", "-DENGINE_DIR=$($tlsStage.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", "-DRUNTIME_DIRS=$(($roots | ForEach-Object { $_.Replace('\','/') }) -join ';')", '-DCAPTURE_IMPORTS=ON', '-P', (Join-Path $repo 'tools/scripts/lib/verify-engine-imports.cmake'))
+            $tlsArgs = @("-DMSVC_RUNTIME_DIRS=$((Join-Path $redist 'x64/Microsoft.VC999.CRT').Replace('\','/'))") + $tlsArgs
             try { $ErrorActionPreference = 'Continue'; & $cmakePath @tlsArgs 2> $errorLog }
             finally { $ErrorActionPreference = $savedPreference }
             if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'Staged redistributable differs') { throw 'Capture accepted a mismatched staged VC runtime.' }
