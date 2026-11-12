@@ -223,7 +223,7 @@ impl DataState {
         let mut items = Vec::with_capacity(records.len());
         for r in records {
             items.push(
-                serde_json::to_value(r)
+                serde_json::to_value(r) // data/list wire response: collections have dynamic record schemas.
                     .map_err(|e| format!("data/list: serialize record — {e}"))?,
             );
         }

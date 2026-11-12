@@ -11,18 +11,25 @@ async fn list_projects_in_storage_and_preserves_count_and_identity() -> Result<(
             json!({"cardId": "card", "state": n, "payload": "x".repeat(1_000_000)})).await?;
         assert!(created.success, "{:?}", created.error);
     }
-    let params = serde_json::from_value(json!({"collection":"projection", "dbPath":path,
-        "filter":{"cardId":"card"}, "select":["state"], "limit":1}))?;
+    let params = DataListParams {
+        collection: "projection".into(), handle: Some(path.clone()),
+        filter: Some(json!({"cardId":"card"})), select: Some(vec!["state".into()]),
+        limit: Some(1), offset: None, sort: None,
+    };
     let result = module.state.list(params).await?;
     assert_eq!(result.total, 3);
     assert_eq!(result.items.len(), 1);
-    let record: DataRecord = serde_json::from_value(result.items.into_iter().next().ok_or("missing projected row")?)?;
-    assert!(record.id.starts_with("row-"));
-    assert!(record.data.get("state").is_some());
-    assert!(record.data.get("payload").is_none());
-    assert!(record.data.get("cardId").is_none());
-    let invalid = serde_json::from_value(json!({"collection":"projection", "dbPath":path,
-        "select":["(select payload from projection)"]}))?;
+    let record = &result.items[0]; // The length assertion above proves this fixture returned one row.
+    assert!(record.get("id").and_then(Value::as_str).is_some_and(|id| id.starts_with("row-")));
+    let data = &record["data"];
+    assert!(data.get("state").is_some());
+    assert!(data.get("payload").is_none());
+    assert!(data.get("cardId").is_none());
+    let invalid = DataListParams {
+        collection: "projection".into(), handle: Some(path),
+        filter: None, select: Some(vec!["(select payload from projection)".into()]),
+        limit: Some(1), offset: None, sort: None,
+    };
     assert!(module.state.list(invalid).await.is_err());
     Ok(())
 }
