@@ -2052,6 +2052,11 @@ simulator that exercises it.
   corpus at 10k/100k/1M vectors, search latency, recall@k against the exact answer, CPU time and
   bytes moved per search.
 
+**A run is a fair comparison or it is not evidence** (shared with the ORM design's section 8): baseline
+and candidate run the identical recorded load with identical seeds; latency is measured from arrival
+and includes every queue wait; quality and custody are gated, not only speed; and every mind's
+progress is reported, because a gain for one mind that starves its neighbours is a regression.
+
 **Load is realistic because it is ours.** Scenarios are recorded from the live nodes: the minds,
 their act shapes and prompt sizes, the node's memory and its other residents. A synthetic load is
 allowed only as a sweep around a recorded one (more minds, longer contexts, a smaller machine).
