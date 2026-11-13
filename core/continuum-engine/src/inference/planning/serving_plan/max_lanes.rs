@@ -542,7 +542,7 @@ impl ModelFootprint {
 }
 
 /// The serving decision for this host.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, ts_rs::TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/serving/ServingPlan.ts"
