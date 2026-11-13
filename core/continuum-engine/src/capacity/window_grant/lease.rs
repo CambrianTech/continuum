@@ -278,6 +278,12 @@ impl GrantReservation {
         self.dispatch = ReservationDispatch::Dispatched;
     }
 
+    /// A preparation IO received its terminal receipt. Keep its grant charged
+    /// for the subsequent quote/dispatch without counting it as served work.
+    pub(crate) fn preparation_io_completed(&mut self) {
+        self.dispatch = ReservationDispatch::Unsent;
+    }
+
     /// The engine's terminal receipt for this request: its own reservation ends.
     fn complete(self) {
         self.owner.release(self.persona, self.id, true);

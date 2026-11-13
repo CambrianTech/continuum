@@ -100,6 +100,7 @@ pub(super) async fn admit_transient_through(
         _permit: None,
         uncommitted: None,
         dispatch: super::Dispatch::Unsent,
+        preparation: None,
         scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
         _endpoint: endpoint,
         _mind: None,
