@@ -136,27 +136,6 @@ pub async fn settle_card_credit_bound(
     Ok(())
 }
 
-/// `data/list` returns DataRecord envelopes, not bare entities. Validate the
-/// complete response before transferring any row; malformed evidence stays put.
-pub fn staged_credit_from_list(listed: serde_json::Value) -> Result<Vec<StagedCredit>, ClientError> {
-    let listed: crate::orm::list_result::DataListResult = serde_json::from_value(listed)?; // Decode the Value-native data/list response at its command boundary.
-    if listed.items.len() != listed.total as usize {
-        return Err(ClientError::Transport(format!(
-            "staged-credit list is incomplete: {} of {} rows",
-            listed.items.len(),
-            listed.total,
-        )));
-    }
-    listed
-        .items
-        .into_iter()
-        .map(|item| {
-            let record: crate::orm::types::DataRecord = serde_json::from_value(item)?; // Decode the persisted ORM envelope; move its entity payload without cloning it.
-            Ok(record.decode()?) // Decode one staged-credit entity from its typed storage envelope.
-        })
-        .collect()
-}
-
 /// Transfer one immutable revision using the destination's existing idempotency
 /// key. The accepted receipt proves ownership independently of training dispatch;
 /// a refusal, failed outcome, missing claim or incompatible lane keeps evidence.

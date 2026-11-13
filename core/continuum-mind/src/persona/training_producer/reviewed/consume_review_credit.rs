@@ -626,31 +626,14 @@ pub(super) async fn generation_row<T: Transport>(
     submitted: &airc_work::WorkSubmission,
     generation: &str,
 ) -> Result<StagedCredit, CreditBindingError> {
-    let value = conn
-        .commands()
-        .execute_value(
-            "data/list",
-            json!({
-                "collection": StagedCreditGeneration::COLLECTION,
-                "dbPath": format!("@persona:{persona_name}"),
-                "filter": {"submittedRequestId": generation},
-            }),
-        )
-        .await?;
-    // The child index exists precisely for this join. Loading every lived turn
-    // on the card can materialize tens of MiB before finding a single request.
-    // Never bind from a partial result, or trust the index instead of the parent.
-    let result: crate::orm::list_result::DataListResult =
-        serde_json::from_value(value).map_err(ClientError::from)?; // Decode the data/list storage command response envelope.
-    if result.items.len() != result.total as usize {
-        return Err(ClientError::Transport("incomplete generation credit lookup".into()).into());
-    }
+    // Read the compact child index through the shared cursor owner. Parent
+    // evidence is loaded only for matching links and still revalidated below.
+    let links: Vec<StagedCreditGeneration> = crate::orm::client_read::matching(
+        conn, &format!("@persona:{persona_name}"), StagedCreditGeneration::COLLECTION,
+        serde_json::Map::from_iter([("submittedRequestId".into(), json!(generation))]), None,
+    ).await?;
     let mut selected = None;
-    for value in result.items {
-        let record: crate::orm::types::DataRecord =
-            serde_json::from_value(value).map_err(ClientError::from)?; // Decode the storage protocol's DataRecord envelope.
-        let link: StagedCreditGeneration =
-            record.decode().map_err(ClientError::from)?; // Decode the persisted generation-index entity from its storage record.
+    for link in links {
         if link.submitted_request_id != generation {
             return Err(CreditBindingError::WrongSelection);
         }
