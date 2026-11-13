@@ -1,0 +1,312 @@
+use super::adapter::AdapterConfig;
+use super::query::{JoinSpec, JoinType};
+use super::relational::RelationalStore;
+use super::types::{BatchOperation, BatchOperationType};
+use super::*;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+#[derive(Serialize, Deserialize, Entity)]
+#[entity(collection = "relational_parents")]
+struct Parent {
+    #[serde(flatten)]
+    base: BaseEntity,
+    label: String,
+}
+
+#[derive(Serialize, Deserialize, Entity)]
+#[entity(collection = "relational_children")]
+struct Child {
+    #[serde(flatten)]
+    base: BaseEntity,
+    #[serde(rename = "parentId")]
+    #[entity(foreign_key("relational_parents.id", on_delete = "cascade"))]
+    parent_id: Option<String>,
+    #[entity(unique)]
+    token: String,
+    #[entity(indexed)]
+    seq: i64,
+    #[entity(json)]
+    body: serde_json::Value,
+    #[serde(rename = "joinedLabel")]
+    joined_label: Option<String>,
+}
+
+fn record(id: &str, collection: &str, data: serde_json::Value) -> DataRecord {
+    DataRecord {
+        id: id.into(),
+        collection: collection.into(),
+        data,
+        metadata: RecordMetadata::default(),
+    }
+}
+async fn store(path: &str) -> Result<RelationalStore, String> {
+    let store = RelationalStore::open(AdapterConfig {
+        connection_string: path.into(),
+        max_connections: 1,
+        ..Default::default()
+    })
+    .await?;
+    store.ensure(Parent::collection_schema()).await?;
+    store.ensure(Child::collection_schema()).await?;
+    Ok(store)
+}
+
+#[tokio::test]
+async fn declared_join_preserves_unmatched_null_and_filters_before_limit(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = store(":memory:").await?;
+    store
+        .insert(
+            &store.db,
+            &record("p", Parent::COLLECTION, json!({"label":"{literal text}"})),
+        )
+        .await?;
+    for (id, parent, seq) in [("a", Some("p"), 1), ("b", None, 2)] {
+        store.insert(&store.db, &record(id, Child::COLLECTION, json!({"parentId":parent,"token":id,"seq":seq,"joinedLabel":"keep me","body":{"integer":9007199254740993u64}}))).await?;
+    }
+    let mut query = QueryBuilder::new(Child::COLLECTION)
+        .sort_asc("seq")
+        .limit(2)
+        .build();
+    query.joins = Some(vec![JoinSpec {
+        collection: Parent::COLLECTION.into(),
+        alias: "parent".into(),
+        local_field: "parentId".into(),
+        foreign_field: "id".into(),
+        join_type: JoinType::Left,
+        select: Some(vec!["label".into()]),
+    }]);
+    let rows = store.query_joined(query.clone()).await?;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].data["parent"]["label"], "{literal text}");
+    assert_eq!(rows[0].data["joinedLabel"], "keep me");
+    assert_eq!(rows[1].data["parent"], serde_json::Value::Null);
+    assert_eq!(
+        rows[0].data["body"]["integer"].as_u64(),
+        Some(9007199254740993)
+    );
+    if let Some(joins) = &mut query.joins {
+        joins[0].join_type = JoinType::Inner;
+    }
+    assert_eq!(store.query_joined(query).await?.len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_batch_rolls_back_and_sequence_survives_pruning_and_restart(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("test.db");
+    let path = path.to_str().ok_or("UTF8 path")?;
+    let first = store(path).await?;
+    let append = |id: &str| BatchOperation {
+        operation_type: BatchOperationType::Append(SequenceSpec {
+            sequence: "seq".into(),
+            unique: "token".into(),
+        }),
+        collection: Child::COLLECTION.into(),
+        id: Some(id.into()),
+        data: Some(json!({"parentId":null,"token":id,"seq":0,"body":{}})),
+    };
+    let invalid = BatchOperation {
+        operation_type: BatchOperationType::Update,
+        collection: Child::COLLECTION.into(),
+        id: Some("absent".into()),
+        data: Some(json!({"body":{}})),
+    };
+    assert!(first.batch(vec![append("a"), invalid]).await.is_err());
+    assert_eq!(
+        first
+            .count(QueryBuilder::new(Child::COLLECTION).build())
+            .await?,
+        0
+    );
+    let revision = first.revision(Child::COLLECTION);
+    let committed = first.batch(vec![append("a")]).await?;
+    assert_eq!(committed[0]["seq"], 1);
+    assert_eq!(*revision.borrow(), 1);
+    assert_eq!(first.batch(vec![append("a")]).await?[0]["fresh"], false);
+    first
+        .delete_on(
+            &first.db,
+            QueryBuilder::new(Child::COLLECTION)
+                .filter_eq("id", "a")
+                .build(),
+        )
+        .await?;
+    first.db.close().await?;
+    let reopened = store(path).await?;
+    assert_eq!(reopened.batch(vec![append("b")]).await?[0]["seq"], 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_request_retains_commit_and_revision_custody(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = store(":memory:").await?;
+    let mut revision = store.revision(Child::COLLECTION);
+    let (written_tx, written_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let worker = store.clone();
+    let request = tokio::spawn(async move {
+        worker
+            .write_with_revisions(move |store, transaction| {
+                Box::pin(async move {
+                    let receipt = store
+                        .append_on(
+                            transaction,
+                            record(
+                                "cancelled",
+                                Child::COLLECTION,
+                                json!({"parentId":null,"token":"cancelled","seq":0,"body":{}}),
+                            ),
+                            &SequenceSpec {
+                                sequence: "seq".into(),
+                                unique: "token".into(),
+                            },
+                        )
+                        .await?;
+                    written_tx
+                        .send(())
+                        .map_err(|_| "write observer disappeared")?;
+                    release_rx.await.map_err(|_| "commit release disappeared")?;
+                    Ok(((), vec![(Child::COLLECTION.into(), receipt.seq)]))
+                })
+            })
+            .await
+    });
+    written_rx.await?;
+    assert_eq!(*revision.borrow(), 0);
+    request.abort();
+    assert!(matches!(request.await, Err(error) if error.is_cancelled()));
+    release_tx
+        .send(())
+        .map_err(|_| "transaction owner disappeared with caller")?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), revision.changed()).await??;
+    assert_eq!(*revision.borrow(), 1);
+    assert!(store
+        .read_on(&store.db, Child::COLLECTION, "cancelled")
+        .await?
+        .is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn monotonic_updates_refuse_stale_values_and_preserve_exact_integers(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = store(":memory:").await?;
+    let row = |seq| {
+        record(
+            "high",
+            Child::COLLECTION,
+            json!({"parentId":null,"token":"high","seq":seq,"body":{}}),
+        )
+    };
+    let high = 9007199254740993i64;
+    assert!(store.upsert_monotonic(row(high), "seq".into()).await?);
+    assert!(!store.upsert_monotonic(row(high - 1), "seq".into()).await?);
+    assert!(store.upsert_monotonic(row(high + 1), "seq".into()).await?);
+    let read = store
+        .read_on(&store.db, Child::COLLECTION, "high")
+        .await?
+        .ok_or("missing high water")?;
+    assert_eq!(read.data["seq"].as_i64(), Some(high + 1));
+    assert_eq!(read.metadata.version, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn typed_store_uses_seaorm_adapter_and_database_side_statistics(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let adapter = std::sync::Arc::new(
+        super::relational_adapter::SeaOrmAdapter::open(AdapterConfig {
+            connection_string: ":memory:".into(),
+            max_connections: 1,
+            ..Default::default()
+        })
+        .await?,
+    );
+    let typed = OrmStore::<Parent>::new(adapter.clone()).await?;
+    let id = uuid::Uuid::new_v4();
+    typed
+        .save(
+            id,
+            &Parent {
+                base: BaseEntity::for_new_record_at(id),
+                label: "{literal}".into(),
+            },
+        )
+        .await?;
+    assert_eq!(
+        typed.find_by_id(id).await?.ok_or("typed row absent")?.label,
+        "{literal}"
+    );
+    assert!(typed.find_by_id(uuid::Uuid::new_v4()).await?.is_none());
+    let stats = adapter
+        .collection_stats(Parent::COLLECTION)
+        .await
+        .into_result()?;
+    assert_eq!(stats.record_count, 1);
+    assert!(stats.total_size >= "{literal}".len());
+    assert!(!stats.last_modified.is_empty());
+    let cleared = adapter.clear_all().await.into_result()?;
+    assert_eq!(cleared.records_deleted, 1);
+    assert_eq!(
+        adapter
+            .count(QueryBuilder::new(Parent::COLLECTION).build())
+            .await
+            .into_result()?,
+        0
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = store(":memory:").await?;
+    assert!(store
+        .query(QueryBuilder::new(Child::COLLECTION).build())
+        .await
+        .is_err());
+    for id in ["c", "a", "b"] {
+        store
+            .create(record(
+                id,
+                Child::COLLECTION,
+                json!({"parentId":null,"token":id,"seq":1,"body":{}}),
+            ))
+            .await?;
+    }
+    let mut query = QueryBuilder::new(Child::COLLECTION)
+        .select(vec!["token".into()])
+        .limit(2)
+        .build();
+    let first = store.query(query.clone()).await?;
+    assert_eq!(
+        first.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert!(first.iter().all(|row| row.data.get("body").is_none()));
+    query.cursor = Some(super::query::Cursor {
+        field: "id".into(),
+        value: json!("b"),
+        direction: super::query::CursorDirection::After,
+    });
+    let second = store.query(query.clone()).await?;
+    assert_eq!(
+        second.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+        ["c"]
+    );
+    query.cursor = Some(super::query::Cursor {
+        field: "seq".into(),
+        value: json!(1),
+        direction: super::query::CursorDirection::After,
+    });
+    assert!(
+        store.query(query).await.is_err(),
+        "a repeated sequence value cannot identify a page boundary"
+    );
+    Ok(())
+}
