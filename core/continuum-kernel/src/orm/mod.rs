@@ -74,3 +74,4 @@ pub use vector::{
     GenerateEmbeddingResponse, IndexVectorRequest, VectorEmbedding, VectorIndexStats,
     VectorSearchAdapter, VectorSearchOptions, VectorSearchResponse, VectorSearchResult,
 };
+pub mod client_read;

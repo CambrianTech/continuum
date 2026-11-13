@@ -401,9 +401,7 @@ pub(super) struct QueryWithJoinParams {
 // ============================================================================
 // Paginated Query Params
 // ============================================================================
-pub(super) fn default_page_size() -> usize {
-    100
-}
+pub(super) use crate::orm::query::default_page_size;
 
 /// Open paginated query params
 #[derive(Debug, Deserialize)]

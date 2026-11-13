@@ -20,36 +20,16 @@ struct RejectionRow {
     rejected_at_ms: Option<u64>,
 }
 
-fn rejection_rows(value: serde_json::Value) -> Result<Vec<RejectionRow>, ClientError> {
-    let listed: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // Decode projected storage rows.
-    if listed.items.len() != listed.total as usize {
-        return Err(ClientError::Transport("rejection list is incomplete".into()));
-    }
-    listed.items.into_iter().map(|value| {
-        let record: crate::orm::types::DataRecord = serde_json::from_value(value)?; // Decode the record envelope.
-        Ok(record.decode()?) // Only identity and rejection state are materialized.
-    }).collect()
-}
-
-
 /// Her staged rows on `card_id`, read through the substrate; `None` when they cannot be read
 /// (named by the probe; the caller then settles as before).
 async fn card_rows(persona_name: &str, card_id: Uuid) -> Option<(Connection<InProcessTransport>, Vec<RejectionRow>)> {
     let executor = EXECUTOR.cloned()?;
     let substrate = substrate_connection(&executor);
-    let listed = substrate
-        .commands()
-        .execute_value(
-            "data/list",
-            json!({
-                "collection": StagedCredit::COLLECTION,
-                "dbPath": format!("@persona:{persona_name}"),
-                "filter": { "cardId": card_id.to_string() },
-                "select": ["rejectedAtMs"],
-            }),
-        )
-        .await
-        .and_then(rejection_rows);
+    let listed = crate::orm::client_read::matching(
+        &substrate, &format!("@persona:{persona_name}"), StagedCredit::COLLECTION,
+        serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]),
+        Some(vec!["rejectedAtMs".into()]),
+    ).await;
     match listed {
         Ok(rows) => Some((substrate, rows)),
         Err(error) => {

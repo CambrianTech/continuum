@@ -307,3 +307,6 @@ mod tests {
         assert!(filter.contains_key("priority"));
     }
 }
+
+/// Shared transfer granularity for paged storage reads; never a total-result cap.
+pub fn default_page_size() -> usize { 100 }
