@@ -164,7 +164,10 @@ async fn test_vector_search_basic() {
         }),
     )
     .await;
-    let Ok(CommandResult::Json(result)) = search_result else { panic!("search failed: {search_result:?}") };
+    let result = match search_result {
+        Ok(CommandResult::Json(result)) => result,
+        other => panic!("search failed: {other:?}"),
+    };
     let results = result["results"].as_array().expect("test: results array");
     assert_eq!(results.len(), 3);
     let first_score = results[0]["score"].as_f64().expect("test: score");
