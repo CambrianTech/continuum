@@ -1,0 +1,8 @@
+0.07.177.374 I srv  llama_server: model loaded
+1.02.000.001 I slot process_sing: id  1 | task -1 | restored 5 context checkpoints from the sidecar: /home/synthetic/.continuum/cache/kv-pages/model/a-0000aaaa111122223333444455556666.bin.ckpt
+1.02.010.000 I slot   operator(): id  1 | task 101 | resume: restored a checkpoint (raw lcp = 30000, lcp after reuse = 30000, slot tokens = 30500, pos_min = 30499, pos_min_thold = 30000, n_swa = 0, checkpoints = 5, chosen n_tokens = 11000, n_past now = 11000 of 31000)
+1.30.000.000 I slot print_timing: id  1 | task 101 | prompt processing, n_tokens =  20000, progress = 1.00, t =  20.00 s / 1000.00 tokens per second
+2.00.000.000 I slot   operator(): id  0 | task 102 | resume: restored a checkpoint (raw lcp = 31500, lcp after reuse = 31500, slot tokens = 31600, pos_min = 31599, pos_min_thold = 31500, n_swa = 0, checkpoints = 6, chosen n_tokens = 31400, n_past now = 31400 of 32000)
+2.10.000.000 I slot process_sing: id  0 | task -1 | restored 3 context checkpoints from the sidecar: /home/synthetic/.continuum/cache/kv-pages/model/a-0000bbbb111122223333444455556666.bin.ckpt
+0.07.000.000 I srv  llama_server: model loaded
+0.20.000.000 I slot   operator(): id  0 | task 1 | resume: full re-prefill: no checkpoint passed the search (raw lcp = 900, lcp after reuse = 900, slot tokens = 0, pos_min = -1, pos_min_thold = 900, n_swa = 0, checkpoints = 0, chosen n_tokens = -1, n_past now = 0 of 33000)

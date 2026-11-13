@@ -38,18 +38,7 @@ pub const REQUIRED_BINS: [&str; 4] = [
 /// running build is not a deploy: the node keeps its core, and CI built nothing for it.
 /// `core-binaries.yml`'s push `paths` must cover every entry (pinned by a test below), or a
 /// change here would ship with no artifact behind it.
-pub const BUILD_INPUTS: [&str; 8] = [
-    "core/",
-    "Cargo.toml",
-    "Cargo.lock",
-    "rust-toolchain.toml",
-    "tools/scripts/lib/",
-    "tools/scripts/shared/cargo-features.sh",
-    // The Windows build's environment, GPU floor, packaged sidecar script, and pinned CUDA
-    // version (Mod-CUDA reads the projection).
-    "tools/scripts/start-livekit-windows.ps1",
-    "tools/scripts/generated/manifest.windows.ps1",
-];
+pub static BUILD_INPUTS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::new(|| include_str!("../build-inputs.txt").lines().collect());
 
 /// `git log` arguments naming `tip`'s BUILD KEY: the newest commit at or before `tip` that
 /// touched a [`BUILD_INPUTS`] path. The core binary is a function of those inputs, so every
@@ -405,6 +394,10 @@ pub enum PublishedCoreError {
     CapabilityDeferred(String),
     OperationalBlocked(String),
     ResourceDeferred(ResourceDeferral),
+    /// The node is held for live work a handoff would end, an in-engine training run (card
+    /// 9beab2da). Rechecked on the consumer's next pass; it spends no attempt and records no
+    /// durable deferral, since the hold releases on its own.
+    Held(String),
 }
 impl From<String> for PublishedCoreError {
     fn from(reason: String) -> Self { Self::Artifact(reason) }
@@ -415,7 +408,7 @@ impl From<&str> for PublishedCoreError {
 impl std::fmt::Display for PublishedCoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Artifact(reason) | Self::SourcePending(reason) | Self::CapabilityDeferred(reason) | Self::OperationalBlocked(reason) => f.write_str(reason),
+            Self::Artifact(reason) | Self::SourcePending(reason) | Self::CapabilityDeferred(reason) | Self::OperationalBlocked(reason) | Self::Held(reason) => f.write_str(reason),
             Self::ResourceDeferred(deferred) => write!(f, "resource admission deferred at {} for {} bytes: {}", deferred.path.display(), deferred.projected_bytes, deferred.reason),
         }
     }
@@ -442,7 +435,7 @@ pub fn recheck_resource_deferral(
             Some(MissingArtifact::AdmissionWait(why))
         }
         Err(PublishedCoreError::Artifact(reason)) => Some(MissingArtifact::Refuse(reason)),
-        Err(PublishedCoreError::SourcePending(reason) | PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => Some(MissingArtifact::AdmissionWait(reason)),
+        Err(PublishedCoreError::SourcePending(reason) | PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason) | PublishedCoreError::Held(reason)) => Some(MissingArtifact::AdmissionWait(reason)),
     }
 }
 

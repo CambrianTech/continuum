@@ -7,9 +7,13 @@ use std::collections::HashSet;
 
 use serde_json::{json, Value};
 
+use super::{offered_name_of, CallForm, CommandDescriptor};
+
 /// Closest authorized command names to a miss — same category prefix (before `/`),
 /// or sharing a path segment. Cheap, dependency-free, and enough to unstick an agent
 /// that guessed a plausible-but-wrong name (e.g. `commands/describe` → `commands/help`).
+/// Every name in the strongest tier that matched, best first: the tier is the measured
+/// boundary, never a fixed count (a cut of six dropped the route on 2026-09-05, below).
 pub fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a str> {
     let q = query.to_lowercase();
     let q_prefix = q.split('/').next().unwrap_or(&q);
@@ -77,7 +81,8 @@ pub fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a str> {
             .then(depth(a.1).cmp(&depth(b.1)))
             .then(a.1.cmp(b.1))
     });
-    scored.into_iter().take(6).map(|(_, n)| n).collect()
+    let strongest = scored.first().map(|(score, _)| *score);
+    scored.into_iter().take_while(|(score, _)| Some(*score) == strongest).map(|(_, n)| n).collect()
 }
 
 /// Path segments in a command name — `work/list` is 2, `ai/providers/list` is 3.
@@ -87,11 +92,25 @@ fn depth(name: &str) -> usize {
     name.split('/').filter(|s| !s.is_empty()).count()
 }
 
-/// Render a command's manual in the AI paradigm: the canonical `{"tool_call": …}`
-/// envelope (with placeholder values typed from the schema) + an argument list.
-/// Pure function of (name, description, params JSON Schema) — same schema every
-/// other interface adapts from.
-pub fn render_ai_help(name: &str, description: &str, schema: &Value) -> String {
+/// Render a command's manual in the AI paradigm: an example call in the form she calls with,
+/// her offered tool name and its arguments object ([`CallForm`], placeholder values typed from
+/// the schema), then an argument list. A pure function of the command's declaration: its name
+/// and aliases (through the resolver her tool list is named by), description and params schema.
+pub fn render_ai_help(command: &CommandDescriptor) -> String {
+    render_manual(command.name, command.aliases, command.description, &command.params_schema)
+}
+
+/// [`render_ai_help`] over the declaration's parts.
+fn render_manual(name: &str, aliases: &'static [&'static str], description: &str, schema: &Value) -> String {
+    let offered = offered_name_of(name, aliases);
+    // An undeclared contract (a hand-written `CommandSpec` still on the `Null` default) has no
+    // example that decodes: `x({})` was shown for each such command and every one refused it.
+    if schema.is_null() {
+        return format!(
+            "{offered} — {description}\n\n\
+             Its arguments are not published as a schema yet, so no example call is shown."
+        );
+    }
     let props = schema.get("properties").and_then(Value::as_object);
     let required: HashSet<&str> = schema
         .get("required")
@@ -132,9 +151,17 @@ pub fn render_ai_help(name: &str, description: &str, schema: &Value) -> String {
         }
     }
 
-    let envelope = json!({ "tool_call": { "name": name, "arguments": Value::Object(example) } });
-    let envelope_str = serde_json::to_string_pretty(&envelope)
-        .unwrap_or_else(|_| "{\"tool_call\": {\"name\": \"…\", \"arguments\": {}}}".to_string());
+    // A whole-params tagged enum (`#[serde(tag = "action")]`: `start{onto} | continue | ...`) has
+    // no top-level `properties`, only its variants: the example is its first variant, flat with
+    // its tag, and the variants are its one argument line. It rendered `x({})` and refused.
+    if props.is_none() {
+        if let (ty, Value::Object(first)) = param_shape(schema, schema) {
+            example = first;
+            arg_lines.push(format!("- {ty}"));
+        }
+    }
+
+    let call = CallForm::new(&offered, &example);
 
     let args_block = if arg_lines.is_empty() {
         "(no arguments)".to_string()
@@ -143,9 +170,9 @@ pub fn render_ai_help(name: &str, description: &str, schema: &Value) -> String {
     };
 
     format!(
-        "{name} — {description}\n\n\
-         To call it, emit this SHAPE — every `<replace-with-…>` below is a blank you fill \
-         in, not a value to send:\n{envelope_str}\n\n\
+        "{offered} — {description}\n\n\
+         Call the tool `{offered}` with these arguments — every `<replace-with-…>` below is a \
+         blank you fill in, not a value to send:\n{call}\n\n\
          Arguments:\n{args_block}"
     )
 }
@@ -232,8 +259,14 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
             "boolean" => json!(true),
             "integer" | "number" => numeric_example(spec, ty == "integer"),
             "array" => json!([]),
-            "object" => json!({}),
+            // A nested object carries its own required fields: `{"envelope":{}}` refused as
+            // "`envelope.eventId` is required" for 17 manuals (card 1d9c0a64).
+            "object" => Value::Object(required_object_example(spec, root)),
             "null" => Value::Null,
+            // A typed id must decode as one, or a copy fails on shape (`roomId did not
+            // decode: UUID parsing failed ... found '<'`, 48 manuals, card 1d9c0a64). The nil
+            // id decodes and names nothing, so a copy fails on meaning: not found.
+            "string" if spec.get("format").and_then(Value::as_str) == Some("uuid") => json!(uuid::Uuid::nil()),
             // A string placeholder IS a valid string: it parses, then fails on content.
             _ => json!(format!("<replace-with-{ty}>")),
         };
@@ -248,10 +281,15 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
                 let props = match v.get("properties").and_then(Value::as_object) {
                     Some(p) => p,
                     None => {
-                        // a bare `const`/`enum` string variant (plain unit enum)
-                        if let Some(c) = v.get("const").and_then(Value::as_str) {
+                        // a bare unit variant: a `const` string, or a string `enum` (schemars'
+                        // shape for a unit variant beside data variants, e.g. TurnBudget's
+                        // `"unbounded"` beside `{"steps": n}`, which rendered as `<any>`)
+                        let units = v.get("const").and_then(Value::as_str).into_iter().chain(
+                            v.get("enum").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str),
+                        );
+                        for (j, c) in units.enumerate() {
                             names.push(format!("\"{c}\""));
-                            if i == 0 {
+                            if i == 0 && j == 0 {
                                 example = json!(c);
                             }
                         }
@@ -375,7 +413,7 @@ mod tests {
                 {"type":"object","required":["type","content"],"properties":{"type":{"type":"string","enum":["append"]},"content":{"type":"string"}}}
             ]}}
         });
-        let out = render_ai_help("code/edit", "edit a file", &schema);
+        let out = render_manual("code/edit", &[], "edit a file", &schema);
         assert!(
             out.contains("search_replace{"),
             "variant NAME (not field) + fields shown: {out}"
@@ -400,7 +438,7 @@ mod tests {
     #[test]
     fn scalar_param_unchanged() {
         let schema = json!({"type":"object","required":["p"],"properties":{"p":{"type":"string"}}});
-        let out = render_ai_help("x", "y", &schema);
+        let out = render_manual("x", &[], "y", &schema);
         assert!(out.contains("p (string, required)"), "{out}");
     }
 
@@ -418,6 +456,16 @@ mod tests {
         assert_eq!(numeric_example(&json!({"minimum":1}), true), json!(1));
         assert_eq!(numeric_example(&json!({"exclusiveMinimum":1}), true), json!(2));
         assert!(numeric_example(&json!({"exclusiveMinimum":0.5}), false).as_f64().unwrap() > 0.5);
+        // what this catches: a unit variant beside a data variant rendered as `<any>`
+        // (cognition/eval's `budget`), and a typed id whose placeholder is not an id.
+        let schema = json!({"oneOf": [{"type":"string","enum":["unbounded"]},
+            {"type":"object","required":["steps"],"properties":{"steps":{"type":"integer","minimum":0}}}]});
+        assert_eq!(param_shape(&schema, &schema), ("one of: \"unbounded\" | steps".into(), json!("unbounded")));
+        let nested = json!({"type":"object","required":["envelope"],"properties":{"envelope":{"type":"object",
+            "required":["eventId"],"properties":{"eventId":{"type":"string"},"note":{"type":"string"}}}}});
+        assert_eq!(param_shape(&nested, &nested).1, json!({"envelope":{"eventId":"<replace-with-string>"}}));
+        let id = json!({"type":"string","format":"uuid"});
+        assert_eq!(param_shape(&id, &id).1, json!("00000000-0000-0000-0000-000000000000"));
     }
 
     // what this catches: regression for card 6c55f7a7 — a string placeholder that reads
@@ -434,7 +482,7 @@ mod tests {
             "required": ["card_id"],
             "properties": {"card_id": {"type": "string"}}
         });
-        let out = render_ai_help("work/release", "release a claim", &schema);
+        let out = render_manual("work/release", &[], "release a claim", &schema);
         assert!(
             !out.contains("\"<string>\""),
             "a bare `<string>` reads as a type annotation and gets sent as a value: {out}"
@@ -504,20 +552,33 @@ mod tests {
                 "line":      {"type": "integer"},
             }
         });
-        let out = render_ai_help("code/edit", "edit a file", &schema);
-        let envelope: Value = {
-            let start = out.find('{').expect("an envelope is rendered");
-            let end = out.rfind('}').expect("an envelope is rendered");
-            serde_json::from_str(&out[start..=end]).expect("the rendered envelope is valid JSON")
-        };
-        let args = &envelope["tool_call"]["arguments"];
-        assert!(args.get("file_path").is_some(), "the required arg is in the example: {args}");
+        let out = render_manual("code/edit", &[], "edit a file", &schema);
+        let (_, args) = super::super::read_call(&out).expect("an example call is rendered");
+        assert!(args.get("file_path").is_some(), "the required arg is in the example: {args:?}");
         assert!(
             args.get("replace").is_none() && args.get("line").is_none(),
-            "optional args must NOT be in the copyable example: {args}"
+            "optional args must NOT be in the copyable example: {args:?}"
         );
         // …but they are still DOCUMENTED, or the caller cannot discover them.
         assert!(out.contains("replace (boolean, optional)"), "{out}");
         assert!(out.contains("line (integer, optional)"), "{out}");
+    }
+
+    // what this catches: regression for card 1d9c0a64. The manual's example was a
+    // `{"tool_call": {"name": …, "arguments": …}}` block, and she pasted that block into an
+    // argument field: `bash(cmd: {"tool_call": {"name": "code/list", "arguments": {"path": "."}}})`
+    // and `code/read(file_path: {"tool_call": …})`, five times in fifteen minutes (the M5,
+    // 2026-11-07). The example is her offered tool name and its arguments object, nothing to paste.
+    #[test]
+    fn the_example_is_her_offered_call_never_a_wrapper_she_pastes_into_a_field() {
+        let schema = json!({"type": "object", "required": ["path"], "properties": {"path": {"type": "string"}}});
+        let out = render_manual("code/list", &["list_files"], "list a directory", &schema);
+        assert!(!out.contains("tool_call") && !out.contains("\"arguments\""), "no wrapper to paste: {out}");
+        assert!(out.contains(r#"list_files({"path":"<replace-with-string>"})"#), "{out}");
+        let (name, args) = super::super::read_call(&out).expect("the example reads back as a call");
+        assert_eq!(name, "list_files", "the name her tool list offers, never the slash form");
+        assert_eq!(args.get("path"), Some(&json!("<replace-with-string>")));
+        let no_alias = render_manual("code/list", &[], "list a directory", &schema);
+        assert!(no_alias.contains("code_list({"), "a command without an alias is offered charset-legal: {no_alias}");
     }
 }

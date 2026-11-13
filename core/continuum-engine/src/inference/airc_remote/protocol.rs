@@ -44,6 +44,12 @@ pub struct RemoteInferenceRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub target_peer: Option<String>,
+    /// The think budget the requester's faculty sized from her measured need, carried to the
+    /// seat's `ai/generate` (`GenerateParams::think`). Sent only to a seat advertising
+    /// `CapabilityId::RemoteThinkBudget`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub think: Option<crate::ai::types::ThinkBudget>,
 }
 
 impl RemoteInferenceRequest {
@@ -55,7 +61,24 @@ impl RemoteInferenceRequest {
             correlation_id: Uuid::new_v4(),
             text_request,
             target_peer: None,
+            think: None,
         }
+    }
+
+    /// Carry the requester's think budget to the seat.
+    pub fn with_think(mut self, think: Option<crate::ai::types::ThinkBudget>) -> Self {
+        self.think = think;
+        self
+    }
+
+    /// The `ai/generate` params this request crosses the wire as: the request itself, and its
+    /// think budget beside it (`GenerateParams::think`).
+    pub fn wire_params(&self) -> Result<serde_json::Value, serde_json::Error> {
+        let mut params = serde_json::to_value(&self.text_request)?; // BOUNDARY: wire, the airc `ai/generate` params
+        if let (Some(think), Some(object)) = (self.think, params.as_object_mut()) {
+            object.insert("think".to_string(), serde_json::json!(think.0));
+        }
+        Ok(params)
     }
 
     pub fn with_target_peer(mut self, peer: impl Into<String>) -> Self {
@@ -123,6 +146,11 @@ pub enum RemoteInferenceError {
     /// [[personas-are-citizens-airc-is-identity-provider]],
     /// quota exceeded, target peer not accepting remote inference).
     PolicyDenied { reason: String },
+    /// The seat refused at admission because every lane it serves already holds a
+    /// generation (`GenerateRefusal::Overloaded`, card 03660a77). Not a fault and not a
+    /// deadline: the peer answered at once. Her next act runs at home instead of asking
+    /// the full seat again.
+    SeatOverloaded { message: String },
 }
 
 impl std::fmt::Display for RemoteInferenceError {
@@ -144,6 +172,9 @@ impl std::fmt::Display for RemoteInferenceError {
             }
             Self::PolicyDenied { reason } => {
                 write!(f, "remote inference policy denied: {reason}")
+            }
+            Self::SeatOverloaded { message } => {
+                write!(f, "remote seat refused, every lane busy: {message}")
             }
         }
     }
@@ -175,6 +206,8 @@ mod tests {
             repeat_last_n: None,
             stop_sequences: None,
             tools: None,
+            tail_tools: None,
+            view_messages: None,
             tool_choice: None,
             response_format: None,
             active_adapters: None,

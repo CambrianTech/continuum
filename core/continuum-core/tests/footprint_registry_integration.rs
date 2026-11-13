@@ -14,7 +14,7 @@
 //!     cargo test --package continuum-core --test footprint_registry_integration \
 //!       -- --ignored --nocapture
 
-use continuum_core::ai::adapter::AIProviderAdapter;
+use continuum_core::ai::adapter::{AIProviderAdapter, DispatchTermsPolicy};
 use continuum_core::ai::types::{ChatMessage, MessageContent, TextGenerationRequest};
 use continuum_core::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use continuum_core::inference::kv_quant::Residency;
@@ -182,7 +182,8 @@ async fn scheduler_reports_per_seq_kv_bytes_for_persona() {
     };
 
     eprintln!("[ftp-int] dispatching generate_text with persona_id={persona_id}");
-    let response = adapter.generate_text(request).await.expect("generate_text");
+    let terms = continuum_core::ai::types::DispatchTerms::thinking(continuum_core::ai::types::Think::ModelDefault);
+    let response = adapter.generate_under(request, terms).await.expect("generate_under");
     eprintln!(
         "[ftp-int] generate_text returned: text={:?} tokens={}",
         &response.text.chars().take(60).collect::<String>(),

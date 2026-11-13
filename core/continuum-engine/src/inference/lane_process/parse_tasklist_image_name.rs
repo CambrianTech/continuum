@@ -1,21 +1,4 @@
-use super::*;
-
-/// Parse `tasklist /NH /FO CSV` output to the image name. Split out as a pure
-/// function so the parse is testable on any host — the shell-out is not.
-///
-/// A miss must be `None`, never a guess: tasklist answers a NO-MATCH filter with
-/// the prose line `INFO: No tasks are running which match the specified criteria.`
-/// on stdout AND exit status 0, so "success" does not imply "found".
-#[cfg(any(windows, test))]
-pub(crate) fn parse_tasklist_image_name(stdout: &str) -> Option<String> {
-    let line = stdout.lines().find(|l| l.trim_start().starts_with('"'))?;
-    let name = line.trim().trim_start_matches('"');
-    let name = name.split('"').next()?.trim();
-    if name.is_empty() {
-        return None;
-    }
-    Some(name.to_string())
-}
+use continuum_process::{command_name, kill9};
 
 /// Positively identify `pid` as one of OUR llama-server children — the guard every
 /// reap decision runs before signalling. `false` for a dead pid, a reused pid now

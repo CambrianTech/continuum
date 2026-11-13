@@ -2,6 +2,9 @@
 
 // The confirmed-save ledger: its page format, legacy migration and resident resume.
 mod ledger;
+mod adopted_checkpoint;
+mod discover;
+mod endpoint_concurrency;
 
     // what this catches (card 9e3350bd; the 5090 2026-10-11, build 6148): the heartbeat's smoke
     // probe ran on a one-slot lane's only slot, replacing the resident's KV, and the next save
@@ -52,21 +55,24 @@ mod ledger;
     // #5060). A dir with no pages is remembered empty; a live sample is never replaced by the disk's.
     #[tokio::test]
     async fn the_first_sizing_after_a_restart_reads_the_pages_on_disk() {
+        let sampler = std::sync::Arc::new(StateSampler::default());
         let root = tempfile::tempdir().expect("test: page store");
         let geometry = |key: usize| root.path().join(format!("test-37eb1925--c{key}"));
-        let reads_of = |dir: &std::path::Path| SEED_READS.lock().iter().filter(|d| d.as_path() == dir).count();
-        // An asker waits at most REPORTER_TIMEOUT and yields to another dir's read in flight (other
-        // tests seed concurrently). Re-ask until the dir is known: a re-ask joins its read or waits
+        let reads_of = |dir: &std::path::Path| sampler.reads.lock().iter().filter(|d| d.as_path() == dir).count();
+        // An asker waits at most REPORTER_TIMEOUT and yields to another dir's read in flight. Re-ask until the dir is known: a re-ask joins its read or waits
         // for the slot, never starting a second read of the same dir.
-        let seeded = |dir: std::path::PathBuf| async move {
+        let seeded = |dir: std::path::PathBuf| {
+            let sampler = sampler.clone();
+            async move {
             tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                while !state_dir_known_in(&RECENT_STATE_BYTES.lock(), &dir) {
-                    seed_state_samples(&dir).await;
+                while !sampler.known(&dir) {
+                    sampler.seed(&dir).await;
                     tokio::task::yield_now().await;
                 }
             })
             .await
             .expect("test: the read lands");
+            }
         };
         for key in 0..(STATE_DIRS + 3) {
             std::fs::create_dir(geometry(key)).expect("test: same-model geometry");
@@ -74,9 +80,9 @@ mod ledger;
         }
         let desired = geometry(0);
         std::fs::write(desired.join("a-p1-r1.bin.ckpt"), vec![0u8; 900]).expect("test: sidecar");
-        assert_eq!(measured_state_bytes(&desired), None, "a fresh core has measured nothing");
+        assert_eq!(sampler.measured(&desired), None, "a fresh core has measured nothing");
         seeded(desired.clone()).await;
-        assert_eq!(measured_state_bytes(&desired), Some(1_900), "the exact dir, no spawn first");
+        assert_eq!(sampler.measured(&desired), Some(1_900), "the exact dir, no spawn first");
         seeded(desired.clone()).await;
         assert_eq!(reads_of(&desired), 1, "a known dir is not read again");
 
@@ -84,14 +90,14 @@ mod ledger;
         std::fs::create_dir(&later).expect("test: a geometry made after the seed");
         std::fs::write(later.join("a-p2-r2.bin"), vec![0u8; 333]).expect("test: page");
         seeded(later.clone()).await;
-        assert_eq!(measured_state_bytes(&later), Some(333), "a new geometry is read for itself");
+        assert_eq!(sampler.measured(&later), Some(333), "a new geometry is read for itself");
 
         for key in 1..(STATE_DIRS + 3) {
             seeded(geometry(key)).await;
         }
-        assert_eq!(measured_state_bytes(&desired), None, "evicted from the bounded cache");
+        assert_eq!(sampler.measured(&desired), None, "evicted from the bounded cache");
         seeded(desired.clone()).await;
-        assert_eq!(measured_state_bytes(&desired), Some(1_900), "an evicted dir is read again");
+        assert_eq!(sampler.measured(&desired), Some(1_900), "an evicted dir is read again");
         assert_eq!(reads_of(&desired), 2, "and read alone, not by a census of its model");
 
         let mut samples = StateSamples::new();
@@ -114,16 +120,17 @@ mod ledger;
     // and releases the slot with nobody waiting on it; and the live sample survives it.
     #[tokio::test]
     async fn one_stuck_read_holds_one_slot_and_releases_it_unwatched() {
+        let sampler = std::sync::Arc::new(StateSampler::default());
         let root = tempfile::tempdir().expect("test: page store");
         let stuck = root.path().join("test-5060-stuck--c1");
         let other = root.path().join("test-5060-other--c2");
-        let reads_of = |dir: &std::path::Path| SEED_READS.lock().iter().filter(|d| d.as_path() == dir).count();
+        let reads_of = |dir: &std::path::Path| sampler.reads.lock().iter().filter(|d| d.as_path() == dir).count();
         let (release, gate) = std::sync::mpsc::channel::<()>();
         let gate = std::sync::Arc::new(parking_lot::Mutex::new(gate));
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             while reads_of(&stuck) == 0 {
                 let gate = gate.clone();
-                seed_state_samples_with(&stuck, move |_| {
+                sampler.seed_with(&stuck, move |_| {
                     let _ = gate.lock().recv(); // released by the test: a volume that stopped answering
                     Ok(vec![111])
                 })
@@ -132,20 +139,29 @@ mod ledger;
             }
         })
         .await
-        .expect("test: the stuck read starts once another test's read clears the slot");
-        assert_eq!(measured_state_bytes(&stuck), None, "still reading: unmeasured, not guessed");
-        seed_state_samples_with(&other, |_| Ok(vec![222])).await;
+        .expect("test: the stuck read is admitted");
+        assert_eq!(sampler.measured(&stuck), None, "still reading: unmeasured, not guessed");
+        sampler.seed_with(&other, |_| Ok(vec![222])).await;
         assert_eq!(reads_of(&other), 0, "another dir starts no worker while one read is in flight");
-        note_state_bytes(&stuck, 999);
+        sampler.note(&stuck, 999);
+        // A separate owner can churn its entire bounded cache while this read is
+        // blocked. Its eviction must never erase this owner's live sample.
+        let churning = StateSampler::default();
+        churning.note(&stuck, 333);
+        for key in 0..(STATE_DIRS + 3) {
+            churning.note(&root.path().join(format!("other-owner-{key}")), 222);
+        }
+        assert_eq!(churning.measured(&stuck), None, "other owner really evicted its sample");
+        assert_eq!(sampler.measured(&stuck), Some(999), "independent owner retains its live sample");
         release.send(()).expect("test: release the stuck read");
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            while SEEDING.lock().as_ref().is_some_and(|(reading, _)| reading == &stuck) {
+            while sampler.reading(&stuck) {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .expect("test: the read releases its slot with nobody waiting on it");
-        assert_eq!(measured_state_bytes(&stuck), Some(999), "the live sample outranks the disk's");
+        assert_eq!(sampler.measured(&stuck), Some(999), "the live sample outranks the disk's");
         assert_eq!(reads_of(&stuck), 1, "one read, however many asks");
     }
 
@@ -172,8 +188,100 @@ mod ledger;
         assert!(samples.len() <= STATE_DIRS, "bounded by dirs");
     }
 
-    fn key(p: u128, r: u128) -> ActivityKey {
-        ActivityKey::new(Uuid::from_u128(p), Uuid::from_u128(r)).expect("non-nil test ids")
+    /// A distinct page per (p, r). The pool is agnostic to the key class, so these tests
+    /// key distinct pages as forks of one persona; one page per mind is tested on its own.
+    fn key(p: u128, r: u128) -> PageKey {
+        PageKey::fork(Uuid::from_u128(p), Uuid::from_u128(r)).expect("non-nil test ids")
+    }
+
+    /// A resident mind's page: what the ledger persists.
+    fn mind(p: u128) -> PageKey {
+        PageKey::mind(Uuid::from_u128(p)).expect("non-nil test id")
+    }
+
+    // what this catches (card 6b28a445): a relaunch that cannot save (here, quarantined
+    // paging) lost residents' KV with no record, so their next cold turn read as a lost page;
+    // and, per Codex's review, a record made when the kill was SENT reports a loss that may
+    // not have happened. Through the real replacement path: nothing is recorded while the
+    // engine is only quarantined, even on re-entry; its observed exit records only the
+    // minds held without a confirmed save, once; a re-entry after the exit records nothing
+    // more; the record survives the pool's replacement and is taken exactly once.
+    #[tokio::test]
+    async fn a_relaunch_records_unsaved_residents_only_at_the_observed_exit_and_once() {
+        let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
+        let endpoint = dir.endpoint("test://relaunch");
+        let mut transition = endpoint.transition().await;
+        let generation = transition.start_generation().expect("first generation");
+        let pool = Arc::new(KvSlotPool::new("test://relaunch", 4));
+        pool.holders.lock().insert(0, mind(1));
+        pool.holders.lock().insert(1, mind(2));
+        pool.holders.lock().insert(2, key(3, 4));
+        pool.note_saved(mind(2));
+        endpoint.state.lock().set_pool(Probed::Known(pool));
+        endpoint.quarantine_paging();
+        let client = reqwest::Client::new();
+
+        for _attempt in 0..2 {
+            transition
+                .checkpoint_before_replacement(&client, "test://relaunch", &|| true)
+                .await
+                .expect("quarantined paging has nothing to save");
+            assert_eq!(endpoint.discarded.lock().take(&mind(1)), None, "the kill is not the death");
+        }
+        generation.observed_exit();
+        transition
+            .checkpoint_before_replacement(&client, "test://relaunch", &|| true)
+            .await
+            .expect("an exited engine has nothing to save");
+        drop(transition);
+        // The next generation's pool replaces this one; the record is the endpoint's.
+        endpoint.state.lock().set_pool(Probed::Known(Arc::new(KvSlotPool::new("test://relaunch", 4))));
+        endpoint.state.lock().ready.send_replace(true); // the replacement verified ready
+
+        let admission = endpoint.admit().await.expect("an open endpoint admits");
+        assert_eq!(admission.take_relaunch_discard(&mind(1)), Some(DiscardReason::PagingUncertain));
+        assert_eq!(admission.take_relaunch_discard(&mind(1)), None, "recorded once, taken once");
+        assert_eq!(admission.take_relaunch_discard(&mind(2)), None, "a saved page restores; nothing was lost");
+        assert_eq!(admission.take_relaunch_discard(&key(3, 4)), None, "a fork dies with its core anyway");
+    }
+
+    // what this catches (card 6b28a445, Codex's review): minds discarded by one relaunch that
+    // never return stayed recorded forever, across every later generation. Retention is one
+    // pool's worth of slots: the latest relaunch is kept whole, older records are evicted
+    // oldest first, and an empty capture evicts nothing.
+    #[tokio::test]
+    async fn discard_records_keep_one_pool_of_slots_across_generations() {
+        let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
+        let endpoint = dir.endpoint("test://retention");
+        let relaunch = |minds: &[u128]| {
+            let pool = Arc::new(KvSlotPool::new("test://retention", 3));
+            for (slot, m) in minds.iter().enumerate() {
+                pool.holders.lock().insert(slot as u32, mind(*m));
+            }
+            endpoint.state.lock().set_pool(Probed::Known(pool));
+            endpoint.pending_discard(DiscardReason::PagingUncertain).commit();
+        };
+        // One mind per relaunch, so "oldest" is defined: the first is evicted by the fourth.
+        for m in [1, 2, 3, 4] {
+            relaunch(&[m]);
+        }
+        {
+            let mut log = endpoint.discarded.lock();
+            assert_eq!(log.take(&mind(1)), None, "oldest evicted first");
+            for kept in [2, 3, 4] {
+                assert_eq!(log.take(&mind(kept)), Some(DiscardReason::PagingUncertain), "mind {kept} kept");
+            }
+        }
+        relaunch(&[5, 6]);
+        relaunch(&[7, 8, 9]); // a whole pool of slots: the latest relaunch is kept whole
+        relaunch(&[]); // nothing lost evicts nothing
+        let mut log = endpoint.discarded.lock();
+        for evicted in [5, 6] {
+            assert_eq!(log.take(&mind(evicted)), None, "mind {evicted} evicted by a newer relaunch");
+        }
+        for kept in [7, 8, 9] {
+            assert_eq!(log.take(&mind(kept)), Some(DiscardReason::PagingUncertain), "mind {kept} kept");
+        }
     }
 
     // regression for card 6102ac09 (BigMama, 2026-09-26 12:28Z): a turn that reached a
@@ -197,8 +305,6 @@ mod ledger;
             slots: 2,
             cache_type: Some("q8_0".into()),
             flash_attn: Some(true),
-            engine_build: None,
-            engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
                 73,
@@ -233,6 +339,104 @@ mod ledger;
         );
     }
 
+    /// An endpoint serving a verified engine, and that engine's generation.
+    async fn served_endpoint(dir: &SlotDirectory, root: &str) -> (Arc<EndpointSlots>, EngineGeneration) {
+        let endpoint = dir.endpoint(root);
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: Vec::new(),
+            page_dir: Some("fixture-pages".into()),
+            context: 32768,
+            slots: 8,
+            cache_type: Some("q8_0".into()),
+            flash_attn: Some(true),
+            revisions: None,
+        };
+        let launch = endpoint.transition().await;
+        let generation = launch.start_generation().expect("test: engine generation");
+        launch
+            .ready(root, &generation, contract)
+            .expect("test: verified engine");
+        drop(launch);
+        (endpoint, generation)
+    }
+
+    // what this catches (card df1d0963; the IntelMac 2026-11-04 06:27-07:34Z, enrico 2026-10-26
+    // 21:10-21:33Z): a replacement's drain waiting on turns that let go only on a condemnation,
+    // while the condemnation came from the admission inside the drain's own writer. Condemned
+    // first, the eight admitted turns let go and the drain completes; with the condemnation
+    // moved back behind the writer this times out.
+    #[tokio::test]
+    async fn a_decided_replacement_condemns_before_its_drain_so_held_turns_let_go() {
+        let dir = SlotDirectory {
+            endpoints: dashmap::DashMap::new(),
+        };
+        let (endpoint, incumbent) = served_endpoint(&dir, "test://draining").await;
+        let condemnations = Arc::new(crate::inference::llama_server::Condemnations::new());
+        let mut turns = Vec::new();
+        for _ in 0..8 {
+            let admission = endpoint.admit().await.expect("test: admitted on the ready endpoint");
+            let condemned = condemnations.subscribe();
+            turns.push(tokio::spawn(async move {
+                crate::inference::llama_server::until_condemned_on(condemned).await;
+                drop(admission);
+            }));
+        }
+        let drained = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            endpoint.drain_for_replacement(
+                Some(&incumbent),
+                None,
+                || Ok::<(), ()>(()),
+                || {
+                    condemnations.condemn();
+                },
+                &|| true,
+            ),
+        )
+        .await
+        .expect("the drain completes once its turns are condemned");
+        assert!(matches!(drained, Ok(Ok(_))), "a current replacement is admitted");
+        for turn in turns {
+            turn.await.expect("test: turn task");
+        }
+    }
+
+    // what this catches (Fable and Codex on df1d0963; the M5 2026-11-04 07:38:34Z refused a
+    // replacement for "adopted checkpoint requires a known pool"): a refused replacement, or a
+    // stale one whose incumbent was already replaced, ending every act in flight. A pre-flight
+    // refusal condemns nothing and leaves the endpoint serving; a stale incumbent is never
+    // condemned, and currentness under the writer still decides admission.
+    #[tokio::test]
+    async fn a_refused_or_stale_replacement_condemns_nothing() {
+        let dir = SlotDirectory {
+            endpoints: dashmap::DashMap::new(),
+        };
+        let (endpoint, first) = served_endpoint(&dir, "test://refused").await;
+        let condemned = std::sync::atomic::AtomicUsize::new(0);
+        let count = || {
+            condemned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        };
+
+        let refused = endpoint
+            .drain_for_replacement(Some(&first), None, || Err("custody refused"), count, &|| true)
+            .await;
+        assert!(matches!(refused, Err("custody refused")));
+        assert_eq!(condemned.load(std::sync::atomic::Ordering::SeqCst), 0, "a refusal condemns nothing");
+        assert!(endpoint.admit().await.is_ok(), "and the incumbent serves on");
+
+        // Another launch replaced the engine this one decided on: stale.
+        first.observed_exit();
+        let (_, second) = served_endpoint(&dir, "test://refused").await;
+        assert!(!first.same_engine(&second));
+        let stale = endpoint
+            .drain_for_replacement(Some(&first), None, || Ok::<(), ()>(()), count, &|| false)
+            .await;
+        assert!(matches!(stale, Ok(Err(()))), "currentness under the writer refuses it");
+        assert_eq!(condemned.load(std::sync::atomic::Ordering::SeqCst), 0, "the replacement is never condemned");
+    }
+
     // regression for Cormac's blocker on #4411 (the M5 grow chain): transitions back to
     // back. The first cut waited for ONE reopen and then called `admit()` once; a second
     // transition that closed the endpoint behind the first one's reopen made that call
@@ -257,8 +461,6 @@ mod ledger;
             slots: 2,
             cache_type: Some("q8_0".into()),
             flash_attn: Some(true),
-            engine_build: None,
-            engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
                 73,
@@ -322,8 +524,9 @@ mod ledger;
         let fourth = pool.lease(key(7, 4)).await.expect("evicts, not refuses");
         assert!(fourth < 3, "the 4th activity takes a citizen slot, never scratch");
         // Nil is unrepresentable.
-        assert!(ActivityKey::new(Uuid::from_u128(7), Uuid::nil()).is_none());
-        assert!(ActivityKey::new(Uuid::nil(), Uuid::from_u128(1)).is_none());
+        assert!(PageKey::fork(Uuid::from_u128(7), Uuid::nil()).is_none());
+        assert!(PageKey::fork(Uuid::nil(), Uuid::from_u128(1)).is_none());
+        assert!(PageKey::mind(Uuid::nil()).is_none());
     }
 
     // what this catches: eviction leaking slot indices. When a 5th activity
@@ -388,7 +591,10 @@ mod ledger;
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let pa4 = pool.lease_paged(a).await.expect("a after lost page");
         assert!(!pa4.restore, "a lost page must not be offered again");
-        assert_eq!(page_filename(&a), format!("a-{}-{}.bin", a.persona.simple(), a.room.simple()));
+        assert_eq!(
+            page_filename(&a),
+            format!("a-{}-fork-{}.bin", Uuid::from_u128(1).simple(), Uuid::from_u128(1).simple())
+        );
     }
 
     // what this catches: the scratch reservation and the placement law. On a
@@ -412,10 +618,41 @@ mod ledger;
         assert_eq!(class_for(Some("persona-respond")), SlotClass::Turn);
         assert_eq!(class_for(Some("cognition/should-respond")), SlotClass::Sidecar);
         assert_eq!(class_for(Some("serving-smoke-probe")), SlotClass::Probe);
-        assert_eq!(class_for(Some("dream-consolidation")), SlotClass::Background);
+        assert_eq!(class_for(Some("dream-consolidation")), SlotClass::Dream);
         assert_eq!(class_for(Some("some-future-producer")), SlotClass::Background,
             "unknown purposes default AWAY from citizen slots");
         assert_eq!(class_for(None), SlotClass::Background);
+    }
+
+    // what this catches: a resident's acts in two rooms keyed as two pages (the per-room key
+    // this replaced: every move between rooms paid a restore or a cold prefill for a prefix
+    // her epoch view already shares), and a fork keyed onto her page (an eval exam would
+    // overwrite her warm view and wait behind her act). Plan line 3b, card 424e0961.
+    #[tokio::test]
+    async fn one_mind_acting_in_two_rooms_warms_one_page_and_a_fork_never_shares_it() {
+        use crate::inference::request_body::{ACT_PURPOSE, DELIBERATION_PURPOSE, FORK_ACT_PURPOSE, FORK_DELIBERATION_PURPOSE};
+        let (her, general, academy) = (Uuid::from_u128(31), Uuid::from_u128(32), Uuid::from_u128(33));
+        let act = class_for(Some(ACT_PURPOSE));
+        let pass = class_for(Some(DELIBERATION_PURPOSE));
+        let in_general = act.page_key(Some(her), Some(general)).expect("her act in general has a page");
+        assert_eq!(pass.page_key(Some(her), Some(academy)), Some(in_general), "two rooms, one page");
+        assert_eq!(act.page_key(Some(her), None), Some(in_general), "a mind's page needs no room");
+        assert_eq!(page_filename(&in_general), format!("a-{}.bin", her.simple()));
+
+        let fork = class_for(Some(FORK_ACT_PURPOSE));
+        assert_eq!(fork, class_for(Some(FORK_DELIBERATION_PURPOSE)));
+        assert!(fork.holds_a_page() && act.holds_a_page() && !class_for(Some("cognition/should-respond")).holds_a_page());
+        let exam = fork.page_key(Some(her), Some(general)).expect("a fork in a room has a page");
+        assert_ne!(exam, in_general, "a fork never warms her page");
+        assert_ne!(fork.page_key(Some(her), Some(academy)), Some(exam), "each fork room is its own page");
+        assert_eq!(fork.page_key(Some(her), None), None, "a fork without a room has no page");
+        assert_ne!(page_filename(&exam), page_filename(&in_general));
+
+        // One slot holds her across both rooms: the second room's act is a warm re-lease.
+        let pool = KvSlotPool::new("test://one-mind", 2);
+        let first = pool.lease_paged(in_general).await.expect("general leases");
+        let second = pool.lease_paged(act.page_key(Some(her), Some(academy)).expect("academy page")).await.expect("academy leases");
+        assert_eq!((second.slot, second.already_resident, second.save_first), (first.slot, true, None));
     }
 
     // what this catches: KV-CACHE-ECONOMY §2's arithmetic, as a pinned test. A
@@ -454,12 +691,12 @@ mod ledger;
         let dir = SlotDirectory {
             endpoints: dashmap::DashMap::new(),
         };
-        assert!(dir.get("s1").is_none(), "unprobed root is unknown");
+        assert!(matches!(dir.get("s1"), Probed::NotAsked), "unprobed root is unknown");
         dir.latch_unsupported("s1");
-        assert!(matches!(dir.get("s1"), Some(None)), "latched unsupported");
+        assert!(matches!(dir.get("s1"), Probed::Absent(PropsAbsent)), "latched unsupported");
         let p = dir.ensure_pool("s2", 4);
         assert_eq!(p.n_slots(), 4);
-        assert!(matches!(dir.get("s2"), Some(Some(_))));
+        assert!(matches!(dir.get("s2"), Probed::Known(_)));
         assert!(dir.negotiate_page_admission("s2", &p, None, None).await);
         assert_eq!(dir.page_admission_path("s2").unwrap(), None, "legacy remains unactivated");
         let capability = serde_json::json!(1);
@@ -472,7 +709,7 @@ mod ledger;
         assert!(dir.negotiate_page_admission("local", &local, None, Some(&capability)).await);
         assert_eq!(dir.page_admission_path("local").unwrap(), Some(page_dir.path().canonicalize().unwrap()));
         let replacement = Arc::new(KvSlotPool::new("local", 1));
-        dir.endpoint("local").state.lock().pool = Some(Some(replacement));
+        dir.endpoint("local").state.lock().set_pool(Probed::Known(replacement));
         assert!(!dir.negotiate_page_admission("local", &local, None, Some(&capability)).await,
             "late props cannot authorize a replacement pool");
         let invalid = dir.ensure_pool("invalid", 1);
@@ -510,8 +747,6 @@ mod ledger;
             slots: 2,
             cache_type: Some("q8_0".into()),
             flash_attn: Some(true),
-            engine_build: None,
-            engine: "fixture-engine".into(),
             revisions: Some(vec![(
                 "fixture.gguf".into(),
                 73,
@@ -621,10 +856,9 @@ mod ledger;
             .expect("replacement ready");
         assert!(!dir.page_admission_known("test://generation"), "replacement renegotiates instead of inheriting capability");
         // Refreshing readiness for this generation must preserve its current ledger.
-        let new_pool = dir
-            .get("test://generation")
-            .flatten()
-            .expect("replacement pool");
+        let continuum_base::probed::Probed::Known(new_pool) = dir.get("test://generation") else {
+            panic!("replacement pool");
+        };
         let pg = new_pool
             .lease_paged(activity)
             .await

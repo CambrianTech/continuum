@@ -1,5 +1,8 @@
 # carl-install-smoke — handoff (root-caused; #1 fatal fixed; verify the rest on WSL/Linux)
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 `carl-install-smoke` (the `curl install.sh | bash` gate — Carl's REAL entry point, not the docker-compose
 gate) has been RED for 8+ runs on canary. This is reliability-spine #1 (install). Root-caused from the CI
 artifact; the blocking fatal is fixed + unit-verified here on macOS. What remains needs a real Linux/WSL run
@@ -51,7 +54,7 @@ smoke loop green so you can prove parity.
 
 ## Lower-priority cleanup in repo-root install.sh (cosmetic, non-fatal)
 Stale `src/shared/models.json` references in COMMENTS + user-facing strings (lines ~248, 442, 458, 461, 515,
-517) — models.json now lives at `legacy/src/shared/models.json` and is read by the `model-init` container
+517) — models.json now lives at `docker/model-init/models.json` and is read by the `model-init` container
 (fixed in #1851). These are comments/echoes, not fatal, but worth truing up when you touch the file.
 
 ## What's already done + verified (so you don't redo it)

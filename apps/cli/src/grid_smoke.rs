@@ -350,9 +350,9 @@ async fn run_spec(conn: &Connection<AircIpcTransport>, spec: &GridSmokeSpec) -> 
             // the wire fast. Anything else (deadline, transport error)
             // stays a failure.
             if gate == GateExpectation::RefusedUntilTrustBridge && msg.contains("refused") {
-                Outcome::Ok(format!(
-                    "refused at the gate as expected until task #38 (Provisional < Privileged)"
-                ))
+                Outcome::Ok(
+                    "refused at the gate as expected until task #38 (Provisional < Privileged)".to_string(),
+                )
             } else {
                 Outcome::Failed(format!("dispatch: {msg}"))
             }

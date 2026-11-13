@@ -95,6 +95,8 @@ pub struct SqliteAdapter {
     /// to look like JSON stays the string it is. Collections nobody declared (the
     /// TS-style dynamic tables) keep the legacy sniff.
     pub(super) declared: Arc<std::sync::RwLock<HashMap<String, Arc<HashMap<String, FieldType>>>>>,
+    /// Each sequenced collection's committed high-water, published by the committing write.
+    pub(super) sequences: Arc<super::sequenced::SequenceRevisions>,
 }
 
 impl SqliteAdapter {
@@ -105,6 +107,7 @@ impl SqliteAdapter {
             reader_index: AtomicUsize::new(0),
             last_pressure_check: Arc::new(AtomicU64::new(0)),
             declared: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            sequences: Arc::default(),
         }
     }
 
@@ -561,6 +564,32 @@ pub(super) fn do_batch_one(
                 Err(r.error.unwrap_or_else(|| "update failed".to_string())) // the adapter reported failure without detail; the operation still failed
             }
         }
+        BatchOperationType::Ensure => {
+            let (Some(id), Some(data)) = (op.id, op.data) else {
+                return Err("ensure requires both id and data".to_string());
+            };
+            let record = DataRecord {
+                id,
+                collection: op.collection,
+                data,
+                metadata: RecordMetadata::default(),
+            };
+            let created = super::conditional::ensure_row(conn, &record)?;
+            Ok(json!({"success": true, "created": created}))
+        }
+        BatchOperationType::Append(spec) => {
+            let (Some(id), Some(data)) = (op.id, op.data) else {
+                return Err("append requires both id and data".to_string());
+            };
+            let record = DataRecord {
+                id,
+                collection: op.collection,
+                data,
+                metadata: RecordMetadata::default(),
+            };
+            let sequenced = super::sequenced::append_sequenced(conn, record, &spec)?;
+            Ok(json!({"success": true, "seq": sequenced.seq, "fresh": sequenced.fresh}))
+        }
         BatchOperationType::Delete => {
             let Some(id) = op.id else {
                 return Err("delete requires an id".to_string());
@@ -625,7 +654,7 @@ pub(super) fn do_batch(
     StorageResult::ok(results)
 }
 
-/// SQL keyword for a CascadeRule. Same mapping for sqlite + postgres
+/// SQL keyword for a CascadeRule. Same mapping for sqlite
 /// (both speak SQL-standard cascade keywords).
 pub(super) fn cascade_rule_sql(rule: super::super::types::CascadeRule) -> &'static str {
     use super::super::types::CascadeRule;

@@ -200,7 +200,7 @@ async fn fetch_floor(
     total_memory: u64,
     tracker: &Arc<parking_lot::Mutex<RateLimitTracker>>,
 ) {
-    let Some(dest_dir) = dirs::home_dir().map(|h| h.join(".continuum").join("genome").join("models")) else {
+    let Some(dest_dir) = crate::paths::ContinuumLayout::home().ok().map(|l| l.genome_models()) else {
         continuum_base::probe!(class = "provisioning.floor_fetch.no_home", "no home dir — cannot place a fetched model");
         return;
     };

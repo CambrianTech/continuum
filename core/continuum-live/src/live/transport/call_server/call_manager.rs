@@ -244,7 +244,7 @@ impl CallManager {
         // TELL THE CORE (#58). This is the wire that was never run: join_call has always
         // known a call started, held the call id — which IS the airc RoomId, enforced by
         // require_airc_room above — and the joiner, and told nobody. Registration was left
-        // to whichever client implemented it, so exactly one did (Node, in legacy/), and
+        // to whichever client implemented it, so exactly one did (Node, in legacy/, tag legacy-archive-2026-10-23), and
         // every other client's citizens were structurally voiceless.
         //
         // Fired AFTER the participant is in the maps, so the registrar can never observe a

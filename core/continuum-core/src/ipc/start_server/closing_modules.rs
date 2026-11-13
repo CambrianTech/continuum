@@ -8,14 +8,16 @@ pub(super) fn register_closing_modules(
     runtime: &Arc<Runtime>,
     gpu_manager: &Arc<GpuMemoryManager>,
     code_state: &Arc<CodeState>,
-) -> Arc<crate::modules::grid::GridState> {
+) -> std::io::Result<Arc<crate::modules::grid::GridState>> {
     // SentinelModule: Concurrent, fault-tolerant build/task execution
     // Provides sentinel/execute, sentinel/status, sentinel/cancel, sentinel/list
     // And sentinel/logs/list, sentinel/logs/read, sentinel/logs/tail
     // Process isolation via child processes - safe for Xcode, cargo, etc.
-    let sentinel_module = Arc::new(SentinelModule::new());
+    let sentinel_module = Arc::new(SentinelModule::new(&crate::paths::continuum_root()));
     runtime.register(sentinel_module.clone());
-    crate::modules::sentinel::register_for_shutdown(sentinel_module);
+    continuum_sentinel::register_for_shutdown(sentinel_module);
+    // The driver gateway: the one door external agents call (docs/architecture/DRIVER-GATEWAY.md).
+    runtime.register(Arc::new(continuum_gateway::GatewayModule::default()));
 
     // PlasticityModule: Adaptive neural plasticity optimization engine
     // Provides plasticity/analyze, plasticity/compact, plasticity/topology
@@ -38,9 +40,9 @@ pub(super) fn register_closing_modules(
     runtime.register(Arc::new(VisionModule::new(code_state.clone())));
 
     // GridModule: inter-node transport + routing (Tailscale, Reticulum)
-    let grid_dir = dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".continuum")
+    // The one continuum home, or boot stops: a fallback tree here would hide a retired-root
+    // refusal (#5420) behind a second grid state (Codex on #5421).
+    let grid_dir = crate::paths::continuum_home().map_err(BootError::ContinuumHome)?
         .join("grid");
     let local_has_gpu = gpu_manager.total_vram_bytes() > 0;
     let local_vram_mb = gpu_manager.total_vram_bytes() / (1024 * 1024);
@@ -48,8 +50,13 @@ pub(super) fn register_closing_modules(
     // GridInterceptor below. The interceptor needs the same router +
     // node registry + transports the GridModule itself runs on; using
     // the public `state()` getter avoids duplicating any of that.
-    let grid_module = Arc::new(GridModule::new(grid_dir, local_has_gpu, local_vram_mb));
+    let grid_module = Arc::new(GridModule::new(
+        grid_dir,
+        local_has_gpu,
+        local_vram_mb,
+        crate::modules::grid::LocalBuild { git_sha: env!("CONTINUUM_BUILD_GIT_SHA"), number: env!("CONTINUUM_BUILD_NUMBER") },
+    ));
     let grid_state = grid_module.state();
     runtime.register(grid_module);
-    grid_state
+    Ok(grid_state)
 }

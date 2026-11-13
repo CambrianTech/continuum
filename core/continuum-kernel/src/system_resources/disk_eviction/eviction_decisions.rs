@@ -25,6 +25,20 @@ pub(super) const OWNED: &[&str] = &[
         // reaper removes every profile no live process names, at boot and on the
         // pressure edge.
         "eye-profiles",
+        // Owner: the `tool-output-spill` FilesystemTierPool (pressure_broker_wiring), oldest
+        // first, through `spill::evict_unless_live`: a handle a live mind or her persisted
+        // checkpoint names is never deleted. Each persona's `archive/` (her acts after they left
+        // RAM, `working_memory/archive.rs`) is in this class too: under disk pressure its oldest
+        // segments go first, which is her history's retention; it also drains itself (compaction
+        // past her measured reopen horizon, and bodies no archived line names deleted).
+        "tool-output",
+        // Owner: `inference::slots::KvPageStorePool` (continuum-engine, registered in
+        // pressure_broker_wiring). Value order: pages of model dirs no live slot pool serves,
+        // then pages the serving pool's ledger does not confirm, then the coldest confirmed
+        // pages of minds no slot holds, each forgotten through `note_page_lost` before its
+        // file goes. Never a resident's page, never `saved-ledger.json`, never a served page
+        // while page IO is in flight. The save-side trim still bounds the one live dir.
+        "kv-pages",
 ];
 
 /// Classes whose eviction is deferred, each with the reason and the task that owns it.
@@ -85,12 +99,20 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
              protected by serving_active_artifacts while served; never deleted in place",
         ),
         ("core-artifacts-configured", "139c651d: shared configured staging root; writer projected-byte admission and post-success retention, no migration/deletion of legacy cache"),
+        ("core-artifacts-legacy", "4dedb177: the historical ~/.continuum/cache/artifacts after $CONTINUUM_HOME moved; no writer adds to it, tracked only while it exists so its bytes stay visible; no automatic deletion"),
         (
             "core-artifacts",
             "50ca737e: bounded by its writer — the deploy consumer keeps the newest 3 \
              CI-built cores and removes older ones only after successful preparation; all \
              re-downloadable from the canary releases. Owner when built: a capped pool \
              like cargo-target, if pressure ever needs more than three",
+        ),
+        (
+            "progress",
+            "a4bbae0a: run ledgers — one small JSON row per detached run (teach, eval). A run \
+             in flight is never evicted (its status poller reads it); a finished run's row is \
+             its only durable result. Owner when built: an age-based sweep of FINISHED rows \
+             (complete:true) past their reader's retention, skipping any run still in flight",
         ),
         (
             "moe-probe",
@@ -101,7 +123,7 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
         (
             "eval-captures",
             "#155: age-based sweep — every file is a re-creatable diagnostic (kv-diag \
-             snapshots, wire-request jsonl from SERVING_WIRE_CAPTURE_DIR); writers are \
+             snapshots); writers are \
              opt-in and quiet by default, so the class grows only while an operator is \
              actively hunting. Owner when built: a capped appender like the log pool",
         ),
@@ -169,17 +191,6 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
             "#155: broker-reachable pool over cognition/eval::live_eval_roots(); \
              sweep + RAII already own the steady state and the crash path",
         ),
-        // Steady-state owner ALREADY EXISTS on every save:
-        // `inference::slots::trim_page_store_after_save` keeps the model's one
-        // page dir under its byte budget, oldest pages first and never one
-        // younger than a day, and each activity owns ONE file that saves
-        // overwrite in place (count bounded by residents × rooms). Legacy
-        // per-window dirs (`<model>--c<step>`) are no longer written; the newest
-        // moves into the model's dir once, the rest wait for an operator.
-        // Deferred only for the broker seam: under real disk pressure the broker
-        // cannot yet claw back live pages — that wants a pool that asks the slot
-        // pool which activities are resident (their pages are one eviction from
-        // being needed) versus departed, never a blind LRU.
         // airc's per-room projection snapshots (operator scope; the personas' live under
         // `citizens`). Size is O(rooms × projection): the board snapshot is the folded
         // board (cards, not events), the wall snapshot is the room's posts (few). Both
@@ -218,17 +229,35 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
             "airc 551fe5ae: the daemon bounds its own log (rotate at a cap, one \
              predecessor) and writes it in its own home, not the spawning scope's",
         ),
-        (
-            "kv-pages",
-            "#155: broker-reachable pool keyed on slot-pool residency; the \
-             spawn-time generation sweep already owns the stale-geometry path",
-        ),
-        // Every lane's --train-dir (2026-09-26). A finished adapter is MOVED into its
-        // job dir by the engine trainer, so what stays is a run in flight (never
-        // touched) or a crashed run's partial file (dead the moment its job is).
+        // Every lane's --train-dir. Since learning moved in place (card 4114a2c6) it holds
+        // staged genes and each learning bucket's shadows and checkpoint generations. The
+        // training trigger's candidate sweep deletes every bucket's generations older than its
+        // committed one (`in_place::evict`); candidate genes are copies in the genome store.
         (
             "engine-train",
-            "charter S3/S6 engine trainer: delete every `<uuid>.gguf` whose job is not \
-             live on the TrainingJobBoard; a live job's file is never touched",
+            "card 4114a2c6 (Cormac): no pressure-driven pool yet; the trigger's sweep keeps one \
+             generation per bucket. Owed, behind custody's fence: shadows and their .pending dirs \
+             no custody entry holds; staged genes no adapter catalog names; the batch trainer's files",
+        ),
+        // Saved state: small measured or recorded facts, one file per key, never a cache. Losing
+        // one costs a re-measure, so byte pressure is never a reason; what can go is a key with no
+        // live owner (a model no longer served, a persona gone), which the saved-state trunk's
+        // retention sweep decides from each kind's declared Retention.
+        (
+            "state",
+            "8a983e31: the decode knee, prefill rate and lane footprint files still written here \
+             by hand move onto the saved-state contract with their observers (controller card); \
+             bf0574a4: each kind's pre-envelope upgrade (adopt_bare) is removed once no node \
+             reports state.load.upgraded over a deploy cycle. Bounded meanwhile by one file per key",
+        ),
+        (
+            "training-demand",
+            "bf0574a4: the pre-envelope upgrade leaves once no node reports state.load.upgraded \
+             over a deploy cycle; bounded by one file per persona with parked examples",
+        ),
+        (
+            "training-rate",
+            "bf0574a4: one file per node, one row per (base, chunk) ever trained; nothing to \
+             evict, only the upgrade seam to retire",
         ),
 ];

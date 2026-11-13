@@ -73,7 +73,7 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.continuum/cache/cargo-target
 # refused three deploys of b6ddc0d0e on the 5090 (2026-10-04) as a stale binary.
 export CONTINUUM_BUILD_SOURCE="$REPO_ROOT@$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 
-# ── PREBUILT MODE (2026-09-16): the CLI's warm-build reboot hands a VERIFIED
+# ── PREBUILT MODE (2026-09-16): the CLI's reboot hands a VERIFIED
 # artifact in CONTINUUM_PREBUILT_CORE. Everything else this script does for the
 # core — the llama-server PATH, ORT_DYLIB_PATH, the derived airc room, the models
 # dir, the airc daemon, the desktop dist + its background rebuild, the caffeinate
@@ -929,14 +929,12 @@ if core_bin_is_stale; then
   echo "✓ #194: forced a fresh continuum-core-server rebuild — binary now reflects source"
 fi
 
-# ── Build-only: the warm deploy ────────────────────────────────────────
-# `continuum reboot` runs this script with CONTINUUM_BUILD_ONLY=1 BEFORE it stops the
-# running core, when the machine has headroom: the core keeps serving through the
-# minutes of compile, and the launch that follows the stop finds the binary fresh
-# (its own build is a warm no-op), so the dark window is the stop plus the start —
-# seconds, not ten minutes (eight deploys on 2026-09-13 = 80 minutes dark, every
-# citizen's turns dropped and leases unrenewed each time). One build definition:
-# this script's, with the same manifest, profile and features.
+# ── Build-only: the dark deploy ────────────────────────────────────────
+# `continuum reboot` runs this script with CONTINUUM_BUILD_ONLY=1 AFTER it has stopped
+# serving (Joel, 2026-10-24: "No. Take down serving while building."): the build takes the
+# whole machine, the exact artifact is reported through the receipt, and a failed build puts
+# the previous core back. One build definition: this script's, with the same manifest,
+# profile and features.
 # THIS NODE FOLLOWS A BRANCH (opt-in, for every install — not an operator's shell chain):
 # `CONTINUUM_TRACK_BRANCH=canary` in ~/.continuum/config.env installs the tracker agent
 # (launchd / systemd user timer) on every start, idempotently. The agent deploys a green
@@ -1002,13 +1000,13 @@ if [ -f "$REPO_ROOT/apps/web/package.json" ] && command -v npm >/dev/null 2>&1; 
     || echo "  ⚠ background desktop build failed — read $ui_build_log" >&2) &
 fi
 
-# THE ENGINE CONVERGES ON A DEPLOY TOO (card 7c5f139d). A deploy's warm build runs this
+# THE ENGINE CONVERGES ON A DEPLOY TOO (card 7c5f139d). A deploy's build-only pass runs this
 # script with BUILD_ONLY=1, and the engine install below the guard at the top is runtime-only,
 # so on the Macs the engine never followed the pin: the M5 and the IntelMac served 965d38a90
 # (no /train) a day after the pin reached 9733aca6c, and the M5 could not dream. The builder is
 # stamp-gated (skips at once when commit:backend match) and installs ATOMICALLY (rm, temp,
-# codesign, mv), so a running lane keeps its old inode and building beside a serving core is
-# safe; the new core then relaunches any lane whose /props build is older than the stamp.
+# codesign, mv), and serving is stopped while it runs; the new core then relaunches any lane
+# whose /props build is older than the stamp.
 # macOS and Linux only: on Windows a running lane holds the engine's DLLs, and that path is
 # `continuum install`'s engine arm (#4382). A failed engine build never fails the core deploy:
 # the stamp is written only after a verified build, so the lane stays on the engine it has.
@@ -1016,7 +1014,7 @@ if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ] && [ -z "${LLAMA_SERVER_BIN:-}" ]; then
   case "$(uname -s)" in
     Darwin|Linux)
       if ! "$SCRIPT_DIR/install-llama-server.sh" >&2; then
-        echo "⚠ engine build failed in the warm pass; the core deploys, lanes keep their current engine" >&2
+        echo "⚠ engine build failed in the build-only pass; the core deploys, lanes keep their current engine" >&2
       fi
       ;;
   esac
@@ -1046,7 +1044,7 @@ if [ "${CONTINUUM_BUILD_ONLY:-}" = "1" ]; then
     esac
     printf '%s\n' "$artifact" > "$CONTINUUM_BUILD_RECEIPT"
   fi
-  echo "✓ warm build complete: continuum-core-server is fresh at $CORE_BIN — build-only, not launching"
+  echo "✓ build-only pass complete: continuum-core-server is fresh at $CORE_BIN — build-only, not launching"
   exit 0
 fi
 

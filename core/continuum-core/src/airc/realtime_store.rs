@@ -14,8 +14,6 @@ use std::collections::{HashMap, VecDeque};
 use ts_rs::TS;
 use uuid::Uuid;
 
-pub const DEFAULT_ROOM_REPLAY_LIMIT: usize = 100;
-pub const MAX_ROOM_REPLAY_LIMIT: usize = 500;
 pub const DEFAULT_EVENTS_PER_ROOM: usize = 2_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
@@ -36,7 +34,8 @@ pub struct AircRealtimePublishParams {
 )]
 pub struct AircRealtimePublishResult {
     pub ok: bool,
-    pub event_id: String,
+    #[ts(type = "string")]
+    pub event_id: Uuid,
     #[ts(type = "string")]
     pub room_id: Uuid,
     pub delivery: AircRealtimeDelivery,
@@ -218,10 +217,9 @@ impl AircRealtimeStore for InMemoryAircRealtimeStore {
     fn replay(&self, params: AircRealtimeReplayParams) -> Result<AircRealtimeReplayResult, String> {
         validate_room_id(params.room_id)?;
 
-        let limit = params
-            .limit
-            .unwrap_or(DEFAULT_ROOM_REPLAY_LIMIT)
-            .clamp(1, MAX_ROOM_REPLAY_LIMIT);
+        // A page is what the caller asks for, bounded by what this store retains (it can return no
+        // more); with no ask, the whole retained window. No second number chosen here.
+        let limit = params.limit.unwrap_or(self.max_events_per_room).clamp(1, self.max_events_per_room);
         let mut state = self.inner.lock();
         if let Some(now_ms) = params.now_ms {
             state.prune_expired_presence(now_ms);

@@ -26,7 +26,7 @@
 //!
 //! ### What the response looks like
 //!
-//! `[heuristic:<8-char-hash>] ack: "<last-200-chars-of-last-user-message>"`
+//! `[heuristic:<8-char-hash>] ack: "<last-user-message>"`
 //!
 //! Enough to prove (a) the inference command surface is wired,
 //! (b) the prompt actually reached the adapter, (c) the response is
@@ -69,10 +69,6 @@ pub const HEURISTIC_PROVIDER_ID: &str = "heuristic";
 /// adapter handled the request.
 pub const HEURISTIC_DEFAULT_MODEL: &str = "heuristic-echo-v1";
 
-/// Echo length cap — last N chars of the most recent user message
-/// surfaces in the response.
-// context-budget-exempt: a TEST-ONLY canned adapter's echo width (gated behind test-fixtures); never a live bound
-const ECHO_CHARS: usize = 200;
 
 /// The adapter struct itself. No mutable state, no clock access, no
 /// external resources — instances are cheap and interchangeable.
@@ -267,8 +263,8 @@ impl HeuristicInferenceAdapter {
             }
         }
         let digest = hasher.finalize();
-        let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
-        hex
+        // The 8-hex-char prefix: the digest's leading u32.
+        format!("{:08x}", u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]))
     }
 
     /// Build the response text from the request. Pure function —
@@ -287,15 +283,8 @@ impl HeuristicInferenceAdapter {
     /// algorithms."
     pub fn build_response_text(req: &TextGenerationRequest) -> String {
         let prefix = Self::determinism_prefix(req);
-        let last = Self::last_user_text(&req.messages);
-        let echoed: String = last
-            .chars()
-            .rev()
-            .take(ECHO_CHARS)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
+        // The whole message, never a width this fixture picked.
+        let echoed = Self::last_user_text(&req.messages);
         let plain = if echoed.is_empty() {
             format!("[heuristic:{prefix}] ack: (no user text in prompt)")
         } else {
@@ -312,7 +301,43 @@ impl HeuristicInferenceAdapter {
             let inner = serde_json::to_string(&plain).expect("plain string serializes");
             return format!("{{\"will_respond\":true,\"response\":{inner}}}");
         }
+        if let Some(crate::ai::types::ResponseFormat::JsonSchema { json_schema }) = &req.response_format {
+            // The smallest value the schema accepts, its strings the echo: a caller's typed parse
+            // is exercised end to end, whatever its shape, with no shape known here.
+            return Self::minimal_instance(&json_schema.schema, &plain).to_string();
+        }
         plain
+    }
+
+    /// The smallest value `schema` accepts: every required property, the fewest array items it
+    /// allows, each string `text`.
+    fn minimal_instance(schema: &serde_json::Value, text: &str) -> serde_json::Value {
+        use serde_json::Value;
+        let kind = schema.get("type").and_then(Value::as_str);
+        match kind {
+            Some("object") => {
+                let required: Vec<&str> = schema
+                    .get("required")
+                    .and_then(Value::as_array)
+                    .map(|names| names.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default(); // unwrap_or_default: a schema with no `required` requires nothing
+                let properties = schema.get("properties").and_then(Value::as_object);
+                let object = required
+                    .into_iter()
+                    .filter_map(|name| properties?.get(name).map(|p| (name.to_owned(), Self::minimal_instance(p, text))))
+                    .collect();
+                Value::Object(object)
+            }
+            Some("array") => {
+                let fewest = schema.get("minItems").and_then(Value::as_u64).unwrap_or(0); // unwrap_or: no minItems allows an empty array
+                let item = schema.get("items").map(|items| Self::minimal_instance(items, text));
+                Value::Array(item.into_iter().cycle().take(fewest as usize).collect())
+            }
+            Some("string") => Value::String(text.to_owned()),
+            Some("integer" | "number") => Value::from(0),
+            Some("boolean") => Value::Bool(false),
+            _ => Value::Null,
+        }
     }
 }
 
@@ -392,6 +417,7 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        _dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         // Observer fires for substrate-side hot-path inference call
         // counts.
@@ -579,6 +605,8 @@ mod tests {
             repeat_last_n: None,
             stop_sequences: None,
             tools: None,
+            tail_tools: None,
+            view_messages: None,
             tool_choice: None,
             response_format: None,
             active_adapters: None,
@@ -596,8 +624,8 @@ mod tests {
         let adapter = HeuristicInferenceAdapter::new();
         let req_a = req_with(vec![user_msg("hello world")]);
         let req_b = req_with(vec![user_msg("hello world")]);
-        let resp_a = adapter.generate_text(req_a).await.unwrap();
-        let resp_b = adapter.generate_text(req_b).await.unwrap();
+        let resp_a = adapter.generate_text(req_a, crate::ai::adapter::Dispatched::fixture()).await.unwrap();
+        let resp_b = adapter.generate_text(req_b, crate::ai::adapter::Dispatched::fixture()).await.unwrap();
         assert_eq!(
             resp_a.text, resp_b.text,
             "determinism contract: same prompt → identical text"
@@ -608,11 +636,11 @@ mod tests {
     async fn different_prompts_yield_different_response_text() {
         let adapter = HeuristicInferenceAdapter::new();
         let resp_a = adapter
-            .generate_text(req_with(vec![user_msg("alpha")]))
+            .generate_text(req_with(vec![user_msg("alpha")]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         let resp_b = adapter
-            .generate_text(req_with(vec![user_msg("beta")]))
+            .generate_text(req_with(vec![user_msg("beta")]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert_ne!(resp_a.text, resp_b.text);
@@ -627,7 +655,7 @@ mod tests {
                 user_msg("first question"),
                 assistant_msg("first answer"),
                 user_msg("second question — please answer this"),
-            ]))
+            ]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert!(
@@ -646,7 +674,7 @@ mod tests {
     async fn no_user_message_still_produces_marker_response() {
         let adapter = HeuristicInferenceAdapter::new();
         let resp = adapter
-            .generate_text(req_with(vec![system_msg("system only, no user")]))
+            .generate_text(req_with(vec![system_msg("system only, no user")]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert!(resp.text.contains("(no user text in prompt)"));
@@ -657,7 +685,7 @@ mod tests {
     async fn finish_reason_is_stop_for_every_request() {
         let adapter = HeuristicInferenceAdapter::new();
         let resp = adapter
-            .generate_text(req_with(vec![user_msg("anything")]))
+            .generate_text(req_with(vec![user_msg("anything")]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert_eq!(resp.finish_reason, FinishReason::Stop);
@@ -669,7 +697,7 @@ mod tests {
         let resp = adapter
             .generate_text(req_with(vec![user_msg(
                 "a long-ish prompt here for token estimation",
-            )]))
+            )]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert!(resp.usage.input_tokens > 0);
@@ -684,7 +712,7 @@ mod tests {
     async fn provider_field_in_response_matches_provider_id_constant() {
         let adapter = HeuristicInferenceAdapter::new();
         let resp = adapter
-            .generate_text(req_with(vec![user_msg("hi")]))
+            .generate_text(req_with(vec![user_msg("hi")]), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert_eq!(resp.provider, HEURISTIC_PROVIDER_ID);
@@ -814,8 +842,8 @@ mod tests {
         let mut req_b = req_with(vec![user_msg("same prompt text")]);
         req_a.temperature = Some(0.0);
         req_b.temperature = Some(0.9);
-        let resp_a = adapter.generate_text(req_a).await.unwrap();
-        let resp_b = adapter.generate_text(req_b).await.unwrap();
+        let resp_a = adapter.generate_text(req_a, crate::ai::adapter::Dispatched::fixture()).await.unwrap();
+        let resp_b = adapter.generate_text(req_b, crate::ai::adapter::Dispatched::fixture()).await.unwrap();
         assert_ne!(
             resp_a.text, resp_b.text,
             "different sampling params should change the determinism prefix"

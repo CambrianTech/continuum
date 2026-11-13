@@ -23,7 +23,7 @@
 //! connection) is declared in the schema as the next tier and refused until built.
 
 use crate::sdk_codegen::{AccessLevel, CommandDescriptor, DynCommand, TypeRef, WireShape};
-use crate::inference::lane_process::{Answer, Why};
+use continuum_process::{Answer, Why};
 use crate::runtime::CommandResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -179,7 +179,7 @@ pub fn load_manifests(dir: &Path, shipped: &[&str]) -> (Vec<LoadedCommand>, Vec<
                     refused.push(ManifestError::Duplicate { path, name: cmd.manifest.name.clone() });
                     continue;
                 }
-                let descriptor = cmd.descriptor();
+                let descriptor = cmd.process_descriptor();
                 loaded.push(LoadedCommand { command: Arc::new(cmd), descriptor });
             }
             Err(e) => refused.push(e),
@@ -260,11 +260,11 @@ impl ProcessCommand {
             program = %self.manifest.exec[0],
             "authored command process starting"
         );
-        // owned (lane_process::run_owned_with_input): params on stdin, written beside the wait so a
+        // owned (continuum_process::run_owned_with_input): params on stdin, written beside the wait so a
         // program that never reads them can't wedge the call; at the bound, or when this call is
         // dropped, the program and everything it started are ended (kill_on_drop ended only it)
         let bound = std::time::Duration::from_millis(self.manifest.timeout_ms);
-        let out = crate::inference::lane_process::run_owned_with_input(cmd, Some(body), Some(bound), "ext-command", std::sync::Arc::default())
+        let out = continuum_process::run_owned_with_input(cmd, Some(body), Some(bound), "ext-command", std::sync::Arc::default())
             .await
             .map_err(|e| format!("{}: cannot run {:?}: {e}", self.name, self.manifest.exec[0]))?;
         let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -316,13 +316,9 @@ impl ProcessCommand {
     }
 }
 
-#[async_trait]
-impl DynCommand for ProcessCommand {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn descriptor(&self) -> CommandDescriptor {
+impl ProcessCommand {
+    /// Always describable: an authored command carries its own schema and no TS types.
+    fn process_descriptor(&self) -> CommandDescriptor {
         // Runtime-only: this descriptor feeds the catalogue, the tool surface, the ACL and
         // the recipe gate. It never enters codegen (the compile-time registry is
         // untouched), so the TypeRefs are a stable placeholder, not a TS type.
@@ -333,12 +329,32 @@ impl DynCommand for ProcessCommand {
             description: self.description,
             wire: WireShape::Bare,
             native: self.manifest.native,
+            // Its params are the authored process's to decode: no Rust type owns them.
+            arguments: crate::sdk_codegen::ArgumentsContract::External,
             aliases: &[],
+            // An authored command runs an arbitrary process and its manifest declares no
+            // effect: undeclared, so it is never a repeat and never taken as observing.
+            effect: continuum_base::tool_effect::ToolEffect::Undeclared,
+            // A native authored command is one of her core hands: its manifest declares no
+            // disclosure, and the author chose `native` to put it in her prompt.
+            disclosure: continuum_base::tool_disclosure::Disclosure::Core,
+            withheld: None,
             params: json.clone(),
             params_schema: self.manifest.params.clone(),
             result: json.clone(),
             type_refs: vec![json],
         }
+    }
+}
+
+#[async_trait]
+impl DynCommand for ProcessCommand {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn descriptor(&self) -> Result<CommandDescriptor, crate::sdk_codegen::CodegenDefect> {
+        Ok(self.process_descriptor())
     }
 
     async fn invoke(

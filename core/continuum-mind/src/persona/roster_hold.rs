@@ -1,0 +1,256 @@
+//! RosterHold — persisted operator intent the hosting reconciler consults
+//! before adopting citizens.
+//!
+//! Measured 2026-08-23 (the showcase battery's root flakiness cause): the
+//! spawn supervisor stays resident as the hosting reconciler and re-fires on
+//! every serving edge, so `persona/instances/despawn` was undone within
+//! minutes — every quiesce of the night silently dissolved, producing KV
+//! thrash, throughput collapse, and a permit-starved exam. Despawn records
+//! "not now"; NOTHING recorded "not until I say". This module is that record.
+//!
+//! The reconciler is right by its own law (boot owns the process tree,
+//! reap-or-ADOPT) — so the fix is not to weaken it but to give it the other
+//! half of the contract: a persisted, EXPIRING operator intent. A hold names
+//! the citizens allowed to be hosted and when the hold lapses; the reconciler
+//! skips (and probes) everyone else. Survives reboots by construction (it is
+//! a file); can never wedge the fleet permanently (expiry is mandatory and
+//! capped). An operator's EXPLICIT `persona/spawn` stays sovereign — the hold
+//! gates the RECONCILER's adoption, never a human's direct command.
+
+use continuum_base::time::EpochMs;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// Longest allowed hold. A measurement window is hours; a hold that outlives
+/// the operator's memory of setting it becomes a mystery outage ("why do my
+/// citizens never come back?") — the cap keeps the failure mode bounded.
+pub const MAX_HOLD_MINUTES: u64 = 24 * 60;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RosterHold {
+    /// Agent names allowed to be hosted while the hold stands.
+    pub only: Vec<String>,
+    /// Unix ms after which the hold no longer applies.
+    pub until_ms: u64,
+    /// Why — travels into every skip probe so a held-down fleet explains itself.
+    pub reason: String,
+    /// `true` = the operator's file: ONLY these names sit and they bound the seats.
+    /// `false` = derived from working rounds' teams: these names sit FIRST, the rest
+    /// of the population fills the remaining seats (2026-09-14: the seed-5 team hold
+    /// read as exclusive held out seven of twelve minds on a sixteen-seat node; a
+    /// team round must never shrink the roster — Joel: push the mind count).
+    #[serde(default = "exclusive_default")]
+    pub exclusive: bool,
+}
+
+fn exclusive_default() -> bool {
+    true
+}
+
+impl RosterHold {
+    pub fn allows(&self, agent_name: &str) -> bool {
+        self.only.iter().any(|n| n.eq_ignore_ascii_case(agent_name))
+    }
+    pub fn expired(&self, now_ms: u64) -> bool {
+        now_ms >= self.until_ms
+    }
+}
+
+fn hold_path() -> Option<PathBuf> {
+    crate::paths::continuum_home().ok().map(|h| h.join("roster-hold.json"))
+}
+
+/// Where a lapsed hold is kept: no longer gating anything, but the decision it encoded
+/// (who sat, who did not) is what durable dormancy migrates from (Cormac on #5509: a
+/// boot after the lapse must not lose the population decision).
+fn lapsed_path_for(active: &std::path::Path) -> PathBuf {
+    active.with_file_name("roster-hold.lapsed.json")
+}
+
+/// The last hold this node recorded, standing or lapsed. `None` = no hold was ever
+/// recorded here (or the record is unreadable).
+pub fn last_recorded() -> Option<RosterHold> {
+    hold_path().and_then(|p| last_recorded_at(&p))
+}
+
+/// Testable core of [`last_recorded`]: the active file (even past its expiry), else the
+/// lapsed record beside it.
+pub fn last_recorded_at(active: &std::path::Path) -> Option<RosterHold> {
+    let read = |p: &std::path::Path| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<RosterHold>(&b).ok());
+    read(active).or_else(|| read(&lapsed_path_for(active)))
+}
+
+/// The active hold, or `None` when absent, expired, or unreadable. An expired file
+/// moves to the lapsed record on read and a corrupt one is removed, so a stale file can
+/// never quietly gate next week's boot.
+/// The hold that stands right now: the OPERATOR's (a persisted, expiring allow-list),
+/// or none. A benchmark round no longer decides who is resident (HER-LOOP row C, Joel
+/// 2026-10-04): a round's team seating itself is how the node's residency followed
+/// whichever test was running; a citizen is here because she lives here, and joins a
+/// round's room only if she chooses to take that test.
+pub fn active() -> Option<RosterHold> {
+    // A pre-1970 clock reads 0 here: every hold reads as expired: fail open (fleet hosts), never a stuck hold.
+    operator_hold(EpochMs::now().millis())
+}
+
+/// The operator's file as this process holds it: read from disk once, then held here
+/// and replaced by [`set`] / [`clear`], the only writers. It was read and parsed on
+/// every `seats()` call (card 948c30c2). `None` inside = read, and no hold stands;
+/// the outer `None` = not read yet (or a write invalidated it).
+static OPERATOR_HELD: parking_lot::RwLock<Option<Option<RosterHold>>> = parking_lot::RwLock::new(None);
+
+fn operator_hold(now: u64) -> Option<RosterHold> {
+    let held = OPERATOR_HELD.read().clone();
+    if let Some(held) = held {
+        match held {
+            // A held hold that has lapsed falls through to the disk read below, which
+            // is the self-cleaning read (it removes the expired file) — the file never
+            // outlives its hold just because a copy was held in memory.
+            Some(h) if h.expired(now) => drop_held(),
+            other => return other,
+        }
+    }
+    let read = hold_path().and_then(|p| active_at(&p, now));
+    *OPERATOR_HELD.write() = Some(read.clone());
+    read
+}
+
+fn drop_held() {
+    *OPERATOR_HELD.write() = None;
+}
+
+/// A test fixture: a non-exclusive hold naming `names` for an hour; empty = no hold.
+#[cfg(test)]
+pub fn from_team_names(names: Vec<String>, now_ms: u64) -> Option<RosterHold> {
+    if names.is_empty() {
+        return None;
+    }
+    Some(RosterHold {
+        reason: format!("a named team ({} names)", names.len()),
+        only: names,
+        until_ms: now_ms.saturating_add(60 * 60 * 1000),
+        exclusive: false,
+    })
+}
+
+/// Testable core of [`active`] — explicit path + clock.
+pub fn active_at(path: &std::path::Path, now_ms: u64) -> Option<RosterHold> {
+    let bytes = std::fs::read(path).ok()?;
+    match serde_json::from_slice::<RosterHold>(&bytes) {
+        Ok(hold) if !hold.expired(now_ms) => Some(hold),
+        Ok(_) => {
+            // Lapsed: it no longer gates, so it leaves the active path; it is KEPT as the
+            // last recorded hold for durable dormancy's migration.
+            if std::fs::rename(path, lapsed_path_for(path)).is_err() {
+                let _ = std::fs::remove_file(path); // a lapsed hold that cannot be kept must still stop gating
+            }
+            None
+        }
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "roster-hold file is corrupt — removing it; the fleet hosts normally \
+                 (fail OPEN: a broken hold must never become a silent standing outage)"
+            );
+            let _ = std::fs::remove_file(path);
+            None
+        }
+    }
+}
+
+/// Install a hold. Minutes are clamped to [1, MAX_HOLD_MINUTES]; an empty
+/// `only` is refused (a hold that allows nobody is a fleet outage, not a
+/// measurement window — despawn the fleet explicitly if that is truly meant).
+pub fn set(only: Vec<String>, minutes: u64, reason: String) -> Result<RosterHold, String> {
+    if only.is_empty() {
+        return Err(
+            "a hold must name at least one allowed citizen — an empty allow-list is a \
+             fleet outage, not a measurement window"
+                .to_string(),
+        );
+    }
+    let minutes = minutes.clamp(1, MAX_HOLD_MINUTES);
+    let hold = RosterHold {
+        only,
+        until_ms: EpochMs::now().millis() + minutes * 60_000,
+        reason,
+        exclusive: true,
+    };
+    let path = hold_path().ok_or_else(|| "no home directory".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&hold).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("write {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("promote {}: {e}", path.display()))?;
+    drop_held();
+    Ok(hold)
+}
+
+/// Remove any standing hold. Returns whether one existed.
+pub fn clear() -> bool {
+    let removed = hold_path().is_some_and(|p| std::fs::remove_file(p).is_ok());
+    drop_held();
+    removed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: a named hold gating by name, case-insensitively, for its hour
+    // (the fixture the host and spawner tests seat with).
+    #[test]
+    fn a_named_team_hold_gates_by_name() {
+        let hold = from_team_names(vec!["Atlas".into(), "Kira".into()], 1_000).expect("a named team holds");
+        assert!(hold.allows("atlas") && hold.allows("Kira"));
+        assert!(!hold.allows("Cyrus"), "not named = not seated while the hold stands");
+        assert!(!hold.expired(1_000 + 59 * 60 * 1000), "stands for the hour it was derived for");
+        assert!(from_team_names(vec![], 1_000).is_none(), "no team named = no hold, the roster seats as before");
+    }
+
+    // what this catches: the whole contract in one pass — a hold gates by name
+    // (case-insensitive), lapses at until_ms with self-cleaning (kept as the last
+    // recorded hold, which durable dormancy migrates from), and a corrupt
+    // file fails OPEN (removed, fleet hosts) rather than becoming a standing
+    // silent outage. Regression for the 2026-08-23 despawn≠quiesce arc.
+    #[test]
+    fn hold_gates_by_name_expires_self_cleans_and_fails_open_on_corruption() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("roster-hold.json");
+
+        let hold = RosterHold {
+            only: vec!["Atlas".into()],
+            until_ms: 10_000,
+            reason: "exam".into(),
+            exclusive: true,
+        };
+        std::fs::write(&path, serde_json::to_vec(&hold).expect("ser")).expect("write");
+
+        let live = active_at(&path, 5_000).expect("hold is live before until_ms");
+        assert!(live.allows("Atlas") && live.allows("atlas"), "name match is case-insensitive");
+        assert!(!live.allows("Benchy"), "unlisted citizens are held out");
+
+        assert!(active_at(&path, 10_000).is_none(), "hold lapses AT until_ms");
+        assert!(!path.exists(), "a lapsed hold self-cleans");
+        let kept = last_recorded_at(&path).expect("the lapsed hold is kept as the last record");
+        assert_eq!(kept.only, vec!["Atlas".to_string()], "its allow-list survives the lapse");
+
+        std::fs::write(&path, b"{not json").expect("write corrupt");
+        assert!(active_at(&path, 0).is_none(), "corrupt hold fails OPEN");
+        assert!(!path.exists(), "corrupt hold is removed, not left to re-fail");
+    }
+
+    // what this catches: an empty allow-list silently becoming a fleet outage,
+    // and unbounded holds outliving the operator's memory of setting them.
+    #[test]
+    fn empty_allow_list_is_refused_and_minutes_are_capped() {
+        assert!(set(vec![], 10, "x".into()).is_err(), "empty only-list must refuse");
+        // (set() writes to the real home path; only the refusal branch is
+        // exercised here — the write path is covered by the gating test's
+        // hand-written file, keeping this test filesystem-neutral.)
+        assert!(MAX_HOLD_MINUTES <= 24 * 60, "cap stays a day or less");
+    }
+}

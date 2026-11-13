@@ -14,17 +14,26 @@
 //! `event::decode_deliver_frame`, `event::matches_subscription`), so the
 //! client and the substrate compose the SAME helpers with their
 //! respective `airc_lib::Airc` handles.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod command;
 pub mod event;
+pub mod inbound;
+pub mod refusal;
 pub mod ws;
 
 pub use command::{
-    AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT,
+    AircCommandRequest, AircCommandResponse, GenerateCancel, GenerateRefusal, COMMAND_PATH_AI_GENERATE,
+    COMMAND_PATH_AI_GENERATE_CANCEL, HEADER_GENERATE_ID, HEADER_GENERATE_VALID_UNTIL_MS,
     DEFAULT_COMMAND_DEADLINE, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH,
     HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT, KIND_BROADCAST, KIND_LOCAL, KIND_PEER,
     KIND_ROOM,
 };
+pub use inbound::{
+    classify as classify_inbound, Addressing, ConversationEvent, InboundEvent, ProtocolEnvelope,
+    ProtocolKind, NODE_TELEMETRY_BODY_HINT,
+};
+pub use refusal::{Calls, CommandRefusal, NextMoves, NoMove, SuggestedCall};
 pub use ws::{WsClientMessage, WsServerMessage};
 pub use event::{
     // Helper functions — shared by substrate AND client

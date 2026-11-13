@@ -14,7 +14,7 @@
 //! URLs (the airc installer and the model-card attribution link), which name where
 //! the software comes from, not whose org is using it.
 
-use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
+use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
 
 /// The tenant identities that must never appear in production code. Lower-case;
 /// matched case-insensitively against CODE (string literals included — a URL is
@@ -41,7 +41,7 @@ impl SourceRule for NoTenantIdentityInProduction {
             })
             .map(|(line, l)| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line,
                 source: l.trim().to_string(),
             })
@@ -97,7 +97,7 @@ impl SourceRule for NoRealUserHomePathAnywhere {
             })
             .map(|(i, l)| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line: i + 1,
                 source: l.trim().to_string(),
             })
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn tenant_identity_in_production_code_never_rises() {
         let violations = scan(&[&NoTenantIdentityInProduction]);
-        crate::ratchet::hold("tenant_lines", violations.len(), || {
+        crate::ratchet::hold_sites("tenant_lines", &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
             "production lines naming our own org rose to {}.\n\
              This repo is for other people and their orgs: derive the identity from the \

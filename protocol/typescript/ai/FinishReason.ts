@@ -3,4 +3,4 @@
 /**
  * Finish reason for generation
  */
-export type FinishReason = "stop" | "length" | "tool_use" | "error";
+export type FinishReason = "stop" | "length" | "tool_use" | "error" | "unreported";

@@ -30,6 +30,8 @@
 //! MCP stdio framing means **only** JSON-RPC may go to stdout. All diagnostics
 //! go to stderr. The runner writes solely to stdout; nothing else here prints
 //! there.
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use continuum_client::Connection;
 use continuum_core::modules::mcp_protocol::McpServer;

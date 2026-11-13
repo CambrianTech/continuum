@@ -41,7 +41,7 @@ pub enum FieldType {
 /// What to do to a referencing row when its target row changes.
 ///
 /// SQL-standard semantics. The substrate names these explicitly so
-/// every backend (sqlite, postgres, future grid-replicated) emits
+/// every backend (sqlite, future grid-replicated) emits
 /// the same intent rather than inheriting whatever default the
 /// backend has.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -78,7 +78,7 @@ impl Default for CascadeRule {
 ///
 /// Per Joel 2026-06-03 ("provide a relational db this time"): FK is
 /// a first-class schema concept, not application-level convention.
-/// Both sqlite + postgres adapters emit the constraint at CREATE
+/// The sqlite adapter emits the constraint at CREATE
 /// TABLE time; queries can JOIN through it; the row-deletion
 /// semantics are enforced by the DB, not by hand-coded cleanup.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -280,6 +280,30 @@ pub enum BatchOperationType {
     Read,
     Update,
     Delete,
+    /// Create the row unless a row with its id already exists; an existing row is left untouched.
+    /// An idempotent import: the same line written twice is one row.
+    Ensure,
+    /// Create the row with the next value of a commit-ordered sequence, unless a row already
+    /// holds the same unique value (then nothing is written and that row's sequence is returned).
+    Append(SequenceSpec),
+}
+
+/// How an [`BatchOperationType::Append`] numbers its row: `sequence` is assigned
+/// `max(sequence) + 1` inside the batch's write transaction, so sequence order IS commit order
+/// (a row can never be acknowledged past an earlier allocation that commits later); `unique`
+/// names the field whose value identifies the row, so a duplicate reuses the first row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/SequenceSpec.ts")]
+pub struct SequenceSpec {
+    pub sequence: String,
+    pub unique: String,
+}
+
+/// What an append did: `fresh` when this batch created the row, otherwise the existing row's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sequenced {
+    pub seq: u64,
+    pub fresh: bool,
 }
 
 /// Batch storage operation

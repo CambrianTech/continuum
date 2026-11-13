@@ -38,5 +38,5 @@ Tauri is the better fit for visual parity with `apps/web`. Bevy becomes
 interesting if `apps/vr` matures and a shared Rust scene graph is worth having.
 
 (The old note here claimed the current desktop path was `src/server-index.ts`
-under Electron-like assumptions. That file is now under `legacy/` and is not
+under Electron-like assumptions. That file is now at tag `legacy-archive-2026-10-23` (`legacy/`) and is not
 the desktop path for anything.)

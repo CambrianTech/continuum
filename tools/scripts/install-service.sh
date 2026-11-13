@@ -5,12 +5,11 @@
 # reboot, a crash, OR a user logout — never "the persona died because someone
 # logged off the machine" (the literal BIGMAMA failure, [[grid-node-resilience]]).
 #
-# Two scopes:
-#   user (default)   macOS LaunchAgent (~/Library/LaunchAgents) / Linux systemd --user.
-#                    No sudo. Survives CRASH (KeepAlive) + reboot-then-LOGIN
-#                    (RunAtLoad). Dies on logout / boot-without-login.
-#   --system          macOS LaunchDaemon (/Library/LaunchDaemons, runs as you at boot)
-#                    / Linux systemd system unit. Needs sudo. Survives LOGOUT +
+# Linux and Windows only; macOS is `continuum install` (its plist has one owner,
+# core/continuum-cli-lifecycle/src/launchd.rs). Two scopes:
+#   user (default)   Linux systemd --user. No sudo. Survives CRASH + reboot-then-LOGIN.
+#                    Dies on logout / boot-without-login.
+#   --system          Linux systemd system unit. Needs sudo. Survives LOGOUT +
 #                    boot-without-login — the real unattended grid-node answer.
 #
 # airc is the nervous system, not optional: this REQUIRES airc on PATH (ensured,
@@ -67,7 +66,6 @@ resolve_core_bin() {
 
 ort_dylib() {
   case "$(uname -s)" in
-    Darwin) echo "/opt/homebrew/lib/libonnxruntime.dylib" ;;
     MINGW*|MSYS*|CYGWIN*|Windows_NT) cygpath -w "$PAYLOAD_ROOT/lib/onnxruntime.dll" ;;
     *) echo "$PAYLOAD_ROOT/lib/libonnxruntime.so" ;;
   esac
@@ -77,77 +75,8 @@ ort_dylib() {
 # finds airc at boot (no blocking install), config.env sourced, ORT set, core
 # exec'd in the FOREGROUND so the supervisor owns its lifecycle.
 core_wrapper() {
-  # if/then/fi (not `&&`) so the string is valid XML unescaped inside the plist.
+  # if/then/fi (not `&&`) so the string is valid XML unescaped inside the task XML.
   echo "export PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.cargo/bin:\$PATH\"; if [ -f \"$DATA/config.env\" ]; then set -a; . \"$DATA/config.env\"; set +a; fi; export ORT_DYLIB_PATH=\"\${ORT_DYLIB_PATH:-$(ort_dylib)}\"; exec \"$1\" \"$SOCKET\""
-}
-
-# ════════════════════════ macOS ════════════════════════
-mac_agent_plist() { echo "$HOME/Library/LaunchAgents/$LABEL.plist"; }
-mac_daemon_plist() { echo "/Library/LaunchDaemons/$LABEL.plist"; }
-
-mac_write_plist() { # $1=path  $2=bin  $3=extra <dict> entries
-  local path="$1" bin="$2" extra="${3:-}"
-  cat <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>$LABEL</string>
-  <key>ProgramArguments</key>
-  <array><string>/bin/bash</string><string>-lc</string><string>$(core_wrapper "$bin")</string></array>
-  <key>RunAtLoad</key><true/>
-  <!-- Crash-only relaunch: survive a CRASH (abnormal exit) + a reboot (RunAtLoad),
-       but honor an explicit `continuum stop` (clean exit 0) so it stays down for dev
-       ([[take-the-core-down-freely]]). Unconditional KeepAlive would instantly
-       relaunch a deliberate stop, fighting the developer AND an operator draining a
-       grid node. Crash + RunAtLoad still satisfies the reliability spine. -->
-  <key>KeepAlive</key><dict><key>Crashed</key><true/></dict>
-  <key>WorkingDirectory</key><string>$DATA</string>
-  <key>StandardOutPath</key><string>$LOG_DIR/service.out.log</string>
-  <key>StandardErrorPath</key><string>$LOG_DIR/service.err.log</string>
-  <key>ProcessType</key><string>Background</string>$extra
-</dict>
-</plist>
-PLIST
-}
-
-mac_install() {
-  local bin; bin="$(resolve_core_bin)" || { echo "✗ no continuum-core-server binary — build it (npm start) or set CONTINUUM_CORE_BIN." >&2; exit 1; }
-  mkdir -p "$LOG_DIR"
-  if [ "$SCOPE" = "system" ]; then
-    # LaunchDaemon: system scope (survives logout), but runs AS the installing
-    # user with their HOME so it uses ~/.continuum (never root's).
-    local extra="
-  <key>UserName</key><string>$SVC_USER</string>
-  <key>EnvironmentVariables</key><dict><key>HOME</key><string>$HOME</string></dict>"
-    local tmp; tmp="$(mktemp)"
-    mac_write_plist "$(mac_daemon_plist)" "$bin" "$extra" > "$tmp"
-    plutil -lint "$tmp" >/dev/null
-    sudo launchctl bootout "system/$LABEL" 2>/dev/null || true
-    sudo install -m 0644 -o root -g wheel "$tmp" "$(mac_daemon_plist)"; rm -f "$tmp"
-    sudo launchctl bootstrap system "$(mac_daemon_plist)"
-    echo "✓ installed system LaunchDaemon '$LABEL' (survives logout) → $bin $SOCKET"
-  else
-    mkdir -p "$(dirname "$(mac_agent_plist)")"
-    mac_write_plist "$(mac_agent_plist)" "$bin" > "$(mac_agent_plist)"
-    plutil -lint "$(mac_agent_plist)" >/dev/null
-    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-    launchctl bootstrap "gui/$(id -u)" "$(mac_agent_plist)"
-    launchctl enable "gui/$(id -u)/$LABEL" 2>/dev/null || true
-    echo "✓ installed user LaunchAgent '$LABEL' (crash + reboot-login) → $bin $SOCKET"
-  fi
-  echo "  logs: $LOG_DIR/service.{out,err}.log"
-}
-
-mac_uninstall() {
-  sudo launchctl bootout "system/$LABEL" 2>/dev/null || true; sudo rm -f "$(mac_daemon_plist)" 2>/dev/null || true
-  launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true; rm -f "$(mac_agent_plist)"
-  echo "✓ removed '$LABEL' (both scopes)"
-}
-
-mac_status() {
-  launchctl print "system/$LABEL" >/dev/null 2>&1 && { echo "✓ '$LABEL' loaded (system/LaunchDaemon)"; return; }
-  launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 && echo "✓ '$LABEL' loaded (user/LaunchAgent)" || echo "✗ '$LABEL' not loaded"
 }
 
 # ════════════════════════ Linux ════════════════════════
@@ -246,15 +175,17 @@ win_write_task_xml() { # $1=bin  -> Task Scheduler XML on stdout
   who="${USERDOMAIN:+$USERDOMAIN\\}${USERNAME:-$SVC_USER}"
   bash_exe="$(win_path "$(command -v bash)")"
   if [ "$SCOPE" = "system" ]; then
-    # Boot trigger + highest privileges: survives LOGOUT and boot-without-login,
+    # Boot trigger + S4U principal: survives LOGOUT and boot-without-login,
     # the same reason --system exists on the other two platforms.
     trigger="<BootTrigger><Enabled>true</Enabled></BootTrigger>"
+    logon_type="<LogonType>S4U</LogonType>"
     principal="<RunLevel>HighestAvailable</RunLevel>"
   else
     trigger="<LogonTrigger><Enabled>true</Enabled></LogonTrigger>"
+    logon_type="<LogonType>InteractiveToken</LogonType>"
     principal="<RunLevel>LeastPrivilege</RunLevel>"
   fi
-  # `core_wrapper` is shared with macOS/Linux and is already written with
+  # `core_wrapper` is shared with Linux and is already written with
   # if/then/fi instead of `&&` so it is valid XML unescaped — the same property
   # the plist relies on. One wrapper definition, three platforms.
   cat <<XML
@@ -262,7 +193,7 @@ win_write_task_xml() { # $1=bin  -> Task Scheduler XML on stdout
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>Continuum headless core (reboot-surviving)</Description></RegistrationInfo>
   <Triggers>$trigger</Triggers>
-  <Principals><Principal id="Author"><UserId>$who</UserId><LogonType>InteractiveToken</LogonType>$principal</Principal></Principals>
+  <Principals><Principal id="Author"><UserId>$who</UserId>$logon_type$principal</Principal></Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <!-- A grid node on a laptop must still come up. The Windows DEFAULTS for both
@@ -358,7 +289,7 @@ win_status() {
 # ── Dispatch ──
 [ "$ACTION" = "install" ] && require_airc
 case "$(uname -s)" in
-  Darwin) case "$ACTION" in install) mac_install;; uninstall) mac_uninstall;; status) mac_status;; esac ;;
+  Darwin) echo "✗ macOS: the supervisor is \`continuum install\` (daemon; \`--user\` for the agent), one owner of the plist." >&2; exit 2 ;;
   Linux)  case "$ACTION" in install) linux_install;; uninstall) linux_uninstall;; status) linux_status;; esac ;;
   MINGW*|MSYS*|CYGWIN*|Windows_NT)
           case "$ACTION" in install) win_install;; uninstall) win_uninstall;; status) win_status;; esac ;;

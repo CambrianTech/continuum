@@ -30,7 +30,7 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
@@ -310,17 +310,17 @@ type HeaderTracker = Arc<Mutex<HashSet<String>>>;
 /// - `sentinels/{handle}/{stream}` → .continuum/jtag/logs/system/sentinels/{handle}/{stream}.log
 /// - `daemons/{name}` → .continuum/jtag/logs/system/daemons/{name}.log
 /// - Anything else → .continuum/jtag/logs/system/{category}.log (legacy fallback)
-fn resolve_log_path(category: &str, log_dir: &str, continuum_root: &str) -> PathBuf {
+fn resolve_log_path(category: &str, log_dir: &str, continuum_root: &Path) -> PathBuf {
     let parts: Vec<&str> = category.split('/').collect();
 
     match parts.as_slice() {
         // personas/{uniqueId}/{subsystem} → $HOME/.continuum/personas/{uniqueId}/logs/{subsystem}.log
         ["personas", unique_id, subsystem] => {
-            PathBuf::from(continuum_root).join(format!("personas/{unique_id}/logs/{subsystem}.log"))
+            continuum_root.join(format!("personas/{unique_id}/logs/{subsystem}.log"))
         }
         // personas/{uniqueId} → $HOME/.continuum/personas/{uniqueId}/logs/general.log
         ["personas", unique_id] => {
-            PathBuf::from(continuum_root).join(format!("personas/{unique_id}/logs/general.log"))
+            continuum_root.join(format!("personas/{unique_id}/logs/general.log"))
         }
         // sentinels/{handle}/{stream} → {log_dir}/sentinels/{handle}/{stream}.log
         ["sentinels", handle, stream] => {
@@ -395,7 +395,7 @@ fn ensure_file_handle(
 fn write_log_message(
     payload: &WriteLogPayload,
     log_dir: &str,
-    continuum_root: &str,
+    continuum_root: &Path,
     file_cache: &FileCache,
     headers_written: &HeaderTracker,
 ) -> std::io::Result<usize> {
@@ -560,7 +560,7 @@ pub type WriteFailures = Arc<AtomicU64>;
 fn write_and_latch(
     payload: &WriteLogPayload,
     log_dir: &str,
-    continuum_root: &str,
+    continuum_root: &Path,
     file_cache: &FileCache,
     headers_written: &HeaderTracker,
     failures: &WriteFailures,
@@ -662,13 +662,10 @@ impl LoggerModule {
     }
 
     pub fn new() -> Self {
-        let continuum_root = std::env::var("CONTINUUM_ROOT").unwrap_or_else(|_| {
-            let home = dirs::home_dir().expect("Failed to resolve home directory");
-            home.join(".continuum").to_string_lossy().to_string()
-        });
+        let continuum_root = crate::paths::continuum_root();
 
         let log_dir = std::env::var("JTAG_LOG_DIR").unwrap_or_else(|_| {
-            PathBuf::from(&continuum_root)
+            continuum_root
                 .join("jtag")
                 .join("logs")
                 .join("system")

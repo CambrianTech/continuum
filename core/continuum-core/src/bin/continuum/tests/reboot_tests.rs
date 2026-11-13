@@ -19,6 +19,13 @@ fn legacy_core_requires_explicit_recovery_before_reboot_teardown() {
     // Maintenance must not inherit ordinary stop's permission to force an
     // exit after a missing or incomplete save receipt (5120).
     assert!(legacy.require_durable().is_err());
+    // #3940 revision: a core that HAS the rail but cannot attest is fail-closed exactly like
+    // LegacyCore — refused before reboot, explicit stop still available, no durable evidence.
+    let fault = GracefulStop::CannotAttest("checkpoint not found".into());
+    let fault_error = fault.ensure_teardown_supported(true).unwrap_err();
+    assert!(fault.ensure_teardown_supported(false).is_ok(), "explicit stop remains available");
+    assert!(fault_error.contains("before teardown"));
+    assert!(fault.require_durable().is_err());
     for outcome in [
         GracefulStop::NothingRunning,
         GracefulStop::Durable("saved".into()),
@@ -542,4 +549,153 @@ fn prebuilt_reboot_launch_retains_candidate_socket_and_cwd() {
         "replacement core"
     )
     .is_ok());
+}
+
+// what this catches: an unmatched phrasing falling through to NoAnswer, which passes the reboot guard (#3940).
+// Regression for #3940 (revised): any error from a reachable core fails closed — never
+// NoAnswer, which used to be the fall-through and passes the reboot guard. Phrasings that
+// mean "this name is not in the command registry" are positive evidence of a pre-rail
+// core (`LegacyCore`, a first rollout); every other error is a fault inside a supported
+// core (`CannotAttest`) and must not be rendered as one. Both fail-closed outcomes are
+// refused by `ensure_teardown_supported` before any kill.
+#[test]
+fn shutdown_errors_fail_closed_never_no_answer() {
+    use super::classify_shutdown_error;
+    use super::GracefulStop;
+    for (rendered, pre_rail) in [
+        ("unknown command: system/shutdown", true),
+        ("no handler registered for 'system/shutdown'", true),
+        // These used to slip through as NoAnswer and pass the reboot guard.
+        ("the core refused the request", false),
+        ("checkpoint not found", false),
+        ("save_state panicked in module X", false),
+        ("", false),
+    ] {
+        let outcome = classify_shutdown_error(rendered);
+        match (pre_rail, &outcome) {
+            (true, GracefulStop::LegacyCore(reason)) => assert!(reason.contains(rendered)),
+            (false, GracefulStop::CannotAttest(reason)) => assert!(reason.contains(rendered)),
+            other => panic!("{rendered:?} must fail closed: got {other:?}"),
+        }
+        // Caller level: both fail-closed outcomes are refused before reboot.
+        assert!(outcome.ensure_teardown_supported(true).is_err(), "{rendered:?}");
+    }
+}
+
+// what this catches: recognition deciding WHETHER to fail closed — it may only pick which of the two labels (#3940).
+// Recognition only picks WHICH label, never whether to fail closed: an internal error like
+// `checkpoint not found` must still be refused, but must not carry the first-rollout claim.
+#[test]
+fn pre_rail_label_is_reserved_for_unknown_verb_phrasings() {
+    use super::classify_shutdown_error;
+    use super::GracefulStop;
+    let legacy = match classify_shutdown_error("unknown command: system/shutdown") {
+        GracefulStop::LegacyCore(reason) => reason,
+        other => panic!("unknown-verb phrasing must be LegacyCore: got {other:?}"),
+    };
+    assert!(legacy.contains("no system/shutdown verb"));
+    assert!(legacy.contains("predates this rail"));
+    let fault = match classify_shutdown_error("checkpoint not found") {
+        GracefulStop::CannotAttest(reason) => reason,
+        other => panic!("internal error must be CannotAttest: got {other:?}"),
+    };
+    assert!(!fault.contains("no system/shutdown verb"));
+    assert!(!fault.contains("predates this rail"));
+}
+
+// what this catches: a checkpoint-not-found fault rendered to the operator as FIRST UPGRADE / first rollout (#3940 revision).
+// What the reviewer asked for (#3940 revision): a caller/rendering regression test — not
+// just an assertion on the classifier's reason string. The checkpoint-not-found path must
+// verify BOTH that reboot is refused AND that what the operator sees carries no first-
+// rollout claim, while a true LegacyCore still does.
+#[test]
+fn cannot_attest_refuses_reboot_and_never_renders_as_first_rollout() {
+    use super::classify_shutdown_error;
+    use super::render_graceful_outcome;
+    use super::GracefulStop;
+    let outcome = classify_shutdown_error("checkpoint not found");
+    match &outcome {
+        GracefulStop::CannotAttest(_) => (),
+        other => panic!("internal error must be CannotAttest: got {other:?}"),
+    }
+    // Caller level: reboot is refused before any kill.
+    assert!(outcome.ensure_teardown_supported(true).is_err());
+    // Rendering level: no first-rollout claim, on stderr like every forced stop.
+    let (to_stderr, line) = render_graceful_outcome(&outcome);
+    assert!(to_stderr);
+    assert!(!line.contains("FIRST UPGRADE"), "{line}");
+    assert!(!line.contains("predates"), "{line}");
+    assert!(line.contains("checkpoint not found"), "{line}");
+    // A true first rollout still says so.
+    let (legacy_stderr, legacy_line) = render_graceful_outcome(&GracefulStop::LegacyCore(
+        "no shutdown handler".into(),
+    ));
+    assert!(legacy_stderr && legacy_line.contains("FIRST UPGRADE"));
+    // And the clean outcomes keep their placement.
+    assert!(!render_graceful_outcome(&GracefulStop::Durable("saved".into())).0);
+    assert!(!render_graceful_outcome(&GracefulStop::NothingRunning).0);
+}
+
+// what this catches (card 9beab2da, Codex on #5551 at 04b1aa49b): a hold that decoded but whose
+// cause is Unknown (the residency record unreadable) mapped to Free, so the handoff proceeded
+// past work it could not see. Holds decoded from serving/status's own wire shape: none is Free,
+// resident work is LiveWork, an Unknown cause is Unreadable (deferred, forceable).
+#[test]
+fn a_decoded_hold_of_unknown_cause_is_unreadable_never_free() {
+    use continuum_cli_lifecycle::deploy_hold::HoldObservation;
+    use continuum_core::inference::llama_server::serving_hold::ServingHold;
+    let decode = |held: serde_json::Value| serde_json::from_value::<ServingHold>(held).expect("test: a serving/status held_for");
+    assert_eq!(observation_of(None, None), HoldObservation::Free);
+    let resident = decode(json!({"sinceMs": 1, "by": {"kind": "resident", "work": [{
+        "job": "8b46862c-a328-4904-9444-2ae9eeab143f", "consumer": "genome-train:8b46862c-a328-4904-9444-2ae9eeab143f",
+        "baseModel": "ggml-org/Qwen3.8-27B-GGUF", "enginePid": 37904, "engineStartedS": 1793118524, "port": 58057}]}}));
+    assert!(matches!(observation_of(Some(&resident), None), HoldObservation::LiveWork(work) if work.contains("genome-train:8b46862c")));
+    let unknown = decode(json!({"sinceMs": 1, "by": {"kind": "unknown", "reason": "the residency record is unreadable"}}));
+    assert!(matches!(observation_of(Some(&unknown), None), HoldObservation::Unreadable(why) if why.contains("residency record is unreadable")));
+    let empty = decode(json!({"sinceMs": 1, "by": {"kind": "resident", "work": []}}));
+    assert_eq!(observation_of(Some(&empty), None), HoldObservation::Free);
+}
+
+// what this catches (card 51d6b4a6, the IntelMac 2026-11-08): genome-train cc9a10dc ran in the
+// live engine, which the macOS handoff keeps, and still deferred every deploy for 10 h. Work bound
+// to the kept engine (same pid AND start time) is Carried; any piece on another engine, a reused
+// pid, or a platform that keeps nothing (`kept` None) stays LiveWork and defers.
+#[test]
+fn only_work_bound_to_the_kept_engine_is_carried() {
+    use continuum_cli_lifecycle::deploy_hold::HoldObservation;
+    use continuum_core::inference::llama_server::serving_hold::ServingHold;
+    let held = |pids: &[(u32, u64)]| {
+        let work: Vec<_> = pids.iter().enumerate().map(|(i, (pid, started))| json!({
+            "job": format!("cc9a10dc-0d43-4116-8dbf-4cc0c7e3106{i}"), "consumer": format!("genome-train:cc9a10dc-{i}"),
+            "baseModel": "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF", "enginePid": pid, "engineStartedS": started, "port": 58057})).collect();
+        serde_json::from_value::<ServingHold>(json!({"sinceMs": 1, "by": {"kind": "resident", "work": work}})).expect("test: a serving/status held_for")
+    };
+    let kept = Some((30681, 1794093320));
+    assert!(matches!(observation_of(Some(&held(&[(30681, 1794093320)])), kept), HoldObservation::Carried(w) if w.contains("cc9a10dc")));
+    assert!(matches!(observation_of(Some(&held(&[(30681, 1794093320), (30681, 1794093320)])), kept), HoldObservation::Carried(_)), "every piece on the kept engine");
+    assert!(matches!(observation_of(Some(&held(&[(30681, 1794093320), (41000, 1794093320)])), kept), HoldObservation::LiveWork(_)), "one piece on another engine defers all");
+    assert!(matches!(observation_of(Some(&held(&[(30681, 1794000000)])), kept), HoldObservation::LiveWork(_)), "a reused pid is another engine");
+    assert!(matches!(observation_of(Some(&held(&[(30681, 1794093320)])), None), HoldObservation::LiveWork(_)), "a handoff that keeps nothing carries nothing");
+}
+
+// what this catches (Codex on #5872): the post-handoff check compared printed work strings, which
+// carry no engine start time, so a reused pid on a new engine read as a successful carry. The
+// carry holds only when every job held before is held after on the same pid AND start time.
+#[test]
+fn a_carry_holds_only_with_the_same_jobs_on_the_same_engine_incarnation() {
+    use continuum_core::inference::llama_server::serving_hold::ServingHold;
+    let held = |work: &[(&str, u32, u64)]| {
+        let work: Vec<_> = work.iter().map(|(job, pid, started)| json!({
+            "job": job, "consumer": format!("genome-train:{job}"), "baseModel": "m",
+            "enginePid": pid, "engineStartedS": started, "port": 58057})).collect();
+        serde_json::from_value::<ServingHold>(json!({"sinceMs": 1, "by": {"kind": "resident", "work": work}})).expect("test: a serving/status held_for")
+    };
+    let job = "cc9a10dc-0d43-4116-8dbf-4cc0c7e31062";
+    let other = "8b46862c-a328-4904-9444-2ae9eeab143f";
+    let before = held(&[(job, 30681, 1794093320)]);
+    assert!(carried_intact(&before, Some(&held(&[(job, 30681, 1794093320)]))));
+    assert!(carried_intact(&before, Some(&held(&[(job, 30681, 1794093320), (other, 30681, 1794093320)]))), "new work beside it is fine");
+    assert!(!carried_intact(&before, Some(&held(&[(job, 30681, 1794200000)]))), "a reused pid with another start is another engine");
+    assert!(!carried_intact(&before, Some(&held(&[(other, 30681, 1794093320)]))), "the job is gone");
+    assert!(!carried_intact(&before, None), "nothing held after");
 }

@@ -56,17 +56,32 @@ impl LlamaServerControl for LlamaServerProcess {
         Ok(id)
     }
 
-    async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
-        // The set we launched the current child with. llama.cpp exposes no query
-        // for `/lora-adapters` contents, so the truthful answer is what WE loaded.
-        Ok(self.served_adapters.lock().unwrap().clone())
+    async fn active_adapters(&self, target: &ServingTarget) -> Result<Vec<String>, LlamaServerError> {
+        let poisoned = |_| LlamaServerError::Unreachable("the served adapter record is poisoned".into());
+        if let Some(known) = self.served_adapters.lock().map_err(poisoned)?.clone() {
+            return Ok(known); // the set this process launched or converged it to
+        }
+        // An engine this process did not launch (a core restart adopting it): its own report is
+        // the contract, never an empty record (IntelMac 2026-11-07: from=0 to=7 relaunched an
+        // engine serving 3 adapters, and every resident's KV went cold).
+        let catalog = self.lora_catalog().await?;
+        let known = super::genome::genome_paths_of(&catalog, &target.adapter_paths());
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.rehydrated",
+            model = target.model_id(),
+            adapters = known.len() as u64,
+            "an adopted engine's adapter set, read from its own report"
+        );
+        *self.served_adapters.lock().map_err(poisoned)? = Some(known.clone());
+        Ok(known)
     }
 
     async fn adopt_genome_in_place(
         &self,
         target: &ServingTarget,
     ) -> Result<GenomeInPlace, LlamaServerError> {
-        let Some(dir) = engine_train_dir().filter(|_| engine_accepts_train_dir()) else {
+        // an unasked binary is asked, never read as no; another binary's answer is not this one's
+        let takes = self.engine_takes_train_dir().await?;
+        let Some(dir) = engine_train_dir().filter(|_| takes) else {
             return Ok(GenomeInPlace::Unsupported);
         };
         self.converge_genome(&dir, target).await
@@ -89,6 +104,19 @@ impl LlamaServerControl for LlamaServerProcess {
                 LlamaServerError::Unreachable(
                     "/props missing default_generation_settings.n_ctx (server up but shape \
                      unexpected — refusing to guess the served window)"
+                        .to_string(),
+                )
+            })
+    }
+
+    async fn served_geometry(&self) -> Result<crate::inference::weight_residency::ContextGeometry, LlamaServerError> {
+        let body = self.props_json().await?;
+        crate::inference::weight_residency::ContextGeometry::from_props(&body)
+            .filter(|geometry| geometry.pool_tokens().is_some())
+            .ok_or_else(|| {
+                LlamaServerError::Unreachable(
+                    "/props has no valid context_geometry: the engine is not our fork's (refusing \
+                     to guess the pool)"
                         .to_string(),
                 )
             })
@@ -162,57 +190,85 @@ impl LlamaServerControl for LlamaServerProcess {
                 resp.status()
             )));
         }
-        let body: serde_json::Value = resp
+        /// The one `/props` field this probe reads; absent means the engine publishes no modalities.
+        #[derive(serde::Deserialize)]
+        struct Props {
+            modalities: Option<MultimodalSupport>,
+        }
+        let props: Props = resp
             .json()
             .await
             .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
-        Ok(body.get("modalities").map(|m| MultimodalSupport {
-            vision: m.get("vision").and_then(|v| v.as_bool()).unwrap_or(false),
-            audio: m.get("audio").and_then(|v| v.as_bool()).unwrap_or(false),
-        }))
+        Ok(props.modalities)
     }
 
     async fn decode_smoke_ok(&self) -> bool {
-        // A REAL multi-token generation, not just HTTP 200. A wedged lane (the
-        // "~2 tokens then stop for EVERY request" failure mode, observed intermittently
-        // on fresh ephemeral eval lanes) still answers a `max_tokens: 1` request with
-        // 200 — so a status-only probe passes it, and every downstream task then decodes
-        // ~2 tokens and silently scores 0. The probe forces a prompt a healthy model
-        // MUST answer with many tokens and verifies BOTH volume (token floor) and
-        // CONTENT (the digits actually count upward — the embedding-model-on-the-port
-        // incident sailed past a count-only gate with "uiuiui…" garbage).
+        // A REAL generation, not just HTTP 200. A wedged lane (the "~2 tokens then stop
+        // for EVERY request" failure mode, observed intermittently on fresh ephemeral eval
+        // lanes) still answers a `max_tokens: 1` request with 200 — so a status-only probe
+        // passes it, and every downstream task then decodes ~2 tokens and silently scores
+        // 0. The probe asks a question whose answer is a monotonic run of integers and
+        // verifies the CONTENT: a ~2-token wedge cannot produce three ascending integers,
+        // and the embedding-model-on-the-port lane's "uiuiui…" garbage has none.
+        //
+        // Every size here comes from the answer itself: the quick attempt's cap is the
+        // engine's own token count of the expected answer ([`smoke_answer_tokens`]), and
+        // the request asks the engine for no reasoning phase, so a healthy lane's whole
+        // decode IS the answer.
         //
         // Judged by [`smoke_verdict`] over BOTH response channels, because a THINKING
-        // model can spend the whole quick budget inside its reasoning channel with a
-        // perfectly healthy decode path (2026-08-15: this exact shape marked serving
-        // degraded forever and killed a full bench round while the server generated
-        // at 30 t/s). That outcome is ThinkStarved, not Dead — retry once with a
-        // budget that lets the model finish thinking and ANSWER. A wedged lane
-        // (~2 tokens) and the garbage-content lane both still read Dead on EITHER
-        // budget. A 500 "Compute error" (the wedged-orphan signature) still fails
-        // fast on status inside `smoke_attempt`.
-        // A lane that has PROVEN its model thinks starts at the thinking budget —
-        // the quick attempt is structurally incapable of succeeding there, and paying
-        // it anyway cost two generations per readiness check, ~30 identical
-        // `think_retry` rows/hour on a lane citizens were starving for. First check
-        // per lane still takes the cheap path; the latch below learns from it.
+        // template the engine cannot switch off spends the whole cap inside its reasoning
+        // channel with a perfectly healthy decode path (2026-08-15: this exact shape marked
+        // serving degraded forever and killed a full bench round while the server
+        // generated at 30 t/s). That outcome is ThinkStarved, not Dead — retry once at the
+        // engine's own per-request bound so the model can finish thinking and ANSWER. A
+        // wedged lane (~2 tokens, short of the cap) and the garbage-content lane both read
+        // Dead. A 500 "Compute error" (the wedged-orphan signature) still fails fast on
+        // status inside `smoke_attempt`.
+        // A lane that has PROVEN its model thinks starts at the engine bound — the capped
+        // attempt is structurally incapable of succeeding there, and paying it anyway cost
+        // two generations per readiness check, ~30 identical `think_retry` rows/hour on a
+        // lane citizens were starving for. First check per lane still takes the capped
+        // path; the latch below learns from it.
+        //
+        // NEVER OVER A MIND'S KV. The seat is decided here, once, for every caller (the
+        // heartbeat, the reconciler's adoption probe, readiness): the guard used to live in
+        // the heartbeat only, and the reconciler re-probed an adopted engine every ensure
+        // tick, wiping a resident's slot each time (M5, 2026-10-25). With no free seat the
+        // lane's own `/slots` answering is the proof, and the residents' deliveries carry it.
+        let slots_url = format!("{}/slots", self.root);
+        let slots = match self.client.get(&slots_url).timeout(PROBE_TIMEOUT).send().await {
+            Ok(resp) if resp.status().is_success() => resp.json::<serde_json::Value>().await.ok(),
+            _ => None,
+        };
+        let Some(slots) = slots else {
+            return false;
+        };
+        if smoke_seat(scratch_slot_for(&self.v1_url), &slots) == SmokeSeat::Occupied {
+            continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.smoke.deferred_to_delivery",
+                root = %self.root,
+                "every slot holds a mind's tokens and there is no scratch slot: no synthetic \
+                 decode (it would replace her KV); the lane answered /slots, and her own \
+                 deliveries prove decode"
+            );
+            return true;
+        }
         if self
             .smoke_proven_thinking
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            return match smoke_attempt(&self.client, &self.v1_url, THINKING_SMOKE_BUDGET).await {
-                Some((tok, visible, rlen)) => {
-                    matches!(smoke_verdict(tok, &visible, rlen), SmokeVerdict::Alive)
-                }
-                None => false,
-            };
+            return smoke_attempt_verdict(&self.client, &self.v1_url, SmokeCap::EngineBound).await
+                == Some(SmokeVerdict::Alive);
         }
-        let Some((tok, visible, rlen)) =
-            smoke_attempt(&self.client, &self.v1_url, QUICK_SMOKE_BUDGET).await
+        let Some(answer_tokens) = smoke_answer_tokens(&self.client, &self.root).await else {
+            return false;
+        };
+        let quick = SmokeCap::Answer(answer_tokens);
+        let Some((tok, visible, rlen)) = smoke_attempt(&self.client, &self.v1_url, quick).await
         else {
             return false;
         };
-        match smoke_verdict(tok, &visible, rlen) {
+        match smoke_verdict(quick, tok, &visible, rlen) {
             SmokeVerdict::Alive => true,
             SmokeVerdict::Dead => false,
             SmokeVerdict::ThinkStarved => {
@@ -220,19 +276,16 @@ impl LlamaServerControl for LlamaServerProcess {
                     .store(true, std::sync::atomic::Ordering::Relaxed);
                 continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.smoke.think_retry",
                     quick_tokens = tok,
+                    answer_tokens = answer_tokens,
                     reasoning_len = rlen as u64,
-                    retry_budget = THINKING_SMOKE_BUDGET,
-                    "smoke decode proven but the whole quick budget went to private \
-                     reasoning — thinking model, not a wedge; retrying with room to \
-                     answer, and LATCHING: this lane's checks start at the thinking \
-                     budget from now on (one discovery per lane, not one per tick)"
+                    "smoke decode ran to the answer's cap inside private reasoning although \
+                     the request asked for none — a template that thinks regardless, not a \
+                     wedge; retrying at the engine's own bound so it can answer, and \
+                     LATCHING: this lane's checks start there from now on (one discovery \
+                     per lane, not one per tick)"
                 );
-                match smoke_attempt(&self.client, &self.v1_url, THINKING_SMOKE_BUDGET).await {
-                    Some((tok, visible, rlen)) => {
-                        matches!(smoke_verdict(tok, &visible, rlen), SmokeVerdict::Alive)
-                    }
-                    None => false,
-                }
+                smoke_attempt_verdict(&self.client, &self.v1_url, SmokeCap::EngineBound).await
+                    == Some(SmokeVerdict::Alive)
             }
         }
     }
@@ -287,11 +340,24 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     fn owns_child(&self) -> bool {
-        self.child.lock().unwrap().is_some()
+        self.child.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some() // unwrap_or_else: a poisoned lock still holds the child handle; whether one exists is a plain read
     }
 
     async fn record_observed_placement(&self) {
         self.stamp_observed_placement().await;
+    }
+
+    fn follow_engine_log(&self) {
+        self.follow_served_engine();
+    }
+
+    fn served_incarnation(&self) -> Option<crate::inference::engine_residency::EngineIncarnation> {
+        let (_host, port) = split_host_port(&self.root);
+        crate::inference::lane_registry::live_incarnation().filter(|lane| lane.port == port)
+    }
+
+    async fn served_template_overhead(&self) -> Option<Vec<super::template_overhead::TemplateSample>> {
+        super::template_overhead::measure(&self.client, &self.root).await
     }
 
     fn launch_kv(&self) -> Option<crate::inference::lane_process::LaunchKv> {
@@ -299,6 +365,13 @@ impl LlamaServerControl for LlamaServerProcess {
         let record = crate::inference::lane_registry::live_lane().filter(|r| r.port == port)?;
         let argv = crate::inference::lane_process::command_args(record.pid)?;
         Some(crate::inference::lane_process::launch_kv_in(&argv))
+    }
+
+    fn pool_launch(&self) -> Option<super::PoolLaunch> {
+        let (_host, port) = split_host_port(&self.root);
+        let record = crate::inference::lane_registry::live_lane().filter(|r| r.port == port)?;
+        let argv = crate::inference::lane_process::command_args(record.pid)?;
+        Some(super::shared_pool::pool_launch(&argv))
     }
 
     fn wedge_flag(&self) -> Option<crate::inference::wedge::WedgeFlag> {
@@ -383,6 +456,10 @@ impl LlamaServerControl for LlamaServerProcess {
 
     async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError> {
         self.serve_if_current(target, &|| true).await
+    }
+
+    fn last_launch_generation(&self) -> Option<crate::inference::slots::EngineGeneration> {
+        self.last_started.lock().clone()
     }
 
     async fn serve_if_current(

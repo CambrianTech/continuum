@@ -26,6 +26,10 @@ pub(super) enum MainLaneMmproj {
     /// The row prefers a sidecar but this node has no other VL candidate: wear it
     /// anyway — the only eyes on the node beat `cache_reuse`.
     WearAsOnlyEyes,
+    /// The row prefers a sidecar, but this model's memory cannot shift (recurrent
+    /// layers), so `cache_reuse` never runs on it and withholding would buy nothing:
+    /// wear it. Prefix reuse and context checkpoints are unaffected by the projector.
+    WearReuseInert,
     /// Nothing resolved; nothing to decide.
     NoneResolved,
 }
@@ -46,6 +50,7 @@ pub(super) fn main_lane_mmproj_decision(
     row_opts_in: bool,
     is_sidecar_lane: bool,
     mmproj_resolved: bool,
+    reuse_inert: bool,
     sidecar_available: Option<bool>,
 ) -> MainLaneMmproj {
     if !mmproj_resolved {
@@ -53,6 +58,9 @@ pub(super) fn main_lane_mmproj_decision(
     }
     if row_opts_in || is_sidecar_lane {
         return MainLaneMmproj::Wear;
+    }
+    if reuse_inert {
+        return MainLaneMmproj::WearReuseInert;
     }
     match sidecar_available {
         Some(true) => MainLaneMmproj::Withhold,
@@ -75,10 +83,10 @@ pub(super) fn main_lane_mmproj_decision_for(
 ) -> MainLaneMmproj {
     let mmproj_resolved =
         crate::model_registry::artifacts::resolve_mmproj_for_model(model).is_some();
-    let sidecar_available = if model.serving.mmproj_on_main_lane
-        || is_sidecar_lane
-        || !mmproj_resolved
-    {
+    let decides = !model.serving.mmproj_on_main_lane && !is_sidecar_lane && mmproj_resolved;
+    // Consulted only where the answer depends on it, like the sidecar search below.
+    let reuse_inert = decides && memory_cannot_shift(model);
+    let sidecar_available = if !decides || reuse_inert {
         None // not consulted: the decision does not depend on it
     } else {
         let rows: Vec<crate::model_registry::types::Model> = crate::model_registry::try_global()
@@ -92,15 +100,39 @@ pub(super) fn main_lane_mmproj_decision_for(
         model.serving.mmproj_on_main_lane,
         is_sidecar_lane,
         mmproj_resolved,
+        reuse_inert,
         sidecar_available,
     )
 }
 
+/// Does this model's own header declare recurrent state? Memoized per artifact path:
+/// the grow-check asks every tick, the header answers once. An unreadable header is
+/// `false` — the decision then stands on the sidecar search exactly as before.
+fn memory_cannot_shift(model: &crate::model_registry::types::Model) -> bool {
+    static CACHE: std::sync::OnceLock<dashmap::DashMap<std::path::PathBuf, bool>> =
+        std::sync::OnceLock::new();
+    let Some(path) = crate::model_registry::artifacts::resolve_gguf_for_model(model) else {
+        return false;
+    };
+    let cache = CACHE.get_or_init(dashmap::DashMap::new);
+    if let Some(hit) = cache.get(&path) {
+        return *hit;
+    }
+    let recurrent = (|| {
+        let mut file = std::fs::File::open(&path).ok()?;
+        let content = candle_core::quantized::gguf_file::Content::read(&mut file).ok()?;
+        let arch = crate::inference_capability::gguf_keys::architecture(&content)?;
+        Some(crate::inference_capability::gguf_keys::holds_recurrent_state(&content, &arch))
+    })()
+    .is_some_and(|r| r);
+    cache.insert(path, recurrent);
+    recurrent
+}
 
 impl MainLaneMmproj {
     /// Does this decision put a projector on the lane?
     pub(super) fn wears(self) -> bool {
-        matches!(self, Self::Wear | Self::WearAsOnlyEyes)
+        matches!(self, Self::Wear | Self::WearAsOnlyEyes | Self::WearReuseInert)
     }
 }
 

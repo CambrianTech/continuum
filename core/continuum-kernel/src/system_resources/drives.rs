@@ -62,21 +62,53 @@ pub fn detect_drives() -> Vec<DriveInfo> {
         })
         .collect();
 
-    // The cold tier is the biggest-available drive that clears the floor AND is not
-    // the smallest (the OS drive tends to be busiest/smallest-free). If exactly one
-    // drive clears the floor and there are others, it's the cold tier; with a single
-    // drive there is no cold tier (nowhere distinct to offload to).
-    if infos.len() > 1 {
-        if let Some((idx, _)) = infos
-            .iter()
-            .enumerate()
-            .filter(|(_, d)| d.available_bytes >= MIN_COLD_TIER_BYTES)
-            .max_by_key(|(_, d)| d.available_bytes)
-        {
-            infos[idx].role = DriveRole::Cold;
-        }
-    }
+    #[cfg(windows)]
+    let system_path = std::env::var_os("SystemRoot").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let system_path = Some(PathBuf::from("/"));
+    assign_cold_role(&mut infos, system_path.as_deref(), |index| {
+        // APFS volumes can share one capacity container despite distinct mounts
+        // (including the root snapshot and writable Data volume). sysinfo exposes
+        // no container identity. Do not advertise unproven capacity separation;
+        // external APFS offload awaits a container-aware storage identity adapter.
+        cold_capacity_is_resolved(disks.list()[index].file_system())
+    });
     infos
+}
+
+fn cold_capacity_is_resolved(file_system: &std::ffi::OsStr) -> bool {
+    !file_system.is_empty() && file_system != std::ffi::OsStr::new("apfs")
+}
+
+// Free space does not identify the OS volume. Resolve its actual path through the
+// same mount selector used by consumers; uncertain identity offers no cold tier.
+fn assign_cold_role(
+    drives: &mut [DriveInfo],
+    system_path: Option<&Path>,
+    eligible: impl Fn(usize) -> bool,
+) {
+    for drive in drives.iter_mut() {
+        drive.role = DriveRole::System;
+    }
+    let Some(system_mount) = system_path
+        .filter(|path| path.is_absolute())
+        .and_then(|path| drive_holding(drives, path))
+        .map(|drive| mount_comparison_path(&drive.mount))
+    else {
+        return;
+    };
+    if let Some((index, _)) = drives
+        .iter()
+        .enumerate()
+        .filter(|(index, drive)| {
+            eligible(*index)
+                && mount_comparison_path(&drive.mount) != system_mount
+                && drive.available_bytes >= MIN_COLD_TIER_BYTES
+        })
+        .max_by_key(|(_, drive)| drive.available_bytes)
+    {
+        drives[index].role = DriveRole::Cold;
+    }
 }
 
 /// THE drive that holds `path` — the ONE resolver every disk-shaped decision uses,
@@ -128,6 +160,57 @@ fn mount_comparison_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // What this catches: a mostly empty OS volume used to win the cold-tier
+    // selection, directing offload back onto the volume it should relieve.
+    #[test]
+    fn cold_tier_excludes_the_resolved_system_volume_and_reverses_with_capacity() {
+        #[cfg(windows)]
+        let (system, secondary, system_path) = (r"C:\", r"D:\", r"\\?\c:\Windows");
+        #[cfg(not(windows))]
+        let (system, secondary, system_path) = ("/", "/Volumes/storage", "/usr");
+        let drive = |mount, available_bytes| DriveInfo {
+            mount: PathBuf::from(mount),
+            total_bytes: 10 * MIN_COLD_TIER_BYTES,
+            available_bytes,
+            role: DriveRole::System,
+        };
+        let mut drives = [
+            drive(system, 8 * MIN_COLD_TIER_BYTES),
+            drive(secondary, 2 * MIN_COLD_TIER_BYTES),
+        ];
+        let os_path = Some(Path::new(system_path));
+        assign_cold_role(&mut drives, os_path, |_| true);
+        assert_eq!(drives[0].role, DriveRole::System);
+        assert_eq!(drives[1].role, DriveRole::Cold);
+        drives[1].available_bytes = MIN_COLD_TIER_BYTES - 1;
+        assign_cold_role(&mut drives, os_path, |_| true);
+        assert!(drives.iter().all(|drive| drive.role == DriveRole::System));
+        drives[1].available_bytes = MIN_COLD_TIER_BYTES;
+        assign_cold_role(&mut drives, os_path, |_| true);
+        assert_eq!(drives[1].role, DriveRole::Cold);
+        // A distinct mount is insufficient when shared capacity identity is
+        // unresolved, as with APFS root and Data in one container.
+        assign_cold_role(&mut drives, os_path, |_| {
+            cold_capacity_is_resolved(std::ffi::OsStr::new("apfs"))
+        });
+        assert!(drives.iter().all(|drive| drive.role == DriveRole::System));
+        assert!(!cold_capacity_is_resolved(std::ffi::OsStr::new("")));
+        assign_cold_role(&mut drives, os_path, |_| {
+            cold_capacity_is_resolved(std::ffi::OsStr::new("exfat"))
+        });
+        assert_eq!(drives[1].role, DriveRole::Cold);
+        assign_cold_role(&mut drives, None, |_| true);
+        assert!(drives.iter().all(|drive| drive.role == DriveRole::System));
+        assign_cold_role(&mut drives, Some(Path::new("relative/unknown")), |_| true);
+        assert!(drives.iter().all(|drive| drive.role == DriveRole::System));
+        let mut single = [drives[0].clone()];
+        assign_cold_role(&mut single, os_path, |_| true);
+        assert_eq!(single[0].role, DriveRole::System);
+        let mut missing_system = [drives[1].clone()];
+        assign_cold_role(&mut missing_system, os_path, |_| true);
+        assert_eq!(missing_system[0].role, DriveRole::System);
+    }
 
     // what this catches (2026-09-18, the 5090 at 0 bytes free reading Normal): the
     // drive holding a path is found by LONGEST mount prefix in the platform's own

@@ -1,4 +1,4 @@
-//! Request body — the tail of chat-body assembly: the per-gateway thinking policy, the
+//! Request body — the tail of chat-body assembly: the request's thinking (its think term), the
 //! structured-output format, the native tool surface, and the wire-truth probe. Carved
 //! out of `openai_adapter::generate_stream` (pure code-motion, 2026-09-03, the S3b
 //! decompose). Behaviour-identical to the inline block. The head of assembly
@@ -6,134 +6,83 @@
 
 use serde_json::{json, Value};
 
-use crate::ai::openai_adapter::{OpenAICompatibleConfig, ThinkingMode};
+use crate::ai::openai_adapter::OpenAICompatibleConfig;
 use crate::ai::types::{ChatMessage, ContentPart, MessageContent, TextGenerationRequest, ToolChoice};
 use crate::model_registry::Capability;
 
-/// Set `chat_template_kwargs.enable_thinking = false` on a built request body — the
-/// ROBUST thinking-suppression lever for qwen3-family chat templates. Where
-/// `apply_no_think_switch` appends a soft text token (which a forged template may
-/// ignore entirely), this drives the template's own `enable_thinking` branch so it
-/// emits an empty `<think></think>` and the model goes straight to content. Inserting
-/// at the body's top level (not inside an existing kwargs map) is correct for the
-/// llama.cpp servers we target; idempotent — overwrites its own prior value.
-/// Harmless where unsupported: cloud providers ignore unknown body fields and a
-/// template without `enable_thinking` ignores the kwarg.
-pub(crate) fn apply_enable_thinking_false(body: &mut Value) {
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert(
-            "chat_template_kwargs".to_string(),
-            json!({ "enable_thinking": false }),
-        );
-    }
-}
-
-/// Finish `body` for the wire: thinking suppression, `response_format`, native tools +
+/// Finish `body` for the wire: the think term ([`apply_think`]), `response_format`, native tools +
 /// `tool_choice` (NativeFunctionCalling gateways only), then the tool-surface probe.
 /// The purpose a work (ACT) turn announces on its request; the faculty sets it
 /// when the hands surface is offered.
 pub const ACT_PURPOSE: &str = "cognition/act";
 
-// context-budget-exempt: a budget for the model's REASONING channel on an act turn, not a window bound
-/// How much a reasoning model may think before its tool call on an ACT turn.
-/// Measured 2026-09-07 (Qwen3.8-27B off-box): committed acts ran 4,188–9,818
-/// output tokens, nearly all of it thinking, 150–260 s per act on a shared lane
-/// (card 12ef9c10). A tool call plus its sentence needs a few hundred tokens of
-/// thought, not thousands. llama-server reads `reasoning_budget_tokens` and
-/// closes the thinking block at the budget; other gateways ignore the field.
-pub(crate) const ACT_REASONING_BUDGET: u32 = 1024;
-
 /// The purpose a deliberation (speak / pass) turn announces on its request.
 pub const DELIBERATION_PURPOSE: &str = "cognition/deliberation";
+
+/// A FORK's act and deliberation: a measurement copy of a mind (an eval exam) acting
+/// beside the living one. The same reasoning budgets as [`ACT_PURPOSE`] and
+/// [`DELIBERATION_PURPOSE`]; only the page differs: a fork warms its own page per room,
+/// never the mind's one page (`slots::PageKey::Fork`), and never waits on her act gate.
+pub const FORK_ACT_PURPOSE: &str = "cognition/fork-act";
+pub const FORK_DELIBERATION_PURPOSE: &str = "cognition/fork-deliberation";
 
 /// A sensory description needs answer text within its existing completion allowance.
 /// Keep it distinct from persona deliberation for routing and diagnostics.
 pub const VISION_DESCRIPTION_PURPOSE: &str = "cognition/vision-describe";
 
-/// The share of a deliberation turn's allowance the ANSWER keeps once thinking is
-/// bounded: three quarters may be thought, one quarter is left for what she says.
-// derived-or-floor: a share of the turn's own allowance (`output_allowance`, measured need
-// under the lane's reserve), never a token count — a capable model with a large allowance
-// thinks proportionally more. The quarter is the floor the answer can never lose.
-pub(crate) const DELIBERATION_ANSWER_SHARE_DIVISOR: u64 = 4;
-
-/// Bound the reasoning channel on a DELIBERATION request from the allowance the turn
-/// already carries. Returns the budget it applied.
+/// The ONE owner of a request's thinking: its think term (`DispatchTerms::think`) and nothing
+/// else. Returns the budget it applied.
 ///
-/// Until now only an act carried a budget, and a deliberation could spend its whole
-/// allowance thinking: the generation ended inside the reasoning channel with no answer
-/// and no call (`persona.act.think_only`, the think-only sentinel). Kimi on the 5090 lost
-/// whole turns that way on 2026-09-26 while composing an answer (`[health] think-only`);
-/// the control on the M5 the same morning showed the budget BINDS on our llama.cpp build
-/// (budget 64 → 73 completion tokens with an answer; no budget → 287 tokens, empty). The
-/// budget is derived from her own `max_tokens`, so it is not a clamp on capable models:
-/// it only guarantees the answer its share of what the turn was already allowed.
+/// - `Think::Budget(ThinkBudget(n))`, `n > 0`: she thinks, bounded at `n`
+///   (`reasoning_budget_tokens`); the template's `enable_thinking` is left at its default, on.
+/// - `Think::Budget(ThinkBudget(0))`: the caller's explicit no-think. Both levers say it: the
+///   template's `enable_thinking = false`, which holds on every pin, and a zero budget for the
+///   fork's sampler, which holds only from the fork fix on (llama.cpp#95, card c5fb32b7). The template
+///   reads `enable_thinking` only in its generation prompt (Qwen3.6-35B-A3B, served by fork
+///   0d7dda6ae: `<think>\n\n</think>\n\n` instead of `<think>\n`; prior turns render by
+///   `preserve_thinking` / the last query index), so flipping it per turn keeps her prefix.
+///   `chat_template_kwargs` sits at the body's top level, ignored by a template without the branch
+///   and by cloud providers.
+/// - `Think::ModelDefault`: no think term on the body; the model's own default.
 ///
-/// ONE seam for both kinds (Fable's review of #4413): an ACT thinks the fixed
-/// [`ACT_REASONING_BUDGET`] before its call; a DELIBERATION turn thinks
-/// [`deliberation_reasoning_budget`] of its own allowance, the answer keeping its share —
-/// and vision descriptions reuse that same answer share. This applies only when
-/// the body carries an allowance to derive it from. Any other purpose is
-/// left to the model. Returns the budget it applied.
-pub fn apply_reasoning_budget(purpose: Option<&str>, body: &mut Value) -> Option<u64> {
+/// The budget is the caller's MEASURED need (her grant past her measured answer,
+/// `llm_deliberation_faculty::act_room`), never a rule here. A fixed act budget of 1,024 stood here
+/// and spent a 72-89 token act cap whole on the think (the M5, 2026-11-04, a95afe3d1: 302 of 414
+/// acts cut at their first sentence). Nothing else turns thinking off: a `response_format` once
+/// did (any format, Text included), so a schema-bound request could never think although the
+/// fork's template wraps the schema in its reasoning rule and the budget sampler runs before the
+/// grammar (Cormac's probe, fork 0d7dda6ae, 2026-11-06: budget 40, a forced `</think>`, then
+/// schema-valid JSON); a gateway-wide suppression flag and a purpose match did too.
+pub fn apply_think(think: crate::ai::types::Think, body: &mut Value) -> Option<u64> {
+    let budget = think.budget()?.0;
     let obj = body.as_object_mut()?;
-    let budget = match purpose {
-        Some(ACT_PURPOSE) => u64::from(ACT_REASONING_BUDGET),
-        Some(DELIBERATION_PURPOSE | VISION_DESCRIPTION_PURPOSE) => {
-            deliberation_reasoning_budget(obj.get("max_tokens")?.as_u64()?)?
-        }
-        _ => return None,
-    };
-    obj.insert("reasoning_budget_tokens".to_string(), json!(budget));
-    Some(budget)
-}
-
-/// THE ONE RULE for a deliberation turn's reasoning budget, read by the request builder
-/// (to set it) and by the emission classifier (to know a think that stopped AT it was
-/// censored by it, not measured): three quarters of the allowance; `None` when the
-/// allowance is too small for the answer to keep a quarter.
-pub fn deliberation_reasoning_budget(max_tokens: u64) -> Option<u64> {
-    let answer_share = max_tokens / DELIBERATION_ANSWER_SHARE_DIVISOR;
-    if answer_share == 0 {
-        return None;
+    if budget == 0 {
+        obj.insert("chat_template_kwargs".to_string(), json!({ "enable_thinking": false }));
     }
-    Some(max_tokens - answer_share)
+    obj.insert("reasoning_budget_tokens".to_string(), json!(budget));
+    Some(u64::from(budget))
 }
 
+/// `tail_tools`: whether the engine this request is routed to takes our fork's `tail_tools`
+/// (the adapter's `route_now`, decided with the URL from one snapshot). A request that carries
+/// a tail the body cannot send is refused as [`InferenceError::TailToolsUnreachable`]: dropping
+/// it would leave her a head without verbs she was told she could call.
+///
+/// [`InferenceError::TailToolsUnreachable`]: crate::ai::inference_error::InferenceError::TailToolsUnreachable
 pub(crate) fn finish_body(
     cfg: &OpenAICompatibleConfig,
     request: &TextGenerationRequest,
     model: &str,
+    tail_tools: bool,
+    // The think her caller stated (`DispatchTerms::think`).
+    think: crate::ai::types::Think,
     body: &mut Value,
-) {
-    // Thinking suppression — the REAL lever for qwen3-family forged templates.
-    // When this gateway suppresses reasoning, the adapter already appends the
-    // `/no_think` soft-switch to the last user turn (build path above). But the
-    // forged qwen3.5 chat template implements `enable_thinking`, NOT the
-    // `/no_think` text token — so the soft-switch is a NO-OP for it, and absent
-    // the kwarg the template's default branch OPENS `<think>` itself, forcing the
-    // model to reason. Verified empirically 2026-06-27 on the CPU eval lane: the
-    // 4B forged model spent its whole ~90-token budget in the `reasoning` channel
-    // and emitted EMPTY `content` (`finish_reason: stop`), so every settled answer
-    // was blank and base/gene/lift were all 0.0 — a broken measurement, not a real
-    // null result. The chat-template hatch `enable_thinking=false` makes the
-    // template emit an empty `<think></think>` so the model goes straight to
-    // content. Set it for ALL turns under suppression (not only the JSON branch
-    // below, which is where it used to be misgated). Harmless where unsupported:
-    // cloud providers ignore unknown body fields; a template without
-    // `enable_thinking` ignores the kwarg. The `/no_think` switch is left in place
-    // for any template that DOES honor the soft token.
-    if cfg.thinking == ThinkingMode::Suppress {
-        apply_enable_thinking_false(body);
-    }
-    // The reasoning channel is bounded by the turn's kind, whichever gateway serves it
-    // — the remote path builds this same body on the responder. An ACT thinks a fixed
-    // amount before its call; a DELIBERATION turn keeps its answer's share of its own
-    // allowance, so a turn can no longer end inside the reasoning channel with nothing
-    // said.
-    if let Some(budget) = apply_reasoning_budget(request.purpose.as_deref(), body) {
+) -> Result<(), crate::ai::inference_error::InferenceError> {
+    // Her thinking is her think term's alone (`apply_think`): bounded at what her caller sized from
+    // her measured need, so the answer keeps its measured room.
+    if let Some(budget) = apply_think(think, body) {
         let budget_class = match request.purpose.as_deref() {
-            Some(ACT_PURPOSE) => "delib.act.reasoning_budgeted",
+            Some(ACT_PURPOSE | FORK_ACT_PURPOSE) => "delib.act.reasoning_budgeted",
             Some(VISION_DESCRIPTION_PURPOSE) => "vision.description.reasoning_budgeted",
             _ => "delib.pass.reasoning_budgeted",
         };
@@ -141,29 +90,17 @@ pub(crate) fn finish_body(
             class = budget_class,
             model = %model,
             budget,
-            max_tokens = request.max_tokens.map(u64::from).unwrap_or(0), // unwrap_or: an act's fixed budget needs no allowance; absent is said as 0
-            "reasoning channel bounded by the turn's kind — the answer keeps its room"
+            max_tokens = request.max_tokens.map(u64::from).unwrap_or(0), // unwrap_or: a caller's budget needs no allowance; absent is said as 0
+            "reasoning channel bounded at her measured need: the answer keeps its room"
         );
     }
 
-    // Forward response_format when set. Llama.cpp/DMR DO grammar-constrain
-    // JSON output, but for qwen3.5 reasoning models the model still
-    // emits its <think> reasoning BEFORE the constrained JSON region,
-    // which is no help to a JSON parser. Verified empirically 2026-04-19:
-    // `response_format=json_object` alone returns "<think>\nThinking
-    // Process:..." with no JSON.
+    // The structured-output format, forwarded as given. It constrains the answer, never the
+    // think: the fork's template wraps the schema in its reasoning rule, so a format composes
+    // with any think budget (`apply_think`).
     if let Some(format) = &request.response_format {
         if let Ok(value) = serde_json::to_value(format) {
             body["response_format"] = value;
-
-            // qwen3-family-specific kicker: when caller asks for JSON,
-            // ALSO disable thinking via the chat_template_kwargs hatch.
-            // Verified the same model returns "<think></think>\n\n{...JSON...}"
-            // in 434ms with this flag set — empty think block, clean JSON,
-            // parser-friendly. Same lever the suppression path above uses, so
-            // it routes through the same helper (one place sets the kwarg).
-            // Idempotent if suppression already set it.
-            apply_enable_thinking_false(body);
         }
         // The completed body is encoded once at dispatch. Its size and native
         // surface are probed there; exact request inspection uses the capture
@@ -181,6 +118,13 @@ pub(crate) fn finish_body(
                 == crate::model_registry::ToolProtocol::NativeFunctionCalling
         {
             body["tools"] = json!(openai_tools(tools));
+            if let Some(tail) = request.tail_tools.as_deref().filter(|tail| !tail.is_empty()) {
+                // Our fork's field: only an engine verified to take it gets it (a cloud provider
+                // would reject an unknown field, a stock llama-server would ignore it).
+                if tail_tools {
+                    body["tail_tools"] = json!(openai_tools(tail));
+                }
+            }
 
             // Add tool_choice if specified
             if let Some(choice) = &request.tool_choice {
@@ -208,23 +152,29 @@ pub(crate) fn finish_body(
         class = "ai.request.tool_surface",
         model = %model,
         tools_n = body.get("tools").and_then(|t| t.as_array()).map_or(0, |a| a.len()),
+        tail_tools_n = body.get("tail_tools").and_then(|t| t.as_array()).map_or(0, |a| a.len()),
         tool_choice = body.get("tool_choice").is_some(),
         stops_n = body.get("stop").and_then(|s| s.as_array()).map_or(0, |a| a.len()),
         msgs_n = body.get("messages").and_then(|m| m.as_array()).map_or(0, |a| a.len()),
         temperature = body.get("temperature").and_then(|t| t.as_f64()).unwrap_or(-1.0),
         "outbound chat request tool surface"
     );
-
+    let carried_tail = request.tail_tools.as_deref().is_some_and(|tail| !tail.is_empty());
+    if carried_tail && body.get("tail_tools").is_none() {
+        // Every path that leaves a requested tail off the wire lands here: refused, never dropped.
+        continuum_base::probe!(
+            class = "ai.request.tail_tools_unreachable",
+            model = %model,
+            tail_tools_accepted = tail_tools,
+            "the request carries tail verbs its destination cannot take: refused for a rebuild"
+        );
+        return Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model: model.to_owned() });
+    }
+    Ok(())
 }
 
 // ── the head of assembly (carve 4): messages → base body ─────────────────────────
 
-/// Append Qwen3's `/no_think` soft-switch to the LAST user message in a built
-/// OpenAI message array, suppressing chain-of-thought for the turn (the model emits
-/// an empty `<think></think>` then answers directly — which [`extract_reasoning`]
-/// reduces to clean text + no reasoning). Operates on string content (chat turns);
-/// multimodal/array content is left untouched (a follow-up can append a text part).
-/// No user message → no-op.
 /// The OpenAI `tools` param for a set of tool specs. One mapping: serving sends it,
 /// and the engine trainer sends the same list so a lived turn renders with the tool
 /// block it was served with.
@@ -254,20 +204,6 @@ pub fn wire_tool_call(id: &str, name: &str, input: &Value) -> Value {
             "arguments": serde_json::to_string(input).unwrap_or_default() // OpenAI wire boundary: tool-call arguments travel as a JSON string
         }
     })
-}
-
-pub(crate) fn apply_no_think_switch(messages: &mut [Value]) {
-    for m in messages.iter_mut().rev() {
-        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
-            continue;
-        }
-        if let Some(content) = m.get_mut("content") {
-            if let Some(s) = content.as_str() {
-                *content = Value::String(format!("{s}\n/no_think"));
-            }
-        }
-        return;
-    }
 }
 
 /// Close a message thread that ENDS with an assistant turn — wire-illegal on
@@ -312,22 +248,18 @@ pub fn close_trailing_assistant(messages: &mut Vec<Value>) {
 /// parts at a text-only endpoint is at best an API error and at worst a
 /// silent drop the persona would mistake for having seen
 /// ([[fallbacks-are-illegal-fail-loud]], CLAUDE.md "Sensory Architecture").
+/// With `view`, also where input message `view` starts on the wire ([`wire_messages_marking`]).
 pub(crate) fn format_messages(
     cfg: &OpenAICompatibleConfig,
     messages: &[ChatMessage],
     system_prompt: Option<&str>,
     vision_native: bool,
     audio_native: bool,
-) -> Vec<Value> {
-    let mut result = wire_messages(messages, system_prompt, vision_native, audio_native, &cfg.provider_id);
-    // Thinking toggle: when this gateway suppresses reasoning, append Qwen3's
-    // `/no_think` soft-switch to the last user turn so the model skips its
-    // chain-of-thought and answers directly. Model-specific token, owned here at
-    // the adapter boundary; higher layers never speak `/no_think`.
-    if cfg.thinking == ThinkingMode::Suppress {
-        apply_no_think_switch(&mut result);
-    }
-    result
+    view: Option<usize>,
+) -> (Vec<Value>, Option<usize>) {
+    // Her thinking is never a text token in her messages: it is her think term's, on the body
+    // (`apply_think`), so the messages she was served are the messages she wrote.
+    wire_messages_marking(messages, system_prompt, vision_native, audio_native, &cfg.provider_id, view)
 }
 
 /// The wire messages for a request: the system prompt, then each message with its
@@ -342,6 +274,23 @@ pub fn wire_messages(
     audio_native: bool,
     provider: &str,
 ) -> Vec<Value> {
+    wire_messages_marking(messages, system_prompt, vision_native, audio_native, provider, None).0
+}
+
+/// [`wire_messages`], and how many leading wire messages come from `messages[..mark]`: the
+/// wire position where input message `mark` starts, or the end when `mark` is every message.
+/// Tool replies regroup on the wire, so the input index is not the wire index. The position
+/// is taken before replies still waiting for their group are flushed, so the wire prefix it
+/// names depends on `messages[..mark]` alone and the next act, whose view extends this one,
+/// sends it again byte for byte. `None` when `mark` is past the end.
+pub(crate) fn wire_messages_marking(
+    messages: &[ChatMessage],
+    system_prompt: Option<&str>,
+    vision_native: bool,
+    audio_native: bool,
+    provider: &str,
+    mark: Option<usize>,
+) -> (Vec<Value>, Option<usize>) {
     // Pre-size: one wire message per input message + the optional system
     // prompt. The common text path lands exactly; tool-result turns push a
     // few extra and realloc once. Runs on every inference call — no
@@ -357,7 +306,11 @@ pub fn wire_messages(
         }));
     }
 
-    for msg in messages {
+    let mut marked = None;
+    for (index, msg) in messages.iter().enumerate() {
+        if mark == Some(index) {
+            marked = Some(result.len());
+        }
         // Keep consecutive tool replies together, including replies carried by
         // separate input messages. User media must not interrupt their pairing.
         let is_tool_reply = matches!(&msg.content, MessageContent::Parts(parts)
@@ -488,8 +441,11 @@ pub fn wire_messages(
         }
     }
 
+    if mark == Some(messages.len()) {
+        marked = Some(result.len());
+    }
     result.append(&mut observations);
-    result
+    (result, marked)
 }
 
 /// OpenAI-compatible audio uses encoded WAV/MP3, not an image data URL.
@@ -530,12 +486,13 @@ pub(crate) fn build_base_body(
     audio_native: bool,
 ) -> Value {
     // Build request body
-    let mut messages = format_messages(
-                cfg,
+    let (mut messages, view_end) = format_messages(
+        cfg,
         &request.messages,
         request.system_prompt.as_deref(),
         vision_native,
         audio_native,
+        request.view_messages.map(|len| len as usize),
     );
 
     // JsonInPrompt tool offering: for gateways/models that ignore the OpenAI
@@ -560,6 +517,12 @@ pub(crate) fn build_base_body(
         "stream": true,
         "stream_options": { "include_usage": true }
     });
+    // Where her view ends, in wire messages: our fork checkpoints her recurrent state there
+    // and keeps that checkpoint in her saved page (card 3512f496). A llama.cpp-family field:
+    // a stock server ignores it, a cloud provider would reject it.
+    if let (true, Some(view_end)) = (cfg.llamacpp_sampling_extensions, view_end) {
+        body["view_messages"] = json!(view_end);
+    }
 
     // max_tokens — the MODEL owns its generation length, enforced server-side
     // by llama.cpp / the cloud provider. We forward a ceiling ONLY
@@ -659,19 +622,138 @@ mod tests {
         assert_eq!(wire_messages(&[only_result], None, true, true, "test").len(), 1);
     }
 
-    // what this catches: through the ONE seam, the ACT budget is the fixed
-    // ACT_REASONING_BUDGET count, applied to an act request and to nothing else — a
-    // deliberation derives its own from its allowance (and carries none without one),
-    // and a turn with no purpose carries none.
+    // what this catches: a think budget sized anywhere but by her caller's measured need. The one
+    // seam applies exactly the budget it is given (an act's: her grant past her measured answer)
+    // and none otherwise: no fixed act count (a 72-token cap spent whole on a 1,024 think), no
+    // quarter-share rule. Only a zero budget, the caller's explicit no-think, closes the template.
     #[test]
-    fn the_act_budget_is_a_fixed_count_and_only_an_act_carries_it() {
-        let mut act = json!({ "model": "m" });
-        assert_eq!(apply_reasoning_budget(Some(ACT_PURPOSE), &mut act), Some(u64::from(ACT_REASONING_BUDGET)));
-        assert_eq!(act["reasoning_budget_tokens"], json!(ACT_REASONING_BUDGET));
-        let mut delib = json!({ "model": "m" });
-        assert_eq!(apply_reasoning_budget(Some("cognition/deliberation"), &mut delib), None);
-        assert!(delib.get("reasoning_budget_tokens").is_none());
-        let mut none = json!({ "model": "m" });
-        assert_eq!(apply_reasoning_budget(None, &mut none), None);
+    fn the_think_budget_is_the_callers_measured_one_and_nothing_else() {
+        use crate::ai::types::{Think, ThinkBudget};
+        let mut act = json!({ "model": "m", "max_tokens": 434 });
+        assert_eq!(apply_think(Think::Budget(ThinkBudget(338)), &mut act), Some(338));
+        assert_eq!(act["reasoning_budget_tokens"], json!(338));
+        assert!(act.get("chat_template_kwargs").is_none(), "a budget thinks");
+        let mut closed = json!({ "model": "m", "max_tokens": 96 });
+        assert_eq!(apply_think(Think::Budget(ThinkBudget(0)), &mut closed), Some(0), "zero is a budget: no thinking");
+        assert_eq!(closed["reasoning_budget_tokens"], json!(0));
+        assert_eq!(closed["chat_template_kwargs"]["enable_thinking"], json!(false), "her caller said no think");
+        let mut none = json!({ "model": "m", "max_tokens": 400 });
+        assert_eq!(apply_think(Think::ModelDefault, &mut none), None);
+        assert!(none.get("reasoning_budget_tokens").is_none(), "no caller budget, no rule of its own");
+        assert!(none.get("chat_template_kwargs").is_none(), "no think term: the model's default");
+    }
+
+    // what this catches: a side rule deciding her thinking (Cormac, fork 0d7dda6ae, 2026-11-06: ANY
+    // response_format, Text included, set `enable_thinking = false`, so a format-bound request
+    // never thought whatever budget it carried; a purpose match and a gateway flag did too). A
+    // JSON or Text request with a budget thinks within it; only her caller's zero turns it off.
+    // And a format alone never leaves the think to the model: a body without a think term is the
+    // `ModelDefault` its caller named (an external passthrough), never one a format produced.
+    #[test]
+    fn a_response_format_never_turns_her_thinking_off_only_her_think_term_does() {
+        use crate::ai::types::{ResponseFormat, Think, ThinkBudget};
+        for format in [ResponseFormat::JsonObject, ResponseFormat::Text] {
+            let request = TextGenerationRequest { purpose: Some(ACT_PURPOSE.into()), response_format: Some(format.clone()), ..Default::default() };
+            let mut body = json!({ "model": "m", "max_tokens": 434 });
+            assert!(finish_body(&gateway(true), &request, "m", false, Think::Budget(ThinkBudget(40)), &mut body).is_ok());
+            assert!(body.get("chat_template_kwargs").is_none(), "{format:?}: the format constrains the answer, not the think");
+            assert_eq!(body["reasoning_budget_tokens"], json!(40), "{format:?}: at her budget");
+            assert!(body.get("response_format").is_some(), "{format:?}: forwarded");
+
+            let mut off = json!({ "model": "m", "max_tokens": 96 });
+            assert!(finish_body(&gateway(true), &request, "m", false, Think::Budget(ThinkBudget(0)), &mut off).is_ok());
+            assert_eq!(off["chat_template_kwargs"]["enable_thinking"], json!(false), "{format:?}: her caller said no think");
+            assert_eq!(off["reasoning_budget_tokens"], json!(0), "{format:?}: and the sampler hears it");
+
+            let mut passthrough = json!({ "model": "m", "max_tokens": 96 });
+            assert!(finish_body(&gateway(true), &request, "m", false, Think::ModelDefault, &mut passthrough).is_ok());
+            assert!(passthrough.get("reasoning_budget_tokens").is_none() && passthrough.get("chat_template_kwargs").is_none(),
+                "{format:?}: only a named ModelDefault leaves the think to the model");
+        }
+    }
+
+    fn gateway(llamacpp: bool) -> OpenAICompatibleConfig {
+        OpenAICompatibleConfig {
+            provider_id: "test-gateway".into(),
+            name: "Test Gateway".into(),
+            base_url: "http://127.0.0.1:0".into(),
+            api_key_env: None,
+            default_model: "test-model".into(),
+            capabilities: [Capability::ToolUse].into_iter().collect(),
+            models: Vec::new(),
+            model_prefixes: Vec::new(),
+            requires_auth: false,
+            tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
+            single_resident_model: false,
+            dynamic_model_catalog: false,
+            llamacpp_sampling_extensions: llamacpp,
+            tail_tools: llamacpp,
+        }
+    }
+
+    // what this catches: a view end that names a wire position the next act does not resend
+    // (a tool reply's held observation flushed into it, so the engine's checkpoint lands past
+    // where her next prompt diverges), an input index sent as if it were a wire index, or the
+    // fork's field reaching a cloud provider (card 3512f496).
+    #[test]
+    fn the_view_end_is_a_wire_prefix_the_next_act_resends_and_only_llamacpp_hears_it() {
+        let text = |role: &str, body: &str| ChatMessage::text(role, body);
+        let reply = |id: &str| -> ChatMessage { serde_json::from_value(json!({ "role": "user", "content": [
+            {"type":"tool_result", "tool_use_id": id, "content":"done"},
+            {"type":"image", "image":{"base64":"pixels", "mimeType":"image/png"}}
+        ]})).unwrap() };
+        // This act: her view is [her note, a tool reply with pixels]; the ask is the tail.
+        let this_act = [text("user", "note"), reply("call-1"), text("user", "ask")];
+        let (wire, end) = wire_messages_marking(&this_act, Some("system"), true, true, "test", Some(2));
+        // system, note, the reply; its observation is still held when the tail starts.
+        assert_eq!(end, Some(3));
+        assert_eq!(wire.len(), 5);
+        // The next act's view appends another reply to the same group, then a new tail.
+        let next_act = [text("user", "note"), reply("call-1"), reply("call-2"), text("user", "ask again")];
+        let (next, _) = wire_messages_marking(&next_act, Some("system"), true, true, "test", Some(3));
+        assert_eq!(wire[..3], next[..3], "the prefix the view end names is resent byte for byte");
+        assert_ne!(wire[3], next[3], "the held observation is not part of it");
+        assert_eq!(wire_messages_marking(&this_act, None, true, true, "test", Some(3)).1, Some(4), "every message is view");
+        assert_eq!(wire_messages_marking(&this_act, None, true, true, "test", Some(4)).1, None);
+
+        let request = TextGenerationRequest { messages: this_act.to_vec(), view_messages: Some(2), ..Default::default() };
+        let served = build_base_body(&gateway(true), &request, "m", true, true);
+        assert_eq!(served["view_messages"], json!(2), "no system prompt: note and the reply");
+        assert!(build_base_body(&gateway(false), &request, "m", true, true).get("view_messages").is_none());
+    }
+
+    // what this catches: a tail-loaded verb not reaching a llama.cpp-family server (she could
+    // read its schema and never call it), the non-standard field going to a cloud provider
+    // that rejects unknown fields, or a tail silently dropped (Codex on #5491).
+    #[test]
+    fn tail_tools_reach_only_a_llamacpp_family_server_and_never_join_the_head() {
+        let spec = |name: &str| crate::ai::types::NativeToolSpec {
+            name: name.to_owned(),
+            description: format!("{name} does one thing"),
+            input_schema: crate::ai::types::ToolInputSchema {
+                schema_type: "object".to_owned(),
+                properties: json!({}),
+                required: None,
+                definitions: None,
+            },
+        };
+        let request = TextGenerationRequest {
+            tools: Some(vec![spec("commands_help")]),
+            tail_tools: Some(vec![spec("code_git_apply")]),
+            ..Default::default()
+        };
+        let cfg = gateway;
+        let mut served = json!({ "model": "m" });
+        assert!(finish_body(&cfg(true), &request, "m", true, crate::ai::types::Think::ModelDefault, &mut served).is_ok());
+        assert_eq!(served["tools"].as_array().map(Vec::len), Some(1), "the head holds only its own verbs");
+        assert_eq!(served["tail_tools"][0]["function"]["name"], "code_git_apply");
+        // A tail the destination cannot take is refused for a rebuild, never silently dropped.
+        let mut cloud = json!({ "model": "m" });
+        assert_eq!(
+            finish_body(&cfg(false), &request, "m", false, crate::ai::types::Think::ModelDefault, &mut cloud),
+            Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model: "m".into() })
+        );
+        let headless = TextGenerationRequest { tail_tools: None, ..request.clone() };
+        assert!(finish_body(&cfg(false), &headless, "m", false, crate::ai::types::Think::ModelDefault, &mut json!({ "model": "m" })).is_ok(), "no tail, nothing to refuse");
     }
 }

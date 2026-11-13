@@ -1,0 +1,21 @@
+[package]
+name = "tool-working-set"
+version = "0.1.0"
+edition = "2021"
+description = """
+A mind's tool working set, LEARNED from her own tool calls (plan goal 10, card ecd5dff3).
+Pure policy and evaluation, no continuum-core dependency: the policies decide which tool
+schemas sit in the head of her prompt for an epoch, and the evaluator replays her real
+history in time order to score them by misses, waste and the engine time both cost.
+Slice 2 imports the winning policy behind `WorkingSetPolicy`.
+"""
+
+[dependencies]
+continuum-base = { path = "../continuum-base" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+
+[[bin]]
+name = "tool-working-set"
+path = "src/bin/tool_working_set.rs"

@@ -21,8 +21,13 @@ use std::sync::Arc;
 
 use crate::recipe::runs_owner::{RecipeModule, MODULE_NAME};
 
+/// The `ServiceModule` face of the mind's [`RecipeModule`]: its verbs and its boot are the
+/// surface's (they need the data module and the recipe commands), the store is the mind's.
+/// `as_any` is the inner module, so [`RecipeModule::runs_in`] finds it through the registry.
+pub struct RecipeService(pub RecipeModule);
+
 #[async_trait]
-impl ServiceModule for RecipeModule {
+impl ServiceModule for RecipeService {
     fn config(&self) -> ModuleConfig {
         ModuleConfig {
             name: MODULE_NAME,
@@ -36,15 +41,7 @@ impl ServiceModule for RecipeModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
-        let module = ctx
-            .registry
-            .get_by_name("data")
-            .ok_or_else(|| "recipe requires the data module".to_string())?;
-        let data = module
-            .as_any()
-            .downcast_ref::<crate::modules::data::DataModule>()
-            .ok_or_else(|| "recipe: data module type mismatch".to_string())?;
-        let runs = RecipeRuns::open(data.state.get_adapter("main").await?).await?;
+        let runs = RecipeRuns::open(ctx.storage("recipe")?.adapter("main").await?).await?;
         let (recovery, interrupted) = runs.expose_interrupted().await?;
         continuum_base::probe!(
             class = "recipe.boot.exposed",
@@ -52,7 +49,7 @@ impl ServiceModule for RecipeModule {
             interrupted = interrupted as u64,
             "recipe runs the last process left Running"
         );
-        self.runs.install(Arc::new(runs));
+        self.0.runs.install(Arc::new(runs));
         Ok(())
     }
 
@@ -61,14 +58,14 @@ impl ServiceModule for RecipeModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        crate::commands::recipe_run::command_objects(self.executor_slot.clone(), self.runs.clone())
+        crate::commands::recipe_run::command_objects(self.0.executor_slot.clone(), self.0.runs.clone())
     }
 
     fn install_executor(&self, executor: Arc<CommandExecutor>) {
-        self.executor_slot.install(executor);
+        self.0.executor_slot.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {
-        self
+        &self.0
     }
 }

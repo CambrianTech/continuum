@@ -208,6 +208,8 @@ pub enum FinishReason {
     MaxDuration,
     StopSequence { matched: String },
     Error { reason: String },
+    /// The stream ended without the backend saying why: never reported as a stop or an error.
+    Unreported,
 }
 
 // ─── Events ─────────────────────────────────────────────────────

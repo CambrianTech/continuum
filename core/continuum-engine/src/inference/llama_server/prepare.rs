@@ -47,12 +47,7 @@ impl LlamaServerProcess {
             crate::inference::engine_install::EngineInstallReceipt::prepare(bin.clone())
                 .await
                 .map_err(LlamaServerError::Spawn)?;
-        let engine_command = || -> Result<tokio::process::Command, LlamaServerError> {
-            match &engine_install {
-                Some(receipt) => receipt.command().map_err(LlamaServerError::Spawn),
-                None => Ok(tokio::process::Command::new(&bin)),
-            }
-        };
+        let engine_command = || super::kv_support::engine_command_of(&engine_install, &bin);
 
         let (host, port) = split_host_port(&self.root);
 
@@ -239,6 +234,13 @@ impl LlamaServerProcess {
                  VL candidate is on this node — the only eyes here beat cache_reuse \
                  (multimodal disables it); pull a *-VL-* row to restore the split"
             ),
+            MainLaneMmproj::WearReuseInert => continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.vision.mmproj_on_main_lane_reuse_inert",
+                model = %target.model.id,
+                "mmproj goes on the MAIN lane: this model's memory cannot shift \
+                 (recurrent layers), so cache_reuse never runs on it and withholding \
+                 the projector would only blind the node; prefix reuse and context \
+                 checkpoints are unchanged"
+            ),
             MainLaneMmproj::Wear | MainLaneMmproj::NoneResolved => {}
         }
         if resolved_mmproj.is_none() && target
@@ -267,7 +269,7 @@ impl LlamaServerProcess {
             target.adapters.iter().map(|a| a.path.clone()).collect();
         let expert_ot = target.expert_ot_value();
 
-        let mut invocation = crate::inference::lane_args::base_invocation(
+        let invocation = crate::inference::lane_args::base_invocation(
             &gguf,
             &target.model.id,
             &host,
@@ -296,7 +298,7 @@ impl LlamaServerProcess {
             chat_template: chat_template.as_deref(),
             loras: &lora_paths,
             // only to an engine that lists the flag: an older one refuses to start with it
-            train_dir: train_dir.as_deref().filter(|_| engine_accepts_train_dir()),
+            train_dir: train_dir.as_deref().filter(|_| engine_accepts_train_dir(&bin)),
             expert_ot: expert_ot.as_deref(),
             host_pinned_tensors: target.model.serving.host_pinned_tensors,
             fit_off: target.model.serving.fit_off,
@@ -304,6 +306,7 @@ impl LlamaServerProcess {
             max_ubatch: target.model.serving.max_ubatch,
             reasoning_budget: target.model.serving.reasoning_budget,
         });
+        let mut invocation = super::shared_pool::on_shared_pool(invocation);
         // MoE glass-box env seam (#278): when expert paging is active, the DAEMON
         // hands the fork its capture + plan file locations. Previously these envs
         // existed only when an operator hand-exported them before booting the

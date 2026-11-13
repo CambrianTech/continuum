@@ -57,7 +57,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use crate::ipc::positron_source::{AircPresenceUpdate, PRESENCE_UPDATED};
-use crate::persona::room_directory::{load_directory, persist_directory};
+use crate::cognition::room_directory::{load_directory, persist_directory};
 use crate::persona::room_roster_source::AircRosterReader;
 use crate::persona::room_roster_source::{PRESENCE_WINDOW, ROSTER_SCAN};
 use crate::runtime::MessageBus;
@@ -224,7 +224,7 @@ pub(crate) fn scan_avatar_store_for_directory() -> HashMap<Uuid, String> {
 }
 
 pub(crate) fn avatar_store_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("avatars"))
+    crate::paths::continuum_home().ok().map(|h| h.join("avatars"))
 }
 
 /// Scan the avatar store once: every `<uuid>.png` becomes `peer id →
@@ -469,11 +469,20 @@ async fn emit_once(
     if !force && last_published.as_ref() == Some(&update) {
         return directory_changed;
     }
-    // Substrate-owned type: a serialize failure is a bug, not a
-    // runtime condition (same discipline as
-    // `continuum_positron::StateBuilder::build`).
-    let payload = serde_json::to_value(&update)
-        .expect("AircPresenceUpdate must serialize — bug, not a runtime error");
+    // Substrate-owned type: a serialize failure is a bug, not a runtime condition. It is
+    // refused the way a failed roster read is above: reported with its cause, nothing
+    // published, and `last_published` left as it was so the next tick tries again.
+    let payload = match serde_json::to_value(&update) {
+        Ok(payload) => payload,
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                %room_id,
+                "positron_presence: AircPresenceUpdate did not serialize — a bug in its Serialize; skip emit, keep last roster"
+            );
+            return directory_changed;
+        }
+    };
     bus.publish_async_only(PRESENCE_UPDATED, payload);
     *last_published = Some(update);
     directory_changed
@@ -497,7 +506,7 @@ const NODE_PRESENCE_READER_NAME: &str = "continuum-node";
 /// The widget roster must survive **zero resident personas** — a chat
 /// window with no persona present still shows its human occupants. So the
 /// reader is node-scoped, not borrowed from a persona lifecycle. It reuses
-/// the exact non-persona attach shape [`crate::context::agent`] uses
+/// the exact non-persona attach shape the removed agent context used
 /// (`Airc::attach_as` → `AircHandleAdapter`), attaching a heartbeat-less
 /// lurker at a stable node home. `room_roster` routes through the daemon
 /// (`page_recent` is daemon-aware), so the lurker reads every *other*
@@ -546,7 +555,7 @@ pub fn spawn_node_presence_emitter(
         };
         // Join by NAME (never UUID-as-string, which derives a *different*
         // channel — the recurring hazard documented in
-        // `context::agent` + `PersonaAircRuntime`). The reader must share
+        // the removed agent context + `PersonaAircRuntime`). The reader must share
         // the operator's channel or its roster reads land in an empty
         // derived room.
         if let Err(err) = airc.join(&room_name).await {

@@ -12,7 +12,6 @@ types, derive macros).
 | `continuum-core/` | The substrate binary (`continuum-core-server`) and library. Persona / cognition / inference / airc / paging / system_resources / routing / runtime. |
 | `continuum-airc-protocol/` | Shared wire types for the substrate's airc command + event protocols. Consumed by `core/continuum-core` (server-side) AND `client/continuum-client` (client-side) so the wire bytes can't drift. |
 | `continuum-orm-derive/` | `#[derive(Entity)]` + `#[entity(...)]` proc macros. The rust analogue of TS entity decorators. |
-| `inference-grpc/` | gRPC-protocol shim for AI inference (separate binary). |
 | `jtag-mcp/` | Rust MCP server (will graduate to `apps/mcp/` per task #143). |
 | `livekit-bridge/`, `livekit-protocol/` | WebRTC + LiveKit integration crates. |
 | `llama/` | Wrapper around the vendored `llama.cpp` library (`core/vendor/llama.cpp`). |

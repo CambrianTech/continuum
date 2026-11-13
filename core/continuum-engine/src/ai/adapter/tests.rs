@@ -19,6 +19,7 @@
         model: Option<String>,
     }
 
+    crate::dispatch_without_thinking!(StubAdapter);
     #[async_trait]
     impl AIProviderAdapter for StubAdapter {
         fn provider_id(&self) -> &str {
@@ -32,7 +33,7 @@
         }
         async fn generate_text(
             &self,
-            _r: TextGenerationRequest,
+            _r: TextGenerationRequest, _dispatched: crate::ai::adapter::Dispatched,
         ) -> Result<TextGenerationResponse, String> {
             Err("stub adapter — no inference".into())
         }

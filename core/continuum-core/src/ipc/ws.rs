@@ -709,7 +709,7 @@ mod tests {
                         result["hello"], "world",
                         "the echo module saw the params; the reply unwraps to its result"
                     ),
-                    AircCommandResponse::Error { message } => {
+                    AircCommandResponse::Error { message, .. } => {
                         panic!("expected ok, got error: {message}")
                     }
                 }

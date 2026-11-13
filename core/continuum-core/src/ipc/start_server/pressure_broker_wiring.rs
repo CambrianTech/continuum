@@ -127,6 +127,17 @@ pub(super) fn register_pressure_broker(
             }
         }
 
+        // KV page disk-tier owner: each mind's saved page is the disk level of her KV (GPU,
+        // RAM, disk). Freed in value order (unserved model dirs, pages no ledger confirms, then
+        // the coldest non-resident confirmed pages, forgotten through their pool first), never a
+        // resident's page or the ledger. Registered after the cargo pools, so on a tie in volume
+        // pressure the build cache sheds before minds' warm state.
+        if let Some(dir) = crate::system_resources::tracked_dir("kv-pages") {
+            broker.register(Arc::new(crate::inference::slots::KvPageStorePool::new(dir))
+                as Arc<dyn crate::paging::pool::ResourcePool>);
+            log_info!("ipc", "server", "KvPageStorePool registered with PressureBroker (class=kv-pages, value-ordered)");
+        }
+
         // NVMe serving-tier eviction owner (#302): the genome-models class
         // holds the HOT per-token-paged serving set (served GGUFs, expert
         // containers, device-fit overrides). Capacity derives from the
@@ -136,14 +147,10 @@ pub(super) fn register_pressure_broker(
         // delete). No cold drive ⇒ the pool refuses loudly — models are
         // re-fetch-hours, not derived artifacts.
         if let Some(models_dir) = crate::system_resources::tracked_dir("genome-models") {
-            use crate::system_resources::drives::{detect_drives, DriveRole};
+            use crate::system_resources::drives::{detect_drives, drive_holding, DriveRole};
             let drives = detect_drives();
             // The volume holding the hot tier: longest mount-point prefix.
-            let volume_total = drives
-                .iter()
-                .filter(|d| models_dir.path().starts_with(&d.mount))
-                .max_by_key(|d| d.mount.as_os_str().len())
-                .map(|d| d.total_bytes);
+            let volume_total = drive_holding(&drives, models_dir.path()).map(|d| d.total_bytes);
             let cold_root = drives
                 .iter()
                 .find(|d| d.role == DriveRole::Cold)
@@ -201,8 +208,8 @@ pub(super) fn register_pressure_broker(
         // capture) but bounded so a runaway sprinkle / leak gets
         // visible to the broker before disk fills.
         const PROBE_POOL_SOFT_CAP_BYTES: u64 = 500 * 1024 * 1024;
-        if let Some(home) = dirs::home_dir() {
-            let probe_dir = home.join(".continuum/jtag/logs/probes");
+        if let Ok(home) = crate::paths::continuum_home() {
+            let probe_dir = home.join("jtag/logs/probes");
             broker.register(Arc::new(crate::paging::FilesystemTierPool::new(
                 "probe-jsonl",
                 probe_dir,

@@ -24,8 +24,28 @@ impl Runtime {
                 // because the inner `&str` is 'static. Carried in from the pre-refactor
                 // `shutdown()`; saying `*name` is what was always meant.
                 let name: &'static str = *name;
+                let readiness = self.registry.readiness();
                 async move {
                     let t = std::time::Instant::now();
+                    // A module whose initialize never returned holds no loaded state: saving it
+                    // could overwrite good durable state with an uninitialized module's. Skip it,
+                    // and say so in the receipt.
+                    if !readiness.state(name).is_none_or(|s| s.initialize_returned()) {
+                        continuum_base::probe!(
+                            class = "shutdown.step",
+                            module = %name,
+                            outcome = "NeverInitialized",
+                            "module initialize never returned; not drained, saved or joined"
+                        );
+                        return ModuleStop {
+                            module: name.to_string(),
+                            drain: DrainOutcome::Unknown {
+                                reason: "initialize never returned".to_string(),
+                            },
+                            outcome: ModuleStopOutcome::NeverInitialized,
+                            ms: t.elapsed().as_millis() as u64,
+                        };
+                    }
                     // 1. Stop taking new work and let in-flight work finish. A module
                     //    that cannot drain in time still gets its save attempted — a
                     //    mid-turn snapshot beats no snapshot — but the receipt says so.
@@ -165,6 +185,32 @@ impl Runtime {
 /// have to remember per-module thresholds.
 pub(super) const TICK_QUARANTINE_AFTER: u32 = 3;
 
+/// Spawn `module`'s tick loop when it declares a `tick_interval` (`None` when it does not).
+/// One spawn path for the boot pass (`start_tick_loops`) and a module whose initialize returns
+/// after it (`module_init`).
+pub(super) fn spawn_tick_loop(module: Arc<dyn ServiceModule>) -> Option<JoinHandle<()>> {
+    let config = module.config();
+    let initial_interval = config.tick_interval?;
+    let module_name = config.name;
+    info!("Starting tick loop for '{}' (interval: {:?})", module_name, initial_interval);
+    continuum_base::probe!(
+        class = "tick.spawn",
+        module = module_name,
+        interval_ms = initial_interval.as_millis() as u64
+    );
+    // Outer catch_unwind protects the *runner* itself — anything genuinely catastrophic
+    // (poisoned lock, bad future state) still emits one final event before the loop dies.
+    Some(tokio::spawn(async move {
+        let result = AssertUnwindSafe(run_tick_loop_for(module, module_name, initial_interval))
+            .catch_unwind()
+            .await;
+        if let Err(panic) = result {
+            error!("Tick loop for '{}' aborted with panic in runner: {:?}", module_name, panic);
+            continuum_base::probe!(class = "tick.aborted", module = module_name, reason = "runner_panic");
+        }
+    }))
+}
+
 /// Per-module tick loop runner — the body wrapped by `start_tick_loops`.
 ///
 /// One tick task per registered module with `tick_interval`. RTOS shape:
@@ -263,7 +309,7 @@ pub(super) async fn run_tick_loop_for(
         // every module was card 948c30c2's row 4. `None` = the registered cadence
         // stands. If the period changed, rebuild the ticker — `Interval` doesn't
         // expose a setter for its period, and rebuilding is cheap on that slow path.
-        let new_interval = module.tick_interval_now().unwrap_or(initial_interval);
+        let new_interval = module.tick_interval_now().unwrap_or(initial_interval); // unwrap_or: None = the registered cadence stands
         if new_interval != current_interval {
             continuum_base::probe!(
                 class = "tick.cadence_changed",
@@ -481,12 +527,10 @@ pub const MODULES: &[ModuleSpec] = &[
         ServiceGroup::ResourceGov,
         ModuleCategory::Core,
     ),
-    // Inference — the engine. (The bare `inference` shell module was deleted in
-    // 89519a899 when its sole command `inference/capacity` became a stateless
-    // self-routing command; this MODULES entry is dropped to match — leaving it
-    // made `required_modules()` demand a module that no longer registers, which
-    // hard-failed boot with "missing [inference]". The engine is now carried by
-    // the coordinator / handle / llm / ai_provider modules below.)
+    // Inference — the engine, carried by the coordinator / handle / llm /
+    // ai_provider modules below. (No bare `inference` module: listing one made
+    // `required_modules()` demand a module that does not register, which
+    // hard-failed boot with "missing [inference]".)
     ModuleSpec::new(
         "inference-coordinator",
         ServiceGroup::Inference,
@@ -523,7 +567,10 @@ pub const MODULES: &[ModuleSpec] = &[
         ServiceGroup::Cognition,
         ModuleCategory::Core,
     ),
-    ModuleSpec::new("agent", ServiceGroup::Cognition, ModuleCategory::Core),
+    // (`agent` was retired here with `AgentModule`, a second autonomous loop beside the persona
+    // minds (#5660). Its spec stayed and boot hard-failed with "missing [agent]" on the M5
+    // (2026-10-31, canary 107e10ddc; rolled back by `continuum reboot`): the same trap as
+    // `search` and `inference` above.)
     // Cognition — AIRC-Healthy-conditional persona hosting (registers only when
     // discovery succeeded across all four sub-steps)
     ModuleSpec::new(

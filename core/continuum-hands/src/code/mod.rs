@@ -11,6 +11,7 @@
 //! - `search` — Regex + glob code search with .gitignore awareness
 //! - `tree` — Directory tree generation
 //! - `git_bridge` — Git status, diff, and branch operations
+//! - `git_actor` — who a commit is by: the acting peer, author and committer
 //! - `hands` — whose hands a call acts with: caller + acting context (the hands-map key)
 
 pub mod card_branch;
@@ -18,9 +19,11 @@ pub mod change_graph;
 pub mod citizen_layer;
 pub mod diff_engine;
 pub mod file_engine;
+pub mod git_actor;
 pub mod git_bridge;
 pub mod hands;
 pub mod path_security;
+pub mod ports;
 pub mod repo_registry;
 pub mod search;
 pub mod shell_session;

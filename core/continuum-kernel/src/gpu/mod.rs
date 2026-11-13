@@ -15,8 +15,15 @@ pub mod device_probe;
 /// Per-platform adapters. ALL `#[cfg(target_os = ...)]` for GPU backends lives in
 /// `backends/mod.rs` and nowhere else — see that file for why.
 pub mod backends;
+/// The `gpu/*` typed commands (one verb per file); they move with their module.
+pub mod commands;
 pub mod eviction_registry;
+// detect_gpu panics on a host with no GPU until card 461a951e (kernel buffers and GPU
+// detection get owners) lands; then delete this allow.
+#[allow(clippy::panic)]
 pub mod memory_manager;
+/// `GpuModule`: the memory authority's service module; contributes `commands`.
+pub mod module;
 pub mod monitor;
 pub mod tracker;
 

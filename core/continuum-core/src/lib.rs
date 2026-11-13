@@ -9,6 +9,9 @@
 //!
 //! Architecture: Rust is the brain, TypeScript is the face.
 //! Target: 60-70% Rust (cognition, compute, real-time), 30-40% TypeScript (UI only)
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![deny(clippy::await_holding_lock)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 // Self-alias so the `#[derive(Entity)]` macro's emitted paths
 // (`::continuum_core::orm::*`) resolve when used from within this
@@ -24,8 +27,12 @@ extern crate self as continuum_core;
 pub use continuum_engine::{ai, capacity, inference, inference_capability, model_registry, sensory};
 pub use continuum_hands::code;
 pub use continuum_live::{live, media};
+pub use continuum_mind::{
+    cognition, context, experience, genome, memory, perception, persona, recipe, vdd,
+};
 pub use continuum_kernel::{
-    concurrency, governor, gpu, identity, logging, orm, paging, paths, resources, routing, runtime,
+    concurrency, docker_tier, docker_tier_pool, entity_schemas, governor, gpu, identity, logging, orm,
+    paging, paths, probe_query, probe_stream, resource_broker, resources, routing, runtime,
     sdk_codegen, system_resources,
 };
 pub use continuum_kernel::{
@@ -34,38 +41,25 @@ pub use continuum_kernel::{
     time_async, time_section,
 };
 pub mod airc;
-pub mod cognition;
 pub mod commands;
 pub mod comms;
-pub mod context;
 pub mod contracts;
-pub mod experience;
 pub mod forge;
-pub mod genome;
 pub mod http;
 pub mod boot_plan;
 pub mod interface;
 pub mod ipc;
-pub mod memory;
 pub mod modules;
-pub mod perception;
-pub mod persona;
 pub mod provisioning;
-pub mod rag;
-pub mod recipe;
 #[cfg(test)]
 pub(crate) mod test_env;
-pub mod vdd;
 
 
 pub use continuum_kernel::concurrency::*;
 pub use live::VoiceOrchestrator;
-pub use persona::{
-    CognitionDecision, InboxMessage, InboxTask, Modality, Mood, PersonaCognitionEngine,
-    PersonaInbox, PersonaState, PriorityScore, QueueItem, SenderType,
-};
+pub use cognition::conversation::types::{InboxMessage, InboxTask, Modality, Mood, PersonaState, QueueItem, SenderType};
+pub use persona::{CognitionDecision, PersonaCognitionEngine, PersonaInbox, PriorityScore};
 // Easy logging macros - auto-route to proper log files based on module_path!()
 // Usage: clog_info!("Session started"); clog_warn!("Warning"); etc.
 pub use ipc::start_server;
 pub use logging::{extract_component, module_path_to_category};
-pub use rag::{LlmMessage, MessageRole, RagContext, RagEngine, RagOptions};

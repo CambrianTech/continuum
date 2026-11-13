@@ -14,9 +14,55 @@ use crate::runtime::message_bus::BusEvent;
 
 pub const CONTINUUM_BODY_HINT: &str = "continuum.airc.realtime.envelope.v1";
 pub const HEADER_CONTINUUM_EVENT_ID: &str = "continuum.event_id";
+/// Who an envelope is from (its typed `source_id`, a peer id): the transport author's own id for a
+/// frame it publishes itself, or the person a relayed line speaks for.
 pub const HEADER_CONTINUUM_SOURCE_ID: &str = "continuum.source_id";
 pub const HEADER_CONTINUUM_DELIVERY: &str = "continuum.delivery";
 pub const HEADER_CONTINUUM_TRACE_ID: &str = "continuum.trace_id";
+
+/// The line's logical sender, from its `continuum.source_id` header (a relay publishes a human's line
+/// for them); the transport peer when there is none. Only lines that passed
+/// the inbound attribution gate reach a consumer, so a claim read here was proven. Read from the header alone: the body is never opened to
+/// attribute a line (Joel, 2026-11-01: routing on headers, never parsed bodies).
+///
+/// Trust is the relay rule's, not this decoder's: whether a transport peer may speak for the sender it
+/// names is a grid-trust decision (raised with Codex), exactly as it was for the body field it replaces.
+pub fn logical_sender(event: &TranscriptEvent) -> uuid::Uuid {
+    event
+        .headers
+        .get(HEADER_CONTINUUM_SOURCE_ID)
+        .and_then(|value| uuid::Uuid::parse_str(value).ok()) // wire boundary: a header value is text; the gate refused a malformed one
+        .unwrap_or_else(|| event.peer_id.as_uuid()) // the transport peer is the real author when no relay named one
+}
+
+/// What a line's `continuum.source_id` header claims about who it speaks for. Every source is a peer
+/// id, so a source equal to the transport is the author speaking for itself, and only a relayed
+/// line names someone else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SenderClaim {
+    /// No claim: the transport peer is the author.
+    Absent,
+    /// A claim naming this sender.
+    Named(airc_core::PeerId),
+    /// A header is present but is not an id: refused before any consumer, never read as absent.
+    Malformed,
+}
+
+/// The sender a line's header claims it speaks for.
+pub fn claimed_sender(event: &TranscriptEvent) -> SenderClaim {
+    match event.headers.get(HEADER_CONTINUUM_SOURCE_ID) {
+        None => SenderClaim::Absent,
+        Some(value) => match uuid::Uuid::parse_str(value) { // wire boundary: a header value is text
+            Ok(id) => SenderClaim::Named(airc_core::PeerId::from_uuid(id)),
+            Err(_) => SenderClaim::Malformed,
+        },
+    }
+}
+
+/// The message id a continuum envelope is named by (`continuum.event_id`), when it is an id.
+pub fn claimed_message(event: &TranscriptEvent) -> Option<uuid::Uuid> {
+    event.headers.get(HEADER_CONTINUUM_EVENT_ID).and_then(|value| uuid::Uuid::parse_str(value).ok()) // wire boundary: a header value is text
+}
 
 pub fn frame_kind_for_delivery(delivery: AircRealtimeDelivery) -> FrameKind {
     match delivery {
@@ -34,11 +80,11 @@ pub fn headers_for_envelope(envelope: &AircRealtimeEnvelope) -> Headers {
     );
     headers.insert(
         HEADER_CONTINUUM_EVENT_ID.to_string(),
-        envelope.event_id.clone(),
+        envelope.event_id.to_string(),
     );
     headers.insert(
         HEADER_CONTINUUM_SOURCE_ID.to_string(),
-        envelope.source_id.clone(),
+        envelope.source_id.as_uuid().to_string(),
     );
     headers.insert(
         HEADER_CONTINUUM_DELIVERY.to_string(),
@@ -128,4 +174,43 @@ pub fn is_stream_chunk(event: &TranscriptEvent) -> bool {
 /// attention. Inspect the routing header before decoding or queueing its body.
 pub fn is_command_frame(event: &TranscriptEvent) -> bool {
     event.headers.get(airc_protocol::HEADER_AIRC_CORRELATION_ID).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use airc_core::{ClientId, EventId, MentionTarget, PeerId, RoomId, TranscriptKind};
+
+    fn event(headers: Headers) -> TranscriptEvent {
+        TranscriptEvent {
+            event_id: EventId::from_u128(1),
+            room_id: RoomId::from_u128(2),
+            peer_id: PeerId::from_u128(0x4e),
+            client_id: ClientId::from_u128(4),
+            kind: TranscriptKind::Message,
+            occurred_at_ms: 100,
+            lamport: 1,
+            target: MentionTarget::All,
+            headers,
+            body: None,
+            attachment: None,
+            receipt: None,
+            metadata: serde_json::Value::Null,
+        }
+    }
+
+    // what this catches: a relayed human line attributed to the relay peer (she answers the wrong
+    // person), or a non-id source fabricating a sender: the header names the logical sender; absent
+    // or not an id, the transport peer is the author.
+    #[test]
+    fn the_logical_sender_is_read_from_the_header() {
+        let human = uuid::Uuid::from_u128(0x5e);
+        let relayed = event(Headers::from([(HEADER_CONTINUUM_SOURCE_ID.to_string(), human.to_string())]));
+        assert_eq!(logical_sender(&relayed), human);
+        assert_eq!(claimed_sender(&relayed), SenderClaim::Named(airc_core::PeerId::from_uuid(human)));
+        assert_eq!(logical_sender(&event(Headers::new())), uuid::Uuid::from_u128(0x4e));
+        assert_eq!(claimed_sender(&event(Headers::new())), SenderClaim::Absent);
+        let garbled = event(Headers::from([(HEADER_CONTINUUM_SOURCE_ID.to_string(), "joel".to_string())]));
+        assert_eq!(claimed_sender(&garbled), SenderClaim::Malformed, "a present sender header that is not an id");
+    }
 }

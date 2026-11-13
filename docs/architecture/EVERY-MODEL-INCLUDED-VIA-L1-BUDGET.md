@@ -40,7 +40,7 @@ matters disproportionately.
 ## What "no base model excluded from anywhere" requires
 
 Four architectural mechanisms, all in the L1 budget design (see
-`persona/rag_budget.rs` for the shipped implementation):
+`cognition/rag_budget.rs` for the shipped implementation):
 
 ### 1. Continuous scaling across the full context-window range
 
@@ -263,7 +263,7 @@ continual learning, evolution, communities) is downstream of "every
 base model is includable." That's downstream of getting this layer
 right.
 
-So when reviewers look at `persona/rag_budget.rs` and think "this is
+So when reviewers look at `cognition/rag_budget.rs` and think "this is
 a CSS-flexbox token allocator with some presets" — yes, that's the
 implementation. The architectural significance is at the substrate
 thesis level: this is the layer where the substrate either

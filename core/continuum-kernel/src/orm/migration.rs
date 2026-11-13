@@ -1,7 +1,6 @@
 //! Migration Engine — Streaming data transfer between ANY two StorageAdapters
 //!
-//! Works between any adapter pairing: SQLite→Postgres, Postgres→SQLite,
-//! SQLite→SQLite, future→future. Only uses the StorageAdapter trait,
+//! Works between any adapter pairing: SQLite→SQLite, future→future. Only uses the StorageAdapter trait,
 //! so any adapter works for free.
 //!
 //! Features:
@@ -71,33 +70,33 @@ pub enum MigrationStatus {
 /// Per-collection migration progress (thread-safe atomics)
 pub struct CollectionMigrationState {
     pub collection: String,
-    pub status: std::sync::RwLock<MigrationStatus>,
+    pub status: parking_lot::RwLock<MigrationStatus>,
     pub total: AtomicUsize,
     pub migrated: AtomicUsize,
     pub failed: AtomicUsize,
-    pub error: std::sync::RwLock<Option<String>>,
+    pub error: parking_lot::RwLock<Option<String>>,
 }
 
 impl CollectionMigrationState {
     fn new(collection: String, total: usize) -> Self {
         Self {
             collection,
-            status: std::sync::RwLock::new(MigrationStatus::Pending),
+            status: parking_lot::RwLock::new(MigrationStatus::Pending),
             total: AtomicUsize::new(total),
             migrated: AtomicUsize::new(0),
             failed: AtomicUsize::new(0),
-            error: std::sync::RwLock::new(None),
+            error: parking_lot::RwLock::new(None),
         }
     }
 
     fn to_progress(&self) -> CollectionProgress {
         CollectionProgress {
             collection: self.collection.clone(),
-            status: format!("{:?}", *self.status.read().unwrap()).to_lowercase(),
+            status: format!("{:?}", *self.status.read()).to_lowercase(),
             total: self.total.load(Ordering::Relaxed),
             migrated: self.migrated.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
-            error: self.error.read().unwrap().clone(),
+            error: self.error.read().clone(),
         }
     }
 }
@@ -172,7 +171,7 @@ pub struct MigrationVerification {
 /// All fields use atomic or RwLock for lock-free concurrent access.
 #[derive(Clone)]
 pub struct MigrationHandle {
-    states: Arc<std::sync::RwLock<HashMap<String, Arc<CollectionMigrationState>>>>,
+    states: Arc<parking_lot::RwLock<HashMap<String, Arc<CollectionMigrationState>>>>,
     paused: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
     source: Arc<dyn StorageAdapter>,
@@ -182,7 +181,7 @@ pub struct MigrationHandle {
 impl MigrationHandle {
     /// Get current migration progress (lock-free atomics) as a typed snapshot.
     pub fn status(&self) -> MigrationProgress {
-        let states = self.states.read().unwrap();
+        let states = self.states.read();
         let collections: Vec<CollectionProgress> =
             states.values().map(|s| s.to_progress()).collect();
         let total: usize = states
@@ -234,7 +233,7 @@ impl MigrationHandle {
         let mut results = Vec::new();
         let mut all_match = true;
 
-        let states = self.states.read().unwrap().clone();
+        let states = self.states.read().clone();
         for (collection, state) in &states {
             let source_count = self
                 .source
@@ -280,7 +279,7 @@ pub struct MigrationEngine {
     source: Arc<dyn StorageAdapter>,
     target: Arc<dyn StorageAdapter>,
     config: MigrationConfig,
-    states: Arc<std::sync::RwLock<HashMap<String, Arc<CollectionMigrationState>>>>,
+    states: Arc<parking_lot::RwLock<HashMap<String, Arc<CollectionMigrationState>>>>,
     paused: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
 }
@@ -296,7 +295,7 @@ impl MigrationEngine {
             source,
             target,
             config,
-            states: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            states: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             paused: Arc::new(AtomicBool::new(false)),
             running: Arc::new(AtomicBool::new(false)),
         }
@@ -345,7 +344,7 @@ impl MigrationEngine {
             counted.push((collection.clone(), count.data.unwrap_or(0)));
         }
         {
-            let mut states = self.states.write().unwrap();
+            let mut states = self.states.write();
             for (collection, total) in counted {
                 let state = Arc::new(CollectionMigrationState::new(collection.clone(), total));
                 states.insert(collection, state);
@@ -370,19 +369,19 @@ impl MigrationEngine {
     /// Migrate a single collection with streaming pagination
     async fn migrate_collection(&self, collection: &str) -> Result<(), String> {
         let state = {
-            let states = self.states.read().unwrap();
+            let states = self.states.read();
             states
                 .get(collection)
                 .ok_or_else(|| format!("No state for collection: {}", collection))?
                 .clone()
         };
 
-        *state.status.write().unwrap() = MigrationStatus::InProgress;
+        *state.status.write() = MigrationStatus::InProgress;
 
         // Ensure target schema exists by reading first record
         let total = state.total.load(Ordering::Relaxed);
         if total == 0 {
-            *state.status.write().unwrap() = MigrationStatus::Completed;
+            *state.status.write() = MigrationStatus::Completed;
             return Ok(());
         }
 
@@ -391,7 +390,7 @@ impl MigrationEngine {
 
         loop {
             if self.paused.load(Ordering::Relaxed) {
-                *state.status.write().unwrap() = MigrationStatus::Paused;
+                *state.status.write() = MigrationStatus::Paused;
                 return Ok(());
             }
 
@@ -409,8 +408,8 @@ impl MigrationEngine {
                 Some(_) => break, // Empty page = done
                 None => {
                     let err = result.error.unwrap_or_else(|| "Source query failed".into());
-                    *state.error.write().unwrap() = Some(err.clone());
-                    *state.status.write().unwrap() = MigrationStatus::Failed;
+                    *state.error.write() = Some(err.clone());
+                    *state.status.write() = MigrationStatus::Failed;
                     return Err(err);
                 }
             };
@@ -460,7 +459,7 @@ impl MigrationEngine {
             }
         }
 
-        *state.status.write().unwrap() = MigrationStatus::Completed;
+        *state.status.write() = MigrationStatus::Completed;
         Ok(())
     }
 

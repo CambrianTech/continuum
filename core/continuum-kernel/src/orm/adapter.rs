@@ -5,7 +5,6 @@
 //!
 //! Supported backends:
 //! - SQLite (implemented)
-//! - PostgreSQL (future)
 //! - MySQL (future)
 //! - Oracle (future)
 //! - REST (future)
@@ -67,7 +66,7 @@ pub struct AdapterCapabilities {
 /// these methods; adapters translate to native database operations.
 #[async_trait]
 pub trait StorageAdapter: Send + Sync {
-    /// Get adapter name (e.g., "sqlite", "postgres")
+    /// Get adapter name (e.g., "sqlite")
     fn name(&self) -> &'static str;
 
     /// Get adapter capabilities
@@ -136,6 +135,12 @@ pub trait StorageAdapter: Send + Sync {
     /// A failure is an ERROR, not a `{"success": false}` element in the returned
     /// vector. The returned values describe operations that all committed.
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>>;
+
+    /// The committed high-water of a collection written by
+    /// [`super::types::BatchOperationType::Append`]: rises when an append commits, published by
+    /// the committing write itself (cancellation-safe for the caller). A hint to drain from a
+    /// cursor, never the data.
+    fn sequence_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64>;
 
     // ─── Schema Operations ───────────────────────────────────────────────────
 

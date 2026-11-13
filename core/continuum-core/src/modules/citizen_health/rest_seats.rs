@@ -1,6 +1,8 @@
 use super::*;
 
-pub(super) async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &CitizenHealth) -> Vec<String> {
+/// The slow clip's yield: each chosen seat's checkpoint is flushed and the seat yields, and she
+/// goes to the back of the draw (no resting record) to come round in turn.
+pub(super) async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, h: &CitizenHealth) -> Vec<String> {
     if chosen.is_empty() {
         return Vec::new();
     }
@@ -21,52 +23,19 @@ pub(super) async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestC
             continue; // already gone this tick
         };
         let agent_name = runtime.agent_name().to_string();
-        let reason = match cause {
-            RestCause::Rotation => {
-                // Not paged out for cause: no resting record, which would keep her out of
-                // the draw. She goes to the back of the draw order and comes round in turn.
-                crate::persona::resting_seat::requeue(&agent_name);
-                continuum_base::probe!(
-                    class = "persona.rotation.rested",
-                    persona = %agent_name,
-                    persona_id = %persona,
-                    resident = h.resident,
-                    lanes = h.lanes,
-                    lane_grants = m.lane_grants,
-                    checkpoint_saved = saved,
-                    "the slow clip: a dormant mind waits and this seat's hour held no act — she yields the seat with her checkpoint and returns in turn"
-                );
-                out.push(agent_name);
-                continue;
-            }
-            RestCause::Mindless => format!(
-                "{} of {} speak verdicts this hour were the gate refusing a recital or an envelope; {} acts, 0 writes",
-                m.gate_refused, m.verdicts, m.acts
-            ),
-        };
-        let since_ms = EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch is not a real host; 0 reads as "unknown"
-        let recorded = crate::persona::resting_seat::rest(crate::persona::resting_seat::RestingSeat {
-            agent_name: agent_name.clone(),
-            persona_id: persona,
-            reason: reason.clone(),
-            since_ms,
-            build: crate::persona::resting_seat::current_build().to_string(),
-        });
-        match cause {
-            RestCause::Rotation => {} // handled above: no resting record
-            RestCause::Mindless => continuum_base::probe!(
-                class = "persona.mindless.paged_out",
-                persona = %agent_name,
-                persona_id = %persona,
-                verdicts = m.verdicts,
-                gate_refused = m.gate_refused,
-                acts = m.acts,
-                checkpoint_saved = saved,
-                recorded = recorded.is_ok(),
-                reason = %reason,
-                "a mindless seat was paged out with her checkpoint — she returns on a change, not a clock"
-            ),
-        }
+        // Not paged out for cause: no resting record, which would keep her out of
+        // the draw. She goes to the back of the draw order and comes round in turn.
+        crate::persona::resting_seat::requeue(&agent_name);
+        continuum_base::probe!(
+            class = "persona.rotation.rested",
+            persona = %agent_name,
+            persona_id = %persona,
+            resident = h.resident,
+            lanes = h.lanes,
+            lane_grants = m.lane_grants,
+            checkpoint_saved = saved,
+            "the slow clip: a dormant mind waits and this seat's hour held no act — she yields the seat with her checkpoint and returns in turn"
+        );
         out.push(agent_name);
     }
     out
@@ -79,7 +48,7 @@ impl CitizenHealthModule {
     /// hour has no row, and she is the quietest of all), the pure choice, then the first
     /// candidate who holds no live claim yields her seat. A claim read that fails counts
     /// as holding one: a mind is never rotated off work on a guess.
-    pub(super) async fn rotate_one(&self, minds: &[(uuid::Uuid, MindHour)], freed_this_pass: usize, h: &CitizenHealth) -> Vec<String> {
+    pub(super) async fn rotate_one(&self, minds: &[(uuid::Uuid, MindHour)], h: &CitizenHealth) -> Vec<String> {
         // Someone in THIS node's own draw order waits; a mind dormant elsewhere is that
         // node's to rotate in, and a rotation here would redraw the same resident.
         let dormant_waiting = crate::persona::resting_seat::waiting() > 0;
@@ -98,73 +67,95 @@ impl CitizenHealthModule {
         let now_ms = continuum_base::time::EpochMs::now().millis();
         let candidates = rotation_candidates(
             dormant_waiting,
-            freed_this_pass,
             &residents,
             crate::persona::resting_seat::seated_since,
             now_ms,
         );
         for (id, hour) in candidates {
             let Some(rt) = registry.get(id) else { continue };
-            let holds_work = crate::persona::active_work_source::AircWorkReader::active_claims(rt.as_ref())
+            let holds_work = crate::persona::held_work::AircWorkReader::active_claims(rt.as_ref())
                 .await
                 .map_or(true, |cards| !cards.is_empty());
             if holds_work {
                 continue;
             }
-            return rest_seats(vec![(id, hour)], RestCause::Rotation, h).await;
+            return rest_seats(vec![(id, hour)], h).await;
         }
         Vec::new()
     }
 
     pub fn new() -> Self {
+        WINDOW_OPENED_MS.store(EpochMs::now().millis(), Ordering::Relaxed);
         Self
     }
+    /// Close the hour: its counters, reset, as the tick reads them. The window is what the
+    /// counters actually cover (from the last close), and the closed hour is kept for readers.
     pub(super) fn read(&self) -> CitizenHealth {
-        let (acts, writes, lanes_granted, settles, credits_staged, credits_settled, think_only) = snapshot_and_reset();
-        let resident = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-            .map(|r| r.live_personas().len() as u64)
-            .unwrap_or(0); // JUSTIFIED unwrap_or: no registry = no residents, and the verdict says so
-        let serving = crate::inference::llama_server::current_serving();
-        let lanes_now = serving.lanes as u64;
-        // The hour's lanes: the window's max folded with this tick's sample, then the
-        // window starts again from what is served now.
-        let lanes = LEDGER.lanes_max.swap(lanes_now, Ordering::Relaxed).max(lanes_now);
-        // The peak stands when the window had too few lane asks to have a shape — a thin
-        // hour is not evidence of a shortage.
-        let lanes_sustained = lanes_sustained_of(&snapshot_lane_buckets_and_reset()).unwrap_or(lanes); // JUSTIFIED unwrap_or: too few distinct buckets = the hour has no shape, and the peak is the read that rests nobody
-        let (directed_wait_p50_ms, directed_wait_p90_ms, directed_waits) =
-            crate::inference::resource_admission::directed_lane_wait_ms();
-        let (prompt_cached_tokens, prompt_prefill_tokens) = snapshot_prompt_and_reset();
-        let lane_starved = snapshot_lane_starved_and_reset();
-        let (generations, generations_dropped) = snapshot_generations_and_reset();
-        let (moves_opportunity, moves_failure) = snapshot_moves_and_reset();
-        CitizenHealth {
-            window_secs: HEALTH_WINDOW.as_secs(),
-            resident,
-            lanes,
-            lanes_now,
-            lanes_sustained,
-            directed_wait_p50_ms,
-            directed_wait_p90_ms,
-            directed_waits: directed_waits as u64,
-            served_window: serving.served_context_window as u64,
-            acts,
-            writes,
-            lanes_granted,
-            settles,
-            credits_staged,
-            credits_settled,
-            think_only,
-            generations,
-            generations_dropped,
-            knee: knee_of(serving.active_model.as_deref()),
-            prompt_cached_tokens,
-            prompt_prefill_tokens,
-            lane_starved,
-            moves_opportunity,
-            moves_failure,
-            oldest_dormant_turn_age_ms: oldest_dormant_turn_age_ms(),
-        }
+        let hour = assemble(Read::Close);
+        WINDOW_OPENED_MS.store(EpochMs::now().millis(), Ordering::Relaxed);
+        *LAST_HOUR.lock() = Some(hour.clone());
+        hour
+    }
+}
+
+/// When the current window opened: the last close, or the module's start. A window's length
+/// is this measurement, never the configured hour (2026-11-02: read just after a close, the
+/// command reported "last 60 min: acts 0 ... IDLE" while 66 acts had landed that hour).
+static WINDOW_OPENED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The last closed hour, for a reader asking between ticks.
+static LAST_HOUR: parking_lot::Mutex<Option<CitizenHealth>> = parking_lot::Mutex::new(None);
+
+/// The one builder of a health reading: the ledger's counters read one way (a close resets,
+/// a peek does not), plus what is served now.
+fn assemble(read: Read) -> CitizenHealth {
+    let now_ms = EpochMs::now().millis();
+    let window_secs = now_ms.saturating_sub(WINDOW_OPENED_MS.load(Ordering::Relaxed)) / 1000;
+    let c = hour(read);
+    let resident = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+        .map(|r| r.live_personas().len() as u64)
+        .unwrap_or(0); // JUSTIFIED unwrap_or: no registry = no residents, and the verdict says so
+    let serving = crate::inference::llama_server::current_serving();
+    let lanes_now = serving.lanes as u64;
+    // The window's lanes: its max folded with this sample; a close starts the next window
+    // from what is served now.
+    let lanes = match read {
+        Read::Close => LEDGER.lanes_max.swap(lanes_now, Ordering::Relaxed),
+        Read::Peek => LEDGER.lanes_max.load(Ordering::Relaxed),
+    }
+    .max(lanes_now);
+    // The peak stands when the window had too few lane asks to have a shape — a thin
+    // window is not evidence of a shortage.
+    let lanes_sustained = lanes_sustained_of(&c.lane_buckets).unwrap_or(lanes); // JUSTIFIED unwrap_or: too few distinct buckets = the window has no shape, and the peak is the read that rests nobody
+    let (directed_wait_p50_ms, directed_wait_p90_ms, directed_waits) =
+        crate::inference::resource_admission::directed_lane_wait_ms();
+    CitizenHealth {
+        window_secs,
+        resident,
+        lanes,
+        lanes_now,
+        lanes_sustained,
+        directed_wait_p50_ms,
+        directed_wait_p90_ms,
+        directed_waits: directed_waits as u64,
+        served_window: serving.served_context_window as u64,
+        acts: c.acts,
+        writes: c.writes,
+        lanes_granted: c.lanes_granted,
+        learning: c.learning,
+        // Measured from the boards by the async readers (tick, command), never by this sync fold.
+        review_queue: None,
+        stops: c.stops,
+        generations: c.generations,
+        generations_dropped: c.generations_dropped,
+        knee: knee_of(serving.active_model.as_deref()),
+        prompt_cached_tokens: c.prompt_cached,
+        prompt_prefill_tokens: c.prompt_prefilled,
+        lane_starved: c.lane_starved,
+        moves_opportunity: c.moves_opportunity,
+        moves_failure: c.moves_failure,
+        oldest_dormant_turn_age_ms: oldest_dormant_turn_age_ms(),
+        held_for: serving.held_for.clone(),
     }
 }
 
@@ -197,19 +188,17 @@ impl ServiceModule for CitizenHealthModule {
         Ok(())
     }
     async fn tick(&self) -> Result<(), String> {
-        let h = self.read();
+        let mut h = self.read();
+        h.review_queue = super::review_queue::read().await;
+        if let Some(hour) = LAST_HOUR.lock().as_mut() {
+            hour.review_queue = h.review_queue;
+        }
         let v = verdict(&h);
-        // THE OWNER ACTS (card aed15611): a mind whose hour was recitals and gate-passes
-        // is paged out WITH her checkpoint — her lane goes to a working mind, and she
-        // returns on a change (a deploy, a trained gene, the operator's word), never
-        // on a clock. The lake and the rabbits: her working memory is flushed first.
+        // No verdict pages a mind out (Joel, 2026-11-02: the mindless page-out is deleted; a
+        // free mind is never judged out of her seat, and seats follow demand). THE SLOW CLIP
+        // remains: a dormant mind waits, so one quiet resident yields her seat in turn.
         let minds = snapshot_minds_and_reset();
-        let paged_out = rest_seats(mindless_seats(&minds, h.resident), RestCause::Mindless, &h).await;
-        let remaining: Vec<(uuid::Uuid, MindHour)> =
-            minds.iter().filter(|(_, m)| !paged_out.contains(&m.agent_name)).cloned().collect();
-        let after_mindless = CitizenHealth { resident: h.resident.saturating_sub(paged_out.len() as u64), ..h.clone() };
-        // THE SLOW CLIP: a dormant mind waits, so one quiet resident yields her seat.
-        let rotated = self.rotate_one(&remaining, paged_out.len(), &after_mindless).await;
+        let rotated = self.rotate_one(&minds, &h).await;
         continuum_base::probe!(
             class = "citizen.health.hour",
             resident = h.resident,
@@ -221,15 +210,28 @@ impl ServiceModule for CitizenHealthModule {
             acts = h.acts,
             writes = h.writes,
             lane_grants = h.lanes_granted,
-            think_only = h.think_only,
+            stops_landed = h.stops.landed,
+            stops_empty = h.stops.empty,
+            stops_think_ended = h.stops.think_ended,
+            stops_cut_answer = h.stops.cut_answer,
+            stops_cut_think = h.stops.cut_think,
+            stops_think_budget = h.stops.think_budget,
             lane_starved = h.lane_starved,
             generations = h.generations,
             generations_dropped = h.generations_dropped,
             dropped_pct = dropped_pct(&h).unwrap_or(0), // unwrap_or: 0 = no generation ended this hour; `generations` says so
-            settles = h.settles,
-            credits_staged = h.credits_staged,
-            credits_settled = h.credits_settled,
-            mindless_paged_out = paged_out.len() as u64,
+            submissions_staged = h.learning.submissions_staged,
+            credit_accepted = h.learning.outcomes.of(CreditOutcome::Accepted),
+            credit_failed_review = h.learning.outcomes.of(CreditOutcome::FailedReview),
+            credit_unknown_review = h.learning.outcomes.of(CreditOutcome::UnknownReview),
+            credit_awaiting_acceptance = h.learning.outcomes.of(CreditOutcome::AwaitingAcceptance),
+            credit_independent_review_required = h.learning.outcomes.of(CreditOutcome::IndependentReviewRequired),
+            credit_held = h.learning.outcomes.of(CreditOutcome::Held),
+            credit_ineligible = h.learning.outcomes.of(CreditOutcome::Ineligible),
+            credit_undecided = h.learning.outcomes.of(CreditOutcome::Undecided),
+            boundaries_processed = h.learning.boundaries_processed,
+            awaiting_reviewer = h.review_queue.map(|q| q.awaiting_reviewer),
+            unsubmitted_pull_requests = h.review_queue.map(|q| q.unsubmitted_pull_requests),
             rotated = rotated.len() as u64,
             moves_opportunity = h.moves_opportunity,
             moves_failure = h.moves_failure,
@@ -237,14 +239,18 @@ impl ServiceModule for CitizenHealthModule {
             verdict = v.as_str(),
             "the hour's citizen health — the substrate's own read"
         );
+        // Each resident's own hour (card 1c157668): a mind asked for work and given none is
+        // named on the line and on the beacon, never found by someone asking.
+        let stuck = super::resident_service::judge_residents(EpochMs::now().millis()).await;
         let mut said = line(&h, &v);
+        if !stuck.is_empty() {
+            let named: Vec<String> = stuck.iter().map(|a| a.line()).collect();
+            said.push_str(&format!(" · residents stuck: {}", named.join("; ")));
+        }
         said.push_str(&continuum_cli_lifecycle::deploy_health::read(
             &crate::paths::continuum_root(),
             env!("CONTINUUM_BUILD_GIT_SHA"),
         ).line(EpochMs::now().millis()));
-        if !paged_out.is_empty() {
-            said.push_str(&format!(" · mindless {} paged out ({})", paged_out.len(), paged_out.join(", ")));
-        }
         crate::modules::grid::say_in_org_room(&said).await;
         Ok(())
     }
@@ -252,38 +258,8 @@ impl ServiceModule for CitizenHealthModule {
         match command {
             // A read WITHOUT reset: the hour's running counters as they stand.
             "citizen/health" => {
-                let h = CitizenHealth {
-                    window_secs: HEALTH_WINDOW.as_secs(),
-                    resident: crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-                        .map(|r| r.live_personas().len() as u64)
-                        .unwrap_or(0), // JUSTIFIED unwrap_or: no registry = no residents
-                    lanes: LEDGER.lanes_max.load(Ordering::Relaxed).max(crate::inference::llama_server::current_serving().lanes as u64),
-                    lanes_now: crate::inference::llama_server::current_serving().lanes as u64,
-                    // A read WITHOUT reset here too — the hour's shape as it stands.
-                    lanes_sustained: lanes_sustained_of(&read_lane_buckets()).unwrap_or_else(|| { // JUSTIFIED unwrap_or_else: same thin-window fallback as the tick's read — the peak, which rests nobody
-                        LEDGER.lanes_max.load(Ordering::Relaxed).max(crate::inference::llama_server::current_serving().lanes as u64)
-                    }),
-                    directed_wait_p50_ms: crate::inference::resource_admission::directed_lane_wait_ms().0,
-                    directed_wait_p90_ms: crate::inference::resource_admission::directed_lane_wait_ms().1,
-                    directed_waits: crate::inference::resource_admission::directed_lane_wait_ms().2 as u64,
-                    served_window: crate::inference::llama_server::current_serving().served_context_window as u64,
-                    acts: LEDGER.acts.load(Ordering::Relaxed),
-                    writes: LEDGER.writes.load(Ordering::Relaxed),
-                    lanes_granted: LEDGER.lanes_granted.load(Ordering::Relaxed),
-                    settles: LEDGER.settles.load(Ordering::Relaxed),
-                    credits_staged: LEDGER.credits_staged.load(Ordering::Relaxed),
-                    credits_settled: LEDGER.credits_settled.load(Ordering::Relaxed),
-                    think_only: LEDGER.think_only.load(Ordering::Relaxed),
-                    lane_starved: LEDGER.lane_starved.load(Ordering::Relaxed),
-                    generations: LEDGER.generations.load(Ordering::Relaxed),
-                    generations_dropped: LEDGER.generations_dropped.load(Ordering::Relaxed),
-                    knee: knee_of(crate::inference::llama_server::current_serving().active_model.as_deref()),
-                    prompt_cached_tokens: LEDGER.prompt_cached.load(Ordering::Relaxed),
-                    prompt_prefill_tokens: LEDGER.prompt_prefilled.load(Ordering::Relaxed),
-                    moves_opportunity: LEDGER.moves_opportunity.load(Ordering::Relaxed),
-                    moves_failure: LEDGER.moves_failure.load(Ordering::Relaxed),
-                    oldest_dormant_turn_age_ms: oldest_dormant_turn_age_ms(),
-                };
+                let mut h = assemble(Read::Peek);
+                h.review_queue = super::review_queue::read().await;
                 let v = verdict(&h);
                 let deploy = continuum_cli_lifecycle::deploy_health::read(
                     &crate::paths::continuum_root(),
@@ -297,9 +273,19 @@ impl ServiceModule for CitizenHealthModule {
                     "resident": h.resident, "lanes": h.lanes,
                     "lanes_sustained": h.lanes_sustained, "lanes_now": h.lanes_now,
                     "served_window": h.served_window,
-                    "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted, "settles": h.settles,
-                    "credits_staged": h.credits_staged, "credits_settled": h.credits_settled,
-                    "think_only": h.think_only,
+                    "acts": h.acts, "writes": h.writes, "lane_grants": h.lanes_granted,
+                    "learning": {
+                        "submissions_staged": h.learning.submissions_staged,
+                        "credit": CreditOutcome::ALL.iter().map(|o| (o.as_str().to_owned(), serde_json::json!(h.learning.outcomes.of(*o)))).collect::<serde_json::Map<_, _>>(),
+                        "boundaries_processed": h.learning.boundaries_processed,
+                        "awaiting_reviewer": h.review_queue.map(|q| q.awaiting_reviewer),
+                        "unsubmitted_pull_requests": h.review_queue.map(|q| q.unsubmitted_pull_requests),
+                    },
+                    "stops": {
+                        "landed": h.stops.landed, "empty": h.stops.empty, "think_ended": h.stops.think_ended,
+                        "cut_answer": h.stops.cut_answer, "cut_think": h.stops.cut_think,
+                        "think_budget": h.stops.think_budget,
+                    },
                     "lane_starved": h.lane_starved,
                     "generations": h.generations, "generations_dropped": h.generations_dropped,
                     "dropped_pct": dropped_pct(&h),
@@ -307,7 +293,10 @@ impl ServiceModule for CitizenHealthModule {
                     "prefix_reuse_pct": prefix_reuse_pct(&h),
                     "moves_opportunity": h.moves_opportunity, "moves_failure": h.moves_failure,
                     "oldest_dormant_turn_age_ms": h.oldest_dormant_turn_age_ms,
+                    "window_secs": h.window_secs,
                     "verdict": v.as_str(), "line": format!("{}{}", line(&h, &v), deploy.line(EpochMs::now().millis())),
+                    // The last closed hour, so a read just after a close still sees a full hour.
+                    "last_hour": LAST_HOUR.lock().as_ref().map(|hour| line(hour, &verdict(hour))),
                     "deploy": deploy,
                     "note": "counters since the last hourly tick (not reset by this read)"
                 }))
@@ -318,11 +307,26 @@ impl ServiceModule for CitizenHealthModule {
     fn command_schemas(&self) -> Vec<CommandSchema> {
         vec![CommandSchema {
             name: "citizen/health",
-            description: "The hour's citizen health as the substrate reads it: residents, lanes, acts, lane-starved waits, think-only turns, dropped generations, writes, lane grants, settles, prefix reuse, and the verdict (healthy / starved / dropping / reading / idle)",
+            description: "The hour's citizen health as the substrate reads it: residents, lanes, acts, lane-starved waits, think-only turns, dropped generations, writes, lane grants, learning (credit outcomes by type, submissions with staged credit, review boundaries, the review queue), prefix reuse, and the verdict (healthy / starved / dropping / reading / idle)",
             params: vec![],
         }]
     }
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+#[cfg(test)]
+pub(super) fn open_window_at_for_test(ms: u64) {
+    WINDOW_OPENED_MS.store(ms, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(super) fn peek_for_test() -> CitizenHealth {
+    assemble(Read::Peek)
+}
+
+#[cfg(test)]
+pub(super) fn last_hour_for_test() -> Option<CitizenHealth> {
+    LAST_HOUR.lock().clone()
 }

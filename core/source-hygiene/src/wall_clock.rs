@@ -55,7 +55,7 @@ impl SourceRule for WallClockReadOnlyByEpochMs {
             if epoch_read || chrono_read || private_clock {
                 out.push(Violation {
                     rule: self.name(),
-                    file: file.rel.clone(),
+                    file: file.repo.clone(),
                     line: i + 1,
                     source: l.trim().to_string(),
                 });
@@ -99,9 +99,8 @@ mod tests {
     fn the_wall_clock_is_read_only_by_epoch_ms() {
         // The crate's integration tests too: four of them kept their own clocks after the
         // library moved onto EpochMs, because the scan covered src/ only.
-        let tests_root = crate::crate_src_root().parent().expect("src has a parent").join("tests");
         let mut violations = scan(&[&WallClockReadOnlyByEpochMs]);
-        for file in crate::collect_files(&tests_root) {
+        for file in crate::collect_files(&crate::scanned_checkout(), &format!("core/{}/tests", crate::AUDITED_CRATE)) {
             violations.extend(WallClockReadOnlyByEpochMs.check(&file).into_iter().map(|v| Violation {
                 file: format!("tests/{}", v.file),
                 ..v

@@ -1,4 +1,5 @@
-//! Construction, endpoint resolution, runtime model catalog and slot-pool wiring.
+//! Construction, endpoint resolution and runtime model catalog. Slot-pool discovery is the slots
+//! directory's (`SlotDirectory::discover_pool`).
 
 use super::*;
 
@@ -18,7 +19,7 @@ impl OpenAICompatibleAdapter {
             .connect_timeout(std::time::Duration::from_secs(3))
             .pool_idle_timeout(std::time::Duration::from_secs(30))
             .build()
-            .expect("Failed to create HTTP client")
+            .expect("Failed to create HTTP client") // rustls-tls bundles webpki roots and the system resolver loads no host config, so these options cannot fail per machine: an error is a build misconfiguration every adapter test hits
     }
 
     pub fn new(config: OpenAICompatibleConfig) -> Self {
@@ -44,12 +45,11 @@ impl OpenAICompatibleAdapter {
         // `--parallel` slots — a short conversational reply slipstreams
         // between a solve's decode steps. The hardcoded 1 was the artificial
         // serializer every scarcity policy downstream compensated for: with 4
-        // served slots, citizen speech queued behind a 40k-prefill solve. The
-        // permit now starts at the LIVE served lane count and a reconciler
-        // (spawned at first use, see `spawn_permit_reconciler`) tracks
-        // relaunches both directions — grow adds permits, shrink retires them
-        // as in-flight generations finish (forget on acquire), so a smaller
-        // relaunch is never over-admitted.
+        // served slots, citizen speech queued behind a 40k-prefill solve.
+        // A POOLED endpoint's admissions take that endpoint's own permits,
+        // sized from its generation and resized on relaunch, shared by every
+        // adapter and the learner (`slots::EndpointConcurrency`, card 23069702).
+        // This semaphore bounds only traffic to an endpoint with no slot pool.
         let slots = if config.single_resident_model {
             crate::inference::llama_server::current_serving()
                 .lanes
@@ -62,25 +62,21 @@ impl OpenAICompatibleAdapter {
         Self {
             config,
             api_key: None,
-            runtime_base_url: None,
             dedicated_lane: false,
             client,
             initialized: false,
-            runtime_models: std::sync::Arc::new(std::sync::RwLock::new(None)),
-            lora_support: std::sync::Arc::new(std::sync::RwLock::new(LoraSupport::Unknown)),
+            runtime_models: std::sync::Arc::new(parking_lot::RwLock::new(None)),
+            lora_support: std::sync::Arc::new(parking_lot::RwLock::new(LoraSupport::Unknown)),
             concurrency,
-            permit_target: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(slots)),
-            permit_reconciler_started: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
         }
     }
 
     /// Override the base URL at runtime (e.g. when running inside a Docker
     /// container on Windows/Linux where DMR is at model-runner.docker.internal
-    /// instead of localhost:12434). Called post-construction, before init.
+    /// instead of localhost:12434). Called post-construction, before init; the adapter
+    /// owns its config, so the override IS its base URL from here on.
     pub fn with_runtime_base_url(mut self, url: String) -> Self {
-        self.runtime_base_url = Some(url);
+        self.config.base_url = url;
         self
     }
 
@@ -111,11 +107,7 @@ impl OpenAICompatibleAdapter {
     /// exactly one place and the snapshot's `/v1` shape can no longer double to
     /// `/v1/v1/...` (THE Asha-mute bug). See [`crate::ai::openai_endpoints`].
     pub(super) fn endpoints(&self) -> OpenAiBase {
-        let raw = self
-            .runtime_base_url
-            .as_deref()
-            .unwrap_or(self.config.base_url.as_str());
-        OpenAiBase::new(raw)
+        OpenAiBase::new(&self.config.base_url)
     }
 
     /// Does this adapter's effective base URL target the LOCAL llama-server lane
@@ -129,6 +121,15 @@ impl OpenAICompatibleAdapter {
         self.targets_serving_endpoint(&snap.base_url)
     }
 
+    /// Does the engine this adapter reaches count each finalized prompt before generating it?
+    /// The managed local lane does (`serving_guard::quote_prompt`); the one predicate for the
+    /// quote itself and for [`AIProviderAdapter::counts_prompts_exactly`].
+    ///
+    /// [`AIProviderAdapter::counts_prompts_exactly`]: crate::ai::adapter::AIProviderAdapter::counts_prompts_exactly
+    pub(super) fn exact_prompt_admission(&self) -> bool {
+        self.config.single_resident_model && self.targets_local_serving_lane()
+    }
+
     pub(super) fn targets_serving_endpoint(&self, serving_base: &str) -> bool {
         if serving_base.is_empty() {
             return false;
@@ -138,11 +139,7 @@ impl OpenAICompatibleAdapter {
                 .trim_end_matches("/v1")
                 .trim_end_matches('/')
         }
-        let raw = self
-            .runtime_base_url
-            .as_deref()
-            .unwrap_or(self.config.base_url.as_str());
-        norm(raw) == norm(serving_base)
+        norm(&self.config.base_url) == norm(serving_base)
     }
 
     /// The endpoint base for a SPECIFIC requested model. Same as [`Self::endpoints`]
@@ -154,9 +151,16 @@ impl OpenAICompatibleAdapter {
     /// [`PROVIDER_ID`](crate::inference::llama_server::PROVIDER_ID) const — no
     /// name sniffing), and the address exists only when `/props` confirmed
     /// sight, so pixels can never be aimed at a text lane.
-    pub(super) fn endpoints_for_model(&self, model: &str, base: &OpenAiBase) -> OpenAiBase {
+    ///
+    /// PURE over `snap`: the caller loads the snapshot once ([`Self::route_now`]) so the URL
+    /// and every decision about the destination (its `tail_tools`) read the same route.
+    pub(super) fn endpoints_for_model(
+        &self,
+        model: &str,
+        base: &OpenAiBase,
+        snap: &crate::inference::llama_server::ServingSnapshot,
+    ) -> OpenAiBase {
         if self.config.provider_id == crate::inference::llama_server::PROVIDER_ID {
-            let snap = crate::inference::llama_server::current_serving();
             if snap.vision_ready
                 && snap.vision_model.as_deref() == Some(model)
                 && snap.active_model.as_deref() != Some(model)
@@ -169,13 +173,47 @@ impl OpenAICompatibleAdapter {
         base.clone()
     }
 
+    /// The route a request for `model` takes NOW, and whether it may carry `tail_tools`, from ONE
+    /// serving snapshot and one evidence read: the head (`accepts_tail_tools`) and the send
+    /// (`stream_checked`) both take this pair, so the wire URL and the tail gate never come from
+    /// two different snapshots (Codex on #5491).
+    pub(super) fn route_now(&self, model: &str, base: &OpenAiBase) -> RequestRoute {
+        self.route_for(
+            model,
+            base,
+            &crate::inference::llama_server::current_serving(),
+            crate::inference::llama_server::serving_engine_takes_tail_tools(),
+        )
+    }
+
+    /// PURE: [`Self::route_now`] over one `snap`. The tail gate holds only where the route
+    /// ([`Self::endpoints_for_model`]) reaches the serving lane whose own reported build takes
+    /// `tail_tools` (`engine_takes`). That evidence is about the main lane only, so a request
+    /// routed to the vision sidecar, a dedicated lane, or any other base gets `false`, as does a
+    /// provider outside the fork-gateway family.
+    pub(super) fn route_for(
+        &self,
+        model: &str,
+        base: &OpenAiBase,
+        snap: &crate::inference::llama_server::ServingSnapshot,
+        engine_takes: bool,
+    ) -> RequestRoute {
+        let route = self.endpoints_for_model(model, base, snap);
+        let tail_tools = self.config.tail_tools
+            && !self.dedicated_lane
+            && engine_takes
+            && !snap.base_url.is_empty()
+            && route.root() == OpenAiBase::new(&snap.base_url).root();
+        RequestRoute { base: route, tail_tools }
+    }
+
     /// Fetch the live model list from the provider's /v1/models endpoint.
     /// Used by adapters that have dynamic catalogs (DMR above all — the list
     /// changes every time the user runs `docker model pull`). Populates
     /// `runtime_models` on success; leaves it unchanged on failure so stale
     /// data is preferred over empty data. Never silently succeeds with an
     /// empty set — returns Err if the endpoint responds with nothing.
-    pub(super) async fn refresh_runtime_models(&self) -> Result<(), String> {
+    pub(super) async fn refresh_runtime_models(&self) -> Result<usize, String> {
         let url = self.endpoints().models();
 
         let mut req = self.client.get(&url);
@@ -196,17 +234,16 @@ impl OpenAICompatibleAdapter {
         let ids: std::collections::HashSet<String> = body
             .get("data")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .ok_or_else(|| format!("{} returned no `data` array", url))?
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
+            .collect();
         if ids.is_empty() {
             return Err(format!("{} returned no models", url));
         }
-        *self.runtime_models.write().unwrap() = Some(ids);
-        Ok(())
+        let count = ids.len();
+        *self.runtime_models.write() = Some(ids);
+        Ok(count)
     }
 
     /// Resolve a logical model name to the actual DMR model ID stored in
@@ -236,7 +273,6 @@ impl OpenAICompatibleAdapter {
         let available: Vec<String> = self
             .runtime_models
             .read()
-            .unwrap()
             .as_ref()
             .map(|ids| ids.iter().cloned().collect())
             .ok_or_else(|| "DMR runtime_models still empty after refresh".to_string())?;
@@ -251,7 +287,7 @@ impl OpenAICompatibleAdapter {
     /// trivial contains in either direction. No I/O, no refresh — callers
     /// own the refresh decision.
     fn lookup_runtime_model(&self, model_name: &str) -> Option<String> {
-        let guard = self.runtime_models.read().unwrap();
+        let guard = self.runtime_models.read();
         let ids = guard.as_ref()?;
         let needle = model_name.to_lowercase();
         ids.iter()
@@ -276,7 +312,7 @@ impl OpenAICompatibleAdapter {
     /// 2026-07-24). Not a fallback: this records a fact the daemon's reconcile
     /// already verified against the live process.
     pub fn ensure_runtime_model(&self, id: &str) {
-        let mut guard = self.runtime_models.write().unwrap();
+        let mut guard = self.runtime_models.write();
         match guard.as_mut() {
             Some(set) => {
                 set.insert(id.to_string());
@@ -288,7 +324,7 @@ impl OpenAICompatibleAdapter {
     }
 
     pub(super) fn runtime_models_contain(&self, model_name: &str) -> bool {
-        let guard = self.runtime_models.read().unwrap();
+        let guard = self.runtime_models.read();
         match guard.as_ref() {
             None => false, // not populated — can't lie, return false
             Some(ids) => {
@@ -300,128 +336,12 @@ impl OpenAICompatibleAdapter {
             }
         }
     }
+}
 
-    /// Probe the serving backend's `GET /lora-adapters` and record what it
-    /// says into `lora_support`. This is capability DISCOVERY, not a declared
-    /// table: a 200 with an array → `Supported` (with the name→id catalog); a
-    /// 404/501 → `Unsupported` (cached, so we don't re-probe a cloud/mlx
-    /// backend every turn). A connection/transport error is returned as `Err`
-    /// and NOT cached — a momentarily-dead server is not a server without LoRA
-    /// support. llama.cpp `llama-server` returns the array of adapters it
-    /// loaded at launch, each `{ "id": N, "path": "...", "scale": S }`.
-    /// Ensure this server's KV slot pool exists — probe `/props` once, install via
-    /// `ensure_pool` — and return it. DISCOVERY only: the lease + pin + KV paging live
-    /// in [`crate::inference::turn_admission::admit_turn`], which takes this pool. (Was
-    /// `slot_for_activity`, which also leased; split so the permit-first + pin ordering
-    /// lives in one place.)
-    pub(super) async fn ensure_slot_pool(
-        &self,
-        endpoints: &OpenAiBase,
-    ) -> Result<std::sync::Arc<crate::inference::slots::KvSlotPool>, crate::ai::slot_discovery::SlotDiscoveryMiss> {
-        use crate::ai::slot_discovery::SlotDiscoveryMiss as Miss;
-        let root = endpoints.root();
-        let dir = crate::inference::slots::directory();
-        // Fast path: this server's state already known (process-global directory —
-        // every adapter instance talking to the same server shares ONE assignment).
-        let existing_pool = match dir.get(root) {
-            Some(Some(pool)) if dir.page_admission_known(root) => return Ok(pool),
-            Some(Some(pool)) => Some(pool),
-            Some(None) => return Err(Miss::LatchedUnsupported),
-            None => None,              // never probed — probe below
-        };
-        let discovery_generation = dir.page_discovery_generation(root);
-        // Probe /props once. Lock is NOT held across the await.
-        let url = endpoints.props();
-        let resp = match self.client.get(&url).send().await {
-            Ok(r) => r,
-            Err(e) => return Err(Miss::Transport { error: e.to_string() }),
-        };
-        if !resp.status().is_success() {
-            let status = resp.status();
-            // ONLY "this endpoint does not exist" may latch Unsupported. Any other
-            // status — above all the 503 a llama-server answers while the model is
-            // still LOADING — is transient, and latching on it killed slot affinity
-            // on effectively EVERY boot: personas start deliberating before the lane
-            // is warm (`inference.lane_relaunch_retry` ×93, reason=503_loading, same
-            // ledger), so the first probe raced the load window, latched Unsupported
-            // for the process's life, and prefix-similarity slot theft quietly
-            // replaced pinning — measured as `cached: 0` mid-conversation on
-            // 2026-08-21. A verdict about what a server IS must never be reached
-            // while the server is mid-transition (#442's rule, one layer down).
-            if props_status_proves_endpoint_absent(status) {
-                dir.latch_unsupported(root);
-                return Err(Miss::EndpointAbsent { status: status.as_u16() });
-            }
-            return Err(Miss::NotReady { status: status.as_u16() });
-        }
-        let body: serde_json::Value = match resp.json().await {
-            Ok(v) => v,
-            // A malformed body from a live server is also not proof of absence —
-            // mid-load llama-server can answer partial/HTML bodies. Defer, don't latch.
-            Err(_) => return Err(Miss::BodyUnparsed),
-        };
-        // Capture the served PER-SLOT window while we hold the props body —
-        // the ONE authoritative source for what a request can actually carry
-        // (#139). Recorded even for single-slot servers (the window truth is
-        // independent of whether affinity is useful).
-        if let Some(n_ctx) = body
-            .pointer("/default_generation_settings/n_ctx")
-            .and_then(|v| v.as_u64())
-        {
-            served_ctx_by_root().insert(root.to_owned(), n_ctx as u32);
-        }
-        let n_slots = body
-            .get("total_slots")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-        if n_slots == 0 {
-            // Missing geometry is not proof that activity paging is unsupported.
-            return Err(Miss::NoGeometry);
-        }
-        if dir.page_discovery_generation(root) != discovery_generation {
-            return Err(Miss::Superseded); // props belongs to the superseded process, not its replacement
-        }
-        // The directory arbitrates the probe race: only the first writer installs
-        // the pool, once per SERVER, not once per adapter.
-        let pool = existing_pool.clone().unwrap_or_else(|| dir.ensure_pool(root, n_slots));
-        if pool.n_slots() != n_slots {
-            return Err(Miss::GeometryMismatch { installed: pool.n_slots(), props: n_slots }); // they must agree
-        }
-        // A running engine this core ADOPTED (a deploy kept it) has no launch contract here,
-        // so its confirmed saves come from the ledger it left, when that ledger names this
-        // very process. A spawned engine already attached its own at readiness;
-        // its first capability probe must not pretend it adopted another ledger.
-        let adoption = if existing_pool.is_some() { Err("pool_already_installed") } else { match crate::inference::lane_registry::live_lane() {
-            None => Err("no_live_lane_record"),
-            Some(lane) if lane.root_url() != root.trim_end_matches('/') => Err("live_lane_is_another_root"),
-            Some(lane) if crate::inference::engine_residency::process_start_s(lane.pid) != Some(lane.started_s) => {
-                Err("live_lane_is_another_process")
-            }
-            Some(lane) => match lane.page_dir.as_deref() {
-                None => Err("live_lane_has_no_page_dir"),
-                Some(page_dir) => {
-                    // the adopted engine's page dir is this core's to trim and measure too
-                    // (a spawn records it at launch; an adoption never did)
-                    crate::inference::slots::note_page_dir(page_dir);
-                    crate::inference::slots::adopt_engine_ledger(&pool, page_dir, lane.pid, lane.started_s)
-                        .map_err(crate::inference::slots::AdoptRefusal::as_str)
-                }
-            },
-        }};
-        continuum_base::probe!(
-            class = "inference.kv_page.ledger_adopted",
-            adopted = adoption.is_ok(),
-            loaded = adoption.unwrap_or(0) as u64, // probe field: 0 when nothing was adopted, `why` names the reason
-            why = adoption.err().unwrap_or("adopted"), // probe field: the refusal, or "adopted" when the ledger was the engine's
-            "an adopted engine's confirmed-save ledger: its saved pages are restorable only when the ledger names this same process"
-        );
-        if !dir.negotiate_page_admission(root, &pool, discovery_generation, body.get("slot_save_size_version")).await {
-            return Err(Miss::PageAdmissionRefused);
-        }
-        tracing::info!(
-            n_slots,
-            "slot affinity enabled — activities lease llama-server slots (props-discovered)"
-        );
-        Ok(pool)
-    }
+/// Where one request goes and whether it may carry `tail_tools`, decided together from one
+/// snapshot ([`OpenAICompatibleAdapter::route_now`]).
+#[derive(Debug, Clone)]
+pub(super) struct RequestRoute {
+    pub(super) base: OpenAiBase,
+    pub(super) tail_tools: bool,
 }

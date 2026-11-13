@@ -179,6 +179,8 @@ function Mod-LlamaServer {
         '-DLLAMA_BUILD_TESTS=OFF', '-DLLAMA_BUILD_EXAMPLES=OFF',
         # We serve local GGUF paths (-m), never fetch by URL -> drop libcurl.
         '-DLLAMA_CURL=OFF',
+        # No TLS in the engine (localhost, local GGUF): never find or ship an OpenSSL.
+        '-DLLAMA_OPENSSL=OFF',
         # STATIC libs: link ggml/ggml-base/ggml-cuda/llama INTO llama-server.exe
         # (mirrors core/llama/build.rs). Without this, llama-server.exe dynamically
         # links ggml-base.dll etc. that live only in the build tree -> copying just

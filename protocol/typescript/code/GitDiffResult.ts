@@ -4,4 +4,8 @@ export type GitDiffResult = {
 /**
  * The raw unified diff text.
  */
-diff: string, };
+diff: string, 
+/**
+ * What the diff compared against.
+ */
+against: string, };

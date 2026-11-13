@@ -8,7 +8,7 @@ impl EngineGeneration {
     pub(crate) fn retiring(&self) {
         if let Some(endpoint) = self.endpoint.upgrade() {
             let state = endpoint.state.lock();
-            if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
+            if state.generation().is_some_and(|g| g.id == self.id) {
                 state.ready.send_replace(false);
             }
         }
@@ -21,7 +21,7 @@ impl EngineGeneration {
         self.exited.store(true, Ordering::Release);
         if let Some(endpoint) = self.endpoint.upgrade() {
             let state = endpoint.state.lock();
-            if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
+            if state.generation().is_some_and(|g| g.id == self.id) {
                 state.ready.send_replace(false);
                 continuum_base::probe!(
                     class = "inference.kv_engine.exited",
@@ -31,12 +31,15 @@ impl EngineGeneration {
                 // Do not mutate a ledger while an old HTTP future can still write
                 // it. Replacement readiness drains admissions and replaces it.
             }
+            drop(state);
+            // A relaunch that could not save waited for this death to record its loss.
+            endpoint.relaunch_exit_observed(self.id);
         }
     }
 }
 
 impl EndpointSlots {
-    pub(super) fn quarantine_paging(&self) {
+    pub(crate) fn quarantine_paging(&self) {
         let mut state = self.state.lock();
         state.paging_uncertain = true;
         state.ready.send_replace(false);
@@ -148,10 +151,17 @@ impl EndpointSlots {
         if !*state.ready.borrow() {
             return Err("serving endpoint is suspended pending engine readiness".into());
         }
+        // An admission carries the pool to pin when one is known. Not asked and absent both admit
+        // without one: the adapter's discovery runs before admission and supplies the pool of a
+        // never-probed engine, and a latched one has none to pin.
+        let pool = match state.pool() {
+            Probed::Known(pool) => Some(Arc::clone(pool)),
+            Probed::NotAsked | Probed::Absent(_) => None,
+        };
         Ok(EndpointAdmission {
             endpoint: self.clone(),
             _guard: guard,
-            pool: state.pool.as_ref().and_then(Clone::clone),
+            pool,
         })
     }
 
@@ -171,9 +181,7 @@ impl EndpointSlots {
     ) -> Result<EndpointTransition, ()> {
         let guard = self.gate.clone().write_owned().await;
         let state = self.state.lock();
-        if !state
-            .generation
-            .as_ref()
+        if !state.generation()
             .is_some_and(|g| g.same_engine(expected))
         {
             return Err(());
@@ -182,11 +190,83 @@ impl EndpointSlots {
         if !current() {
             return Err(());
         }
-        self.state.lock().ready.send_replace(false);
+        let found_ready = self.state.lock().ready.send_replace(false);
         Ok(EndpointTransition {
             endpoint: self.clone(),
             _guard: guard,
+            found_ready,
         })
+    }
+
+    /// The engine installed on this endpoint now: what a launch decides to replace. `None` is no
+    /// owned engine (none yet, or an adopted one).
+    pub(crate) fn incumbent(&self) -> Option<EngineGeneration> {
+        self.state.lock().generation().cloned()
+    }
+
+    /// Drain this endpoint for an engine replacement its caller has decided. In order:
+    /// 1. `preflight`: every refusal the replacement can make from state. A refused replacement
+    ///    condemns nothing, so a refusal that repeats every tick never ends the incumbent's acts
+    ///    (Fable on df1d0963; the M5 2026-11-04 07:38:34Z, "adopted checkpoint requires a known
+    ///    pool").
+    /// 2. `condemn`, only while `incumbent` (captured when the launch was decided) is still the
+    ///    installed engine: a stale launch never condemns the engine that replaced its target
+    ///    (Codex on df1d0963).
+    /// 3. The writer, admitted by the caller's `current` under the guard as before.
+    ///
+    /// The acts holding admissions let go on a condemnation (`llama_server::until_condemned`).
+    /// Condemned only once the writer held the gate, as the caller's admission inside it did,
+    /// the drain waited on acts that only a finished drain would end: 67 min on the IntelMac
+    /// (2026-11-04 06:27-07:34Z, card df1d0963), 23 min on enrico (2026-10-26, card 4d2a64a2).
+    /// `expected` names the exited engine a restore replaces; `None` is any replacement.
+    pub(crate) async fn drain_for_replacement<E>(
+        self: &Arc<Self>,
+        incumbent: Option<&EngineGeneration>,
+        expected: Option<&EngineGeneration>,
+        preflight: impl FnOnce() -> Result<(), E>,
+        condemn: impl FnOnce(),
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<Result<EndpointTransition, ()>, E> {
+        preflight()?;
+        let still_incumbent = match (incumbent, self.state.lock().generation()) {
+            (Some(captured), Some(installed)) => captured.same_engine(installed),
+            (None, None) => true,
+            _ => false,
+        };
+        if still_incumbent {
+            condemn();
+        }
+        Ok(match expected {
+            Some(expected) => self.transition_for_generation_if(expected, current).await,
+            None => self.transition_if(current).await,
+        })
+    }
+
+    /// What an adopted engine's checkpoint needs of this endpoint, read from its state alone: an
+    /// unowned, certain pool, as far as it was probed; a known pool also needs a verified ledger
+    /// naming `incarnation`. `SlotDirectory::adopted_checkpoint_pool` is the one caller (for the
+    /// replacement's pre-flight, before anything is condemned or drained, and for the checkpoint
+    /// itself, under the guard): it discovers on `NotAsked` and refuses on `Absent`.
+    pub(super) fn adopted_checkpoint_pool(
+        &self,
+        incarnation: crate::inference::engine_residency::EngineIncarnation,
+    ) -> Result<PoolProbe, AdoptedCheckpointRefusal> {
+        let pool = {
+            let state = self.state.lock();
+            if state.generation().is_some() || state.paging_uncertain {
+                return Err(AdoptedCheckpointRefusal::OwnedOrUncertain);
+            }
+            match state.pool() {
+                Probed::NotAsked => return Ok(Probed::NotAsked),
+                Probed::Absent(why) => return Ok(Probed::Absent(*why)),
+                Probed::Known(pool) => Arc::clone(pool),
+            }
+        };
+        let ledger = pool.ledger.get().ok_or(AdoptedCheckpointRefusal::UnverifiedLedger)?;
+        if ledger.incarnation.get().copied() != Some((incarnation.pid, incarnation.started_s)) {
+            return Err(AdoptedCheckpointRefusal::OtherProcess);
+        }
+        Ok(Probed::Known(pool))
     }
 
     /// Drain first, then admit a conditional lifecycle operation. A superseded
@@ -199,10 +279,11 @@ impl EndpointSlots {
         if !current() {
             return Err(());
         }
-        self.state.lock().ready.send_replace(false);
+        let found_ready = self.state.lock().ready.send_replace(false);
         Ok(EndpointTransition {
             endpoint: self.clone(),
             _guard: guard,
+            found_ready,
         })
     }
 
@@ -214,35 +295,133 @@ impl EndpointSlots {
         EndpointTransition {
             endpoint: self.clone(),
             _guard: guard,
+            // This writer closes readiness BEFORE it holds the guard, so what it saw is not
+            // what it took over (a preceding writer may reopen or close it meanwhile; Codex on
+            // #5413). It never hands back: only the conditional writers, which read under the
+            // guard, do.
+            found_ready: false,
         }
     }
 }
 
 impl EndpointTransition {
+    /// Hand the endpoint back as this writer found it when its operation changed nothing
+    /// (card 931cfd22): a replacement refused before its incumbent was signalled. "The writer
+    /// that closed the endpoint reopens it", and only to what it was: open only if it was
+    /// open when this writer took it, and only while nothing owned took its place (no owned
+    /// generation, certain paging), which is an adopted incumbent left exactly as it was.
+    pub(crate) fn hand_back_unchanged(&self) -> bool {
+        let state = self.endpoint.state.lock();
+        if !self.found_ready || state.generation().is_some() || state.paging_uncertain {
+            return false;
+        }
+        state.ready.send_replace(true);
+        true
+    }
+
+    /// Save an adopted engine without inventing ownership of its process. The
+    /// persisted ledger and the caller's lane record must identify the same live
+    /// incarnation. Retirement still requires a fresh identity check by its owner.
+    pub(crate) async fn checkpoint_adopted_before_replacement(
+        &mut self,
+        client: &reqwest::Client,
+        root: &str,
+        incarnation: crate::inference::engine_residency::EngineIncarnation,
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<(), AdoptedCheckpointRefusal> {
+        use crate::inference::engine_residency::Liveness;
+
+        if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
+            return Err(AdoptedCheckpointRefusal::EndpointMismatch);
+        }
+        let pool = directory().adopted_checkpoint_pool(client, root, incarnation).await?;
+        let verify = || match incarnation.liveness() {
+            Liveness::Alive => Ok(()),
+            Liveness::Dead => Err(AdoptedCheckpointRefusal::EngineGone),
+            Liveness::Unknown => Err(AdoptedCheckpointRefusal::IdentityUnverified),
+        };
+        verify()?;
+        if !current() {
+            return Err(AdoptedCheckpointRefusal::IntentChanged);
+        }
+        // The save checks the engine between pages through the same typed verdict.
+        let result = self
+            .checkpoint_pool(client, root, &pool, &verify)
+            .await
+            .map_err(|failure| match failure {
+                CheckpointFailure::Engine(refusal) => refusal,
+                CheckpointFailure::Save(detail) => AdoptedCheckpointRefusal::Save(detail),
+            });
+        if result.is_err() && current() && verify().is_ok() {
+            // A terminal refusal did not mutate the engine. Only reopen this
+            // exact pool; CheckpointSave quarantines cancellation/uncertainty.
+            let state = self.endpoint.state.lock();
+            if state.generation().is_none() && !state.paging_uncertain && state.serves(&pool) {
+                state.ready.send_replace(true);
+            }
+        }
+        result?;
+        if !current() {
+            return Err(AdoptedCheckpointRefusal::IntentChangedAfterCheckpoint);
+        }
+        Ok(())
+    }
+
+    /// Planned replacement cannot discard a healthy engine's unsaved residents.
+    /// A terminal refusal resumes the exact original ledger; an uncertain write
+    /// stays quarantined. Dead engines and quarantined paging use recovery instead:
+    /// nothing can be saved, so their unsaved residents are recorded as lost when this
+    /// generation's exit is observed, at once if it already was (card 6b28a445).
+    pub(crate) async fn checkpoint_before_replacement(
+        &mut self,
+        client: &reqwest::Client,
+        root: &str,
+        current: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<(), String> {
+        let generation = self.previous_generation().ok_or("replacement requires a known generation")?;
+        if generation.has_exited() || self.endpoint.paging_recovery_required() {
+            let reason = if generation.has_exited() {
+                DiscardReason::EngineExited
+            } else {
+                DiscardReason::PagingUncertain
+            };
+            self.endpoint.pending_discard(reason).on_exit_of(&generation);
+            return Ok(());
+        }
+        let original = self.capture_suspension(&generation)?;
+        let result = self.checkpoint_residents(client, root).await.map(|_| ());
+        if let Err(error) = result {
+            return match self.resume_suspension(&original, current) {
+                Ok(()) => Err(format!("replacement deferred; original engine resumed: {error}")),
+                Err(resume) => Err(format!("replacement deferred; endpoint remains suspended: {error}; {resume}")),
+            };
+        }
+        if !current() {
+            return Err("replacement intent changed after checkpoint".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn capture_suspension(
         &self,
         expected: &EngineGeneration,
     ) -> Result<EndpointSuspension, String> {
         let state = self.endpoint.state.lock();
-        if expected.has_exited()
-            || state.paging_uncertain
-            || state.pool_generation != Some(expected.id)
-            || !state
-                .generation
-                .as_ref()
-                .is_some_and(|g| g.same_engine(expected))
-        {
-            return Err("cannot suspend an unknown or uncertain live ledger".into());
-        }
+        let owned = match state.owned_by(expected.id) {
+            Some(owned)
+                if !expected.has_exited()
+                    && !state.paging_uncertain
+                    && state.generation().is_some_and(|g| g.same_engine(expected)) =>
+            {
+                owned
+            }
+            _ => return Err("cannot suspend an unknown or uncertain live ledger".into()),
+        };
         Ok(EndpointSuspension {
             endpoint: self.endpoint.clone(),
             generation: expected.clone(),
-            pool: state
-                .pool
-                .as_ref()
-                .and_then(Clone::clone)
-                .ok_or("missing live ledger")?,
-            contract: state.contract.clone().ok_or("missing live page contract")?,
+            pool: Arc::clone(&owned.pool),
+            contract: owned.contract.clone(),
         })
     }
 
@@ -257,17 +436,11 @@ impl EndpointTransition {
         let state = self.endpoint.state.lock();
         if original.generation.has_exited()
             || state.paging_uncertain
-            || state.pool_generation != Some(original.generation.id)
-            || state.contract.as_ref() != Some(&original.contract)
-            || !state
-                .generation
-                .as_ref()
+            || !state.generation()
                 .is_some_and(|g| g.same_engine(&original.generation))
-            || !state
-                .pool
-                .as_ref()
-                .and_then(Option::as_ref)
-                .is_some_and(|p| Arc::ptr_eq(p, &original.pool))
+            || !state.owned_by(original.generation.id).is_some_and(|owned| {
+                owned.contract == original.contract && Arc::ptr_eq(&owned.pool, &original.pool)
+            })
         {
             return Err("suspended live ledger changed or paging is uncertain".into());
         }
@@ -282,8 +455,6 @@ impl EndpointTransition {
         client: &reqwest::Client,
         root: &str,
     ) -> Result<ResidentCheckpoint<'_>, String> {
-        use super::super::turn_admission::{kv_page_action, PageOutcome};
-
         if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
             return Err("checkpoint URL does not identify the held endpoint".into());
         }
@@ -293,29 +464,52 @@ impl EndpointTransition {
                 return Err("checkpoint refused: paging completion remains uncertain".into());
             }
             let generation = state
-                .generation
-                .clone()
+                .generation()
+                .cloned()
                 .ok_or("checkpoint requires an owned generation")?;
-            if generation.has_exited() || state.pool_generation != Some(generation.id) {
-                return Err("checkpoint requires this live generation's verified pool".into());
-            }
-            if state
-                .contract
-                .as_ref()
-                .and_then(|c| c.page_dir.as_ref())
-                .is_none()
-            {
+            let owned = match state.owned_by(generation.id) {
+                Some(owned) if !generation.has_exited() => owned,
+                _ => return Err("checkpoint requires this live generation's verified pool".into()),
+            };
+            if owned.contract.page_dir.is_none() {
                 return Err("checkpoint requires a verified page directory".into());
             }
-            let pool = state
-                .pool
-                .as_ref()
-                .and_then(Clone::clone)
-                .ok_or("checkpoint requires a known slot pool")?;
+            let pool = Arc::clone(&owned.pool);
             state.ready.send_replace(false);
             (generation, pool)
         };
-        directory().discover_page_admission(client, root).await?;
+        self.checkpoint_pool(client, root, &pool, &|| {
+            if generation.has_exited() {
+                Err("checkpoint engine exited")
+            } else {
+                Ok(())
+            }
+        }).await.map_err(|failure| failure.to_string())?;
+        Ok(ResidentCheckpoint {
+            transition: self,
+            generation,
+            pool,
+        })
+    }
+
+    /// One save path for a drained pool. The caller supplies its existing engine
+    /// authority: an owned generation or a verified adopted process incarnation.
+    /// Losing that authority cannot publish a successful save for its successor.
+    async fn checkpoint_pool<E>(
+        &mut self,
+        client: &reqwest::Client,
+        root: &str,
+        pool: &Arc<KvSlotPool>,
+        verify_engine: &(dyn Fn() -> Result<(), E> + Send + Sync),
+    ) -> Result<(), CheckpointFailure<E>> {
+        use super::super::turn_admission::{kv_page_action, PageOutcome};
+
+        let verify_engine = || verify_engine().map_err(CheckpointFailure::Engine);
+        verify_engine()?;
+        directory()
+            .discover_page_admission(client, root)
+            .await
+            .map_err(CheckpointFailure::Save)?;
         let mut residents: Vec<_> = pool
             .holders
             .lock()
@@ -324,9 +518,7 @@ impl EndpointTransition {
             .collect();
         residents.sort_unstable_by_key(|(slot, _)| *slot);
         for (slot, key) in residents {
-            if generation.has_exited() {
-                return Err("checkpoint engine exited before save".into());
-            }
+            verify_engine()?;
             pool.note_page_lost(&key);
             let mut save = CheckpointSave {
                 endpoint: self.endpoint.clone(),
@@ -334,35 +526,43 @@ impl EndpointTransition {
             };
             match kv_page_action(client, root, slot, &key, "save").await {
                 PageOutcome::Completed => {
+                    verify_engine()?;
                     save.pending = false;
                     pool.note_saved(key);
                 }
                 PageOutcome::Rejected => {
                     save.pending = false;
-                    return Err(format!("checkpoint save rejected for slot {slot}"));
+                    return Err(CheckpointFailure::Save(format!("checkpoint save rejected for slot {slot}")));
+                }
+                PageOutcome::Unresolved(unresolved) => {
+                    // The engine kept working without a receipt. This checkpoint's error does not
+                    // prove the engine is retired (Codex's follow-up on #5772), and the writer
+                    // cannot be handed to the request, so the save stays PENDING: its drop below
+                    // quarantines the endpoint, and no turn is admitted until a verified
+                    // replacement. The request itself stays owned by the endpoint until its
+                    // receipt. The page stays lost (noted above): no half-written restore.
+                    unresolved.hold(());
+                    return Err(CheckpointFailure::Save(format!(
+                        "checkpoint save unresolved for slot {slot}: the engine kept working without a receipt; endpoint quarantined"
+                    )));
                 }
                 PageOutcome::Uncertain => {
-                    return Err(format!("checkpoint save completion uncertain for slot {slot}; endpoint quarantined"));
+                    return Err(CheckpointFailure::Save(format!(
+                        "checkpoint save completion uncertain for slot {slot}; endpoint quarantined"
+                    )));
                 }
             }
         }
-        if generation.has_exited() {
-            return Err("checkpoint engine exited before completion".into());
-        }
-        Ok(ResidentCheckpoint {
-            transition: self,
-            generation,
-            pool,
-        })
+        verify_engine()
     }
 
     pub(crate) fn previous_generation(&self) -> Option<EngineGeneration> {
-        self.endpoint.state.lock().generation.clone()
+        self.endpoint.state.lock().generation().cloned()
     }
 
     pub fn start_generation(&self) -> Result<EngineGeneration, String> {
         let mut state = self.endpoint.state.lock();
-        if state.generation.as_ref().is_some_and(|g| !g.has_exited()) {
+        if state.generation().is_some_and(|g| !g.has_exited()) {
             return Err("predecessor engine exit remains unverified".into());
         }
         let generation = EngineGeneration {
@@ -370,7 +570,7 @@ impl EndpointTransition {
             exited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             endpoint: Arc::downgrade(&self.endpoint),
         };
-        state.generation = Some(generation.clone());
+        state.start(generation.clone());
         state.paging_uncertain = false;
         Ok(generation)
     }
@@ -383,9 +583,7 @@ impl EndpointTransition {
     ) -> Result<(), String> {
         let mut state = self.endpoint.state.lock();
         if generation.has_exited()
-            || !state
-                .generation
-                .as_ref()
+            || !state.generation()
                 .is_some_and(|g| g.id == generation.id)
         {
             return Err("engine generation exited or was superseded before readiness".into());
@@ -397,7 +595,7 @@ impl EndpointTransition {
             );
         }
         if *state.ready.borrow() {
-            return if state.contract.as_ref() == Some(&contract) {
+            return if state.owned().map(|owned| &owned.contract) == Some(&contract) {
                 Ok(())
             } else {
                 Err("ready engine cannot change its page contract without a transition".into())
@@ -406,18 +604,23 @@ impl EndpointTransition {
         // A fresh assignment ledger prevents old Arc holders/pins from affecting
         // the new engine. Copy ONLY saved-page eligibility under an exact contract.
         let pool = Arc::new(KvSlotPool::new(root, contract.slots));
+        self.endpoint.concurrency.retarget(contract.slots as usize);
         let mut carried = false;
         // Same page format, not the same launch: a relaunch at another window or slot count
         // keeps every page it can restore (the engine refuses, loudly, one that no longer fits).
         let fingerprint = contract.fingerprint();
-        let previous = state.contract.as_ref();
+        let previous = state.owned().map(|owned| &owned.contract);
         if fingerprint.is_some()
             && previous.and_then(KvPageContract::fingerprint) == fingerprint
             && previous.and_then(|c| c.page_dir.as_ref()) == contract.page_dir.as_ref()
         {
-            if let Some(Some(old)) = state.pool.as_ref() {
-                *pool.saved.lock() = old.saved.lock().clone();
-                carried = true;
+            // Not asked and absent carry nothing: no pool held saves under this contract.
+            match state.pool() {
+                Probed::Known(old) => {
+                    *pool.saved.lock() = old.saved.lock().clone();
+                    carried = true;
+                }
+                Probed::NotAsked | Probed::Absent(_) => {}
             }
         }
         // The same eligibility across a PROCESS restart: the ledger beside the pages,
@@ -435,10 +638,15 @@ impl EndpointTransition {
                 "confirmed-save ledger attached: pages saved under this exact contract are restorable, across a core restart too"
             );
         }
-        state.pool = Some(Some(pool));
+        state.engine = Engine::Owned {
+            generation: generation.clone(),
+            serving: Serving::Install(OwnedInstall {
+                generation: generation.id,
+                contract,
+                pool,
+            }),
+        };
         state.page_admission = None;
-        state.pool_generation = Some(generation.id);
-        state.contract = Some(contract);
         state.ready.send_replace(true);
         continuum_base::probe!(
             class = "inference.kv_engine.ready",
@@ -458,33 +666,34 @@ impl SlotDirectory {
                 let (ready, ready_rx) = tokio::sync::watch::channel(true);
                 Arc::new(EndpointSlots {
                     gate: Arc::new(tokio::sync::RwLock::new(())),
+                    paging_tasks: Mutex::new(tokio::task::JoinSet::new()),
                     ready_rx,
+                    discarded: Mutex::new(DiscardLog::default()),
+                    concurrency: Arc::new(super::EndpointConcurrency::new()),
                     state: Mutex::new(EndpointState {
                         ready,
                         paging_uncertain: false,
-                        generation: None,
-                        contract: None,
-                        pool: None,
-                        pool_generation: None,
+                        engine: Engine::Unprobed,
                         page_admission: None,
                     }),
                 })
             })
             .clone()
     }
-    /// `None` entry == latched Unsupported for this server root.
+    /// Latch `root` unsupported (unless this core owns a generation there): its pool answers
+    /// `Probed::Absent(PropsAbsent)` from now on.
     pub fn latch_unsupported(&self, root: &str) {
         let endpoint = self.endpoint(root);
         let mut state = endpoint.state.lock();
-        if state.generation.is_none() {
-            state.pool = Some(None);
+        if state.generation().is_none() {
+            state.engine = Engine::Unsupported;
         }
     }
 
-    /// `Some(Some(pool))` = pool ready; `Some(None)` = latched unsupported;
-    /// `None` = never probed (caller should probe /props).
-    pub fn get(&self, root: &str) -> Option<Option<Arc<KvSlotPool>>> {
-        self.endpoint(root).state.lock().pool.clone()
+    /// The pool at `root` as far as it was probed: `NotAsked` (the caller discovers it, probing
+    /// /props), `Absent` (latched unsupported), or `Known`.
+    pub fn get(&self, root: &str) -> PoolProbe {
+        self.endpoint(root).state.lock().pool().cloned()
     }
 
     pub(crate) fn page_admission_known(&self, root: &str) -> bool {
@@ -494,12 +703,14 @@ impl SlotDirectory {
     }
 
     pub fn page_discovery_generation(&self, root: &str) -> Option<Uuid> {
-        self.endpoint(root).state.lock().generation.as_ref().map(|generation| generation.id)
+        self.endpoint(root).state.lock().generation().map(|generation| generation.id)
     }
 
     pub(crate) fn page_admission_path(&self, root: &str) -> Result<Option<std::path::PathBuf>, String> {
-        self.endpoint(root).state.lock().page_admission.clone()
-            .unwrap_or_else(|| Err("page-write capability has not been negotiated".into()))
+        match self.endpoint(root).state.lock().page_admission.clone() {
+            Some(negotiated) => negotiated,
+            None => Err("page-write capability has not been negotiated".into()),
+        }
     }
 
     /// Cold discovery shared by spawned and adopted pools. Only the admission
@@ -519,8 +730,7 @@ impl SlotDirectory {
         };
         let endpoint = self.endpoint(root);
         let mut state = endpoint.state.lock();
-        if state.generation.as_ref().map(|current| current.id) != generation
-            || !state.pool.as_ref().and_then(Option::as_ref).is_some_and(|current| Arc::ptr_eq(current, pool)) {
+        if state.generation().map(|current| current.id) != generation || !state.serves(pool) {
             return false; // a response from an old incarnation cannot authorize its successor
         }
         if !matches!(state.page_admission, Some(Ok(_))) {
@@ -538,7 +748,11 @@ impl SlotDirectory {
     pub(crate) async fn discover_page_admission(&self, client: &reqwest::Client, root: &str) -> Result<(), String> {
         if self.page_admission_known(root) { return self.page_admission_path(root).map(|_| ()); }
         let generation = self.page_discovery_generation(root);
-        let pool = self.get(root).flatten().ok_or("page-write discovery requires a pool")?;
+        let pool = match self.get(root) {
+            Probed::Known(pool) => pool,
+            Probed::NotAsked => return Err("page-write discovery requires a discovered pool".into()),
+            Probed::Absent(PropsAbsent) => return Err("page-write discovery: the engine has no paging surface".into()),
+        };
         let body = super::super::llama_server::engine_props(root, client).await
             .map_err(|error| format!("page-write capability request failed: {error}"))?;
         if body.get("total_slots").and_then(serde_json::Value::as_u64) != Some(pool.n_slots() as u64) {
@@ -554,30 +768,58 @@ impl SlotDirectory {
     pub(crate) fn page_dir(&self, root: &str) -> Option<std::path::PathBuf> {
         let endpoint = self.endpoint(root);
         let state = endpoint.state.lock();
-        if let Some(path) = state.contract.as_ref().and_then(|contract| contract.page_dir.clone()) {
+        if let Some(path) = state.owned().and_then(|owned| owned.contract.page_dir.clone()) {
             return Some(path);
         }
         // Adoption installs a ledger only after checking the live process incarnation.
-        state.pool.as_ref()?.as_ref()?.ledger.get()?.path.parent().map(std::path::Path::to_path_buf)
+        match state.pool() {
+            Probed::Known(pool) => pool.ledger.get()?.path.parent().map(std::path::Path::to_path_buf),
+            Probed::NotAsked | Probed::Absent(_) => None,
+        }
     }
 
     /// Install (or return the already-installed) pool for a probed server.
     /// First writer wins — the probe race resolves to ONE pool per root.
+    /// The endpoint's permits are sized to the pool this returns while the state lock still
+    /// holds it, so a stale discovery can never resize them after a newer generation installs.
     pub fn ensure_pool(&self, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
         let endpoint = self.endpoint(root);
         let mut state = endpoint.state.lock();
-        let entry = state
-            .pool
-            .get_or_insert_with(|| Some(Arc::new(KvSlotPool::new(root, n_slots))));
-        match entry {
-            Some(pool) => Arc::clone(pool),
-            None => {
-                // A racing latch_unsupported won — honor it by returning a
-                // zero-slot pool that never leases (callers treat None lease
-                // as unpinned). Practically unreachable: latch and ensure are
-                // driven by the same probe outcome.
-                Arc::new(KvSlotPool::new(root, 0))
+        let pool = installed_pool(&mut state, root, n_slots);
+        endpoint.concurrency.retarget(pool.n_slots() as usize);
+        pool
+    }
+}
+
+/// The pool serving `root`: the installed one, or a first writer's.
+fn installed_pool(state: &mut super::kv_slot_pool::EndpointState, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
+    let pool = match &mut state.engine {
+        Engine::Owned { serving: Serving::Install(install), .. } => return Arc::clone(&install.pool),
+        Engine::Owned { serving: Serving::Before(before), .. } => match before {
+            Probed::Known(pool) => Some(Arc::clone(pool)),
+            Probed::Absent(PropsAbsent) => None,
+            not_asked @ Probed::NotAsked => {
+                let pool = Arc::new(KvSlotPool::new(root, n_slots));
+                *not_asked = Probed::Known(Arc::clone(&pool));
+                Some(pool)
             }
+        },
+        Engine::Adopted(pool) => return Arc::clone(pool),
+        Engine::Unsupported => None,
+        unprobed @ Engine::Unprobed => {
+            let pool = Arc::new(KvSlotPool::new(root, n_slots));
+            *unprobed = Engine::Adopted(Arc::clone(&pool));
+            Some(pool)
+        }
+    };
+    match pool {
+        Some(pool) => pool,
+        None => {
+            // A racing latch_unsupported won — honor it by returning a
+            // zero-slot pool that never leases (callers treat None lease
+            // as unpinned). Practically unreachable: latch and ensure are
+            // driven by the same probe outcome.
+            Arc::new(KvSlotPool::new(root, 0))
         }
     }
 }
@@ -588,9 +830,19 @@ pub(crate) fn stamp_engine_incarnation(root: &str, pid: u32, started_s: u64) {
     if started_s == 0 {
         return; // an unreadable start time names no process, so it can prove nothing
     }
-    if let Some(Some(pool)) = directory().get(root) {
-        pool.stamp_incarnation((pid, started_s));
+    match directory().get(root) {
+        Probed::Known(pool) => pool.stamp_incarnation((pid, started_s)),
+        // No pool installed for this root: no ledger to name the process in.
+        Probed::NotAsked | Probed::Absent(_) => {}
     }
+}
+
+/// A fixture driving a live engine outside serving: register its slots at its address and stamp its
+/// incarnation, the two halves serving's launch performs (`ensure_pool`, then the stamp above).
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn register_engine_for_fixture(root: &str, slots: u32, pid: u32, started_s: u64) {
+    directory().ensure_pool(root, slots);
+    stamp_engine_incarnation(root, pid, started_s);
 }
 
 /// The adopting core's half: `pool` was installed by props discovery for a running engine
@@ -655,4 +907,20 @@ pub fn directory() -> &'static SlotDirectory {
     DIR.get_or_init(|| SlotDirectory {
         endpoints: dashmap::DashMap::new(),
     })
+}
+
+/// Why one drained pool's save stopped: its caller's own engine check refused (kept as the
+/// caller's type, so an adopted engine's `EngineGone` stays that variant), or the save failed.
+enum CheckpointFailure<E> {
+    Engine(E),
+    Save(String),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for CheckpointFailure<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Engine(refusal) => refusal.fmt(f),
+            Self::Save(detail) => f.write_str(detail),
+        }
+    }
 }

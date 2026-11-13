@@ -34,7 +34,7 @@ fn is_terminal(state: &str) -> bool {
     crate::cognition::bench_round::is_terminal_card_state(state)
 }
 
-use crate::cognition::bench_title::parse_card_title as parse_bench_title;
+use crate::recipe::bench_title::parse_card_title as parse_bench_title;
 
 /// The grade-on-done subscriber. Holds a persona-airc registry so it can author the grade
 /// through a live citizen — whoever this machine has online (never a hardcoded name), the
@@ -246,7 +246,7 @@ async fn grade_card(
     let Some(dataset) = spec.and_then(|s| s.swe_dataset()) else {
         // A gym suite, registered or a coursework lesson set: the ONE resolver turns the
         // title's suite name into the eval set the oracle is read from.
-        if let Some(reference) = crate::commands::benchmark::eval_set_reference(&bench) {
+        if let Some(reference) = crate::cognition::eval_set::eval_set_reference(&bench) {
             return grade_gym_card(&airc, &reference, &instance, owner, &bench, room_id, graded_card).await;
         }
         return Ok(()); // catalogued-but-not-runnable, or a bench name we don't know
@@ -497,7 +497,7 @@ async fn grade_gym_card(
         let path = workspace.join(&solution_file);
         let outcome: Option<(bool, String)> = match std::fs::read_to_string(&path) {
             Ok(code) if !code.trim().is_empty() => {
-                Some(crate::cognition::gym_grader::test_grade(&code, &lang, &test).await)
+                Some(crate::genome::gym_grader::test_grade(&code, &lang, &test).await)
             }
             Ok(_) | Err(_) => None,
         };

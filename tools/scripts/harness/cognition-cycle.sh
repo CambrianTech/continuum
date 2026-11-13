@@ -140,9 +140,11 @@ RUN_DIR="$HOME/.continuum/harness-runs/$STAMP-${PNAME}"
 EVAL_ARGS=(cognition/eval --persona_id "$PID" --eval_set "$EVAL_PATH")
 [[ -n "$NOTE" ]]     && EVAL_ARGS+=(--note "$NOTE")
 [[ -n "$GENE" ]]     && EVAL_ARGS+=(--gene "$GENE")
-[[ -n "$MAX_ACTS" ]] && EVAL_ARGS+=(--max_acts "$MAX_ACTS")
+# The eval's policy is part of what it measures, so the caller always declares it. This
+# harness declares the bounds its earlier runs were measured under unless told otherwise.
+EVAL_ARGS+=(--budget "{\"steps\":${MAX_ACTS:-32}}" --max_retries "${MAX_RETRIES:-3}")
 
-echo "harness: persona=$PNAME ($PID)  eval_set=$EVAL_SET  note='${NOTE:-}'"
+echo "harness: persona=$PNAME ($PID)  eval_set=$EVAL_SET  note='${NOTE:-}'  budget=${MAX_ACTS:-32} steps  retries=${MAX_RETRIES:-3}"
 echo "harness: report → $RUN_DIR"
 echo "harness: command → $CU ${EVAL_ARGS[*]}"
 

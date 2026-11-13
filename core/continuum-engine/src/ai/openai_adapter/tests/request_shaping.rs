@@ -35,7 +35,8 @@ fn vision_capable_model_gets_raw_image_content_parts() {
         None,
         true,
         false,
-    );
+        None,
+    ).0;
     assert_eq!(wire.len(), 1);
     let content = wire[0]["content"].as_array().expect("multimodal array");
     assert_eq!(content.len(), 2, "text part + image part");
@@ -54,15 +55,15 @@ fn vision_capable_model_gets_raw_image_content_parts() {
         url: None, base64: Some("AAAA".into()), mime_type: Some("video/mp4".into()),
     }});
     let native = crate::inference::request_body::format_messages(
-        &test_adapter().config, &mixed, None, true, true,
-    );
+        &test_adapter().config, &mixed, None, true, true, None,
+    ).0;
     assert_eq!(native[0]["content"][2], json!({
         "type":"input_audio", "input_audio":{"data":"UklGRg==", "format":"wav"}
     }));
     assert!(native[0]["content"][3]["text"].as_str().unwrap().contains("Video was not attached"));
     let unsupported = crate::inference::request_body::format_messages(
-        &test_adapter().config, &mixed, None, true, false,
-    );
+        &test_adapter().config, &mixed, None, true, false, None,
+    ).0;
     assert!(unsupported[0]["content"][2]["text"].as_str().unwrap().contains("AudioInput"));
 }
 
@@ -79,7 +80,8 @@ fn non_vision_model_has_image_parts_dropped_and_keeps_bridge_text() {
         None,
         false,
         false,
-    );
+        None,
+    ).0;
     assert_eq!(wire.len(), 1);
     let content = wire[0]["content"].as_array().expect("content array");
     assert_eq!(
@@ -263,36 +265,6 @@ fn extract_reasoning_plain_and_empty_think() {
 // personas take distinct free slots; once full, a NEW persona evicts the
 // LEAST-recently-active holder, not a fixed round-robin victim — so the active
 // set keeps its warm slots and co-active minds never share one. This is the
-// what this catches: the boot-race latch that killed slot affinity on effectively
-// EVERY boot (2026-08-21). Personas start deliberating while llama-server still
-// answers 503_loading (measured ×93 in the same ledger); the old code latched
-// Unsupported on ANY non-success status, so one probe racing the load window
-// disabled pinning for the process's life and prefix-similarity slot theft took
-// over (`cached: 0` mid-conversation). Only "no such endpoint" may be permanent.
-#[test]
-fn a_loading_lane_must_not_latch_slot_affinity_off() {
-    use reqwest::StatusCode;
-    for transient in [
-        StatusCode::SERVICE_UNAVAILABLE, // llama-server mid-load — THE incident
-        StatusCode::INTERNAL_SERVER_ERROR,
-        StatusCode::BAD_GATEWAY,
-        StatusCode::TOO_MANY_REQUESTS,
-    ] {
-        assert!(
-            !props_status_proves_endpoint_absent(transient),
-            "{transient} is a statement about NOW, not about what the server IS — \
-             latching Unsupported on it re-opens the boot race"
-        );
-    }
-    for absent in [StatusCode::NOT_FOUND, StatusCode::NOT_IMPLEMENTED] {
-        assert!(
-            props_status_proves_endpoint_absent(absent),
-            "{absent} genuinely proves the surface is missing — without the latch \
-             every cloud provider would be re-probed per persona request forever"
-        );
-    }
-}
-
 #[test]
 fn trailing_assistant_thread_is_closed_with_continuation_fact() {
     let mut msgs = vec![
@@ -325,62 +297,6 @@ fn trailing_assistant_thread_is_closed_with_continuation_fact() {
     ];
     close_trailing_assistant(&mut system_final);
     assert_eq!(system_final.len(), 2, "system-final thread unchanged");
-}
-
-// what this catches: the thinking toggle's mechanism — `/no_think` is appended
-// to the LAST user message (Qwen3 soft-switch), not the system or an earlier
-// turn. Verified live: this makes the model emit an empty think block + a direct
-// answer (which extract_reasoning reduces to clean text).
-#[test]
-fn apply_no_think_switch_targets_last_user_message() {
-    let mut msgs = vec![
-        json!({"role": "system", "content": "be helpful"}),
-        json!({"role": "user", "content": "earlier turn"}),
-        json!({"role": "assistant", "content": "earlier reply"}),
-        json!({"role": "user", "content": "what is 2+2?"}),
-    ];
-    apply_no_think_switch(&mut msgs);
-    assert_eq!(msgs[3]["content"], json!("what is 2+2?\n/no_think"));
-    // earlier user turn + system untouched
-    assert_eq!(msgs[1]["content"], json!("earlier turn"));
-    assert_eq!(msgs[0]["content"], json!("be helpful"));
-}
-
-// what this catches: no user message → no-op (never corrupts a system-only or
-// tool-only message array).
-#[test]
-fn apply_no_think_switch_noop_without_user() {
-    let mut msgs = vec![json!({"role": "system", "content": "be helpful"})];
-    apply_no_think_switch(&mut msgs);
-    assert_eq!(
-        msgs[0]["content"],
-        json!("be helpful"),
-        "no user turn → unchanged"
-    );
-}
-
-// what this catches: the ROBUST thinking-suppression lever — under
-// ThinkingMode::Suppress the request body must carry
-// `chat_template_kwargs.enable_thinking=false` on EVERY turn, not only JSON
-// (response_format) turns. Regresses the 2026-06-27 misgating where the kwarg
-// lived solely in the response_format branch, so free-form act/speak turns let
-// the forged qwen3.5 template open `<think>` and emit empty content (all eval
-// answers blank, lift=0.0). Idempotent: a second apply leaves the same value.
-#[test]
-fn apply_enable_thinking_false_sets_kwarg_idempotently() {
-    let mut body = json!({ "model": "m", "messages": [], "stream": true });
-    apply_enable_thinking_false(&mut body);
-    assert_eq!(
-        body["chat_template_kwargs"],
-        json!({ "enable_thinking": false }),
-        "suppression must set the template hatch the forged template honors"
-    );
-    // second apply is a no-op on the value (overwrites identically)
-    apply_enable_thinking_false(&mut body);
-    assert_eq!(
-        body["chat_template_kwargs"],
-        json!({ "enable_thinking": false })
-    );
 }
 
 // what this catches: a single string input serializes as a JSON string (not

@@ -33,16 +33,11 @@
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-// The TS CommandRouterServer is reached over a Unix-domain socket. On Windows
-// there is no Unix socket; alias to TcpStream so the TS-bridge path compiles
-// unchanged. `connect()` to the filesystem-path socket then fails gracefully at
-// runtime. BEHAVIORAL GAP: the explicit TS-bridge (`execute_ts*`) is
-// unavailable on Windows until a TCP endpoint is wired; the Rust dispatch chain
-// (the primary path) is unaffected.
-#[cfg(windows)]
-use tokio::net::TcpStream as UnixStream;
-#[cfg(unix)]
-use tokio::net::UnixStream;
+// The TS CommandRouterServer is reached through `continuum_host::core_ipc::connect`: a
+// Unix-domain socket, or on Windows a TCP connect to the same address, which fails at runtime
+// because the address is a path. BEHAVIORAL GAP (unchanged): the explicit TS bridge
+// (`execute_ts*`) is unavailable on Windows until a TCP endpoint is wired; the Rust dispatch
+// chain (the primary path) is unaffected.
 use tracing::Instrument;
 
 use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
@@ -77,15 +72,28 @@ pub enum DispatchOutcome {
 pub struct DispatchFailure {
     pub outcome: DispatchOutcome,
     pub message: String,
+    /// Set when the owning module could not take the command (its initialize is past its
+    /// deadline): the typed reason, so a caller matches it instead of reading the message.
+    pub unavailable: Option<super::module_readiness::ModuleUnavailable>,
 }
 
 impl DispatchFailure {
     pub(crate) fn not_committed(message: String) -> Self {
-        Self { outcome: DispatchOutcome::NotCommitted, message }
+        Self { outcome: DispatchOutcome::NotCommitted, message, unavailable: None }
     }
 
-    fn uncertain(message: String) -> Self {
-        Self { outcome: DispatchOutcome::Uncertain, message }
+    /// A handler, interceptor or transport was reached (or may have been) and failed.
+    pub fn uncertain(message: String) -> Self {
+        Self { outcome: DispatchOutcome::Uncertain, message, unavailable: None }
+    }
+
+    /// Refused before any handler ran because the owning module is unavailable.
+    fn unavailable(refused: super::module_readiness::ModuleUnavailable) -> Self {
+        Self {
+            outcome: DispatchOutcome::NotCommitted,
+            message: refused.to_string(),
+            unavailable: Some(refused),
+        }
     }
 }
 
@@ -178,6 +186,13 @@ impl CommandExecutor {
             policy: Arc::new(crate::routing::AllowAllPolicy),
             remote_transport: Arc::new(crate::routing::NotImplementedRemoteTransport),
         }
+    }
+
+    /// The trust this executor's policy resolves for `caller`: the same policy its gate uses
+    /// ([`AuthPolicy::caller_trust`](crate::routing::AuthPolicy::caller_trust)). `None` when the
+    /// policy cannot resolve it, which an owner-only handler treats as a refusal.
+    pub fn caller_trust(&self, caller: Option<&crate::routing::CallerIdentity>) -> Option<crate::routing::trust_level::TrustLevel> {
+        self.policy.caller_trust(caller)
     }
 
     /// Replace the auth policy. Defaults to [`AllowAllPolicy`];
@@ -481,7 +496,7 @@ impl CommandExecutor {
         }
         .instrument(span);
         // The command runs inside every scope (the hands' admission is a task-local its
-        // children inherit until their tree has ended: `lane_process::run_owned`).
+        // children inherit until their tree has ended: `continuum_process::run_owned`).
         super::dispatch_hook::wrap_all(&scopes, Box::pin(command)).await
     }
 
@@ -538,6 +553,11 @@ impl CommandExecutor {
         //    A migrated command lives here and beats its module's legacy
         //    handle_command arm; see docs/architecture/COMMAND-ORGANIZATION.md.
         if let Some(cmd) = self.registry.route_object(command) {
+            // A dep-holding object reaches its module's state: admitted as far as that module is.
+            self.registry
+                .admit(self.registry.object_owner(command))
+                .await
+                .map_err(DispatchFailure::unavailable)?;
             log.debug(&format!(
                 "Routing '{}' to DynCommand object (typed path)",
                 command
@@ -555,6 +575,9 @@ impl CommandExecutor {
         if let Some((module, cmd)) = self.registry.route_command(command) {
             log.debug(&format!("Routing '{}' to local Rust module", command));
             let module_name = module.config().name;
+            // Waited on while its initialize runs (bounded by the init deadline); refused by type
+            // past it, never a hang inside a half-initialized module.
+            self.registry.admit(Some(module_name)).await.map_err(DispatchFailure::unavailable)?;
             // catch_unwind guard — same shape `Runtime::route_command`
             // uses. Persona tool execution flows through this path; a
             // panicking handler converts to typed Err instead of
@@ -619,7 +642,7 @@ impl CommandExecutor {
             handle,
             result,
         };
-        match serde_json::to_value(&event) {
+        match serde_json::to_value(&event) { // boundary: the bus carries JSON payloads to every subscriber, socket clients included
             Ok(payload) => bus.publish_async_only(COMMAND_COMPLETED_TOPIC, payload),
             Err(e) => {
                 // Should be impossible (the struct is plain fields
@@ -697,7 +720,8 @@ impl CommandExecutor {
             "Connecting to TypeScript socket: {}",
             TS_COMMAND_SOCKET
         ));
-        let stream = UnixStream::connect(TS_COMMAND_SOCKET).await.map_err(|e| {
+        // A Unix socket, or TCP on Windows: the OS difference lives in continuum_host::core_ipc.
+        let stream = continuum_host::core_ipc::connect(TS_COMMAND_SOCKET).await.map_err(|e| {
             format!(
                 "Failed to connect to CommandRouterServer at {}: {}",
                 TS_COMMAND_SOCKET, e
@@ -744,16 +768,17 @@ impl CommandExecutor {
 
         // Check success
         if response.get("success").and_then(|v| v.as_bool()) == Some(true) {
-            let result = response.get("result").cloned().unwrap_or(Value::Null);
+            let result = response.get("result").cloned().unwrap_or(Value::Null); // unwrap_or: a success with no result field returned nothing
             log.info(&format!("Command '{}' succeeded", command));
             Ok(result)
         } else {
-            let error = response
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown error from TypeScript");
+            // A failure without an error field says so with the response itself, never an invented reason.
+            let error = match response.get("error").and_then(|v| v.as_str()) {
+                Some(error) => error.to_string(),
+                None => format!("TypeScript reported failure with no error field: {response}"),
+            };
             log.error(&format!("Command '{}' failed: {}", command, error));
-            Err(error.to_string())
+            Err(error)
         }
     }
 }

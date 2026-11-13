@@ -1,6 +1,6 @@
 use super::*;
 
-/// How many of a server's `n_slots` are CITIZEN slots — warm activity slots a
+/// How many of a server's `n_slots` are CITIZEN slots — warm page slots a
 /// Turn may hold. ≥3 slots reserve the highest index as scratch for non-Turn
 /// traffic; below that every slot is a citizen slot. More citizens than this is
 /// the DESIGN (N minds over M slots, paged like registers), never a fault — the
@@ -10,34 +10,42 @@ pub fn citizen_slots(n_slots: u32) -> u32 {
 }
 
 /// A slot pinned for the duration of a turn — while held, the pool cannot evict
-/// this activity's slot, so a concurrent returner never leases (and restores into)
+/// this page's slot, so a concurrent returner never leases (and restores into)
 /// a slot that is still decoding. RAII: dropping it releases the pin.
-pub type SlotPin = PinHandle<ActivityKey, std::sync::Arc<KvSlotLease>>;
+pub type SlotPin = PinHandle<PageKey, std::sync::Arc<KvSlotLease>>;
 
 /// How a request may touch serving slots — the traffic-class policy, AS DATA
 /// (one tested map over the existing `purpose` strings, answering the
 /// INFERENCE-SCHEDULING doc's open question; never per-callsite hacks).
 ///
-/// Placement rule: **only `Turn` may hold or evict a citizen's activity slot.**
+/// Placement rule: **only `Turn` may hold or evict a citizen's page slot.**
 /// Everything else lands on the reserved SCRATCH slot. A single-slot server
 /// saves its resident before lending that slot transiently; a two-slot server
 /// without scratch stays unpinned. Both use `cache_prompt: false`. The
 /// measured defect this closes: the small sidecar calls (`should_respond`,
-/// `check_redundancy`, `generate_response`) pinned the SAME slot as the turn
+/// `generate_response`) pinned the SAME slot as the turn
 /// and truncated the citizen's ~30k warm tail to their tiny common head —
 /// breaking KV reuse even for a SOLO citizen — while the smoke probe and the
 /// unpinned producers were free to LCP-steal any warm slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotClass {
-    /// The citizen's real turn (deliberation / persona-respond): pins her
-    /// activity slot via [`ActivityKey`].
+    /// The citizen's real turn (deliberation / act / persona-respond): pins her
+    /// MIND's slot ([`PageKey::Mind`]), one page across every room she acts in.
     Turn,
+    /// A forked copy's turn (an eval exam acting beside the living mind): pins its own
+    /// per-room slot ([`PageKey::Fork`]), never her page.
+    Fork,
     /// Short same-context helper calls riding a live turn (gates, validators,
-    /// recipe/proposal raters): scratch — never the activity slot they'd clobber.
+    /// recipe/proposal raters): scratch — never the page slot they'd clobber.
     Sidecar,
-    /// Background cognition with no live turn (dream lenses, module inference,
-    /// anything unrecognized): scratch.
+    /// Background cognition with no live turn (module inference, anything
+    /// unrecognized): scratch.
     Background,
+    /// A dream lens (consolidation, belief review, the historian): background work on
+    /// scratch that yields to residents. With a scratch slot its admission is that slot;
+    /// without one it borrows a citizen slot and takes an ambient serving lane first
+    /// (`turn_admission::admit`), so a waiting turn still wins the lane.
+    Dream,
     /// Infrastructure traffic (smoke probe, warmup, operator try-outs): scratch.
     Probe,
 }
@@ -46,12 +54,18 @@ impl SlotClass {
     pub fn as_str(&self) -> &'static str {
         match self {
             SlotClass::Turn => "turn",
+            SlotClass::Fork => "fork",
             SlotClass::Sidecar => "sidecar",
             SlotClass::Background => "background",
+            SlotClass::Dream => "dream",
             SlotClass::Probe => "probe",
         }
     }
 }
+
+/// An external agent's call through the driver gateway: a Turn of its session's mind, so the
+/// session keeps a warm, paged page exactly as a resident does (DRIVER-GATEWAY.md G2).
+pub const DRIVER_PURPOSE: &str = "driver";
 
 /// The ONE purpose→class map. Unknown purposes default to `Background` —
 /// scratch placement — so a new producer can never clobber a citizen slot by
@@ -61,9 +75,9 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         Some("cognition/deliberation")
         | Some("cognition/act")
         | Some("persona-respond")
-        | Some("persona_decide_and_respond") => SlotClass::Turn,
+        | Some("persona_decide_and_respond")
+        | Some(DRIVER_PURPOSE) => SlotClass::Turn,
         Some("cognition/should-respond")
-        | Some("cognition/check-redundancy")
         | Some("cognition/generate-response")
         | Some("cognition/validate-response-decision")
         | Some("resolution-draft")
@@ -77,27 +91,28 @@ pub fn class_for(purpose: Option<&str>) -> SlotClass {
         | Some("local-coding-agent")
         | Some("serving-smoke-probe")
         | Some("cognition/replay-request") => SlotClass::Probe,
+        Some("dream-consolidation") | Some("dream-belief-review") | Some("wanderer-historian") => SlotClass::Dream,
+        Some(crate::inference::request_body::FORK_ACT_PURPOSE)
+        | Some(crate::inference::request_body::FORK_DELIBERATION_PURPOSE) => SlotClass::Fork,
         _ => SlotClass::Background,
     }
 }
 
-/// The warm-KV identity: one persona's conversation in one room — an ACTIVITY.
-/// Typed UUIDs, non-nil by construction; the map keys on this struct itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ActivityKey {
-    pub persona: Uuid,
-    pub room: Uuid,
-}
+impl SlotClass {
+    /// Whether this class holds a warm slot of its own (a mind's or a fork's).
+    pub fn holds_a_page(&self) -> bool {
+        matches!(self, SlotClass::Turn | SlotClass::Fork)
+    }
 
-impl ActivityKey {
-    /// Both halves must be real ids. A nil room cannot become a key — the old
-    /// persona-only collapse (N concurrent activities thrashing one slot) and
-    /// the nil-room phantom key were the two halves of the KV-reuse-0% bug.
-    pub fn new(persona: Uuid, room: Uuid) -> Option<Self> {
-        if persona.is_nil() || room.is_nil() {
-            return None;
+    /// The page a request of this class warms: a Turn warms the persona's ONE mind page
+    /// whatever room it acts in; a Fork warms its own page in its room. `None` for every
+    /// class that holds no page, or when the ids it needs are missing or nil.
+    pub fn page_key(&self, persona: Option<Uuid>, room: Option<Uuid>) -> Option<PageKey> {
+        match self {
+            SlotClass::Turn => PageKey::mind(persona?),
+            SlotClass::Fork => ForkKey::new(persona?, room?).map(PageKey::Fork),
+            SlotClass::Sidecar | SlotClass::Background | SlotClass::Dream | SlotClass::Probe => None,
         }
-        Some(Self { persona, room })
     }
 }
 
@@ -110,7 +125,7 @@ impl ActivityKey {
 pub struct KvSlotLease {
     pub(super) slot: u32,
     pub(super) free: Arc<Mutex<Vec<u32>>>,
-    /// The activity's last-known prompt size in tokens — the COST basis for the
+    /// The page's last-known prompt size in tokens — the COST basis for the
     /// priced eviction policy (cost_of_loss ∝ tail re-prefill). Updated at each
     /// pin from the request's own token estimate; an estimate is fine because
     /// eviction only needs slots COMPARABLE, not absolutely priced.
@@ -123,7 +138,7 @@ impl Drop for KvSlotLease {
     }
 }
 
-/// The per-server slot pool: N leasable slot indices, activities resident in
+/// The per-server slot pool: N leasable slot indices, pages resident in
 /// the shared paging engine.
 /// Recency tie-break window: within it, a fresher equal-cost tail outranks a
 /// staler one; beyond it equal-cost tails are genuinely equivalent. Strictly
@@ -135,7 +150,7 @@ pub(super) const RECENCY_TIEBREAK_MS: u64 = 600_000;
 pub(super) const COST_STEP: i64 = 1 << 20;
 
 pub struct KvSlotPool {
-    pub(super) pool: PagedResourcePool<ActivityKey, Arc<KvSlotLease>>,
+    pub(super) pool: PagedResourcePool<PageKey, Arc<KvSlotLease>>,
     pub(super) free: Arc<Mutex<Vec<u32>>>,
     pub(super) n_slots: u32,
     /// The reserved non-citizen slot (highest index) when the server has ≥3
@@ -148,43 +163,54 @@ pub struct KvSlotPool {
     /// onto a resident's slot and overwrote her page; Sahar reused 0 tokens on
     /// every turn while Kimi, on the other slot, reused 44,950.
     pub(super) scratch: Option<u32>,
-    /// slot index → the activity whose KV last WARMED that slot. This is the
+    /// slot index → the page whose KV last WARMED that slot. This is the
     /// paging ledger's "who is resident" half: when a lease hands a slot to a
-    /// DIFFERENT activity, the previous holder's KV is still physically in the
+    /// DIFFERENT page, the previous holder's KV is still physically in the
     /// server slot and must be SAVED to its disk page before the new turn
     /// overwrites it. Tiny map (n_slots entries), cold path (one pin per turn).
-    pub(super) holders: Mutex<std::collections::HashMap<u32, ActivityKey>>,
+    pub(super) holders: Mutex<std::collections::HashMap<u32, PageKey>>,
     /// Activities with a valid KV page on disk (written via
     /// `/slots/{id}?action=save` under the lane's `--slot-save-path`). The
-    /// restore half of the ledger: a re-entering activity whose slot was
+    /// restore half of the ledger: a re-entering page whose slot was
     /// recycled restores its page (at this node's measured switch cost) instead of
     /// re-prefilling (~35s at 22k — the 330× cliff the restore economy names).
-    pub(super) saved: Mutex<std::collections::HashSet<ActivityKey>>,
+    pub(super) saved: Mutex<std::collections::HashSet<PageKey>>,
     /// Physical-slot admission also excludes concurrent requests for the same key.
     pub(super) operations: Vec<Arc<tokio::sync::Semaphore>>,
-    /// Signalled whenever a slot's operation permit is released: what a turn that found every
+    /// Signalled whenever a citizen slot's operation permit is released: what a turn that found every
     /// slot pinned waits on before it leases again (card ff9ecfd8), so it never runs unpinned
     /// over a resident's KV. A wake signal, not a queue: the order stays the server's own.
     pub(super) released: Arc<tokio::sync::Notify>,
     /// Where [`Self::saved`] persists, set once when the engine is ready under a contract
     /// that has a page dir and a fingerprint ([`SavedLedger`]). Unset = in-memory only.
     pub(super) ledger: std::sync::OnceLock<SavedLedger>,
+    /// The engine process this pool belongs to (pid, OS start time), stamped when the owned
+    /// engine is verified ready (`stamp_engine_incarnation`) or when discovery adopts a running
+    /// one it verified (`slots/discover.rs`), with or without a page ledger: the identity every
+    /// endpoint admission on this pool is bound to (`EndpointAdmission::incarnation`).
+    pub(super) incarnation: std::sync::OnceLock<(u32, u64)>,
     /// Numbers each change of [`Self::saved`] for the ledger, so a write taken outside the
     /// lock never replaces a newer one ([`Self::ledger_snapshot`]).
     pub(super) ledger_generation: AtomicU64,
+    /// What each slot physically holds and how new, against each confirmed page
+    /// ([`LiveSequences`]): a restore never regresses a newer live sequence.
+    pub(super) sequences: Mutex<LiveSequences>,
 }
 
-/// A slot's operation permit. Dropping it wakes turns waiting for a slot
+/// A slot's operation permit. Dropping a citizen permit wakes turns waiting for a slot
 /// ([`KvSlotPool::released`]); the holder's pin was already dropped (field order in
 /// `TurnAdmission`), so a woken turn finds that lease evictable.
 pub struct SlotPermit {
     pub(super) _permit: tokio::sync::OwnedSemaphorePermit,
-    pub(super) released: Arc<tokio::sync::Notify>,
+    /// Scratch has its own semaphore waiters, but cannot satisfy citizen admission.
+    pub(super) released: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl Drop for SlotPermit {
     fn drop(&mut self) {
-        self.released.notify_waiters();
+        if let Some(released) = &self.released {
+            released.notify_waiters();
+        }
     }
 }
 
@@ -195,28 +221,36 @@ impl Drop for SlotPermit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotPaging {
     pub slot: u32,
-    /// A different activity's KV is still resident in this slot — save it to
+    /// A different page's KV is still resident in this slot — save it to
     /// its disk page BEFORE the new turn's prefill overwrites it.
-    pub save_first: Option<ActivityKey>,
-    /// This activity has a page on disk and the slot does not currently hold
+    pub save_first: Option<PageKey>,
+    /// This page has a page on disk and the slot does not currently hold
     /// its (fresher) KV — restore the page before the turn.
     pub restore: bool,
-    /// The physical slot already contains this activity, rather than a new lease.
+    /// The physical slot already contains this page, rather than a new lease.
     pub already_resident: bool,
+    /// Why: her live sequence against her page. `restore` and `already_resident` are derived
+    /// from it in [`SlotPaging::judged`], the one constructor.
+    pub basis: super::SequenceBasis,
 }
 
-/// The page filename for an activity — stable across processes, one file per
-/// activity, overwritten on each save. Lives under the lane's geometry-keyed
-/// `--slot-save-path` dir, so a page can never be restored into a slot with a
-/// different context size or model.
-pub fn page_filename(key: &ActivityKey) -> String {
-    format!("a-{}-{}.bin", key.persona.simple(), key.room.simple())
+impl SlotPaging {
+    pub(super) fn judged(slot: u32, save_first: Option<PageKey>, basis: super::SequenceBasis) -> Self {
+        use super::SequenceBasis::*;
+        Self {
+            slot,
+            save_first,
+            restore: matches!(basis, PageCurrent | PageBehindLive),
+            already_resident: matches!(basis, Attributed | LiveKept),
+            basis,
+        }
+    }
 }
 
-/// The KV page store is VIRTUAL-MEMORY PAGING ON CHEAP DISK — one page (+ one
-/// checkpoint sidecar) per activity, overwritten on each save, kept across runs
-/// under the geometry-keyed dir — and it must hold EVERY active resident's
-/// activities without eviction (Joel, 2026-09-13: "disk is cheap … could easily
+/// The KV page store is VIRTUAL-MEMORY PAGING ON CHEAP DISK — one page (+ its
+/// sidecars) per mind, and per room of a fork, overwritten on each save, kept across
+/// runs under the geometry-keyed dir — and it must hold EVERY active resident's
+/// page without eviction (Joel, 2026-09-13: "disk is cheap … could easily
 /// support all active resident persona"). So the limit is generous bytes on
 /// disk, never the slot count, and only pages nobody has touched for
 /// [`KV_PAGE_MIN_AGE_MS`] are candidates: an active resident's page is always
@@ -235,17 +269,6 @@ pub fn note_page_dir(dir: &std::path::Path) {
     *PAGE_DIR.lock() = Some(dir.to_path_buf());
 }
 
-/// The one disk read in flight, and the dir it reads. ONE: every page dir is under one store on one
-/// volume, so a second concurrent read only adds a second stuck thread when that volume stops
-/// answering, and a plan whose geometry churns could otherwise start one per window (root on
-/// #5060). The read is its own task: it lands its samples and clears this slot whether or not
-/// anyone is still waiting on it.
-pub(super) static SEEDING: parking_lot::Mutex<Option<(std::path::PathBuf, futures::future::Shared<futures::future::BoxFuture<'static, ()>>)>> =
-    parking_lot::Mutex::new(None);
-
-#[cfg(test)]
-pub(super) static SEED_READS: parking_lot::Mutex<Vec<std::path::PathBuf>> = parking_lot::Mutex::new(Vec::new());
-
 /// A restarted core starts with no state samples while the pages it would measure sit on disk
 /// (IntelMac, 2026-10-11 02:46Z: derived 1,792 MiB beside states up to 865 MB). Seed the EXACT page
 /// dir a sizing is about to read from its newest pages, before it reads: they are exactly the saves
@@ -255,7 +278,7 @@ pub(super) static SEED_READS: parking_lot::Mutex<Vec<std::path::PathBuf>> = park
 /// 9,477 MiB; card 37eb1925).
 ///
 /// The sample cache is the readiness authority: a dir it knows (measured, or read and empty) is not
-/// read again, and a dir it evicted is unknown again. One read is in flight at a time ([`SEEDING`]);
+/// read again, and a dir it evicted is unknown again. One read is in flight at a time (owned by the sampler);
 /// while another dir's read is still running, this dir stays unknown and its sizing uses the
 /// estimate, and the next ask reads it. The read runs on the blocking pool, never on a worker (root
 /// on #5060), and each asker waits at most the disk reporters'
@@ -263,91 +286,7 @@ pub(super) static SEED_READS: parking_lot::Mutex<Vec<std::path::PathBuf>> = park
 /// disk leaves one read in flight and the sizing on its estimate, and never holds serving. A read
 /// that fails leaves the dir unknown (probed), so the next ask reads again.
 pub async fn seed_state_samples(dir: &std::path::Path) {
-    seed_state_samples_with(dir, |dir| newest_page_states(dir, STATE_SAMPLES)).await;
-}
-
-pub(super) async fn seed_state_samples_with(
-    dir: &std::path::Path,
-    read: impl FnOnce(&std::path::Path) -> Result<Vec<u64>, String> + Send + 'static,
-) {
-    use crate::runtime::daemon::{guarded, Guarded};
-    let reading = {
-        let mut seeding = SEEDING.lock();
-        if state_dir_known_in(&RECENT_STATE_BYTES.lock(), dir) {
-            return;
-        }
-        match &*seeding {
-            Some((reading, read)) if reading == dir => read.clone(),
-            Some((reading, _)) => {
-                continuum_base::probe!(
-                    class = "inference.kv_page.seed_busy",
-                    dir = %dir.display(),
-                    reading = %reading.display(),
-                    "another page dir is still being read; this sizing uses the estimate, the next ask reads this one",
-                );
-                return;
-            }
-            None => {
-                let landed = spawn_state_read(dir.to_path_buf(), read);
-                *seeding = Some((dir.to_path_buf(), landed.clone()));
-                landed
-            }
-        }
-    };
-    if let Guarded::TimedOut = guarded(crate::system_resources::disk_pressure::REPORTER_TIMEOUT, reading).await {
-        continuum_base::probe!(
-            class = "inference.kv_page.seed_pending",
-            dir = %dir.display(),
-            "the saved pages are still being read; this sizing uses the estimate, the next one the pages",
-        );
-    }
-}
-
-/// Start the read of `dir` as its own task and return its completion for askers to wait on. The
-/// task lands the samples (a live sample already there outranks them), THEN clears [`SEEDING`], so
-/// no asker between the two starts a second read; it never holds both locks.
-pub(super) fn spawn_state_read(
-    dir: std::path::PathBuf,
-    read: impl FnOnce(&std::path::Path) -> Result<Vec<u64>, String> + Send + 'static,
-) -> futures::future::Shared<futures::future::BoxFuture<'static, ()>> {
-    use futures::FutureExt;
-    #[cfg(test)]
-    SEED_READS.lock().push(dir.clone());
-    let released = dir.clone();
-    let task = tokio::spawn(async move {
-        let path = dir.clone();
-        match tokio::task::spawn_blocking(move || read(&path))
-            .await
-            .map_err(|error| error.to_string())
-            .and_then(|states| states)
-        {
-            Ok(states) => seed_dir_in(&mut RECENT_STATE_BYTES.lock(), &dir, states),
-            Err(error) => continuum_base::probe!(
-                class = "inference.kv_page.seed_failed",
-                dir = %dir.display(),
-                error = %error,
-                "reading the saved pages on disk failed; left unmeasured, the next ask reads again",
-            ),
-        }
-        let mut seeding = SEEDING.lock();
-        if seeding.as_ref().is_some_and(|(reading, _)| reading == &dir) {
-            *seeding = None;
-        }
-    });
-    async move {
-        // The read's own failures (the reader, the blocking pool) release the slot inside the
-        // task. Only a panic of the task itself skips that, and then the slot is released here,
-        // when an asker next waits on it: waiter-dependent, and with no reachable panic in the
-        // task body, not relied on (root on #5060).
-        if task.await.is_err() {
-            let mut seeding = SEEDING.lock();
-            if seeding.as_ref().is_some_and(|(reading, _)| reading == &released) {
-                *seeding = None;
-            }
-        }
-    }
-    .boxed()
-    .shared()
+    super::state_sampler::STATE_SAMPLER.seed(dir).await;
 }
 
 /// The engine's sidecars beside each page, saved and restored with it: the context checkpoints
@@ -389,7 +328,7 @@ pub(super) fn pages_in(dir: &std::path::Path) -> Result<std::collections::HashMa
         };
         let sidecar = PAGE_SIDECARS.iter().find_map(|s| name.strip_suffix(s));
         let page = sidecar.unwrap_or(&name).to_string(); // unwrap_or: a name with no sidecar suffix IS the page name
-        if !md.is_file() || !(page.starts_with("a-") && page.ends_with(".bin")) {
+        if !(md.is_file() && page.starts_with("a-") && page.ends_with(".bin")) {
             continue;
         }
         let entry = pages.entry(page).or_insert((std::time::SystemTime::UNIX_EPOCH, 0));
@@ -450,13 +389,8 @@ pub(super) const STATE_DIRS: usize = 8;
 /// node is never sized by another model's states (Fable on #4930).
 pub(super) type StateSamples = std::collections::VecDeque<(std::path::PathBuf, std::collections::VecDeque<u64>)>;
 
-pub(super) static RECENT_STATE_BYTES: parking_lot::Mutex<StateSamples> = parking_lot::Mutex::new(std::collections::VecDeque::new());
-
 pub(crate) fn note_state_bytes(dir: &std::path::Path, bytes: u64) {
-    if bytes == 0 {
-        return;
-    }
-    note_state_bytes_in(&mut RECENT_STATE_BYTES.lock(), dir, bytes);
+    super::state_sampler::STATE_SAMPLER.note(dir, bytes);
 }
 
 /// PURE: record `bytes` under `dir`, bounded by [`STATE_SAMPLES`] per dir and [`STATE_DIRS`] dirs.
@@ -505,7 +439,7 @@ pub(super) fn measured_state_bytes_in(samples: &StateSamples, dir: &std::path::P
 /// so 104 states were skipped and 220 evicted, and two minds on one slot found nothing.
 /// The largest, not a median: the engine refuses any state over the limit outright.
 pub fn measured_state_bytes(page_dir: &std::path::Path) -> Option<u64> {
-    measured_state_bytes_in(&RECENT_STATE_BYTES.lock(), page_dir)
+    super::state_sampler::STATE_SAMPLER.measured(page_dir)
 }
 
 /// Pure trim: pages (`a-*.bin`) with their sidecars ([`PAGE_SIDECARS`]), oldest mtime first,

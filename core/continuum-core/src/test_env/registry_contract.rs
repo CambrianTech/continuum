@@ -270,6 +270,22 @@ mod conformance {
                 .join("\n")
         );
     }
+
+    // what this catches: a native tool whose own result is never read, so a failure it
+    // returns as data renders as a success (code/edit and code/write before ONE-ACT 6b: a
+    // refused edit ticked). Run where every crate's commands link: the whole native surface.
+    #[test]
+    fn every_native_tool_projects_its_outcome() {
+        let natives = crate::sdk_codegen::command_registry().into_iter().filter(|d| d.native).count();
+        assert!(natives >= 20, "only {natives} native tools in the registry: the filter is broken");
+        let missing = crate::sdk_codegen::natives_without_an_outcome();
+        assert!(
+            missing.is_empty(),
+            "native tool(s) with no outcome projection: {missing:?}. Implement `ProjectsOutcome` and \
+             `register_outcome!(Cmd)` (or `register_outcome!(Cmd, refusals_only)` when its result has \
+             no failure state)"
+        );
+    }
 }
 
 mod events {
@@ -345,33 +361,21 @@ mod events {
 mod sdk_tests {
     use crate::sdk_codegen::*;
 
-    // what this catches: EVERY registered command's descriptor must build without
-    // panicking — i.e. its Params and Result are named TS types, not inline
-    // primitives (`Vec<T>`, `Option<T>`, bare scalars). A single inline-primitive
-    // output panics the whole `command_registry()` walk (regression for the
+    // what this catches: EVERY registered command's descriptor must build — i.e. its
+    // Params and Result are named TS types, not inline primitives (`Vec<T>`,
+    // `Option<T>`, bare scalars). A single inline-primitive output is a codegen
+    // defect that refuses boot (regression for the
     // `cognition/semantic-search-tools` / `inbox/drain-frame` / `vision-describe`
     // sweep — a bare `Vec`/`Option` output that poisoned `commands/list`).
     #[test]
     fn every_registered_command_descriptor_builds() {
-        // command_registry() itself panics on the first offender; walk the raw
-        // registrations so a failure names ALL offenders, not just the first.
-        let prev = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let mut offenders = Vec::new();
-        for reg in inventory::iter::<CommandRegistration>() {
-            if let Err(e) = std::panic::catch_unwind(reg.descriptor_fn) {
-                let msg = e
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "<non-string panic>".to_string());
-                offenders.push(msg);
-            }
-        }
-        std::panic::set_hook(prev);
+        // The registry records every offender (and leaves it out), so a failure names ALL
+        // of them, not just the first.
+        let offenders: Vec<String> =
+            command_registry_defects().iter().chain(event_registry_defects()).map(ToString::to_string).collect();
         assert!(
             offenders.is_empty(),
-            "{} command(s) have inline-primitive Params/Result — wrap in a named struct:\n{}",
+            "{} command(s) cannot be described — wrap inline-primitive Params/Result in a named struct:\n{}",
             offenders.len(),
             offenders.join("\n")
         );

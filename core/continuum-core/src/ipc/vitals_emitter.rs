@@ -90,8 +90,13 @@ const TPS_FULL_SCALE: u64 = 40;
 /// Prefill/ingest t/s that reads as pegged (M-series ingest ~300-800).
 const PFX_FULL_SCALE: u64 = 800;
 
+/// `v` as a share of a full scale, in percent. Past the full scale it reads as full, and an
+/// empty scale reads as nothing for nothing and full for anything.
 fn pct_usize(v: usize, full: usize) -> u8 {
-    (v.saturating_mul(100) / full.max(1)).min(100) as u8
+    if v >= full {
+        return if v == 0 { 0 } else { 100 };
+    }
+    (v.saturating_mul(100) / full) as u8 // v < full, so the share is below 100 and fits a u8
 }
 
 /// One tick's radiated readouts from `registry` — the SAMPLE half of the
@@ -337,8 +342,8 @@ mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
     use crate::cognition::persona_workspace::{PersonaBrainConfig, PersonaWorkspaceRegistry};
-    use crate::persona::admission_state::AdmissionState;
-    use crate::persona::recall_metadata::RecallMetadataRegistry;
+    use crate::cognition::admission_state::AdmissionState;
+    use crate::cognition::recall_metadata::RecallMetadataRegistry;
 
     /// A minimal resident persona in a LOCAL registry (never the process
     /// global), keyed by `peer_id` — the same uuid the spawn path would take
@@ -354,7 +359,6 @@ mod tests {
                     RecallMetadataRegistry::new(),
                 ))),
                 adapter: std::sync::Arc::new(HeuristicInferenceAdapter::new()),
-                capacity: None,
                 grounding_sources: Vec::new(),
                 embedder: None,
                 tool_executor: None,
@@ -363,6 +367,8 @@ mod tests {
                 defer_recall: false,
                 defer_grounding: false,
                 suppress_recall: false,
+                forked: false,
+                read_receipt: None,
             })
             .expect("test: resident checkpoint is readable");
         registry
@@ -442,7 +448,7 @@ mod tests {
     fn queue_vital_sums_staged_unread_across_the_personas_channels() {
         use crate::cognition::channel_digest::ChannelDigestBuilder;
         use crate::cognition::channel_element::ChannelElementCache;
-        use crate::cognition::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
+        use crate::ai::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
         use crate::runtime::ready_buffer::ReadyBuffer as _;
         use airc_lib::RoomId;
 

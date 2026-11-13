@@ -11,8 +11,8 @@
 //! prompt samples, measured waits) are serving facts, so they live with the engine;
 //! the mind's own turn bookkeeping is `cognition::turn_ledger`, which calls down here.
 
-
 mod gate;
+mod lane_handoff;
 mod lanes;
 mod metrics;
 mod progress;
@@ -21,7 +21,9 @@ mod serving_lane_permit;
 mod tests;
 
 pub use gate::*;
+pub(crate) use lane_handoff::take_serving_lane;
+pub use lane_handoff::with_serving_lane;
 pub use lanes::*;
 pub use metrics::*;
-pub use progress::{LaneWait, LaneProgress};
+pub use progress::{LaneProgress, LaneWait};
 pub use serving_lane_permit::ServingLanePermit;

@@ -28,6 +28,14 @@ pub struct LlamaServerProcess {
     pub(super) pending_resource_reservation: parking_lot::Mutex<Option<crate::resources::LeaseGuard>>,
     // Retains the exact startup generation even when readiness already retired it.
     pub(super) last_started: parking_lot::Mutex<Option<crate::inference::slots::EngineGeneration>>,
+    /// A launch whose readiness wait ended while its engine still loaded ([`super::late_ready`]):
+    /// the next launch finishes that engine instead of replacing it, when it is still the same.
+    pub(super) loading: parking_lot::Mutex<Option<super::late_ready::LoadingLaunch>>,
+    /// A signalled adopted predecessor stays fenced across timeout/cancellation.
+    pub(super) retiring_adopted: parking_lot::Mutex<Option<crate::inference::engine_residency::EngineIncarnation>>,
+    /// The residents that predecessor loses unsaved, recorded only once its exit is observed
+    /// (card 6b28a445). Held with `retiring_adopted`, so a re-entered wait still records it.
+    pub(super) retiring_discard: parking_lot::Mutex<Option<crate::inference::slots::PendingDiscard>>,
     /// The LoRA genome set (sorted paths) the CURRENT child was launched with —
     /// the truthful record of what `/lora-adapters` holds, since llama.cpp has no
     /// API to query it. `ensure_model_serving` compares this against the desired
@@ -35,7 +43,10 @@ pub struct LlamaServerProcess {
     /// with a persisting server this reads empty → one safe extra relaunch
     /// re-establishes the genome (core owns the lifecycle, so this is truthful in
     /// the steady state).
-    pub(super) served_adapters: Arc<StdMutex<Vec<String>>>,
+    /// The adapter set the served engine holds, as genome paths: `None` until this process launches
+    /// the engine or reads an adopted engine's own report (`active_adapters`), never an empty set
+    /// standing in for one it did not read.
+    pub(super) served_adapters: Arc<StdMutex<Option<Vec<String>>>>,
     /// The page-dir reservation of the CURRENT child when its registry record could
     /// not be written — kept until the owned child reports exit
     /// (see [`PageDirReservation`]). Empty when the record carries the dir.
@@ -47,6 +58,10 @@ pub struct LlamaServerProcess {
     /// it would reap the living persona's own server. This boolean is the seam
     /// that keeps the reclaim machinery bound to exactly one process.
     pub(super) is_live_lane: bool,
+    /// Where a spawned candidate's `tail_tools` evidence is published ([`LaunchedEvidence`]):
+    /// the serving lane's cell for the live lane, none for an ephemeral lane, which serves no
+    /// resident's tool head.
+    pub(super) served_evidence: Option<&'static ServedEvidence>,
     /// Raised by this lane's stderr watcher when a slot reports impossible progress,
     /// polled by the serving daemon. Live lane only — an ephemeral lane has no daemon
     /// watching it and tears down its own process, so its watcher would report into a void.
@@ -56,10 +71,11 @@ pub struct LlamaServerProcess {
     /// carries it (live and ephemeral): a CPU-fallback eval lane silently corrupts a
     /// benchmark's wall-clock exactly like a live one starves citizens.
     pub(super) offload: crate::inference::placement_watch::OffloadReport,
-    /// LEARNED, once per lane: the served model spends its quick smoke budget inside
-    /// the reasoning channel (a thinking model). Latched on the first `ThinkStarved`
-    /// verdict; every later readiness check then STARTS at the thinking budget instead
-    /// of re-proving the same property by burning a doomed 24-token generation first.
+    /// LEARNED, once per lane: the served model's template thinks even when the smoke
+    /// request asks for no reasoning, so the answer-sized attempt runs out inside the
+    /// reasoning channel. Latched on the first `ThinkStarved` verdict; every later
+    /// readiness check then STARTS at the engine's own bound instead of re-proving the
+    /// same property by burning a doomed answer-sized generation first.
     /// Measured before this latch: the identical `think_retry` fired ~30×/hour on a
     /// contended lane — two generations per readiness check, forever, on the same
     /// slots the citizens were starving for. Thinking-ness is a property of the MODEL;
@@ -130,11 +146,15 @@ impl LlamaServerProcess {
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
             last_started: parking_lot::Mutex::new(None),
-            served_adapters: Arc::new(StdMutex::new(Vec::new())),
+            loading: parking_lot::Mutex::new(None),
+            retiring_adopted: parking_lot::Mutex::new(None),
+            retiring_discard: parking_lot::Mutex::new(None),
+            served_adapters: Arc::new(StdMutex::new(None)),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // THE host's live lane — pins the canonical port, owns the reclaim
             // pidfile. `new()`/`with_client()` are the live constructors.
             is_live_lane: true,
+            served_evidence: Some(serving_lane_evidence()),
             wedge: Some(crate::inference::wedge::WedgeFlag::new()),
             offload: crate::inference::placement_watch::OffloadReport::new(),
             smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
@@ -162,11 +182,15 @@ impl LlamaServerProcess {
             child: Arc::new(StdMutex::new(None)),
             pending_resource_reservation: parking_lot::Mutex::new(None),
             last_started: parking_lot::Mutex::new(None),
-            served_adapters: Arc::new(StdMutex::new(Vec::new())),
+            loading: parking_lot::Mutex::new(None),
+            retiring_adopted: parking_lot::Mutex::new(None),
+            retiring_discard: parking_lot::Mutex::new(None),
+            served_adapters: Arc::new(StdMutex::new(None)),
             retained_page_dir: Arc::new(parking_lot::Mutex::new(None)),
             // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
             // It must never write the canonical pidfile or reclaim the live port.
             is_live_lane: false,
+            served_evidence: None,
             // No serving daemon watches an ephemeral lane, and its owner tears the process
             // down when the eval ends — a wedge report would have no consumer.
             wedge: None,
@@ -320,23 +344,14 @@ impl LlamaServerProcess {
     /// a co-resident second Metal context that never acquired the device), distinct
     /// from a crash (which prints a banner + fault first).
     pub(super) fn stderr_log_tail(&self) -> String {
-        let Some(port) = self
-            .root
-            .rsplit(':')
-            .next()
-            .and_then(|p| p.parse::<u16>().ok())
-        else {
+        let Some(port) = super::port_of_base_url(&self.root) else {
             return "<lane port unparseable>".to_string();
         };
-        let Some(path) = dirs::home_dir().map(|h| {
-            h.join(".continuum")
-                .join("logs")
-                .join(format!("llama-server-{port}.log"))
-        }) else {
+        let Some(path) = crate::inference::child_log::llama_server_log(port) else {
             return "<no home dir>".to_string();
         };
         match std::fs::read_to_string(&path) {
-            Ok(s) => tail_or_hang_marker(&s),
+            Ok(s) => tail_or_hang_marker(&path.display().to_string(), &s),
             // The marker is the contract (never block the error path), but a bare
             // "unreadable" hides WHY — permissions vs absent vs mid-rotation.
             Err(e) => format!("<stderr log unreadable: {e}>"),
@@ -353,20 +368,18 @@ impl LlamaServerProcess {
 /// dies before llama.cpp prints its banner) vs. a genuine early-init hang (child
 /// still running at the deadline). A crash from bad args or a model-load fault
 /// prints the banner + fault FIRST, so a non-empty tail carries that directly.
-/// Pure so the load-bearing empty-vs-tail decision is unit-tested without touching
-/// the real `~/.continuum/logs` path ([[self-test-via-command-feedback-surface-
-/// never-blind]], and #72's env-dependent-test lesson).
-pub(super) fn tail_or_hang_marker(contents: &str) -> String {
-    let mut lines: Vec<&str> = contents.lines().rev().take(20).collect();
-    lines.reverse();
-    let tail = lines.join("\n");
-    if tail.trim().is_empty() {
-        "<stderr log empty — child produced no output before it stopped: with a SIGKILL/137 \
-         exit this is an OS OOM/jetsam kill (a second large model that didn't fit in free \
-         memory); with no exit status it is a genuine early-init hang>"
-            .to_string()
-    } else {
-        tail
+/// The report names the log (the whole output, reachable) and its last line (where a fault
+/// prints); it never picks a fixed number of lines to keep. Pure so the load-bearing
+/// empty-vs-fault decision is unit-tested without touching the real `~/.continuum/logs` path
+/// ([[self-test-via-command-feedback-surface-never-blind]], and #72's env-dependent-test lesson).
+pub(super) fn tail_or_hang_marker(log_path: &str, contents: &str) -> String {
+    match contents.lines().rev().find(|line| !line.trim().is_empty()) {
+        Some(last) => format!("{last} (full log: {log_path})"),
+        None => format!(
+            "<stderr log empty — child produced no output before it stopped: with a SIGKILL/137 \
+             exit this is an OS OOM/jetsam kill (a second large model that didn't fit in free \
+             memory); with no exit status it is a genuine early-init hang> (log: {log_path})"
+        ),
     }
 }
 
@@ -396,8 +409,7 @@ impl LlamaServerProcess {
         invocation: &crate::inference::lane_args::LaneInvocation,
         prepared: Option<Arc<PreparedLocalLaunch>>,
         engine_program: &str,
-        context: u32,
-        lanes: u32,
+        observed: ObservedGeometry,
     ) {
         let mut child = self.child.lock().unwrap(); // JUSTIFIED: poison means prior panic mutating the owned child.
         if let Some(owned) = child
@@ -406,7 +418,7 @@ impl LlamaServerProcess {
         {
             let prepared = prepared.map(|original| {
                 let mut verified = original.as_ref().clone();
-                verified.expected_geometry = Some((context, lanes));
+                verified.expected_geometry = Some((observed.context_window, observed.lanes));
                 Arc::new(verified)
             });
             owned.verified_target = Some(OwnedServingTarget {
@@ -418,8 +430,7 @@ impl LlamaServerProcess {
                 target: target.clone(),
                 engine_program: engine_program.to_string(),
                 invocation: invocation.clone(),
-                observed_context_window: context,
-                observed_lanes: lanes,
+                observed,
                 launched_host_prompt_cache_mib: self
                     .launched_prompt_cache_mib
                     .load(std::sync::atomic::Ordering::Relaxed),

@@ -1,6 +1,6 @@
 use super::super::*;
 
-/// llama-server frontier/work-tier rows (Qwen3.8-27B, Ornith, Flash-Next, Hermes-3) and the ds4 DeepSeek sidecar.
+/// llama-server frontier/work-tier rows (Qwen3.8-27B, Qwen3.6-35B-A3B, Ornith, Flash-Next, Hermes-3) and the ds4 DeepSeek sidecar.
 pub(super) fn llama_server_frontier() -> Vec<Model> {
     vec![
         // QWEN3.8-27B — the FRONTIER-TIER lane (Joel, 2026-08-15: "open models just got
@@ -68,6 +68,41 @@ pub(super) fn llama_server_frontier() -> Vec<Model> {
                         // AA Intelligence Index v4.2 (2026-09-05 chart): 42.
             serving: ModelServingPrefs { measured_capability: Some(42), ..ModelServingPrefs::default() },
 ..ModelSpec::default()
+        }),
+        // QWEN3.6-35B-A3B — the MoE successor to Qwen3.5-35B-A3B with native image and video
+        // input, packaged like the 27B (ggml-org: main + mtp draft + mmproj in one snapshot).
+        // Joel, 2026-10-25: "we need more like 50tok/sec so probably this 3.6 model".
+        // MEASURED on this M5 Pro (2026-10-25, engine b10994-e7e1077b3, one slot at 43,776,
+        // q4_0 KV, flash-attn, MTP draft n-max 4): Aiko's eight captured act prompts replayed
+        // in order, 256 tokens each, against the 27B at identical conditions:
+        //   wall for the eight     106 s   vs Qwen3.8-27B 374 s  (3.5x)
+        //   prefill              667-1036 t/s vs 187-249
+        //   cold 22k prompt         21 s   vs 89 s
+        //   decode (MTP on)       51.6-60.4 t/s vs 14.6-20.3, draft acceptance ~90% on both
+        // Receipt: the replay of 75ece751's prompt captures, 2026-10-25 ~02:57Z.
+        model(ModelSpec {
+            id: "ggml-org/Qwen3.6-35B-A3B-GGUF",
+            name: "Qwen3.6-35B-A3B (fast MoE coder: image + video)",
+            provider: "llama-server",
+            arch: Arch::Qwen35,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            // The single-stream expectation the #441 collapse alarm reads: the replay's
+            // median decode at a 22-26k-token prompt, MTP on.
+            tokens_per_second: 56.1,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/ggml-org/Qwen3.6-35B-A3B-GGUF"),
+            hf_source: Some("Qwen/Qwen3.6-35B-A3B"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
         }),
         // ORNITH-1.5-35B-A3B — the WORK-TIER lane (Joel, 2026-08-22: "Swap it for
         // sure"), adopted on a same-day tier battery against the incumbent at

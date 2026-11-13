@@ -10,7 +10,6 @@
 
 use std::path::{Path, PathBuf};
 
-use super::types::MAX_WRITE_SIZE;
 
 /// Workspace-scoped path security validator.
 ///
@@ -29,13 +28,9 @@ pub struct PathSecurity {
 pub enum ReadScope {
     /// The workspace and its read-only roots — every caller.
     Sandbox,
-    /// Also any absolute path the OS user can read or write, except `deny`: the operator
-    /// (`deny` empty: the core runs as the operator, whose files are the operator's), and
-    /// this node's resident (`deny` = her confinement's [`host_denials`]: every credential
-    /// path and every other citizen's directory, Joel 2026-10-18 "keep creds off-limits").
-    ///
-    /// [`host_denials`]: crate::system_resources::confinement::Confinement::host_denials
-    Host { deny: Vec<PathBuf> },
+    /// Also any absolute path the OS user can read or write: the operator, and this node's
+    /// residents, whose shell is the operator's (Joel, 2026-11-08: "Stop caging them").
+    Host,
     /// Also any absolute path inside the caller's confinement (card d598c806): a citizen
     /// whose trust admits `code/shell` reads what her shell can read — her workspace,
     /// her citizen directory, the toolchains, the temp dir — and nothing the kernel
@@ -48,8 +43,10 @@ pub enum ReadScope {
 pub enum PathSecurityError {
     /// Path escapes the workspace boundary.
     TraversalBlocked { path: String, workspace: String },
-    /// File exceeds maximum write size.
+    /// A write larger than the free space measured on the workspace's volume at the write.
     FileTooLarge { path: String, size: u64, max: u64 },
+    /// The workspace volume's free space could not be read, so a write's room is unknown.
+    SpaceUnreadable { path: String, kind: std::io::ErrorKind },
     /// Path is not valid UTF-8.
     InvalidPath { path: String },
     /// Workspace root does not exist or is not a directory.
@@ -135,22 +132,16 @@ fn missing_path_lead(root: &std::path::Path, normalized: &str) -> String {
     }
 
     // No near-miss: name the divergence point and show what is actually there, so her next
-    // act is a corrected read rather than another guess.
-    let shown: Vec<String> = names.iter().take(12).cloned().collect();
-    let more = names.len().saturating_sub(shown.len());
+    // act is a corrected read rather than another guess. Every entry: her refusal renders
+    // through the one codec, which decides what of it she reads.
     format!(
-        "The path is good up to '{}' — but that directory has no '{broke}'. It contains: {}{}.",
+        "The path is good up to '{}' — but that directory has no '{broke}'. It contains: {}.",
         if existing_prefix.is_empty() {
             "."
         } else {
             &existing_prefix
         },
-        shown.join(", "),
-        if more > 0 {
-            format!(", …+{more} more")
-        } else {
-            String::new()
-        }
+        names.join(", "),
     )
 }
 
@@ -197,7 +188,10 @@ impl std::fmt::Display for PathSecurityError {
                 write!(f, "Path '{}' escapes workspace '{}'", path, workspace)
             }
             Self::FileTooLarge { path, size, max } => {
-                write!(f, "File '{}' is {} bytes (max: {})", path, size, max)
+                write!(f, "File '{}' is {} bytes, more than the {} bytes free on the workspace's volume", path, size, max)
+            }
+            Self::SpaceUnreadable { path, kind } => {
+                write!(f, "Cannot write '{}': the workspace volume's free space is unreadable ({kind})", path)
             }
             Self::InvalidPath { path } => {
                 write!(f, "Invalid path: '{}'", path)
@@ -352,8 +346,8 @@ pub fn clean_path_arg(raw: &str) -> CleanedPathArg {
 
 /// Whether a host-scope caller is refused `path` (canonical): inside a denial root, or a
 /// scope's signing key wherever it sits.
-fn host_denied(deny: &[PathBuf], path: &Path) -> bool {
-    deny.iter().any(|d| path.starts_with(d)) || crate::system_resources::confinement::is_scoped_credential(path)
+fn host_denied(path: &Path) -> bool {
+    crate::system_resources::confinement::is_scoped_credential(path)
 }
 
 impl PathSecurity {
@@ -427,8 +421,8 @@ impl PathSecurity {
         let sandboxed = self.validate_read(path);
         if let Ok(inside) = &sandboxed {
             // Inside the workspace too: a scope key or a credential is never hers to read.
-            if let ReadScope::Host { deny } = &scope {
-                if host_denied(deny, inside) {
+            if let ReadScope::Host = &scope {
+                if host_denied(inside) {
                     return Err(PathSecurityError::TraversalBlocked { path: path.to_string(), workspace: self.workspace_root.display().to_string() });
                 }
             }
@@ -440,11 +434,11 @@ impl PathSecurity {
             (_, Some(Ok(canonical))) => canonical,
         };
         match scope {
-            ReadScope::Host { deny } if host_denied(&deny, &canonical) => Err(PathSecurityError::TraversalBlocked {
+            ReadScope::Host if host_denied(&canonical) => Err(PathSecurityError::TraversalBlocked {
                 path: path.to_string(),
                 workspace: self.workspace_root.display().to_string(),
             }),
-            ReadScope::Host { .. } => Ok(canonical),
+            ReadScope::Host => Ok(canonical),
             ReadScope::Confined(list) if list.permits_read(&canonical) => Ok(canonical),
             // Outside her roots: the sandbox's verdict names the workspace she escaped, the
             // same refusal her shell would have met at the kernel.
@@ -464,11 +458,11 @@ impl PathSecurity {
     /// workspace verdict.
     pub fn validate_write_in(&self, path: &str, scope: &ReadScope) -> Result<PathBuf, PathSecurityError> {
         let sandboxed = self.validate_write(path);
-        let ReadScope::Host { deny } = scope else {
+        let ReadScope::Host = scope else {
             return sandboxed;
         };
         if let Ok(inside) = &sandboxed {
-            if host_denied(deny, inside) {
+            if host_denied(inside) {
                 return Err(PathSecurityError::TraversalBlocked { path: path.to_string(), workspace: self.workspace_root.display().to_string() });
             }
             return sandboxed;
@@ -483,7 +477,7 @@ impl PathSecurity {
             Ok(dir) => {
                 let target = dir.join(name);
                 let lands = target.canonicalize().unwrap_or_else(|_| target.clone());
-                if host_denied(deny, &target) || host_denied(deny, &lands) {
+                if host_denied(&target) || host_denied(&lands) {
                     return Err(PathSecurityError::TraversalBlocked {
                         path: path.to_string(),
                         workspace: self.workspace_root.display().to_string(),
@@ -507,14 +501,14 @@ impl PathSecurity {
         self.resolve_for_write(relative_path)
     }
 
-    /// Validate file size for a write operation.
+    /// Whether a write of `size` bytes fits: the bound is the free space measured on the
+    /// workspace's volume at the write, never a size picked here (the 1 MiB constant it replaced
+    /// refused real files and protected no disk).
     pub fn validate_size(&self, path: &str, size: u64) -> Result<(), PathSecurityError> {
-        if size > MAX_WRITE_SIZE {
-            return Err(PathSecurityError::FileTooLarge {
-                path: path.to_string(),
-                size,
-                max: MAX_WRITE_SIZE,
-            });
+        let free = fs2::available_space(&self.workspace_root)
+            .map_err(|e| PathSecurityError::SpaceUnreadable { path: path.to_string(), kind: e.kind() })?;
+        if size > free {
+            return Err(PathSecurityError::FileTooLarge { path: path.to_string(), size, max: free });
         }
         Ok(())
     }

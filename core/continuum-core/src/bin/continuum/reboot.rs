@@ -74,7 +74,7 @@ impl RebootOptions {
                 }
             }
         }
-        // `--service` alone (2026-09-19, card 82af11f5): the warm build produces the
+        // `--service` alone (2026-09-19, card 82af11f5): the dark build produces the
         // artifact and the supervisor takes it — the path the deploy consumer runs
         // unattended. Until now `--service` demanded a hand-supplied `--prebuilt`,
         // which is exactly why the 5090 ran whatever a hand last typed.
@@ -154,9 +154,101 @@ impl PrebuiltCore {
     }
 }
 
+/// What the running core's own `serving/status` hold says its engine carries. A read that fails
+/// is `NoCore` only when no core process is alive; with one alive it is `Unreadable` (a busy
+/// training core answers slowly), never "nothing held" (Codex on #5551).
+async fn observe_engine_hold() -> (continuum_cli_lifecycle::deploy_hold::HoldObservation, Option<ServingHold>) {
+    use continuum_cli_lifecycle::deploy_hold::HoldObservation;
+    match read_engine_hold().await {
+        Ok(held) => (observation_of(held.as_ref(), kept_engine()), held),
+        Err(_) if !running_core_pids().into_iter().any(pid_alive) => (HoldObservation::NoCore, None),
+        Err(why) => (HoldObservation::Unreadable(why), None),
+    }
+}
+
+type ServingHold = continuum_core::inference::llama_server::serving_hold::ServingHold;
+
+/// The running core's `serving/status` hold, decoded.
+async fn read_engine_hold() -> Result<Option<ServingHold>, String> {
+    let response = running_core_provenance("serving/status", "deploy training guard").await?;
+    serde_json::from_value::<continuum_core::inference::llama_server::ServingSnapshot>(response) // IPC boundary: decode the running core's serving/status response.
+        .map(|snapshot| snapshot.held_for)
+        .map_err(|e| format!("serving snapshot: {e}"))
+}
+
+/// The engine incarnation (pid, start time) this handoff keeps running: the live lane, where this
+/// platform's handoff leaves it up (`continuum_host::core_handoff`).
+fn kept_engine() -> Option<(u32, u64)> {
+    if !continuum_host::core_handoff::keeps_engine_lanes() {
+        return None;
+    }
+    continuum_core::inference::lane_registry::live_lane().map(|lane| (lane.pid, lane.started_s))
+}
+
+/// PURE: what a decoded hold says. A hold of unknown cause (its residency record unreadable) is
+/// not a confirmed absence of work: Unreadable, deferred like a failed read (Codex on #5551).
+/// Work bound, every piece, to the engine this handoff keeps (`kept`, pid and start time) is
+/// Carried: it goes on with that engine and the next core re-attaches to it (card 51d6b4a6).
+pub(super) fn observation_of(
+    held: Option<&continuum_core::inference::llama_server::serving_hold::ServingHold>,
+    kept: Option<(u32, u64)>,
+) -> continuum_cli_lifecycle::deploy_hold::HoldObservation {
+    use continuum_cli_lifecycle::deploy_hold::HoldObservation;
+    use continuum_core::inference::llama_server::serving_hold::HoldCause;
+    match held {
+        None => HoldObservation::Free,
+        Some(hold) => match (&hold.by, hold.live_work()) {
+            (HoldCause::Unknown { reason }, _) => HoldObservation::Unreadable(format!("the serving hold's cause is unknown: {reason}")),
+            (HoldCause::Resident { work: held }, Some(work))
+                if kept.is_some_and(|kept| held.iter().all(|w| (w.engine_pid, w.engine_started_s) == kept)) =>
+            {
+                HoldObservation::Carried(work)
+            }
+            (_, Some(work)) => HoldObservation::LiveWork(work),
+            (HoldCause::Resident { .. }, None) => HoldObservation::Free,
+        },
+    }
+}
+
+/// After a handoff that carried live engine work: does the new core hold the same work on the
+/// same engine? Said either way; a deploy that landed is not undone for it. Lost work is the
+/// training trigger's to reconcile (its boot replay re-attaches or resumes), and this line is
+/// where the operator learns the carry failed.
+async fn report_carried(carried: &ServingHold, said: &str) {
+    match read_engine_hold().await {
+        Ok(now) if carried_intact(carried, now.as_ref()) => println!("✓ live engine work carried through the handoff: {said}"),
+        Ok(now) => println!("⚠ live engine work was carried into the handoff ({said}) but the new core does not hold the same jobs on the same engine incarnation: {now:?}"),
+        Err(why) => println!("⚠ live engine work was carried into the handoff ({said}) but the new core's hold could not be read: {why}"),
+    }
+}
+
+/// PURE: does the hold after the handoff carry every job held before it, each on the same engine
+/// incarnation (pid AND start time)? A reused pid with another start is another engine (Codex on
+/// #5872), and a job missing after is a carry that failed.
+pub(super) fn carried_intact(before: &ServingHold, after: Option<&ServingHold>) -> bool {
+    use continuum_core::inference::llama_server::serving_hold::HoldCause;
+    let (HoldCause::Resident { work: before }, Some(HoldCause::Resident { work: after })) = (&before.by, after.map(|h| &h.by)) else {
+        return false;
+    };
+    before.iter().all(|b| after.iter().any(|a| (a.job, a.engine_pid, a.engine_started_s) == (b.job, b.engine_pid, b.engine_started_s)))
+}
+
 /// Rebuild source by default, or hand off to an explicitly validated prebuilt
 /// core. Both use the same leases, selective teardown and deploy verification.
+///
+/// A handoff that closes in-engine training admission (card 91921d0f) reopens it on every path
+/// that returns an error: refused, deferred or failed before the stop, the core still runs and
+/// must admit again. Past the stop the core is gone, and a restored or new one boots open.
 pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreError> {
+    let admission = HandoffAdmission::default();
+    let result = reboot_admitted(options, &admission).await;
+    if result.is_err() {
+        admission.reopen().await;
+    }
+    result
+}
+
+async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -> Result<(), PublishedCoreError> {
     // macOS: a registered launchd job owns the launch (a1bd8b58). `--service` is implied
     // by its presence, so a bare `continuum reboot` stages + kickstarts instead of
     // spawning an orphan beside the supervisor. `CONTINUUM_FROM_SOURCE` opts out.
@@ -225,8 +317,8 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
     let socket = socket_path();
     // With a hand-supplied artifact the supervisor is prepared NOW, while the old core
     // still serves (its loader + provenance checked before anything stops). Without
-    // one, it is prepared right after the warm build below — same check, same
-    // ordering, the artifact simply comes from the build instead of a hand.
+    // one, it is prepared right after the dark build below — same check, the artifact
+    // simply comes from the build instead of a hand.
     let mut service = match (options.service, prebuilt.as_ref()) {
         (true, Some(candidate)) if !options.stage_prebuilt => Some(PreparedCoreService::prepare(candidate, &socket).await?),
         _ => None,
@@ -266,6 +358,28 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
             evals.join(", ")
         ).into());
     }
+    // In-engine training guard (card 9beab2da; the windows 5090, 2026-10-28: the consumer's
+    // handoff killed job 8b46862c at 41% while serving/status read held_for it, and the mlx_lm
+    // guard above never sees an engine's own run). The running core's hold is the one owner of
+    // what live work its engine carries (#5543); read even under --force, so what a forced
+    // handoff ends is said. A deferral is Held: the consumer rechecks on its next pass with no
+    // attempt charged. Admission is closed FIRST (card 91921d0f), so this read is final: no run is
+    // admitted between it and the stop.
+    let closed = admission.close().await;
+    let (observed, held) = observe_engine_hold().await;
+    let carried = match continuum_cli_lifecycle::deploy_hold::verdict(closed, observed, force) {
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Defer(why) => return Err(PublishedCoreError::Held(why)),
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Proceed(Some(said)) => {
+            println!("⚠ {said}");
+            None
+        }
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Proceed(None) => None,
+        continuum_cli_lifecycle::deploy_hold::HoldVerdict::Carry(work) => {
+            println!("▶ live engine work goes on through this handoff, in the engine it keeps: {work}");
+            // Carried was read from this very hold, so it is present.
+            held.map(|held| (held, work))
+        }
+    };
     if !evals.is_empty() {
         println!(
             "⚠ --force: rebooting over {} live eval run(s) — they die here; their worlds are \
@@ -317,141 +431,37 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
             old.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
         );
     }
-    // Publish the claim before teardown for the WHOLE build/swap. Held until this function returns, so a
-    // concurrent `continuum <verb>` refuses instead of autostarting the pre-swap installed
-    // image and stealing the socket (the DEPLOY MISMATCH measured 2026-08-17).
-    // THE WARM BUILD. Stop-first is right when a build beside a serving core would
-    // starve it (Joel, 2026-08-23); on a machine with headroom it is ten minutes of
-    // darkness per deploy for nothing — eight deploys on 2026-09-13 cost the round
-    // eighty dark minutes, dropped turns and lapsed leases each time. So: with a
-    // source tree, no --prebuilt, and enough free memory, build FIRST through the
-    // start script's own definition (CONTINUUM_BUILD_ONLY=1) while the core serves;
-    // the exact reported artifact is validated before teardown and launched directly.
-    // The claim is published BEFORE the warm build, not after: the build is the deploy's
-    // longest phase and it runs beside the serving core (rustc on every core for minutes).
-    // The running core reads the claim (`deploy_claim::in_flight`) to know that a decode
-    // measured now measures the compiler, not the lane — 2026-09-16 the decode knee fell
-    // 4 → 2 on samples taken inside its own reboot's build. The claim's only other reader
-    // is the CLI's autostart gate, which is right to refuse during a build too.
+    // Publish the claim before teardown and hold it through the dark build and the swap
+    // (until this function returns), so a concurrent `continuum <verb>` refuses instead of
+    // autostarting the pre-swap installed image and stealing the socket (the DEPLOY
+    // MISMATCH measured 2026-08-17).
     let target_sha = prebuilt
         .as_ref()
         .map(|p| p.build_sha.clone())
         .or_else(git_head_short_sha);
     let _deploy_claim = DeployClaimGuard::take(target_sha.as_deref().unwrap_or("unknown"));
-    // UNATTENDED Windows deploy (card d5584dfc, option (b)): build the pinned engine into the idle
-    // slot and promote `current`, the same unprivileged sequence the bash installer runs, while
-    // the old core still serves. It never re-registers the scheduled task (an elevation nobody is
-    // there to answer), and an engine that does not build never fails the core deploy: the lanes
-    // keep the engine they have. `install` takes the attended path below.
-    #[cfg(windows)]
-    // Published/prepared handoffs carry their verified engine closure. Never enter
-    // the source-building engine refresh path for an explicit prebuilt artifact.
-    // Attended developer installs retain their explicit receipt path below.
-    if options.service && prebuilt.is_none() && !options.require_engine_receipt {
-        match PreparedCoreService::installer_root().await {
-            Ok(repo) => match PreparedCoreService::prepare_engine(&repo, false).await {
-                Ok(Some((_, engine))) => deploy_note(&format!("▶ verified engine slot promoted ({}); the next core converges its lanes onto it", engine.display())),
-                Ok(None) => {}
-                Err(e) => deploy_note(&format!("⚠ engine not updated this deploy ({e}); the core deploys on the engine it has")),
-            },
-            Err(e) => deploy_note(&format!("⚠ engine not updated this deploy (installer root unavailable: {e})")),
-        }
+    // THE BUILD RUNS DARK (Joel, 2026-10-24: "No. Take down serving while building."). The
+    // warm build beside a serving core is gone: on unified memory the compiler and the
+    // residents' KV share one pool, and no gate taken at start follows either of them for
+    // the length of a build (the M5's Metal OOM, 2026-10-23). Serving stops gracefully, the
+    // build takes the whole machine at cargo's own job count, and a build that fails puts
+    // the previous core back, so a broken tree never leaves the node dark. The previous
+    // build is captured HERE, while it still serves; a node with no way back refuses now.
+    let build_script = if requested_source_build { locate_start_script().ok() } else { None };
+    if options.service && requested_source_build && build_script.is_none() {
+        return Err("reboot --service: no --prebuilt artifact and no source tree to build one; the running core stands".into());
     }
+    // Windows' attended install also builds and registers the engine after the stop.
     #[cfg(windows)]
-    let prepared_engine = if options.require_engine_receipt {
-        Some(std::env::current_dir().map_err(|e| e.to_string())?)
+    let engine_phase = options.require_engine_receipt;
+    #[cfg(not(windows))]
+    let engine_phase = false;
+    // A supervised handoff stages after the stop too, so it always has a way back.
+    let previous = if build_script.is_some() || engine_phase || options.service {
+        PreviousCore::capture(&old, options.service, &socket).await?
     } else {
         None
     };
-    #[cfg(windows)]
-    let prepared_engine = match prepared_engine {
-        Some(repo) => PreparedCoreService::prepare_engine(&repo, false)
-            .await?
-            .map(|prepared| (repo, prepared)),
-        None => None,
-    };
-    // A failed attempted warm build returns without stopping the serving core.
-    // Below the headroom line the existing stop-first path remains available.
-    if prebuilt.is_none() {
-        match warm_build_allowed(available_memory_bytes(), locate_start_script().ok()) {
-            Ok(script) => {
-                let started = std::time::Instant::now();
-                let mut cmd = std::process::Command::new(locate_bash()?);
-                cmd.arg(&script);
-                apply_core_runtime_env(&mut cmd)?;
-                if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
-                    cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
-                }
-                println!("▶ warm build: compiling from source while the core keeps serving (build-only pass of {})", script.display());
-                let built = prepare_warm_build(cmd).await?;
-                // A shared checkout can advance while Cargo is reading it. A binary
-                // reporting either endpoint is not proof of a coherent source tree.
-                // Refuse BEFORE staging or stopping the serving core (2026-10-01).
-                let after = git_head_short_sha();
-                continuum_cli_lifecycle::deploy_provenance::warm_build_verdict(
-                    target_sha.as_deref(), after.as_deref(), &built.build_sha,
-                )?;
-                prebuilt = Some(built);
-                println!(
-                    "✓ warm artifact validated in {}s — stopping now for direct artifact handoff",
-                    started.elapsed().as_secs()
-                );
-                // `--service` with no hand-supplied artifact: the warm build's artifact is
-                // the one the supervisor takes — STAGED into the slot the supervisor is
-                // bound to, then prepared, all before the old core stops. The supervisor
-                // validates the exact artifact path in its descriptor; a warm build lands
-                // in the cargo target dir, so without this step the handoff refused
-                // ("does not select the requested artifact") — measured 2026-09-19
-                // 05:1xZ, the 5090's first unattended deploy: a 1,145 s build, validated,
-                // then refused at the door. Every hand deploy had done this copy by hand.
-                //
-                // Windows uses an inactive slot, so staging and provisioning can
-                // finish while the current core serves. macOS retains its existing
-                // post-stop slot replacement below.
-
-            }
-            Err(why) => {
-                if options.service {
-                    // The supervisor path has no source-launch fallback: a service handoff
-                    // without an artifact would be the child-of-launcher launch this card
-                    // (82af11f5) exists to end. Say so and leave the running core standing.
-                    return Err(format!(
-                        "reboot --service: no artifact to hand the supervisor — {why}; the running core stands"
-                    ).into());
-                }
-                println!("▶ no warm build: {why} — stopping first, then building")
-            }
-        }
-    }
-    #[cfg(windows)]
-    if let Some((repo, (original, engine))) = &prepared_engine {
-        if PreparedCoreService::query().await?.description != *original {
-            return Err(
-                "installed release changed during preparation; running Core preserved".into(),
-            );
-        }
-        let repo_arg = repo.to_string_lossy().replace('\'', "''");
-        let directory = engine
-            .parent()
-            .ok_or("prepared engine has no directory")?
-            .to_string_lossy()
-            .replace('\'', "''");
-        let drift = PreparedCoreService::powershell(&format!(
-            "$ErrorActionPreference='Stop'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{directory}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo_arg}')"
-        )).await?;
-        if !drift.is_empty() {
-            return Err(format!("prepared engine changed before stop: {drift}").into());
-        }
-        let candidate = prebuilt
-            .as_ref()
-            .ok_or("engine handoff requires a verified Core artifact")?;
-        PrebuiltCore::prepare(&candidate.path).await?;
-        // Registration can fail even after Task Scheduler accepted the new engine
-        // (Windows install, 2026-09-28). Do it while the old core is still alive:
-        // Register-CoreServiceRelease validates and registers, but never launches.
-        // An error here must not strand the node after a successful teardown.
-        PreparedCoreService::register_engine(repo, original, engine).await?;
-    }
     // Reboot deliberately does NOT fail on an unsaved module: the caller's goal is a
     // running core, and refusing to continue would leave the node down over a module that
     // could not flush. The warning is printed by `stop_with`; `stop` is the verb whose
@@ -489,13 +499,13 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
         let home = continuum_core::paths::continuum_home()?;
         let root = continuum_core::inference::engine_slots::root(&home)?;
         let selection = continuum_core::inference::engine_slots::HandoffSelection::capture(&root, Path::new(&release.engine))?;
-        selected.engine_selection = Some(selection);
+        // Kept on the handoff for its unwind; the promotion reads the one it just stored.
+        let selection: &continuum_core::inference::engine_slots::HandoffSelection = selected.engine_selection.insert(selection);
         let promotion = async {
             let promoted = PreparedCoreService::prepare_engine(&repo, true).await?;
             if PreparedCoreService::query().await?.description != selected.task.description {
                 return Err("installed release changed during published engine preparation".into());
             }
-            let selection = selected.engine_selection.as_ref().ok_or("missing captured engine selection")?;
             match promoted {
                 Some((description, _)) => {
                     if description != selected.task.description { return Err("installed release changed during published engine promotion".into()); }
@@ -535,19 +545,118 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
     let _prebuilt_startup = if !requested_source_build && !options.service {
         Some(supervisor_install::maintenance::StartupPermit::acquire(&continuum_core::paths::continuum_home()?).await?)
     } else { None };
+    let mut dark = DarkWindow::start();
     if let Err(failed) = stop_with_authority(true, options.operator_present).await {
         #[cfg(windows)]
         if let Some(selected) = &service { return Err(selected.unwind_engine_promotion(failed).await.into()); }
         return Err(failed.into());
     }
-    // macOS retains its existing post-stop slot replacement contract.
-    #[cfg(not(windows))]
-    if options.service && service.is_none() {
-        if let Some(built) = prebuilt.take() {
-            let staged = PreparedCoreService::stage(&built, &socket).await?;
-            service = Some(PreparedCoreService::prepare(&staged, &socket).await?);
-            prebuilt = Some(staged);
+    dark.stopped();
+    // Everything that can fail between the stop and the launch is one phase: a failure
+    // anywhere in it restarts the previous build (`PreviousCore::restore`) and reports both.
+    let service_mode = options.service;
+    let dark_phase = async {
+        // UNATTENDED Windows deploy (card d5584dfc, option (b)): build the pinned engine into the
+        // idle slot and promote `current`, the same unprivileged sequence the bash installer runs,
+        // now with serving stopped like every other build. It never re-registers the scheduled
+        // task (an elevation nobody is there to answer), and an engine that does not build never
+        // fails the core deploy: the lanes keep the engine they have. `install` takes the
+        // attended path below. Published/prepared handoffs carry their verified engine closure,
+        // so an explicit prebuilt artifact never enters this source-building refresh.
+        #[cfg(windows)]
+        if service_mode && prebuilt.is_none() && !engine_phase {
+            match PreparedCoreService::installer_root().await {
+                Ok(repo) => match PreparedCoreService::prepare_engine(&repo, false).await {
+                    Ok(Some((_, engine))) => deploy_note(&format!("▶ verified engine slot promoted ({}); the next core converges its lanes onto it", engine.display())),
+                    Ok(None) => {}
+                    Err(e) => deploy_note(&format!("⚠ engine not updated this deploy ({e}); the core deploys on the engine it has")),
+                },
+                Err(e) => deploy_note(&format!("⚠ engine not updated this deploy (installer root unavailable: {e})")),
+            }
         }
+        // Attended Windows install: the engine is built and its receipt required.
+        #[cfg(windows)]
+        let prepared_engine = match engine_phase {
+            true => {
+                let repo = std::env::current_dir().map_err(|e| e.to_string())?;
+                PreparedCoreService::prepare_engine(&repo, false).await?.map(|prepared| (repo, prepared))
+            }
+            false => None,
+        };
+        let mut built = None;
+        if let Some(script) = &build_script {
+            let mut cmd = std::process::Command::new(locate_bash()?);
+            cmd.arg(script);
+            apply_core_runtime_env(&mut cmd)?;
+            if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
+                cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
+            }
+            println!("▶ building dark: serving is stopped, the build takes the whole machine (build-only pass of {})", script.display());
+            let artifact = build_dark(cmd).await?;
+            // A shared checkout can advance while Cargo is reading it. A binary reporting
+            // either endpoint is not proof of a coherent source tree (2026-10-01).
+            let after = git_head_short_sha();
+            continuum_cli_lifecycle::deploy_provenance::source_build_verdict(
+                target_sha.as_deref(), after.as_deref(), &artifact.build_sha,
+            )?;
+            dark.built();
+            println!("✓ dark build validated: {} (build {})", artifact.path.display(), artifact.build_sha);
+            built = Some(artifact);
+        }
+        #[cfg(windows)]
+        if let Some((repo, (original, engine))) = &prepared_engine {
+            if PreparedCoreService::query().await?.description != *original {
+                return Err("installed release changed during preparation; the previous core is restored".into());
+            }
+            let repo_arg = repo.to_string_lossy().replace('\'', "''");
+            let directory = engine
+                .parent()
+                .ok_or("prepared engine has no directory")?
+                .to_string_lossy()
+                .replace('\'', "''");
+            let drift = PreparedCoreService::powershell(&format!(
+                "$ErrorActionPreference='Stop'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{directory}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo_arg}')"
+            )).await?;
+            if !drift.is_empty() {
+                return Err(format!("prepared engine changed during the dark build: {drift}").into());
+            }
+            let candidate = built
+                .as_ref()
+                .or(prebuilt.as_ref())
+                .ok_or("engine handoff requires a verified Core artifact")?;
+            PrebuiltCore::prepare(&candidate.path).await?;
+            // Registration can fail even after Task Scheduler accepted the new engine
+            // (Windows install, 2026-09-28). Register-CoreServiceRelease validates and
+            // registers, but never launches; a failure here restarts the previous core.
+            PreparedCoreService::register_engine(repo, original, engine).await?;
+        }
+        if let Some(artifact) = built {
+            prebuilt = Some(artifact);
+        }
+        // A built artifact is STAGED into the slot the supervisor is bound to, then prepared:
+        // the supervisor validates the exact artifact path in its descriptor, and a build lands
+        // in the cargo target dir (the 5090's first unattended deploy, 2026-09-19, refused a
+        // validated 1,145 s build at the door for want of this copy).
+        if service_mode && service.is_none() {
+            if let Some(built) = prebuilt.take() {
+                let staged = PreparedCoreService::stage(&built, &socket).await?;
+                service = Some(PreparedCoreService::prepare(&staged, &socket).await?);
+                prebuilt = Some(staged);
+            }
+        }
+        #[cfg(windows)]
+        return Ok::<_, PublishedCoreError>(prepared_engine);
+        #[cfg(not(windows))]
+        Ok::<_, PublishedCoreError>(())
+    }.await;
+    #[cfg(windows)]
+    let prepared_engine = match dark_phase {
+        Ok(done) => done,
+        Err(failed) => return Err(restore_or_report(previous, failed, &old).await),
+    };
+    #[cfg(not(windows))]
+    if let Err(failed) = dark_phase {
+        return Err(restore_or_report(previous, failed, &old).await);
     }
     #[cfg(windows)]
     if prepared_engine.is_some() {
@@ -569,7 +678,11 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
     } else { source };
     let secs = match service {
         Some(service) => service.launch(&old).await?,
-        None => launch_core(&old, source).await?,
+        // A supervised launch rolls back inside `launch`; a direct one restarts the copy kept.
+        None => match launch_core(&old, source).await {
+            Ok(secs) => secs,
+            Err(failed) => return Err(restore_or_report(previous, failed.into(), &old).await),
+        },
     };
     // Deploy-verification (#194): a new core is up — but is it the FRESHLY-BUILT one? If
     // start-server.sh's build was a stale cache no-op or silently failed, an OLD binary would
@@ -580,6 +693,7 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
     println!(
         "core answering (socket={socket}) after ~{secs}s — verifying deploy provenance (#194)"
     );
+    println!("▶ {}", dark.receipt());
     // Did THIS reboot replace the installed CLI? Only when it went through the build script
     // (a source tree exists — the same condition `plan_launch` uses to pick `Script` for a
     // FromSource launch) AND the platform allows a self-build. Both terms matter: on an
@@ -592,5 +706,9 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
         locate_start_script().is_ok(),
         matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild),
     );
-    verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await.map_err(Into::into)
+    verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await?;
+    if let Some((held, said)) = &carried {
+        report_carried(held, said).await;
+    }
+    Ok(())
 }

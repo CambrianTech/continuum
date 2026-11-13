@@ -13,7 +13,7 @@ use crate::recipe::benchmark_catalog::known_benchmarks;
 use crate::commands::benchmark::{
     prepare_cards, CardSelection, CardWork, PreparedCard,
 };
-use crate::cognition::bench_title::parse_card_title;
+use crate::recipe::bench_title::parse_card_title;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -256,7 +256,7 @@ impl ActionCommand for CourseworkImport {
         .map_err(|e| CommandError::Internal(format!("lesson selection task failed: {e}")))??;
         let home = crate::paths::continuum_home()?;
         let set = crate::cognition::coursework::write_set(&home, &tasks).map_err(CommandError::Invalid)?;
-        let reference = crate::commands::benchmark::eval_set_reference(&set).ok_or_else(|| {
+        let reference = crate::cognition::eval_set::eval_set_reference(&set).ok_or_else(|| {
             CommandError::Internal(format!("coursework set {set} was written but does not resolve"))
         })?;
         let prepared = crate::commands::benchmark::prepare_gym_cards(&set, &reference)?;
@@ -288,7 +288,7 @@ crate::register_command!(CourseworkImport);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::bench_title::dispatch_card_title;
+    use crate::recipe::bench_title::dispatch_card_title;
     use crate::commands::benchmark::dispatch_swe_card_body;
 
     // what this catches: a recipe-posted card and a dispatch-posted card must be the

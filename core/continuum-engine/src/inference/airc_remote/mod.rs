@@ -11,10 +11,10 @@
 //!
 //! ```ignore
 //! // LOCAL — LlamaCppAdapter on Apple Silicon via Metal
-//! let response = adapter.generate_text(request).await?;
+//! let response = adapter.generate_under(request, terms).await?;
 //!
 //! // REMOTE — AircRemoteInferenceAdapter routing over airc to a peer
-//! let response = remote_adapter.generate_text(request).await?;
+//! let response = remote_adapter.generate_under(request, terms).await?;
 //! ```
 //!
 //! Both impls return `TextGenerationResponse`. Everything above the
@@ -57,10 +57,13 @@
 //!   the heuristic; real-model work routes over airc to whichever
 //!   peer has capacity.
 
+mod abandon;
 pub mod adapter;
 pub mod interceptor;
+mod overload;
 pub mod peer_breaker;
 pub mod protocol;
+mod seat_deadline;
 pub mod transport;
 
 pub use adapter::{AircRemoteInferenceAdapter, AIRC_REMOTE_PROVIDER_ID};
@@ -68,3 +71,6 @@ pub use protocol::{RemoteInferenceError, RemoteInferenceRequest, RemoteInference
 pub use transport::{
     AircInferenceTransport, AircLiveTransport, LocalAdapterTransport, StubInferenceTransport,
 };
+
+#[cfg(test)]
+mod capacity_tests;

@@ -22,7 +22,7 @@ use super::{SourceFile, SourceRule, Violation};
 
 /// Ring 0, the kernel: the machine. Nothing about models, minds, rooms or commands.
 const KERNEL: &[&str] = &[
-    "time", "identity", "fs_portable", "paths", "concurrency", "paging", "logging", "orm",
+    "time", "identity", "paths", "concurrency", "paging", "logging", "orm",
     "system_resources", "runtime", "governor", "routing", "sdk_codegen", "resources", "gpu",
 ];
 /// Ring 1, the engine: serving. Knows the kernel.
@@ -60,7 +60,7 @@ fn module_of(file: &SourceFile) -> Option<&str> {
 /// a group `{cognition::x, modules::{a, b}, time}` names each head at depth one, across
 /// lines (rustfmt wraps long groups). A head followed by neither `::` nor a group end is a
 /// local item, not a module, and is skipped by `ring_of` returning `None`.
-fn named_modules(rest: &str) -> Vec<&str> {
+pub(crate) fn named_modules(rest: &str) -> Vec<&str> {
     let ident_end = |s: &str| s.find(|c: char| !(c.is_ascii_lowercase() || c == '_')).unwrap_or(s.len());
     let Some(group) = rest.strip_prefix('{') else {
         let end = ident_end(rest);
@@ -117,7 +117,7 @@ impl SourceRule for LayerDiscipline {
                 seen.push((line_no, dep));
                 out.push(Violation {
                     rule: "layer-discipline",
-                    file: file.rel.clone(),
+                    file: file.repo.clone(),
                     line: line_no + 1,
                     source: format!("ring {own} imports ring {} `crate::{dep}::`", ring_of(dep).unwrap_or(own)), // unwrap_or: `is_some_and` above proved it is Some
                 });
@@ -176,7 +176,7 @@ mod tests {
     fn upward_imports_never_rise() {
         let violations = scan(&[&LayerDiscipline]);
         let count = violations.len();
-        let mut pairs = std::collections::BTreeMap::<(String, String), usize>::new();
+                let mut pairs = std::collections::BTreeMap::<(String, String), usize>::new();
         for v in &violations {
             let from = v.file.split('/').next().unwrap_or("?").to_string(); // unwrap_or: a rel path always has a first component
             let to = v.source.split('`').nth(1).unwrap_or("?").to_string(); // unwrap_or: the source line is built by `check` with the backticked path
@@ -188,7 +188,7 @@ mod tests {
         for ((from, to), n) in worst.iter().take(8) {
             eprintln!("  {from} -> {to}: {n} lines");
         }
-        crate::ratchet::hold("upward_imports", count, || {
+        crate::ratchet::hold_sites("upward_imports", &violations, crate::ratchet::Touched::HeldOnly(crate::ratchet::HeldOnly::CrossFile), || {
             "upward imports rose. A lower ring now names a higher ring: move the fact or verb \
              down to its owner, or place the module in its ring."
                 .to_string()

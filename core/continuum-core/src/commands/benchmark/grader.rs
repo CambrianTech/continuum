@@ -43,7 +43,8 @@ impl ActionCommand for BenchmarkList {
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "List the known benchmarks (name, grader, task count, whether it can be run \
-         now). Use `benchmark/dispatch` with a name to post its tasks onto the work board.";
+         now). Preview a benchmark's cards with `benchmark/import --suite <name>`; run one as a round with \
+         `activity/spawn --name <room> --recipe benchmark/round --params '{\"suite\":\"<name>\",\"repo\":\"<owner/name>\"}'`.";
     type Params = BenchmarkListParams;
     type Output = BenchmarkListResult;
 

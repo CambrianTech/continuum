@@ -106,10 +106,15 @@ impl ServiceModule for GridCapacityModule {
             return Ok(());
         };
 
+        // Published as this core's own scope peer: the beacon's author speaking for itself (a typed
+        // id, never a name). No scope peer means the airc module never attached, so nothing to beacon on.
+        let Some(source) = crate::persona::self_peer::scope() else {
+            return Ok(());
+        };
         let envelope = json!({
             "eventId": uuid::Uuid::new_v4().to_string(),
             "roomId": self.room.as_uuid().to_string(),
-            "sourceId": "grid-capacity",
+            "sourceId": source.to_string(),
             "createdAtMs": offer.at_ms,
             "delivery": "ephemeral_coalesced",
             "payload": {
@@ -155,7 +160,10 @@ impl ServiceModule for GridCapacityModule {
 /// lie the grid's per-node-fit honesty exists to prevent). Before 2026-09-14 a
 /// RAM-only host (IntelMac's CPU node) never beaconed at all — one offer all day,
 /// invisible to grid/nodes, the fleet fold and placement (card deb26770).
-pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64) -> Option<CapacityOffer> {
+pub(crate) fn offer_from_board(
+    board: &crate::resources::LeaseBoard,
+    at_ms: u64,
+) -> Option<CapacityOffer> {
     let serving = crate::inference::llama_server::current_serving();
     let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram);
     let ram = board.kinds.iter().find(|k| k.kind == ResourceKind::Ram);
@@ -192,6 +200,8 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
         // a gate checks membership here and refuses on absence; an older core advertises
         // nothing (serde default), so typed absence is safe by construction.
         capabilities: crate::capacity::gossip::this_build_capabilities(),
+        // The residents this node last judged stalled or regressed (card 1c157668).
+        resident_alarms: crate::modules::citizen_health::current_resident_alarms(),
     })
 }
 

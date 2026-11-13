@@ -48,6 +48,7 @@ pub mod moe_arch_profile;
 pub mod moe_serving;
 pub mod pager_capture;
 pub mod placement;
+pub mod power_mode;
 pub mod plan_file;
 pub mod recursion_depth;
 pub mod residency_detect;
@@ -55,9 +56,15 @@ pub mod score;
 pub mod serving_pager;
 pub mod settlement;
 pub mod sim;
+pub mod mind_window;
+pub mod window_grant;
+pub mod window_sim;
 pub mod system_profile;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod profile_fixtures;
+/// The ONE-ACT dyno: recorded 2026-11-04 inputs driving the real policy code (`dyno.rs`).
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod dyno;
 pub mod trace_tail;
 pub mod vq_decode;
 

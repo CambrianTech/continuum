@@ -306,7 +306,12 @@ impl InferenceHandleStore {
         session.last_used_ms.store(EpochMs::now().millis(), Ordering::Relaxed);
         session.generation_count.fetch_add(1, Ordering::Relaxed);
 
-        session.adapter.generate_text(request).await.map_err(|e| {
+        // A session's call states no think term yet: the model's own default, as it always ran
+        // (measured per-purpose think budgets: card, owner Fable).
+        let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
+        let adapter = &session.adapter;
+        crate::ai::stream_sinks::drain_generation(|sink| adapter.generate_admitted(request, terms, sink)).await.map_err(|e| {
+            let e = e.to_string();
             // Adapter errors aren't HandleStoreErrors per se,
             // but the consumer needs them surfaced. Wrap as a
             // synthetic "not-found-but-adapter-failed" string.
@@ -433,6 +438,8 @@ mod tests {
             repeat_last_n: None,
             stop_sequences: None,
             tools: None,
+            tail_tools: None,
+            view_messages: None,
             tool_choice: None,
             response_format: None,
             active_adapters: None,
@@ -583,7 +590,7 @@ mod tests {
             .await
             .unwrap();
         let direct = heuristic()
-            .generate_text(req_with_text("identical"))
+            .generate_text(req_with_text("identical"), crate::ai::adapter::Dispatched::fixture())
             .await
             .unwrap();
         assert_ne!(

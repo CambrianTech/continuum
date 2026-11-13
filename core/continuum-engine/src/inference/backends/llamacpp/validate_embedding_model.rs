@@ -37,50 +37,20 @@ pub(super) fn embed_model(model: &Model, texts: &[String]) -> Result<Vec<Vec<f32
     if texts.is_empty() {
         return Ok(Vec::new());
     }
-    // Embedding is single-batch and non-causal: ALL of a text's tokens are
-    // decoded together in one `llama_decode`, so `n_tokens <= n_batch` is a
-    // hard llama.cpp invariant — violating it is `GGML_ASSERT(... <=
-    // cparams.n_batch)` → `ggml_abort` → SIGABRT, which kills the whole
-    // process (C abort, uncatchable by Rust unwinding). A persona admitting
-    // a long engram / doctrine chunk at spawn was exactly long enough to
-    // trip it. Two-part fix: (1) size the embedding context's batch to a
-    // fixed ceiling so it's never the default, and (2) TRUNCATE any input
-    // past that ceiling — retrieval embedders cap their context anyway, so
-    // clamping a pathologically long input is the correct degrade, never a
-    // crash. Ceiling stays modest: this context is rebuilt per call, and
-    // `n_ubatch` drives the compute-buffer size (~quadratic in attention).
-    // context-budget-exempt: the EMBEDDING model's own architectural input limit (embeddings truncate by design); a property of that model, not a policy we chose
-    const EMBED_MAX_TOKENS: usize = 2048;
-    let mut ctx = model.new_context(llama::ContextParams {
-        embeddings: true,
-        // Qwen3-Embedding family is last-token pooled. Thread from config
-        // when other embedders join the grid.
-        pooling_type: llama::PoolingType::Last,
-        // Explicit, not the default: KV + batch + ubatch all sized to the
-        // ceiling so any input up to EMBED_MAX_TOKENS decodes in one batch.
-        n_ctx: EMBED_MAX_TOKENS as u32,
-        n_batch: EMBED_MAX_TOKENS as u32,
-        n_ubatch: EMBED_MAX_TOKENS as u32,
-        ..Default::default()
-    })?;
-    let mut out = Vec::with_capacity(texts.len());
-    for text in texts {
-        // Independent embedding per text — clear the KV so text N's pooled
-        // vector doesn't include text N-1's sequence.
-        ctx.memory_clear(true);
-        let mut tokens = model.tokenize(text, true, false)?;
-        if tokens.is_empty() {
-            return Err(format!("embed: input tokenized to empty: {text:?}"));
-        }
-        // Clamp to the batch ceiling. Last-token pooling reads the final
-        // kept token, so we keep the head (the standard truncation for an
-        // over-length document) rather than crash on the full sequence.
-        if tokens.len() > EMBED_MAX_TOKENS {
-            tokens.truncate(EMBED_MAX_TOKENS);
-        }
-        out.push(ctx.embed(&tokens)?);
+    EmbeddingBatch::tokenize(model, texts)?.embed(model)
+}
+
+/// A caller-issued nonzero generation window; model metadata cannot create one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenerationAllocation(std::num::NonZeroU32);
+
+impl GenerationAllocation {
+    pub fn new(tokens: std::num::NonZeroU32) -> Self {
+        Self(tokens)
     }
-    Ok(out)
+    pub fn tokens(self) -> u32 {
+        self.0.get()
+    }
 }
 
 /// Configuration for loading a model.
@@ -88,17 +58,6 @@ pub(super) fn embed_model(model: &Model, texts: &[String]) -> Result<Vec<Vec<f32
 pub struct LlamaCppConfig {
     /// Path to the GGUF model file
     pub model_path: PathBuf,
-    /// Per-sequence context budget (tokens). `None` = use the model's
-    /// trained `n_ctx_train` from GGUF metadata (the model's own ceiling).
-    /// Override only when memory pressure forces a smaller window than the
-    /// model natively supports — and pass it explicitly so the choice is
-    /// visible. Hardcoded defaults like 8192 cap a 262144-context model
-    /// at 3% of its real capability.
-    ///
-    /// The actual `n_ctx` passed to llama.cpp is `context_length * n_seq_max`
-    /// because llama.cpp's KV cache is a single shared pool across sequences
-    /// — if N seqs each hold P tokens, total KV needed is N*P.
-    pub context_length: Option<u32>,
     /// Batch size for prefill / per-decode token cap. Larger = faster
     /// prefill but more Metal compute buffer.
     pub n_batch: u32,
@@ -136,12 +95,6 @@ impl Default for LlamaCppConfig {
     fn default() -> Self {
         Self {
             model_path: PathBuf::new(),
-            // None = derive from the model's GGUF metadata at load time
-            // via `Model::n_ctx_train()`. The model is the source of truth
-            // for its own context. Setting Some(N) here overrides only when
-            // a hardware tier can't allocate KV for the model's native
-            // window (rare on M5+/RTX class).
-            context_length: None,
             n_batch: 512,
             n_ubatch: 512,
             n_gpu_layers: -1,
@@ -159,26 +112,6 @@ impl Default for LlamaCppConfig {
             mmproj_path: None,
         }
     }
-}
-
-/// Currently-available system memory in bytes, read live via sysinfo. Used at
-/// model-load / scheduler-spawn time (not the hot path) to size the KV cache
-/// against the REAL machine rather than a guessed per-tier budget. On unified-
-/// memory Macs this is the same pool the GPU allocates from; on discrete-VRAM
-/// boxes it's a conservative proxy (the real fix there is a VRAM probe — see
-/// task #46 follow-up). Returns 0 on read failure, which floors the KV budget
-/// to MIN_CTX rather than over-allocating.
-pub(super) fn available_memory_bytes() -> u64 {
-    use sysinfo::System;
-    let mut sys = System::new();
-    sys.refresh_memory();
-    // NOT `available_memory()`: it returns 0 on macOS while total/used are correct
-    // (`system_resources::memory_pressure::available_from`, which exists to be the one
-    // derivation every reader shares). The doc above says a 0 here "floors the KV budget
-    // to MIN_CTX rather than over-allocating" — on a unified-memory Mac, which is the
-    // platform this comment is about, that floor was unconditional rather than a
-    // read-failure fallback.
-    crate::system_resources::memory_pressure::available_from(&sys)
 }
 
 /// Rich, model-derived capability facts — read ONCE from the loaded GGUF at
@@ -309,6 +242,8 @@ impl ModelCapabilities {
 /// activation is a v2 follow-up — the scheduler currently ignores
 /// `active_loras` (see `llamacpp_scheduler` module docs).
 pub struct LlamaCppBackend {
+    /// One temporary embedding context is admitted per loaded model.
+    pub(super) embedding_lane: super::embedding_lane::EmbeddingLane,
     pub(super) model: Arc<Model>,
     pub(super) config: LlamaCppConfig,
     pub(super) model_id: String,
@@ -317,7 +252,7 @@ pub struct LlamaCppBackend {
     pub(super) caps: ModelCapabilities,
     /// Lazy-spawned scheduler. Lives behind OnceLock because spawning
     /// touches the Model Arc and we want a single instance per backend.
-    pub(super) scheduler: OnceLock<Scheduler>,
+    pub(super) scheduler: OnceLock<(GenerationAllocation, Scheduler)>,
     /// Lazy-loaded multimodal projector. Built on first `generate_with_image`
     /// call from `config.mmproj_path` (so text-only backends pay zero cost).
     /// Sits behind a Mutex<Option<...>> so concurrent first-call requests

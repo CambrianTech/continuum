@@ -92,11 +92,12 @@ pub fn select_failure_message(
     }
 }
 
-/// Generate text using the best available provider
-/// This is a convenience function for internal use (e.g., AgentModule)
+/// Generate text using the best available provider, under the caller's stated `terms` (its think).
+/// This is a convenience function for internal use (e.g., the recipe generator)
 pub async fn generate_text(
     registry: &AdapterRegistry,
     request: TextGenerationRequest,
+    terms: crate::ai::types::DispatchTerms,
 ) -> Result<TextGenerationResponse, String> {
     // Device = `Auto` — this convenience helper trusts what the
     // caller specified via `request.provider` + `request.model`.
@@ -104,8 +105,8 @@ pub async fn generate_text(
     // class; layering a `Gpu` filter on top of an already-named
     // (provider, model) pair wrongly excludes CPU-only adapters
     // even when they are the only ones claiming the requested
-    // model. Used by cognition::analyze and other internal
-    // callers that don't have a device opinion.
+    // model. Used by internal callers that don't have a device
+    // opinion.
     let (provider_id, adapter) = registry
         .select(
             request.provider.as_deref(),
@@ -120,7 +121,9 @@ pub async fn generate_text(
             )
         })?;
 
-    let mut response = adapter.generate_text(request).await?;
+    let mut response = crate::ai::stream_sinks::drain_generation(|sink| adapter.generate_admitted(request, terms, sink))
+        .await
+        .map_err(|e| e.to_string())?;
 
     RoutingInfo::stamp(
         &mut response.routing,

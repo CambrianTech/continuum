@@ -339,7 +339,7 @@ autonomous citizen with its own mind, not a puppet pulled by an `@`-string.
     *always remembering* — continuously pulling the *relevant* past into the
     working set. **This has landed:** `RecallFaculty` over-fetches candidates and
     re-ranks them by **cosine similarity to the current burst** (blended with
-    salience), behind a swappable `EmbeddingProvider` (`cognition/embedding.rs`);
+    salience), behind a swappable `EmbeddingProvider` (the engine's `ai/embedding.rs`);
     it surfaces the relevant memory, not just the recent one, and records the
     recall hit only on what it surfaces. It is **on by default** in
     `build_workspace_cycle`. The bootstrap embedder is **lexical** (FNV

@@ -398,6 +398,8 @@ pub(super) async fn run_adapter_inference(
             Some(request.stop_sequences.clone())
         },
         tools: None,
+        tail_tools: None,
+        view_messages: None,
         tool_choice: None,
         response_format: None,
         active_adapters: None,
@@ -409,8 +411,10 @@ pub(super) async fn run_adapter_inference(
         turn_bound: None,
     };
 
-    let response = adapter
-        .generate_text(adapter_request)
+    // The module's request states no think term yet: the model's own default, as it always ran
+    // (measured per-purpose think budgets: card, owner Fable).
+    let terms = crate::ai::types::DispatchTerms::thinking(crate::ai::types::Think::ModelDefault);
+    let response = crate::ai::stream_sinks::drain_generation(|sink| adapter.generate_admitted(adapter_request, terms, sink))
         .await
         .map_err(|e| format!("inference-llm: adapter generate_text failed: {e}"))?;
 
@@ -476,6 +480,7 @@ fn translate_adapter_finish_reason(adapter_reason: &AdapterFinishReason) -> Fini
         AdapterFinishReason::Error => FinishReason::Error {
             reason: "adapter returned Error finish".to_string(),
         },
+        AdapterFinishReason::Unreported => FinishReason::Unreported,
     }
 }
 
@@ -936,6 +941,11 @@ mod tests {
             }
             other => panic!("Error should map to Error, got {other:?}"),
         }
+        assert_eq!(
+            super::translate_adapter_finish_reason(&AdapterFinishReason::Unreported),
+            FinishReason::Unreported,
+            "a stream with no finish marker is neither a stop nor an error on the wire clients read"
+        );
     }
 
     /// What this catches: with_adapter and with_bus_and_adapter

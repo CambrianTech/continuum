@@ -27,15 +27,16 @@ pub(super) fn register_code_data_and_service_modules(
         file_engines.clone(),
         shell_sessions.clone(),
         rt_handle.clone(),
+        Arc::new(crate::modules::acting_provider::CoreActing),
     ));
     runtime.register(Arc::new(CodeModule::new(code_state.clone())));
 
     // Phase 4: DataModule (database-agnostic storage via ORM adapters)
     // DB path is passed per-request from TypeScript - NO defaults
-    runtime.register(Arc::new(DataModule::new()));
+    runtime.register(Arc::new(crate::modules::data_wiring::data_module()));
     // RecipeModule: the node's durable recipe runs (`recipe_runs`) and the recipe/*
     // verbs. Its store opens through DataModule's adapter at initialize.
-    runtime.register(Arc::new(crate::recipe::runs_owner::RecipeModule::new()));
+    runtime.register(Arc::new(crate::modules::recipe::RecipeService(crate::recipe::runs_owner::RecipeModule::new())));
 
     // ChatModule: the kernel `chat/send` + `chat/poll` surface (aliases of
     // `collaboration/chat/*`). Unlike `search/*` these DynCommands are NOT
@@ -68,7 +69,7 @@ pub(super) fn register_code_data_and_service_modules(
     match crate::routing::installed_probe_router() {
         Some(router) => {
             runtime.register(Arc::new(
-                crate::modules::probe_stream::ProbeStreamModule::new(router),
+                crate::probe_stream::ProbeStreamModule::new(router),
             ));
         }
         None => {
@@ -101,9 +102,6 @@ pub(super) fn register_code_data_and_service_modules(
     // Provides mcp/list-tools, mcp/search-tools, mcp/tool-help
     runtime.register(Arc::new(crate::modules::mcp::MCPModule::new()));
 
-    // AgentModule: Autonomous AI coding agents with structured tool calling
-    // Provides agent/start, agent/status, agent/stop, agent/list, agent/wait
-    runtime.register(Arc::new(AgentModule::new(rt_handle.clone())));
     CodeHandles {
         file_engines,
         shell_sessions,

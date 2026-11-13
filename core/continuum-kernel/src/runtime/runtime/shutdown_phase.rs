@@ -138,138 +138,6 @@ impl Runtime {
         self.registry.register(module);
     }
 
-    /// Initialize all registered modules.
-    /// Provides each module with a ModuleContext for inter-module communication.
-    pub async fn initialize(&self) -> Result<(), String> {
-        let ctx = ModuleContext::new(
-            self.registry.clone(),
-            self.bus.clone(),
-            self.compute.clone(),
-            tokio::runtime::Handle::current(),
-        );
-
-        let modules = self.registry.list_modules();
-        info!("Initializing {} modules...", modules.len());
-
-        // Dispatch-parity audit (see [`ModuleRegistry::dispatch_orphans`]): every
-        // advertised command must be routable NOW, before any client can be told
-        // it exists. ERROR (not panic) so a drift is loud on the first boot that
-        // ships it without bricking the substrate; promote to a boot refusal once
-        // the count holds at zero across the fleet.
-        let orphans = self.registry.dispatch_orphans();
-        if !orphans.is_empty() {
-            tracing::error!(
-                probe_class = "registry.dispatch_parity",
-                orphans = ?orphans,
-                count = orphans.len(),
-                "ADVERTISED-BUT-UNDISPATCHABLE commands: these appear in help, \
-                 suggestions, and the persona tool offer but cannot route — add each \
-                 to its module's commands() vec (the work/list class, #309)"
-            );
-        }
-
-        // The declared dataflow graph (CBAR gap #2): name every one-sided wire once at
-        // boot, beside the command parity audit above. Not an error yet: production is
-        // being declared module by module, so the unfed count starts high and ratchets
-        // down (docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md § The Declared Dataflow
-        // Graph). The dead `event_subscriptions` are named so their modules move to a
-        // live path.
-        let edges = self.registry.event_edges();
-        let graph = super::super::event_graph::orphans(&edges, &[]);
-        // Hand the bus what every module declares it emits, so each event name's first
-        // publish reports whether anyone declared it (`runtime.event_graph.published`).
-        self.bus
-            .declare_emissions(edges.iter().flat_map(|e| e.emits.iter().cloned()).collect());
-        let dead_subscriptions: Vec<&'static str> = modules
-            .iter()
-            .filter_map(|name| self.registry.get_by_name(name))
-            .filter(|m| !m.config().event_subscriptions.is_empty())
-            .map(|m| m.config().name)
-            .collect();
-        continuum_base::probe!(
-            class = "runtime.event_graph",
-            modules = edges.len() as u64,
-            declared_producers = edges.iter().filter(|e| !e.emits.is_empty()).count() as u64,
-            declared_consumers = edges.iter().filter(|e| !e.consumes.is_empty()).count() as u64,
-            unfed = graph.unfed.len() as u64,
-            unread = graph.unread.len() as u64,
-            unfed_list = ?graph.unfed,
-            unread_list = ?graph.unread,
-            dead_bus_subscriptions = ?dead_subscriptions,
-            "the declared dataflow graph: consumers no module declares it feeds, productions \
-             nobody reads, and bus subscriptions on the dispatch path with no live caller"
-        );
-
-        // Per-module init deadline. A module's `initialize()` is meant to be fast
-        // (in-memory wiring; heavy work is detached / tick-driven), so 60s is a
-        // wedged-init backstop, NOT a normal budget — it bounds the airc-120s-hang
-        // class per-module so ONE hung init can't stall the whole boot + socket
-        // bind. Generous to never false-positive a legitimately slow init.
-        const PER_MODULE_INIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
-
-        // Collect failures instead of cascading. The old `return Err` on the FIRST
-        // failure skipped EVERY module after it → a silently half-booted core
-        // (audit finding). Each module now inits independently; a failure is
-        // recorded LOUDLY and we keep going so the rest of the substrate comes up.
-        let mut failures: Vec<String> = Vec::new();
-        for name in &modules {
-            if let Some(module) = self.registry.get_by_name(name) {
-                // BOOT IS LEGIBLE OR IT IS A WEDGE: one probe per module init with
-                // its outcome and wall time — the only way to read "core did not
-                // bind its IPC socket within 300s" (BigMama's host, 2026-09-04: a
-                // cold-disk init on the pre-bind path) without a stopwatch.
-                let started = std::time::Instant::now();
-                let attempt =
-                    tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await;
-                continuum_base::probe!(
-                    class = "boot.module_init",
-                    module = %name,
-                    outcome = match &attempt { Ok(Ok(_)) => "ok", Ok(Err(_)) => "error", Err(_) => "timeout" },
-                    ms = started.elapsed().as_millis() as u64,
-                    "module initialize"
-                );
-                match attempt {
-                    Ok(Ok(_)) => {
-                        info!("  {} initialized", name);
-                    }
-                    Ok(Err(e)) => {
-                        error!("  ✗ {} initialization FAILED: {}", name, e);
-                        failures.push(format!("{name}: {e}"));
-                    }
-                    Err(_) => {
-                        error!(
-                            "  ✗ {} init TIMED OUT after {}s (wedged) — skipped so the rest boot",
-                            name,
-                            PER_MODULE_INIT_DEADLINE.as_secs()
-                        );
-                        failures.push(format!(
-                            "{name}: init timed out after {}s",
-                            PER_MODULE_INIT_DEADLINE.as_secs()
-                        ));
-                    }
-                }
-            }
-        }
-
-        if failures.is_empty() {
-            info!("All {} modules initialized", modules.len());
-            Ok(())
-        } else {
-            // Fail LOUD with the COMPLETE failure set (never just the first, never
-            // silent). The caller decides whether a degraded boot is acceptable;
-            // either way the operator sees every module that failed. The main.rs
-            // boot deadline still backstops a failure that prevents socket bind.
-            let summary = format!(
-                "{}/{} modules FAILED to initialize — core is DEGRADED: [{}]",
-                failures.len(),
-                modules.len(),
-                failures.join("; ")
-            );
-            error!("⚠ {summary}");
-            Err(summary)
-        }
-    }
-
     /// Await a named module's `ready_edge()`. Returns `Ok(())` as soon as
     /// the module's ready watch publishes `true`. Returns `Err(...)` if
     /// the named module is not registered, or if the watch sender drops
@@ -335,52 +203,24 @@ impl Runtime {
     /// - `probe!(class = "tick.…", module = name, …)` emits on every
     ///   meaningful seam so operators see what's actually happening.
     pub fn start_tick_loops(&self) -> Vec<JoinHandle<()>> {
+        let readiness = self.registry.readiness();
+        // Open first: a module whose initialize returns after this pass starts its own loop
+        // (module_init's late path), so neither path misses it and the claim stops both doing it.
+        readiness.open_ticks();
         let mut handles = Vec::new();
-        let modules = self.registry.list_modules();
-
-        for name in &modules {
-            if let Some(module) = self.registry.get_by_name(name) {
-                let config = module.config();
-                if let Some(initial_interval) = config.tick_interval {
-                    let module_name = config.name;
-                    let module = module.clone();
-                    info!(
-                        "Starting tick loop for '{}' (interval: {:?})",
-                        module_name, initial_interval
-                    );
-                    continuum_base::probe!(
-                        class = "tick.spawn",
-                        module = module_name,
-                        interval_ms = initial_interval.as_millis() as u64
-                    );
-
-                    // Outer catch_unwind protects the *runner* itself —
-                    // anything genuinely catastrophic (poisoned lock,
-                    // bad future state) still emits one final event
-                    // before the loop dies.
-                    let handle = tokio::spawn(async move {
-                        let result = AssertUnwindSafe(run_tick_loop_for(
-                            module,
-                            module_name,
-                            initial_interval,
-                        ))
-                        .catch_unwind()
-                        .await;
-                        if let Err(panic) = result {
-                            error!(
-                                "Tick loop for '{}' aborted with panic in runner: {:?}",
-                                module_name, panic
-                            );
-                            continuum_base::probe!(
-                                class = "tick.aborted",
-                                module = module_name,
-                                reason = "runner_panic"
-                            );
-                        }
-                    });
-
-                    handles.push(handle);
-                }
+        for name in self.registry.list_modules() {
+            let Some(module) = self.registry.get_by_name(name) else { continue };
+            if !readiness.admits_now(name) {
+                // Never tick a module whose initialize has not returned; it ticks when it does.
+                continuum_base::probe!(
+                    class = "tick.deferred",
+                    module = name,
+                    "initialize has not returned; its tick loop starts when it does"
+                );
+                continue;
+            }
+            if readiness.claim_tick(name) {
+                handles.extend(spawn_tick_loop(module));
             }
         }
 
@@ -444,6 +284,10 @@ impl Runtime {
             }
         }
         if let Some(cmd) = self.registry.route_object(command) {
+            // A dep-holding object reaches its module's state: admitted as far as that module is.
+            if let Err(refused) = self.registry.admit(self.registry.object_owner(command)).await {
+                return Some(Err(refused.to_string()));
+            }
             // NOTE (adversarial review 2026-06-21): the typed object path does NOT
             // pass through the per-MODULE concurrency limiter or ModuleMetrics below
             // — a DynCommand object is module-independent, so it has no module to key
@@ -476,6 +320,11 @@ impl Runtime {
 
         let (module, full_cmd) = self.registry.route_command(command)?;
         let module_name = module.config().name;
+        // A module whose initialize has not returned is waited on (bounded by the init deadline)
+        // or, past it, refused by type: never a hang inside a half-initialized module.
+        if let Err(refused) = self.registry.admit(Some(module_name)).await {
+            return Some(Err(refused.to_string()));
+        }
 
         // Get metrics tracker for this module
         let metrics = self.registry.get_metrics(module_name);
@@ -505,103 +354,6 @@ impl Runtime {
 
         // Record timing (automatic for ALL commands)
         if let (Some(metrics), Some(tracker)) = (metrics, tracker) {
-            let timing = tracker.finish(result.is_ok());
-            metrics.record(timing);
-        }
-
-        Some(result)
-    }
-
-    /// Route a command synchronously (for use from rayon threads).
-    /// Spawns async work on tokio and bridges via sync channel.
-    /// This avoids "Cannot start a runtime from within a runtime" panics.
-    ///
-    /// AUTOMATIC METRICS: Every command is timed and recorded.
-    /// Module authors don't need to add timing code — the runtime handles it.
-    pub fn route_command_sync(
-        &self,
-        command: &str,
-        params: serde_json::Value,
-        rt_handle: &tokio::runtime::Handle,
-    ) -> Option<Result<CommandResult, String>> {
-        // Same dialect resolution as the async route (see route_command): a socket
-        // client's trained alias / former name / charset-legal form maps to the
-        // canonical command before any registry lookup. Idempotent, non-recording.
-        let resolved = crate::runtime::extensions::resolve_command_name(command);
-        let command = resolved.as_str();
-
-        // Typed path wins (see route_command). Bridge the async object dispatch
-        // onto rt_handle with the same 60s safety-net timeout the module path uses.
-        if let Some(cmd) = self.registry.route_object(command) {
-            let (tx, rx) = std::sync::mpsc::sync_channel(1);
-            rt_handle.spawn(async move {
-                let _ = tx.send(dispatch_object_with_panic_guard(cmd, params, None).await);
-            });
-            let result = match rx.recv_timeout(std::time::Duration::from_secs(60)) {
-                Ok(result) => result,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    error!("Command timed out after 60s (rayon safety net): {command}");
-                    Err(format!("Command timed out after 60s: {command}"))
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    error!("Command handler task panicked or was cancelled: {command}");
-                    Err(format!("Command handler failed: {command}"))
-                }
-            };
-            return Some(result);
-        }
-        let (module, full_cmd) = self.registry.route_command(command)?;
-        let module_name = module.config().name;
-
-        // Get metrics tracker for this module (created at registration)
-        let metrics = self.registry.get_metrics(module_name);
-        let queued_at = std::time::Instant::now();
-        let limit = self
-            .concurrency_limits
-            .get(module_name)
-            .map(|entry| entry.clone());
-
-        // Use sync channel to bridge async -> sync safely
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-
-        rt_handle.spawn(async move {
-            let permit = match limit {
-                Some(limit) => match limit.acquire_owned().await {
-                    Ok(permit) => Some(permit),
-                    Err(_) => {
-                        let _ = tx.send(Err(format!(
-                            "Runtime concurrency limiter for module '{module_name}' is closed"
-                        )));
-                        return;
-                    }
-                },
-                None => None,
-            };
-            let result = dispatch_with_panic_guard(&module, &full_cmd, params, module_name).await;
-            drop(permit);
-            let _ = tx.send(result);
-        });
-
-        // 60s timeout — generous enough for legitimate long operations (vector backfill,
-        // large queries), strict enough to prevent rayon thread starvation.
-        // Voice/TTS streaming uses a different code path (binary frames, dedicated connections).
-        // The ORMRustClient timeout is 30s, so the client always times out first with a clean
-        // error. This 60s is a safety net to free the rayon thread.
-        let result = match rx.recv_timeout(std::time::Duration::from_secs(60)) {
-            Ok(result) => result,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                error!("Command timed out after 60s (rayon safety net): {command}");
-                Err(format!("Command timed out after 60s: {command}"))
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                error!("Command handler task panicked or was cancelled: {command}");
-                Err(format!("Command handler failed: {command}"))
-            }
-        };
-
-        // Record timing (automatic for ALL commands)
-        if let Some(metrics) = metrics {
-            let tracker = metrics.start_command(command, queued_at);
             let timing = tracker.finish(result.is_ok());
             metrics.record(timing);
         }
@@ -643,36 +395,6 @@ impl Runtime {
     /// Get a reference to the shared compute cache.
     pub fn compute(&self) -> &SharedCompute {
         &self.compute
-    }
-
-    /// Broadcast `load_state` to every module — the symmetric boot half of
-    /// the CBAR contract, called once after module initialization. Receipted
-    /// per node so "which modules restored state" is a boot fact, not a hope.
-    pub async fn load_all_state(&self) {
-        // PARALLEL fork/join — nobody waits on anyone (Joel 2026-09-02: "they
-        // all load/store state in parallel so no one waits… join/fork threads").
-        // Symmetric with `shutdown`'s save-and-join: total wall time = the
-        // slowest single concern, never the SUM. The first cut was a sequential
-        // for-loop — a boot tax that grew with every module added.
-        const PER_MODULE: std::time::Duration = SHUTDOWN_PHASE;
-        let futs = self.registry.list_modules().into_iter().filter_map(|name| {
-            self.registry.get_by_name(&name).map(|module| async move {
-                let t = std::time::Instant::now();
-                let outcome = match tokio::time::timeout(PER_MODULE, module.load_state()).await {
-                    Ok(Ok(())) => "ok",
-                    Ok(Err(_)) => "error",
-                    Err(_) => "timeout",
-                };
-                continuum_base::probe!(
-                    class = "boot.load_state",
-                    module = %name,
-                    outcome = outcome,
-                    ms = t.elapsed().as_millis() as u64,
-                    "module state load"
-                );
-            })
-        });
-        futures::future::join_all(futs).await;
     }
 
     /// Shutdown all modules — PARALLEL, BOUNDED, RECEIPTED (the CBAR shape,

@@ -119,7 +119,7 @@ macro_rules! time_sync {
 ///
 /// // Inline complex expressions just as cleanly:
 /// let response = time_probe!("inference.generate",
-///     adapter.generate_text(request));
+///     adapter.generate_under(request, terms));
 /// ```
 ///
 /// ## Why this isn't `time_async!`

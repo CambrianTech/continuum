@@ -18,7 +18,7 @@ impl OpenAICompatibleAdapter {
         if resp.status() == reqwest::StatusCode::NOT_FOUND
             || resp.status() == reqwest::StatusCode::NOT_IMPLEMENTED
         {
-            *self.lora_support.write().unwrap() = LoraSupport::Unsupported;
+            *self.lora_support.write() = LoraSupport::Unsupported;
             return Ok(());
         }
         if !resp.status().is_success() {
@@ -34,25 +34,20 @@ impl OpenAICompatibleAdapter {
             .as_array()
             .or_else(|| body.get("data").and_then(|v| v.as_array()))
             .ok_or_else(|| format!("{} returned non-array LoRA catalog", url))?;
+        // The server's own `id` and `path` are the catalog; an entry missing either is a
+        // malformed answer, refused whole rather than indexed by position.
         let catalog: Vec<(i64, String)> = arr
             .iter()
-            .enumerate()
-            .map(|(idx, entry)| {
-                // The server's own `id` is authoritative; fall back to array
-                // position only if it omits one (older builds).
-                let id = entry
-                    .get("id")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(idx as i64);
-                let path = entry
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                (id, path)
+            .map(|entry| {
+                let id = entry.get("id").and_then(|v| v.as_i64());
+                let path = entry.get("path").and_then(|v| v.as_str());
+                match (id, path) {
+                    (Some(id), Some(path)) => Ok((id, path.to_string())),
+                    _ => Err(format!("{url} LoRA catalog entry lacks an id or path: {entry}")),
+                }
             })
-            .collect();
-        *self.lora_support.write().unwrap() = LoraSupport::Supported(catalog);
+            .collect::<Result<_, _>>()?;
+        *self.lora_support.write() = LoraSupport::Supported(catalog);
         Ok(())
     }
 
@@ -72,12 +67,11 @@ impl OpenAICompatibleAdapter {
         // 2. a gene staged into the engine's --train-dir for a runtime load (charter S1):
         //    the catalog carries the staged file, named from the genome path
         if !path.is_empty() {
-            if let Some(stage) = crate::inference::llama_server::gene_stage_name(std::path::Path::new(path)) {
-                if let Some((id, _)) = catalog.iter().find(|(_, p)| {
-                    std::path::Path::new(p).file_name().and_then(|n| n.to_str()) == Some(stage.as_str())
-                }) {
-                    return Some(*id);
-                }
+            let stage = crate::inference::llama_server::gene_stage_name(std::path::Path::new(path));
+            if let Some((id, _)) = catalog.iter().find(|(_, p)| {
+                std::path::Path::new(p).file_name().and_then(|n| n.to_str()) == Some(stage.as_str())
+            }) {
+                return Some(*id);
             }
         }
         // 3. substring on path or name
@@ -118,7 +112,7 @@ impl OpenAICompatibleAdapter {
         // fail loud on miss). Explicit requested scales override the 0.0 neutral.
         let mut requested: Vec<(i64, f64)> = Vec::with_capacity(reqs.len());
         if !reqs.is_empty() {
-            if matches!(&*self.lora_support.read().unwrap(), LoraSupport::Unknown) {
+            if matches!(&*self.lora_support.read(), LoraSupport::Unknown) {
                 self.probe_lora_catalog().await?;
             }
             for req in reqs {
@@ -139,7 +133,7 @@ impl OpenAICompatibleAdapter {
         // Neutralize every loaded-but-unrequested adapter. Unknown/Unsupported with
         // an EMPTY request → nothing known to neutralize → omit the field (the eval
         // probes at lane spawn so its base arm already has the catalog here).
-        let loaded_ids: Vec<i64> = match &*self.lora_support.read().unwrap() {
+        let loaded_ids: Vec<i64> = match &*self.lora_support.read() {
             LoraSupport::Supported(catalog) => catalog.iter().map(|(id, _)| *id).collect(),
             _ => Vec::new(),
         };
@@ -153,7 +147,7 @@ impl OpenAICompatibleAdapter {
                     .iter()
                     .find(|(rid, _)| *rid == id)
                     .map(|(_, s)| *s)
-                    .unwrap_or(0.0);
+                    .unwrap_or(0.0); // not requested this turn: loaded but disabled, by definition
                 json!({ "id": id, "scale": scale })
             })
             .collect();
@@ -163,7 +157,7 @@ impl OpenAICompatibleAdapter {
     /// Local lookup against the discovered catalog. `None` when unsupported,
     /// unprobed, or genuinely absent — callers own the probe/fail decision.
     fn lookup_lora_index(&self, name: &str, path: &str) -> Option<i64> {
-        match &*self.lora_support.read().unwrap() {
+        match &*self.lora_support.read() {
             LoraSupport::Supported(catalog) => Self::match_lora_index(catalog, name, path),
             _ => None,
         }
@@ -172,7 +166,7 @@ impl OpenAICompatibleAdapter {
     /// The fail-loud message for an unresolved page-in, naming the cause so the
     /// log makes the boundary obvious (backend can't, vs custodian hasn't).
     fn lora_miss_error(&self, name: &str, path: &str) -> String {
-        match &*self.lora_support.read().unwrap() {
+        match &*self.lora_support.read() {
             LoraSupport::Unsupported => format!(
                 "LoRA page-in requested (adapter '{}') but provider '{}' exposes no \
                  /lora-adapters — its serving backend can't apply a LoRA per-request \

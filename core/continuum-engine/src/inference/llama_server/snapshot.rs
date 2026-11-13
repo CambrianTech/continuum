@@ -140,6 +140,14 @@ pub struct ServingSnapshot {
     /// MEMORY, and they do not start together.
     #[ts(optional)]
     pub loading_model: Option<String>,
+    /// THE ENGINE IS HELD FOR LIVE WORK, if it is: what holds it, on which incarnation, and
+    /// since when ([`super::serving_hold`], card a18452d6). Serving does not swap, re-home,
+    /// page in or retire a held engine, so a node can be `ready: false` with no lanes for
+    /// hours on purpose; without this it read as an unexplained empty node. Separate from
+    /// `degraded_reason`: a hold is not a degradation.
+    #[serde(default)]
+    #[ts(optional)]
+    pub held_for: Option<super::serving_hold::ServingHold>,
 }
 
 
@@ -185,6 +193,7 @@ impl ServingSnapshot {
             vision_base_url: None,
             vision_model: None,
             loading_model: None,
+            held_for: None,
         }
     }
 
@@ -206,7 +215,8 @@ impl ServingSnapshot {
 /// is the ENDPOINT truth (#106): the catalog row *declares* Vision, the mmproj
 /// file *exists*, but only the process itself can confirm the projector loaded
 /// and the multimodal tokenize path answers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default)] // a modality the reply does not name is one the server does not accept
 pub struct MultimodalSupport {
     /// `/props` `modalities.vision` — the server accepts image content parts.
     pub vision: bool,
@@ -372,7 +382,7 @@ pub fn current_serving() -> ServingSnapshot {
     SERVING_STATE
         .get()
         .map(|rx| rx.borrow().clone())
-        .unwrap_or_else(ServingSnapshot::empty)
+        .unwrap_or_else(ServingSnapshot::empty) // unwrap_or_else: before the daemon installs its state nothing is served, which empty states exactly
 }
 
 

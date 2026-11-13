@@ -131,7 +131,7 @@ for platform in "${platforms[@]}"; do
         grep -q -- '--bin livekit-bridge --release' "$FIXTURE_TRACE"
         cmp "$scratch/repo/tools/scripts/start-livekit-windows.ps1" "$CARGO_TARGET_DIR/release/start-livekit-windows.ps1"
       fi
-      grep -q 'warm build complete' "$scratch/output"
+      grep -q 'build-only pass complete' "$scratch/output"
       artifact="$CARGO_TARGET_DIR/release/continuum-core-server"
       if [ "$platform" = MINGW64_NT-10.0 ]; then
         artifact="$artifact.exe"
@@ -143,7 +143,7 @@ for platform in "${platforms[@]}"; do
       grep -q 'mapped output Access is denied' "$scratch/output"
       grep -q 'leaving the running core untouched' "$scratch/output"
       [ ! -s "$CONTINUUM_BUILD_RECEIPT" ]
-      if grep -q 'warm build complete' "$scratch/output"; then exit 1; fi
+      if grep -q 'build-only pass complete' "$scratch/output"; then exit 1; fi
     fi
     # One library compile: the FIRST cargo line names the core and both sidecars
     # together (the self-build is skipped here, so the CLI is off it), and no
@@ -169,8 +169,8 @@ printf '#!/usr/bin/env bash\necho Darwin\n' > "$fixture_home/.cargo/bin/uname"
 HOME="$fixture_home" FIXTURE_PLATFORM=Darwin FAIL_CORE_BUILD=0 FAIL_ENGINE_BUILD=1 \
   bash "$scratch/repo/tools/scripts/start-server.sh" > "$scratch/output" 2>&1
 if grep -Eq 'FORBIDDEN|LAUNCHED' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
-grep -q 'engine build failed in the warm pass' "$scratch/output"
-grep -q 'warm build complete' "$scratch/output"
+grep -q 'engine build failed in the build-only pass' "$scratch/output"
+grep -q 'build-only pass complete' "$scratch/output"
 [ -s "$CONTINUUM_BUILD_RECEIPT" ]
 echo "PASS a failed engine build does not fail the deploy"
 

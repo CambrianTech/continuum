@@ -27,8 +27,8 @@ Continuum has multiple state roots because some data belongs to the repo, some t
 
 | Variable | Meaning |
 | --- | --- |
-| `CONTINUUM_HOME` | Preferred future override for user-level Continuum state |
-| `CONTINUUM_ROOT` | Preferred future override for checkout-level Continuum state |
+| `CONTINUUM_HOME` | The continuum home override, read only by `paths::continuum_home` (else `~/.continuum`) |
+| `CONTINUUM_ROOT` | Retired (line 7): a value naming another tree is refused; set `CONTINUUM_HOME` to that path instead |
 | `CONTINUUM_SSH_USER` | SSH account for grid and remote model commands |
 | `CONTINUUM_COMPACTION_MODEL` | Local model path for compaction profiling |
 | `ESPEAK_NG_BIN` | `espeak-ng` executable path when it is not on `PATH` |

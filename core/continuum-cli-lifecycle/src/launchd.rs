@@ -17,7 +17,7 @@
 //! agent cannot heal on a Mac whose gui domain is in on-demand-only mode — launchd's own
 //! words at 13:32Z: `pending spawn, domain in on-demand-only mode: com.continuum.core`.
 //! `RunAtLoad` did not fire at bootstrap and `KeepAlive` did not relaunch after `kill -9`
-//! (127 s dark). The system LaunchDaemon (`install-service.sh install --system`, sudo
+//! (127 s dark). The system LaunchDaemon (`continuum install`, sudo
 //! once) is the session-independent answer, the same elevation class the 5090 needs for
 //! S4U (card 7b56a84b). [`supervision_verdict`] says which of these a node is in, so the
 //! receipt is a self-running check ([`SupervisorReport`]), never a hand test.
@@ -27,8 +27,11 @@
 
 use std::path::{Path, PathBuf};
 
-/// The launchd label the installer registers (`install-service.sh`: `LABEL`).
+/// The launchd label `continuum install` registers.
 pub const LABEL: &str = "com.continuum.core";
+
+/// The scheduling class the core and its engine run in (`MacDrift::Throttled`).
+pub const PROCESS_TYPE: &str = "<key>ProcessType</key><string>Standard</string>";
 
 /// Which launchd domain owns the job. `System` is the LaunchDaemon (survives logout,
 /// immune to the gui domain's on-demand mode); `Gui(uid)` is the per-user agent.
@@ -345,65 +348,6 @@ impl SupervisionVerdict {
     }
 }
 
-/// One way the registered supervision differs from the contract — the read half of the
-/// macOS supervisor arm of `continuum install` (Joel: one idempotent verb; each arm
-/// reads, changes only what drifted, says so). The write half is the register + hand-off;
-/// the verb re-reads after it and demands this list empty.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MacDrift {
-    /// No launchd job at all.
-    Absent,
-    /// Registered in the other domain than asked for (agent vs daemon).
-    Domain { have: Domain, want: Domain },
-    /// The plist execs a bash wrapper, not the binary (audit item 7).
-    WrapperCommand,
-    /// The plist lacks `AbandonProcessGroup`: a kickstart or heal would kill the lanes.
-    KillsLanes,
-    /// The job exists but the core on the socket is not its pid (or nothing answers).
-    NotOwned {
-        job_pid: Option<u32>,
-        core_pid: Option<u32>,
-    },
-    /// The agent's domain is on-demand-only: registered, cannot heal.
-    CannotHeal,
-}
-
-/// The pure rule over what the node can read: the job (if any) and its plist text, the
-/// pids, launchd's word on the domain. `want` is the domain asked for.
-pub fn mac_drift(
-    have: Option<(&Domain, &str)>,
-    want: &Domain,
-    job_pid: Option<u32>,
-    core_pid: Option<u32>,
-    on_demand_only: bool,
-) -> Vec<MacDrift> {
-    let Some((domain, plist)) = have else {
-        return vec![MacDrift::Absent];
-    };
-    let mut out = Vec::new();
-    if domain != want {
-        out.push(MacDrift::Domain {
-            have: domain.clone(),
-            want: want.clone(),
-        });
-    }
-    if plist.contains("<string>/bin/bash</string>") || plist.contains("<string>/bin/sh</string>") {
-        out.push(MacDrift::WrapperCommand);
-    }
-    if !plist.contains("<key>AbandonProcessGroup</key><true/>") {
-        out.push(MacDrift::KillsLanes);
-    }
-    match supervision_verdict(Some(domain.clone()), job_pid, core_pid, on_demand_only) {
-        SupervisionVerdict::Supervised { .. } => {}
-        SupervisionVerdict::OwnedButCannotHeal { .. } => out.push(MacDrift::CannotHeal),
-        SupervisionVerdict::JobPresentCoreOrphaned { job_pid, core_pid } => {
-            out.push(MacDrift::NotOwned { job_pid, core_pid })
-        }
-        SupervisionVerdict::Unsupervised => out.push(MacDrift::Absent),
-    }
-    out
-}
-
 /// Everything the plist `continuum install` writes is built from — the binary as the
 /// command (audit #4223 item 7: no `bash -lc` wrapper). `env` is what launchd must
 /// carry for the exec to find its libraries and tools (PATH, the runtime library dirs);
@@ -479,7 +423,10 @@ pub fn render_plist(spec: &PlistSpec<'_>) -> String {
   <key>WorkingDirectory</key><string>{data}</string>
   <key>StandardOutPath</key><string>{out}</string>
   <key>StandardErrorPath</key><string>{err}</string>
-  <key>ProcessType</key><string>Background</string>
+  <!-- Standard, never Background: Background runs every thread, the engine the core
+       spawns included, at PRI 4, ~15% of a normal process's CPU under load (IntelMac
+       2026-11-04) and on Apple Silicon only on the efficiency cores. -->
+  {process_type}
 {user}  <key>EnvironmentVariables</key>
   <dict>
 {env}  </dict>
@@ -491,6 +438,7 @@ pub fn render_plist(spec: &PlistSpec<'_>) -> String {
         data = xml(&data.display().to_string()),
         out = xml(&logs.join("service.out.log").display().to_string()),
         err = xml(&logs.join("service.err.log").display().to_string()),
+        process_type = PROCESS_TYPE,
     )
 }
 
@@ -991,6 +939,9 @@ pub mod live {
         Ok(removed)
     }
 }
+
+mod drift;
+pub use drift::{mac_drift, MacDrift};
 
 #[cfg(test)]
 mod tests;

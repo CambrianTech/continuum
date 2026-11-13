@@ -3,11 +3,14 @@
 use super::*;
 // The SSE wire types + stream consumer live in `crate::inference::sse_stream` (S3b decompose).
 use crate::inference::sse_stream::warn_if_decode_collapsed;
+use continuum_tool_protocol::UnparsedArguments;
 
 impl OpenAICompatibleAdapter {
+    /// Generate `request` under `terms` (`DispatchTerms::default()` = none beyond the lane's own).
     pub(super) async fn stream_checked(
         &self,
         request: TextGenerationRequest,
+        terms: crate::ai::types::DispatchTerms,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         // Only require API key for providers that need auth
@@ -20,11 +23,11 @@ impl OpenAICompatibleAdapter {
         let request_id = request
             .request_id
             .clone()
-            .unwrap_or_else(|| format!("req-{}", continuum_base::time::EpochMs::now().millis()));
+            .unwrap_or_else(|| format!("req-{}", continuum_base::time::EpochMs::now().millis())); // an un-ided request is minted its id here: an identity, never a quantity
         let raw_model = request
             .model
             .as_deref()
-            .unwrap_or(self.config.default_model.as_str());
+            .unwrap_or(self.config.default_model.as_str()); // no model named: the adapter's declared default is the documented contract
 
         // For DMR: resolve the logical model name to the actual model ID
         // stored in Docker Model Runner (which may have hf.co/ prefix and
@@ -56,12 +59,12 @@ impl OpenAICompatibleAdapter {
                     crate::sensory::route(row, crate::sensory::Modality::ImageIn).is_native()
                 })
             })
-            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::Vision));
+            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::Vision)); // no registry row: the adapter's set, itself projected from the registry (#65)
 
         // Build the base request body — `inference::request_body` (the head of assembly).
         let audio_native = crate::model_registry::try_global()
             .and_then(|reg| reg.model(raw_model).map(|row| row.has(Capability::AudioInput)))
-            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::AudioInput));
+            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::AudioInput)); // no registry row: the adapter's set, itself projected from the registry (#65)
         let mut body = crate::inference::request_body::build_base_body(
             &self.config,
             &request,
@@ -176,7 +179,7 @@ impl OpenAICompatibleAdapter {
                 continuum_base::probe!(
                     class = "inference.hold.backoff",
                     traffic = %class.as_str(),
-                    purpose = %request.purpose.as_deref().unwrap_or("-"),
+                    purpose = %request.purpose.as_deref().unwrap_or("-"), // display only: an unnamed purpose prints as -
                     "hold active at the adapter seam — refusing fast so the caller drops its permits and retries through the pre-gate defer"
                 );
                 return Err(
@@ -187,58 +190,55 @@ impl OpenAICompatibleAdapter {
             // Estimate this activity's prompt size once — the eviction price basis
             // AND the overshoot-alarm input below (chars/4, deliberately conservative).
             let approx_tokens = prompt_tokens as u64;
-            // TURN ADMISSION (event-driven, bounded by the request deadline) — permit-first, then lease+pin
-            // this activity's slot and page its KV onto a now-free slot. The returned
-            // guard holds the permit + slot pin for the WHOLE generation (bound into
-            // `_admission` at function scope above). A Turn that cannot name both
-            // (persona, room) halves passes `None` and stays unpinned. Non-Turn traffic
-            // takes the permit only and lands on the scratch slot below.
-            let turn_key = match class {
-                crate::inference::slots::SlotClass::Turn => request
-                    .persona_id
-                    .as_deref()
-                    .and_then(|p| uuid::Uuid::parse_str(p).ok())
-                    .zip(
-                        request
-                            .room_id
-                            .as_deref()
-                            .and_then(|r| uuid::Uuid::parse_str(r).ok()),
-                    )
-                    .and_then(|(p, r)| crate::inference::slots::ActivityKey::new(p, r)),
-                _ => None,
-            };
+            // TURN ADMISSION (event-driven, bounded by the request deadline) — the mind's act
+            // gate, then permit-first, then lease+pin her page's slot and page its KV onto a
+            // now-free slot. The returned guard holds all of it for the WHOLE generation
+            // (bound into `_admission` at function scope above). A Turn keys on her MIND
+            // alone (one page across every room); a Fork on its own (persona, room). One that
+            // cannot name its ids passes `None` and stays unpinned. Non-page traffic takes
+            // the permit only and lands on the scratch slot below.
+            let parse = |id: Option<&str>| id.and_then(|id| uuid::Uuid::parse_str(id).ok());
+            let turn_key = class.page_key(parse(request.persona_id.as_deref()), parse(request.room_id.as_deref()));
             let root = endpoints.root();
             // Discovery: install this server's slot pool on first use (probes /props).
             // Non-Turn traffic also needs the pool on a single-slot server: it
             // must save the activity resident before borrowing the only slot.
-            let pool = self.ensure_slot_pool(&endpoints).await.map_err(|miss| miss.probe(root)).ok();
+            let pool = crate::inference::slots::directory().discover_pool(&self.client, root).await.map_err(|miss| {
+                miss.probe(root);
+                crate::ai::inference_error::InferenceError::Unavailable(format!(
+                    "slot discovery refused generation at {root}: {} ({miss:?})",
+                    miss.as_str(),
+                ))
+            })?;
+            // The endpoint's own permits, shared by every adapter and the learner (card 23069702).
+            let endpoint_permits = crate::inference::slots::directory().endpoint(root).concurrency().bound();
             let adm = crate::inference::turn_admission::admit_turn(
-                &self.concurrency,
+                endpoint_permits,
+                class,
                 turn_key,
-                pool,
+                Some(pool),
                 &self.client,
                 root,
                 approx_tokens,
-                crate::inference::turn_admission::AdmissionPatience::for_turn(request.turn_bound, start.elapsed()),
+                crate::inference::turn_admission::AdmissionPatience::for_turn(),
             )
             .await
             .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
             let scratch = adm.scratch_slot();
-            // Only a Turn that names its activity owns a slot. A Turn with no (persona, room)
-            // key (a nil-room eval forked onto her live lane, or a caller that dropped its
-            // room) used to go out UNPINNED with cache_prompt on whenever the pool had a
+            // Only a turn that names its page owns a slot. A Turn with no persona (or a Fork
+            // with no room) used to go out UNPINNED with cache_prompt on whenever the pool had a
             // scratch slot, so the server placed it by similarity and could overwrite a
             // resident's KV (card f3ba3b56, item 4). It is placed like every other
             // unattributed request: the scratch slot, or on a pool without one, a slot its
             // admission borrowed (the resident saved and detached first) with the cache off.
-            let keyed_turn = matches!(class, crate::inference::slots::SlotClass::Turn) && turn_key.is_some();
-            if matches!(class, crate::inference::slots::SlotClass::Turn) && !keyed_turn {
+            let keyed_turn = class.holds_a_page() && turn_key.is_some();
+            if class.holds_a_page() && !keyed_turn {
                 continuum_base::probe!(
                     class = "inference.turn.keyless",
                     persona = request.persona_id.as_deref(),
                     room = request.room_id.as_deref(),
                     purpose = request.purpose.as_deref().unwrap_or("none"), // unwrap_or: an unset purpose is itself the fact to see
-                    "a Turn named no (persona, room) activity: it runs on the scratch slot, or, with none, on a slot its admission borrowed after saving that resident, never persisting a cache there"
+                    "a page-holding turn named no page (a Turn without a persona, a Fork without a room): it runs on the scratch slot, or, with none, on a slot its admission borrowed after saving that resident, never persisting a cache there"
                 );
             }
             let decided = crate::inference::slots::placement(keyed_turn, adm.slot(), scratch);
@@ -249,6 +249,11 @@ impl OpenAICompatibleAdapter {
             }
             let placement = decided.slot;
             _admission = Some(adm);
+            // The draft only while this turn decodes alone (`inference::speculation`).
+            let others = crate::inference::slots::directory().endpoint(root).concurrency().decoding_others();
+            if let (Some(limit), Some(obj)) = (crate::inference::speculation::draft_limit(others), body.as_object_mut()) {
+                obj.insert("speculative.n_max".to_string(), json!(limit));
+            }
             // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win
             // rides on placement. Report class + room so a cached:0 streak names
             // WHICH activity thrashed — or which class strayed off scratch.
@@ -284,7 +289,7 @@ impl OpenAICompatibleAdapter {
                 // into a diagnosis. Chars/4 is a deliberately conservative
                 // token estimate — an alarm that only fires when the overshoot
                 // is unambiguous.
-                if let Some(served) = served_ctx_by_root().get(endpoints.root()) {
+                if let Some(served) = crate::inference::slots::served_ctx_by_root().get(endpoints.root()) {
                     let approx_tokens = prompt_tokens;
                     if approx_tokens > *served as usize {
                         // #3847: the total was measured but never ATTRIBUTED, so
@@ -316,7 +321,6 @@ impl OpenAICompatibleAdapter {
                                 rows.sort_by(|a, b| b.1.cmp(&a.1));
                                 let rendered = rows
                                     .iter()
-                                    .take(6)
                                     .map(|(role, tokens)| format!("{role}={tokens}"))
                                     .collect::<Vec<_>>()
                                     .join(" ");
@@ -352,7 +356,7 @@ impl OpenAICompatibleAdapter {
         // discovered, not declared: it probes the endpoint and FAILS LOUD if the
         // backend can't page LoRA or a requested adapter isn't loaded. `None` only
         // when nothing is loaded (omit the field, no probe penalty for non-LoRA).
-        let active = request.active_adapters.as_deref().unwrap_or(&[]);
+        let active = request.active_adapters.as_deref().unwrap_or(&[]); // None means none requested: the empty set is that fact
         continuum_base::probe!(
             class = "inference.request.lora_resolve",
             adapters = active.len() as u64,
@@ -370,7 +374,10 @@ impl OpenAICompatibleAdapter {
 
         // Finish the body for the wire (thinking policy, response_format, native tools,
         // tool-surface probe) — `inference::request_body`.
-        crate::inference::request_body::finish_body(&self.config, &request, model, &mut body);
+        // ONE snapshot decides both where this request goes and whether it may carry its tail;
+        // a tail the destination cannot take is refused, never dropped (Codex on #5491).
+        let route = self.route_now(model, &endpoints);
+        crate::inference::request_body::finish_body(&self.config, &request, model, route.tail_tools, terms.think, &mut body)?;
 
         // Make request — the endpoint base for THIS request's model. Normally the
         // runtime/config base; for the local serving gateway, a request for the
@@ -378,9 +385,7 @@ impl OpenAICompatibleAdapter {
         // text-only mind) routes to the snapshot's verified `vision_base_url`.
         // Snapshot-driven: the daemon publishes the address only after `/props`
         // confirmed sight, so this can never aim pixels at a text lane.
-        let url = self
-            .endpoints_for_model(model, &endpoints)
-            .chat_completions();
+        let url = route.base.chat_completions();
 
         let mut request_builder = self
             .client
@@ -399,7 +404,7 @@ impl OpenAICompatibleAdapter {
         // stall happened (oversized prompt, wrong model, etc.). Kept at
         // info! because this is the one log line every failing-persona
         // investigation needs to see.
-        let body_bytes = serde_json::to_vec(&body).map_err(|error| {
+        let body_bytes = serde_json::to_vec(&body).map_err(|error| { // boundary: the OpenAI-compatible HTTP request body sent to the provider
             crate::ai::inference_error::InferenceError::Protocol(format!(
                 "could not encode generation request: {error}"
             ))
@@ -433,12 +438,8 @@ impl OpenAICompatibleAdapter {
             body_bytes.len(),
             body.get("tools")
                 .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0)
-                > 0,
-            body.get("stream")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
+                .is_some_and(|a| !a.is_empty()),
+            body.get("stream").and_then(|v| v.as_bool()) == Some(true)
         );
 
         // Concurrency permit. Turn admission above already took it (permit-FIRST,
@@ -451,19 +452,39 @@ impl OpenAICompatibleAdapter {
             _admission = Some(
                 crate::inference::turn_admission::admit_turn(
                     &self.concurrency,
+                    crate::inference::slots::class_for(request.purpose.as_deref()),
                     None,
                     None,
                     &self.client,
                     root,
                     0,
-                    crate::inference::turn_admission::AdmissionPatience::for_turn(request.turn_bound, start.elapsed()),
+                    crate::inference::turn_admission::AdmissionPatience::for_turn(),
                 )
                 .await
                 .map_err(crate::ai::inference_error::InferenceError::Unavailable)?,
             );
         }
 
-        let exact_prompt_quote = self.config.single_resident_model && self.targets_local_serving_lane();
+        let exact_prompt_quote = self.exact_prompt_admission();
+        // A request priced behind the engine's exact count is never sent without that count.
+        let priced_below_estimate = terms.admission.is_some_and(|a| a.priced == crate::ai::types::PromptAdmission::EngineCounted);
+        if priced_below_estimate && !exact_prompt_quote {
+            return Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model: model.to_owned() });
+        }
+        // Whose grant the request was rendered against: re-checked at dispatch, after the lane wait.
+        let dispatch_admission = match (terms.admission, request.persona_id.as_deref().map(uuid::Uuid::parse_str)) {
+            (Some(admission), Some(Ok(persona))) => Some(crate::inference::lane_send::DispatchAdmission {
+                persona,
+                admission,
+                engine: _admission.as_ref().and_then(|admitted| admitted.engine_incarnation()),
+            }),
+            (Some(_), _) => {
+                return Err(crate::ai::inference_error::InferenceError::Protocol(
+                    "a request carrying a grant admission must name its persona by id".into(),
+                ))
+            }
+            (None, _) => None,
+        };
         // Pre-flight the single-resident gateway (the serving guard, now its own module:
         // `inference::serving_guard`). Refuses when the lane cannot guarantee `model` or
         // the prompt alone overflows the served slot (#175).
@@ -479,6 +500,9 @@ impl OpenAICompatibleAdapter {
         // The managed engine quotes the finalized body before generation; the heuristic
         // preflight above checks residency only so an overestimate cannot refuse a fit.
         // POST through the lane with the mid-relaunch retry (`inference::lane_send`).
+        // Her grant's reservation: released by the engine's terminal receipt (the stream's final
+        // frame, below); dropped without it (a cancelled caller, a broken stream) it stays held.
+        let mut grant_reservation = None;
         let response = crate::inference::lane_send::send_with_lane_retry(
             &self.config,
             request_builder,
@@ -495,6 +519,14 @@ impl OpenAICompatibleAdapter {
                         reply: request.max_tokens.unwrap_or(0), // absent max_tokens reserves no explicit output allowance
                         request_id: &request_id,
                     }),
+                admission: dispatch_admission,
+            },
+            &mut grant_reservation,
+            // Only a POST touches her slot: an admission refused before it keeps her residency.
+            || {
+                if let Some(admission) = _admission.as_mut() {
+                    admission.dispatching();
+                }
             },
         )
         .await?;
@@ -511,6 +543,7 @@ impl OpenAICompatibleAdapter {
             stream_timings,
             resp_model,
             probe_persona,
+            terminal,
         } = crate::inference::sse_stream::consume_sse_stream(
             &self.config,
             &request,
@@ -519,6 +552,11 @@ impl OpenAICompatibleAdapter {
             &sink,
         )
         .await?;
+        // Her reservation ends only on the engine's terminal receipt (its final frame's finish);
+        // a stream that ended without one leaves it held, unresolved.
+        if let Some(reservation) = grant_reservation.take() {
+            crate::capacity::window_grant::settle(reservation, terminal.as_ref());
+        }
         let response_time_ms = start.elapsed().as_millis() as u64;
 
         // Separate reasoning from the answer AT THE BOUNDARY: a reasoning model's
@@ -540,7 +578,7 @@ impl OpenAICompatibleAdapter {
         let mut finish_reason = finish_reason_str
             .as_deref()
             .map(|r| self.map_finish_reason(r))
-            .unwrap_or(FinishReason::Stop);
+            .unwrap_or(FinishReason::Unreported); // no marker arrived: say so, never claim a stop
         let generation_completed =
             finish_reason_str.is_some() && !matches!(finish_reason, FinishReason::Error);
 
@@ -629,30 +667,24 @@ impl OpenAICompatibleAdapter {
                     // the JSON. The turn showed a confusing downstream error instead of
                     // "your tool arguments were not valid JSON."
                     // [[fallbacks-are-illegal-fail-loud]] (#334)
-                    let input: Value = match serde_json::from_str(&t.arguments) {
+                    // The fate of a call whose arguments do not parse is decided HERE, the
+                    // one seam that knows why the generation stopped: the output limit cut
+                    // it (never a retry: the same call re-cuts), or she wrote bad JSON (a
+                    // retry). Typed in the call, so no reader infers it from a JSON EOF
+                    // (`continuum_tool_protocol::call_ending`, ONE-ACT 6b).
+                    let arg_len = t.arguments.len();
+                    let input: Value = match UnparsedArguments::parse(t.arguments, finish_reason.generation_end()) {
                         Ok(v) => v,
-                        Err(e) => {
+                        Err(unparsed) => {
                             continuum_base::probe!(
                                 class = "ai.tool_call.unparseable_args",
                                 tool = t.name.as_str(),
-                                error = e.to_string().as_str(),
-                                arg_len = t.arguments.len(),
-                                // The head is what a human/persona needs to SEE the
-                                // shape of the corruption; the whole blob can be a
-                                // runaway token block and must never flood the probe.
-                                head = t.arguments.chars().take(200).collect::<String>().as_str(),
+                                cut = matches!(unparsed, UnparsedArguments::Cut { .. }),
+                                arg_len,
+                                // The whole blob rides in the call's input below; the probe names its size.
                                 "model emitted tool arguments that are not valid JSON — the call cannot be honored as written",
                             );
-                            // Carry the parse error itself, under a SELF-DESCRIBING key,
-                            // so whatever rejects this call downstream can say what
-                            // actually went wrong instead of inventing a missing-field
-                            // story about params that were never parsed.
-                            json!({
-                                "__malformed_tool_arguments": {
-                                    "error": e.to_string(),
-                                    "raw": t.arguments,
-                                }
-                            })
+                            unparsed.into_input()
                         }
                     };
                     ToolCall {
@@ -697,16 +729,21 @@ impl OpenAICompatibleAdapter {
             }
         }
 
+        // Every request asks for `stream_options.include_usage`; a finished stream without
+        // its usage frame broke that contract, and zero tokens would be a count the budget trusts.
         let usage = stream_usage
             .map(|u| UsageMetrics {
                 input_tokens: u.prompt_tokens,
                 output_tokens: u.completion_tokens,
-                total_tokens: u
-                    .total_tokens
-                    .unwrap_or(u.prompt_tokens + u.completion_tokens),
-                estimated_cost: None, // TODO: Calculate from model pricing
+                total_tokens: u.total_tokens.unwrap_or(u.prompt_tokens + u.completion_tokens), // omitted total is the sum by definition
+                estimated_cost: None,
             })
-            .unwrap_or_default();
+            .ok_or_else(|| {
+                crate::ai::inference_error::InferenceError::Protocol(format!(
+                    "{} finished the stream without the usage frame include_usage requested",
+                    self.config.name
+                ))
+            })?;
 
         // Per-call PREFILL-vs-DECODE split for the speed harness. cache_n vs
         // prompt_n is the KV-cache hit/miss that dominates Metal wall-clock.
@@ -770,12 +807,19 @@ impl OpenAICompatibleAdapter {
                 use crate::inference::turn_admission::PageIn;
                 if let Some(t) = &timing {
                     match admission.page_in() {
-                        PageIn::Restored => continuum_base::probe!(
+                        // Judged against what she should have resumed, never `cached > 0` alone:
+                        // an older page than her newest sequence reuses tokens and is still a
+                        // regression (Benchy, M5 ed142f14c: 7 "warm" restores, 4,420 prefill-seconds).
+                        PageIn::Restored | PageIn::RestoredBehindLive => continuum_base::probe!(
                             class = "inference.restored_turn",
                             cached = t.cached_tokens,
                             prompt = t.prefill_tokens,
-                            outcome = if t.cached_tokens > 0 { "warm" } else { "cold" },
-                            "a turn restored from a KV page completed — did the engine reuse it"
+                            outcome = match (admission.page_in(), t.cached_tokens > 0) {
+                                (PageIn::RestoredBehindLive, _) => "behind_live",
+                                (_, true) => "warm",
+                                (_, false) => "cold",
+                            },
+                            "a turn restored from a KV page completed — did the engine reuse it, and was the page her newest"
                         ),
                         PageIn::Resident if t.cached_tokens == 0 => continuum_base::probe!(
                             class = "inference.resident_prefix_lost",
@@ -791,7 +835,7 @@ impl OpenAICompatibleAdapter {
         Ok(TextGenerationResponse {
             text,
             finish_reason,
-            model: resp_model.unwrap_or_else(|| model.to_string()),
+            model: resp_model.unwrap_or_else(|| model.to_string()), // the server named no model: the one addressed answered
             provider: self.config.provider_id.to_string(),
             usage,
             response_time_ms,

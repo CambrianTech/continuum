@@ -48,7 +48,7 @@ use crate::airc::event_transport::AircEventTransport;
 use crate::routing::airc_realtime::AircRealtimeDelivery;
 use crate::airc::realtime_store::{
     AircRealtimePublishParams, AircRealtimePublishResult, AircRealtimeReplayParams,
-    AircRealtimeReplayResult, AircRealtimeStore, InMemoryAircRealtimeStore, MAX_ROOM_REPLAY_LIMIT,
+    AircRealtimeReplayResult, AircRealtimeStore, InMemoryAircRealtimeStore,
 };
 use crate::routing::airc_realtime_wire::{
     body_for_envelope, envelope_from_event, frame_kind_for_delivery, headers_for_envelope,
@@ -200,7 +200,7 @@ impl AircEventTransport for DaemonAircEventTransport {
 
         Ok(AircRealtimePublishResult {
             ok: true,
-            event_id: publish.event_id.to_string(),
+            event_id: publish.event_id.as_uuid(),
             room_id: publish.channel_id.as_uuid(),
             delivery: envelope.delivery,
             stored_for_replay: matches!(
@@ -222,18 +222,12 @@ impl AircEventTransport for DaemonAircEventTransport {
         let response = self
             .client
             .inbox(InboxRequest {
-                // TranscriptCursor → IpcCursor via the airc#1096 From
-                // impl. `.transpose()?` keeps the `Option<Result<_,_>>`
-                // pattern of the old code; `.map(Into::into)` then
-                // does the type conversion.
-                since: params
-                    .after_cursor
-                    .as_ref()
-                    .map(|cursor| cursor.to_airc())
-                    .transpose()?
-                    .map(Into::into),
+                // TranscriptCursor → IpcCursor via the airc#1096 From impl; the cursor's id is
+                // typed, so the conversion cannot fail.
+                since: params.after_cursor.as_ref().map(|cursor| cursor.to_airc().into()),
                 channel: Some(RoomId::from_uuid(params.room_id)),
-                limit: Some(params.limit.unwrap_or(MAX_ROOM_REPLAY_LIMIT)),
+                // The caller's page; with none, the daemon's own page.
+                limit: params.limit,
                 // Replay is a cursor-resume of the FULL wire (durable
                 // transcript hydration), not a perception page — no kinds
                 // filter here. Perception's message-only page lives in
@@ -251,7 +245,8 @@ impl AircEventTransport for DaemonAircEventTransport {
             crate::routing::airc_realtime::AircReplayCursor::from_airc(params.room_id, cursor.into())
         });
 
-        let projection = InMemoryAircRealtimeStore::new(MAX_ROOM_REPLAY_LIMIT);
+        // Holds exactly the page the daemon returned.
+        let projection = InMemoryAircRealtimeStore::new(response.envelopes.len().max(1));
         for envelope_bytes in response.envelopes {
             // Decode wire bytes → TranscriptEvent (airc_lib helper),
             // then project to continuum envelope. Malformed bytes are
@@ -355,11 +350,11 @@ mod tests {
         }
     }
 
-    fn envelope(event_id: &str) -> AircRealtimeEnvelope {
+    fn envelope(event_id: u128) -> AircRealtimeEnvelope {
         AircRealtimeEnvelope::new(
-            event_id.to_string(),
+            Uuid::from_u128(event_id),
             Uuid::from_u128(0xA1),
-            "continuum".to_string(),
+            airc_core::PeerId::from_u128(0xC0),
             100,
             AircRealtimePayload::ExistingSchema {
                 payload: AircRealtimePayloadRef::inline(
@@ -377,7 +372,7 @@ mod tests {
 
         let result = transport
             .publish(AircRealtimePublishParams {
-                envelope: envelope("evt-1"),
+                envelope: envelope(1),
             })
             .await
             .unwrap();
@@ -414,7 +409,7 @@ mod tests {
 
         transport
             .publish(AircRealtimePublishParams {
-                envelope: envelope("evt-1"),
+                envelope: envelope(1),
             })
             .await
             .unwrap();
@@ -427,7 +422,7 @@ mod tests {
     #[tokio::test]
     async fn replay_passes_cursor_through_as_ipc_cursor() {
         let fake = Arc::new(FakeDaemonClient::default());
-        let env = envelope("evt-1");
+        let env = envelope(1);
         let since_event = EventId::from_u128(0x10);
         let newest_event = EventId::from_u128(0x20);
         // Daemon hands us an IpcCursor in `newest`; we convert it
@@ -446,7 +441,7 @@ mod tests {
                 after_cursor: Some(crate::routing::airc_realtime::AircReplayCursor {
                     room_id: env.room_id,
                     lamport: 4,
-                    event_id: since_event.to_string(),
+                    event_id: since_event.as_uuid(),
                     observed_at_ms: None,
                 }),
                 limit: Some(10),
@@ -470,6 +465,6 @@ mod tests {
         assert_eq!(since.event_id, since_event);
         let cursor = replay.cursor.unwrap();
         assert_eq!(cursor.lamport, 9);
-        assert_eq!(cursor.event_id, newest_event.to_string());
+        assert_eq!(cursor.event_id, newest_event.as_uuid());
     }
 }

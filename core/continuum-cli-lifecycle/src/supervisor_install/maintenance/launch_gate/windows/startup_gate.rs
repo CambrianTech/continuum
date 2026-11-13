@@ -34,6 +34,19 @@ pub struct StartupPermit {
 }
 
 impl StartupPermit {
+    /// Deploy launches never participate in restoration. Hold the same startup
+    /// gate through Scheduler/detached launch; any recovery journal blocks them.
+    pub fn acquire_deploy(root: &Path) -> Result<Self, String> {
+        let gate = launch_gate(root, false)?;
+        match root.join(JOURNAL).symlink_metadata() {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self {
+                _gate: gate,
+                _evidence: None,
+            }),
+            Ok(_) => Err("scheduler maintenance recovery is pending; deploy launch refused".into()),
+            Err(e) => Err(format!("cannot establish maintenance state before deploy launch: {e}")),
+        }
+    }
     pub async fn acquire(root: &Path) -> Result<Self, String> {
         let gate = launch_gate(root, false)?;
         match root.join(JOURNAL).symlink_metadata() {

@@ -300,7 +300,7 @@
         registry.ensure(me);
         registry.ensure(me);
         assert_eq!(
-            registry.spawned.lock().expect("registry lock").len(),
+            registry.spawned.lock().len(),
             1,
             "one citizen, one projector"
         );

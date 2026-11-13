@@ -25,6 +25,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 
 pub mod admission_gate;
+pub mod arguments;
 pub mod artifact_handle;
 pub mod boot_clock;
 pub mod boot_mode;
@@ -48,11 +49,16 @@ pub mod governor_bus;
 pub mod handle;
 pub mod in_process_transport;
 pub mod late_bound;
+// Poisoned std locks unwrap here until card 461a951e (kernel buffers and GPU detection get
+// owners) lands; then delete this allow.
+#[allow(clippy::unwrap_used)]
 pub mod message_bus;
 pub mod module_context;
 /// Per-module TDD harness — boots a single module in isolation. Test-only.
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod module_harness;
+pub mod module_init_record;
+pub mod module_readiness;
 pub mod module_logger;
 pub mod module_metrics;
 pub mod orientation_shares;
@@ -61,11 +67,14 @@ pub mod provided_provider;
 pub mod ready_buffer;
 pub mod region_telemetry;
 pub mod registry;
+pub mod wiring_defect;
 #[allow(clippy::module_inception)]
 pub mod runtime;
 pub mod service_module;
 pub mod share_controller;
 pub mod shared_compute;
+pub mod stage;
+pub mod storage_provider;
 pub mod params;
 
 pub use boot_mode::{extract_boot_mode, BootMode, BootModeParseError};
@@ -93,6 +102,7 @@ pub use in_process_transport::InProcessTransport;
 pub use late_bound::LateBound;
 pub use message_bus::{BusEvent, MessageBus};
 pub use module_context::ModuleContext;
+pub use storage_provider::StorageProvider;
 pub use module_logger::ModuleLogger;
 pub use module_metrics::{CommandTiming, ModuleMetrics, ModuleStats};
 pub use orientation_shares::{
@@ -105,11 +115,16 @@ pub use provided_provider::{
 pub use ready_buffer::{DashMapReadyBuffer, ReadyBuffer};
 pub use region_telemetry::RegionTelemetry;
 pub use registry::ModuleRegistry;
+pub use wiring_defect::{WiringDefect, WiringDefects};
 pub use admission_gate::{AdmissionGate, Permit};
 pub use runtime::{
     await_shutdown, begin_shutdown, install_signal_shutdown, run_signal_shutdown,
-    signal_runtime, shutdown_receipt, DrainOutcome, ModuleStop,
+    signal_runtime, shutdown_receipt, DrainOutcome, InitPlan, InitSettled, ModuleStop,
     MeshPresence, ModuleStopOutcome, Runtime, ShutdownReceipt,
+};
+pub use module_init_record::{InitRecordStore, SlowestHealthyInit};
+pub use module_readiness::{
+    DegradedReason, InitDeadline, ModuleReadiness, ModuleReadinessRow, ModuleState, ModuleUnavailable,
 };
 pub use service_module::{
     CommandResult, CommandSchema, ModuleConfig, ModulePriority, ParamSchema, ServiceModule,

@@ -38,7 +38,7 @@ impl LiveKitAgentManager {
 
     /// Ensure connected to bridge. Spawns reader thread on first connection.
     pub(super) fn ensure_connected(&self) -> Result<(), String> {
-        let mut writer = self.writer.lock().unwrap();
+        let mut writer = self.writer.lock();
         if writer.is_some() {
             return Ok(());
         }
@@ -59,7 +59,7 @@ impl LiveKitAgentManager {
         *writer = Some(stream);
 
         // Start reader thread (once)
-        let mut started = self.reader_started.lock().unwrap();
+        let mut started = self.reader_started.lock();
         if !*started {
             *started = true;
             let pending = self.pending.clone();
@@ -73,7 +73,7 @@ impl LiveKitAgentManager {
         // disconnects the previous pump's receiver, so the old thread exits on
         // its own — one live pump per connection, no generation bookkeeping.
         let (tx, rx) = std::sync::mpsc::sync_channel::<MediaFrame>(MEDIA_QUEUE_DEPTH);
-        *self.media_tx.lock().unwrap() = Some(tx);
+        *self.media_tx.lock() = Some(tx);
         let pump_writer = Arc::clone(&self.writer);
         std::thread::spawn(move || {
             media_pump_loop(rx, pump_writer);
@@ -102,7 +102,7 @@ impl LiveKitAgentManager {
         kind: continuum_bridge_protocol::MediaKind,
     ) -> Result<u16, String> {
         let key = (call_id.to_string(), user_id.to_string(), kind as u8);
-        if let Some(ch) = self.out_channels.lock().unwrap().get(&key) {
+        if let Some(ch) = self.out_channels.lock().get(&key) {
             return Ok(*ch);
         }
         let channel = self.next_out_channel.fetch_add(1, Ordering::Relaxed) as u16;
@@ -115,7 +115,7 @@ impl LiveKitAgentManager {
             },
             None,
         )?;
-        self.out_channels.lock().unwrap().insert(key, channel);
+        self.out_channels.lock().insert(key, channel);
         continuum_base::probe!(
             class = "media.pump.channel_open",
             module = "livekit-bridge",
@@ -134,7 +134,7 @@ impl LiveKitAgentManager {
         label: &'static str,
     ) -> Result<(), String> {
         self.ensure_connected()?;
-        let tx_guard = self.media_tx.lock().unwrap();
+        let tx_guard = self.media_tx.lock();
         let Some(tx) = tx_guard.as_ref() else {
             return Err("Not connected".to_string());
         };
@@ -145,7 +145,7 @@ impl LiveKitAgentManager {
             Ok(()) => {
                 // One summary row per second, not one per frame (12 pumps ×
                 // 30 fps blinded the ledger — see pump_tally.rs).
-                let summary = self.enqueue_tally.lock().unwrap().record(frame_bytes as u64, 0); // unwrap: tally mutex holds three counters; a poisoned lock here means a panic mid-record, and dropping the probe row is the honest outcome
+                let summary = self.enqueue_tally.lock().record(frame_bytes as u64, 0);
                 if let Some(s) = summary {
                     continuum_base::probe!(
                         class = "media.pump.enqueue",
@@ -163,7 +163,7 @@ impl LiveKitAgentManager {
                 // One summary row per second, like enqueue/write — a saturated
                 // pump dropped 12,327 frames in eight minutes on 2026-09-05 and
                 // the per-frame rows rotated the voice receipt out of the ledger.
-                if let Some(s) = self.drop_tally.lock().unwrap().record(frame_bytes as u64, 0) { // unwrap: three counters behind the lock; a poisoned tally loses one summary row, never a frame
+                if let Some(s) = self.drop_tally.lock().record(frame_bytes as u64, 0) {
                     continuum_base::probe!(
                         class = "media.pump.drop",
                         module = "livekit-bridge",
@@ -216,34 +216,30 @@ impl LiveKitAgentManager {
         });
         self.pending
             .lock()
-            .unwrap()
             .insert(request_id, pending_req.clone());
 
         // Write command
         {
-            let mut writer = self.writer.lock().unwrap();
+            let mut writer = self.writer.lock();
             if let Some(ref mut stream) = *writer {
                 if let Err(e) = stream.write_all(&frame) {
                     *writer = None;
-                    self.pending.lock().unwrap().remove(&request_id);
+                    self.pending.lock().remove(&request_id);
                     return Err(format!("Bridge write failed: {}", e));
                 }
             } else {
-                self.pending.lock().unwrap().remove(&request_id);
+                self.pending.lock().remove(&request_id);
                 return Err("Not connected".to_string());
             }
         }
 
         // Wait for response (30s timeout)
-        let response = pending_req.response.lock().unwrap();
+        let mut guard = pending_req.response.lock();
         let timeout = std::time::Duration::from_secs(30);
-        let (mut guard, timed_out) = pending_req
-            .signal
-            .wait_timeout_while(response, timeout, |r| r.is_none())
-            .unwrap();
+        let timed_out = pending_req.signal.wait_while_for(&mut guard, |r| r.is_none(), timeout);
 
         if timed_out.timed_out() {
-            self.pending.lock().unwrap().remove(&request_id);
+            self.pending.lock().remove(&request_id);
             return Err("Bridge command timed out after 30s".to_string());
         }
 
@@ -266,7 +262,7 @@ impl LiveKitAgentManager {
         if resp.success {
             clog_info!(
                 "🎤 STT listener started via bridge for {}",
-                &call_id[..8.min(call_id.len())]
+                continuum_base::shown_text::shown_text(&call_id)
             );
             Ok(())
         } else {
@@ -639,7 +635,7 @@ pub(super) fn media_pump_loop(
     let mut tally = super::super::pump_tally::PumpTally::new(std::time::Duration::from_secs(1));
     while let Ok(item) = rx.recv() {
         let start = std::time::Instant::now();
-        let mut guard = writer.lock().unwrap();
+        let mut guard = writer.lock();
         match guard.as_mut() {
             Some(stream) => {
                 // Parts back-to-back — the payload was MOVED here, never

@@ -486,15 +486,17 @@ async function main(): Promise<void> {
   };
   widget.settingsHandler = settingsHandler;
 
-  // Scroll-back: one older page out of the durable transcript per call —
-  // `chat/poll { beforeMessageId }` is the storage cursor (the Twitter
-  // endless-scroll's read half); the widget owns the trigger + the buffer.
+  // History paging: one page out of the durable transcript per call —
+  // `beforeMessageId` (the oldest row the widget holds) pages back,
+  // `afterMessageId` (the newest it holds, once it dropped rows below a reader
+  // parked far up) pages toward the present; no cursor = the newest page. The
+  // widget owns the triggers and the bounded buffer.
   // Same raw-wire seam as `nav/select` above: the generated CommandMap
   // predates `beforeMessageId` and its re-emit is blocked by the same
   // unexported-wire-types drift — when that regenerates, this becomes
-  // `continuum.commands.execute('chat/poll', …)`.
+  // `continuum.commands.execute('chat/history', …)`.
   let chatHistoryAbsenceLogged = false;
-  const historyHandler: HistoryHandler = async (roomId, beforeMessageId) => {
+  const historyHandler: HistoryHandler = async (roomId, cursor, limit) => {
     // THE DURABLE TRANSCRIPT (chat/history, 2026-08-31): the airc daemon's
     // own store — citizen speech AND radiated 💭/⚙ receipts, the full story
     // of an activity. chat/poll (operator collection) remains the fallback
@@ -502,7 +504,7 @@ async function main(): Promise<void> {
     try {
       const rawH = await transport.execute(
         buildCommandUri('chat/history'),
-        JSON.stringify({ roomId, limit: 50 }),
+        JSON.stringify({ roomId, ...cursor, limit }),
       );
       const hist = JSON.parse(rawH) as {
         messages?: readonly { id: string; senderId: string; text: string; timestamp: number }[];
@@ -529,7 +531,7 @@ async function main(): Promise<void> {
     }
     const raw = await transport.execute(
       buildCommandUri('chat/poll'),
-      JSON.stringify({ roomId, beforeMessageId, limit: 50 }),
+      JSON.stringify({ roomId, ...cursor, limit }),
     );
     // Bare-wire contract (same as nav/select above): a FAILURE is a rejected
     // promise; a success payload is the command output and need not carry a
@@ -607,9 +609,6 @@ async function main(): Promise<void> {
   ];
   // Liveness re-polls: right after a core reboot the roster is empty while
   // citizens respawn — a one-shot seed would freeze that emptiness forever.
-  // NOTE: `persona/roster` is the CANONICAL name — the auth gate does not yet
-  // resolve aliases (persona/list bounces off the Owner wildcard; core fix
-  // queued), so the canonical verb is load-bearing here.
   const seedDirectory = async (): Promise<void> => {
     // THE panel is global scope (Joel, 2026-08-31: "who all exists in this
     // continuum and who is online — any activity"). presence/directory is the

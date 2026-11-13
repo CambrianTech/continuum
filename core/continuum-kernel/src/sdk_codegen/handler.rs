@@ -40,6 +40,7 @@ use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use uuid::Uuid;
 
+use crate::runtime::arguments::{accepted_shape, ArgumentsRefusal, FieldProblem};
 use crate::runtime::cell_shapes::HandleRef;
 use crate::runtime::command_envelope::{CommandRequest, CommandResponse};
 use crate::runtime::CommandResult;
@@ -54,8 +55,13 @@ use super::{CommandSpec, WireShape};
 /// parsing prose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandError {
-    /// The request could not be decoded, or a required envelope argument is absent.
-    Arguments(String),
+    /// The arguments did not decode as the command's params, or a field failed a check past
+    /// its type: which field, and what it needed, typed.
+    Arguments(ArgumentsRefusal),
+    /// A refused call with its typed cause and her next moves ([`super::Refusal`]): what every
+    /// refusal she can act on becomes. The three string variants below are its predecessors,
+    /// migrated by the `stringly_command_errors` ratchet.
+    Refused(std::sync::Arc<super::Refusal>),
     /// A decoded request failed validation or a domain precondition.
     Invalid(String),
     /// A referenced resource (handle, id, session) was not found.
@@ -70,38 +76,34 @@ impl CommandError {
     fn category(&self) -> &'static str {
         match self {
             CommandError::Arguments(_) => "arguments",
+            CommandError::Refused(refusal) => refusal.category().as_str(),
             CommandError::Invalid(_) => "invalid",
             CommandError::NotFound(_) => "not_found",
             CommandError::Denied(_) => "denied",
             CommandError::Internal(_) => "internal",
         }
     }
-
-    fn message(&self) -> &str {
-        match self {
-            CommandError::Arguments(m)
-            | CommandError::Invalid(m)
-            | CommandError::NotFound(m)
-            | CommandError::Denied(m)
-            | CommandError::Internal(m) => m,
-        }
-    }
-
-    /// Read our category at the refusal boundary, never a tag quoted in domain prose.
-    /// The transport preserves command errors as `command: [category] message`.
-    pub fn is_argument_refusal(command: &str, refusal: &str) -> bool {
-        let body = refusal.strip_prefix(command).and_then(|rest| rest.strip_prefix(": ")).unwrap_or(refusal);
-        body.starts_with("[arguments] ")
-    }
 }
 
 impl std::fmt::Display for CommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {}", self.category(), self.message())
+        match self {
+            CommandError::Arguments(refusal) => write!(f, "[{}] {refusal}", self.category()),
+            CommandError::Refused(refusal) => write!(f, "[{}] {refusal}", self.category()),
+            CommandError::Invalid(m) | CommandError::NotFound(m) | CommandError::Denied(m) | CommandError::Internal(m) => {
+                write!(f, "[{}] {m}", self.category())
+            }
+        }
     }
 }
 
 impl std::error::Error for CommandError {}
+
+impl From<ArgumentsRefusal> for CommandError {
+    fn from(refusal: ArgumentsRefusal) -> Self {
+        CommandError::Arguments(refusal)
+    }
+}
 
 /// Existing module helpers return `Result<T, String>`; `From<String>` lets an
 /// author `?` them straight into a handler without restating the error. A bare
@@ -155,7 +157,7 @@ impl Ctx {
     pub fn handle(&self) -> Result<HandleRef, CommandError> {
         self.handle
             .clone()
-            .ok_or_else(|| CommandError::Arguments("missing required `handle` on the request".into()))
+            .ok_or_else(|| CommandError::Arguments(ArgumentsRefusal::field("handle", FieldProblem::Missing { sent: None, sent_as: None })))
     }
 }
 
@@ -247,8 +249,18 @@ where
     <H::Spec as CommandSpec>::Result: Serialize,
 {
     let name = <H::Spec as CommandSpec>::NAME;
-    let req = CommandRequest::<<H::Spec as CommandSpec>::Params>::from_value(params)
-        .map_err(|e| format!("{name}: {}", CommandError::Arguments(e.to_string())))?;
+    // Refusal is the last resort (card 9ed04d88): a call that does not decode as sent is read
+    // against the command's declared schema, the one its offer is generated from, before it
+    // refuses. Every module command is in the registry (`ModuleRegistry::register` refuses one
+    // that is not); an unregistered handler (a test fixture) declares no schema to read against.
+    let decode = CommandRequest::<<H::Spec as CommandSpec>::Params>::decode;
+    let decoded = match super::command_descriptor(name) {
+        Some(descriptor) => {
+            accepted_shape::decode_accepting(name, &descriptor.params_schema, &params, decode).map(|(req, _)| req)
+        }
+        None => decode(&params),
+    };
+    let req = decoded.map_err(|e| format!("{name}: {}", CommandError::Arguments(e)))?;
     let ctx = Ctx {
         handle: req.handle,
         session_id: req.session_id,
@@ -376,6 +388,58 @@ pub mod tests {
         }
     }
 
+    // ── A command that reads the caller's issuing generation ──────────
+    struct ProvenanceSpec;
+    impl CommandSpec for ProvenanceSpec {
+        const NAME: &'static str = "test/echo-provenance";
+        const ACCESS_LEVEL: AccessLevel = AccessLevel::AiSafe;
+        const WIRE: WireShape = WireShape::Bare;
+        type Params = EchoParams;
+        type Result = EchoResult;
+    }
+    struct ProvenanceHandler;
+    #[async_trait]
+    impl CommandHandler for ProvenanceHandler {
+        type Spec = ProvenanceSpec;
+        async fn execute(&self, ctx: &Ctx, _p: EchoParams) -> Result<Outcome<EchoResult>, CommandError> {
+            let issuing = ctx.caller.as_ref().and_then(|c| c.issuing_generation.clone());
+            Ok(EchoResult { echoed: format!("{issuing:?}") }.into())
+        }
+    }
+
+    async fn provenance_seen(
+        params: serde_json::Value,
+        caller: Option<crate::routing::CallerIdentity>,
+    ) -> serde_json::Value {
+        match dispatch_with_caller(&ProvenanceHandler, params, caller).await {
+            Ok(CommandResult::Json(v)) => v["echoed"].clone(),
+            other => panic!("expected Json, got {other:?}"),
+        }
+    }
+
+    // what this catches (card fe8554d2, Codex on #5386): credit binds a submission to the
+    // generation in `ctx.caller.issuing_generation`, so a tool call must not be able to name
+    // one. Envelope fields are parsed from the same JSON as the params; the caller is not.
+    // A forged field in either spelling, with or without a caller, never reaches the handler;
+    // only a caller the act seam bound with `issued_by` carries one.
+    #[tokio::test]
+    async fn a_tool_input_cannot_name_the_issuing_generation() {
+        let forged = serde_json::json!({
+            "text": "x",
+            "issuingGeneration": "forged",
+            "issuing_generation": "forged",
+            "caller": {"issuingGeneration": "forged"},
+        });
+        let her = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(Uuid::new_v4()));
+        assert_eq!(provenance_seen(forged.clone(), None).await, "None");
+        assert_eq!(provenance_seen(forged.clone(), Some(her.clone())).await, "None");
+        assert_eq!(
+            provenance_seen(forged, Some(her.issued_by("real".into()))).await,
+            "Some(\"real\")",
+            "the bound caller's generation, never the forged field"
+        );
+    }
+
     // what this catches: a Bare command's reply is the BARE output (no envelope),
     // so the SDK's bare `Result` type matches the wire — the author wrote only the
     // typed execute.
@@ -463,13 +527,13 @@ pub mod tests {
     // real dispatch; decoded domain refusals must not share that category.
     #[tokio::test]
     async fn dispatch_bad_params_has_argument_recovery() {
-        let err = dispatch(&BareHandler, serde_json::json!({ "text": 123 }))
+        let err = dispatch(&BareHandler, serde_json::json!({ "text": ["a", "b"] }))
             .await
-            .expect_err("type mismatch must refuse");
+            .expect_err("a list has no one reading as a string: it must refuse");
         assert!(
             err.starts_with("test/echo-bare: [arguments]"),
             "named + categorized: {err}"
         );
-        assert!(CommandError::is_argument_refusal("test/echo-bare", &err));
+        assert!(err.contains("`text` must be a string"), "names the field and its type: {err}");
     }
 }

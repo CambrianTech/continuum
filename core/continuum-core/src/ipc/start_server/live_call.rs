@@ -30,7 +30,7 @@ pub(super) fn start_live_call_plane(rt_handle: &tokio::runtime::Handle) -> LiveC
     // CORE-DRIVEN SESSION REGISTRATION (#58). Built mutable so the registrar can be
     // installed BEFORE the Arc freezes it: joining a call now registers the session in
     // the core itself, instead of waiting for whichever client happened to implement it.
-    // Exactly one ever did (Node, in legacy/, now retired), which is why iOS/Android/TUI
+    // Exactly one ever did (Node, in legacy/, deleted: tag legacy-archive-2026-10-23), which is why iOS/Android/TUI
     // citizens were structurally voiceless rather than merely buggy.
     // The registrar's late-bound executor: filled beside `install_executor_on_all`
     // so a human's call join can invoke `voice/register-session` — the verb that
@@ -268,7 +268,7 @@ pub(super) fn register_voice_module(
     // pressure it REFUSES while a call is live (never kicks a human mid-call) and
     // sheds its idle STT/TTS models otherwise — serving tiers down first.
     resource_daemon.add_consumer(Arc::new(
-        crate::modules::live_session_consumer::VoiceConsumer::new(
+        continuum_live::consumers::live_session_consumer::VoiceConsumer::new(
             voice_state.resource_lifecycle.clone(),
             gpu_manager.clone(),
         ),
@@ -281,7 +281,7 @@ pub(super) fn register_voice_module(
     // voice, so both sides of a call are protected together. Only under
     // `avatar-3d`: without the renderer there is no residency to account or shed.
     #[cfg(feature = "avatar-3d")]
-    resource_daemon.add_consumer(Arc::new(crate::modules::bevy_consumer::BevyConsumer::new(
+    resource_daemon.add_consumer(Arc::new(continuum_live::consumers::bevy_consumer::BevyConsumer::new(
         voice_state.resource_lifecycle.clone(),
         gpu_manager.clone(),
     )));
@@ -292,7 +292,7 @@ pub(super) fn register_voice_module(
     // The vision-describe it triggers is SERVING's VRAM, not perception's; this accounts
     // only what perception owns.
     resource_daemon.add_consumer(Arc::new(
-        crate::modules::perception_consumer::PerceptionConsumer::new(
+        continuum_live::consumers::perception_consumer::PerceptionConsumer::new(
             crate::media::perception_registry(),
         ),
     ));

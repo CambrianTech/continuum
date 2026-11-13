@@ -292,6 +292,11 @@ output token.** The captures explain the two failing shapes:
   `deliberation_prompt::stable_prefix_order` (churn class — standing → board → turn — then
   name), orders the system's stable tier, the trailing standing grounding and the trailing
   proprioception turns alike.
+- **Superseded 2026-11-09:** the churn table (`churn_of`, `PromptChurn`) is deleted. The
+  system message takes no grounding (since 2026-10-23); within an epoch blocks are laid by
+  name, and at every start her view orders its sources by measured motion
+  (`continuum_context::motion`), which records per mind what the table guessed per faculty
+  id (the wall's and the kanban's rates above).
 - Two further economies stay on card c119ace7 as the next slices, deliberately not in
   this change: **(A) budget-invariant membership** — which blocks are present must not
   depend on the budget, or a window change silently re-cuts the prefix — and **(B) earned

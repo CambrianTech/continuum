@@ -53,7 +53,7 @@ impl SourceRule for TestModSingularity {
             .skip(1) // the FIRST test mod is the sanctioned one; every further mod is excess
             .map(|line| Violation {
                 rule: "test-mod-singularity",
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line,
                 source: "#[cfg(test)] mod — a second test mod in this file".to_string(),
             })
@@ -73,8 +73,8 @@ mod tests {
     #[test]
     fn the_excess_test_mod_count_never_rises() {
         let violations = scan(&[&TestModSingularity]);
-        let count = violations.len();
-        crate::ratchet::hold("excess_test_mods", count, || {
+                let count = violations.len();
+                crate::ratchet::hold_sites("excess_test_mods", &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
             "excess test mods rose to {count}.\n\
              One `#[cfg(test)] mod` per file — new themes nest INSIDE it as \
@@ -94,11 +94,7 @@ mod tests {
     /// error direction makes the ratchet meaningless.
     #[test]
     fn only_gated_mods_count_and_the_first_is_free() {
-        let mk = |src: &str| SourceFile {
-            rel: "fake.rs".into(),
-            production: String::new(),
-            raw: src.into(),
-        };
+        let mk = |src: &str| SourceFile::fixture("fake.rs", "", src);
         let rule = TestModSingularity;
         assert_eq!(rule.check(&mk("#[cfg(test)]\nmod tests {}")).len(), 0, "one mod is sanctioned");
         assert_eq!(

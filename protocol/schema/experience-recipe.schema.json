@@ -61,7 +61,7 @@
               "$ref": "#/definitions/RoleId"
             }
           ],
-          "description": "Role identifier (snake_case: `helper`, `coder`, `sentinel`, …) — `persona/role_template::RoleId`'s own serde form."
+          "description": "Role identifier (snake_case: `helper`, `coder`, `sentinel`, …) — `experience::role::RoleId`'s own serde form."
         }
       },
       "required": [
@@ -70,7 +70,7 @@
       "type": "object"
     },
     "CitizenRequirement": {
-      "description": "A role's declared lane requirement — the recipe's word on what a seat must hold before one of its minds sits there ([`crate::cognition::grid_allocation::Requirement`]).",
+      "description": "A role's declared lane requirement — the recipe's word on what a seat must hold before one of its minds sits there (continuum-mind's `cognition::grid_allocation::Requirement`).",
       "properties": {
         "decodeFloorTps": {
           "default": null,

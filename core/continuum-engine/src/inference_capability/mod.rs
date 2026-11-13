@@ -41,6 +41,7 @@
 pub mod enforcement;
 pub mod expert_layout;
 pub mod gate_magnitude;
+pub mod gguf_fingerprint;
 pub mod gguf_keys;
 pub mod gguf_loader;
 pub mod hw_probe;

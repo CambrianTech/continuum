@@ -34,6 +34,15 @@ fn main() {
             .expect("CARGO_MANIFEST_DIR must be set when cargo runs this build script"),
     );
     let submodule = manifest_dir.join("..").join("vendor").join("llama.cpp");
+    println!("cargo:rerun-if-changed=decode_boundary.cpp");
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .flag_if_supported("/EHsc")
+        .include(submodule.join("include"))
+        .include(submodule.join("ggml/include"))
+        .file(manifest_dir.join("decode_boundary.cpp"))
+        .compile("continuum_decode_boundary");
     println!("cargo:rerun-if-changed={}", submodule.display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=msvc_cache.rs");
@@ -348,6 +357,8 @@ fn main() {
     if target_os == "macos" {
         println!("cargo:rustc-link-lib=c++");
     } else if target_env == "msvc" {
+        // ggml's CPU discovery reads the Windows registry directly.
+        println!("cargo:rustc-link-lib=advapi32");
         // windows-msvc: there is NO GCC-world `stdc++`/`gomp`. The MSVC C++
         // runtime is auto-linked through the `/DEFAULTLIB` directives the MSVC
         // compiler embeds in the ggml/llama `.obj` files, and OpenMP (when

@@ -9,6 +9,7 @@ pub(super) fn prepare_socket_and_load_model_registry(
     boot_mode: crate::runtime::BootMode,
 ) -> std::io::Result<std::time::Instant> {
     prepare_unix_socket_path(socket_path)?;
+    continuum_base::probe!(class = "boot.step", step = "socket_path_prepared", "the socket path is prepared; the model registry scan is next");
 
     log_info!(
         "ipc",
@@ -81,7 +82,7 @@ pub(super) fn prepare_socket_and_load_model_registry(
                 );
             }
         }
-        Err(e) => panic!("failed to load model_registry: {e}"),
+        Err(e) => return Err(BootError::from(e).into()),
     }
     Ok(phase_started)
 }

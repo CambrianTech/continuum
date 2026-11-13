@@ -164,42 +164,76 @@ fn slots_fingerprint_sees_decode_through_the_array_shaped_next_token() {
 }
 
 // what this catches (2026-08-15, the round-killer): the smoke verdict judged a
-// THINKING model's healthy decode as a dead lane because the whole quick budget
+// THINKING model's healthy decode as a dead lane because the whole capped attempt
 // went to the reasoning channel and `content` came back empty — serving was
 // marked degraded forever and every turn waited on a transition that never
 // resolved. The verdict must read that shape as ThinkStarved (retry), keep the
 // wedged-lane shape (~2 tokens) Dead, keep the embedding-model-on-the-port
 // shape (garbage in the VISIBLE channel, no reasoning) Dead, and pass a real
-// answer regardless of whether reasoning is present.
+// answer regardless of whether reasoning is present. Think-starved is proven by
+// running to THIS attempt's cap, never by a fixed token floor.
 #[test]
 fn smoke_verdict_separates_thinking_from_wedged_from_garbage() {
-    use super::{smoke_verdict, SmokeVerdict};
+    use crate::inference::llama_server::smoke::{smoke_verdict, SmokeCap, SmokeVerdict};
+    // The served model's token count of "1 2 3 4 5 6 7 8 9 10" (a Qwen-class tokenizer).
+    let quick = SmokeCap::Answer(19);
     // Healthy non-thinking model: answer in the visible channel.
     assert_eq!(
-        smoke_verdict(20, "1 2 3 4 5 6 7 8 9 10", 0),
+        smoke_verdict(quick, 19, "1 2 3 4 5 6 7 8 9 10", 0),
         SmokeVerdict::Alive
     );
-    // Healthy THINKING model after the big-budget retry: reasoning present AND
+    // Healthy THINKING model at the engine's own bound: reasoning present AND
     // the visible answer counts — reasoning must not disqualify a real answer.
     assert_eq!(
-        smoke_verdict(120, "1 2 3 4 5 6 7 8 9 10", 400),
+        smoke_verdict(SmokeCap::EngineBound, 420, "1 2 3 4 5 6 7 8 9 10", 400),
         SmokeVerdict::Alive
     );
-    // Thinking model starved by the quick budget: decode proven, all of it
-    // private, visible empty — retry, never "dead lane".
-    assert_eq!(smoke_verdict(24, "", 300), SmokeVerdict::ThinkStarved);
-    assert_eq!(smoke_verdict(24, "   ", 300), SmokeVerdict::ThinkStarved);
-    // Wedged lane: ~2 tokens then stop. Dead on either budget.
-    assert_eq!(smoke_verdict(2, "", 0), SmokeVerdict::Dead);
-    assert_eq!(smoke_verdict(2, "", 50), SmokeVerdict::Dead);
+    // Thinking model whose template thinks although asked not to: it ran to the
+    // answer's cap, all of it private, visible empty — retry, never "dead lane".
+    assert_eq!(smoke_verdict(quick, 19, "", 300), SmokeVerdict::ThinkStarved);
+    assert_eq!(smoke_verdict(quick, 19, "   ", 300), SmokeVerdict::ThinkStarved);
+    // Wedged lane: ~2 tokens then stop, short of its cap. Dead at either cap.
+    assert_eq!(smoke_verdict(quick, 2, "", 0), SmokeVerdict::Dead);
+    assert_eq!(smoke_verdict(quick, 2, "", 50), SmokeVerdict::Dead);
+    assert_eq!(smoke_verdict(SmokeCap::EngineBound, 2, "", 50), SmokeVerdict::Dead);
     // Embedding model bound to the port: garbage in the VISIBLE channel, no
     // reasoning channel at all (the BigMama incident) — Dead, never a retry.
     assert_eq!(
-        smoke_verdict(24, "user interface interface UIUUIUUIuiui", 0),
+        smoke_verdict(quick, 19, "user interface interface UIUUIUUIuiui", 0),
         SmokeVerdict::Dead
     );
     // Empty visible with NO reasoning: nothing proves a mind is attached.
-    assert_eq!(smoke_verdict(24, "", 0), SmokeVerdict::Dead);
+    assert_eq!(smoke_verdict(quick, 19, "", 0), SmokeVerdict::Dead);
+}
+
+// what this catches: the smoke probe's sizes drifting back to hand-picked numbers. The
+// question and the answer it is capped at must be one fact (an answer that does not pass
+// its own content check would fail every healthy lane), the cap must come from the
+// engine's `/tokenize` count (an empty or malformed reply is no cap, never a zero one),
+// every attempt must ask the engine for no reasoning phase, and only the capped attempt
+// may carry `max_tokens` (the engine-bound retry decodes to the lane's own `--n-predict`).
+#[test]
+fn smoke_probe_is_sized_by_its_own_answer() {
+    use crate::inference::llama_server::smoke::{
+        counts_upward, smoke_answer, smoke_body, smoke_prompt, token_count_of, SmokeCap,
+    };
+    assert!(counts_upward(&smoke_answer()), "the expected answer must pass the content check");
+    assert!(smoke_prompt().contains("1 through 10"), "the prompt asks for the answer it is capped at");
+
+    assert_eq!(token_count_of(&serde_json::json!({ "tokens": [16, 220, 17] })), Some(3));
+    assert_eq!(token_count_of(&serde_json::json!({ "tokens": [] })), None);
+    assert_eq!(token_count_of(&serde_json::json!({ "error": "no model" })), None);
+
+    let capped = smoke_body(SmokeCap::Answer(19), Some(4));
+    assert_eq!(capped["max_tokens"], 19);
+    assert_eq!(capped["id_slot"], 4);
+    assert_eq!(capped["chat_template_kwargs"]["enable_thinking"], false);
+    assert_eq!(capped["reasoning_budget_tokens"], 0);
+
+    let bound = smoke_body(SmokeCap::EngineBound, None);
+    assert!(bound.get("max_tokens").is_none(), "the engine-bound retry names no cap");
+    assert!(bound.get("id_slot").is_none(), "no scratch slot, no pin");
+    assert_eq!(bound["chat_template_kwargs"]["enable_thinking"], false);
 }
 
 // what this catches: the latched-backend wedge class, AND the empty that must NOT

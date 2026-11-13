@@ -88,6 +88,28 @@ use super::*;
         assert_eq!(result.content.unwrap(), "     2 | line 2");
     }
 
+    // what this catches (ONE-ACT slice 2; HER-TOOLS §Answer: the view is the only sizer): the read
+    // boundary sizing her answer. `code/read` returns `read_in` exactly (the page budget that
+    // answered an unranged read with its first page, `headroom / reads`, is deleted): a large file
+    // with no range comes back whole, every line; a range comes back exactly those lines at their
+    // absolute numbers, nothing more, nothing less.
+    #[test]
+    fn a_read_returns_exactly_the_selection_asked_for_whole_or_its_range() {
+        let (dir, engine) = setup_engine();
+        let lines = 5_000u32;
+        let body: String = (1..=lines).map(|n| format!("let line_{n} = {n};\n")).collect();
+        std::fs::write(dir.path().join("src/large.rs"), &body).expect("test: write the fixture file"); // JUSTIFIED: test fixture
+        let whole = engine.read("src/large.rs", None, None).expect("test: read whole"); // JUSTIFIED: test fixture
+        assert_eq!((whole.start_line, whole.end_line, whole.lines_returned, whole.total_lines), (1, lines, lines, lines));
+        assert!(whole.content.as_deref().is_some_and(|c| c.lines().count() == lines as usize && c.ends_with("let line_5000 = 5000;")));
+        let range = engine.read("src/large.rs", Some(2_400), Some(2_402)).expect("test: read a range"); // JUSTIFIED: test fixture
+        assert_eq!((range.start_line, range.end_line, range.lines_returned), (2_400, 2_402, 3));
+        assert_eq!(
+            range.content.as_deref(),
+            Some("  2400 | let line_2400 = 2400;\n  2401 | let line_2401 = 2401;\n  2402 | let line_2402 = 2402;")
+        );
+    }
+
     #[test]
     fn test_read_nonexistent() {
         let (_dir, engine) = setup_engine();
@@ -653,7 +675,6 @@ use super::*;
         let mut sorted = r.matches.clone();
         sorted.sort();
         assert_eq!(r.matches, sorted, "matches must be sorted alphabetically");
-        assert!(!r.truncated);
     }
 
     #[test]
@@ -680,7 +701,6 @@ use super::*;
         assert!(r.success);
         assert!(r.matches.is_empty());
         assert_eq!(r.total_matches, 0);
-        assert!(!r.truncated);
     }
 
     #[test]

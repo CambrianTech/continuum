@@ -181,9 +181,9 @@ case "$OS" in
     #   (a) native continuum-core     ~12GB budget (Qwen 4B Q4 + KV + Candle
     #                                  embeddings + Bevy render + vision +
     #                                  audio + working set)
-    #   (b) Docker Desktop VM         hosts postgres*, node-server, widget-
+    #   (b) Docker Desktop VM         hosts node-server, widget-
     #                                  server, livekit-bridge, model-init.
-    #                                  With SQLite default (postgres opt-in),
+    #                                  With SQLite storage,
     #                                  the active containers need ~6-10GB.
     #   (c) macOS itself              kernel, window server, user apps     ~6GB
     #
@@ -643,7 +643,6 @@ fi
 #
 #   widget-server: static + light TS, 1GB.
 #
-#   postgres: our dataset is small, 512MB (already set in compose).
 #   livekit server: 256m (already set in compose).
 #
 # Physical RAM is whichever host this runs on.
@@ -961,7 +960,7 @@ PHASE="pull images"
 # are always in sync by construction.
 #
 # On Mac: `continuum-core` is not pulled (replicas=0 in docker-compose.mac.yml);
-# only support services (postgres, node-server, widget-server, livekit-bridge,
+# only support services (node-server, widget-server, livekit-bridge,
 # model-init) are pulled. continuum-core runs natively from `npm start` below.
 # docker compose v2 substitution for ${CONTINUUM_IMAGE_TAG:-latest} reads
 # from .env in the compose dir AND from shell env. In practice (observed
@@ -1044,10 +1043,8 @@ if [[ "$OS" == "Darwin" ]]; then
 
   # No DATABASE_URL configured by default. Rust's data module defaults to
   # SQLite at ~/.continuum/database/main.db — zero-dep, portable, no
-  # network topology gymnastics. For grid deployments (multi-writer over
-  # Tailscale) users explicitly set DATABASE_URL in config.env AND run
-  # `docker compose --profile postgres up`. All other callers (TS, tests,
-  # jtag CLI) pass opaque handles; Rust resolves them to the configured
+  # network topology gymnastics. SQLite is the only store; a postgres://
+  # DATABASE_URL is refused. All callers (TS, tests, jtag CLI) pass opaque handles; Rust resolves them to the configured
   # backend in modules/data.rs::resolve_handle.
 
   # CONTINUUM_CORE_TCP=9100 tells the native continuum-core-server to bind an

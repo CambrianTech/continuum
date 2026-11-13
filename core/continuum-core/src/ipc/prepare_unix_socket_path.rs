@@ -26,13 +26,14 @@ pub(super) trait IpcStream: Read + Write + Send + Sized + 'static {
     fn peer_addr_str(&self) -> String;
 }
 
-#[cfg(unix)]
-impl IpcStream for UnixStream {
+/// The primary endpoint's connection (a Unix socket, or loopback TCP on Windows): the OS
+/// difference lives in `continuum_host::core_ipc`.
+impl IpcStream for continuum_host::core_ipc::Stream {
     fn try_clone_stream(&self) -> std::io::Result<Self> {
         self.try_clone()
     }
     fn peer_addr_str(&self) -> String {
-        format!("{:?}", self.peer_addr().ok())
+        self.peer()
     }
 }
 
@@ -41,9 +42,10 @@ impl IpcStream for TcpStream {
         self.try_clone()
     }
     fn peer_addr_str(&self) -> String {
-        self.peer_addr()
-            .map(|a| a.to_string())
-            .unwrap_or_else(|_| "unknown".to_string())
+        match self.peer_addr() {
+            Ok(addr) => addr.to_string(),
+            Err(e) => format!("unreadable peer ({e})"),
+        }
     }
 }
 
@@ -74,7 +76,6 @@ pub(super) struct ServerState {
     pub(super) voice_service: Arc<crate::live::session::voice_service::VoiceService>,
     /// Per-persona channel registries + state — DashMap: hot-path ops are &mut self.
     pub(super) channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
-    pub(super) rag_engine: Arc<RagEngine>,
     /// Server-side audio buffer pool for handle-based synthesis.
     pub(super) audio_pool: Arc<crate::live::audio::buffer::AudioBufferPool>,
     /// Tokio runtime handle for async operations from IPC threads.
@@ -108,7 +109,6 @@ impl ServerState {
         memory_manager: Arc<crate::memory::PersonaMemoryManager>,
         runtime: Arc<Runtime>,
         channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
-        rag_engine: Arc<RagEngine>,
         voice_service: Arc<crate::live::session::voice_service::VoiceService>,
         audio_pool: Arc<crate::live::audio::buffer::AudioBufferPool>,
         file_engines: Arc<DashMap<String, FileEngine>>,
@@ -120,7 +120,6 @@ impl ServerState {
         Self {
             voice_service,
             channel_registries,
-            rag_engine,
             audio_pool,
             rt_handle,
             memory_manager,
@@ -181,7 +180,7 @@ pub(super) enum Outbound {
 /// Send a length-prefixed JSON response frame.
 /// Frame format: [4 bytes u32 BE length][JSON payload bytes]
 pub(super) fn send_json_frame<S: Write>(stream: &mut S, response: &Response) -> std::io::Result<()> {
-    let json = match serde_json::to_string(response) {
+    let json = match serde_json::to_string(response) { // boundary: the IPC socket's JSON frame
         Ok(j) => j,
         Err(e) => {
             log_error!("ipc", "server", "Failed to serialize response: {}", e);
@@ -204,7 +203,7 @@ pub(super) fn send_binary_frame<S: Write>(
     response: &Response,
     binary_data: &[u8],
 ) -> std::io::Result<()> {
-    let json = match serde_json::to_string(response) {
+    let json = match serde_json::to_string(response) { // boundary: the IPC socket's binary frame header
         Ok(j) => j,
         Err(e) => {
             log_error!(
@@ -243,14 +242,26 @@ pub(super) fn send_provide_call_frame<S: Write>(
         "command": command,
         "params": params,
     });
-    let json = serde_json::to_string(&frame).unwrap_or_else(|e| {
-        log_error!("ipc", "server", "Failed to serialize provideCall: {}", e);
-        format!(r#"{{"type":"provideCall","callId":{call_id},"error":"serialize failed"}}"#)
-    });
+    let json = match serde_json::to_string(&frame) { // boundary: the IPC socket's provideCall frame
+        Ok(json) => json,
+        Err(e) => {
+            log_error!("ipc", "server", "Failed to serialize provideCall: {}", e);
+            format!(r#"{{"type":"provideCall","callId":{call_id},"error":"serialize failed"}}"#)
+        }
+    };
     let payload = json.as_bytes();
     stream.write_all(&(payload.len() as u32).to_be_bytes())?;
     stream.write_all(payload)?;
     stream.flush()
+}
+
+/// Hand one response to the client's writer thread. A send fails only when the writer has gone
+/// (the client disconnected or its socket failed), so the response has no one to reach: said in
+/// the log, never silently dropped.
+fn hand_to_writer(tx: &std::sync::mpsc::Sender<Outbound>, outbound: Outbound) {
+    if tx.send(outbound).is_err() {
+        log_debug!("ipc", "server", "a response was ready after its client's writer had gone (the client disconnected)");
+    }
 }
 
 /// Handle a single IPC client connection with concurrent request processing.
@@ -344,10 +355,10 @@ pub(super) fn handle_client<S: IpcStream>(
         }
 
         // Parse JSON to extract requestId and command
-        let json_value: serde_json::Value = match serde_json::from_str(&line) {
+        let json_value: serde_json::Value = match serde_json::from_str(&line) { // boundary: a request line read off the IPC socket
             Ok(v) => v,
             Err(e) => {
-                let _ = tx.send(Outbound::Response {
+                hand_to_writer(&tx, Outbound::Response {
                     request_id: None,
                     result: HandleResult::Json(Response::error(format!("Invalid JSON: {e}"))),
                 });
@@ -386,7 +397,7 @@ pub(super) fn handle_client<S: IpcStream>(
                 &json_value,
                 &mut my_registrations,
             );
-            let _ = tx.send(Outbound::Response {
+            hand_to_writer(&tx, Outbound::Response {
                 request_id,
                 result: HandleResult::Json(reply),
             });
@@ -422,7 +433,7 @@ pub(super) fn handle_client<S: IpcStream>(
                 if let Some(ref c) = caller {
                     let trust = crate::modules::grid::caller_trust(Some(c));
                     if !crate::routing::command_acl::is_command_authorized(cmd, trust) {
-                        let _ = tx.send(Outbound::Response {
+                        hand_to_writer(&tx, Outbound::Response {
                             request_id,
                             result: HandleResult::Json(Response::error(format!(
                                 "forbidden: command '{cmd}' is not permitted for a remote \
@@ -466,13 +477,13 @@ pub(super) fn handle_client<S: IpcStream>(
                             .get("success")
                             .and_then(|v| v.as_bool())
                             .map(|s| !s)
-                            .unwrap_or(false);
+                            .unwrap_or(false); // unwrap_or: no success field = the inner result claims no failure
                         if is_inner_failure {
-                            let error = value
-                                .get("error")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Operation failed")
-                                .to_string();
+                            // A failure with no error text carries the result itself, never an invented reason.
+                            let error = match value.get("error").and_then(|v| v.as_str()) {
+                                Some(error) => error.to_string(),
+                                None => format!("the command reported failure with no error text: {value}"),
+                            };
                             HandleResult::Json(Response {
                                 success: false,
                                 result: Some(value),
@@ -527,7 +538,7 @@ pub(super) fn handle_client<S: IpcStream>(
                     "Missing 'command' field in request".to_string(),
                 ))
             };
-            let _ = tx.send(Outbound::Response {
+            hand_to_writer(&tx, Outbound::Response {
                 request_id,
                 result: handle_result,
             });
@@ -577,7 +588,9 @@ pub(super) fn handle_client<S: IpcStream>(
 
     // Drop sender to signal writer thread to exit, then wait for it
     drop(tx);
-    let _ = writer_handle.join();
+    if writer_handle.join().is_err() {
+        log_error!("ipc", "server", "the writer thread for {} panicked; its last responses may not have been sent", peer_addr);
+    }
 
     log_debug!("ipc", "server", "Client disconnected: {}", peer_addr);
     Ok(())
@@ -586,4 +599,3 @@ pub(super) fn handle_client<S: IpcStream>(
 // ============================================================================
 // Server Main Loop
 // ============================================================================
-use crate::runtime::ipc_ready::ipc_ready_tx;

@@ -6,11 +6,12 @@ use super::*;
 ///
 /// Default: Gpu (enforced now — no silent CPU fallback).
 /// Auto (try GPU, explicit CPU fallback) is reserved for future opt-in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InferenceDevice {
     /// GPU-accelerated inference only. Metal (Mac) / CUDA (Nvidia) /
     /// ROCm (AMD) / Vulkan (everyone else). If no GPU adapter can serve
     /// the model → hard error, never silent CPU.
+    #[default]
     Gpu,
     /// CPU-only inference. Candle / future CPU adapter. Currently only
     /// reachable when caller EXPLICITLY requests it (training pipelines,
@@ -23,11 +24,6 @@ pub enum InferenceDevice {
     Auto,
 }
 
-impl Default for InferenceDevice {
-    fn default() -> Self {
-        InferenceDevice::Gpu
-    }
-}
 
 /// AI provider adapter configuration
 #[derive(Debug, Clone)]
@@ -376,9 +372,10 @@ pub enum GenerationAdmissionOwner {
 /// The universal AI provider adapter trait
 ///
 /// All AI providers implement this trait. The AIProviderModule calls
-/// these methods; adapters translate to native provider API calls.
+/// these methods; adapters translate to native provider API calls. Every adapter also states,
+/// with no default, how it honours a mind's dispatch terms ([`super::DispatchTermsPolicy`]).
 #[async_trait]
-pub trait AIProviderAdapter: Send + Sync {
+pub trait AIProviderAdapter: super::DispatchTermsPolicy + Send + Sync {
     /// Get adapter provider ID (e.g., "openai", "anthropic")
     fn provider_id(&self) -> &str;
 
@@ -415,6 +412,29 @@ pub trait AIProviderAdapter: Send + Sync {
         AdapterCapabilities::text_only()
     }
 
+    /// Whether a request for `model` reaches a server that accepts `tail_tools` (callable verbs
+    /// outside the rendered head), decided for the destination that request is routed to.
+    /// Default `false`: only a server that declares it gets a learned tool head.
+    fn accepts_tail_tools(&self, _model: &str) -> bool {
+        false
+    }
+
+    /// Whether a request through this adapter is admitted by the ENGINE'S exact count of its
+    /// finalized prompt (the strict admission guard a request's `admission` asks for),
+    /// decided for the destination the request is routed to now. Only then may a caller price
+    /// its prompt below its estimate. Default `false`: no engine count, the estimate stands.
+    fn counts_prompts_exactly(&self) -> bool {
+        false
+    }
+
+    /// The chat template observed (each probe message and the tokens it added) for a request for
+    /// `model`, measured from the
+    /// engine that request reaches (`llama_server::template_overhead`). Default `Unmeasured`: a
+    /// caller prices message text at its density alone and says so.
+    fn template_overhead(&self, _model: &str) -> crate::inference::llama_server::TemplateMeasurement {
+        crate::inference::llama_server::TemplateMeasurement::Unmeasured
+    }
+
     /// Get API style.
     ///
     /// Default: `Local` (in-process inference). Cloud adapters override
@@ -424,7 +444,7 @@ pub trait AIProviderAdapter: Send + Sync {
     }
 
     /// RESTORE-AHEAD (compression-ladder rung 1, FOLLOW-THE-SIGNAL doc): the
-    /// caller is ABOUT to generate for this activity — begin paging its warm
+    /// caller is ABOUT to generate for this page (a mind, or a fork) — begin paging its warm
     /// KV state into a serving slot NOW, overlapped with the caller's own
     /// prompt assembly, instead of racing the restore against the turn at pin
     /// time (measured 2026-09-01: pin-time restores queue behind busy slots to
@@ -433,7 +453,7 @@ pub trait AIProviderAdapter: Send + Sync {
     ///
     /// Default: no-op — cloud adapters and adapters without slot paging have
     /// nothing to warm.
-    fn warm_ahead(&self, _persona: uuid::Uuid, _room: uuid::Uuid) {}
+    fn warm_ahead(&self, _page: crate::inference::slots::PageKey) {}
 
     /// The LIVE served context window (tokens) of the lane THIS adapter serves on,
     /// or `None` when the adapter's own binding window is already authoritative.
@@ -458,6 +478,24 @@ pub trait AIProviderAdapter: Send + Sync {
     /// live lane to report.
     fn live_served_window(&self) -> Option<u32> {
         None
+    }
+
+    /// Whether this adapter's requests go to the node's own shared-pool engine. There a mind's
+    /// window is her grant, decided by [`crate::capacity::mind_window::mind_window`], and the
+    /// lane's per-sequence window is nobody's. Default `false`: a remote, dedicated, cloud or
+    /// in-process adapter.
+    fn serves_on_shared_pool(&self) -> bool {
+        false
+    }
+
+    /// Wait for a semantic capacity observation to change, without generating or
+    /// polling. Live adapters subscribe before rechecking; fixed bindings have
+    /// no capacity events and are woken by their binding owner instead.
+    fn capacity_changed(
+        &self,
+        _observed: Option<u32>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(std::future::pending())
     }
 
     /// Get default model for this provider
@@ -526,21 +564,28 @@ pub trait AIProviderAdapter: Send + Sync {
     /// Generate with typed transport/admission failures. Backends can migrate
     /// their existing streaming implementation without changing legacy callers
     /// or fabricating a classification for an untyped provider error.
+    ///
+    /// Reached only under stated terms: `dispatched` is built by the engine's dispatch
+    /// ([`super::Dispatched`]), so a caller outside it generates through
+    /// [`super::DispatchTermsPolicy::generate_admitted`] and states its think.
     async fn generate_stream_checked(
         &self,
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        dispatched: super::Dispatched,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
-        self.generate_stream(request, sink)
+        self.generate_stream(request, sink, dispatched)
             .await
             .map_err(Into::into)
     }
 
     /// Generate text (convenience drain over [`generate_stream`])
-    /// Handles both plain text generation AND tool calling
+    /// Handles both plain text generation AND tool calling. Reached only under stated terms
+    /// (`dispatched`, [`super::Dispatched`]).
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        dispatched: super::Dispatched,
     ) -> Result<TextGenerationResponse, String>;
 
     /// Generate, delivering each [`GenerationChunk`] to `sink` the INSTANT the
@@ -551,8 +596,9 @@ pub trait AIProviderAdapter: Send + Sync {
     /// when you don't need the tokens live.
     ///
     /// `sink` is an unbounded channel so a slow consumer never stalls token
-    /// decode; a consumer that only wants the final answer passes a sink it
-    /// drops/ignores (the chunks are cheap to discard).
+    /// decode; a consumer that only wants the final answer uses
+    /// `stream_sinks::drain_generation` to keep consuming until completion.
+    /// Closing a streaming receiver can cancel the generation.
     ///
     /// Default impl: a NON-incremental adapter (a cloud one-shot endpoint, the
     /// heuristic test adapter) genuinely has nothing to stream — it produces the
@@ -565,18 +611,19 @@ pub trait AIProviderAdapter: Send + Sync {
         &self,
         request: TextGenerationRequest,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+        dispatched: super::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
-        let response = self.generate_text(request).await?;
+        let response = self.generate_text(request, dispatched).await?;
         if sink.is_closed() {
             return Ok(response); // No observer: keep the result without cloning discarded chunks.
         }
         if let Some(reasoning) = response.reasoning.as_ref() {
             if !reasoning.is_empty() {
-                let _ = sink.send(GenerationChunk::Reasoning(reasoning.clone()));
+                crate::ai::stream_sinks::deliver(&sink, GenerationChunk::Reasoning(reasoning.clone())).await;
             }
         }
         if !response.text.is_empty() {
-            let _ = sink.send(GenerationChunk::Token(response.text.clone()));
+            crate::ai::stream_sinks::deliver(&sink, GenerationChunk::Token(response.text.clone())).await;
         }
         Ok(response)
     }

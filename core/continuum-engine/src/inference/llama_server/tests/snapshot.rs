@@ -137,3 +137,27 @@ fn real_token_delivery_is_recorded_as_liveness_evidence() {
         "a decode recorded just now must read as recent, got {since}ms"
     );
 }
+
+// what this catches (IntelMac, 2026-11-03 07:32Z): the share divided the slot's `n_ctx`, which
+// the fork caps at the trained window under `--kv-unified` (a 65,536 pool reads 32,768), so
+// each of 2 minds was published 16,384 instead of 32,768. The pool is `allocated_tokens`.
+#[tokio::test]
+async fn the_pool_is_the_engines_allocated_tokens_never_the_capped_slot_window() {
+    let app = axum::Router::new().route(
+        "/props",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({
+                "default_generation_settings": {"n_ctx": 32_768},
+                "total_slots": 2,
+                "context_geometry": {"allocated_tokens": 65_536, "max_tokens_per_sequence": 32_768, "sequence_capacity": 2}
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+    let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let process = LlamaServerProcess::with_root(root);
+    assert_eq!(process.served_context_window().await.expect("test: n_ctx"), 32_768);
+    assert_eq!(process.served_geometry().await.expect("test: geometry").pool_tokens(), Some(65_536));
+    server.abort();
+}

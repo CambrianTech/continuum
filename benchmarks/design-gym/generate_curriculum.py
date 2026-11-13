@@ -11,7 +11,7 @@ metric→fix, exactly the way the coder gene learns compiler-error→fix
 (the metric IS the compiler).
 
 Output: ShareGPT/mlx `{"messages":[...]}` JSONL (the same shape genome/teach emits
-and `genome/job-create` consumes) + an eval split. Infinite via --seed/--count.
+and `genome/training-trigger/submit` takes) + an eval split. Infinite via --seed/--count.
 
 Prior art this composes with (fetched, not vendored): Aalto Interface Metrics for
 harder pixel-level graders, WebSight for real-page mutation at scale. v0 keeps the
@@ -228,8 +228,8 @@ def main():
     ap.add_argument("--eval-frac", type=float, default=0.1)
     ap.add_argument("--install", default=None, metavar="DATASET_NAME",
                     help="install as ~/.continuum/datasets/<name>/ (train.jsonl + "
-                         "eval.jsonl + manifest.json — the shape genome/job-create "
-                         "consumes via datasetName). The mechanical path; never cp by hand.")
+                         "eval.jsonl + manifest.json: the installed dataset dataset/* and "
+                         "genome/teach read by name). The mechanical path; never cp by hand.")
     args = ap.parse_args()
 
     rng = random.Random(args.seed)

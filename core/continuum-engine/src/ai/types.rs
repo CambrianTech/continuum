@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
+pub use super::think::{DispatchTerms, Think, ThinkBudget};
+
 /// Chat message for text generation
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ChatMessage.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
@@ -22,7 +24,7 @@ pub struct ChatMessage {
 }
 
 /// Message content - either plain text or multimodal content blocks
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/MessageContent.ts"
@@ -34,7 +36,7 @@ pub enum MessageContent {
 }
 
 /// Content part for multimodal and tool protocol messages
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ContentPart.ts")]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
@@ -65,7 +67,7 @@ pub enum ContentPart {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ImageInput.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ImageInput {
@@ -80,7 +82,7 @@ pub struct ImageInput {
     pub mime_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/AudioInput.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct AudioInput {
@@ -95,7 +97,7 @@ pub struct AudioInput {
     pub mime_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/VideoInput.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct VideoInput {
@@ -114,7 +116,10 @@ pub struct VideoInput {
 // TOOL CALLING TYPES
 // ============================================================================
 
-pub use continuum_tool_protocol::{NativeToolSpec, ToolCall, ToolInputSchema};
+pub use continuum_tool_protocol::{
+    CallBatch, CallEnding, CallOrigin, CommittedCall, Disposed, GenerationEnd, HeldCall, NativeToolSpec, ToolCall, ToolInputSchema,
+    UnparsedArguments, UnreadableMarker,
+};
 
 /// Tool result to send back to AI after execution
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -165,7 +170,7 @@ impl ResultCustody {
 }
 
 /// Tool choice specification
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ToolChoice.ts")]
 #[serde(untagged)]
 pub enum ToolChoice {
@@ -178,7 +183,7 @@ pub enum ToolChoice {
 // ============================================================================
 
 /// Active LoRA adapter to apply during generation
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/ActiveAdapterRequest.ts"
@@ -198,7 +203,7 @@ fn default_adapter_scale() -> f64 {
 }
 
 /// Text generation request
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/TextGenerationRequest.ts"
@@ -256,6 +261,21 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tools: Option<Vec<NativeToolSpec>>,
+    /// Verbs she loaded into the TAIL this epoch: callable natively (the engine's parser and
+    /// grammar accept them) but never rendered in the head, so the cached prefix is unchanged
+    /// (goal 10, card ecd5dff3). Their schemas ride the conversation, after the cache point.
+    /// Sent only to a llama.cpp-family server; one that predates the field ignores it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tail_tools: Option<Vec<NativeToolSpec>>,
+    /// How many leading `messages` are her view: the epoch's append-only part, which her next
+    /// act sends again unchanged, before this act's fresh tail. A llama.cpp-family engine
+    /// checkpoints her recurrent state exactly there, and a saved page keeps that checkpoint,
+    /// so a page-in resumes at the end of her view rather than at the shared head (card
+    /// 3512f496). `None` when the prompt has no view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub view_messages: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tool_choice: Option<ToolChoice>,
@@ -316,13 +336,43 @@ pub struct TextGenerationRequest {
     pub turn_bound: Option<std::time::Duration>,
 }
 
+/// How a prompt's price is admitted: whether a price below its estimate is backed by the engine's
+/// exact count of the finalized body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptAdmission {
+    /// No engine count: a prompt is never priced below its estimate.
+    #[default]
+    Estimated,
+    /// The engine counts the finalized prompt and refuses at its exact count: the measured
+    /// density prices it, below the estimate too.
+    EngineCounted,
+}
+
+/// The admission a request was rendered under, checked at DISPATCH (after any wait for a lane),
+/// never only at render: on the M5 (0b2854327, 2026-11-05 01:25Z) Atlas's act was rendered
+/// against a 148,838 window, her grant shrank to 40,282 0.6 s later while she waited 26.3 s for a
+/// lane, and the engine counted 139,007 tokens and SENT it (3.45x her grant), because the only
+/// count check compared against the slot's window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestAdmission {
+    /// The window prompt plus `max_tokens` must fit strictly, by the engine's exact count.
+    pub window: u32,
+    /// Her grant's LEASE when the request was rendered (its size and the revision that published
+    /// it); at dispatch the grant owner reserves that revision, or the request is refused
+    /// (`InferenceError::GrantChanged`) and re-rendered. `None` = not on the shared pool.
+    pub lease: Option<crate::capacity::window_grant::GrantLease>,
+    /// How its prompt was priced: below the estimate only behind the engine's count.
+    pub priced: PromptAdmission,
+}
+
 /// Constrains the model's output format. OpenAI-compatible serialization:
 /// `{"type": "json_object"}` for `JsonObject`, `{"type": "text"}` for `Text`.
 /// llama.cpp / DMR honors this by constraining the sampler so the model
 /// can only emit valid JSON (when JsonObject) — no thinking prose, no
 /// commentary, no leading/trailing text. The right way to enforce structured
 /// output: at the model level, not via a downstream parser fallback.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ai/ResponseFormat.ts"
@@ -331,8 +381,23 @@ pub struct TextGenerationRequest {
 pub enum ResponseFormat {
     /// Model output is constrained to a single valid JSON object.
     JsonObject,
+    /// The answer is constrained to one JSON schema, the shape a caller's own type declares. On
+    /// our fork the chat template wraps the schema in its reasoning rule, so it constrains the
+    /// answer and never the think (llama.cpp#95 probe). An adapter that cannot enforce a schema
+    /// refuses it typed (`InferenceError::FormatUnenforceable`), never degrades it.
+    JsonSchema { json_schema: JsonSchemaFormat },
     /// Plain text output (default; equivalent to omitting response_format).
     Text,
+}
+
+/// A named JSON schema for [`ResponseFormat::JsonSchema`]; serializes as the OpenAI wire's
+/// `{"type":"json_schema","json_schema":{"name":…,"schema":…}}`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/JsonSchemaFormat.ts")]
+pub struct JsonSchemaFormat {
+    pub name: String,
+    #[ts(type = "Record<string, unknown>")]
+    pub schema: serde_json::Value,
 }
 
 /// Text generation response
@@ -433,6 +498,25 @@ pub enum FinishReason {
     Length,
     ToolUse,
     Error,
+    /// The stream ended without the backend saying why (no `finish_reason` arrived). Not a
+    /// stop: a receipt must never claim an explicit stop it did not see (Codex, 2026-10-31:
+    /// Kimi's reasoning-only completions read `stop` because an absent marker defaulted to it).
+    Unreported,
+}
+
+impl FinishReason {
+    /// Why the generation stopped, as far as a tool call's fate is concerned: `Length` is the
+    /// output limit, `Error` is no completion receipt, and a backend that said nothing is
+    /// `Unreported`; only `Stop` and `ToolUse` are finished
+    /// (`continuum_tool_protocol::call_ending`).
+    pub fn generation_end(self) -> continuum_tool_protocol::GenerationEnd {
+        match self {
+            FinishReason::Length => continuum_tool_protocol::GenerationEnd::OutputLimit,
+            FinishReason::Unreported => continuum_tool_protocol::GenerationEnd::Unreported,
+            FinishReason::Error => continuum_tool_protocol::GenerationEnd::Failed,
+            FinishReason::Stop | FinishReason::ToolUse => continuum_tool_protocol::GenerationEnd::Finished,
+        }
+    }
 }
 
 impl std::fmt::Display for FinishReason {
@@ -442,6 +526,7 @@ impl std::fmt::Display for FinishReason {
             FinishReason::Length => write!(f, "length"),
             FinishReason::ToolUse => write!(f, "tool_use"),
             FinishReason::Error => write!(f, "error"),
+            FinishReason::Unreported => write!(f, "unreported"),
         }
     }
 }
@@ -800,6 +885,18 @@ impl Default for HealthStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a schema format the engine cannot read. llama-server and every
+    // OpenAI-compatible gateway take `{"type":"json_schema","json_schema":{"name","schema"}}`; the
+    // request body forwards the format as it serializes, so the serialized form IS the wire.
+    #[test]
+    fn a_json_schema_format_serializes_as_the_openai_wire() {
+        let format = ResponseFormat::JsonSchema {
+            json_schema: JsonSchemaFormat { name: "lesson".into(), schema: serde_json::json!({ "type": "object" }) },
+        };
+        let Ok(wire) = serde_json::to_value(&format) else { panic!("a format serializes") };
+        assert_eq!(wire, serde_json::json!({ "type": "json_schema", "json_schema": { "name": "lesson", "schema": { "type": "object" } } }));
+    }
 
     // what this catches: command/module route stamping used to reconstruct the
     // route and discard the serving window, model mapping and remote receipt.

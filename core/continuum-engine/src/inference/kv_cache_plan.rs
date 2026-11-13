@@ -86,7 +86,8 @@ pub const Q8_0: &str = "q8_0";
 /// Named from the SAME strings [`crate::gpu::device_probe::GpuDeviceProbe::platform`]
 /// returns and [`crate::inference::backend_receipt::BackendVerdict::backend_label`]
 /// reports, so there is one vocabulary for "what is this box" across the substrate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")] // the same names `label` gives (a proven pool's contract records it)
 pub enum ServingBackend {
     /// Apple Silicon / Metal.
     Metal,

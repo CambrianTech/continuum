@@ -36,7 +36,7 @@ use uuid::Uuid;
 /// One engine process: its pid, its OS start time, and the port it serves. A binding is only
 /// ever recorded with a NONZERO start time; `started_s == 0` (a lane record from before the
 /// field) cannot be verified either way and reads as [`Liveness::Unknown`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EngineIncarnation {
     pub pid: u32,
     /// OS process start time, seconds since the Unix epoch (sysinfo's `start_time`).
@@ -74,61 +74,22 @@ pub enum ProcessProbe {
 /// - Unix: `kill(pid, 0)` returning `ESRCH` is absence; success or `EPERM` means it exists
 ///   (another user's); any other error is unreadable.
 /// - Windows: `OpenProcess` failing with `ERROR_INVALID_PARAMETER` is absence (no such pid);
-///   a handle means it exists; any other failure (access denied, …) is unreadable.
+///   a signaled process handle proves termination; other failures are unreadable.
 pub fn probe_process(pid: u32) -> ProcessProbe {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    use crate::system_resources::process_tree::{listed, Listed};
+    use continuum_host::process_presence::{kernel_says, Presence};
     if pid == 0 {
         return ProcessProbe::Absent;
     }
-    let target = Pid::from_u32(pid);
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[target]),
-        true,
-        ProcessRefreshKind::nothing(),
-    );
-    if let Some(p) = sys.process(target) {
-        return ProcessProbe::Present(p.start_time());
+    match listed(pid) {
+        Listed::Running { start_time } => ProcessProbe::Present(start_time),
+        Listed::Exited => ProcessProbe::Absent,
+        Listed::NotListed => match kernel_says(pid) {
+            Presence::Present => ProcessProbe::Present(0),
+            Presence::Absent => ProcessProbe::Absent,
+            Presence::Unreadable => ProcessProbe::Unreadable,
+        },
     }
-    kernel_says(pid)
-}
-
-#[cfg(unix)]
-fn kernel_says(pid: u32) -> ProcessProbe {
-    // SAFETY: signal 0 performs only the existence and permission check; nothing is sent.
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    if rc == 0 {
-        return ProcessProbe::Present(0);
-    }
-    match std::io::Error::last_os_error().raw_os_error() {
-        Some(libc::ESRCH) => ProcessProbe::Absent,
-        Some(libc::EPERM) => ProcessProbe::Present(0),
-        _ => ProcessProbe::Unreadable,
-    }
-}
-
-#[cfg(windows)]
-fn kernel_says(pid: u32) -> ProcessProbe {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-    // SAFETY: a query-only handle for exactly this pid, closed once below.
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if !handle.is_null() {
-        // SAFETY: `handle` came from a successful OpenProcess and is closed once, here.
-        unsafe { CloseHandle(handle) };
-        return ProcessProbe::Present(0);
-    }
-    // SAFETY: reads this thread's last error, set by the failed OpenProcess above.
-    if unsafe { GetLastError() } == ERROR_INVALID_PARAMETER {
-        ProcessProbe::Absent
-    } else {
-        ProcessProbe::Unreadable
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-fn kernel_says(_pid: u32) -> ProcessProbe {
-    ProcessProbe::Unreadable
 }
 
 /// The OS start time of `pid` (nonzero), or `None` when the process is absent or its start
@@ -140,17 +101,25 @@ pub fn process_start_s(pid: u32) -> Option<u64> {
     }
 }
 
-impl EngineIncarnation {
-    /// The incarnation of the process `pid` serving `port` right now, only when its start time
-    /// is readable (a binding without one could never be verified or released).
-    pub fn of(pid: u32, port: u16) -> Option<Self> {
-        process_start_s(pid).map(|started_s| Self {
-            pid,
-            started_s,
-            port,
-        })
+/// One process by pid and OS start time (a reused pid is another process): the identity every
+/// owner bound to a process is read alive or dead by, with ONE rule (an engine incarnation, a
+/// handoff close, a learning residency's core; card 138a09e3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProcessIncarnation {
+    pub pid: u32,
+    /// OS process start time, seconds since the Unix epoch; 0 when it was never read.
+    pub started_s: u64,
+}
+
+impl ProcessIncarnation {
+    /// The process `pid` as it runs now; `None` when its start time cannot be read, since an owner
+    /// that can never be verified dead could never be released by its death.
+    pub fn of(pid: u32) -> Option<Self> {
+        process_start_s(pid).map(|started_s| Self { pid, started_s })
     }
 
+    /// PURE but for `probe`: whether this process still runs. No start time is Unknown, never
+    /// Dead; a readable different start time is a reused pid, so Dead; unreadable is not dead.
     pub fn liveness_with(&self, probe: impl Fn(u32) -> ProcessProbe) -> Liveness {
         if self.started_s == 0 {
             return Liveness::Unknown;
@@ -165,6 +134,31 @@ impl EngineIncarnation {
 
     pub fn liveness(&self) -> Liveness {
         self.liveness_with(probe_process)
+    }
+}
+
+impl EngineIncarnation {
+    /// The incarnation of the process `pid` serving `port` right now, only when its start time
+    /// is readable (a binding without one could never be verified or released).
+    pub fn of(pid: u32, port: u16) -> Option<Self> {
+        process_start_s(pid).map(|started_s| Self {
+            pid,
+            started_s,
+            port,
+        })
+    }
+
+    /// The engine's process, read by the one liveness rule.
+    pub fn process(&self) -> ProcessIncarnation {
+        ProcessIncarnation { pid: self.pid, started_s: self.started_s }
+    }
+
+    pub fn liveness_with(&self, probe: impl Fn(u32) -> ProcessProbe) -> Liveness {
+        self.process().liveness_with(probe)
+    }
+
+    pub fn liveness(&self) -> Liveness {
+        self.process().liveness()
     }
 
     /// The root url every in-process client addresses this engine by.
@@ -262,9 +256,7 @@ fn write(path: &Path, all: &[ResidentWork]) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     let body = serde_json::to_vec_pretty(all).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    continuum_host::durable::write_replace(path, &body).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Two records name the same binding: the same job, the same engine run, the same
@@ -460,6 +452,76 @@ pub fn occupancy(path: &Path, port: u16) -> Occupancy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A stopped engine can retain an open Child handle. It must release custody,
+    // while a live child with an unreadable start time must remain held.
+    #[cfg(windows)]
+    #[test]
+    fn a_retained_terminated_process_handle_is_not_live() -> Result<(), Box<dyn std::error::Error>> {
+        use std::process::Stdio;
+        let mut child = airc_core::process::background("cmd.exe")
+            .args(["/D", "/C", "set /p fixture_input="])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let pid = child.id();
+        use continuum_host::process_presence::{kernel_says, Presence};
+        let live = kernel_says(pid);
+        drop(child.stdin.take());
+        child.wait()?;
+        assert_eq!(live, Presence::Present);
+        assert_eq!(kernel_says(pid), Presence::Absent);
+        let dir = tempfile::tempdir()?;
+        let path = store_path(dir.path());
+        record(&path, work(11, pid, 1, 58059))?;
+        assert_eq!(occupancy(&path, 58059), Occupancy::Free);
+        assert!(all(&path)?.is_empty());
+        drop(child);
+        Ok(())
+    }
+
+    // what this catches (card e4ef7780): an engine that exited but was never reaped. On Unix it
+    // is a zombie, which answers kill(0) and keeps its start time, so it read ALIVE and its
+    // residency held serving forever. A real unreaped child: Present while it runs, Absent once
+    // it exits (before any reaping), and its record is released by occupancy.
+    #[cfg(unix)]
+    #[test]
+    fn an_exited_unreaped_child_is_not_live() -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+        // reaped on every exit of this test, a failed assertion included (Codex on #5566)
+        struct Reaped(std::process::Child);
+        impl Drop for Reaped {
+            fn drop(&mut self) {
+                let _ = self.0.kill(); // best effort: an exited child refuses the kill
+                let _ = self.0.wait(); // the reap this test exists for; nothing to report from a drop
+            }
+        }
+        let mut child = Reaped(
+            std::process::Command::new("sh")
+                .args(["-c", "read line"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()?,
+        );
+        let pid = child.0.id();
+        let started = process_start_s(pid).ok_or("test: a running child has a start time")?;
+        assert_eq!(probe_process(pid), ProcessProbe::Present(started), "running");
+        let dir = tempfile::tempdir()?;
+        let path = store_path(dir.path());
+        record(&path, work(12, pid, started, 58060))?;
+        assert!(matches!(occupancy(&path, 58060), Occupancy::Resident(_)), "a running engine holds");
+        child.0.stdin.take().ok_or("test: piped stdin")?.write_all(b"done\n")?;
+        // exited, NOT waited: a zombie until the wait below
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while probe_process(pid) != ProcessProbe::Absent {
+            assert!(std::time::Instant::now() < deadline, "test: the exited child never read Absent");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(occupancy(&path, 58060), Occupancy::Free, "its record is released on the way");
+        assert!(all(&path)?.is_empty());
+        Ok(())
+    }
 
     fn work(job: u128, pid: u32, started_s: u64, port: u16) -> ResidentWork {
         ResidentWork {

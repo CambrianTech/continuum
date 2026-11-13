@@ -2,8 +2,8 @@
 
 /**
  * Params for `persona/rag-inspect`. The persona name is the only
- * required input; everything else has defaults from the canonical
- * library `defaults_for`. Optional knobs let callers vary the
+ * required input; the window is the one served now unless the caller names one
+ * (`context_window`). Optional knobs let callers vary the
  * inspection profile (tighter window, deeper fetch, capture
  * trace).
  */
@@ -12,7 +12,7 @@ export type RagInspectParams = {
  * Which persona's RAG pipeline to introspect — her name or id (full or the
  * short form shown in rosters).
  */
-persona: string, contextWindow?: number, aircFloor?: number, aircMax?: number, aircFetchLimit?: number, 
+persona: string, contextWindow?: number, aircFetchLimit?: number, 
 /**
  * Optional absolute path for the JSONL capture trace. When set,
  * the inspection records the full turn there so other AIs /

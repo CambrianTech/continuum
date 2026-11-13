@@ -89,6 +89,7 @@
 //! - `#[entity(index(name = "idx_x", fields = ["a", "b"]))]` — composite
 //!   index across multiple fields. Add `unique = true` for a unique
 //!   composite. Repeat the attribute for multiple indexes.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use proc_macro::TokenStream;
 use proc_macro_crate::{crate_name, FoundCrate};

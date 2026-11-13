@@ -389,9 +389,18 @@
                 },
                 MacDrift::WrapperCommand,
                 MacDrift::KillsLanes,
+                MacDrift::Throttled,
                 MacDrift::CannotHeal,
             ],
             "the script-installed agent on IntelMac, read against the daemon contract"
+        );
+        // regression for card 3bdfc972: a plist that runs the core at Background priority
+        // (every engine thread at PRI 4 on IntelMac and the M5, 2026-11-04) is a drift,
+        // so `continuum install` rewrites it; the plist it writes is Standard.
+        let background = daemon.replace(PROCESS_TYPE, "<key>ProcessType</key><string>Background</string>");
+        assert_eq!(
+            mac_drift(Some((&Domain::System, &background)), &Domain::System, Some(7), Some(7), false),
+            vec![MacDrift::Throttled]
         );
         let agent = render_plist(&PlistSpec {
             domain: &Domain::Gui(501),

@@ -61,9 +61,8 @@ pub enum Arch {
 /// or id. Adding a capability is a real architectural decision (new kind
 /// of task) and should be rare.
 ///
-/// Wire-exported via ts-rs because `PersonaContext` (recipe layer) and
-/// the `cognition/respond` IPC payload both carry capability vocab as
-/// a list of these values. TS hosts read/write the same kebab-case
+/// Wire-exported via ts-rs because IPC payloads carry capability vocab
+/// as a list of these values. TS hosts read/write the same kebab-case
 /// strings serde produces.
 #[derive(
     Debug,
@@ -211,13 +210,8 @@ pub struct ProviderCapabilities {
     /// How the endpoint exchanges tool calls. See [`ToolProtocol`].
     #[serde(default)]
     pub tool_protocol: ToolProtocol,
-    /// Suppress the model's chain-of-thought by default. Some local
-    /// reasoning GGUFs ramble/loop in their thinking (latency + the
-    /// runaway-leak failure mode) yet answer correctly without it; cloud
-    /// reasoning models manage their own and leave this `false`.
-    /// Default: `false` (keep thinking).
-    #[serde(default)]
-    pub suppress_thinking: bool,
+    // NOTE: thinking is NOT here. Whether a request thinks is its think term's alone
+    // (`DispatchTerms::think`, `inference::request_body::apply_think`), never a provider default.
     // NOTE: embedding + image-generation are NOT here. They're capability
     // FACTS of a MODEL, not behavioral traits of a provider — a provider
     // "supports embeddings" only because it serves a model that does. They
@@ -259,6 +253,14 @@ pub struct ProviderCapabilities {
     /// `false`.
     #[serde(default)]
     pub llamacpp_sampling_extensions: bool,
+    /// The endpoint is our fork's server, whose pinned build accepts `tail_tools`
+    /// (CambrianTech/llama.cpp#75): verbs callable through its tool-call parser and grammar
+    /// without rendering them in the head. A declaration of the family only: the adapter offers a
+    /// mind's learned tool head (goal 10) while the RUNNING lane reports that build, since a verb
+    /// outside the head must stay callable. Cloud and stock servers leave it `false`.
+    /// Default: `false`.
+    #[serde(default)]
+    pub tail_tools: bool,
 }
 
 /// How prompt_assembly should shape multi-party chat history when

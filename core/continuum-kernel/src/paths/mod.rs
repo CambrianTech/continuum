@@ -56,30 +56,25 @@ pub fn has_path_prefix(path: &std::path::Path, base: &std::path::Path) -> bool {
     }))
 }
 
-/// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
-/// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the
-/// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen
-/// layout as the grader that wrote the stream — one layout, never two.
+/// The continuum home dir (`$CONTINUUM_HOME`, else a test build's home, else `~/.continuum`).
+/// The rule is `continuum_base::home`, the one owner `config_env` and `secrets` also use; this
+/// adds only the test-build homes, so a test never reaches the operator's state.
 pub fn continuum_home() -> Result<std::path::PathBuf, String> {
-    std::env::var_os("CONTINUUM_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(test_home)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
-        .ok_or_else(|| "no home dir".to_string())
+    // A test's per-thread native home wins over process-global env (card 3c8b03ae): the
+    // captures and the recorder resolve here now, and their tests isolate per thread.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    if let Some(native) = NativeHomeOverride::current() {
+        return Ok(native.join(".continuum"));
+    }
+    continuum_base::home::continuum_home_with(test_home)
 }
 
-/// Resolve `~/.continuum/` (or `$CONTINUUM_ROOT` if set) for the
-/// substrate root. Matches the resolution in
-/// [`crate::modules::logger::LoggerModule::new`] — single source of
-/// truth would be nice but inline duplication is cheaper than a new
-/// crate-wide helper for two callers. If both are still around when
-/// a third caller appears, extract.
+/// The substrate root, infallibly: the ONE continuum home, [`continuum_home`] (`$CONTINUUM_HOME`,
+/// else a test build's per-process home, else `~/.continuum`). It was a second owner reading
+/// `$CONTINUUM_ROOT` and then the real home, so its 39 callers' tests could write the operator's
+/// state (line 7 of the plan: one owner per fact).
 pub fn continuum_root() -> std::path::PathBuf {
-    if let Ok(root) = std::env::var("CONTINUUM_ROOT") {
-        return std::path::PathBuf::from(root);
-    }
-    let home = dirs::home_dir().expect("HOME directory is required to resolve CONTINUUM_ROOT"); // JUSTIFIED: no HOME means no persistent state at all: boot-fatal by design; 20+ callers need the infallible PathBuf
-    home.join(".continuum")
+    continuum_home().expect("a home directory is required to resolve the continuum home") // JUSTIFIED: no home means no persistent state at all: boot-fatal by design; its callers need the infallible PathBuf
 }
 
 /// A TEST BINARY NEVER WRITES THE OPERATOR'S RECORDS (2026-09-20, the M5): a local
@@ -87,10 +82,18 @@ pub fn continuum_root() -> std::path::PathBuf {
 /// fixture's "coder-14b" into ~/.continuum/state/served-window.json; the next boot
 /// remembered that model, found no decode knee for it, planned 8 lanes unclamped on a box
 /// whose knee is 2, and swapped 4.6 GB. Every store resolves its path through this
-/// function, so under `cfg(test)` — when no `$CONTINUUM_HOME` is declared — the home is a
+/// function, so in any test build — when no `$CONTINUUM_HOME` is declared (an explicit one is
+/// always honoured, by design) — the home is a
 /// per-process directory under the system temp dir. Not configurable, not a fixture to
 /// remember: a test cannot reach the operator's state by forgetting.
-#[cfg(test)]
+///
+/// "Any test build" means `cfg(test)` OR `test-fixtures`. `cfg(test)` alone covers only the
+/// kernel's OWN tests: once the kernel was cut out of core, core's tests (the serving daemon
+/// of the incident above) and every other crate's tests built the kernel WITHOUT it and
+/// resolved the real home again (card d11d9827). Every crate's test run turns on
+/// `continuum-kernel/test-fixtures` (core and the cut crates through their dev-dependencies or
+/// their own `test-fixtures`); resolver 2 never applies it to a production build.
+#[cfg(any(test, feature = "test-fixtures"))]
 fn test_home() -> Option<std::path::PathBuf> {
     static HOME: std::sync::LazyLock<std::path::PathBuf> = std::sync::LazyLock::new(|| {
         let dir = std::env::temp_dir().join(format!("continuum-test-home-{}", std::process::id()));
@@ -99,7 +102,7 @@ fn test_home() -> Option<std::path::PathBuf> {
     });
     Some(HOME.clone())
 }
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-fixtures")))]
 fn test_home() -> Option<std::path::PathBuf> {
     None
 }
@@ -227,12 +230,21 @@ impl Drop for NativeHomeOverride {
 mod tests {
     use super::*;
 
+    // what this catches (line 7): two owners of the continuum home. The infallible root IS the
+    // home, so a test home (or $CONTINUUM_HOME) governs every caller of either.
     #[test]
-    fn continuum_root_respects_env_var() {
-        std::env::set_var("CONTINUUM_ROOT", "/tmp/test-root-12345");
-        let root = continuum_root();
-        assert_eq!(root, std::path::PathBuf::from("/tmp/test-root-12345"));
-        std::env::remove_var("CONTINUUM_ROOT");
+    fn the_root_is_the_one_continuum_home() {
+        let _home = crate::paths::test_home::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
+        assert_eq!(continuum_root(), continuum_home().expect("a test build always has a home")); // JUSTIFIED: test asserts the owner
+    }
+
+    // what this catches (Codex on #5420): the root escaping a test's isolation. Under a thread's
+    // native home override the root is that home's .continuum, never the operator's.
+    #[test]
+    fn the_root_follows_a_tests_native_home() {
+        let native = tempfile::tempdir().expect("native home"); // JUSTIFIED: test fixture
+        let _override = NativeHomeOverride::install(native.path());
+        assert_eq!(continuum_root(), native.path().join(".continuum"));
     }
 
     // what this catches (2026-09-20): a test binary resolving the OPERATOR's home — a

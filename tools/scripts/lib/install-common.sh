@@ -531,7 +531,7 @@ mod_continuum_bin_link() {
 mod_jtag_bin_link() {
   local src="$1"
   if [ -z "$src" ] || [ ! -f "$src" ]; then
-    # The old Node `jtag` CLI moved to legacy/ (#1840) and is NOT part of a
+    # The old Node `jtag` CLI deleted (tag legacy-archive-2026-10-23) and is NOT part of a
     # headless-core install. Its absence must not abort the installer — the
     # core plus the `continuum` / `cu` CLIs are the deliverable. Skip, don't
     # fail (this is the exact fatal that reddened carl-install-smoke: install.sh

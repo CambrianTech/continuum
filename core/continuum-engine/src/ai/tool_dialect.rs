@@ -55,80 +55,42 @@ pub fn alias_to_command() -> &'static HashMap<&'static str, &'static str> {
     })
 }
 
-/// canonical command name → its PRIMARY offered alias (the FIRST declared) — the
-/// trained reflex we rename to on the wire. Commands with no alias are absent
-/// (offered under their canonical name).
+/// canonical command name → its PRIMARY offered alias ([`primary_alias`], the FIRST declared):
+/// the trained reflex we rename to on the wire. Commands with no alias are absent.
 fn command_to_primary_alias() -> &'static HashMap<&'static str, &'static str> {
     static IDX: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     IDX.get_or_init(|| {
         command_registry_live()
             .iter()
-            .filter_map(|d| d.aliases.first().map(|&alias| (d.name, alias)))
+            .filter_map(|d| primary_alias(d.aliases).map(|alias| (d.name, alias)))
             .collect()
     })
 }
 
-/// The policy for how a command is NAMED on the wire when OFFERED to a model —
-/// the seam future per-model / per-persona selection plugs into
-/// ([[adaptive-tool-surface-meets-you-in-the-middle]]). Chosen by
-/// [`offer_style_for`]; either way, BOTH the offered form and the trained alias
-/// resolve on the way back in ([`from_wire_name`]), so switching styles never
-/// narrows what a model can call — it only changes what it's SHOWN.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OfferStyle {
-    /// Offer the model's trained reflex — the command's primary alias (`code/read`
-    /// → `read_file`). Meet their training; no menu to learn.
-    TrainedReflex,
-    /// Offer OUR canonical name, charset-legal (`code/read` → `code_read`). Converge
-    /// the model onto our semantically-grouped namespace; the trained alias still
-    /// resolves inbound, so it's meet-in-the-middle, not a hard cutover.
-    Canonical,
-}
-
-/// The offer policy for a served model — THE per-model adapter seam. Today it
-/// returns the global default for every model; the foresight is that a model whose
-/// LoRA is tuned on the trained names is met with `TrainedReflex` while a fresh /
-/// base model could be offered `Canonical` to learn our namespace. That logic lands
-/// HERE, once, instead of scattered at the call sites.
-pub fn offer_style_for(_model: Option<&str>) -> OfferStyle {
-    // DEFAULT: meet their training. The living personas' coder LoRAs are tuned on the
-    // trained names (`read_file`, `bash`); ~99.9% of live tool calls already resolve
-    // ([[tool-naming-meet-their-training-alias-or-redirect]]) and tool-naming is NOT
-    // the score bottleneck. So we offer the trained reflex — no blind change to the
-    // tuned surface.
-    //
-    // Canonical (`code_read`) is a HYPOTHESIS, not yet validated: the only offer-surface
-    // gate we can run today is humaneval-rs, which is PURE CODEGEN and offers NO tools
-    // (needs_tools is false for spoken-graded tasks), so it structurally CANNOT measure
-    // whether renaming the offered tools helps or hurts. Flipping the global default to
-    // Canonical on that gate was a blind flip of the tuned surface — the exact move the
-    // hard constraint forbids. Canonical stays available via `to_wire_spec_with` and is
-    // adopted here (per-model or globally) only once a TOOL-USING A/B (#204) validates it.
-    OfferStyle::TrainedReflex
-}
-
-/// Charset-legal wire form of a canonical command name: `/` → `_` (`code/read` →
-/// `code_read`), matching the OpenAI function-name charset our slashed names
-/// violate. Round-trips: [`from_wire_name`] maps the underscore form back to the
-/// slashed command.
-fn charset_legal(name: &str) -> String {
-    name.replace('/', "_")
-}
+/// The offer policy and the one wire-name function live beside the command declaration
+/// (`sdk_codegen::verb_ref`), so a verb her text names (`VerbRef`) renders exactly as her
+/// offered tool list does. Re-exported here, the dialect's surface.
+pub use crate::sdk_codegen::{offer_style_for, OfferStyle};
+use crate::sdk_codegen::{primary_alias, wire_name};
 
 /// Rename a spec for the wire under an explicit offer style. Always yields a
 /// charset-legal name (never a raw slash), so the offered surface is wire-valid
 /// regardless of style. See [`OfferStyle`].
 pub fn to_wire_spec_with(mut spec: NativeToolSpec, style: OfferStyle) -> NativeToolSpec {
-    spec.name = match style {
-        OfferStyle::TrainedReflex => command_to_primary_alias()
-            .get(spec.name.as_str())
-            .map(|&alias| alias.to_string())
-            // No trained alias: the long tail is offered under its charset-legal
-            // canonical (reachable, just not a trained reflex) — never a raw slash.
-            .unwrap_or_else(|| charset_legal(&spec.name)),
-        OfferStyle::Canonical => charset_legal(&spec.name),
-    };
+    spec.name = offered_name(&spec.name, style);
     spec
+}
+
+/// The wire name of the canonical command `name` under `style` ([`wire_name`]).
+fn offered_name(name: &str, style: OfferStyle) -> String {
+    wire_name(name, command_to_primary_alias().get(name).copied(), style)
+}
+
+/// The name her tool list offers a STORED verb under: a name recorded before a rename resolves
+/// through the alias the rename kept ([`resolve_wire_name`]) to the command it names now, and
+/// renders as that command is offered today. A record never re-renders a name she cannot call.
+pub fn offered_name_of_stored(stored: &str) -> String {
+    offered_name(&resolve_wire_name(stored), offer_style_for(None))
 }
 
 /// Rename a spec for the wire under the DEFAULT offer policy ([`offer_style_for`]
@@ -143,43 +105,6 @@ pub fn to_wire_spec(spec: NativeToolSpec) -> NativeToolSpec {
 fn command_names() -> &'static HashSet<&'static str> {
     static NAMES: OnceLock<HashSet<&'static str>> = OnceLock::new();
     NAMES.get_or_init(|| command_registry_live().iter().map(|d| d.name).collect())
-}
-
-/// Registered verbs omitted from the default hands menu, still discoverable and
-/// callable under their command's preconditions. This is presentation policy, NOT
-/// authorization. Share purpose guidance with error feedback without erasing the
-/// real failure or declaring a discoverable command impossible to use.
-pub struct WithheldVerb {
-    pub why: &'static str,
-    pub instead: &'static str,
-}
-
-/// The withheld verbs a REVIEW card's holder needs on her work turn: reading the
-/// submission under review and filing her verdict are the whole of that card. They are
-/// withheld from every other holder (`withheld_from_hands`), and a native-tool model
-/// can call only what it was offered, so without this the reviewer lost the one verb
-/// her card exists for (Kimi on review card deec4ac2, 2026-10-06: "work/review is not
-/// in this prompt").
-pub fn reviewer_hand(name: &str) -> bool {
-    matches!(name.replace('_', "/").as_str(), "work/review" | "work/submission")
-}
-
-pub fn withheld_from_hands(name: &str) -> Option<WithheldVerb> {
-    match name.replace('_', "/").as_str() {
-        "work/review" => Some(WithheldVerb {
-            why: "`work/review` records a reviewer's verdict under a REVIEW claim for someone else's work. It does not inspect or submit your own implementation card.",
-            instead: "For your own card: `work/get` to read it, `work/note` to record progress, `work/submit` to hand it in. To give a review word on a peer's PR, say it in the room: \"APPROVED at <sha>\" or \"CHANGES REQUESTED at <sha>: <why>\".",
-        }),
-        "work/submission" => Some(WithheldVerb {
-            why: "`work/submission` inspects a submitted artifact for review; use `work/get` to inspect your own card.",
-            instead: "For your own card: `work/get` to read it, `work/submit` to hand it in (that IS the submission).",
-        }),
-        "code/git/apply" => Some(WithheldVerb {
-            why: "`code/git/apply` applies a peer's unified diff; it is not the command for authoring your own edits.",
-            instead: "Your edits land with `code/edit` and `code/write`; commit them with `code/git/commit`.",
-        }),
-        _ => None,
-    }
 }
 
 /// What sat in the tool NAME field when it was not a verb at all. The executor's
@@ -374,12 +299,10 @@ pub fn normalize_call(call: &mut crate::ai::types::ToolCall) -> Option<String> {
     let mut merged = 0usize;
     if let Some(from_name) = parsed {
         if !from_name.is_empty() {
-            let obj = match call.input.as_object_mut() {
-                Some(o) => o,
-                None => {
-                    call.input = serde_json::Value::Object(serde_json::Map::new());
-                    call.input.as_object_mut().expect("just set to an object")
-                }
+            // An input that is not an object carried no named fields; the recovered ones become it.
+            let mut obj = match std::mem::take(&mut call.input) {
+                serde_json::Value::Object(o) => o,
+                _ => serde_json::Map::new(),
             };
             for (k, v) in from_name {
                 if !obj.contains_key(&k) {
@@ -387,6 +310,7 @@ pub fn normalize_call(call: &mut crate::ai::types::ToolCall) -> Option<String> {
                     merged += 1;
                 }
             }
+            call.input = serde_json::Value::Object(obj);
         }
     }
 
@@ -409,6 +333,50 @@ pub fn normalize_call(call: &mut crate::ai::types::ToolCall) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A command that was renamed: its current name, its trained reflex first, and the name it
+    /// carried before the move kept as an alias (the rename rule).
+    mod renamed {
+        #[derive(serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+        pub struct P {}
+        #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)]
+        pub struct R {}
+        crate::action_command! {
+            /// Test fixture: a renamed reopen verb.
+            pub struct Renamed;
+            name: "fixture/reopen-now",
+            access: AiSafe,
+            native: true,
+            aliases: &["fixture_reopen", "fixture/reopen-before"],
+            disclosure: Always,
+            params: P,
+            output: R,
+            run(_this, _ctx, _p) => { Ok(R {}) }
+        }
+        continuum_kernel::projects_success_on_return! { Renamed => R }
+        pub const RENAMED: crate::sdk_codegen::VerbRef<Renamed> = crate::sdk_codegen::VerbRef::always();
+    }
+
+    // what this catches: a rename leaving her text, her offered list and her records disagreeing.
+    // A reference by type renders as her tool list offers the command (its first alias, never
+    // the slash name); a call by the old name still resolves to it; and a name stored before the
+    // rename renders as the command is offered now.
+    #[test]
+    fn a_renamed_verb_renders_its_current_offer_and_its_old_name_still_resolves() {
+        let offered = renamed::RENAMED.offered();
+        assert_eq!(offered, "fixture_reopen");
+        let Ok(spec) = serde_json::from_value::<NativeToolSpec>(serde_json::json!({
+            "name": renamed::RENAMED.canonical(),
+            "description": "",
+            "input_schema": {"type": "object", "properties": {}},
+        })) else {
+            panic!("a spec for the fixture")
+        };
+        assert_eq!(to_wire_spec(spec).name, offered, "her text names what her list offers");
+        assert_eq!(resolve_wire_name("fixture/reopen-before"), "fixture/reopen-now");
+        assert_eq!(offered_name_of_stored("fixture/reopen-before"), offered);
+        assert_eq!(offered_name_of_stored("fixture/reopen-now"), offered);
+    }
 
     /// Signature-carrying names (#326). A model copies the prose menu's
     /// `work/list(claimable?, state?)` shape into the NAME slot; the adapter must meet

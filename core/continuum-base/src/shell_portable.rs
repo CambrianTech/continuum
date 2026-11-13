@@ -1,4 +1,4 @@
-//! Portable resolution of a POSIX shell — sibling of [`crate::fs_portable`].
+//! Portable resolution of a POSIX shell — sibling of `continuum_host`'s capabilities.
 //!
 //! ONE definition of "which bash do we exec", because this bug has now been
 //! found twice in two call sites that could not see each other.
@@ -78,7 +78,7 @@ pub fn locate_bash() -> Result<PathBuf, String> {
         return Ok(PathBuf::from("bash"));
     }
 
-    Ok(windows_bash_candidates()
+    windows_bash_candidates()
         .into_iter()
         .find(|p| p.is_file())
         .ok_or_else(|| {
@@ -86,7 +86,7 @@ pub fn locate_bash() -> Result<PathBuf, String> {
              POSIX shell. Install Git for Windows (which ships bash), or set CONTINUUM_BASH \
              to a bash.exe."
                 .to_string()
-        })?)
+        })
 }
 
 /// The candidate list, in priority order. Split out so the ORDERING and the

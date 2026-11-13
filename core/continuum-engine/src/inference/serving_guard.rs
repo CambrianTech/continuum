@@ -274,7 +274,7 @@ pub(crate) async fn guard_resident_model(
         // the #106 sidecar lane beside a text-only mind. A request for the
         // sidecar's model is exactly as guaranteed as one for the active
         // model (the daemon verified its `/props` before publishing), and
-        // `endpoints_for_model` routes it to `vision_base_url`.
+        // `endpoints_for_model` (via `route_now`) routes it to `vision_base_url`.
         let mut snap = snap;
         if !snapshot_guarantees(&snap, model) && !settled_on_another_model(&snap) {
             // A TRANSITION, not a fault — wait it out instead of failing the turn.
@@ -303,7 +303,7 @@ pub(crate) async fn guard_resident_model(
             // stream itself (2026-08-15: every turn of a round waited here for
             // 120s each while serving/status knew the exact cause — a failed
             // decode smoke-probe — and nothing surfaced it).
-            let degraded = snap.degraded_reason.as_deref().unwrap_or("");
+            let degraded = snap.degraded_reason.as_deref().unwrap_or(""); // unwrap_or: a daemon that states no degradation has none to carry on the probe
             continuum_base::probe!(
                 class = "inference.awaiting_serving_transition",
                 provider = cfg.provider_id.as_str(),
@@ -311,7 +311,7 @@ pub(crate) async fn guard_resident_model(
                 waited_ms = started.elapsed().as_millis() as u64,
                 served_before = crate::inference::llama_server::has_reconciled(),
                 resolved = snapshot_guarantees(&snap, model),
-                degraded = &degraded[..degraded.len().min(200)],
+                degraded = degraded, // whole: a byte slice at 200 could split a multi-byte char and panic
                 "no lane was resident at pre-flight (serving transition) — waited on the \
                  daemon's readiness signal rather than failing the turn"
             );
@@ -332,7 +332,7 @@ pub(crate) async fn guard_resident_model(
         // restart (the wedge storm this task chased). The persona deliberation path
         // already fits its prompt to the live window; this is the chokepoint backstop
         // for the ~10 OTHER callers that build their own prompts (dream_consolidation,
-        // check_redundancy, validate_response, …), which the persona-scoped overshoot
+        // validate_response, …), which the persona-scoped overshoot
         // WARN below never covered. A refused request fails LOUD naming the caller and
         // never reaches llama_decode, so the slot stays healthy. Threshold is PROMPT
         // ALONE ≥ window for estimates. Exact engine measurements additionally
@@ -349,10 +349,33 @@ pub(crate) async fn guard_resident_model(
 mod tests {
     use super::*;
 
+    // what this catches: the M5, 2026-11-11 16:13Z (#5947): Benchy's 22,949-token prompt with
+    // the reply sized from her 136,517 grant fits that grant, and only the lane's equal share
+    // (524,285 / 5 = 104,857) refuses it. An admitted request is checked against her grant;
+    // checked against the share too, every act whose grant passed the share was refused.
+    #[test]
+    fn an_admitted_request_fits_its_grant_even_where_the_share_would_refuse_it() {
+        let (grant, share) = (136_517, 104_857);
+        // `>=` refuses, as the engine does (`n_tokens >= n_ctx`): fitting leaves one token free.
+        let measured = PromptCount::Measured { prompt: 22_949, reply: grant - 22_949 - 1 };
+        assert_eq!(measured.check(grant, "p", "Benchy"), Ok(()), "within her grant: admitted");
+        assert_eq!(
+            measured.check(share, "p", "Benchy"),
+            Err(InferenceError::ContextExceeded { requested: 22_949, available: share }),
+            "the share alone refuses it: why an admitted request must not also be held to it"
+        );
+        let full = PromptCount::Measured { prompt: 22_949, reply: grant - 22_949 };
+        assert!(full.check(grant, "p", "Benchy").is_err(), "filling her grant to the last token: refused, as the engine would");
+    }
+
     #[test]
     fn refuses_measured_prompt_and_reply_overflow_without_pricing_base64_as_text() {
         let measured = PromptCount::Measured { prompt: 1319, reply: 128 }.overflow(1024, "fixture", "persona");
         assert!(matches!(measured, InferenceError::ContextExceeded { requested: 1319, available: 1024 }));
+        // what this catches: Atlas on the M5 (0b2854327): 139,007 counted tokens sent against a
+        // 40,282 grant. Checked against her window, the exact count refuses typed with the count.
+        let over = PromptCount::Measured { prompt: 139_007, reply: 2_000 }.check(40_282, "p", "Atlas");
+        assert_eq!(over, Err(InferenceError::ContextExceeded { requested: 139_007, available: 40_282 }), "over her grant: the exact count, typed");
         assert!(!measured.is_retryable_unchanged(), "measured overflow must refit, not replay");
         let estimated = PromptCount::Estimated(1319).overflow(1024, "fixture", "persona");
         assert!(matches!(estimated, InferenceError::Transient(_)), "a text estimate is not a provider measurement");

@@ -27,6 +27,8 @@ fn empty_request() -> TextGenerationRequest {
         repeat_last_n: None,
         stop_sequences: None,
         tools: None,
+        tail_tools: None,
+        view_messages: None,
         tool_choice: None,
         response_format: None,
         active_adapters: None,
@@ -304,7 +306,7 @@ async fn generate_without_envelope_handle_returns_loud_error() {
     .unwrap();
     let result = m.handle_command(COMMAND_GENERATE, envelope).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("missing required `handle`"));
+    assert!(result.unwrap_err().contains("`handle` is required"), "the refusal names the envelope field it needs");
 }
 
 // ── coordinator-wired path ─────────────────────────────────────

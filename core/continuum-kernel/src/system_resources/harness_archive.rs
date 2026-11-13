@@ -25,7 +25,7 @@ const RECEIPT: &str = "archived.json";
 /// Whole directories the harness wrote, relative to the continuum home: the round
 /// tracker's files, `benchmark/validate`'s coverage maps, the detached solve's attempt
 /// patches. NOT `benchmarks/swe/verdicts`: the grader still reads it live (a box's
-/// `.ungradeable.json` env refusals keep `card_holder::standing_refusal_for_card` from
+/// `.ungradeable.json` env refusals keep `swe_verdict_sweep::standing_refusal_for_card` from
 /// re-offering an instance it cannot grade, and `benchmark_import` skips resolved ones), so
 /// it moves only when outcomes move into rooms (Cormac on #5211).
 const HARNESS_DIRS: &[&str] = &[

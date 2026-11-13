@@ -1,5 +1,8 @@
 //! continuum-live: cut out of continuum-core (MICROKERNEL-DECOMPOSITION.md). Depends only on the
 //! engine, the kernel and crates below them; core re-exports these modules under their old names.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![deny(clippy::await_holding_lock)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 pub use continuum_engine::*;
 
@@ -10,5 +13,6 @@ pub use continuum_engine::*;
 #[macro_use]
 extern crate objc;
 
+pub mod consumers;
 pub mod live;
 pub mod media;

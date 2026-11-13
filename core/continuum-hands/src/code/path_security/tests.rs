@@ -87,35 +87,31 @@
         fs::write(&file, "diff").unwrap();
         let abs = file.to_string_lossy().to_string();
         assert!(security.validate_read_in(&abs, ReadScope::Sandbox).is_err());
-        assert_eq!(security.validate_read_in(&abs, ReadScope::Host { deny: Vec::new() }).unwrap(), file.canonicalize().unwrap());
-        assert!(security.validate_read_in("../../etc/passwd", ReadScope::Host { deny: Vec::new() }).is_err());
+        assert_eq!(security.validate_read_in(&abs, ReadScope::Host).unwrap(), file.canonicalize().unwrap());
+        assert!(security.validate_read_in("../../etc/passwd", ReadScope::Host).is_err());
         assert!(security.validate_write(&abs).is_err(), "writes never widen");
     }
 
-    // what this catches (Joel 2026-10-18 "keep creds off-limits"): a resident's file verbs,
-    // which reach the whole host, reading or writing a credential root: directly, through a
-    // link she names, or a scope's signing key inside her own workspace.
+    // what this catches (Joel 2026-11-08 "Stop caging them"): the host scope, which the operator
+    // and this node's residents share, reaching every path the OS user can, including ones a
+    // carve-out used to hide, while still refusing a scope's signing key (the one check every
+    // host-scope caller shares, the operator included).
     #[cfg(unix)]
     #[test]
-    fn host_scope_refuses_every_credential_path_however_it_is_named() {
+    fn host_scope_reaches_the_whole_host_except_a_scope_signing_key() {
         let (dir, security) = setup_workspace();
         let outside = tempfile::tempdir().unwrap();
         let ssh = outside.path().join(".ssh");
         fs::create_dir_all(&ssh).unwrap();
-        fs::write(ssh.join("id"), "secret").unwrap();
+        fs::write(ssh.join("config"), "Host *").unwrap();
         fs::write(outside.path().join("notes.txt"), "hers").unwrap();
-        std::os::unix::fs::symlink(ssh.join("id"), outside.path().join("innocent")).unwrap();
         fs::create_dir_all(dir.path().join(".airc")).unwrap();
         fs::write(dir.path().join(".airc/identity.key"), "key").unwrap();
-        let scope = || ReadScope::Host { deny: vec![ssh.canonicalize().unwrap()] };
         let at = |p: &std::path::Path| p.to_string_lossy().to_string();
-        assert!(security.validate_read_in(&at(&outside.path().join("notes.txt")), scope()).is_ok(), "the rest of the host is hers");
-        assert!(security.validate_read_in(&at(&ssh.join("id")), scope()).is_err(), "a credential root");
-        assert!(security.validate_read_in(&at(&outside.path().join("innocent")), scope()).is_err(), "a link to one");
-        assert!(security.validate_read_in(".airc/identity.key", scope()).is_err(), "a scope key inside her own workspace");
-        assert!(security.validate_write_in(&at(&outside.path().join("new.txt")), &scope()).is_ok(), "she writes where she names");
-        assert!(security.validate_write_in(&at(&ssh.join("authorized_keys")), &scope()).is_err(), "never into a credential root");
-        assert!(security.validate_write_in(&at(&outside.path().join("innocent")), &scope()).is_err(), "nor through a link into one");
+        assert!(security.validate_read_in(&at(&outside.path().join("notes.txt")), ReadScope::Host).is_ok(), "the host");
+        assert!(security.validate_read_in(&at(&ssh.join("config")), ReadScope::Host).is_ok(), "no carve-out");
+        assert!(security.validate_write_in(&at(&outside.path().join("new.txt")), &ReadScope::Host).is_ok(), "she writes where she names");
+        assert!(security.validate_read_in(".airc/identity.key", ReadScope::Host).is_err(), "a scope signing key");
     }
 
     // what this catches (card d598c806): a citizen whose shell is confined reading, by
@@ -262,21 +258,18 @@
         assert!(security.validate_write("../escape.swift").is_err());
     }
 
+    // what this catches: a write bounded by a constant instead of the room it needs. A write
+    // larger than the volume's measured free space is refused naming that measurement; one that
+    // fits (a few MiB, past the old 1 MiB constant) lands.
     #[test]
-    fn test_file_too_large() {
-        let (_dir, security) = setup_workspace();
-        let result = security.validate_size("test.ts", MAX_WRITE_SIZE + 1);
-        assert!(matches!(
-            result,
-            Err(PathSecurityError::FileTooLarge { .. })
-        ));
-    }
-
-    #[test]
-    fn test_file_within_limit() {
-        let (_dir, security) = setup_workspace();
-        let result = security.validate_size("test.ts", MAX_WRITE_SIZE);
-        assert!(result.is_ok());
+    fn a_write_is_bounded_by_the_measured_free_space() {
+        let (dir, security) = setup_workspace();
+        let free = fs2::available_space(dir.path()).expect("the test volume reports free space"); // JUSTIFIED: the measurement under test
+        match security.validate_size("test.ts", u64::MAX) {
+            Err(PathSecurityError::FileTooLarge { max, .. }) => assert!(max < u64::MAX && free < u64::MAX, "max is a measured free space, not a cap"),
+            other => panic!("expected FileTooLarge, got {other:?}"),
+        }
+        assert!(security.validate_size("test.ts", 4 * 1024 * 1024).is_ok());
     }
 
     #[test]

@@ -130,6 +130,7 @@ fn a_census_under_the_guard_never_finds_a_lane_in_neither_list_during_handoff() 
         lanes: 1,
         page_dir: Some(b_dir.clone()),
         engine_bin: None,
+        weights: None,
         started_s: 0,
         placement: None,
     };
@@ -221,6 +222,7 @@ fn the_live_lane_inventory_is_complete_only_when_every_live_record_names_its_dir
         lanes: 1,
         page_dir: page_dir.map(PathBuf::from),
         engine_bin: None,
+        weights: None,
         started_s: 0,
         placement: None,
     };

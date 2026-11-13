@@ -64,7 +64,10 @@ impl StorageAdapter for SqliteAdapter {
         let pressure = self.last_pressure_check.clone();
         let types = self.declared_types(&collection);
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = match conn.lock() {
+                Ok(conn) => conn,
+                Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
+            };
             apply_memory_pressure(&conn, &pressure);
             do_read(&conn, &collection, &id, types.as_deref())
         })
@@ -81,7 +84,7 @@ impl StorageAdapter for SqliteAdapter {
             let table = naming::to_table_name(&query.collection);
             let types = self.declared_types(&query.collection);
             let ensure_result = tokio::task::spawn_blocking(move || {
-                let conn = writer.lock().unwrap();
+                let conn = writer.lock().map_err(|e| format!("SQLite writer lock poisoned: {e}"))?;
                 ensure_table_exists(&conn, &table, &dummy)?;
                 evolve_table_schema(&conn, &table, &dummy, types.as_deref());
                 Ok::<(), String>(())
@@ -101,7 +104,10 @@ impl StorageAdapter for SqliteAdapter {
         let collection_name = query.collection.clone();
         let types = self.declared_types(&query.collection);
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = match conn.lock() {
+                Ok(conn) => conn,
+                Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
+            };
             apply_memory_pressure(&conn, &pressure);
             let start = std::time::Instant::now();
             let result = do_query(&conn, query, types.as_deref());
@@ -129,7 +135,10 @@ impl StorageAdapter for SqliteAdapter {
         };
         let pressure = self.last_pressure_check.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = match conn.lock() {
+                Ok(conn) => conn,
+                Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
+            };
             apply_memory_pressure(&conn, &pressure);
             do_count(&conn, query)
         })
@@ -143,7 +152,10 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = match conn.lock() {
+                Ok(conn) => conn,
+                Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
+            };
             do_list_collections(&conn)
         })
         .await
@@ -180,7 +192,10 @@ impl StorageAdapter for SqliteAdapter {
         let pressure = self.last_pressure_check.clone();
         let types = self.declared_types(&record.collection);
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = match conn.lock() {
+                Ok(conn) => conn,
+                Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
+            };
             apply_memory_pressure(&conn, &pressure);
             do_create(&conn, record, types.as_deref())
         })
@@ -204,7 +219,10 @@ impl StorageAdapter for SqliteAdapter {
         let pressure = self.last_pressure_check.clone();
         let types = self.declared_types(&collection);
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = match conn.lock() {
+                Ok(conn) => conn,
+                Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
+            };
             apply_memory_pressure(&conn, &pressure);
             do_update(&conn, &collection, &id, data, increment_version, types.as_deref())
         })
@@ -220,7 +238,10 @@ impl StorageAdapter for SqliteAdapter {
         let collection = collection.to_string();
         let id = id.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = match conn.lock() {
+                Ok(conn) => conn,
+                Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
+            };
             do_delete(&conn, &collection, &id)
         })
         .await
@@ -246,13 +267,41 @@ impl StorageAdapter for SqliteAdapter {
         };
         let pressure = self.last_pressure_check.clone();
         let declared = self.declared.read().map(|d| d.clone()).unwrap_or_default(); // unwrap_or: a poisoned lock reads as "nothing declared" — the legacy sniff, never a refused batch
+        let sequences = Arc::clone(&self.sequences);
+        let appends: Vec<(usize, String)> = operations
+            .iter()
+            .enumerate()
+            .filter(|(_, op)| matches!(op.operation_type, BatchOperationType::Append(_)))
+            .map(|(index, op)| (index, op.collection.clone()))
+            .collect();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = match conn.lock() {
+                Ok(conn) => conn,
+                Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
+            };
             apply_memory_pressure(&conn, &pressure);
-            do_batch(&conn, operations, &declared)
+            let result = do_batch(&conn, operations, &declared);
+            // Published inside the committing write, after COMMIT: the revision has the
+            // commit's custody, so a caller dropped at the await cannot strand the row.
+            if let Some(values) = result.data.as_ref().filter(|_| result.success) {
+                for (index, collection) in &appends {
+                    if let Some(seq) = values
+                        .get(*index)
+                        .and_then(|v| v.get("seq"))
+                        .and_then(Value::as_u64)
+                    {
+                        sequences.publish(collection, seq);
+                    }
+                }
+            }
+            result
         })
         .await
         .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+    }
+
+    fn sequence_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64> {
+        self.sequences.subscribe(collection)
     }
 
     async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool> {
@@ -267,7 +316,10 @@ impl StorageAdapter for SqliteAdapter {
             declared.insert(schema.collection.clone(), Arc::new(types));
         }
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = match conn.lock() {
+                Ok(conn) => conn,
+                Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
+            };
             do_ensure_schema(&conn, schema)
         })
         .await
@@ -281,7 +333,10 @@ impl StorageAdapter for SqliteAdapter {
         };
         let collection = collection.to_string();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = match conn.lock() {
+                Ok(conn) => conn,
+                Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
+            };
             do_truncate(&conn, &collection)
         })
         .await
@@ -294,7 +349,10 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = match conn.lock() {
+                Ok(conn) => conn,
+                Err(e) => return StorageResult::err(format!("SQLite connection lock poisoned: {e}")),
+            };
             do_clear_all(&conn)
         })
         .await
@@ -304,7 +362,7 @@ impl StorageAdapter for SqliteAdapter {
     async fn cleanup(&self) -> Result<(), String> {
         let conn = self.get_writer()?;
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = conn.lock().map_err(|e| format!("SQLite connection lock poisoned: {e}"))?;
             do_cleanup(&conn)
         })
         .await

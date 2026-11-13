@@ -30,6 +30,9 @@ use crate::runtime;
 mod validate_embedding_model;
 pub use validate_embedding_model::*;
 mod llama_cpp_backend;
+mod embedding_lane;
+mod embedding_batch;
+pub(crate) use embedding_batch::{ContextBytes, EmbeddingBatch, Placement};
 
 #[cfg(test)]
 mod tests;

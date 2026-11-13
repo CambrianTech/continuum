@@ -110,9 +110,9 @@ pub(super) fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64
 
             // Try as BridgeResponse first (has request_id)
             if let Ok(response) = serde_json::from_slice::<BridgeResponse>(json_bytes) {
-                let mut map = pending.lock().unwrap();
+                let mut map = pending.lock();
                 if let Some(req) = map.remove(&response.request_id) {
-                    let mut resp = req.response.lock().unwrap();
+                    let mut resp = req.response.lock();
                     *resp = Some(response);
                     req.signal.notify_one();
                 }
@@ -195,7 +195,7 @@ pub(super) fn handle_bridge_event(
                 channel,
                 kind,
                 speaker_name,
-                &call_id[..8.min(call_id.len())]
+                continuum_base::shown_text::shown_text(&call_id)
             );
             in_channels.insert(
                 channel,
@@ -229,7 +229,7 @@ pub(super) fn handle_bridge_event(
                 clog_info!(
                     "🎤 New audio processor for '{}' in call {}",
                     speaker_name,
-                    &call_id[..8.min(call_id.len())]
+                    continuum_base::shown_text::shown_text(&call_id)
                 );
                 AudioProcessor::new(call_id.clone(), speaker_id.clone(), speaker_name.clone())
             });
@@ -282,9 +282,9 @@ pub(super) fn handle_bridge_event(
         } => {
             clog_info!(
                 "👤 Bridge: participant joined call {}: {} ({})",
-                &call_id[..8.min(call_id.len())],
+                continuum_base::shown_text::shown_text(&call_id),
                 name,
-                &identity[..8.min(identity.len())]
+                continuum_base::shown_text::shown_text(&identity)
             );
         }
         BridgeEvent::ParticipantLeft {
@@ -293,8 +293,8 @@ pub(super) fn handle_bridge_event(
         } => {
             clog_info!(
                 "👤 Bridge: participant left call {}: {}",
-                &call_id[..8.min(call_id.len())],
-                &identity[..8.min(identity.len())]
+                continuum_base::shown_text::shown_text(&call_id),
+                continuum_base::shown_text::shown_text(&identity)
             );
             // Clean up audio processor for this speaker
             let key = format!("{}:{}", call_id, identity);
@@ -303,13 +303,13 @@ pub(super) fn handle_bridge_event(
         BridgeEvent::ListenerReady { call_id } => {
             clog_info!(
                 "🎤 Bridge: STT listener ready for call {}",
-                &call_id[..8.min(call_id.len())]
+                continuum_base::shown_text::shown_text(&call_id)
             );
         }
         BridgeEvent::RoomDisconnected { call_id, reason } => {
             clog_warn!(
                 "🌉 Bridge: room disconnected for call {}: {}",
-                &call_id[..8.min(call_id.len())],
+                continuum_base::shown_text::shown_text(&call_id),
                 reason
             );
             // Clean up all processors for this call
@@ -370,8 +370,8 @@ pub(super) fn handle_bridge_event(
         } => {
             clog_info!(
                 "🔊 Bridge: agent connected in call {}: {}",
-                &call_id[..8.min(call_id.len())],
-                &user_id[..8.min(user_id.len())]
+                continuum_base::shown_text::shown_text(&call_id),
+                continuum_base::shown_text::shown_text(&user_id)
             );
         }
         BridgeEvent::AgentDisconnected {
@@ -381,8 +381,8 @@ pub(super) fn handle_bridge_event(
         } => {
             clog_info!(
                 "🔊 Bridge: agent disconnected from call {}: {} ({})",
-                &call_id[..8.min(call_id.len())],
-                &user_id[..8.min(user_id.len())],
+                continuum_base::shown_text::shown_text(&call_id),
+                continuum_base::shown_text::shown_text(&user_id),
                 reason
             );
         }

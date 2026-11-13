@@ -1,35 +1,6 @@
 //! Reconcile regression fixtures.
 #![cfg(test)]
 use super::*;
-// what this catches: the per-lane → total `-c` arithmetic. llama-server's
-// `-c` is the WHOLE KV cache split across `--parallel` slots, so to give each
-// of `lanes` slots a full per-lane `context_window` the spawn must request
-// `context_window * lanes` and pass `--parallel lanes`. Launching `-c
-// context_window` alone let llama.cpp default to 4 slots and quarter the
-// per-request window, 500-ing live deliberations ("Context size exceeded").
-// Regression here silently shrinks every persona's real prompt budget.
-#[test]
-fn served_total_ctx_is_per_lane_window_times_lanes() {
-    let mut t = target("coder-4b");
-    t.context_window = 16_384;
-    t.lanes = 4;
-    assert_eq!(t.parallel_lanes(), 4);
-    assert_eq!(
-        t.served_total_ctx(),
-        65_536,
-        "-c must be per-lane window × lanes so each slot holds one full window"
-    );
-
-    // lanes floored at 1: a single-lane plan serves the full window to one slot.
-    t.lanes = 1;
-    assert_eq!(t.served_total_ctx(), 16_384);
-
-    // defensive floor: a zero lane count never collapses the cache to nothing.
-    t.lanes = 0;
-    assert_eq!(t.parallel_lanes(), 1);
-    assert_eq!(t.served_total_ctx(), 16_384);
-}
-
 // what this catches: the desired model already being served is a NO-OP — we
 // must not relaunch (which would kill the GPU-warm server). Regression here
 // would thrash the served model every tick.
@@ -45,62 +16,6 @@ async fn already_serving_does_not_relaunch() {
     );
     // card 22aa3379: an adopted lane records its placement, so training can name its pool.
     assert_eq!(ctrl.placements_recorded.load(Ordering::SeqCst), 1, "adoption records the placement");
-}
-
-// what this catches: a same-model / same-genome lane whose live per-slot window
-// is STARVED far below the plan target (the 2048 boot-floor vs a 31k plan) must
-// RELAUNCH to grow — llama.cpp has no hot-resize. Regression here (returning
-// AlreadyServing on a genome-set match alone) strands the lane at the boot floor
-// forever while the daemon logs "re-homing starved" every tick and never grows
-// it — glass-boxed 2026-07-20, blocked all benchmark runs (prompts overflowed
-// 2048). The daemon's `starved` gate only sends a target ≥ 2× the served window,
-// so the grow is unambiguous.
-#[tokio::test]
-async fn starved_window_relaunches_to_grow() {
-    // Owned + decode-healthy: the ONLY thing wrong is the window (2048 ≪ 32768).
-    let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
-        .owned()
-        .with_served_window(2048);
-    let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
-    assert!(
-        matches!(outcome, EnsureOutcome::Spawned { .. }),
-        "a starved window must relaunch to grow, got {outcome:?}"
-    );
-    assert_eq!(
-        ctrl.serves.load(Ordering::SeqCst),
-        1,
-        "exactly one relaunch to the larger window"
-    );
-}
-
-// what this catches: THE 2026-09-03 SLOW-RESUME defect — a warm lane REAPED for a
-// trivial window drift. On reboot the boot plan re-computes the window against live
-// memory, which climbs ~7% once the old core frees its share (measured 147712 →
-// 158107). A flat 512-token tolerance (0.35% of a 147k lane) tripped a full ~7-10
-// min 35B RELAUNCH on EVERY restart — the dominant "resume is slow" cost. Tolerance
-// is now a percentage (max(512, served/8) ≈ 12.5%), so a warm lane within ~12.5% of
-// the target is ADOPTED (warm-now beats cold-in-10-min); a genuinely starved lane
-// (the 2× case above) still relaunches, and the runtime re-home grows a persistent
-// gain later.
-#[tokio::test]
-async fn a_small_window_drift_adopts_the_warm_lane_not_a_slow_reload() {
-    // Owned + decode-healthy, serving 147712; the boot plan drifted to 158107 (~7%).
-    let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
-        .owned()
-        .with_served_window(147_712);
-    let mut t = target("coder-14b");
-    t.context_window = 158_107;
-    let outcome = ensure_model_serving(&ctrl, &t, false).await;
-    assert_eq!(
-        outcome,
-        EnsureOutcome::AlreadyServing,
-        "a ~7% window drift must ADOPT the warm lane, not reload it; got {outcome:?}"
-    );
-    assert_eq!(
-        ctrl.serves.load(Ordering::SeqCst),
-        0,
-        "zero relaunches — the warm 35B lane is reused, not reloaded"
-    );
 }
 
 // what this catches: THE 2026-08-19 DEFECT — a PAST FORM OF OURSELF being reaped
@@ -133,105 +48,40 @@ async fn a_past_form_of_ourself_serving_enough_lanes_is_adopted_not_reaped() {
     );
 }
 
-// what this catches: the fix above must not disable lane grow-back (#214's sibling).
-// A lane genuinely serving FEWER slots than the plan wants still has to relaunch —
-// llama.cpp cannot hot-resize n_seq_max. Without this, "adopt more eagerly" would
-// silently freeze every citizen at the squeezed slot count forever.
+// what this catches: a window, lane count or cache grant that differs from the plan
+// relaunching an engine on the shared pool. The M5 loaded its model 40 times as the plan's
+// slot count moved 1 -> 2 -> 1 (2026-11-02/03), every reload wiping every mind's cache; a
+// starved 2,048 window, one slot under a four-lane plan, and a grant that holds no state are
+// all runtime matters now (Joel: "Slot counts should never require shutdown").
 #[tokio::test]
-async fn a_lane_serving_fewer_slots_than_planned_still_relaunches_to_grow() {
-    let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
-        .owned()
-        .with_served_lanes(1)
-        .with_served_window(32768); // window is FINE — only the lane count is short
-    let mut t = target("coder-14b");
-    t.lanes = 4;
-    let outcome = ensure_model_serving(&ctrl, &t, false).await;
-    assert!(
-        matches!(outcome, EnsureOutcome::Spawned { .. }),
-        "1 served slot against a 4-lane plan must relaunch to grow, got {outcome:?}"
-    );
+async fn a_window_or_lane_change_never_relaunches_an_engine_on_the_shared_pool() {
+    for (served_lanes, served_window, plan_lanes, plan_window) in
+        [(1, 32_768, 4, 32_768), (2, 2_048, 2, 32_768), (5, 58_112, 1, 87_410), (2, 81_920, 1, 87_410)]
+    {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .launched_with_cache(1)
+            .with_served_lanes(served_lanes)
+            .with_served_window(served_window);
+        let mut t = target("coder-14b");
+        t.lanes = plan_lanes;
+        t.context_window = plan_window;
+        let outcome = ensure_model_serving(&ctrl, &t, false).await;
+        assert_eq!(outcome, EnsureOutcome::AlreadyServing, "served {served_lanes} x {served_window}, plan {plan_lanes} x {plan_window}");
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "served {served_lanes} x {served_window}, plan {plan_lanes} x {plan_window}");
+    }
 }
 
-// what this catches (card d9d747b2, the M5 2026-09-21 09:29-09:36Z): a plan wanting
-// MORE lanes at a NARROWER window than the lane serves (5 × 36,810 over 3 × 78,592)
-// must not relaunch — following it thrashed the engine every ~3 min against the
-// window grow-back and reaped 35 generations in 20 min. Both directions: the trade is
-// refused and the lane stays; a pure lane grow at the served window still relaunches
-// (the test above), and a WIDER window at fewer lanes still relaunches (the window is
-// the requirement, lanes are throughput).
-// what this catches: the grow ladder allocating through a CLOSED memory gate. The M5
-// settled at 8 lanes × 35,328 during 39 consecutive Critical samples (2026-09-23), and
-// fseventsd has twice held over a quarter of the machine. A grow on either axis is
-// refused while the gate is closed; a decision-only relaunch (KV type, sight) is not,
-// and nothing is refused while the gate is open.
-#[test]
-fn a_closed_memory_gate_refuses_a_lane_or_window_grow() {
-    assert!(grow_refused_by_memory_gate(true, true, false, true), "more lanes through a closed gate");
-    assert!(grow_refused_by_memory_gate(true, false, true, true), "a wider window through a closed gate");
-    assert!(grow_refused_by_memory_gate(true, false, false, true), "both");
-    assert!(grow_refused_by_memory_gate(true, true, true, false), "a bigger host cache through a closed gate (card d7294f0b)");
-    assert!(!grow_refused_by_memory_gate(true, true, true, true), "geometry matches: a KV/sight relaunch is not a grow");
-    assert!(!grow_refused_by_memory_gate(false, false, false, false), "an open gate refuses nothing");
-}
-
+// what this catches: an engine launched with fixed slots (every node before 2026-11-03) left
+// on them, so its slot count still needs a relaunch to change. It moves to the shared pool by
+// one relaunch; the test above proves no further one follows.
 #[tokio::test]
-async fn a_lane_grow_that_would_narrow_the_window_is_refused_as_a_trade() {
-    // The predicate, at the measured numbers and at the edges.
-    assert!(lane_grow_would_narrow_the_window(5, 36_810, 3, 78_592), "the M5 loop's first step");
-    assert!(lane_grow_would_narrow_the_window(4, 34_176, 3, 78_592), "and its second");
-    assert!(!lane_grow_would_narrow_the_window(3, 78_592, 5, 36_810), "wider at fewer lanes is a grow-back");
-    assert!(!lane_grow_would_narrow_the_window(5, 78_592, 3, 78_592), "a pure lane grow");
-    assert!(!lane_grow_would_narrow_the_window(5, 70_000, 3, 78_592), "within the window tolerance (78,592 / 8)");
-    assert!(!lane_grow_would_narrow_the_window(3, 31_000, 1, 2_048), "the 2k → 31k starved case grows both axes");
-    assert!(!lane_grow_would_narrow_the_window(5, 36_810, 0, 0), "an unreadable served side is not a trade");
-    // Fable's 45 s time series on the M5 (09:28-09:42Z): the DOWN steps are crash
-    // respawns under a trough budget, not this ladder (grow-only), and from any of
-    // them a wider plan must still climb out — lanes up or down.
-    assert!(!lane_grow_would_narrow_the_window(4, 34_176, 5, 36_810), "fewer lanes is never a refused trade");
-    assert!(!lane_grow_would_narrow_the_window(1, 19_173, 4, 34_176));
-    assert!(!lane_grow_would_narrow_the_window(3, 78_592, 1, 19_173), "out of the bottom: wider at more lanes");
-    assert!(!lane_grow_would_narrow_the_window(2, 31_141, 1, 19_173), "out of the bottom: wider at more lanes");
-
-    // The ladder on the fake control: served 3 × 78,592, plan 5 × 36,810 → no relaunch.
+async fn an_engine_on_fixed_slots_moves_to_the_shared_pool_once() {
     let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
         .owned()
-        .with_served_lanes(3)
-        .with_served_window(78_592);
-    let mut t = target("coder-14b");
-    t.lanes = 5;
-    t.context_window = 36_810;
-    let outcome = ensure_model_serving(&ctrl, &t, false).await;
-    assert_eq!(outcome, EnsureOutcome::AlreadyServing, "a trade is refused, the lane keeps its window");
-    assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch toward the narrower geometry");
-
-    // The other direction: served 5 × 36,810, plan 3 × 78,592 → relaunches (window grow-back).
-    let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
-        .owned()
-        .with_served_lanes(5)
-        .with_served_window(36_810);
-    let mut t = target("coder-14b");
-    t.lanes = 3;
-    t.context_window = 78_592;
-    let outcome = ensure_model_serving(&ctrl, &t, false).await;
-    assert!(matches!(outcome, EnsureOutcome::Spawned { .. }), "a wider window at fewer lanes still grows, got {outcome:?}");
-}
-
-// what this catches: the window-grow check must NOT fire on llama.cpp's 256-pad
-// (served slightly BELOW target after internal rounding is normal) — only a real
-// step-change grow relaunches. A served window one pad under target stays
-// AlreadyServing; regression would relaunch every tick on padding noise.
-#[tokio::test]
-async fn padded_window_within_tolerance_does_not_relaunch() {
-    let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
-        .owned()
-        .with_served_window(32768 - 256); // one 256-pad under the 32768 target
+        .launched_partitioned();
     let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
-    assert_eq!(outcome, EnsureOutcome::AlreadyServing);
-    assert_eq!(
-        ctrl.serves.load(Ordering::SeqCst),
-        0,
-        "padding noise must not relaunch"
-    );
+    assert!(matches!(outcome, EnsureOutcome::Spawned { .. }), "got {outcome:?}");
 }
 
 // what this catches: an orphan that answers /v1/models with the RIGHT model
@@ -307,36 +157,6 @@ async fn an_adopted_lane_on_last_deploys_kv_decision_relaunches_onto_this_ones()
     // Unknown launch (no argv): not a mismatch.
     let unknown = FakeControl::probe(Ok(Some("coder-14b".into()))).owned();
     assert_eq!(ensure_model_serving(&unknown, &target("coder-14b"), false).await, EnsureOutcome::AlreadyServing);
-}
-
-// what this catches (card d7294f0b, Kimi's node 2026-10-15 07:37-07:39Z): the daemon decided a
-// cache re-home for an adopted lane whose --cache-ram held no measured state, and this rail
-// answered AlreadyServing because it never compared the grant. With a measured state between
-// the running grant and the target's, the lane relaunches; an unknown grant, or a target that
-// could not hold the state either, still adopts.
-#[tokio::test]
-async fn an_adopted_lane_whose_cache_holds_no_state_relaunches_onto_one_that_does() {
-    const MIB: u64 = 1024 * 1024;
-    let id = "cache-grant-d7294f0b"; // its own page dir: the state samples are process-wide
-    let t = target(id);
-    crate::inference::slots::note_state_bytes(&kv_page_dir(id), 3_800 * MIB);
-    let starved = FakeControl::probe(Ok(Some(id.into()))).owned().launched_with_cache(3_248);
-    assert_eq!(
-        ensure_model_serving(&starved, &t, false).await,
-        EnsureOutcome::Spawned { model: id.into() },
-        "a 3,248 MiB grant holds no 3,800 MiB state and the target's 4,096 does"
-    );
-    assert_eq!(starved.serves.load(Ordering::SeqCst), 1);
-    let unknown = FakeControl::probe(Ok(Some(id.into()))).owned();
-    assert_eq!(ensure_model_serving(&unknown, &t, false).await, EnsureOutcome::AlreadyServing, "no argv: an unknown grant is not a mismatch");
-    let futile = ServingTarget { host_prompt_cache_mib: 3_500, ..t.clone() };
-    let starved = FakeControl::probe(Ok(Some(id.into()))).owned().launched_with_cache(3_248);
-    assert_eq!(
-        ensure_model_serving(&starved, &futile, false).await,
-        EnsureOutcome::AlreadyServing,
-        "a relaunch whose grant holds no state either is not owed"
-    );
-    assert_eq!(starved.serves.load(Ordering::SeqCst), 0);
 }
 
 // what this catches: #175 self-heal. A child WE OWN that is compute-wedged (decode
@@ -483,11 +303,81 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     }
     // The staged name: a bare .gguf the engine's confinement accepts, and two genes
     // sharing a file name in different folders never collide.
-    let a = gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf")).expect("stageable");
-    let b = gene_stage_name(std::path::Path::new("/genome/asha/adapter.gguf")).expect("stageable");
+    let a = gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf"));
+    let b = gene_stage_name(std::path::Path::new("/genome/asha/adapter.gguf"));
     assert_ne!(a, b);
-    assert!(a.starts_with("gene-adapter-") && a.ends_with(".gguf"));
+    assert!(a.starts_with("gene-") && a.ends_with(".gguf"));
+    assert_eq!(a, gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf")), "the same gene stages under the same name");
     assert!(!a.contains('/') && !a.contains("..") && a.len() <= 200);
+}
+
+// what this catches (IntelMac 2026-11-07, from=0 to=7): a core adopting a live engine reading
+// its adapter set as empty and relaunching it cold. The engine's own report maps back to genome
+// paths: a gene loaded at launch by its path, one loaded in place by its staged name, matched to
+// the target's gene; a gene the target dropped keeps the engine's path (to retire); and a target
+// whose genes the engine already holds compares equal to it, so nothing relaunches.
+#[test]
+fn an_adopted_engines_report_reads_back_as_the_genes_it_holds() {
+    let kimi = "/genome/kimi/adapter.gguf".to_string();
+    let asha = "/genome/asha/adapter.gguf".to_string();
+    let staged = format!("/cache/engine-train/{}", gene_stage_name(std::path::Path::new(&asha)));
+    let dropped = "/genome/old/retired.gguf".to_string();
+    let mut genes = vec![kimi.clone(), asha.clone()];
+    genes.sort();
+    let held = genome_paths_of(&[(0, kimi.clone()), (2, staged.clone())], &genes);
+    assert_eq!(held, genes, "launch path and staged name both read back as the target's genes");
+    let with_dropped = genome_paths_of(&[(0, kimi.clone()), (1, dropped.clone()), (2, staged)], &genes);
+    assert!(with_dropped.contains(&dropped), "a gene the target dropped stays visible to retire: {with_dropped:?}");
+    assert_ne!(with_dropped, genes);
+    assert!(genome_paths_of(&[], &genes).is_empty(), "an engine with nothing loaded holds nothing");
+}
+
+// what this catches (Codex on #5817): a train-dir answer standing in for a binary that was never
+// asked. Each binary's entry is its own: one asked and answered is never asked again, one never asked
+// (a promoted binary, another endpoint's) reads as unasked, and one that did not answer is "no" for
+// now and asked again at its next use.
+#[test]
+fn a_train_dir_answer_is_about_the_binary_asked_and_no_other() {
+    let probes = std::collections::BTreeMap::from([
+        ("/slots/engine-a/llama-server".to_string(), ProbeOutcome::Answered { train_dir: true }),
+        ("/slots/engine-b/llama-server".to_string(), ProbeOutcome::Unanswered),
+    ]);
+    assert_eq!(answer_for(&probes, "/slots/engine-a/llama-server"), Some(true));
+    assert!(!needs_asking(&probes, "/slots/engine-a/llama-server"), "answered: never asked again");
+    assert_eq!(answer_for(&probes, "/slots/engine-b/llama-server"), Some(false), "unanswered reads no for now");
+    assert!(needs_asking(&probes, "/slots/engine-b/llama-server"), "and is asked again at its next use");
+    assert_eq!(answer_for(&probes, "/slots/engine-c/llama-server"), None, "a promoted binary is unasked, never inherits");
+}
+
+// what this catches (Codex on #5817): the in-place gene path reading a probe that did not answer as
+// "no", so a binary whose first probe timed out stayed "no" for every in-place change until a
+// relaunch re-asked it. A decision rests only on an answer; anything else is asked now.
+#[test]
+fn an_in_place_decision_rests_only_on_an_answer() {
+    let probes = std::collections::BTreeMap::from([
+        ("answered-yes".to_string(), ProbeOutcome::Answered { train_dir: true }),
+        ("answered-no".to_string(), ProbeOutcome::Answered { train_dir: false }),
+        ("timed-out".to_string(), ProbeOutcome::Unanswered),
+    ]);
+    assert_eq!(train_dir_known(&probes, "answered-yes"), Some(true));
+    assert_eq!(train_dir_known(&probes, "answered-no"), Some(false));
+    assert_eq!(train_dir_known(&probes, "timed-out"), None, "a probe that did not answer is asked again, never read as no");
+    assert_eq!(train_dir_known(&probes, "never-asked"), None);
+}
+
+// what this catches (Codex on #5817, review_failed_other_binary_probe_preserves_the_first_binary_answer):
+// the real probe, through its one record. A answers yes; a failed probe of another binary B; A asked
+// again must keep its yes and not be probed again (here its second command would answer no).
+#[tokio::test]
+async fn a_failed_probe_of_another_binary_leaves_the_first_binarys_answer() {
+    let (a, b) = ("test-probe-a/llama-server", "test-probe-b/llama-server");
+    let says = |help: &str| { let mut command = tokio::process::Command::new("echo"); command.arg(help); command };
+    ensure_engine_kv_support_recorded(a, says("--train-dir")).await;
+    assert_eq!(train_dir_support(a), Some(true), "A lists the flag");
+    ensure_engine_kv_support_recorded(b, tokio::process::Command::new("/nonexistent/test-probe-b")).await;
+    assert_eq!(train_dir_support(b), Some(false), "B did not answer: no, for now");
+    ensure_engine_kv_support_recorded(a, says("no-flags-here")).await;
+    assert_eq!(train_dir_support(a), Some(true), "A keeps its own answer and is not asked again");
 }
 
 // what this catches: nothing running (Unreachable) is NOT an error — it's
@@ -518,3 +408,49 @@ async fn serve_failure_degrades_with_reason() {
         other => panic!("expected Degraded, got {other:?}"),
     }
 }
+
+// what this catches (card 931cfd22; enrico 2026-10-25, 5 hours empty): a refused ELECTIVE
+// replacement condemning a working engine. The incumbent serves the target and decodes; its
+// retirement is refused before anything is signalled ("adopted checkpoint requires a known
+// pool"): it keeps serving. A condemned incumbent (fails its decode proof) and an incumbent on
+// another model stay degraded, so neither is ever advertised ready for the target.
+#[tokio::test]
+async fn a_refused_replacement_keeps_a_verified_incumbent_and_only_that() {
+    let healthy = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .launched_partitioned()
+        .retirement_refused();
+    assert_eq!(ensure_model_serving(&healthy, &target("coder-14b"), false).await, EnsureOutcome::AlreadyServing);
+    assert_eq!(healthy.serves.load(Ordering::SeqCst), 1, "the replacement was attempted, and refused");
+
+    let condemned = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .decode_wedged()
+        .retirement_refused();
+    assert!(
+        matches!(ensure_model_serving(&condemned, &target("coder-14b"), false).await, EnsureOutcome::Degraded { .. }),
+        "a wedged incumbent is never kept as ready"
+    );
+
+    let other_model = FakeControl::probe(Ok(Some("other-model".into()))).retirement_refused();
+    assert!(
+        matches!(ensure_model_serving(&other_model, &target("coder-14b"), false).await, EnsureOutcome::Degraded { .. }),
+        "another model is never reported as the target"
+    );
+
+    // Codex on #5413: a replacement wanted for the GENOME. Keeping the incumbent would publish
+    // the target's genes as loaded; a different or unreadable set stays degraded.
+    let other_genes = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .with_active_adapters(vec!["/genes/old.gguf".into()])
+        .retirement_refused();
+    assert!(
+        matches!(ensure_model_serving(&other_genes, &target("coder-14b"), false).await, EnsureOutcome::Degraded { .. }),
+        "the target's genes are never reported as loaded on an incumbent that holds others"
+    );
+    let unknown_genes = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .adapters_unreadable()
+        .retirement_refused();
+    assert!(
+        matches!(ensure_model_serving(&unknown_genes, &target("coder-14b"), false).await, EnsureOutcome::Degraded { .. }),
+        "an unknown gene set is never assumed to be the target's"
+    );
+}
+

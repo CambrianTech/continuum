@@ -85,14 +85,8 @@ impl ShellSession {
             .canonicalize()
             .map_err(|e| format!("Cannot cd to '{path}': {e}"))?;
 
-        if !canonical.starts_with(&self.workspace_root) {
-            return Err(format!(
-                "Cannot cd to '{}': outside workspace boundary '{}'",
-                path,
-                self.workspace_root.display()
-            ));
-        }
-
+        // No workspace boundary: a resident works where an agent does (another repository's
+        // checkout, a toolchain directory). An outside peer's reach is its confinement's to bound.
         if !canonical.is_dir() {
             return Err(format!("Cannot cd to '{path}': not a directory"));
         }
@@ -133,6 +127,20 @@ impl ShellSession {
         timeout_ms: Option<u64>,
         rt_handle: &tokio::runtime::Handle,
     ) -> Result<String, String> {
+        self.execute_as(command, timeout_ms, rt_handle, None)
+    }
+
+    /// [`Self::execute`] for one command run AS a resident: her name as author and committer of
+    /// every commit it makes, and her shell otherwise the one every shell on this node inherits
+    /// ([`resident_env`]). The caller decides who is acting, each call; the session holds
+    /// no identity between commands.
+    pub fn execute_as(
+        &mut self,
+        command: &str,
+        timeout_ms: Option<u64>,
+        rt_handle: &tokio::runtime::Handle,
+        resident: Option<crate::code::git_actor::GitActor>,
+    ) -> Result<String, String> {
         // Auto-GC: move completed executions to history before starting new one
         self.gc();
 
@@ -143,7 +151,8 @@ impl ShellSession {
         let target_env = target.to_str()
             .ok_or_else(|| "shell session environment requires a UTF-8 Cargo target; refusing to alter its native path".to_string())?.to_owned();
 
-        let execution_id = Uuid::new_v4().to_string();
+        let id = ExecutionId::new();
+        let execution_id = id.key();
         let now_ms = continuum_base::time::EpochMs::now().millis();
 
         let notify = Arc::new(Notify::new());
@@ -177,6 +186,7 @@ impl ShellSession {
         let cmd_str = command.to_string();
         let confinement = self.confinement.clone();
         let who = self.persona_id.clone();
+        let actor = resident;
 
         // This task can outlive the command. Release must reach the existing
         // shell kill path before waiting for the task's process/output lifetime.
@@ -207,9 +217,13 @@ impl ShellSession {
                 return;
             };
             let mut custody = ShellCargoCustody { state: state.clone(), admission, kept: cargo_grant.kept(), completed: false };
+            // A resident's identity and credential, read for THIS command: the credential is
+            // never held in the session between commands.
+            let identity = actor.as_ref().map(resident_env).unwrap_or_default(); // unwrap_or_default: the operator's command carries no resident identity
             run_shell_command(
                 state.clone(),
-                &cmd_str, &cwd, &env, timeout_ms, confinement.as_ref(), &who, cargo_grant.grant(),
+                &cmd_str, &cwd, &env, timeout_ms,
+                ChildSpec { confinement: confinement.as_ref(), who: &who, cargo_grant: cargo_grant.grant(), identity: &identity },
             )
             .await;
             custody.completed = true;
@@ -229,7 +243,7 @@ impl ShellSession {
             "code",
             "shell",
             "Execution {} started: {}",
-            &execution_id[..8],
+            id.shown(),
             command
         );
         Ok(execution_id)
@@ -248,7 +262,18 @@ impl ShellSession {
         timeout_ms: Option<u64>,
         rt_handle: &tokio::runtime::Handle,
     ) -> Result<ShellExecuteResponse, String> {
-        let execution_id = self.execute(command, timeout_ms, rt_handle)?;
+        self.execute_and_wait_as(command, timeout_ms, rt_handle, None)
+    }
+
+    /// [`Self::execute_and_wait`] run as `resident` ([`Self::execute_as`]).
+    pub fn execute_and_wait_as(
+        &mut self,
+        command: &str,
+        timeout_ms: Option<u64>,
+        rt_handle: &tokio::runtime::Handle,
+        resident: Option<crate::code::git_actor::GitActor>,
+    ) -> Result<ShellExecuteResponse, String> {
+        let execution_id = self.execute_as(command, timeout_ms, rt_handle, resident)?;
 
         // Block this thread until the execution finishes
         let state_arc = self
@@ -298,15 +323,14 @@ impl ShellSession {
         if self.history.iter().any(|entry| entry.execution_id == execution_id) {
             return Err(format!("Output for completed shell execution '{execution_id}' was evicted by the session retention limit; exit/timing metadata remains in shell history"));
         }
-        let candidates: Vec<Uuid> = self
+        let candidates = self
             .executions
             .keys()
-            .map(|id| {
-                Uuid::parse_str(id).map_err(|e| format!("invalid stored execution handle: {e}"))
-            })
-            .collect::<Result<_, _>>()?;
-        let id = continuum_base::id_resolve::resolve_handle(execution_id, &candidates, "shell execution")?;
-        self.executions.get(&id.to_string()).cloned()
+            .map(|key| ExecutionId::parse_stored(key))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|corrupt| corrupt.to_string())?;
+        let id = execution_in(execution_id, candidates).map_err(|refused| refused.to_string())?;
+        self.executions.get(&id.key()).cloned()
             .ok_or_else(|| format!("No execution '{execution_id}' in this shell session"))
     }
 
@@ -365,7 +389,7 @@ impl ShellSession {
             "code",
             "shell",
             "Killed execution {}: {}",
-            &execution_id[..8.min(execution_id.len())],
+            ExecutionId::parse_stored(execution_id).map_or_else(|_| execution_id.to_owned(), ExecutionId::shown), // map_or_else: a key that is not an id is logged as given
             state.command
         );
         Ok(())

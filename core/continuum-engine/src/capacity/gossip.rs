@@ -135,6 +135,13 @@ pub struct CapacityOffer {
     /// comparison site).
     #[serde(default)]
     pub capabilities: Vec<CapabilityId>,
+    /// THE MINDS HERE THAT ARE STUCK (card 1c157668): each resident this node judged stalled
+    /// (work asked, nothing completed) or regressed over its last service window, with the
+    /// refusal that explains it. Kimi was refused before inference for 17 hours on 2026-10-26
+    /// and no node said so; on the beacon, `grid/nodes` on any node names her. An older core
+    /// advertises none (serde default), which reads as "nothing judged", never "all healthy".
+    #[serde(default)]
+    pub resident_alarms: Vec<continuum_service::resident::ResidentAlarm>,
 }
 
 /// What a core knows how to do — the names a beacon may advertise in
@@ -158,6 +165,15 @@ pub enum CapabilityId {
     /// granted-slot arithmetic requires this; absence means the number is lanes-residents,
     /// which overcounts what a second node would see.
     PlacementReservationGrant,
+    /// The seat aborts a served generation when its requester sends
+    /// `ai/generate/cancel` for it (card 83f774fb). A requester that abandons a generation
+    /// sends the cancel only to a seat advertising this; absence means it would be ignored,
+    /// and a seat that never learned the command must not be sent one.
+    RemoteGenerateCancel,
+    /// The seat's `ai/generate` takes a mind's think budget (`GenerateParams::think`) and bounds
+    /// her think with it on its own engine. A grid lane forwards a turn with a think budget only to
+    /// a seat advertising this; absence means a core that would generate it unbounded.
+    RemoteThinkBudget,
     /// Parse-only: a name THIS build does not know (a newer core advertising a capability we
     /// predate). It never grants — membership of this list is exact-name, so an unknown name
     /// cannot stand in for another — but its presence must not drop the rest of the beacon,
@@ -176,6 +192,8 @@ pub fn this_build_capabilities() -> Vec<CapabilityId> {
         CapabilityId::ServedWindowStamp,
         CapabilityId::LaneWaitReporting,
         CapabilityId::PlacementReservationGrant,
+        CapabilityId::RemoteGenerateCancel,
+        CapabilityId::RemoteThinkBudget,
     ]
 }
 
@@ -225,15 +243,19 @@ pub fn decode_tps_of(milli: u32) -> Option<f32> {
     (milli > 0).then(|| milli as f32 / 1000.0)
 }
 
-/// The 9-hex build sha prefix as the integer a beacon carries (0 when unparsable).
+/// How many hex digits of the build sha a beacon carries: the wire format's one owner, read by
+/// both directions below (the prefix operators recognise).
+const BEACON_BUILD_DIGITS: usize = 9;
+
+/// The build sha prefix as the integer a beacon carries (0 when unparsable).
 pub fn build_from_sha(sha: &str) -> u64 {
-    let hex: String = sha.chars().take(9).collect();
+    let hex: String = sha.chars().take(BEACON_BUILD_DIGITS).collect();
     u64::from_str_radix(&hex, 16).unwrap_or(0) // JUSTIFIED unwrap_or: a non-hex build string beacons as "unknown", never a fake sha
 }
 
-/// The beacon's build back as the 9-hex prefix operators recognise.
+/// The beacon's build back as the prefix operators recognise.
 pub fn build_hex(build: u64) -> Option<String> {
-    (build != 0).then(|| format!("{build:09x}"))
+    (build != 0).then(|| format!("{build:0width$x}", width = BEACON_BUILD_DIGITS))
 }
 
 impl CapacityOffer {
@@ -276,9 +298,17 @@ pub struct RosterHeard {
 }
 
 /// Process-global ledger of heard capacity offers, keyed by the WIRE's peer id.
-#[derive(Default)]
 pub struct GridCapacityLedger {
     heard: DashMap<Uuid, HeardOffer>,
+    changes: tokio::sync::watch::Sender<()>,
+}
+impl Default for GridCapacityLedger {
+    fn default() -> Self {
+        Self {
+            heard: DashMap::new(),
+            changes: tokio::sync::watch::channel(()).0,
+        }
+    }
 }
 
 /// The one process-global ledger — the resource it mirrors (this node's view of the
@@ -320,6 +350,26 @@ pub(crate) fn replays_an_older_reading(held_at_ms: u64, incoming_at_ms: u64) -> 
 }
 
 impl GridCapacityLedger {
+    /// Independent fanout: parked consumers must not consume the allocator's
+    /// notify_one permit. Subscribe before reading the semantic offer.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changes.subscribe()
+    }
+
+    /// A window offered for this exact bound peer/model, using existing freshness
+    /// and affirmative capability policy. Clock-only refresh is not a new window.
+    pub fn served_window(&self, peer: Uuid, model: &str, now_ms: u64) -> Option<u32> {
+        let held = self.heard.get(&peer)?;
+        let offer = &held.offer;
+        (now_ms.saturating_sub(held.heard_at_ms) <= FRESHNESS_WINDOW_MS
+            && offer.served_model.as_deref() == Some(model)
+            && offer
+                .capabilities
+                .contains(&CapabilityId::ServedWindowStamp)
+            && offer.served_context_window > 0)
+            .then_some(offer.served_context_window)
+    }
+
     /// Fold one heard offer in (latest per peer wins — capacity is a live reading).
     /// `from_peer` is the transcript event's transport identity, never payload-declared.
     /// Returns `true` when this peer is NEW to the ledger (first offer heard) — the
@@ -344,6 +394,7 @@ impl GridCapacityLedger {
         // Wake whoever waits on the grid changing (the allocator daemon): a stored
         // permit, so a beat heard between two waits is not lost.
         heard_notify().notify_one();
+        self.changes.send_replace(());
         is_new
     }
 
@@ -476,6 +527,36 @@ mod tests {
 
     const GB: u64 = 1024 * 1024 * 1024;
 
+    // Separate parked receivers must not steal each other's or the allocator's
+    // notification. Timestamp-only refresh does not change the capacity witness.
+    #[tokio::test]
+    async fn capacity_watch_fans_out_without_consuming_allocator_wake() {
+        let ledger = GridCapacityLedger::default();
+        let mut one = ledger.subscribe();
+        let mut two = ledger.subscribe();
+        let peer = Uuid::new_v4();
+        let mut reading = offer(8, 1000);
+        reading.served_model = Some("bound".into());
+        reading.served_context_window = 4096;
+        reading.capabilities.push(CapabilityId::ServedWindowStamp);
+        ledger.hear(peer, reading.clone(), 1000);
+        one.changed().await.unwrap();
+        two.changed().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), heard_notify().notified())
+            .await
+            .unwrap();
+        assert_eq!(ledger.served_window(peer, "bound", 1000), Some(4096));
+        reading.at_ms = 2000;
+        ledger.hear(peer, reading.clone(), 2000);
+        assert_eq!(ledger.served_window(peer, "bound", 2000), Some(4096));
+        assert_eq!(ledger.served_window(peer, "other", 2000), None);
+        reading.served_context_window = 8192;
+        ledger.hear(peer, reading, 2000);
+        one.changed().await.unwrap();
+        two.changed().await.unwrap();
+        assert_eq!(ledger.served_window(peer, "bound", 2000), Some(8192));
+    }
+
     fn offer(free_gb: u64, at_ms: u64) -> CapacityOffer {
         CapacityOffer {
             origin: Uuid::nil(),
@@ -497,6 +578,7 @@ mod tests {
             // capabilities at all, and the ledger must fold that as 'nothing',
             // never as 'all' (card 8bd75362).
             capabilities: Vec::new(),
+            resident_alarms: Vec::new(),
         }
     }
     // what this catches (2026-09-19, the M5 spilled two minds to ITSELF): a node hears
@@ -508,8 +590,12 @@ mod tests {
     #[test]
     fn a_node_recognises_its_own_offer_under_any_scope_id_and_never_seats_on_it() {
         let ledger = GridCapacityLedger::default();
-        let (me_as_scope_a, me_as_scope_b, other, older) =
-            (Uuid::from_u128(0xa), Uuid::from_u128(0xb), Uuid::from_u128(0xc), Uuid::from_u128(0xd));
+        let (me_as_scope_a, me_as_scope_b, other, older) = (
+            Uuid::from_u128(0xa),
+            Uuid::from_u128(0xb),
+            Uuid::from_u128(0xc),
+            Uuid::from_u128(0xd),
+        );
         let mut mine = offer(8, 1_000);
         mine.origin = this_process_origin();
         mine.residents = 3;
@@ -652,7 +738,11 @@ mod tests {
         };
         ledger.hear(me, with(16, now), now);
         ledger.hear(m5, with(16, now - 5_000), now - 5_000);
-        ledger.hear(intel, with(2, now - FRESHNESS_WINDOW_MS - 1), now - FRESHNESS_WINDOW_MS - 1);
+        ledger.hear(
+            intel,
+            with(2, now - FRESHNESS_WINDOW_MS - 1),
+            now - FRESHNESS_WINDOW_MS - 1,
+        );
         ledger.hear(lanes_only, with(0, now), now);
         let heard = ledger.residents_elsewhere(Some(me), now);
         assert_eq!(heard, RosterHeard { peers: 1, residents: 16, newest_heard_at_ms: now - 5_000 });
@@ -796,7 +886,10 @@ mod tests {
         // The reviewer's wire-compatibility ask: the names this build advertises travel as
         // stable snake_case, and the emission source can never carry a parse-only fold.
         let wire = serde_json::to_string(&this_build_capabilities())?;
-        assert_eq!(wire, "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\"]");
+        assert_eq!(
+            wire,
+            "[\"served_window_stamp\",\"lane_wait_reporting\",\"placement_reservation_grant\",\"remote_generate_cancel\",\"remote_think_budget\"]"
+        );
         assert!(!this_build_capabilities().contains(&CapabilityId::Unknown), "emission never advertises Unknown");
 
         Ok(())

@@ -20,9 +20,9 @@ impl KvSlotPool {
             sizer: Arc::new(|_| 1),
             // PRICED eviction (plan B5, KV-CACHE-ECONOMY §3.2/§6 — the classic
             // heuristic floor, dropped into the engine's own priority seam):
-            // cost_of_loss ∝ the activity's tail tokens (what a cold re-entry
+            // cost_of_loss ∝ the page's tail tokens (what a cold re-entry
             // re-prefills), discounted by staleness — halved per hour idle — so
-            // an abandoned giant eventually yields to live small activities.
+            // an abandoned giant eventually yields to live small pages.
             // Ascending sort evicts lowest first, so the CHEAPEST tail goes
             // first and a 7.6k head can never displace a warm 36k tail (§2's
             // arithmetic, pinned by test below). The learned/bandit policy is a
@@ -32,7 +32,12 @@ impl KvSlotPool {
                 let now_ms = continuum_base::time::EpochMs::read().map_or(view.last_access_at, continuum_base::time::EpochMs::millis); // engine has no view of a just-inserted key: fall back to its own stamp
                 let stale_hours =
                     now_ms.saturating_sub(view.last_access_at) / (3600 * 1000);
-                let cost = (tokens >> stale_hours.min(20)) as i64;
+                // Halved per idle hour until nothing is left: the shift's only bound is the width of
+                // the count, past which a page is fully discounted.
+                let cost = match stale_hours < u64::from(u64::BITS) {
+                    true => (tokens >> stale_hours) as i64,
+                    false => 0,
+                };
                 // EQUAL costs tie-break by RECENCY, never by map-iteration order —
                 // without this the tie fell to hash ordering, a platform coin flip
                 // (Linux CI evicted a just-refreshed slot; macOS happened not to).
@@ -56,7 +61,9 @@ impl KvSlotPool {
                 .collect(),
             released: Arc::new(tokio::sync::Notify::new()),
             ledger: std::sync::OnceLock::new(),
+            incarnation: std::sync::OnceLock::new(),
             ledger_generation: AtomicU64::new(0),
+            sequences: Mutex::new(LiveSequences::default()),
         }
     }
 
@@ -89,6 +96,7 @@ impl KvSlotPool {
     /// Stamp the engine process into this pool's ledger and rewrite it, so a core that
     /// later adopts this engine can prove the ledger is its own. Once per ledger.
     pub(super) fn stamp_incarnation(&self, incarnation: (u32, u64)) {
+        self.mark_incarnation(incarnation);
         let Some(ledger) = self.ledger.get() else {
             return;
         };
@@ -96,6 +104,17 @@ impl KvSlotPool {
             return;
         }
         self.persist_ledger(self.current_snapshot());
+    }
+
+    /// Name the engine process this pool belongs to, once (a later name for the same pool is
+    /// ignored: a replacement engine gets a new pool). Independent of the page ledger.
+    pub(crate) fn mark_incarnation(&self, incarnation: (u32, u64)) {
+        let _ = self.incarnation.set(incarnation);
+    }
+
+    /// The engine process this pool belongs to, when stamped.
+    pub(crate) fn incarnation(&self) -> Option<(u32, u64)> {
+        self.incarnation.get().copied()
     }
 
     pub fn n_slots(&self) -> u32 {
@@ -109,7 +128,7 @@ impl KvSlotPool {
     }
 
     /// Whether a synthetic decode (the serving heartbeat's smoke probe) could only run on a slot
-    /// holding a resident's live KV: no scratch slot, and some slot attributed to an activity.
+    /// holding a resident's live KV: no scratch slot, and some slot attributed to an page.
     /// The probe must not run then (card 9e3350bd, the 5090 2026-10-11: on a one-slot lane the
     /// 72-token smoke prompt replaced a 53,980-token resident and the next save wrote that as
     /// her page, 0 checkpoints; every restore after it re-prefilled from ~0).
@@ -138,18 +157,18 @@ impl KvSlotPool {
             .unwrap_or(0) // unwrap_or: a pool has at least one slot; an empty range is impossible
     }
 
-    /// Record the activity's current prompt size — the cost basis the priced
+    /// Record the page's current prompt size — the cost basis the priced
     /// eviction reads. Called at pin time with the request's token estimate.
-    pub fn note_tail(&self, key: &ActivityKey, tokens: u64) {
+    pub fn note_tail(&self, key: &PageKey, tokens: u64) {
         if let Some(lease) = self.pool.get(key) {
             lease.tail_tokens.store(tokens.max(1), Ordering::Relaxed);
         }
     }
 
-    /// Lease the slot for `key`: warm reuse if the activity is resident, a free
+    /// Lease the slot for `key`: warm reuse if the page is resident, a free
     /// index otherwise, evicting the engine-chosen (LRU, later priced) resident
     /// when full. `None` only if the pool cannot free an index (all pinned).
-    pub async fn lease(&self, key: ActivityKey) -> Option<u32> {
+    pub async fn lease(&self, key: PageKey) -> Option<u32> {
         // Warm path — also refreshes recency in the engine.
         if let Some(lease) = self.pool.get(&key) {
             return Some(lease.slot);
@@ -173,8 +192,7 @@ impl KvSlotPool {
                     // M5); the caller waits for a release rather than running unpinned.
                     continuum_base::probe!(
                         class = "inference.slot_affinity.all_pinned",
-                        persona = %key.persona,
-                        room = %key.room,
+                        page = %key,
                         "all slots are pinned by in-flight turns: nothing to evict"
                     );
                     return None;
@@ -182,13 +200,13 @@ impl KvSlotPool {
                 continuum_base::probe!(
                     class = "inference.slot_affinity.evicted",
                     evicted_count = evicted,
-                    "all slots held — engine evicted the least-valuable activity; its \
+                    "all slots held — engine evicted the least-valuable page; its \
                      warm prefix is forfeit and its next turn re-prefills (or restores \
                      its page at this node's measured switch cost — inference.kv_page.action ms)",
                 );
             }
             let free = Arc::clone(&self.free);
-            // The slot that physically still holds this activity's KV (evicted from the pool
+            // The slot that physically still holds this page's KV (evicted from the pool
             // but not yet overwritten, or resumed from the same engine's ledger) is taken
             // back when free: its next turn reuses that KV in place instead of restoring.
             let warm = self.holders.lock().iter().find(|(_, k)| **k == key).map(|(slot, _)| *slot);
@@ -214,10 +232,9 @@ impl KvSlotPool {
                 Ok(lease) => {
                     continuum_base::probe!(
                         class = "inference.slot_affinity.pinned",
-                        persona = %key.persona,
-                        room = %key.room,
+                        page = %key,
                         slot = lease.slot as u64,
-                        "activity pinned to a llama-server slot — its prefix warms HERE",
+                        "page pinned to a llama-server slot — its prefix warms HERE",
                     );
                     return Some(lease.slot);
                 }
@@ -232,24 +249,24 @@ impl KvSlotPool {
     }
 
     /// [`Self::lease`] plus the paging ledger: who to SAVE before this turn
-    /// overwrites the slot, and whether to RESTORE this activity's own page.
+    /// overwrites the slot, and whether to RESTORE this page's own page.
     ///
     /// The rules, in order:
-    /// - slot still holds THIS activity (warm re-lease) → no save, no restore:
+    /// - slot still holds THIS page (warm re-lease) → no save, no restore:
     ///   the in-slot KV is fresher than any page on disk.
-    /// - slot last warmed a DIFFERENT activity → save THEIRS first (their KV is
+    /// - slot last warmed a DIFFERENT page → save THEIRS first (their KV is
     ///   physically still in the server slot), then restore OURS if a page
     ///   exists.
     /// - slot holder unknown (fresh pool over a pre-existing server) → restore
     ///   ours if a page exists; nothing known to save.
-    pub async fn lease_paged(&self, key: ActivityKey) -> Option<SlotPaging> {
+    pub async fn lease_paged(&self, key: PageKey) -> Option<SlotPaging> {
         let slot = self.lease(key).await?;
         Some(self.plan_paging(slot, key))
     }
 
     /// Resolve the physical index from the pinned assignment, not a prior lease
     /// that another executor thread could have evicted before the pin.
-    pub(crate) fn pin_slot(&self, key: &ActivityKey) -> Option<(u32, SlotPin)> {
+    pub(crate) fn pin_slot(&self, key: &PageKey) -> Option<(u32, SlotPin)> {
         let pin = self.pin(key)?;
         let slot = pin.value()?.slot;
         Some((slot, pin))
@@ -266,7 +283,23 @@ impl KvSlotPool {
             .acquire_owned()
             .await
             .map_err(|_| "physical KV slot admission closed".to_string())?;
-        Ok(SlotPermit { _permit: permit, released: Arc::clone(&self.released) })
+        Ok(self.operation_permit(slot, permit))
+    }
+
+    /// The slot's permit when it is free right now, without queueing: a caller holding other
+    /// gates checks first and, when the slot is busy, drops what it holds before it waits.
+    pub(crate) fn try_acquire_slot(&self, slot: u32) -> Option<SlotPermit> {
+        let permit = self.operations.get(slot as usize)?.clone().try_acquire_owned().ok()?;
+        Some(self.operation_permit(slot, permit))
+    }
+
+    /// A scratch release wakes only its physical semaphore, never citizen admission:
+    /// scratch is excluded from the citizen free list and cannot satisfy those waiters.
+    fn operation_permit(&self, slot: u32, permit: tokio::sync::OwnedSemaphorePermit) -> SlotPermit {
+        SlotPermit {
+            _permit: permit,
+            released: (Some(slot) != self.scratch).then(|| Arc::clone(&self.released)),
+        }
     }
 
     /// The signal a slot release raises; see [`Self::released`] on the struct.
@@ -274,39 +307,58 @@ impl KvSlotPool {
         Arc::clone(&self.released)
     }
 
-    /// Caller holds the physical-slot permit and activity pin before changing attribution.
-    pub(crate) fn plan_paging(&self, slot: u32, key: ActivityKey) -> SlotPaging {
+    /// Caller holds the physical-slot permit and page pin before changing attribution.
+    /// A page is restored only when no newer live sequence of hers is in the slot
+    /// ([`SequenceBasis`]): a slot that lost her attribution but still holds her newer
+    /// sequence is resumed in place (the M5, ed142f14c: 7 restores of Benchy's older page
+    /// over her live sequence, 4,420 prefill-seconds).
+    pub(crate) fn plan_paging(&self, slot: u32, key: PageKey) -> SlotPaging {
         let prev = self.holders.lock().insert(slot, key);
         if prev != Some(key) {
             self.persist_ledger(self.current_snapshot());
         }
-        let save_first = prev.filter(|p| *p != key);
-        let slot_holds_ours = prev == Some(key);
-        let restore = !slot_holds_ours && self.saved.lock().contains(&key);
-        SlotPaging {
-            slot,
-            save_first,
-            restore,
-            already_resident: slot_holds_ours,
-        }
+        let page_saved = self.saved.lock().contains(&key);
+        let basis = self.sequences.lock().judge(slot, key, prev, page_saved);
+        SlotPaging::judged(slot, prev.filter(|p| *p != key), basis)
     }
 
-    /// Pin this activity's slot for the duration of a turn. While the returned
+    /// `key`'s generation completed in `slot`: the slot holds her newest sequence.
+    pub(crate) fn note_generated(&self, slot: u32, key: PageKey) {
+        self.sequences.lock().completed(slot, key);
+    }
+
+    /// A generation of `key` was sent to `slot` (the engine may now change it).
+    pub(crate) fn note_dispatched(&self, slot: u32, key: PageKey) {
+        self.sequences.lock().dispatched(slot, key);
+    }
+
+    /// The engine is replacing `slot`'s content (a restore, an erase, transient traffic).
+    pub(crate) fn note_overwritten(&self, slot: u32) {
+        self.sequences.lock().overwritten(slot);
+    }
+
+    /// `key`'s page was restored into `slot`, verified by the engine's receipt.
+    pub(crate) fn note_restored(&self, slot: u32, key: PageKey) {
+        self.sequences.lock().restored(slot, key);
+    }
+
+    /// Pin this page's slot for the duration of a turn. While the returned
     /// [`SlotPin`] is held, priced eviction skips this slot, so a concurrent
     /// returner can never lease (and restore into) a slot that is still decoding
     /// this turn's KV — the decoupling that forced the old restore timeout. RAII:
-    /// drop the handle to release. `None` if the activity is not resident (nothing
+    /// drop the handle to release. `None` if the page is not resident (nothing
     /// to protect — a caller that just leased it will always get `Some`).
-    pub fn pin(&self, key: &ActivityKey) -> Option<SlotPin> {
+    pub fn pin(&self, key: &PageKey) -> Option<SlotPin> {
         self.pool.pin(key)
     }
 
     /// Detach the resident identity before transient traffic overwrites a slot.
     /// The caller holds the decode permit and keeps the returned pin through the
-    /// request. A later activity must restore its saved page, never mistake the
+    /// request. A later page must restore its saved page, never mistake the
     /// transient KV for its own warm state or save it under its own filename.
-    pub(crate) fn take_resident(&self, slot: u32) -> (Option<ActivityKey>, Option<SlotPin>) {
+    pub(crate) fn take_resident(&self, slot: u32) -> (Option<PageKey>, Option<SlotPin>) {
         let previous = self.holders.lock().remove(&slot);
+        self.sequences.lock().detached(slot);
         if previous.is_some() {
             self.persist_ledger(self.current_snapshot());
         }
@@ -316,7 +368,7 @@ impl KvSlotPool {
 
     /// Failed/cancelled generation never proves whose KV now occupies the slot.
     /// Saved pages remain valid; only the provisional physical attribution clears.
-    pub(crate) fn forget_resident(&self, slot: u32, key: ActivityKey) {
+    pub(crate) fn forget_resident(&self, slot: u32, key: PageKey) {
         let removed = {
             let mut holders = self.holders.lock();
             holders.get(&slot) == Some(&key) && holders.remove(&slot).is_some()
@@ -328,14 +380,28 @@ impl KvSlotPool {
 
     /// Whether `key` has a page file beside this pool's ledger; `None` without a ledger (no
     /// page dir known). One stat, on the cold path only.
-    pub(crate) fn page_on_disk(&self, key: &ActivityKey) -> Option<bool> {
+    pub(crate) fn page_on_disk(&self, key: &PageKey) -> Option<bool> {
         let dir = self.ledger.get()?.path.parent()?.to_path_buf();
         Some(dir.join(page_filename(key)).is_file())
     }
 
+    /// Whether `key`'s page is confirmed (restorable) in this pool now: what a test outside the
+    /// slots module asserts a refusal kept or removed.
+    #[cfg(test)]
+    pub(crate) fn confirms(&self, key: &PageKey) -> bool {
+        self.saved.lock().contains(key)
+    }
+
+    /// The confirmed-save ledger file beside this pool's pages, when it has one.
+    #[cfg(test)]
+    pub(crate) fn ledger_path(&self) -> Option<std::path::PathBuf> {
+        Some(self.ledger.get()?.path.clone())
+    }
+
     /// Record that `key`'s page was successfully written to disk — it becomes
     /// restorable. Called by the adapter AFTER the save HTTP call succeeds.
-    pub fn note_saved(&self, key: ActivityKey) {
+    pub fn note_saved(&self, key: PageKey) {
+        self.sequences.lock().saved(key);
         let snapshot = {
             let mut saved = self.saved.lock();
             saved.insert(key);
@@ -348,7 +414,7 @@ impl KvSlotPool {
     /// mismatch) — stop offering it so the turn falls back to a plain prefill
     /// instead of retrying a dead restore every pin. Also called BEFORE a save
     /// overwrites the page, so an interrupted save is never restorable.
-    pub fn note_page_lost(&self, key: &ActivityKey) {
+    pub fn note_page_lost(&self, key: &PageKey) {
         let snapshot = {
             let mut saved = self.saved.lock();
             if !saved.remove(key) {
@@ -365,16 +431,19 @@ impl KvSlotPool {
     /// Lock order: `saved`, then `holders`.
     pub(super) fn ledger_snapshot(
         &self,
-        saved: &std::collections::HashSet<ActivityKey>,
-        holders: &std::collections::HashMap<u32, ActivityKey>,
+        saved: &std::collections::HashSet<PageKey>,
+        holders: &std::collections::HashMap<u32, PageKey>,
     ) -> Option<LedgerSnapshot> {
         self.ledger.get()?;
         let generation = self.ledger_generation.fetch_add(1, Ordering::Relaxed) + 1;
-        let mut keys: Vec<(Uuid, Uuid)> = saved.iter().map(|k| (k.persona, k.room)).collect();
-        keys.sort_unstable();
-        let mut residents: Vec<(u32, Uuid, Uuid)> = holders.iter().map(|(slot, k)| (*slot, k.persona, k.room)).collect();
+        // Minds only: a fork dies with the core that ran it, so a restart could only pin its
+        // pages on disk. In memory a fork's page is restorable like any other.
+        let mut minds: Vec<Uuid> = saved.iter().filter_map(|k| k.as_mind()).map(|m| m.persona()).collect();
+        minds.sort_unstable();
+        let mut residents: Vec<(u32, Uuid)> =
+            holders.iter().filter_map(|(slot, k)| k.as_mind().map(|m| (*slot, m.persona()))).collect();
         residents.sort_unstable();
-        Some(LedgerSnapshot { generation, keys, residents })
+        Some(LedgerSnapshot { generation, minds, residents })
     }
 
     /// [`Self::ledger_snapshot`] of the state right now, for a change that held neither lock.
@@ -425,11 +494,7 @@ pub struct KvPageContract {
     pub cache_type: Option<String>,
     /// Whether the engine runs flash attention: it decides the V layout a page stores.
     pub flash_attn: Option<bool>,
-    /// The engine build's commit as the running server reports it (`/props` `build_info`).
-    /// `None` = unknown, and then the engine FILE is one of the `revisions` instead.
-    pub engine_build: Option<String>,
-    pub engine: String,
-    /// Cold-path revision evidence for the resolved model, adapters and engine.
+    /// Cold-path revision evidence for the resolved model, adapters and MTP draft.
     /// Unknown revisions refuse saved-page carry-over, never guess compatibility.
     pub revisions: Option<Vec<(std::path::PathBuf, u64, std::time::SystemTime)>>,
 }
@@ -441,14 +506,126 @@ pub(super) struct EndpointState {
     /// so the field and the signal cannot disagree.
     pub(super) ready: tokio::sync::watch::Sender<bool>,
     pub(super) paging_uncertain: bool,
-    pub(super) generation: Option<EngineGeneration>,
-    pub(super) contract: Option<KvPageContract>,
-    pub(super) pool: Option<Option<Arc<KvSlotPool>>>,
-    // An installed ledger can outlive its child until replacement readiness.
-    pub(super) pool_generation: Option<Uuid>,
+    /// Which engine this endpoint has and the pool serving it: one value, so an owned
+    /// generation, its verified install and an unowned pool can never disagree (card df1d0963).
+    pub(super) engine: Engine,
     /// Negotiated for this pool incarnation. None is not yet negotiated;
     /// Ok(None) is explicitly legacy or remotely owned, not governed coverage.
     pub(super) page_admission: Option<Result<Option<std::path::PathBuf>, String>>,
+}
+
+/// A slot pool as far as its engine was probed (see [`Probed`]).
+pub type PoolProbe = Probed<Arc<KvSlotPool>, PropsAbsent>;
+
+/// Which engine an endpoint has, and the pool serving it.
+pub(super) enum Engine {
+    /// Never probed: no pool known.
+    Unprobed,
+    /// Probed and latched: the engine has no paging.
+    Unsupported,
+    /// A running engine this core did not launch, with the pool its probe discovered.
+    Adopted(Arc<KvSlotPool>),
+    /// An engine this core launched. `generation` is the latest started (loading, serving or
+    /// exited); `serving` is what serves until the next verified ready replaces it.
+    Owned { generation: EngineGeneration, serving: Serving },
+}
+
+/// What serves an owned endpoint.
+pub(super) enum Serving {
+    /// The last verified ready's install.
+    Install(OwnedInstall),
+    /// No launch of this core has verified ready yet: the pool the endpoint had before, as far as
+    /// it was probed, whose residents a relaunch still saves or records as discarded.
+    Before(PoolProbe),
+}
+
+/// An owned engine as `ready` installed it: its generation, the contract it launched with and
+/// the pool holding its residents' KV.
+pub(super) struct OwnedInstall {
+    pub(super) generation: Uuid,
+    pub(super) contract: KvPageContract,
+    pub(super) pool: Arc<KvSlotPool>,
+}
+
+impl Engine {
+    /// The pool this engine leaves to its successor's launch, as `Serving::Before` holds it.
+    fn into_pool(self) -> PoolProbe {
+        match self {
+            Engine::Unprobed => Probed::NotAsked,
+            Engine::Unsupported => Probed::Absent(PropsAbsent),
+            Engine::Adopted(pool) => Probed::Known(pool),
+            Engine::Owned { serving: Serving::Install(install), .. } => Probed::Known(install.pool),
+            Engine::Owned { serving: Serving::Before(before), .. } => before,
+        }
+    }
+}
+
+impl EndpointState {
+    /// The latest engine generation this core started, if it launched one.
+    pub(super) fn generation(&self) -> Option<&EngineGeneration> {
+        match &self.engine {
+            Engine::Owned { generation, .. } => Some(generation),
+            _ => None,
+        }
+    }
+
+    /// The last verified owned install.
+    pub(super) fn owned(&self) -> Option<&OwnedInstall> {
+        match &self.engine {
+            Engine::Owned { serving: Serving::Install(install), .. } => Some(install),
+            _ => None,
+        }
+    }
+
+    /// The owned install of exactly `generation`, if that is what is installed.
+    pub(super) fn owned_by(&self, generation: Uuid) -> Option<&OwnedInstall> {
+        self.owned().filter(|install| install.generation == generation)
+    }
+
+    /// The pool serving this endpoint, as far as it was probed: never probed asks, latched
+    /// unsupported refuses, known proceeds. One answer per state, so no caller can read "not asked
+    /// yet" as "there is none" (the M5 2026-11-04 14:56Z pool-growth refusal).
+    pub(super) fn pool(&self) -> Probed<&Arc<KvSlotPool>, &PropsAbsent> {
+        match &self.engine {
+            Engine::Unprobed => Probed::NotAsked,
+            Engine::Unsupported => Probed::Absent(&PropsAbsent),
+            Engine::Adopted(pool) => Probed::Known(pool),
+            Engine::Owned { serving: Serving::Install(install), .. } => Probed::Known(&install.pool),
+            Engine::Owned { serving: Serving::Before(before), .. } => before.as_ref(),
+        }
+    }
+
+    /// Whether `pool` is exactly the pool serving this endpoint now. Not asked and absent are both
+    /// "not this pool": a caller holding a pool asks only whether it is still the installed one.
+    pub(super) fn serves(&self, pool: &Arc<KvSlotPool>) -> bool {
+        match self.pool() {
+            Probed::Known(installed) => Arc::ptr_eq(installed, pool),
+            Probed::NotAsked | Probed::Absent(_) => false,
+        }
+    }
+
+    /// Start `generation`: what served before keeps serving until it is verified ready.
+    pub(super) fn start(&mut self, generation: EngineGeneration) {
+        let serving = match std::mem::replace(&mut self.engine, Engine::Unprobed) {
+            Engine::Owned { serving, .. } => serving,
+            previous => Serving::Before(previous.into_pool()),
+        };
+        self.engine = Engine::Owned { generation, serving };
+    }
+
+    /// Replace the serving pool, keeping any started generation: a test's stand-in for a
+    /// discovered or carried pool.
+    #[cfg(test)]
+    pub(super) fn set_pool(&mut self, pool: PoolProbe) {
+        self.engine = match std::mem::replace(&mut self.engine, Engine::Unprobed) {
+            Engine::Owned { generation, .. } => Engine::Owned { generation, serving: Serving::Before(pool) },
+            _ => match pool {
+                Probed::NotAsked => Engine::Unprobed,
+                Probed::Absent(PropsAbsent) => Engine::Unsupported,
+                Probed::Known(pool) => Engine::Adopted(pool),
+            },
+        };
+    }
 }
 
 /// The directory's existing endpoint owner also arbitrates engine transitions.
@@ -457,8 +634,17 @@ pub(super) struct EndpointState {
 pub struct EndpointSlots {
     pub(super) gate: Arc<tokio::sync::RwLock<()>>,
     pub(super) state: Mutex<EndpointState>,
+    /// In-flight paging retains its exact admission after a requester leaves.
+    /// Physical slot permits bound this set; no queued admissions run in it.
+    pub(super) paging_tasks: Mutex<tokio::task::JoinSet<()>>,
     /// The read side of `EndpointState::ready`, for turns that hold through a transition.
     pub(super) ready_rx: tokio::sync::watch::Receiver<bool>,
+    /// Residents a relaunch discarded unsaved, until their next turn takes the record
+    /// (card 6b28a445). On the endpoint because the pool does not outlive the engine;
+    /// retention is bounded by [`DiscardLog`].
+    pub(super) discarded: Mutex<DiscardLog>,
+    /// The endpoint's aggregate decode permits, sized from its generation (card 23069702).
+    pub(super) concurrency: Arc<super::EndpointConcurrency>,
 }
 
 pub struct EndpointAdmission {
@@ -467,7 +653,21 @@ pub struct EndpointAdmission {
     pub pool: Option<Arc<KvSlotPool>>,
 }
 
+impl EndpointSlots {
+    /// The endpoint's aggregate decode permits: every pooled admission at this server takes one.
+    pub fn concurrency(&self) -> &super::EndpointConcurrency {
+        &self.concurrency
+    }
+}
+
 impl EndpointAdmission {
+    /// The engine incarnation (pid, OS start time) this admission is bound to: the one its pool
+    /// was stamped with when the engine was verified ready or adopted. The read lease holds it
+    /// against replacement for the admission's life. `None` when this endpoint has no stamped pool.
+    pub(crate) fn incarnation(&self) -> Option<(u32, u64)> {
+        self.pool.as_ref()?.incarnation()
+    }
+
     /// The response must name this owned engine's launch alias. The read lease
     /// prevents replacement while this evidence is checked; a discovered or
     /// remote endpoint without a launch contract cannot certify local service.
@@ -490,10 +690,24 @@ impl EndpointAdmission {
 }
 
 impl EndpointSlots {
+    pub(crate) fn retain_paging(&self, operation: impl std::future::Future<Output = ()> + Send + 'static) {
+        let mut tasks = self.paging_tasks.lock();
+        while tasks.try_join_next().is_some() {}
+        // The endpoint owns the task, and the task owns the admission reader:
+        // lifecycle transitions drain that reader before replacing the engine.
+        tasks.spawn(operation);
+    }
+
+    /// The model this endpoint's engine was launched with, ready or not: a page switch in a
+    /// relaunch's drain still waits on that engine's batches.
+    pub(crate) fn launched_model(&self) -> Option<String> {
+        self.state.lock().owned().map(|owned| owned.contract.model_id.clone())
+    }
+
     pub fn served_geometry(&self) -> Option<crate::inference::served_window_store::ServedGeometry> {
         let state = self.state.lock();
-        let generation = state.generation.as_ref()?;
-        let contract = state.contract.as_ref()?;
+        let generation = state.generation()?;
+        let contract = &state.owned()?.contract;
         if generation.has_exited() || !*state.ready.borrow() || contract.context == 0 || contract.slots == 0 {
             return None;
         }
@@ -507,6 +721,9 @@ impl EndpointSlots {
 pub struct EndpointTransition {
     pub(super) endpoint: Arc<EndpointSlots>,
     pub(super) _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+    /// Whether the endpoint was open when this writer closed it: what
+    /// [`EndpointTransition::hand_back_unchanged`] restores when its operation changed nothing.
+    pub(super) found_ready: bool,
 }
 
 /// Confirmed saves of every attributed resident. Retains the exclusive writer
@@ -540,16 +757,11 @@ impl ResidentCheckpoint<'_> {
         }
         let state = self.transition.endpoint.state.lock();
         if state.paging_uncertain
-            || !state
-                .generation
-                .as_ref()
+            || !state.generation()
                 .is_some_and(|g| g.same_engine(expected))
-            || state.pool_generation != Some(expected.id)
             || !state
-                .pool
-                .as_ref()
-                .and_then(Option::as_ref)
-                .is_some_and(|p| Arc::ptr_eq(p, &self.pool))
+                .owned_by(expected.id)
+                .is_some_and(|owned| Arc::ptr_eq(&owned.pool, &self.pool))
         {
             return Err("resident checkpoint generation is no longer current".into());
         }

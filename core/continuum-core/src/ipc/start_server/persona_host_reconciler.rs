@@ -232,7 +232,7 @@ pub(super) async fn run_persona_host(
                             );
                 }
                 let summary = supervisor
-                    .spawn_all(&mut provider, Some(tool_executor.clone()))
+                    .spawn_all(&mut provider, tool_executor.clone())
                     .await;
                 if summary.hosted > 0 {
                     tracing::info!(
@@ -260,7 +260,7 @@ pub(super) async fn run_persona_host(
                 // draws only `seats - hosted` identities, so live citizens are
                 // never re-bootstrapped and a full roster is a no-op.
                 let grown = supervisor
-                    .spawn_all(&mut provider, Some(tool_executor.clone()))
+                    .spawn_all(&mut provider, tool_executor.clone())
                     .await;
                 if grown.hosted > 0 {
                     tracing::info!(
@@ -275,7 +275,7 @@ pub(super) async fn run_persona_host(
                 // loop) is ours. Each serving-plan edge, host any registered
                 // citizen with no attached service loop.
                 let summary = supervisor
-                    .host_unattended(Some(tool_executor.clone()))
+                    .host_unattended(tool_executor.clone())
                     .await;
                 if summary.hosted > 0 {
                     tracing::info!(

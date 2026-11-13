@@ -25,6 +25,16 @@ pub enum LlamaServerError {
     /// ([[fallbacks-are-illegal-fail-loud]]).
     #[error("LoRA adapter file not found: {0}")]
     AdapterNotFound(String),
+    /// The incumbent engine could not be retired safely, so it was not signalled and still
+    /// runs: its residents' checkpoint custody refused, or its identity could not be verified
+    /// (card 931cfd22). Never a spawn failure: it neither condemns the incumbent nor rolls the
+    /// engine binary back.
+    #[error("retiring the incumbent engine was refused, nothing was signalled: {0}")]
+    RetirementRefused(super::RetirementRefusal),
+    /// Retirement has been signalled but exact-process exit is not yet proven.
+    /// Keep admission suspended and resume observation; never blame the candidate binary.
+    #[error("incumbent retirement remains unverified; endpoint suspended: {0}")]
+    RetirementPending(String),
 }
 
 
@@ -74,11 +84,21 @@ pub struct OwnedServingTarget {
     /// Public diagnostic projection of explicit arguments and managed environment.
     /// Only the private original prepared receipt can authorize exact replay.
     pub invocation: crate::inference::lane_args::LaneInvocation,
-    pub observed_context_window: u32,
-    pub observed_lanes: u32,
+    /// The geometry the running engine reported when it came ready.
+    pub observed: ObservedGeometry,
     pub launched_host_prompt_cache_mib: u32,
 }
 
+
+/// What a running engine reported about its context when it came ready, read off its own `/props`:
+/// each sequence's limit (`n_ctx`, capped at the trained window), its sequences (`total_slots`),
+/// and its whole KV pool (`context_geometry.allocated_tokens`, our fork's report).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObservedGeometry {
+    pub context_window: u32,
+    pub lanes: u32,
+    pub pool_tokens: u32,
+}
 
 /// Checked at the endpoint's drained lifecycle-admission boundary. Once admitted,
 /// the operation may settle even if newer intent arrives; its result keeps its epoch.
@@ -163,7 +183,8 @@ pub trait LlamaServerControl: Send + Sync {
     /// this against the desired set to detect a genome change (a new gene
     /// trained, or one retired) that requires a relaunch — page-in/out *within* a
     /// loaded set is per-request scale and never reaches here.
-    async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError>;
+    /// `target` names the genes an adopted engine's staged adapters are matched back to.
+    async fn active_adapters(&self, target: &ServingTarget) -> Result<Vec<String>, LlamaServerError>;
 
     /// Converge the running engine's adapter set onto `target`'s WITHOUT a relaunch:
     /// load each new gene (dormant until a request gives it a scale) and retire each one
@@ -191,6 +212,12 @@ pub trait LlamaServerControl: Send + Sync {
     /// it. Default is a no-op so test fakes that never model a process still compile.
     async fn idle(&self) -> Result<(), LlamaServerError> {
         Ok(())
+    }
+
+    /// Physical launch-stage receipt, advanced immediately before OS spawn.
+    /// Checkpoint refusal and deferred preparation must leave this unchanged.
+    fn last_launch_generation(&self) -> Option<crate::inference::slots::EngineGeneration> {
+        None
     }
 
     async fn serve_if_current(
@@ -316,6 +343,16 @@ pub trait LlamaServerControl: Send + Sync {
     /// `n_ctx` (a loud invariant violation — never a guessed window).
     async fn served_context_window(&self) -> Result<u32, LlamaServerError>;
 
+    /// The tokens the engine's KV holds in all, from `/props` `context_geometry.allocated_tokens`
+    /// (`llama_n_ctx`): the ONE shared pool under `--kv-unified`, the sum of the slots without
+    /// it. Never `n_ctx` x slots: under a unified cache the fork caps each slot's `n_ctx` at the
+    /// model's trained window (server-context.cpp, "the slot context exceeds the training
+    /// context"), so `n_ctx` reads 32,768 on a 65,536 pool (IntelMac, 2026-11-03 07:32Z).
+    /// The whole geometry in one read: the pool and the most one sequence may hold
+    /// (`context_geometry.max_tokens_per_sequence`), so no reader derives a sequence's limit from
+    /// how the engine was launched.
+    async fn served_geometry(&self) -> Result<crate::inference::weight_residency::ContextGeometry, LlamaServerError>;
+
     /// The REAL number of continuous-batching slots the running server serves,
     /// read from its own `/props` (`total_slots`) — the LANE sibling of
     /// [`Self::served_context_window`], and for the same reason.
@@ -347,6 +384,24 @@ pub trait LlamaServerControl: Send + Sync {
     /// remote control, or an engine without the field): nothing to compare.
     async fn served_engine_build(&self) -> Result<Option<String>, LlamaServerError> {
         Ok(None)
+    }
+
+    /// The engine process serving this endpoint now ([`EngineIncarnation`]: pid + OS start
+    /// time + port), owned or adopted, read from the lane pidfile and its registry record:
+    /// what a `/props` reading is evidence about. `None` = unknown (a fake or remote control,
+    /// no pidfile, a record without a start time): no reading outlives a probe error then.
+    ///
+    /// [`EngineIncarnation`]: crate::inference::engine_residency::EngineIncarnation
+    fn served_incarnation(&self) -> Option<crate::inference::engine_residency::EngineIncarnation> {
+        None
+    }
+
+    /// The chat template observed through this endpoint's own
+    /// `/apply-template` and `/tokenize`: each probe message and the tokens it added
+    /// ([`super::template_overhead`]). `None` = not measured (a
+    /// fake or remote control, or an engine whose endpoints did not answer).
+    async fn served_template_overhead(&self) -> Option<Vec<super::template_overhead::TemplateSample>> {
+        None
     }
 
     /// The multimodal capabilities the running server ITSELF reports in `/props`
@@ -409,6 +464,14 @@ pub trait LlamaServerControl: Send + Sync {
         None
     }
 
+    /// How the RUNNING engine was launched, read off its own argv ([`super::PoolLaunch`]): whether
+    /// its KV is one shared pool, and whether that launch is the one a launch would make now. An
+    /// engine on fixed slots, or on the pool still clearing idle slots, is moved by one relaunch.
+    /// `None` = unknown (no live lane, argv unreadable, a fake): an absence is not a mismatch.
+    fn pool_launch(&self) -> Option<super::PoolLaunch> {
+        None
+    }
+
     /// Fingerprint of the server's `/slots` activity state (see
     /// [`slots_activity_fingerprint_of`]). The health heartbeat compares the value
     /// across two consecutive smoke-probe MISSES: changed → the serve loop is
@@ -451,4 +514,9 @@ pub trait LlamaServerControl: Send + Sync {
     /// The reconcile calls it on every `AlreadyServing`. Default: nothing, for a control with
     /// no lane record to write (a fake or a remote control).
     async fn record_observed_placement(&self) {}
+
+    /// Follow the served engine's log relay, so an engine this core adopted has its lines watched
+    /// as a spawned one's are (card 1d7d6d4c). Default: a fake or remote control has no local
+    /// engine to follow.
+    fn follow_engine_log(&self) {}
 }

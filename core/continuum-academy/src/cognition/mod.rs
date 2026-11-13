@@ -1,0 +1,31 @@
+//! The moved modules: the academy, above cognition (pure move).
+pub use continuum_cognition::cognition::*;
+pub mod eval;
+pub mod exam_serving;
+pub mod held_out;
+pub mod coursework;
+pub mod eval_set;
+pub mod correction_families;
+pub mod curriculum;
+pub mod training_sources;
+pub mod learning_policy;
+#[allow(clippy::unwrap_used)] // 23 std lock unwraps wait on region.rs's self_sized sites: #5860
+pub mod dream_consolidation;
+pub mod decay_tick;
+pub mod experience;
+pub mod activity;
+pub mod benchmark;
+pub mod benchmark_algotune;
+pub mod benchmark_ds1000;
+pub mod benchmark_humaneval;
+pub mod benchmark_mirrorcode;
+pub mod benchmark_super;
+pub mod benchmark_terminalbench;
+pub mod bench_round;
+pub mod bench_task;
+pub mod swe_bench;
+pub mod swe_verdict_sweep;
+pub mod measurement_staging;
+pub mod vision_gym;
+pub mod gym;
+pub mod gym_rng;

@@ -121,6 +121,16 @@ macro_rules! log_error {
 /// - `continuum_core::orm::*` → `modules/orm`
 /// - `continuum_core::ipc::*` → `system/ipc`
 pub fn module_path_to_category(module_path: &str) -> &'static str {
+    // Domains cut out of continuum-core keep their old categories.
+    if module_path.starts_with("continuum_models::") {
+        return "modules/models";
+    }
+    if module_path.starts_with("continuum_embedding::") {
+        return "modules/embedding";
+    }
+    if module_path.starts_with("continuum_store::") {
+        return "modules/data";
+    }
     // Strip the crate prefix
     let path = module_path
         .strip_prefix("continuum_core::")
@@ -242,6 +252,11 @@ mod tests {
         assert_eq!(
             module_path_to_category("continuum_core::live::session::orchestrator"),
             "modules/live"
+        );
+        assert_eq!(
+            module_path_to_category("continuum_store::data::data_state"),
+            "modules/data",
+            "the data layer keeps its category after the store cut (card 2709ec6d)"
         );
         assert_eq!(
             module_path_to_category("continuum_core::modules::data"),

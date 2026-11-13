@@ -304,6 +304,7 @@ impl AIProviderAdapter for AnthropicAdapter {
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+        _dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         let api_key = self
             .api_key
@@ -452,7 +453,7 @@ impl AIProviderAdapter for AnthropicAdapter {
             .stop_reason
             .as_deref()
             .map(|r| self.map_finish_reason(r))
-            .unwrap_or(FinishReason::Stop);
+            .unwrap_or(FinishReason::Unreported); // no stop_reason arrived: say so, never claim a stop
 
         let usage = response_json
             .usage

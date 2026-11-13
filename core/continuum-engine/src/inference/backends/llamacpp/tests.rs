@@ -84,7 +84,7 @@
     //     --lib inference::backends::llamacpp::tests::effective_context -- --ignored
     #[test]
     #[ignore = "requires the dense base GGUF on disk; run explicitly"]
-    fn effective_context_derives_from_real_limits_without_override() {
+    fn generation_uses_exact_explicit_context_allocation() {
         let path = dirs::home_dir()
             .unwrap()
             .join(".continuum/models/qwen2.5-coder-3b-instruct-f16.gguf");
@@ -95,7 +95,6 @@
         // No context_length override — force the real-limit derivation path.
         let config = LlamaCppConfig {
             model_path: path,
-            context_length: None,
             ..Default::default()
         };
         let backend = LlamaCppBackend::load(config).expect("load dense base");
@@ -107,19 +106,6 @@
             "real dims populated"
         );
 
-        let ctx = backend.effective_context_length();
-        // Derived, not panicked; within the model's real ceiling; usable.
-        assert!(ctx >= 1024, "must give a usable window, got {ctx}");
-        assert!(
-            ctx <= caps.n_ctx_train,
-            "must never exceed the model's real ceiling ({} > {})",
-            ctx,
-            caps.n_ctx_train
-        );
-        eprintln!(
-            "effective_context_length={} (n_ctx_train={}, kv={}B/tok)",
-            ctx,
-            caps.n_ctx_train,
-            caps.kv_bytes_per_token(KvCacheType::F16, KvCacheType::F16),
-        );
+        let tokens = std::num::NonZeroU32::new(512).expect("test allocation");
+        assert_eq!(backend.effective_context_length(GenerationAllocation::new(tokens)), Ok(512));
     }

@@ -1,5 +1,8 @@
 # TS Persona Cognition Deletion Ratchet
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 > **Retired 2026-10-03.** The TypeScript it measured moved to `legacy/src` (the quarantined Node MVP), so its workflows could only fail; they and their scripts were deleted (card 5c3204ba). The Rust core owns persona behaviour. This page is kept as history.
 
 **Lane F** (PR #1084 alpha workstreams). Enforces the Rust-first alpha

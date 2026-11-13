@@ -2,53 +2,100 @@
 
 use super::*;
 
-// what this catches: the `{"_raw": …}` fallback returning. Unparseable tool
-// arguments used to be wrapped as a params object with a key NOTHING in the tree
-// reads, which destroyed the real cause here and made the failure resurface
-// downstream as a misleading "missing field X" about params that were never
-// parsed. Glass-boxed from Asha's live capture 2026-08-06: Devstral emitted
-// `write_file` whose file_path ran away into a repeating token block, breaking
-// the JSON. The marker must NAME the failure and carry the parser's own error.
-// [[fallbacks-are-illegal-fail-loud]] (#334)
+// Exercise the actual quote -> POST -> 503 -> re-quote path. The second quote
+// must restore the original reply ceiling, not inherit the first reduction.
+#[tokio::test]
+async fn measured_reply_transport_retry_uses_each_quote() {
+    use crate::inference::lane_send::{send_with_lane_retry, DispatchAdmission, FillReceipt, PromptQuote};
+    use crate::ai::types::{PromptAdmission, RequestAdmission};
+    use axum::{http::StatusCode, routing::post, Json, Router};
+    use std::sync::{Arc, Mutex};
+    let posts = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let quotes = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let post_log = posts.clone();
+    let quote_log = quotes.clone();
+    let app = Router::new()
+        .route("/v1/chat/completions/input_tokens", post(move |Json(body): Json<Value>| {
+            let log = quote_log.clone();
+            async move {
+                let mut log = log.lock().expect("fixture quotes");
+                log.push(body);
+                Json(serde_json::json!({"input_tokens": if log.len() == 1 { 66780 } else { 60000 }}))
+            }
+        }))
+        .route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
+            let log = post_log.clone();
+            async move {
+                let mut log = log.lock().expect("fixture posts");
+                log.push(body);
+                if log.len() == 1 { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture listener");
+    let address = listener.local_addr().expect("fixture address");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mut adapter = test_adapter();
+    adapter.config.base_url = format!("http://{address}");
+    adapter.config.single_resident_model = true;
+    let original = serde_json::json!({"messages": [{"role":"user", "content":"unchanged prompt"}], "max_tokens":120000});
+    let mut dispatched = 0;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), send_with_lane_retry(
+        &adapter.config,
+        adapter.client.post(format!("http://{address}/v1/chat/completions")).header("Content-Type", "application/json"),
+        serde_json::to_vec(&original).expect("fixture JSON"), None,
+        FillReceipt {
+            model: "fixture", prompt_tokens: 4,
+            prompt_quote: Some(PromptQuote { client: &adapter.client, dedicated_lane: true, caller: "fixture", reply: 120000, request_id: "reply-retry" }),
+            admission: Some(DispatchAdmission { persona: uuid::Uuid::new_v4(), engine: None,
+                admission: RequestAdmission { window: 181826, lease: None, priced: PromptAdmission::EngineCounted } }),
+        }, &mut None, || dispatched += 1,
+    )).await;
+    server.abort();
+    let _ = server.await;
+    assert!(result.expect("bounded transport").expect("fits both measured quotes").status().is_success());
+    assert_eq!(dispatched, 2);
+    let posts = posts.lock().expect("fixture posts");
+    let quotes = quotes.lock().expect("fixture quotes");
+    assert_eq!(posts.len(), 2);
+    assert_eq!(quotes.len(), 2);
+    assert_eq!(posts[0]["max_tokens"], 115045);
+    assert_eq!(posts[1]["max_tokens"], 120000);
+    for body in posts.iter().chain(quotes.iter()) {
+        assert_eq!(body["messages"], original["messages"]);
+    }
+}
+
+// what this catches: the engine reading a cut as bad JSON (or the reverse), or a finish the
+// backend never reported as finished. Only `length` is the output limit, and an absent marker is
+// Unreported; a call whose arguments do not parse under a reported finish is hers to retry.
+// Glass-boxed from Asha's capture 2026-08-06: Devstral's runaway `file_path` broke the JSON
+// with finish `stop`, and the turn showed a "missing field" story instead.
 #[test]
-fn unparseable_tool_arguments_are_marked_malformed_never_silently_wrapped() {
-    let runaway = format!(
-        "{{\"content\":\"x\",\"file_path\":\"/a{}",
-        "e072".repeat(50)
-    );
-    let parsed: Result<serde_json::Value, _> = serde_json::from_str(&runaway);
-    let err = parsed.expect_err("fixture must actually be invalid JSON");
-
-    let input = json!({
-        "__malformed_tool_arguments": { "error": err.to_string(), "raw": runaway.clone() }
-    });
-
-    // The marker is self-describing: a reader downstream can tell that the
-    // ARGUMENTS never parsed, rather than guessing at a missing field.
-    let m = input
-        .get("__malformed_tool_arguments")
-        .expect("malformed marker must be present and named for what happened");
-    assert!(
-        m.get("error")
-            .and_then(|e| e.as_str())
-            .is_some_and(|e| !e.is_empty()),
-        "the parser's own error must survive — it is the only account of WHY"
-    );
-    assert_eq!(
-        m.get("raw").and_then(|r| r.as_str()),
-        Some(runaway.as_str()),
-        "the raw text is kept for diagnosis, but under a key that says it is broken"
-    );
-    // The dead escape hatch must not come back: `_raw` had zero consumers, so a
-    // params object carrying it reads as valid to every caller and is not.
-    assert!(
-        input.get("_raw").is_none(),
-        "the silent `_raw` wrapper must stay gone"
-    );
+fn only_the_output_limit_reads_as_a_cut() {
+    use continuum_tool_protocol::{GenerationEnd, UnparsedArguments};
+    let runaway = format!("{{\"content\":\"x\",\"file_path\":\"/a{}", "e072".repeat(50));
+    for (finish, end) in [
+        (FinishReason::Length, GenerationEnd::OutputLimit),
+        (FinishReason::Stop, GenerationEnd::Finished),
+        (FinishReason::ToolUse, GenerationEnd::Finished),
+        (FinishReason::Error, GenerationEnd::Failed),
+        (FinishReason::Unreported, GenerationEnd::Unreported),
+    ] {
+        assert_eq!(finish.generation_end(), end, "{finish}");
+        let unparsed = UnparsedArguments::parse(runaway.clone(), end).expect_err("the fixture is not JSON"); // JUSTIFIED: the fixture is invalid by construction
+        let expected = match end {
+            GenerationEnd::OutputLimit => matches!(unparsed, UnparsedArguments::Cut { .. }),
+            GenerationEnd::Finished => matches!(unparsed, UnparsedArguments::Malformed { .. }),
+            GenerationEnd::Failed => matches!(unparsed, UnparsedArguments::Errored { .. }),
+            GenerationEnd::Unreported => matches!(unparsed, UnparsedArguments::Unexplained { .. }),
+        };
+        assert!(expected, "{finish}: {unparsed:?}");
+        assert_eq!(unparsed.raw(), runaway, "the raw text is kept whole");
+    }
 }
 
 // what this catches (card 394017ed, f3ba3b56 item 5): a /props transport failure left
-// the request unpinned with only a debug! line. It is now a typed miss the caller probes,
+// the request unpinned with only a debug! line. It is now a typed miss the caller refuses,
 // never a latch: the next request probes again.
 #[tokio::test]
 async fn a_props_transport_failure_is_a_named_miss_and_never_latches() {
@@ -56,9 +103,55 @@ async fn a_props_transport_failure_is_a_named_miss_and_never_latches() {
     // test could rebind); the path keeps this root's directory entry its own.
     let mut adapter = test_adapter();
     adapter.config.base_url = "http://127.0.0.1:0/slot-discovery-transport-miss".into();
-    let Err(miss) = adapter.ensure_slot_pool(&adapter.endpoints()).await else { panic!("test: nothing listens, yet a pool came back") };
+    let Err(miss) = crate::inference::slots::directory().discover_pool(&adapter.client, adapter.endpoints().root()).await else { panic!("test: nothing listens, yet a pool came back") };
     assert_eq!(miss.as_str(), "transport", "{miss:?}");
-    assert!(crate::inference::slots::directory().get(adapter.endpoints().root()).is_none(), "a transport error never latches");
+    assert!(matches!(crate::inference::slots::directory().get(adapter.endpoints().root()), continuum_base::probed::Probed::NotAsked), "a transport error never latches");
+}
+
+// Exercise the generation boundary, not just discovery: no miss may turn into
+// permit-only admission and an HTTP generation on an unowned slot.
+#[tokio::test]
+async fn slot_discovery_failure_refuses_generation_before_http_dispatch() {
+    use axum::{http::StatusCode, routing::{get, post}, Router};
+    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+    for (status, body, cause) in [
+        (StatusCode::SERVICE_UNAVAILABLE, "loading", "not_ready"),
+        (StatusCode::NOT_FOUND, "absent", "endpoint_absent"),
+        (StatusCode::OK, "not json", "body_unparsed"),
+        (StatusCode::OK, "{}", "no_geometry"),
+    ] {
+        let generations = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&generations);
+        let app = Router::new()
+            .route("/props", get(move || async move { (status, body) }))
+            .route("/v1/chat/completions", post(move || {
+                let counted = Arc::clone(&counted);
+                async move {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "generation must not be reached")
+                }
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture bind");
+        let address = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let mut adapter = test_adapter();
+        adapter.config.base_url = format!("http://{address}");
+        adapter.config.llamacpp_sampling_extensions = true;
+        let request = TextGenerationRequest {
+            messages: vec![ChatMessage::text("user", "act")],
+            purpose: Some("turn".into()),
+            ..Default::default()
+        };
+        let (sink, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5), adapter.generate_stream_checked(request, sink, crate::ai::adapter::Dispatched::fixture()),
+        ).await.expect("bounded fixture").expect_err("discovery must refuse");
+        assert!(matches!(error, crate::ai::inference_error::InferenceError::Unavailable(_)), "{error}");
+        assert!(error.to_string().contains(cause), "{error}");
+        assert_eq!(generations.load(Ordering::SeqCst), 0, "{cause}");
+        server.abort();
+    }
 }
 
 
@@ -96,6 +189,45 @@ fn a_lane_that_is_not_the_shared_gateway_reports_no_window_at_all() {
         None,
         "a non-single-resident gateway has no one lane to report"
     );
+}
+
+// what this catches: card 7eef3e05, a wedged engine's mid-stream error frame read as an empty
+// `stop` completion (32 such acts on the M5, 2026-10-23); the act must fail with the server's
+// words so a resident never loops on empty "completed" acts.
+#[tokio::test]
+async fn a_server_error_frame_fails_the_act_never_an_empty_completion() {
+    use axum::{routing::post, Router};
+
+    const WEDGED: &str = "data: {\"choices\":[{\"finish_reason\":null,\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":null}}],\"model\":\"test-model\",\"prompt_progress\":{\"total\":113106,\"cache\":4096,\"processed\":4096,\"time_ms\":0}}\n\ndata: {\"error\":{\"code\":500,\"message\":\"decode() failed: failed to process speculative batch\",\"type\":\"server_error\"}}\n\n";
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { ([("content-type", "text/event-stream")], WEDGED) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("isolated HTTP fixture");
+    let address = listener.local_addr().expect("bound address");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mut adapter = test_adapter();
+    adapter.config.base_url = format!("http://{address}");
+    let request = TextGenerationRequest {
+        messages: vec![ChatMessage::text("user", "act")],
+        ..Default::default()
+    };
+    let (sink, receiver) = tokio::sync::mpsc::unbounded_channel();
+    drop(receiver);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        adapter.generate_stream_checked(request, sink, crate::ai::adapter::Dispatched::fixture()),
+    )
+    .await
+    .expect("bounded fixture request");
+    let error = result.expect_err("a server error frame is a failed act, never a completion");
+    assert!(
+        error.to_string().contains("failed to process speculative batch"),
+        "the server's own words reach the act's failure: {error}"
+    );
+    server.abort();
 }
 
 // what this catches: aa5888a9 — the actual HTTP boundary must preserve
@@ -156,7 +288,7 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
     drop(receiver);
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_stream_checked(request, sink),
+        adapter.generate_stream_checked(request, sink, crate::ai::adapter::Dispatched::fixture()),
     )
     .await
     .expect("bounded fixture request");
@@ -194,7 +326,10 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
                     reply: 0,
                     request_id: "fixture",
                 }),
+                admission: None,
             },
+            &mut None,
+            || {},
         ),
     )
     .await
@@ -390,27 +525,27 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     let generation = transition.start_generation().expect("fixture engine generation");
     transition.ready(&root, &generation, crate::inference::slots::KvPageContract {
         model_id: "test-model".into(), model: "fixture.gguf".into(), adapters: vec![],
-        page_dir: None, context: 8192, slots: 1, cache_type: None, flash_attn: None, engine_build: None,
-        engine: "fixture-engine".into(), revisions: None,
+        page_dir: None, context: 8192, slots: 1, cache_type: None, flash_attn: None,
+        revisions: None,
     }).expect("fixture owned engine readiness");
     drop(transition);
-    assert!(matches!(adapter.ensure_slot_pool(&adapter.endpoints()).await,
-        Err(crate::ai::slot_discovery::SlotDiscoveryMiss::GeometryMismatch { .. })),
+    assert!(matches!(crate::inference::slots::directory().discover_pool(&adapter.client, adapter.endpoints().root()).await,
+        Err(crate::inference::slots::PoolDiscoveryMiss::GeometryMismatch { .. })),
         "props cannot authorize an already installed pool with different geometry");
     assert!(!crate::inference::slots::directory().page_admission_known(&root));
     props_slots.store(1, Ordering::SeqCst);
-    assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_ok());
+    assert!(crate::inference::slots::directory().discover_pool(&adapter.client, adapter.endpoints().root()).await.is_ok());
     assert!(crate::inference::slots::directory().page_admission_known(&root));
     let owned_geometry = endpoint.served_geometry().expect("fixture owned geometry");
     let observed_service = || crate::inference::resource_admission::leased_in_sent_samples()
         .iter().filter_map(|sample| sample.served(&root, Some("test-model"))).collect::<Vec<_>>();
     let activity =
-        crate::inference::slots::ActivityKey::new(uuid::Uuid::new_v4(), uuid::Uuid::new_v4())
+        crate::inference::slots::PageKey::mind(uuid::Uuid::new_v4())
             .expect("non-nil fixture activity");
     let turn = TextGenerationRequest {
         messages: vec![ChatMessage::text("user", "activity")],
-        persona_id: Some(activity.persona.to_string()),
-        room_id: Some(activity.room.to_string()),
+        persona_id: Some(activity.persona().to_string()),
+        room_id: Some(uuid::Uuid::new_v4().to_string()),
         purpose: Some("cognition/deliberation".into()),
         ..Default::default()
     };
@@ -429,14 +564,15 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         fail_save.store(fails, Ordering::SeqCst);
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            adapter.generate_text(request),
+            adapter.generate_text(request, crate::ai::adapter::Dispatched::fixture()),
         )
         .await
         .expect("bounded adapter fixture")
         .expect("fixture generation");
     }
+    // Another MIND's turn: hers in another room would be her own page (one page per mind).
     let failed_turn = TextGenerationRequest {
-        room_id: Some(uuid::Uuid::new_v4().to_string()),
+        persona_id: Some(uuid::Uuid::new_v4().to_string()),
         ..turn.clone()
     };
     assert!(!observed_service().is_empty(), "real adapter terminal records owned service");
@@ -447,7 +583,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(1, Ordering::SeqCst);
     assert!(tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(failed_turn.clone()),
+        adapter.generate_text(failed_turn.clone(), crate::ai::adapter::Dispatched::fixture()),
     )
     .await
     .expect("bounded failed generation")
@@ -455,7 +591,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(0, Ordering::SeqCst);
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(turn.clone()),
+        adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture()),
     )
     .await
     .expect("bounded return after failure")
@@ -495,7 +631,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
             // assertion that cancellation stops a production backend.
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             {
-                let generation = adapter.generate_stream(failed_turn.clone(), tx);
+                let generation = adapter.generate_stream(failed_turn.clone(), tx, crate::ai::adapter::Dispatched::fixture());
                 tokio::pin!(generation);
                 tokio::time::timeout(std::time::Duration::from_secs(5), async {
                     tokio::select! {
@@ -509,7 +645,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         } else {
             let result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                adapter.generate_text(failed_turn.clone()),
+                adapter.generate_text(failed_turn.clone(), crate::ai::adapter::Dispatched::fixture()),
             )
             .await
             .expect("bounded interrupted generation");
@@ -525,7 +661,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         generation_mode.store(0, Ordering::SeqCst);
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            adapter.generate_text(turn.clone()),
+            adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture()),
         )
         .await
         .expect("bounded restore")
@@ -551,7 +687,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     // following generation also fails; retry must prefill, not retry that page.
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(background),
+        adapter.generate_text(background, crate::ai::adapter::Dispatched::fixture()),
     )
     .await
     .expect("bounded background")
@@ -560,7 +696,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(1, Ordering::SeqCst);
     assert!(tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(turn.clone())
+        adapter.generate_text(turn.clone(), crate::ai::adapter::Dispatched::fixture())
     )
     .await
     .expect("bounded failed restore")
@@ -569,7 +705,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     generation_mode.store(0, Ordering::SeqCst);
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        adapter.generate_text(turn),
+        adapter.generate_text(turn, crate::ai::adapter::Dispatched::fixture()),
     )
     .await
     .expect("bounded cold retry")
@@ -583,7 +719,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         ["save", "generate", "restore", "generate", "generate"]
     );
     generation_mode.store(5, Ordering::SeqCst);
-    tokio::time::timeout(std::time::Duration::from_secs(5), adapter.generate_text(TextGenerationRequest::default()))
+    tokio::time::timeout(std::time::Duration::from_secs(5), adapter.generate_text(TextGenerationRequest::default(), crate::ai::adapter::Dispatched::fixture()))
         .await.expect("bounded foreign alias response").expect("response compatibility");
     assert!(!crate::inference::resource_admission::leased_in_sent_samples().iter()
         .any(|sample| sample.served(&root, Some("foreign-alias")).is_some()),

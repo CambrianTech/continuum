@@ -12,8 +12,8 @@ use crate::inference::planning::service_rate::ModelRates;
 use crate::inference::decode_knee::DecodeCurve;
 use crate::inference::prefill_rate::PrefillPoint;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use continuum_saved_state::{OwnedFile, Rebuildable, Retention, SavedState, Singleton, Store};
 
 /// One model's measured rates.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -24,6 +24,14 @@ pub struct ServingRates {
     /// Clean per-stream decode tok/s by streams in flight.
     #[serde(default)]
     pub decode: DecodeCurve,
+    /// The last prefill knee a busy window measured for this model: the lanes its prefill
+    /// serves inside the turn budget (`prefill_knee`). Kept so a restarted core plans with the
+    /// measurement instead of the looser decode knee until its first window: on the M5
+    /// (2026-10-25) every core restart planned 6-8 lanes from the decode knee, seated 7-8 minds
+    /// at once, then measured 3-4 and relaunched the engine to clamp (17:11, 17:26, 17:43,
+    /// 17:47, 18:12, 19:04, 19:40, 19:56Z). Absent in a record from before this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefill_knee: Option<u32>,
 }
 
 impl ServingRates {
@@ -46,7 +54,7 @@ impl ServingRates {
 }
 
 static RATES: LazyLock<parking_lot::Mutex<BTreeMap<String, ServingRates>>> =
-    LazyLock::new(|| parking_lot::Mutex::new(load()));
+    LazyLock::new(|| parking_lot::Mutex::new(STORE.load_rebuildable(&Singleton, &())));
 
 /// A server-total prefill rate measured over one busy window for `model`.
 pub fn observe_prefill(model: &str, tps: f64, now_ms: u64) {
@@ -55,7 +63,7 @@ pub fn observe_prefill(model: &str, tps: f64, now_ms: u64) {
         rates.entry(model.to_string()).or_default().prefill.observe(tps, now_ms);
         rates.clone()
     };
-    save_all(&snapshot);
+    STORE.save_rebuildable(&Singleton, &(), &snapshot);
 }
 
 /// A clean per-stream decode rate for `model` with `streams` in flight.
@@ -74,7 +82,27 @@ pub fn observe_decode(model: &str, streams: u32, tps: f64, now_ms: u64) {
     );
     // written outside the lock (Cormac on #4489); reads are serialized by the knee's
     // in-flight flag, so one writer at a time
-    save_all(&snapshot);
+    STORE.save_rebuildable(&Singleton, &(), &snapshot);
+}
+
+/// A prefill knee a busy window measured for `model`: kept with its rates so the next boot
+/// plans with it. Written only when it moves.
+pub fn observe_prefill_knee(model: &str, knee: u32) {
+    let snapshot = {
+        let mut rates = RATES.lock();
+        let record = rates.entry(model.to_string()).or_default();
+        if record.prefill_knee == Some(knee) {
+            return;
+        }
+        record.prefill_knee = Some(knee);
+        rates.clone()
+    };
+    STORE.save_rebuildable(&Singleton, &(), &snapshot);
+}
+
+/// The prefill knee last measured for `model` on this node, this boot or an earlier one.
+pub fn prefill_knee_for(model: &str) -> Option<u32> {
+    RATES.lock().get(model).and_then(|rates| rates.prefill_knee)
 }
 
 /// The measured rates of `model` on this node; empty (every verdict unmeasured) when none.
@@ -82,39 +110,45 @@ pub fn rates_for(model: &str) -> ModelRates {
     RATES.lock().get(model).map(ServingRates::as_model_rates).unwrap_or_default() // unwrap_or_default: an unmeasured model has no rates, and the rule reads that as unmeasured
 }
 
-fn default_path() -> Option<PathBuf> {
-    crate::paths::continuum_home()
-        .ok()
-        .map(|h| h.join("state").join("serving-rates.json"))
-}
-
-fn load() -> BTreeMap<String, ServingRates> {
-    default_path().map(|p| load_from(&p)).unwrap_or_default() // unwrap_or_default: no home = nothing remembered; every model re-measures
-}
-
-pub fn load_from(path: &Path) -> BTreeMap<String, ServingRates> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(), // unwrap_or_default: a corrupt record is forgotten, never trusted
-        Err(_) => BTreeMap::new(),
+/// This node's serving rates per model, saved through the one saved-state contract (`state/serving-rates.json`).
+struct Rates;
+impl SavedState for Rates {
+    const KIND: &'static str = "serving-rates";
+    const FORMAT: u32 = 1;
+    const RETENTION: Retention = Retention::PerKey { bound: "one file per node, one record per model it has served" };
+    type Key = Singleton;
+    type Contract = ();
+    type Value = BTreeMap<String, ServingRates>;
+    type Medium = OwnedFile;
+    /// The file before the envelope was this value: adopted once, rewritten by the next save.
+    fn upgrade(found: u32, old: serde_json::Value) -> Option<Self::Value> {
+        continuum_saved_state::adopt_bare(found, old)
     }
 }
+impl Rebuildable for Rates {}
 
-fn save_all(rates: &BTreeMap<String, ServingRates>) {
-    let Some(path) = default_path() else { return };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(bytes) = serde_json::to_vec_pretty(rates) {
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, bytes).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
-        }
-    }
-}
+static STORE: LazyLock<Store<Rates>> = LazyLock::new(crate::inference::node_state::store);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a restarted core forgetting the prefill knee it measured and planning
+    // from the looser decode knee (the M5, 2026-10-25: 6-8 lanes after every restart, then a
+    // relaunch to 3-4), and any other file read as measured: every outcome of the saved-state
+    // contract, for this kind. A record written before the knee field reads as unmeasured.
+    #[test]
+    fn the_prefill_knee_survives_a_reboot_and_an_older_record_reads_unmeasured() -> Result<(), serde_json::Error> {
+        let dir = tempfile::tempdir().map_err(serde_json::Error::io)?;
+        let rates = BTreeMap::from([("m".to_string(), ServingRates { prefill_knee: Some(4), ..ServingRates::default() })]);
+        continuum_saved_state::round_trip::every_outcome::<Rates>(dir.path(), Singleton, (), None, rates);
+        // The M5's own record before this field (state/serving-rates.json, 2026-10-25).
+        let older: BTreeMap<String, ServingRates> = serde_json::from_str(
+            r#"{"m":{"prefill":{"samples":90,"tps_ema":373.1,"last_ms":1792958628941},"decode":{"points":{}}}}"#,
+        )?;
+        assert_eq!(older.get("m").and_then(|r| r.prefill_knee), None);
+        Ok(())
+    }
 
     // what this catches: a thin or zero point read as a rate. The rule sees a prefill rate
     // only after MIN_SAMPLES windows and a decode point only after MIN_SAMPLES clean

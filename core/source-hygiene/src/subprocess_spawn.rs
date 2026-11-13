@@ -20,23 +20,34 @@
 //!    links, or a question `std`/`sysinfo` answers — the per-program count may never
 //!    rise, and each carries the replacement that retires it. New code reaches for the
 //!    library; a site that must remain says why on its line.
+//! 3. A program whose count reached zero is [`Standing::Retired`]: any new site fails,
+//!    judged without a base.
 //!
 //! A real subprocess (llama-server, git, cargo, a benchmark's own test runner, the
 //! browser) is fine — through `bounded_command`, with a bound and a named outcome.
-use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
+use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
+
+/// Where a program's spawn count stands: falling toward zero, or already there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// Sites remain; the count may only fall.
+    Falling,
+    /// No site remains; any new one fails, on any tree.
+    Retired,
+}
 
 /// Programs that a library, module, or std already answers for. The replacement is
 /// the rule's message, so the site that trips it also says what to write instead.
-pub const ANSWERED_BY_A_LIBRARY: &[(&str, &str)] = &[
-    ("airc", "airc-lib is linked: Airc::open(scope_home) + current_room() / subscription_set(); the daemon endpoint by its resolver, never by parsing `airc ipc-endpoint`"),
-    ("continuum", "this IS the core: call the command through CommandExecutor, never re-enter through the CLI"),
-    ("gh", "GitHub goes through the code/github module's client, never a CLI on PATH"),
-    ("curl", "the http client (reqwest) is linked; a download is a bounded request, not a shell"),
-    ("wget", "the http client (reqwest) is linked; a download is a bounded request, not a shell"),
-    ("ps", "sysinfo is a dependency: System::new_with_specifics + process(pid) for rss/name/parent"),
-    ("which", "walk PATH in-process: std::env::split_paths(PATH).find(|d| d.join(tool).is_file())"),
-    ("tar", "the tar crate / std::fs — an archive is not a shell"),
-    ("cp", "std::fs::copy / a recursive copy helper — a file is not a shell"),
+pub const ANSWERED_BY_A_LIBRARY: &[(&str, Standing, &str)] = &[
+    ("airc", Standing::Falling, "airc-lib is linked: Airc::open(scope_home) + current_room() / subscription_set(); the daemon endpoint by its resolver, never by parsing `airc ipc-endpoint`"),
+    ("continuum", Standing::Retired, "this IS the core: call the command through CommandExecutor, never re-enter through the CLI"),
+    ("gh", Standing::Falling, "GitHub goes through the code/github module's client, never a CLI on PATH"),
+    ("curl", Standing::Falling, "the http client (reqwest) is linked; a download is a bounded request, not a shell"),
+    ("wget", Standing::Retired, "the http client (reqwest) is linked; a download is a bounded request, not a shell"),
+    ("ps", Standing::Falling, "sysinfo is a dependency: System::new_with_specifics + process(pid) for rss/name/parent"),
+    ("which", Standing::Falling, "walk PATH in-process: std::env::split_paths(PATH).find(|d| d.join(tool).is_file())"),
+    ("tar", Standing::Falling, "the tar crate / std::fs — an archive is not a shell"),
+    ("cp", Standing::Falling, "std::fs::copy / a recursive copy helper — a file is not a shell"),
 ];
 
 /// The program a spawn names, when it names one as a string literal. `Command::new(&bin)`
@@ -65,7 +76,7 @@ impl SourceRule for SubprocessSpawn {
             }
             out.push(Violation {
                 rule: "subprocess-spawn",
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line: line_no,
                 source: code.trim().to_string(),
             });
@@ -94,16 +105,20 @@ mod tests {
                 per.entry(p).or_default().push(format!("  {}:{}  {}", v.file, v.line, v.source));
             }
         }
-        for (program, why) in ANSWERED_BY_A_LIBRARY {
+        for (program, standing, why) in ANSWERED_BY_A_LIBRARY {
             let found = per.get(program).map_or(&[][..], Vec::as_slice);
-            crate::ratchet::hold(&format!("spawn:{program}"), found.len(), || {
+            let advice = || {
                 format!(
                     "a program a library already answers for gained a spawn site: `{program}` \
                      spawned at {} sites — {why}\n{}",
                     found.len(),
                     found.join("\n")
                 )
-            });
+            };
+            match standing {
+                Standing::Falling => crate::ratchet::hold(&format!("spawn:{program}"), found.len(), advice),
+                Standing::Retired => crate::ratchet::zero_count(&format!("spawn:{program}"), found.len(), advice),
+            }
         }
         crate::ratchet::hold("spawn_sites", total, || {
             format!(

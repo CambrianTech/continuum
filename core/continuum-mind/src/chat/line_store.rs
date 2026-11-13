@@ -1,0 +1,328 @@
+//! The ONE write path of a room line into the chat store: the message row and its [`Arrival`],
+//! committed together in one batch (PERCEPTION-FROM-THE-STORE.md, Slice P). Two writers use it:
+//! a human `chat/send` (a new line) and the inbound airc seam (an import, idempotent by id, so a
+//! replay after a crash commits without a second row or arrival).
+
+use airc_core::{PeerId, RoomId};
+use serde_json::{json, Value};
+use uuid::Uuid;
+
+use super::arrival::{Arrival, ArrivalKind};
+use super::chat_data_handle::{now_iso, ChatModule};
+use super::import_watermark::{ImportHistory, ImportWatermark, ImportedThrough};
+use super::publication::PublicationObligation;
+use super::types::CHAT_MESSAGES_COLLECTION;
+use crate::orm::types::{BatchOperation, BatchOperationType};
+use crate::runtime::late_bound::LateBound;
+
+/// A room line, typed: the routing header and the text, never a JSON payload to fish fields from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PostedLine {
+    pub message_id: Uuid,
+    pub room: RoomId,
+    pub author: PeerId,
+    pub kind: ArrivalKind,
+    pub direct_to: Option<PeerId>,
+    pub occurred_at_ms: u64,
+    pub text: String,
+    /// The line was delegated through this core's publication obligation, which the import retires
+    /// in the same batch.
+    pub retires_publication: bool,
+}
+
+/// Where a line landed in arrival order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Imported {
+    /// This write created the line, at this arrival.
+    Fresh { arrival_seq: u64 },
+    /// The line was already stored; its existing arrival.
+    Duplicate { arrival_seq: u64 },
+}
+
+/// The chat module the inbound seam imports through, installed at its initialize.
+static IMPORTER: LateBound<ChatModule> = LateBound::new("chat::line_store::importer");
+
+pub(super) fn install_importer(module: std::sync::Arc<ChatModule>) {
+    IMPORTER.install(module);
+}
+
+/// Where the inbound seam stores the lines it receives. Injected into the seam, so production
+/// writes the chat store and a test records what the seam would have written.
+#[async_trait::async_trait]
+pub trait LineImporter: Send + Sync {
+    /// Store `line` (idempotent by its id); awaited, so the attach watermark never passes a line
+    /// the store has not committed.
+    async fn import(&self, line: PostedLine) -> Result<Imported, String>;
+
+    /// Publish again the lines this core relayed into `room` and has not seen back (pending
+    /// obligations): run by the room's attach owner on every (re)attach, so a refused publish is
+    /// retried with the attach's backoff, never left for the next process start.
+    async fn recover_publications(&self, room: RoomId) -> Result<usize, String>;
+
+    /// The publication obligation `id` names, if this core published that line for a caller.
+    async fn publication(&self, id: Uuid) -> Result<Option<PublicationObligation>, String>;
+
+    /// How far the store has imported `room` from airc; `None` when it never has.
+    async fn watermark(&self, room: RoomId) -> Result<Option<ImportedThrough>, String>;
+
+    /// Record how far the store has imported `room` (a position already delivered and imported).
+    async fn advance_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String>;
+
+    /// Record a position migrated from the pre-store cursor file: unvouched through it.
+    async fn migrate_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String>;
+}
+
+/// The chat store, as the inbound seam's importer: the installed chat module, resolved at each
+/// import (before it is installed an import fails, and the seam re-attaches and replays).
+pub struct ChatStore;
+
+#[async_trait::async_trait]
+impl LineImporter for ChatStore {
+    async fn import(&self, line: PostedLine) -> Result<Imported, String> {
+        ready()
+            .await?
+            .commit_line(&line, None, json!({ "text": line.text }))
+            .await
+    }
+
+    async fn recover_publications(&self, room: RoomId) -> Result<usize, String> {
+        ready().await?.republish_pending(room).await
+    }
+
+    async fn publication(&self, id: Uuid) -> Result<Option<PublicationObligation>, String> {
+        ready().await?.publication(id).await
+    }
+
+    async fn watermark(&self, room: RoomId) -> Result<Option<ImportedThrough>, String> {
+        ready().await?.import_watermark(room).await
+    }
+
+    async fn advance_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String> {
+        ready().await?.advance_import_watermark(room, mark).await
+    }
+
+    async fn migrate_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String> {
+        ready().await?.migrate_import_watermark(room, mark).await
+    }
+}
+
+/// The chat module once its executor is installed: the inbound seam can attach before boot
+/// installs executors, and waits for that install (an event) instead of failing its first attach.
+async fn ready() -> Result<std::sync::Arc<ChatModule>, String> {
+    let module = IMPORTER.cloned().ok_or_else(|| {
+        "chat store: the chat module is not installed yet (early boot)".to_string()
+    })?;
+    module.executor_slot.ready().await?;
+    Ok(module)
+}
+
+/// The message row of `line` as one batch operation: the same ChatMessageEntity shape for every
+/// writer; WHO spoke is `senderId`, and `metadata.source: "user"` for all citizens alike.
+fn message_row(
+    line: &PostedLine,
+    operation_type: BatchOperationType,
+    reply_to: Option<Uuid>,
+    content: Value,
+) -> BatchOperation {
+    BatchOperation {
+        operation_type,
+        collection: CHAT_MESSAGES_COLLECTION.to_string(),
+        id: Some(line.message_id.to_string()),
+        data: Some(json!({
+            "id": line.message_id.to_string(),
+            "roomId": line.room.as_uuid().to_string(),
+            "senderId": line.author.as_uuid().to_string(),
+            "timestamp": now_iso(line.occurred_at_ms),
+            "content": content,
+            "replyToId": reply_to.map(|id| id.to_string()),
+            "metadata": { "source": "user" },
+            "status": "sent",
+        })),
+    }
+}
+
+/// Records every imported line and reports each as fresh, in order: the seam's test importer.
+#[cfg(any(test, feature = "test-fixtures"))]
+#[derive(Default)]
+pub struct RecordingImporter(
+    pub std::sync::Mutex<Vec<PostedLine>>,
+    pub std::sync::Mutex<std::collections::HashMap<RoomId, ImportedThrough>>,
+    pub std::sync::Mutex<std::collections::HashMap<Uuid, PublicationObligation>>,
+);
+
+#[cfg(any(test, feature = "test-fixtures"))]
+#[async_trait::async_trait]
+impl LineImporter for RecordingImporter {
+    async fn import(&self, line: PostedLine) -> Result<Imported, String> {
+        // As the store does: a message id already held is a duplicate at its first arrival.
+        let mut lines = self.0.lock().unwrap_or_else(|p| p.into_inner()); // test fixture: a poisoned lock still holds the lines recorded
+        if let Some(first) = lines
+            .iter()
+            .position(|held| held.message_id == line.message_id)
+        {
+            return Ok(Imported::Duplicate {
+                arrival_seq: first as u64 + 1,
+            });
+        }
+        lines.push(line);
+        Ok(Imported::Fresh {
+            arrival_seq: lines.len() as u64,
+        })
+    }
+
+    async fn recover_publications(&self, _room: RoomId) -> Result<usize, String> {
+        Ok(0)
+    }
+
+    async fn publication(&self, id: Uuid) -> Result<Option<PublicationObligation>, String> {
+        Ok(self
+            .2
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&id)
+            .cloned()) // test fixture: a poisoned lock still holds the obligations
+    }
+
+    async fn watermark(&self, room: RoomId) -> Result<Option<ImportedThrough>, String> {
+        Ok(self
+            .1
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&room)
+            .copied()) // test fixture: a poisoned lock still holds the marks
+    }
+
+    async fn advance_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String> {
+        let mut marks = self.1.lock().unwrap_or_else(|p| p.into_inner()); // test fixture: a poisoned lock still holds the marks
+        let history = marks
+            .get(&room)
+            .map_or(ImportHistory::Complete, |m| m.history);
+        marks.insert(
+            room,
+            ImportedThrough {
+                position: mark,
+                history,
+            },
+        );
+        Ok(())
+    }
+
+    async fn migrate_watermark(&self, room: RoomId, mark: ImportWatermark) -> Result<(), String> {
+        let history = ImportHistory::UnvouchedThrough {
+            epoch: mark.epoch,
+            counter: mark.counter,
+            event_id: mark.event_id,
+        };
+        self.1.lock().unwrap_or_else(|p| p.into_inner()).insert(
+            room,
+            ImportedThrough {
+                position: mark,
+                history,
+            },
+        ); // test fixture: a poisoned lock still holds the marks
+        Ok(())
+    }
+}
+
+impl ChatModule {
+    /// Store a line `chat/send` just minted: its message row, plus `extra` (the publication
+    /// obligation when this core relays it), in ONE batch. No arrival: arrivals are the inbound
+    /// seam's alone, appended when the line comes back over airc (Codex, #5691 P2).
+    pub(super) async fn store_sent_line(
+        &self,
+        line: &PostedLine,
+        reply_to: Option<Uuid>,
+        content: Value,
+        extra: Vec<BatchOperation>,
+    ) -> Result<(), String> {
+        let mut operations = vec![message_row(
+            line,
+            BatchOperationType::Create,
+            reply_to,
+            content,
+        )];
+        operations.extend(extra);
+        self.run_batch(operations).await.map(|_| ())
+    }
+
+    /// Import a line the inbound seam received: its message row (ensured, so a replay is
+    /// idempotent) and its arrival in ONE batch, and, for a delegated line, its publication
+    /// obligation marked retired (kept, so an exact replay after a restart still attributes).
+    pub(super) async fn commit_line(
+        &self,
+        line: &PostedLine,
+        reply_to: Option<Uuid>,
+        content: Value,
+    ) -> Result<Imported, String> {
+        let message_op = message_row(line, BatchOperationType::Ensure, reply_to, content);
+        let arrival = Arrival::new(
+            line.message_id,
+            line.room,
+            line.author,
+            line.kind,
+            line.direct_to,
+        );
+        let append_op = arrival.append_op().map_err(|e| format!("chat line: {e}"))?;
+        let mut operations = vec![message_op, append_op];
+        if line.retires_publication {
+            // The relayed line came back: its obligation is marked retired with the import,
+            // atomically. Kept, not deleted, so an exact replay after a restart is recognized.
+            operations.push(BatchOperation {
+                operation_type: BatchOperationType::Update,
+                collection:
+                    <super::publication::PublicationObligation as crate::orm::OrmEntity>::COLLECTION
+                        .to_string(),
+                id: Some(line.message_id.to_string()),
+                data: Some(json!({ "state": super::publication::PublicationState::Retired })),
+            });
+        }
+        let result = self.run_batch(operations).await?;
+        let appended = result
+            .get("data")
+            .and_then(|d| d.get(1))
+            .ok_or("chat line: the batch reported no arrival")?;
+        let arrival_seq = appended
+            .get("seq")
+            .and_then(Value::as_u64)
+            .ok_or("chat line: the arrival carried no sequence")?;
+        match appended.get("fresh").and_then(Value::as_bool) {
+            Some(true) => Ok(Imported::Fresh { arrival_seq }),
+            Some(false) => Ok(Imported::Duplicate { arrival_seq }),
+            // An append that does not say whether it created the arrival is a malformed reply, never a
+            // duplicate: reading it as one would vouch for a line nobody confirmed (Codex on #5694).
+            None => Err("chat line: the arrival did not say whether it was fresh".to_string()),
+        }
+    }
+}
+
+/// Refuses every import: the seam's test importer for a store that cannot write.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub struct RefusingImporter;
+
+#[cfg(any(test, feature = "test-fixtures"))]
+#[async_trait::async_trait]
+impl LineImporter for RefusingImporter {
+    async fn import(&self, _line: PostedLine) -> Result<Imported, String> {
+        Err("test: the store refused the line".to_string())
+    }
+
+    async fn recover_publications(&self, _room: RoomId) -> Result<usize, String> {
+        Err("test: the relay refused the publish".to_string())
+    }
+
+    async fn publication(&self, _id: Uuid) -> Result<Option<PublicationObligation>, String> {
+        Err("test: the store cannot read".to_string())
+    }
+
+    async fn watermark(&self, _room: RoomId) -> Result<Option<ImportedThrough>, String> {
+        Err("test: the store cannot read".to_string())
+    }
+
+    async fn advance_watermark(&self, _room: RoomId, _mark: ImportWatermark) -> Result<(), String> {
+        Err("test: the store refused the watermark".to_string())
+    }
+
+    async fn migrate_watermark(&self, _room: RoomId, _mark: ImportWatermark) -> Result<(), String> {
+        Err("test: the store refused the watermark".to_string())
+    }
+}

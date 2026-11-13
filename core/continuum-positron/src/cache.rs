@@ -41,7 +41,8 @@
 //! cache is the cell that holds the latest decoded value.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use positron_core::wire::StateEnvelope;
 
@@ -104,7 +105,7 @@ impl SubstrateStateCache {
     /// envelope, every consumer reads the same bytes.
     pub fn store_arc(&self, envelope: Arc<StateEnvelope>) {
         let kind = envelope.kind.clone();
-        let mut by_kind = self.by_kind.lock().expect("cache mutex poisoned");
+        let mut by_kind = self.by_kind.lock();
         by_kind.insert(kind, envelope);
     }
 
@@ -117,7 +118,7 @@ impl SubstrateStateCache {
     /// "empty chat" snapshot would be a fallback that hides bugs
     /// (renderer would render an empty chat that isn't real).
     pub fn get(&self, kind: &str) -> Option<Arc<StateEnvelope>> {
-        let by_kind = self.by_kind.lock().expect("cache mutex poisoned");
+        let by_kind = self.by_kind.lock();
         by_kind.get(kind).map(Arc::clone)
     }
 
@@ -125,7 +126,7 @@ impl SubstrateStateCache {
     /// tests + diagnostics; not part of the snapshot-then-live hot
     /// path.
     pub fn len(&self) -> usize {
-        self.by_kind.lock().expect("cache mutex poisoned").len()
+        self.by_kind.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {

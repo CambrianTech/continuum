@@ -1,0 +1,79 @@
+{
+  "m5_device_bytes": {
+    "value": 68719476736,
+    "receipt": "sysctl hw.memsize on the M5 Pro, 2026-11-04 (ONE-ACT table: 68.7 GB, not 128)"
+  },
+  "qwen36_weights_bytes": {
+    "value": 20419565568,
+    "receipt": "lane footprint of Qwen3.6-35B-A3B, wired, 2026-11-04"
+  },
+  "qwen36_trained_window": {
+    "value": 262144,
+    "receipt": "the model's trained window, as the M5 footprint in serving_daemon/tests/one_launch.rs pins it (m5_trained)"
+  },
+  "m5_kv_bytes_per_token": {
+    "value": 8317,
+    "receipt": "the M5's KV rate (q4_0 KV, flash attention), as serving_daemon/tests/one_launch.rs pins it (m5.kv_per_token)"
+  },
+  "m5_sequences": {
+    "value": 5,
+    "receipt": "four residents (Aiko, Aris, Atlas, Benchy) and the scratch traffic: engine_pool's seated + 1"
+  },
+  "launch_pools_same_build": {
+    "value": [33040, 50275, 88425, 125640, 413625, 654336],
+    "receipt": "engine -c of each launch of one build, by launch timing, 2026-11-04 (ONE-ACT table)"
+  },
+  "cold_boot": {
+    "value": {
+      "reading": {
+        "usable_bytes": 22785477836,
+        "credited_bytes": 0,
+        "previous_engine": { "still_attributed": { "wired_bytes": 20419565568 } }
+      },
+      "launched_pool": 125640
+    },
+    "receipt": "board reading usable 22,785,477,836 B, credited 0, with the old engine still wired (vm_stat 20:56Z: 21-24 GB reclaimable; 45.6 GB after its release at 21:00Z); the engine launched -c 125640"
+  },
+  "whole_pool_grant": {
+    "value": {
+      "pool": 125696,
+      "holder": 1,
+      "held": 114592,
+      "residents": [
+        { "name": "Aiko", "mind": 1, "need": { "at_least": 114592 } },
+        { "name": "Aris", "mind": 2, "need": { "exact": 40000 } },
+        { "name": "Atlas", "mind": 3, "need": { "exact": 40000 } },
+        { "name": "Benchy", "mind": 4, "need": { "exact": 40000 } }
+      ]
+    },
+    "receipt": "serving.grants 20:15-20:35Z: pool_tokens 125,696, grants {Aiko: 114,592} from her Observed::AtLeast; three residents dark 20 min on exact needs of about 40k each (40,000 is the rounded receipt; the property used is only that any one fits beside the others but not beside Aiko's bound)"
+  },
+  "grant_tick_ms": {
+    "value": 5000,
+    "receipt": "the serving daemon's 5-second planning tick (serving_daemon/planning.rs), on which grants are republished"
+  },
+  "aiko_turns": {
+    "value": { "window_ms": 1200000, "acts": 28 },
+    "receipt": "Aiko ~20k-token prompts, 28 acts in 20 min, 20:15-20:35Z: one act about every 43 s, so each completes and the next starts between two grant ticks"
+  },
+  "restore_free_cells": {
+    "value": { "pool_cells": 125696, "page_cells": 59144, "others_resident_cells": 70000 },
+    "receipt": "restore 400 \"failed to find 59144 available cells\" in the 125,696-cell unified pool; others_resident_cells is SHAPE, not a receipt (\"others resident\"): only that they held more than the 66,552 the pool left her page"
+  },
+  "oversize": {
+    "value": { "launch_ctx": 33040, "pool_cells": 33280, "pages": [35842, 33542] },
+    "receipt": "a relaunch at -c 33040, reported pool 33,280; resident pages of 35,842 and 33,542 tokens; restore 400 \"n_tokens = 35838 > size = 33280\""
+  },
+  "unreleased_hold": {
+    "value": { "held_ms": 914000, "running_pool": 88425, "target_pool": 88425 },
+    "receipt": "admission.quiesce held 18:00:46Z-18:16Z, zero generations, growth due and the launch planner refusing the relaunch; the two pools are SHAPE, not a receipt (the hold's receipt names none): only that the ensure's target was not larger than the running pool"
+  },
+  "aris_view": {
+    "value": { "view_tokens": 44000, "append_chars_per_act": [17000, 43000], "prompt_tokens": 89000, "aiko_prompt_tokens": 20000 },
+    "receipt": "Aris 18:49-19:22Z: per-act appends 17-43k chars on a ~44k-token view, ~89k-token prompts, 9 acts in 30 min; Aiko ~20k-token prompts, 28 acts in 20 min"
+  },
+  "m5_prefill_tok_per_s_large": {
+    "value": 148,
+    "receipt": "llama-server prompt eval on the M5: 141,739 tokens at 148 tok/s (a cold act: Atlas 76,114 tokens, 0 cached, 318 s, 21:37Z)"
+  }
+}

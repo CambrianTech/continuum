@@ -11,7 +11,7 @@
     // the plan says so with fits_on_gpu=false instead of planning a 2k lane.
     #[test]
     pub(super) fn with_requirements_the_plan_is_the_allocators_never_a_starved_lane() {
-        use crate::inference::planning::window_allocator::LaneRequirement;
+        use crate::inference::planning::window_allocator::{test_tokens, LaneRequirement};
         const GB: u64 = 1 << 30;
         let qwen = ModelFootprint {
             model_id: "qwen-27b".into(),
@@ -23,8 +23,8 @@
         };
         let host = HostBudget { usable_bytes: 30 * GB, perf_cores: 8 };
         let two = vec![
-            LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
-            LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
+            LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000)),
+            LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000)),
         ];
         // The poisoned inputs the 5090 had: a sent median of 828 and a sticky 2048.
         let demand = ServingDemand::new(2, Some(56_057))
@@ -35,7 +35,7 @@
         assert_eq!((plan.lanes, plan.served_context_window), (2, 70_000), "{}", plan.rationale);
         assert!(plan.fits_on_gpu);
 
-        let five: Vec<_> = (0..5).map(|_| LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)).collect();
+        let five: Vec<_> = (0..5).map(|_| LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000))).collect();
         let squeezed = plan_serving(&host, std::slice::from_ref(&qwen), &ServingDemand::new(5, Some(56_057)).with_requirements(five)).expect("plan");
         assert_eq!((squeezed.lanes, squeezed.served_context_window), (2, 70_000), "minds shed, window kept");
         assert_eq!(squeezed.grid_overflow_lanes, 3);

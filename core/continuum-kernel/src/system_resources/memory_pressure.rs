@@ -76,6 +76,8 @@ use crate::{clog_info, clog_warn};
 
 mod poll_interval;
 pub use poll_interval::*;
+mod shed_lru;
+pub use shed_lru::{ByteSized, ShedLru};
 mod memory_pressure_monitor;
 
 // =============================================================================

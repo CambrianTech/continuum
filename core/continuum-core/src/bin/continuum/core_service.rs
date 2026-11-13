@@ -406,9 +406,8 @@ impl PreparedCoreService {
         if !prebuilt_only && Self::engine_drift(repo).await?.is_empty() {
             return Ok(None);
         }
-        if !prebuilt_only { warm_build_allowed(available_memory_bytes(), locate_start_script().ok())?; }
         let original = Self::query().await?.description;
-        let receipt = WarmBuildReceipt::create()?;
+        let receipt = BuildReceipt::create()?;
         let repo_arg = repo.to_string_lossy().replace('\'', "''");
         let environment = if prebuilt_only { String::new() } else {
             let cuda = build_env_cuda(repo)?;
@@ -538,7 +537,7 @@ impl PreparedCoreService {
             let repo = tracked_repo_dir()?;
             let source = built.path.parent().ok_or("prebuilt artifact has no directory")?;
             let existing = Self::query().await?.runtime_paths_resolve()?;
-            let receipt = WarmBuildReceipt::create().map_err(PublishedCoreError::OperationalBlocked)?;
+            let receipt = BuildReceipt::create().map_err(PublishedCoreError::OperationalBlocked)?;
             let quote = |p: &Path| p.to_string_lossy().replace('\'', "''");
             let engine_stage = if source.join("engine/engine-install.json").is_file() {
                 format!("$r=New-CoreServiceRelease -RepoRoot '{repo}' -ArtifactDirectory '{source}'; Copy-CorePublishedEngine -RepoRoot '{repo}' -ArtifactDirectory '{source}' -InstallDirectory (Split-Path $r.engine)", repo=quote(&repo), source=quote(source))

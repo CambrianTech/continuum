@@ -30,9 +30,9 @@
 //!
 //! A same-line `//` comment with real content (see [`MIN_JUSTIFICATION_CHARS`]) —
 //! not `// ok`, not `// fixme`. String-literal-aware, so a `//` inside a URL is not
-//! mistaken for a comment (see [`super::split_code_and_comment`]).
+//! mistaken for a comment (see [`super::lexer::split_code_and_comment`]).
 
-use super::{split_code_and_comment, SourceRule, SourceFile, Violation};
+use super::{lexer::split_code_and_comment, SourceRule, SourceFile, Violation};
 
 /// A justification has to say something. `// ok` and `// safe` are not reasons; they
 /// are the shape of a reason, which is worse than nothing because it silences the
@@ -74,7 +74,7 @@ impl SourceRule for UnwrapJustification {
             if !justified {
                 out.push(Violation {
                     rule: "unwrap-justification",
-                    file: file.rel.clone(),
+                    file: file.repo.clone(),
                     line: line_no,
                     source: code.trim().to_string(),
                 });
@@ -98,13 +98,13 @@ mod tests {
     #[test]
     fn the_unjustified_unwrap_count_never_rises() {
         let violations = scan(&[&UnwrapJustification]);
-        let count = violations.len();
-        // The scan cannot know which occurrences are NEW — it has no old set — so it does
+                // The scan cannot know which occurrences are NEW — it has no old set — so it does
         // not pretend to. The label used to say "First few new ones" and list the
         // alphabetically-first files in tree (anthropic_adapter.rs:52…), which sent the
         // reader to lines that predate the guard; the four real ones (#4211) were in
         // files starting with `b` and `s`. Say what is printed, and how to find yours.
-        crate::ratchet::hold("unjustified_unwraps", count, || {
+        let count = violations.len();
+        crate::ratchet::hold_sites("unjustified_unwraps", &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
             "unjustified production unwraps rose to {count}.\n\
              Every unwrap/expect/unwrap_or needs a same-line `//` comment saying WHY it is safe.\n\
@@ -133,11 +133,7 @@ mod tests {
     #[test]
     fn a_token_comment_does_not_count_as_a_justification() {
         let rule = UnwrapJustification;
-        let mk = |src: &str| SourceFile {
-            rel: "fake.rs".into(),
-            production: src.into(),
-            raw: src.into(),
-        };
+        let mk = |src: &str| SourceFile::fixture("fake.rs", src, src);
 
         assert_eq!(rule.check(&mk("let x = o.unwrap(); // ok")).len(), 1, "`// ok` is not a reason");
         assert_eq!(rule.check(&mk("let x = o.unwrap();")).len(), 1, "no comment at all");

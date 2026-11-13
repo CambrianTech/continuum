@@ -16,7 +16,8 @@ use std::net::TcpStream as UnixStream;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use parking_lot::{Condvar, Mutex};
+use std::sync::Arc;
 
 use crate::{clog_info, clog_warn};
 

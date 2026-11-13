@@ -22,11 +22,13 @@
 //! registry.register(Arc::new(anthropic), 1);
 //!
 //! let (provider_id, adapter) = registry.select(None, Some("deepseek-chat"), InferenceDevice::Auto).unwrap();
-//! let response = adapter.generate_text(request).await?;
+//! // Every generation states its think (`DispatchTerms`); the terms-less paths are the engine's.
+//! let response = adapter.generate_under(request, DispatchTerms::thinking(Think::ModelDefault)).await?;
 //! ```
 
 pub mod adapter;
 pub mod anthropic_adapter;
+pub mod embedding;
 // HeuristicInferenceAdapter is gated behind `cfg(any(test, feature =
 // "test-fixtures"))`. Production binaries built without the feature
 // do not contain it at all — the compiler enforces what the doctrine
@@ -40,9 +42,10 @@ pub mod inference_error;
 pub mod json_in_prompt_tools;
 pub mod openai_adapter;
 pub mod openai_endpoints;
-pub(crate) mod slot_discovery;
+pub mod provenance;
 pub mod registry_bridge;
 pub mod stream_sinks;
+pub mod think;
 pub mod tool_dialect;
 pub mod tool_usage;
 pub mod types;

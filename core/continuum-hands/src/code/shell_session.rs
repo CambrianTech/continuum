@@ -26,7 +26,6 @@ use regex::Regex;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 use tokio::sync::Notify;
-use uuid::Uuid;
 
 use super::shell_types::{
     ClassifiedLine, OutputClassification, SentinelAction, SentinelRule, ShellExecuteResponse,
@@ -39,8 +38,12 @@ mod max_output_lines_per_execution;
 pub use max_output_lines_per_execution::*;
 mod shell_session;
 pub use shell_session::*;
+mod execution_id;
+pub use execution_id::*;
 mod run_shell_command;
 pub use run_shell_command::*;
+pub mod resident_env;
+pub use resident_env::*;
 
 #[cfg(test)]
 mod tests;

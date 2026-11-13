@@ -6,12 +6,8 @@ pub(super) fn register_inference_modules(runtime: &Arc<Runtime>) {
     // Runtime-owned lease ledger for CPU/GPU/memory/disk/network admission.
     // Subsystems ask this broker for capacity instead of keeping private caps.
     runtime.register(Arc::new(
-        crate::modules::resource_broker::ResourceBrokerModule::new(),
+        crate::resource_broker::ResourceBrokerModule::new(),
     ));
-
-    // `inference/capacity` is now a stateless self-routing command
-    // (`commands/inference/capacity.rs`) — same single-source-of-truth RAM
-    // formula (issue #887), no module shell needed. See the typed registry.
 
     // InferenceHandleModule — the `ai/inference/{open,generate,close,inspect}`
     // lane command surface, routed through the SAME `InferenceCoordinator`
@@ -72,5 +68,5 @@ pub(super) fn register_inference_modules(runtime: &Arc<Runtime>) {
     // for first-token-ms" with a single command return. PR-body
     // VDD claims become `./jtag vdd/report --git_sha=<sha>`,
     // not pasted terminal text.
-    runtime.register(Arc::new(crate::modules::vdd::VddModule::new()));
+    runtime.register(Arc::new(continuum_mind::vdd::module::VddModule::new()));
 }

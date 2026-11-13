@@ -83,6 +83,7 @@ use serde_json::Value;
 use ts_rs::TS;
 use uuid::Uuid;
 
+use super::arguments::{decode, ArgumentsRefusal, JsonKind};
 use super::cell_shapes::HandleRef;
 use super::CommandResult;
 
@@ -225,100 +226,12 @@ where
     })
 }
 
-/// Turn serde's one-sided "missing field `cmd`" into a two-sided diagnosis.
-///
-/// Every caller — persona, CLI, SDK — sends a params object, and the single most common
-/// failure is a NAME mismatch, not a missing intent: `command` for `cmd`, `path` for
-/// `file_path`. serde reports only what it WANTED, so the message reads as "you forgot
-/// something" when the truth is "you called it something else, and here is the something".
-/// Measured on myself: two different commands, two mismatches, inside two minutes — a model
-/// reaching for the industry-standard name hits this constantly and has nothing to correct
-/// toward.
-///
-/// One seam, every command: this is the only place a params object is decoded.
-///
-/// Naming what was SENT is the fix. The near-miss suggestion is a bonus and is deliberately
-/// conservative — when nothing is close, listing the sent keys is still strictly better than
-/// naming the wanted one alone.
-fn param_mismatch_message(serde_error: &str, sent: &[String]) -> String {
-    let base = format!("CommandRequest deserialization failed: {serde_error}");
-    // serde renders this as: missing field `cmd`
-    let Some(wanted) = serde_error
-        .split_once("missing field `")
-        .and_then(|(_, rest)| rest.split_once('`'))
-        .map(|(name, _)| name)
-    else {
-        return base;
-    };
-    // Params the caller controls — the envelope's own fields are not the mismatch.
-    let candidates: Vec<&String> = sent
-        .iter()
-        // Envelope + transport fields are the kernel's, never her params — parading them back
-        // as "you sent" points at things she never typed.
-        //
-        // `command` is deliberately NOT filtered even though the CLI adds it: for `code/shell`
-        // it is the single likeliest mis-name (`command` for `cmd`), and suppressing it would
-        // break the exact case this function exists for. A little CLI noise beats losing the
-        // real diagnosis — caught by this function's own test.
-        .filter(|k| !is_envelope_field(k.as_str()))
-        .collect();
-    if candidates.is_empty() {
-        return format!(
-            "{base}. You sent no parameters at all — this command requires `{wanted}`."
-        );
-    }
-    let sent_list = candidates
-        .iter()
-        .map(|k| format!("`{k}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    if let Some(near) = closest_param(wanted, &candidates) {
-        return format!(
-            "{base}. You sent {sent_list} — this command calls that parameter `{wanted}`, not `{near}`. Re-send with `{wanted}`."
-        );
-    }
-    format!("{base}. You sent {sent_list}, but this command requires `{wanted}`.")
-}
-
-/// The sent key most plausibly MEANT as `wanted`.
-///
-/// Two kinships, because the real pairs come in two shapes and the obvious check only catches
-/// one — my first version used substring alone and its own test caught that `cmd` is NOT a
-/// substring of `command` (the letters are not contiguous), i.e. it failed on the exact case
-/// that motivated it:
-///
-/// - QUALIFIER: `path` ⊂ `file_path` — substring.
-/// - ABBREVIATION: `cmd` ⊆ `command` — subsequence, the letters in order.
-///
-/// Both stay tight enough to refuse unrelated names: `cmd` is not a subsequence of `colour`
-/// (no `m`), and a wrong "you meant X" would send her to rename the wrong field, which is
-/// worse than a plain listing.
-fn closest_param<'a>(wanted: &str, sent: &[&'a String]) -> Option<&'a str> {
-    let w = wanted.to_lowercase();
-    sent.iter()
-        .find(|k| {
-            let k = k.to_lowercase();
-            k.contains(&w) || w.contains(&k) || is_subsequence(&k, &w) || is_subsequence(&w, &k)
-        })
-        .map(|k| k.as_str())
-}
-
-/// Is `short` an in-order subsequence of `long` — the abbreviation relation? Requires at least
-/// 3 characters so a 1-2 letter param never matches half the alphabet.
-fn is_subsequence(short: &str, long: &str) -> bool {
-    if short.len() < 3 || short.len() >= long.len() {
-        return false;
-    }
-    let mut chars = long.chars();
-    short.chars().all(|c| chars.any(|l| l == c))
-}
-
 /// The base fields every wire request may carry beside its command params.
 ///
 /// `actorKind` belongs here for the same reason as the rest, and its absence cost two
-/// citizens a retry loop on 2026-09-05: they sent NO parameters, so `candidates` in
-/// `param_mismatch_message` should have been empty and the dedicated "you sent no
-/// parameters at all" branch should have fired. Instead actorKind made it non-empty and
+/// citizens a retry loop on 2026-09-05: they sent NO parameters, so the keys a refusal
+/// names as hers should have been empty and the "you sent no parameters at all" reading
+/// should have held. Instead actorKind made it non-empty and
 /// they were told to fix a field the KERNEL had added for them — unremovable, so the
 /// identical call was resent and the identical message came back. Observed six-plus times
 /// in minutes, including a repeat the substrate had to collapse as near-identical.
@@ -336,7 +249,7 @@ pub fn is_envelope_field(key: &str) -> bool {
 /// — silently `None` for an option, "invalid type … expected struct HandleRef" for a
 /// string. Five collisions before the guard (card ea28d2f6): actorKind (#3781),
 /// requestId (#4178), `handle` on the staging path (#3924 — why `dbPath` exists), and
-/// `jobHandle` (#4326); `agent/status`, `agent/stop` and `agent/wait` could not be
+/// `jobHandle` (#4326), where a command whose input was named `handle` could not be
 /// called through the envelope at all.
 pub const ENVELOPE_FIELDS: &[&str] =
     &["handle", "sessionId", "userId", "actorKind", "contextId", "requestId"];
@@ -345,21 +258,30 @@ impl<P> CommandRequest<P>
 where
     P: serde::de::DeserializeOwned,
 {
-    /// Parse a `CommandRequest<P>` from a raw `Value`. The
-    /// command-specific fields go into `params`; `handle`, `sessionId`,
-    /// `userId` are pulled from the top level of the same object.
-    ///
-    /// Error is a String describing the failure, matching the existing
-    /// `ServiceModule::handle_command` error type so handlers can `?`
-    /// the result directly.
-    pub fn from_value(value: Value) -> Result<Self, String> {
-        // Keep what the caller actually sent — serde's error names only what it WANTED, and
-        // the gap between those two is the whole diagnosis.
-        let sent: Vec<String> = value
-            .as_object()
-            .map(|o| o.keys().cloned().collect())
-            .unwrap_or_default();
-        serde_json::from_value(value).map_err(|e| param_mismatch_message(&e.to_string(), &sent))
+    /// Parse a `CommandRequest<P>` from a raw `Value`: the envelope's own fields from their
+    /// keys, the command's params from every other key, each through the one typed decoder
+    /// ([`super::arguments::decode`]), so a failure names its field as data.
+    pub fn from_value(value: Value) -> Result<Self, ArgumentsRefusal> {
+        Self::decode(&value)
+    }
+
+    /// [`Self::from_value`] over a borrowed value: what a caller checking a call BEFORE it runs
+    /// (her executor, through the command's descriptor) and the dispatch both decode with.
+    pub fn decode(value: &Value) -> Result<Self, ArgumentsRefusal> {
+        if !value.is_object() {
+            return Err(ArgumentsRefusal::NotAnObject { sent: JsonKind::of(value) });
+        }
+        let params: P = decode(value, |key| !is_envelope_field(key))?;
+        let envelope: CommandRequest<serde::de::IgnoredAny> = decode(value, is_envelope_field)?;
+        Ok(CommandRequest {
+            params,
+            handle: envelope.handle,
+            session_id: envelope.session_id,
+            user_id: envelope.user_id,
+            actor_kind: envelope.actor_kind,
+            context_id: envelope.context_id,
+            request_id: envelope.request_id,
+        })
     }
 }
 

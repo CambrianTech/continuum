@@ -49,7 +49,7 @@ use uuid::Uuid;
 use crate::orm::adapter::StorageAdapter;
 use crate::orm::entity::OrmEntity;
 use crate::orm::query::{QueryBuilder, StorageQuery};
-use crate::orm::types::{BatchOperation, BatchOperationType, DataRecord, RecordMetadata, StorageResult};
+use crate::orm::types::{BatchOperation, BatchOperationType, DataRecord, RecordMetadata, SequenceSpec, Sequenced, StorageResult};
 
 /// Typed failure modes for OrmStore operations. Per [[no-fallbacks-
 /// ever]] + the typed-error pattern: every failure mode is named so
@@ -63,7 +63,7 @@ pub enum OrmStoreError {
 
     /// An adapter CRUD call returned `success: false`. We propagate
     /// the adapter's error verbatim — diagnosing the underlying
-    /// (sqlite vs postgres vs grid-replicated) failure is the
+    /// (sqlite vs grid-replicated) failure is the
     /// adapter's responsibility, not ours.
     #[error("adapter {operation} failed for collection {collection}: {detail}")]
     AdapterFailed {
@@ -162,6 +162,7 @@ where
     /// specific order should drop down to QueryBuilder + sort_asc /
     /// sort_desc on the relevant field.
     pub async fn find_all(&self) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
+        // bounded: the verb itself; each caller of find_all is counted where it reads (source-hygiene store_reads/reads.rs)
         self.find_matching(QueryBuilder::new(T::COLLECTION).build()).await
     }
 
@@ -175,7 +176,7 @@ where
             .map(|r| -> Result<(Uuid, T), OrmStoreError> {
                 let id = Uuid::parse_str(&r.id).map_err(OrmStoreError::InvalidUuid)?;
                 let entity: T =
-                    serde_json::from_value(r.data).map_err(OrmStoreError::DeserializeFailed)?;
+                    r.decode().map_err(OrmStoreError::DeserializeFailed)?;
                 Ok((id, entity))
             })
             .collect()
@@ -187,6 +188,7 @@ where
         field: &str,
         value: impl Into<serde_json::Value>,
     ) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
+        // bounded: the verb itself; each caller of find_eq is counted where it reads (source-hygiene store_reads/reads.rs)
         self.find_matching(QueryBuilder::new(T::COLLECTION).filter_eq(field, value).build())
             .await
     }
@@ -208,7 +210,7 @@ where
         let mut records = unwrap_adapter(result, "query", T::COLLECTION)?;
         match records.pop() {
             Some(r) => Ok(Some(
-                serde_json::from_value(r.data).map_err(OrmStoreError::DeserializeFailed)?,
+                r.decode().map_err(OrmStoreError::DeserializeFailed)?,
             )),
             None => Ok(None),
         }
@@ -259,6 +261,27 @@ where
         })
     }
 
+    /// The sequenced append of a new row ([`BatchOperationType::Append`]), as the last operation
+    /// of an atomic [`commit_appending`].
+    pub fn append_op(
+        &self,
+        id: Uuid,
+        entity: &T,
+        spec: SequenceSpec,
+    ) -> Result<BatchOperation, OrmStoreError> {
+        Ok(BatchOperation {
+            operation_type: BatchOperationType::Append(spec),
+            collection: T::COLLECTION.to_string(),
+            id: Some(id.to_string()),
+            data: Some(row_data(entity)?),
+        })
+    }
+
+    /// The committed high-water of this collection's sequence: wakes when an append commits.
+    pub fn sequence_revision(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.adapter.sequence_revision(T::COLLECTION)
+    }
+
     /// Save `entity` as row `id` unless that row already holds a GREATER `field`: ONE
     /// atomic backend operation ([`StorageAdapter::upsert_monotonic`]), so the compare
     /// can never be separated from the write. Returns whether it was written.
@@ -288,7 +311,7 @@ where
 
 /// An entity's row as the storage adapter takes it: the ONE place a store encodes a row.
 fn row_data<P: Serialize>(entity: &P) -> Result<serde_json::Value, OrmStoreError> {
-    serde_json::to_value(entity).map_err(OrmStoreError::SerializeFailed) // storage boundary: the adapter's row format (SQLite/Postgres JSON)
+    serde_json::to_value(entity).map_err(OrmStoreError::SerializeFailed) // storage boundary: the adapter's row format (SQLite JSON)
 }
 
 /// Apply `operations` (built by stores sharing `adapter`) ATOMICALLY: every one commits, or none
@@ -297,6 +320,32 @@ pub async fn commit(adapter: &Arc<dyn StorageAdapter>, operations: Vec<BatchOper
     let result = adapter.batch(operations).await;
     unwrap_adapter(result, "batch", "atomic commit")?;
     Ok(())
+}
+
+/// Apply `prior` and then `append` ATOMICALLY (a row and the sequenced record of it, written
+/// together), returning what the append did: the sequence it was given, or the existing row's
+/// when its unique value was already there.
+pub async fn commit_appending(
+    adapter: &Arc<dyn StorageAdapter>,
+    mut prior: Vec<BatchOperation>,
+    append: BatchOperation,
+) -> Result<Sequenced, OrmStoreError> {
+    let collection = append.collection.clone();
+    prior.push(append);
+    let values = unwrap_adapter(adapter.batch(prior).await, "batch", "atomic append")?;
+    values
+        .last()
+        .and_then(|v| {
+            Some(Sequenced {
+                seq: v.get("seq")?.as_u64()?,
+                fresh: v.get("fresh")?.as_bool()?,
+            })
+        })
+        .ok_or(OrmStoreError::AdapterFailed {
+            operation: "append",
+            collection,
+            detail: "the adapter's append result carried no sequence".to_string(),
+        })
 }
 
 /// Generic StorageResult unwrap for adapter CRUD operations.
@@ -315,7 +364,7 @@ fn unwrap_adapter<T>(
         Err(OrmStoreError::AdapterFailed {
             operation,
             collection: collection.to_string(),
-            detail: result.error.unwrap_or_else(|| "unknown".to_string()),
+            detail: result.error.unwrap_or_else(|| "the adapter gave no reason".to_string()), // unwrap_or_else: a failure without a message is reported as one
         })
     }
 }
@@ -337,7 +386,7 @@ fn unwrap_storage<T>(
     } else {
         Err(OrmStoreError::SchemaFailed {
             collection: collection.to_string(),
-            detail: result.error.unwrap_or_else(|| "unknown".to_string()),
+            detail: result.error.unwrap_or_else(|| "the adapter gave no reason".to_string()), // unwrap_or_else: a failure without a message is reported as one
         })
     }
 }

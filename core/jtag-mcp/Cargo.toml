@@ -25,4 +25,4 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 # For reading the socket path
-dirs = "5"
+dirs = { workspace = true }

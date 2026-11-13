@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::arguments::ArgumentsRefusal;
 
 /// The capability a command declares.
 ///
@@ -110,20 +111,37 @@ pub trait CommandSpec {
     /// Defaults `false` (catalog-only): the native set stays the small core agentic
     /// working set so the schema payload never floods the window — the ~150-tool dump
     /// muted personas (see [`native_tool_specs`](crate::cognition::persona_tools::native_tool_specs)).
+    ///
+    /// A native tool says what its own result means (`register_outcome!`; ONE-ACT 6b: a refused
+    /// edit renders as a failure because the edit said so, never because a reader guessed).
     const NATIVE: bool = false;
     /// The trained/former/expected tool-call names this command ANSWERS TO (see
     /// [`ActionCommand::ALIASES`](crate::sdk_codegen::command::ActionCommand)). Declared
     /// by the command in its own file so it stays portable; aggregated into one
     /// generated inverse index. Defaults to none.
     const ALIASES: &'static [&'static str] = &[];
+    /// What this command's calls do to the world (MIND-CONTEXT invariant 4): declared HERE,
+    /// by the command in its own file, never inferred from its name or output. Defaults to
+    /// `Undeclared`, which authorizes nothing: such a call is never a repeat and never taken as
+    /// observing, and the replay validator counts it.
+    const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Undeclared;
+    /// Where this verb sits in a mind's hands: in her prompt every act (`Core`), one
+    /// `commands/help` away (`OnDemand`), or never among her hands (`Withheld`). Declared HERE, by
+    /// the command in its own file, like its access level, never a name list the surface keeps
+    /// (Joel, 2026-11-04: "values associated with the tool just like perms"). Defaults to `Core`;
+    /// read only for a `NATIVE` command.
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::Core;
+    /// For a `Withheld` verb: why, and what to use instead, shown when she reaches for it.
+    const WITHHELD: Option<continuum_base::tool_disclosure::WithheldGuidance> = None;
     /// The handler's ACTUAL wire convention — decides whether the generated
     /// surface is enveloped or bare. MUST match what the handler really does
     /// (a mismatch is a type that lies about the wire).
     const WIRE: WireShape;
     /// The command-specific params payload (the INNER `P`). When
     /// [`WIRE`](CommandSpec::WIRE) is `Enveloped` the generated surface wraps this
-    /// in `CommandRequest<P>`; otherwise it's used directly.
-    type Params: TS + 'static;
+    /// in `CommandRequest<P>`; otherwise it's used directly. Decodable, because the
+    /// command's descriptor carries the check of a call's arguments against it.
+    type Params: TS + serde::de::DeserializeOwned + 'static;
     /// The command-specific result payload (the INNER `T`). When
     /// [`WIRE`](CommandSpec::WIRE) is `Enveloped` the generated surface wraps this
     /// in `CommandResponse<T>`; otherwise it's used directly.
@@ -137,18 +155,17 @@ pub trait CommandSpec {
     /// declared (or ported) onto a base trait gains a real schema with no extra
     /// code, and every SDK handles it symmetrically. Manual `CommandSpec` impls
     /// keep `Null` until migrated.
-    fn params_schema() -> serde_json::Value {
-        serde_json::Value::Null
+    fn params_schema() -> Result<serde_json::Value, serde_json::Error> {
+        Ok(serde_json::Value::Null)
     }
 }
 
 /// Reflect a typed input contract for any command wire shape, including external
 /// adapters. Keep schema generation identical for native and provided commands.
-pub fn input_schema<P: schemars::JsonSchema>() -> serde_json::Value {
-    let mut schema = serde_json::to_value(schemars::schema_for!(P))
-        .expect("typed command schema must serialize"); // JUSTIFIED: schemars RootSchema is plain data; converting it to a Value cannot fail
+pub fn input_schema<P: schemars::JsonSchema>() -> Result<serde_json::Value, serde_json::Error> {
+    let mut schema = serde_json::to_value(schemars::schema_for!(P))?; // boundary: the JSON Schema is the command's published wire contract, read by every driver and codegen
     flatten_singleton_all_of(&mut schema);
-    schema
+    Ok(schema)
 }
 
 /// schemars 0.8 wraps a documented field of a referenced type as
@@ -226,7 +243,7 @@ pub(super) fn module_of(output_path: &Path) -> String {
         None => normalized
             .rsplit('/')
             .next()
-            .unwrap_or(&normalized)
+            .unwrap_or(&normalized) // unwrap_or: rsplit yields at least the whole path, so this is its last segment
             .to_string(),
     }
 }
@@ -247,11 +264,20 @@ pub struct CommandDescriptor {
     /// [`CommandSpec::NATIVE`]). The projection [`native_tool_specs`] filters the
     /// registry on this — so the native set is derived, never a hand-kept list.
     pub native: bool,
+    /// How a call's arguments are checked before it runs.
+    pub arguments: ArgumentsContract,
     /// The trained/former/expected tool-call names this command answers to (from
     /// [`CommandSpec::ALIASES`]). Aggregated into the one generated inverse index
     /// (`ai::tool_dialect`) that maps a model's reflex name back to this
     /// command. Empty for most commands.
     pub aliases: &'static [&'static str],
+    /// What its calls do to the world (from [`CommandSpec::EFFECT`]): the effect an executed
+    /// call carries into her act, read from the command that actually ran.
+    pub effect: continuum_base::tool_effect::ToolEffect,
+    /// Where its verb sits in a mind's hands (from [`CommandSpec::DISCLOSURE`]).
+    pub disclosure: continuum_base::tool_disclosure::Disclosure,
+    /// Why a withheld verb is withheld and what to use instead (from [`CommandSpec::WITHHELD`]).
+    pub withheld: Option<continuum_base::tool_disclosure::WithheldGuidance>,
     pub params: TypeRef,
     /// The params' JSON Schema (from [`CommandSpec::params_schema`]) — the
     /// canonical input contract every SDK/interface adapts from. `Null` when the
@@ -266,20 +292,14 @@ pub struct CommandDescriptor {
 impl CommandDescriptor {
     /// Snapshot a `CommandSpec` into a descriptor. `Params`/`Result` and their
     /// transitive ts-rs dependencies are collected as importable `TypeRef`s.
-    pub fn of<C: CommandSpec>() -> Self {
+    pub fn of<C: CommandSpec>() -> Result<Self, CodegenDefect> {
         let cfg = Config::default();
-        let params_dep = Dependency::from_ty::<C::Params>(&cfg).unwrap_or_else(|| {
-            panic!(
-                "command '{}' Params must be a named TS type (struct/enum), not an inline primitive",
-                C::NAME
-            )
-        });
-        let result_dep = Dependency::from_ty::<C::Result>(&cfg).unwrap_or_else(|| {
-            panic!(
-                "command '{}' Result must be a named TS type (struct/enum), not an inline primitive",
-                C::NAME
-            )
-        });
+        let params_dep = Dependency::from_ty::<C::Params>(&cfg)
+            .ok_or(CodegenDefect::UnnamedParams { command: C::NAME })?;
+        let result_dep = Dependency::from_ty::<C::Result>(&cfg)
+            .ok_or(CodegenDefect::UnnamedResult { command: C::NAME })?;
+        let params_schema = C::params_schema()
+            .map_err(|error| CodegenDefect::ParamsSchema { command: C::NAME, error: error.to_string() })?;
         let params = TypeRef::from_dependency(&params_dep);
         let result = TypeRef::from_dependency(&result_dep);
 
@@ -291,18 +311,60 @@ impl CommandDescriptor {
             type_refs.push(TypeRef::from_dependency(&dep));
         }
 
-        Self {
+        Ok(Self {
             name: C::NAME,
             access_level: C::ACCESS_LEVEL,
             description: C::DESCRIPTION,
             wire: C::WIRE,
             native: C::NATIVE,
+            arguments: ArgumentsContract::Typed(check_arguments::<C::Params>),
             aliases: C::ALIASES,
+            effect: C::EFFECT,
+            disclosure: C::DISCLOSURE,
+            withheld: C::WITHHELD,
             params,
-            params_schema: C::params_schema(),
+            params_schema,
             result,
             type_refs,
+        })
+    }
+}
+
+/// How a command's arguments are checked before it runs.
+#[derive(Debug, Clone, Copy)]
+pub enum ArgumentsContract {
+    /// Decoded into the command's own `Params`, through the same decoder its dispatch uses.
+    Typed(fn(&serde_json::Value) -> Result<(), ArgumentsRefusal>),
+    /// A command whose params no Rust type owns (an authored process command): the process
+    /// decodes its own input.
+    External,
+}
+
+impl ArgumentsContract {
+    /// Check a call's arguments, or refuse them typed.
+    pub fn check(self, arguments: &serde_json::Value) -> Result<(), ArgumentsRefusal> {
+        match self {
+            ArgumentsContract::Typed(check) => check(arguments),
+            ArgumentsContract::External => Ok(()),
         }
+    }
+}
+
+fn check_arguments<P: serde::de::DeserializeOwned>(arguments: &serde_json::Value) -> Result<(), ArgumentsRefusal> {
+    crate::runtime::CommandRequest::<P>::decode(arguments).map(drop)
+}
+
+impl CommandDescriptor {
+    /// Her call's arguments as this command accepts them, or why it refuses them: checked against
+    /// its `Params`, and when they do not decode as sent, read once against its declared schema
+    /// (`accepted_shape`) before the refusal stands. The value returned is the one to dispatch.
+    pub fn accept<'a>(
+        &self,
+        arguments: &'a serde_json::Value,
+    ) -> Result<std::borrow::Cow<'a, serde_json::Value>, ArgumentsRefusal> {
+        let check = |v: &serde_json::Value| self.arguments.check(v);
+        crate::runtime::arguments::accepted_shape::decode_accepting(self.name, &self.params_schema, arguments, check)
+            .map(|((), accepted)| accepted)
     }
 }
 
@@ -510,13 +572,13 @@ pub fn generate_command_api(
 /// every generated surface automatically (the anti-drift guarantee, mandatory
 /// when commands are infinitely-extensible / written on the fly).
 pub struct CommandRegistration {
-    pub descriptor_fn: fn() -> CommandDescriptor,
+    pub descriptor_fn: fn() -> Result<CommandDescriptor, CodegenDefect>,
 }
 
 impl CommandRegistration {
     /// Build a registration from a descriptor constructor — the
     /// `|| CommandDescriptor::of::<C>()` the macro supplies.
-    pub const fn new(descriptor_fn: fn() -> CommandDescriptor) -> Self {
+    pub const fn new(descriptor_fn: fn() -> Result<CommandDescriptor, CodegenDefect>) -> Self {
         Self { descriptor_fn }
     }
 }
@@ -535,28 +597,59 @@ inventory::collect!(CommandRegistration);
 /// (a cheap `Vec`/`Value` clone vs. re-reflecting every command). The duplicate-
 /// name check + sort happen once, inside the init.
 pub fn command_registry() -> Vec<CommandDescriptor> {
-    static REGISTRY: std::sync::OnceLock<Vec<CommandDescriptor>> = std::sync::OnceLock::new();
-    REGISTRY
-        .get_or_init(|| {
-            let mut descriptors: Vec<CommandDescriptor> = inventory::iter::<CommandRegistration>()
-                .map(|reg| (reg.descriptor_fn)())
-                .collect();
-            descriptors.sort_by(|a, b| a.name.cmp(b.name));
-            // Hard-fail on a duplicate command NAME. The "no central list" design
-            // removes the human backstop that would otherwise catch a collision, so
-            // the registry must catch it itself — two CommandSpec impls claiming the
-            // same name would silently emit a conflicting/duplicate CommandMap key (a
-            // TS error or a silent shadow). Sorted above, so duplicates are adjacent.
-            if let Some(dup) = descriptors.windows(2).find(|w| w[0].name == w[1].name) {
-                panic!(
-                    "sdk_codegen: duplicate command NAME '{}' — two CommandSpec impls \
-                     claim it. Command names must be unique across the whole registry.",
-                    dup[0].name
-                );
+    registry().to_vec()
+}
+
+/// One command's descriptor, borrowed from the built registry (no clone of the whole list):
+/// what a per-call reader (her executor's argument check, the outcome projection) looks up.
+pub fn command_descriptor(name: &str) -> Option<&'static CommandDescriptor> {
+    let all = registry();
+    all.binary_search_by(|d| d.name.cmp(name)).ok().and_then(|at| all.get(at))
+}
+
+/// Every declaration the command registry could not describe (an unnamed contract type, a
+/// schema that did not serialize, a duplicate name). Empty in a sound build; boot refuses
+/// on any (`ModuleRegistry::check_wiring`). A defective declaration is left out of
+/// [`command_registry`], so nothing reads half a command.
+pub fn command_registry_defects() -> &'static [CodegenDefect] {
+    &built().defects
+}
+
+fn registry() -> &'static [CommandDescriptor] {
+    &built().descriptors
+}
+
+struct BuiltRegistry {
+    descriptors: Vec<CommandDescriptor>,
+    defects: Vec<CodegenDefect>,
+}
+
+fn built() -> &'static BuiltRegistry {
+    static REGISTRY: std::sync::OnceLock<BuiltRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut defects = Vec::new();
+        let mut descriptors: Vec<CommandDescriptor> = Vec::new();
+        for described in inventory::iter::<CommandRegistration>().map(|reg| (reg.descriptor_fn)()) {
+            match described {
+                Ok(descriptor) => descriptors.push(descriptor),
+                Err(defect) => defects.push(defect),
             }
-            descriptors
-        })
-        .clone()
+        }
+        descriptors.sort_by(|a, b| a.name.cmp(b.name));
+        // A duplicate command NAME is a defect. The "no central list" design removes the
+        // human backstop that would otherwise catch a collision, so the registry must catch
+        // it itself — two CommandSpec impls claiming the same name would silently emit a
+        // conflicting/duplicate CommandMap key (a TS error or a silent shadow). Sorted
+        // above, so duplicates are adjacent; the first is kept and boot refuses.
+        descriptors.dedup_by(|later, kept| {
+            let duplicate = later.name == kept.name;
+            if duplicate {
+                defects.push(CodegenDefect::DuplicateCommand { name: later.name });
+            }
+            duplicate
+        });
+        BuiltRegistry { descriptors, defects }
+    })
 }
 
 /// Is `name` declared in the descriptor registry?
@@ -566,11 +659,9 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
 /// constructor a module contributes, so a command that declared only one half of its
 /// (descriptor, constructor) pair fails LOUD at boot instead of routing invisibly.
 ///
-/// `command_registry()` sorts by name and panics on duplicates, so a binary search is
+/// `command_registry()` sorts by name and keeps one descriptor per name, so a binary search is
 /// exact — and it reads the SAME list every other consumer reads, which is the point:
 /// this must never become a second opinion about what commands exist.
 pub fn descriptor_exists(name: &str) -> bool {
-    command_registry()
-        .binary_search_by(|d| d.name.cmp(name))
-        .is_ok()
+    command_descriptor(name).is_some()
 }

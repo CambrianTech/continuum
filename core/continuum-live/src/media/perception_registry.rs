@@ -9,7 +9,7 @@
 //! delivers. This registry is that single seam — one `Arc<PerceptionBuffer>` per
 //! persona, resolved by id from both sides. It is NOT a parallel copy of any state;
 //! it is the single home for a persona's perception hold, the same "one home, two
-//! reachers by id" shape as [`persona::focus::registry()`](crate::persona::focus)
+//! reachers by id" shape as [`cognition::focus::registry()`](crate::cognition::focus)
 //! and [`persona_workspace::global()`](crate::cognition::persona_workspace).
 //!
 //! The cells inside each buffer resolve on the ONE runtime
@@ -19,7 +19,8 @@
 //! ([[vision-replication-is-the-multipersona-moat-vs-cloud]]).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use parking_lot::Mutex;
+use std::sync::{Arc, OnceLock};
 
 use uuid::Uuid;
 
@@ -54,12 +55,11 @@ impl PerceptionRegistry {
     /// first caller installs a buffer sized to [`AMBIENT_PERCEPTION_SIZE`] (the
     /// correct birth posture, not a fallback over a missing precondition); every
     /// later caller — the ingest path, the source — gets the SAME `Arc`, so what
-    /// ingest warms is exactly what the source reads. A poisoned lock is a prior
-    /// panic mid-mutation and is propagated (fail loud), never swallowed.
+    /// ingest warms is exactly what the source reads. The lock cannot poison
+    /// (`parking_lot`), so no caller handles a stale-lock case.
     pub fn handle(&self, persona_id: Uuid) -> Arc<PerceptionBuffer> {
         self.buffers
             .lock()
-            .unwrap()
             .entry(persona_id)
             .or_insert_with(|| Arc::new(PerceptionBuffer::new(AMBIENT_PERCEPTION_SIZE)))
             .clone()
@@ -70,7 +70,6 @@ impl PerceptionRegistry {
     pub fn get(&self, persona_id: &Uuid) -> Option<Arc<PerceptionBuffer>> {
         self.buffers
             .lock()
-            .unwrap()
             .get(persona_id)
             .cloned()
     }
@@ -79,7 +78,6 @@ impl PerceptionRegistry {
     pub fn remove(&self, persona_id: &Uuid) {
         self.buffers
             .lock()
-            .unwrap()
             .remove(persona_id);
     }
 
@@ -88,7 +86,6 @@ impl PerceptionRegistry {
     pub fn total_resident_bytes(&self) -> u64 {
         self.buffers
             .lock()
-            .unwrap()
             .values()
             .map(|b| b.resident_bytes())
             .sum()
@@ -102,7 +99,6 @@ impl PerceptionRegistry {
         let buffers: Vec<Arc<PerceptionBuffer>> = self
             .buffers
             .lock()
-            .unwrap()
             .values()
             .cloned()
             .collect();
@@ -118,7 +114,7 @@ impl PerceptionRegistry {
 }
 
 /// Process-global perception registry. Same `OnceLock` shape as
-/// `persona::focus::registry()` — the single seam between the media ingest that
+/// `cognition::focus::registry()` — the single seam between the media ingest that
 /// warms a persona's perception and the source that reads it.
 pub fn registry() -> Arc<PerceptionRegistry> {
     static GLOBAL: OnceLock<Arc<PerceptionRegistry>> = OnceLock::new();

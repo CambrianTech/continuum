@@ -26,3 +26,12 @@ pub const GUARD_CHARS_PER_TOKEN: usize = 3;
 pub fn estimate_guard_tokens(s: &str) -> usize {
     s.len() / GUARD_CHARS_PER_TOKEN
 }
+
+/// What one tool schema costs in the prompt: its serialized JSON at the guard rate, plus the
+/// chat template's fixed framing around each tool. One owner, so the mind's tool surface and
+/// the working-set evaluator price a schema the same way.
+pub fn estimate_tool_schema_tokens(serialized: &str) -> usize {
+    // context-budget-exempt: fixed per-tool schema overhead in the template — same reason as PER_MESSAGE_TEMPLATE_TOKENS
+    const PER_TOOL_TEMPLATE_MARGIN_TOKENS: usize = 8;
+    estimate_guard_tokens(serialized) + PER_TOOL_TEMPLATE_MARGIN_TOKENS
+}

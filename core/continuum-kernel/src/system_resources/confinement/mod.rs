@@ -39,13 +39,9 @@
 //! Outside the home the host is readable (system, toolchains under `/opt`, `/usr`)
 //! and only the temp directory is writable.
 //!
-//! That is the WORKSPACE reach, for a caller from outside this node. This node's own
-//! resident has HOST reach ([`Confinement::reaching_host`]): everything the operator's
-//! process may touch EXCEPT the credential paths ([`CARVED_OUT_HOME_ENTRIES`], plus every
-//! scope's signing key, [`CREDENTIAL_SUFFIXES`]) and other citizens' directories (Joel
-//! 2026-10-17 "Don't restrict them"; 2026-10-18 "keep creds off-limits"). That boundary is
-//! a denylist by decision, so the list names every store a token lives in on the fleet's
-//! hosts. Seatbelt writes it as denials only; landlock grants the host carved around it.
+//! This confines only a caller from OUTSIDE this node (an airc peer, a socket). Neither the
+//! operator nor this node's residents are confined: a resident's shell is the operator's shell
+//! (Joel, 2026-11-08: "Stop caging them"; "If you carve out every little thing it's infinite").
 //!
 //! Not confined by this module: `code/git/*`, which runs fixed-argument git through
 //! `git_bridge` at her checkout (add, commit, diff, apply, log, push, status: never a
@@ -181,51 +177,6 @@ const CARVED_OUT_HOME_ENTRIES: &[&str] = &[
     "Library/Keychains",
 ];
 
-/// Credential files that sit wherever their scope does, not at one home path: every
-/// airc project scope keeps its agent's signing key at `<repo>/.airc/identity.key`
-/// (the deploy checkout's is an agent's), and a resident who read one could sign as
-/// that agent. Matched by trailing path components: the file verbs check the suffix,
-/// seatbelt denies it by regex. Landlock cannot express a pattern; no Linux node hosts
-/// residents today.
-const CREDENTIAL_SUFFIXES: &[&str] = &[".airc/identity.key"];
-
-/// Whether `path` ends in a [`CREDENTIAL_SUFFIXES`] entry. One check for every consumer.
-pub fn is_scoped_credential(path: &Path) -> bool {
-    CREDENTIAL_SUFFIXES.iter().any(|suffix| path.ends_with(suffix))
-}
-
-/// What the file verbs and the enforcers agree a citizen may touch: absolute,
-/// canonical roots. Produced once per spawn by [`Confinement::materialize`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AllowList {
-    /// Roots she may read AND write (her workspace, her citizen dir, caches, temp).
-    pub write: Vec<PathBuf>,
-    /// Roots she may read only (dotfiles, `~/.continuum` minus the exclusions).
-    pub read: Vec<PathBuf>,
-    /// Credential files carved OUT of a granted root ([`CARVED_OUT_HOME_ENTRIES`]).
-    /// The last word everywhere: a deny-capable enforcer writes them after every
-    /// grant; an allow-only enforcer never sees them, because a granted root that
-    /// contains one is already replaced by its children minus the carve-out
-    /// ([`carve`]). Another citizen's directory needs no carve-out: it is never
-    /// granted (the citizens root is enumerated without `peers`).
-    pub deny: Vec<PathBuf>,
-    /// Directories a carve-out was cut out of: listable themselves (a `ls ~` works), with
-    /// nothing beneath them granted by this entry. Their granted children are in `write`
-    /// or `read`.
-    pub listable: Vec<PathBuf>,
-}
-
-impl AllowList {
-    /// Whether `path` (absolute, canonical) is readable under this list: inside a
-    /// granted root and not a carve-out. A carve-out is the last word, write root or
-    /// not (`~/.cache/huggingface/token` sits inside a write root).
-    pub fn permits_read(&self, path: &Path) -> bool {
-        !self.deny.iter().any(|d| path.starts_with(d))
-            && !is_scoped_credential(path)
-            && self.write.iter().chain(self.read.iter()).any(|r| path.starts_with(r))
-    }
-}
-
 /// The policy for one caller. Built by the workspace authority (`ensure_shell`,
 /// `code/run`) from the same facts the engine roots on; nothing here reads a
 /// params field.
@@ -239,19 +190,6 @@ pub struct Confinement {
     /// is a citizen with one; the operator's own tools have none.
     citizen_dir: Option<PathBuf>,
     continuum_root: PathBuf,
-    reach: Reach,
-}
-
-/// How far a confined caller's hands reach.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Reach {
-    /// Her workspace, her citizen dir, the toolchains and caches: a caller from outside
-    /// this node.
-    Workspace,
-    /// The whole host except the credential paths and other citizens' directories: this
-    /// node's own resident (Joel 2026-10-17 "Don't restrict them"; 2026-10-18 "keep creds
-    /// off-limits").
-    Host,
 }
 
 /// Produced by the bounded disk admission owner after validation and creation,
@@ -275,32 +213,7 @@ impl Confinement {
             .parse::<uuid::Uuid>()
             .ok()
             .map(|id| crate::identity::citizen_peer_dir(continuum_root, crate::identity::PeerId::from_uuid(id)));
-        Self { home: home.to_path_buf(), workspace: workspace.to_path_buf(), citizen_dir, continuum_root: continuum_root.to_path_buf(), reach: Reach::Workspace }
-    }
-
-    /// This policy widened to the whole host, minus every credential path and every
-    /// OTHER citizen's directory: this node's resident.
-    pub fn reaching_host(mut self) -> Self {
-        self.reach = Reach::Host;
-        self
-    }
-
-    pub fn reaches_host(&self) -> bool {
-        self.reach == Reach::Host
-    }
-
-    /// What a host-reach caller may never touch, canonical: the credential roots and
-    /// every other citizen's directory (hers excepted). The file verbs check this
-    /// without materializing the whole host grant.
-    pub fn host_denials(&self) -> Vec<PathBuf> {
-        let mut deny = self.credential_roots();
-        let peers = crate::identity::citizen_peers_dir(&self.continuum_root);
-        if let Ok(entries) = std::fs::read_dir(&peers) {
-            let mine = self.citizen_dir.as_deref().and_then(|d| d.canonicalize().ok());
-            deny.extend(entries.flatten().map(|e| e.path()).filter(|p| p.canonicalize().ok() != mine));
-        }
-        canonical_all(&mut deny);
-        deny
+        Self { home: home.to_path_buf(), workspace: workspace.to_path_buf(), citizen_dir, continuum_root: continuum_root.to_path_buf() }
     }
 
     pub fn workspace(&self) -> &Path {
@@ -349,15 +262,6 @@ impl Confinement {
     }
 
     fn materialize_with_cargo(&self, configured_target: Option<&CargoTargetGrant>) -> AllowList {
-        if self.reach == Reach::Host {
-            // Everything, then carved down to the parents of each denial, so an allow-only
-            // enforcer grants every sibling and never a credential.
-            let deny = self.host_denials();
-            let mut write = vec![PathBuf::from("/")];
-            canonical_all(&mut write);
-            let listable = carve(&mut write, &deny);
-            return AllowList { write, read: Vec::new(), deny, listable };
-        }
         let home = &self.home;
         let mut write: Vec<PathBuf> = vec![self.workspace.clone()];
         // Only the operator's configured target is an extra grant. Session
@@ -378,7 +282,7 @@ impl Confinement {
         let mut read: Vec<PathBuf> = READABLE_HOME_ENTRIES.iter().map(|e| home.join(e)).collect();
         // `~/.continuum`, minus the citizens' directories (hers is a write root above),
         // the shared cache (a write root above) and the core's secrets.
-        let continuum = home.join(".continuum");
+        let continuum = self.continuum_root.clone();
         if let Ok(entries) = std::fs::read_dir(&continuum) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
@@ -488,38 +392,12 @@ fn canonical_all(paths: &mut Vec<PathBuf>) {
     });
 }
 
-/// What the enforcer did for one spawn: the receipt every spawn probe carries.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Enforcement {
-    /// The child is confined by the named mechanism.
-    Enforced { mechanism: &'static str },
-    /// This host cannot confine a child at this level; the child runs as the operator
-    /// and the reason is on the probe. Never silent.
-    Unavailable { reason: String },
-}
-
-impl Enforcement {
-    pub fn is_enforced(&self) -> bool {
-        matches!(self, Self::Enforced { .. })
-    }
-}
-
-// One module per OS difference; everything above is the shared contract.
-mod seatbelt;
-pub use seatbelt::{seatbelt_host_profile, seatbelt_profile};
-#[cfg(target_os = "linux")]
-mod landlock;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-mod unconfined;
-#[cfg(target_os = "macos")]
-use seatbelt::confined_command_with;
-#[cfg(target_os = "linux")]
-use landlock::confined_command_with;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-use unconfined::confined_command_with;
+// The OS mechanism lives in continuum-host's sandbox (logic once, an adapter per OS); this
+// module owns the policy: what a caller may reach.
+pub use continuum_host::sandbox::{is_scoped_credential, seatbelt_profile, AllowList, Enforcement};
 
 /// THE one way a child is spawned for a caller: confined when `confinement` is hers,
-/// the operator's own process when `None`. Every confined spawn carries its receipt as
+/// the operator's own process when `None`, and either way below the foreground. Every confined spawn carries its receipt as
 /// a probe (`shell.confinement` / `shell.confinement.unavailable`), so an unconfined
 /// citizen child on a host without a sandbox is a line in the stream, never a silent gap.
 pub fn command_for(
@@ -530,15 +408,19 @@ pub fn command_for(
     cwd: Option<&Path>,
     cargo_grant: Option<&CargoTargetGrant>,
 ) -> tokio::process::Command {
+    // Every child a caller spawns runs below the engine that serves her: it takes the cores serving
+    // leaves idle and yields when serving needs them (continuum_host::process_class).
     let Some(confinement) = confinement else {
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
+        continuum_host::process_class::below_the_foreground(&mut cmd);
         return cmd;
     };
-    let (cmd, receipt) = confined_command(confinement, program, args, cwd, cargo_grant);
+    let (mut cmd, receipt) = confined_command(confinement, program, args, cwd, cargo_grant);
+    continuum_host::process_class::below_the_foreground(&mut cmd);
     match &receipt {
         Enforcement::Enforced { mechanism } => continuum_base::probe!(
             class = "shell.confinement",
@@ -572,7 +454,7 @@ pub fn confined_command(
     cargo_grant: Option<&CargoTargetGrant>,
 ) -> (tokio::process::Command, Enforcement) {
     let list = confinement.materialize_with_cargo(cargo_grant);
-    let (mut cmd, receipt) = confined_command_with(confinement, &list, program, args);
+    let (mut cmd, receipt) = continuum_host::sandbox::confine(&confinement.home, &list, program, args);
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
     }
@@ -717,55 +599,6 @@ mod tests {
         }
     }
 
-    // what this catches (Joel 2026-10-18 "keep creds off-limits"): a host-reach resident
-    // granted a credential store, a scope's signing key, or another citizen's directory;
-    // or refused her own citizen dir or the operator's ordinary files. Also the carve
-    // defect this caught: siblings of the FIRST carve-out (`.aws` beside `.ssh`,
-    // `.config` holding `.config/gh`) were granted whole.
-    #[test]
-    fn a_resident_reaches_the_host_except_every_credential_and_other_citizens() {
-        let me = uuid::Uuid::from_u128(7);
-        let other = uuid::Uuid::from_u128(8);
-        let home = home_with(&[
-            ".ssh/id_ed25519",
-            ".aws/credentials",
-            ".config/gh/hosts.yml",
-            ".config/htop/htoprc",
-            ".claude/credentials.json",
-            ".cargo/credentials.toml",
-            ".cargo/registry/",
-            ".continuum/config.env",
-            ".continuum/models/",
-            &format!(".continuum/citizens/peers/{me}/notes"),
-            &format!(".continuum/citizens/peers/{other}/notes"),
-            "Development/continuum/.airc/identity.key",
-            "Development/continuum/src/lib.rs",
-            "Documents/letter.txt",
-        ]);
-        let h = home.path().canonicalize().expect("test: canonical");
-        let ws = h.join("Development/continuum");
-        let c = Confinement::for_caller(&h, &h.join(".continuum"), &me.to_string(), &ws).reaching_host();
-        let list = c.materialize();
-        let ok = |rel: &str| list.permits_read(&h.join(rel));
-        let mine = format!(".continuum/citizens/peers/{me}/notes");
-        let theirs = format!(".continuum/citizens/peers/{other}/notes");
-        for rel in ["Documents/letter.txt", ".config/htop/htoprc", ".cargo/registry", ".continuum/models", mine.as_str(), "Development/continuum/src/lib.rs"] {
-            assert!(ok(rel), "hers: {rel}");
-        }
-        for rel in [".ssh/id_ed25519", ".aws/credentials", ".config/gh/hosts.yml", ".claude/credentials.json", ".cargo/credentials.toml", ".continuum/config.env", theirs.as_str(), "Development/continuum/.airc/identity.key"] {
-            assert!(!ok(rel), "never: {rel}");
-        }
-        // The allow-only side: no granted root may CONTAIN a denial, or landlock would hand
-        // it over. This is the assertion the single-carve-out defect failed.
-        for granted in &list.write {
-            assert!(!list.deny.iter().any(|d| d.starts_with(granted)), "{} holds a denial", granted.display());
-        }
-        assert!(list.listable.contains(&h), "her `ls ~` works");
-        let p = seatbelt_host_profile(&list);
-        assert!(p.starts_with("(version 1)\n(allow default)\n") && !p.contains("(allow file-write*"), "denials only, nothing to go stale:\n{p}");
-        assert!(p.contains(&format!("(deny file-read* (subpath \"{}\"))", h.join(".ssh").display())), "{p}");
-        assert!(p.contains("(deny file-read* (regex #\"/\\.airc/identity\\.key$\"))"), "{p}");
-    }
 
     // what this catches: the seatbelt profile granting before it denies the home, or a
     // carve-out written before the grant of the root that held it (it would lose: last
@@ -798,41 +631,6 @@ mod tests {
     // host profile refused the operator's ordinary files or a fresh directory, or reading a
     // credential, another citizen's directory, or a scope's signing key. Real `sandbox-exec`.
     #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn on_macos_a_residents_child_reaches_the_host_but_never_a_credential() {
-        let me = uuid::Uuid::from_u128(7);
-        let other = uuid::Uuid::from_u128(8);
-        let home = home_with(&[
-            ".ssh/id",
-            ".config/gh/hosts.yml",
-            "Documents/letter.txt",
-            "Development/continuum/.airc/identity.key",
-            &format!(".continuum/citizens/peers/{other}/notes"),
-        ]);
-        let h = home.path().canonicalize().expect("test: canonical");
-        let c = Confinement::for_caller(&h, &h.join(".continuum"), &me.to_string(), &h.join("Development/continuum")).reaching_host();
-        let leak = |rel: &str, tag: &str| format!("(cat '{}/{rel}' && echo LEAK-{tag}); ", h.display());
-        let script = format!(
-            "cat '{h}/Documents/letter.txt' && mkdir '{h}/Fresh' && echo made > '{h}/Fresh/new.txt' && cat '{h}/Fresh/new.txt' && ls '{h}' >/dev/null && echo LISTED; \
-             {s}{g}{k}{o}(echo pwn >> '{h}/.ssh/id' && echo LEAK-WRITE); echo done",
-            h = h.display(),
-            s = leak(".ssh/id", "SSH"),
-            g = leak(".config/gh/hosts.yml", "GH-TOKEN"),
-            k = leak("Development/continuum/.airc/identity.key", "SCOPE-KEY"),
-            o = leak(&format!(".continuum/citizens/peers/{other}/notes"), "OTHER-CITIZEN"),
-        );
-        let (mut cmd, receipt) = confined_command(&c, Path::new("/bin/sh"), &["-c".into(), script.into()], None, None);
-        assert!(receipt.is_enforced(), "{receipt:?}");
-        let out = cmd.output().await.expect("test: spawn");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stdout.contains("done") && stdout.contains("made") && stdout.contains("LISTED"), "the operator's files, a fresh dir, a home listing: stdout={stdout} stderr={stderr}");
-        for tag in ["SSH", "GH-TOKEN", "SCOPE-KEY", "OTHER-CITIZEN", "WRITE"] {
-            assert!(!stdout.contains(&format!("LEAK-{tag}")), "{tag} leaked: stdout={stdout}");
-        }
-        assert_eq!(std::fs::read_to_string(h.join(".ssh/id")).unwrap(), "x", "the key is untouched");
-        assert!(stderr.contains("Operation not permitted"), "the refusal is the OS's: stderr={stderr}");
-    }
 
     // what this catches (the M5 incident, kernel-level): with the profile applied, a
     // child reading the operator's Pictures is refused by the OS, while her workspace

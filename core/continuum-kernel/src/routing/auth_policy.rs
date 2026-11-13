@@ -200,12 +200,22 @@ pub struct CallerIdentity {
     /// #5026). Set only by the kernel's release path ([`Self::releasing_hands`]), never from
     /// params.
     pub releases_hands: bool,
+    /// Provenance: the generation whose tool call this dispatch is (its request id). Bound
+    /// in-process by the code that executes the call ([`Self::issued_by`]), never from params,
+    /// so a call cannot name another generation. `None` for every caller that is not an act.
+    pub issuing_generation: Option<String>,
 }
 
 impl CallerIdentity {
     /// This identity, acting in `context`: same caller, same trust, its own hands.
     pub fn in_hands(mut self, context: crate::identity::hands_context::HandsContext) -> Self {
         self.hands = Some(context);
+        self
+    }
+
+    /// This identity, dispatching a tool call that `generation` emitted.
+    pub fn issued_by(mut self, generation: String) -> Self {
+        self.issuing_generation = Some(generation);
         self
     }
 
@@ -225,6 +235,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
@@ -238,6 +249,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
@@ -253,6 +265,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
@@ -266,6 +279,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
@@ -281,6 +295,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
@@ -311,6 +326,7 @@ impl CallerIdentity {
             granted_capabilities: Vec::new(),
             hands: None,
             releases_hands: false,
+            issuing_generation: None,
         }
     }
 
@@ -343,6 +359,15 @@ pub trait AuthPolicy: Send + Sync + std::fmt::Debug {
     /// `caller = None` means "this substrate's own code" —
     /// default policies treat it as implicitly trusted.
     fn gate(&self, decision: &RouteDecision, caller: Option<&CallerIdentity>) -> Verdict;
+
+    /// The trust this policy resolves for `caller`, for a handler's own check inside a command
+    /// the gate already allowed (an owner-only recovery, card 2a69e6ba). `None`: this policy
+    /// cannot resolve trust, so an owner-only operation is refused, never assumed. A policy
+    /// that can (the grid's) answers; a command reaches it through its executor, so a crate cut
+    /// out of the core asks the same policy the gate uses without reaching into the grid.
+    fn caller_trust(&self, _caller: Option<&CallerIdentity>) -> Option<crate::routing::trust_level::TrustLevel> {
+        None
+    }
 }
 
 /// Default policy — every dispatch is allowed.
@@ -357,6 +382,16 @@ pub struct AllowAllPolicy;
 impl AuthPolicy for AllowAllPolicy {
     fn gate(&self, _decision: &RouteDecision, _caller: Option<&CallerIdentity>) -> Verdict {
         Verdict::Allowed
+    }
+
+    /// The substrate's own code (no caller) and a `Local` caller are the owner on their own box.
+    /// Every other source needs a real trust policy to resolve it, so this one does not: an
+    /// owner-only operation from a persona or a remote peer is refused here, never granted.
+    fn caller_trust(&self, caller: Option<&CallerIdentity>) -> Option<crate::routing::trust_level::TrustLevel> {
+        match caller.map(|c| &c.source) {
+            None | Some(CallerSource::Local) => Some(crate::routing::trust_level::TrustLevel::Owner),
+            Some(_) => None,
+        }
     }
 }
 
@@ -444,6 +479,27 @@ mod tests {
 
     fn local_decision(path: &str) -> RouteDecision {
         route(&CommandUri::local(path))
+    }
+
+    // what this catches (card 2a69e6ba): the permissive default handing Owner to a caller it
+    // cannot vouch for. It resolves the substrate's own code and a Local caller as the owner and
+    // refuses to resolve any other source, so an owner-only handler under it refuses them.
+    #[test]
+    fn allow_all_resolves_only_the_local_owner() {
+        use crate::routing::trust_level::TrustLevel;
+        let policy = AllowAllPolicy;
+        let peer = PeerId::new();
+        assert_eq!(policy.caller_trust(None), Some(TrustLevel::Owner));
+        assert_eq!(policy.caller_trust(Some(&CallerIdentity::local(peer))), Some(TrustLevel::Owner));
+        for remote in [
+            CallerIdentity::local_persona(peer),
+            CallerIdentity::airc(peer),
+            CallerIdentity::tcp(peer),
+            CallerIdentity::ws(peer),
+            CallerIdentity::positron_observer(peer, "obs".into()),
+        ] {
+            assert_eq!(policy.caller_trust(Some(&remote)), None, "{:?} is not resolved here", remote.source);
+        }
     }
 
     #[test]

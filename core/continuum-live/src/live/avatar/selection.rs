@@ -73,7 +73,7 @@ pub fn select_avatar_for_voice(
 /// matches the persona's gender (which also drives its name + voice).
 ///
 /// This is the single-persona projection used by the profile-picture snapshot
-/// (`modules/avatar.rs`) and the live video pump (`live/avatar/video_pump.rs`).
+/// (`continuum-live/src/consumers/avatar.rs`) and the live video pump (`live/avatar/video_pump.rs`).
 /// It used to hash the FULL catalog with no gender filter, so a female persona
 /// (female name + female voice) could land on a male VRM — the incoherence
 /// [[procedural-persona-genesis]] Gap #1 names. Filtering by gender first makes a
@@ -110,8 +110,8 @@ pub fn select_avatar_by_identity(identity: &str) -> &'static AvatarModel {
 /// Global allocation map: identity → catalog index.
 /// Tracks which models have been assigned to avoid duplicates.
 /// Once a persona is assigned a model, it keeps it forever (deterministic + stable).
-static AVATAR_ALLOCATION: std::sync::Mutex<Option<HashMap<String, usize>>> =
-    std::sync::Mutex::new(None);
+static AVATAR_ALLOCATION: parking_lot::Mutex<Option<HashMap<String, usize>>> =
+    parking_lot::Mutex::new(None);
 
 /// Identity → a REMOTE/live participant's gender, derived from their display NAME at
 /// the one moment name + identity co-occur (voice-session join).
@@ -122,20 +122,19 @@ static AVATAR_ALLOCATION: std::sync::Mutex<Option<HashMap<String, usize>>> =
 /// DON'T host (a peer joining a call from another grid): we have no card for them, so
 /// their display name is the only presentation signal, captured here. A unisex/custom
 /// name (`gender_from_name` → `None`) records nothing → id-hash fallback.
-static PERSONA_GENDER: std::sync::Mutex<Option<HashMap<String, AvatarGender>>> =
-    std::sync::Mutex::new(None);
+static PERSONA_GENDER: parking_lot::Mutex<Option<HashMap<String, AvatarGender>>> =
+    parking_lot::Mutex::new(None);
 
 /// The gender on each local persona's durable card, published by the card registry
 /// (`persona::card::register`) so presentation reads it here without reaching up into
 /// persona. Tier 1 of [`registered_gender`].
-static CARD_GENDER: std::sync::Mutex<Option<HashMap<String, AvatarGender>>> =
-    std::sync::Mutex::new(None);
+static CARD_GENDER: parking_lot::Mutex<Option<HashMap<String, AvatarGender>>> =
+    parking_lot::Mutex::new(None);
 
 /// A local persona's card registered or changed: her card's gender is authoritative.
 pub fn register_card_gender(identity: &str, gender: AvatarGender) {
     CARD_GENDER
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) // poison: a panicked writer leaves a whole map (insert/remove are single ops); keep serving it
         .get_or_insert_with(HashMap::new)
         .insert(identity.to_string(), gender);
 }
@@ -144,7 +143,6 @@ pub fn register_card_gender(identity: &str, gender: AvatarGender) {
 pub fn forget_card_gender(identity: &str) {
     if let Some(m) = CARD_GENDER
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) // poison: a panicked writer leaves a whole map (insert/remove are single ops); keep serving it
         .as_mut()
     {
         m.remove(identity);
@@ -165,7 +163,7 @@ pub fn register_persona_gender(identity: &str, name: &str) {
             identity,
             gender
         );
-        let mut guard = PERSONA_GENDER.lock().unwrap();
+        let mut guard = PERSONA_GENDER.lock();
         guard
             .get_or_insert_with(HashMap::new)
             .insert(identity.to_string(), gender);
@@ -187,7 +185,6 @@ pub fn registered_gender(identity: &str) -> Option<AvatarGender> {
     // (1) Local persona's durable card wins.
     if let Some(gender) = CARD_GENDER
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) // poison: a panicked writer leaves a whole map (insert/remove are single ops); keep serving it
         .as_ref()
         .and_then(|m| m.get(identity).copied())
     {
@@ -196,7 +193,6 @@ pub fn registered_gender(identity: &str) -> Option<AvatarGender> {
     // (2) Remote/live participant name-anchor.
     PERSONA_GENDER
         .lock()
-        .unwrap()
         .as_ref()
         .and_then(|m| m.get(identity).copied())
 }
@@ -213,7 +209,7 @@ pub fn registered_gender(identity: &str) -> Option<AvatarGender> {
 /// Gender coherence is prioritized: avatar gender must match voice gender.
 /// The identity hash is the SEED for gender; personas can override via preferences later.
 pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static AvatarModel {
-    let mut guard = AVATAR_ALLOCATION.lock().unwrap();
+    let mut guard = AVATAR_ALLOCATION.lock();
     let allocation = guard.get_or_insert_with(HashMap::new);
 
     // Already allocated — return the same model (stable)
@@ -245,7 +241,7 @@ pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static 
             if !used.contains(&catalog_idx) {
                 clog_info!(
                     "🎭 Avatar for '{}': gender={:?} → model='{}' (unique, gender-match)",
-                    &identity[..8.min(identity.len())],
+                    continuum_base::shown_text::shown_text(&identity),
                     gender,
                     AVATAR_CATALOG[catalog_idx].id
                 );
@@ -269,7 +265,7 @@ pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static 
     {
         clog_info!(
             "🎭 Avatar for '{}': gender={:?} → model='{}' (shared, same-gender)",
-            &identity[..8.min(identity.len())],
+            continuum_base::shown_text::shown_text(&identity),
             gender,
             AVATAR_CATALOG[picked].id
         );
@@ -284,7 +280,7 @@ pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static 
         .unwrap_or(0);
     clog_info!(
         "🎭 Avatar for '{}': gender={:?} → model='{}' (shared, any-gender last-resort)",
-        &identity[..8.min(identity.len())],
+        continuum_base::shown_text::shown_text(&identity),
         gender,
         AVATAR_CATALOG[picked].id
     );
@@ -419,8 +415,8 @@ static DISCOVERED_CATALOG: once_cell::sync::OnceCell<AvatarCatalog> =
     once_cell::sync::OnceCell::new();
 
 /// Global dynamic allocation map: identity → catalog index into discovered catalog.
-static DYNAMIC_ALLOCATION: std::sync::Mutex<Option<HashMap<String, usize>>> =
-    std::sync::Mutex::new(None);
+static DYNAMIC_ALLOCATION: parking_lot::Mutex<Option<HashMap<String, usize>>> =
+    parking_lot::Mutex::new(None);
 
 /// Get the discovered catalog (lazy init on first call).
 fn discovered_catalog() -> &'static AvatarCatalog {
@@ -469,7 +465,7 @@ pub fn select_dynamic_avatar(identity: &str, voice: Option<&str>) -> &'static Dy
         return &leaked.all()[0];
     }
 
-    let mut guard = DYNAMIC_ALLOCATION.lock().unwrap();
+    let mut guard = DYNAMIC_ALLOCATION.lock();
     let allocation = guard.get_or_insert_with(HashMap::new);
 
     // Already allocated — return the same model (stable)
@@ -501,7 +497,7 @@ pub fn select_dynamic_avatar(identity: &str, voice: Option<&str>) -> &'static Dy
             if !used.contains(&catalog_idx) {
                 clog_info!(
                     "🎭 Avatar for '{}': gender={:?} → '{}' / {} (unique, gender match)",
-                    &identity[..8.min(identity.len())],
+                    continuum_base::shown_text::shown_text(&identity),
                     gender,
                     models[catalog_idx].id,
                     models[catalog_idx].filename
@@ -526,7 +522,7 @@ pub fn select_dynamic_avatar(identity: &str, voice: Option<&str>) -> &'static Dy
     {
         clog_info!(
             "🎭 Avatar for '{}': gender={:?} → '{}' / {} (shared, same-gender)",
-            &identity[..8.min(identity.len())],
+            continuum_base::shown_text::shown_text(&identity),
             gender,
             models[picked].id,
             models[picked].filename
@@ -541,7 +537,7 @@ pub fn select_dynamic_avatar(identity: &str, voice: Option<&str>) -> &'static Dy
         .unwrap_or(0);
     clog_info!(
         "🎭 Avatar for '{}': gender={:?} → '{}' / {} (shared, any-gender last-resort)",
-        &identity[..8.min(identity.len())],
+        continuum_base::shown_text::shown_text(&identity),
         gender,
         models[picked].id,
         models[picked].filename
@@ -569,17 +565,13 @@ pub fn allocate_dynamic_batch(identities: &[(&str, Option<&str>)]) {
 /// Used by AvatarModule's auto-refresh tick to know which personas need snapshots.
 pub fn get_allocated_identities() -> Vec<String> {
     let mut identities = Vec::new();
-    if let Ok(guard) = AVATAR_ALLOCATION.lock() {
-        if let Some(map) = guard.as_ref() {
-            identities.extend(map.keys().cloned());
-        }
+    if let Some(map) = AVATAR_ALLOCATION.lock().as_ref() {
+        identities.extend(map.keys().cloned());
     }
-    if let Ok(guard) = DYNAMIC_ALLOCATION.lock() {
-        if let Some(map) = guard.as_ref() {
-            for key in map.keys() {
-                if !identities.contains(key) {
-                    identities.push(key.clone());
-                }
+    if let Some(map) = DYNAMIC_ALLOCATION.lock().as_ref() {
+        for key in map.keys() {
+            if !identities.contains(key) {
+                identities.push(key.clone());
             }
         }
     }
@@ -589,14 +581,14 @@ pub fn get_allocated_identities() -> Vec<String> {
 /// Reset the global allocation map. Only for testing.
 #[cfg(test)]
 pub fn reset_allocation() {
-    let mut guard = AVATAR_ALLOCATION.lock().unwrap();
+    let mut guard = AVATAR_ALLOCATION.lock();
     *guard = None;
 }
 
 /// Reset the dynamic allocation map. Only for testing.
 #[cfg(test)]
 pub fn reset_dynamic_allocation() {
-    let mut guard = DYNAMIC_ALLOCATION.lock().unwrap();
+    let mut guard = DYNAMIC_ALLOCATION.lock();
     *guard = None;
 }
 
@@ -606,7 +598,7 @@ mod tests {
 
     /// Allocation tests share global AVATAR_ALLOCATION state.
     /// This mutex serializes them so parallel test threads don't interfere.
-    static ALLOC_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ALLOC_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
     #[test]
     fn test_identity_selection_round_robin() {
@@ -698,7 +690,7 @@ mod tests {
 
     #[test]
     fn test_select_avatar_for_agent_with_voice() {
-        let _guard = ALLOC_TEST_LOCK.lock().unwrap();
+        let _guard = ALLOC_TEST_LOCK.lock();
         reset_allocation();
 
         let model = select_avatar_for_agent("voice-test-male", Some("am_adam"));
@@ -722,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_select_avatar_for_agent_no_voice() {
-        let _guard = ALLOC_TEST_LOCK.lock().unwrap();
+        let _guard = ALLOC_TEST_LOCK.lock();
         reset_allocation();
 
         let model = select_avatar_for_agent("no-voice-test-id", None);
@@ -733,7 +725,7 @@ mod tests {
 
     #[test]
     fn test_unique_avatar_allocation_no_duplicates() {
-        let _guard = ALLOC_TEST_LOCK.lock().unwrap();
+        let _guard = ALLOC_TEST_LOCK.lock();
         reset_allocation();
 
         let identities: Vec<String> = (0..8).map(|i| format!("persona-uuid-{:04}", i)).collect();
@@ -768,7 +760,7 @@ mod tests {
 
     #[test]
     fn test_unique_avatar_allocation_stable() {
-        let _guard = ALLOC_TEST_LOCK.lock().unwrap();
+        let _guard = ALLOC_TEST_LOCK.lock();
         reset_allocation();
 
         let model1 = select_avatar_for_agent("stable-test-id", None);
@@ -783,7 +775,7 @@ mod tests {
 
     #[test]
     fn test_unique_avatar_allocation_overflow_shares() {
-        let _guard = ALLOC_TEST_LOCK.lock().unwrap();
+        let _guard = ALLOC_TEST_LOCK.lock();
         reset_allocation();
 
         let identities: Vec<String> = (0..12)
@@ -884,7 +876,7 @@ mod tests {
 
     #[test]
     fn test_batch_allocation_order_independent() {
-        let _guard = ALLOC_TEST_LOCK.lock().unwrap();
+        let _guard = ALLOC_TEST_LOCK.lock();
 
         reset_allocation();
         let ids_a = vec![

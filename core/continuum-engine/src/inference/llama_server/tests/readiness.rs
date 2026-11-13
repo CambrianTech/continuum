@@ -103,24 +103,34 @@ fn a_loading_engine_of_ours_is_not_a_failed_one() {
 }
 
 #[test]
-fn tail_or_hang_marker_fingerprints_empty_and_tails_nonempty() {
+fn tail_or_hang_marker_fingerprints_empty_and_names_the_fault_and_the_log() {
+    let log = "/logs/llama-server-58057.log";
     assert!(
-        tail_or_hang_marker("").contains("OOM/jetsam"),
+        tail_or_hang_marker(log, "").contains("OOM/jetsam"),
         "an empty log is the no-output fingerprint naming the OOM-kill cause, not a silent blank"
     );
     assert!(
-        tail_or_hang_marker("   \n\n \t \n").contains("OOM/jetsam"),
+        tail_or_hang_marker(log, "   \n\n \t \n").contains("OOM/jetsam"),
         "whitespace-only counts as empty"
     );
-    let log = (1..=30)
-        .map(|i| format!("line{i}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let tail = tail_or_hang_marker(&log);
-    assert!(
-        tail.contains("line30") && tail.contains("line11") && !tail.contains("line10"),
-        "keeps the LAST 20 lines in original order, not the first: {tail}"
-    );
-    // sanity: order preserved (line11 appears before line30)
-    assert!(tail.find("line11") < tail.find("line30"));
+    let report = tail_or_hang_marker(log, "load_model: loading\nGGML_ASSERT(n_ctx > 0) failed\n\n");
+    assert!(report.starts_with("GGML_ASSERT(n_ctx > 0) failed"), "the last printed line leads: {report}");
+    assert!(report.contains(log), "the whole log stays reachable by its path: {report}");
+}
+
+// what this catches (M5 2026-10-25, card 9e3350bd's second site): a synthetic smoke decode
+// seated on a slot holding a mind's tokens replaces her KV, so her next turn re-prefills from 0
+// and her next page save writes the probe as her page. The seat is the scratch slot when the
+// pool has one, any slot only when the server holds nothing, and otherwise no decode at all.
+#[test]
+fn a_smoke_decode_never_takes_a_slot_holding_a_mind() {
+    use serde_json::json;
+    let fresh = json!([{"id": 0, "is_processing": false, "n_prompt_tokens": 0}, {"id": 1, "is_processing": false}]);
+    let resident = json!([{"id": 0, "is_processing": false, "n_prompt_tokens": 26728}, {"id": 1, "is_processing": false, "n_prompt_tokens": 0}]);
+    let busy = json!([{"id": 0, "is_processing": true, "n_prompt_tokens": 0}]);
+    assert_eq!(smoke_seat(Some(2), &resident), SmokeSeat::Scratch(2), "the scratch slot is always a seat");
+    assert_eq!(smoke_seat(None, &fresh), SmokeSeat::Empty, "a server holding nothing may prove decode anywhere");
+    assert_eq!(smoke_seat(None, &resident), SmokeSeat::Occupied, "one slot holding her prompt: no synthetic decode");
+    assert_eq!(smoke_seat(None, &busy), SmokeSeat::Occupied, "a processing slot is taken");
+    assert_eq!(smoke_seat(None, &json!({"error": "x"})), SmokeSeat::Occupied, "an unreadable account is never read as empty");
 }

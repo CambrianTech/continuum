@@ -13,8 +13,13 @@ use serde_json::Value;
 use crate::persona::instance_manager::PersonaInstanceManagerModule;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 
+/// The `ServiceModule` face of the mind's [`PersonaInstanceManagerModule`]: its command
+/// surface and lifecycle are the surface's, the manager is the persona's. `as_any` is the
+/// inner manager.
+pub struct PersonaInstanceManagerService(pub Arc<PersonaInstanceManagerModule>);
+
 #[async_trait]
-impl ServiceModule for PersonaInstanceManagerModule {
+impl ServiceModule for PersonaInstanceManagerService {
     fn config(&self) -> ModuleConfig {
         ModuleConfig {
             name: "persona_instance_manager",
@@ -31,7 +36,22 @@ impl ServiceModule for PersonaInstanceManagerModule {
         // Capture the event bus so every completed birth (boot auto-seed OR the
         // `persona/spawn` command) can announce itself as `persona:born`. Shared with
         // `PersonaBirth` via the same `Arc<LateBound>`.
-        self.bus.install(ctx.bus.clone());
+        self.0.bus.install(ctx.bus.clone());
+        // Durable dormancy loads before the hosting reconciler is released (executor
+        // release follows every module's initialize), so a dormant home is never drawn.
+        // A ledger failure DEGRADES (resume blocked, spawn served, probed) and never fails
+        // this module's init: the manager's verbs keep serving.
+        let adapter = match ctx.storage("persona wakefulness") {
+            Ok(storage) => storage.adapter("main").await,
+            Err(e) => Err(e),
+        };
+        if let crate::persona::instance_manager::DormancyBoot::Loaded { dormant } = self.0.load_dormancy(adapter).await {
+            continuum_base::probe!(
+                class = "persona.dormancy.loaded",
+                dormant = dormant as u64,
+                "durable wakefulness loaded: dormant homes are not resumed until woken"
+            );
+        }
         Ok(())
     }
 
@@ -74,10 +94,11 @@ impl ServiceModule for PersonaInstanceManagerModule {
     /// capability — socket, room, executor — is threaded here.)
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         crate::commands::persona::command_objects(
-            self.registry.clone(),
-            self.continuum_root.clone(),
-            Arc::clone(&self.executor),
-            self.birth(),
+            self.0.registry.clone(),
+            Arc::clone(&self.0.dormancy),
+            self.0.continuum_root.clone(),
+            Arc::clone(&self.0.executor),
+            self.0.birth(),
         )
     }
 
@@ -87,7 +108,7 @@ impl ServiceModule for PersonaInstanceManagerModule {
     /// are renewed once (board-derived, a full TTL), so the holds outlive the dark window.
     /// Bounded well inside the runtime's 2 s save budget; a slow daemon is probed, not waited on.
     async fn save_state(&self) -> Result<(), String> {
-        let runtimes: Vec<_> = self.registry.iter().collect();
+        let runtimes: Vec<_> = self.0.registry.iter().collect();
         let work = async {
             let mut renewed = 0usize;
             let now_ms = EpochMs::now().millis();
@@ -96,14 +117,14 @@ impl ServiceModule for PersonaInstanceManagerModule {
                 // renewal takes the live holds from it; the handoff record takes the rest
                 // (her cards in Review, the reviews she owes) — card 49b5e806, Kimi's #4.
                 let owned =
-                    match crate::persona::airc_runtime::scoped_board_owned_by(rt.airc().as_ref())
+                    match crate::persona::work_board::board_index::scoped_board_owned_by(rt.airc().as_ref())
                         .await
                     {
                         Ok(owned) => owned,
                         Err(_) => continue,
                     };
                 crate::cognition::handoff::note_owned(rt.airc().peer_id().as_uuid(), &owned, now_ms);
-                let held = crate::persona::airc_runtime::held_of_owned(owned, now_ms);
+                let held = crate::cognition::card_holder::held_of_owned(owned, now_ms);
                 for (room, card) in held {
                     let Some(claim_id) = card.claim_id else {
                         continue;
@@ -115,7 +136,7 @@ impl ServiceModule for PersonaInstanceManagerModule {
                             airc_lib::HeartbeatWorkClaim {
                                 card_id: card.card_id,
                                 claim_id,
-                                ttl_ms: crate::persona::work_board::facts::DEFAULT_CLAIM_TTL_MS,
+                                ttl_ms: crate::cognition::card_facts::DEFAULT_CLAIM_TTL_MS,
                             },
                         )
                         .await
@@ -144,11 +165,11 @@ impl ServiceModule for PersonaInstanceManagerModule {
     }
 
     fn install_executor(&self, executor: std::sync::Arc<crate::runtime::CommandExecutor>) {
-        self.executor.install(executor);
+        self.0.executor.install(executor);
     }
 
     fn as_any(&self) -> &dyn Any {
-        self
+        self.0.as_ref()
     }
 }
 
@@ -167,11 +188,11 @@ mod tests {
     #[test]
     fn module_config_routes_persona_instances() {
         let registry = PersonaAircRuntimeRegistry::new();
-        let module = PersonaInstanceManagerModule::new(
+        let module = PersonaInstanceManagerService(Arc::new(PersonaInstanceManagerModule::new(
             registry,
             PathBuf::from("/nonexistent/socket"),
             PathBuf::from("/tmp/continuum-test"),
-        );
+        )));
         let cfg = module.config();
         assert_eq!(cfg.name, "persona_instance_manager");
         assert_eq!(cfg.command_prefixes, &["persona/instances/"]);
@@ -183,11 +204,11 @@ mod tests {
     // the roster read away from the typed command) is caught here.
     #[tokio::test]
     async fn migrated_list_and_get_arms_fail_loud() {
-        let module = PersonaInstanceManagerModule::new(
+        let module = PersonaInstanceManagerService(Arc::new(PersonaInstanceManagerModule::new(
             PersonaAircRuntimeRegistry::new(),
             PathBuf::from("/nonexistent/socket"),
             PathBuf::from("/tmp/continuum-test"),
-        );
+        )));
         for command in ["persona/instances/list", "persona/instances/get"] {
             let err = module
                 .handle_command(command, Value::Null)
@@ -204,11 +225,11 @@ mod tests {
     // surface without the roster verbs — is caught.
     #[test]
     fn contributes_the_typed_instance_commands() {
-        let module = PersonaInstanceManagerModule::new(
+        let module = PersonaInstanceManagerService(Arc::new(PersonaInstanceManagerModule::new(
             PersonaAircRuntimeRegistry::new(),
             PathBuf::from("/nonexistent/socket"),
             PathBuf::from("/tmp/continuum-test"),
-        );
+        )));
         let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
         assert!(names.contains(&"persona/instances/list"), "got {names:?}");
         assert!(names.contains(&"persona/instances/get"), "got {names:?}");
@@ -218,14 +239,36 @@ mod tests {
         );
     }
 
+    // what this catches: a wakefulness store that fails to open taking the whole manager
+    // down (Cormac on #5509). Initialize succeeds, the ledger stays uninstalled (so the draw
+    // resumes no home from disk), and spawn/despawn/wake are still contributed.
+    #[tokio::test]
+    async fn a_failed_ledger_degrades_and_the_manager_still_serves() {
+        let module = PersonaInstanceManagerService(Arc::new(PersonaInstanceManagerModule::new(
+            PersonaAircRuntimeRegistry::new(),
+            PathBuf::from("/nonexistent/socket"),
+            PathBuf::from("/tmp/continuum-test"),
+        )));
+        let boot = module.0.load_dormancy(Err("store down".to_string())).await;
+        assert_eq!(
+            boot,
+            crate::persona::instance_manager::DormancyBoot::Unavailable { error: "store down".to_string() }
+        );
+        assert!(!module.0.dormancy.is_installed(), "no ledger: the draw fails closed");
+        let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
+        for verb in ["persona/spawn", "persona/instances/despawn", "persona/instances/wake"] {
+            assert!(names.contains(&verb), "{verb} still served: {names:?}");
+        }
+    }
+
     #[tokio::test]
     async fn unknown_command_errors() {
         let registry = PersonaAircRuntimeRegistry::new();
-        let module = PersonaInstanceManagerModule::new(
+        let module = PersonaInstanceManagerService(Arc::new(PersonaInstanceManagerModule::new(
             registry,
             PathBuf::from("/nonexistent/socket"),
             PathBuf::from("/tmp/continuum-test"),
-        );
+        )));
         let res = module
             .handle_command("persona/instances/teleport", Value::Null)
             .await;

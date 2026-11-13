@@ -1,24 +1,6 @@
 //! Engine install regression fixtures.
 #![cfg(test)]
 use super::*;
-// what this catches (2026-09-27, the M5 at 10.4 GiB free beside the 27B): a node whose
-// lane fills its memory refused every deploy. Between the floor and plenty the build takes
-// fewer jobs; with plenty, cargo's own count; the floor itself is one job plus the reserve.
-// In the lib so CI runs it (the CLI's own tests run only by name).
-#[test]
-fn a_warm_build_takes_the_jobs_its_free_memory_holds() {
-    let gib = 1024 * 1024 * 1024;
-    // measured: continuum_core's front end alone peaked at 6.4 GB, so one job needs it
-    // plus the reserve; a second job only past another 2.5 GiB
-    assert_eq!(WARM_BUILD_MIN_FREE_BYTES, 4 * gib + 6656 * 1024 * 1024);
-    assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES), Some(1));
-    assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024 - 1), Some(1));
-    assert_eq!(warm_build_jobs_for_memory(WARM_BUILD_MIN_FREE_BYTES + 2560 * 1024 * 1024), None, "where a second job would start, the build is already uncapped");
-    assert_eq!(warm_build_jobs_for_memory(12 * gib), Some(1), "under the measured uncapped need");
-    assert_eq!(warm_build_jobs_for_memory(13 * gib), None);
-    assert!(WARM_BUILD_UNCAPPED_FREE_BYTES >= WARM_BUILD_RESERVE_BYTES + 8_700_000_000, "uncapped covers its measured peak plus the reserve");
-}
-
 // what this catches (card 7c5f139d): an adopted lane left on last deploy's engine
 // forever — the M5 and IntelMac served b10765-965d38a90 (no /train) while the stamp
 // moved on. A lane whose /props build names another commit than the installed stamp is
@@ -123,4 +105,23 @@ fn serving_uses_the_supervisors_engine() {
 fn a_debug_build_is_refused_at_the_door_and_a_release_build_passes() {
     assert!(super::is_debug_build("warning: DEBUG BUILD (asserts enabled) -- performance numbers from this process are not valid\nversion: 10229 (a28ee566c)"));
     assert!(!super::is_debug_build("version: 0.3.0-dev (build 10751, commit 0a637ba22)\nbuilt with AppleClang 21.0.0.21000101 for Darwin arm64"));
+}
+
+// what this catches: the engine launched as fixed slots again (no `--kv-unified`), the shape
+// whose slot count could change only by a relaunch (the M5 loaded its model 40 times on
+// 2026-11-02/03). `-c` is the pool laid out as `--parallel` sequences, and every sequence may
+// draw on all of it.
+#[test]
+fn the_engine_launches_on_one_shared_pool() {
+    let mut planned = target("pool-fixture");
+    planned.context_window = 58_112;
+    planned.lanes = 5;
+    let invocation = super::super::shared_pool::on_shared_pool(crate::inference::lane_args::base_invocation(
+        Path::new("fixture.gguf"), planned.model_id(), "127.0.0.1", 1,
+        planned.parallel_lanes(), planned.served_total_ctx(),
+        planned.host_prompt_cache_mib, Path::new("pages"),
+    ));
+    assert_eq!(invocation.value_of("-c"), Some("290560"));
+    assert_eq!(invocation.value_of("--parallel"), Some("5"));
+    assert_eq!(super::super::shared_pool::pool_launch(&invocation.args), super::super::PoolLaunch::Shared, "the launch and the read-back agree");
 }

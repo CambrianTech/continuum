@@ -12,7 +12,7 @@ pub(super) fn start_persona_host(
     airc_interceptor_cell: &Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>>,
     rt_handle: &tokio::runtime::Handle,
     stretch_mark: &mut impl FnMut(&'static str, &'static str),
-) -> tokio::sync::oneshot::Sender<Arc<crate::runtime::CommandExecutor>> {
+) -> Result<tokio::sync::oneshot::Sender<Arc<crate::runtime::CommandExecutor>>, crate::experience::source::RecipeLoadError> {
     // The Grid's first heartbeat at server boot: resume any
     // existing citizens from disk + ensure at least one is
     // present. ResumeOrMintProvider scans
@@ -99,10 +99,7 @@ pub(super) fn start_persona_host(
     // Persona floor — how many citizens to host (read early: it is ALSO the
     // serving plan's lane DEMAND, so it must be set before the first
     // compute_plan; see below for the full doc).
-    let persona_floor = continuum_base::config_env::read("CONTINUUM_PERSONA_FLOOR")
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&n| n >= 1)
-        .unwrap_or(1);
+    let persona_floor = continuum_base::population::persona_floor();
     // Lanes serve DEMAND: the floor is how many minds need a concurrent
     // lane. Without this, the planner maximized lane count and split the KV
     // budget across slots nobody asked for — 2 personas served through 4
@@ -163,7 +160,7 @@ pub(super) fn start_persona_host(
                      citizens until the named file is fixed or removed \
                      (#430)"
                 );
-                RecipeExperienceSource::resident_citizens_embedded()
+                RecipeExperienceSource::resident_citizens_embedded()?
             }
         }
     };
@@ -182,7 +179,7 @@ pub(super) fn start_persona_host(
             &crate::paths::continuum_root(),
         );
         RecipeExperienceSource::grid_citizens(&overlay_dir)
-            .unwrap_or_else(|_| RecipeExperienceSource::grid_citizens_embedded()) // unwrap_or_else: a refused overlay was already reported by the resident read above; the embedded activities stand
+            .or_else(|_| RecipeExperienceSource::grid_citizens_embedded())? // or_else: a refused overlay was already reported by the resident read above; the embedded activities stand
     };
     runtime.register(Arc::new(
         crate::modules::grid_allocator::GridAllocatorModule::new(
@@ -190,7 +187,7 @@ pub(super) fn start_persona_host(
             grid_citizens,
         ),
     ));
-    let resident_roles: Vec<crate::persona::role_template::RoleId> =
+    let resident_roles: Vec<crate::experience::role::RoleId> =
         resident_citizens.into_iter().map(|c| c.role).collect();
     stretch_mark("resident_roles_and_overlay", "supervisor_construct");
     stretch_mark(
@@ -269,5 +266,5 @@ pub(super) fn start_persona_host(
         supervisor,
         serving_plan_rx,
     ));
-    executor_ready_tx
+    Ok(executor_ready_tx)
 }

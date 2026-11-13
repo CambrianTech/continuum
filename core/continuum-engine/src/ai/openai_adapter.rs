@@ -40,25 +40,6 @@ use super::types::{
 /// — no hand-written literals. Fields that the registry doesn't know
 /// about (HTTP concerns — auth shape, Authorization header requirement)
 /// are derived from `Provider.auth`, not separately configured.
-/// Per-gateway thinking policy for reasoning models. The gateway can't always
-/// honor `chat_template_kwargs.enable_thinking` (verified: llama.cpp
-/// ignores it for this forged model), but Qwen3's `/no_think` SOFT-SWITCH in the
-/// message works — the model emits an empty `<think></think>` then answers
-/// directly. This is the model-specific knob the adapter owns (same boundary as
-/// reasoning separation); higher layers express a model-agnostic intent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ThinkingMode {
-    /// Leave the model at its default — reasoning models think every turn. Output
-    /// is still reasoning-stripped by [`extract_reasoning`] (the safety net).
-    #[default]
-    Default,
-    /// Suppress chain-of-thought via the model's soft-switch. Faster turns, and the
-    /// runaway-loop failure mode can't happen (no reasoning is generated). For a
-    /// small reasoning model whose "thinking" tends to ramble, this is usually the
-    /// better default; a task that genuinely needs deliberation re-enables it.
-    Suppress,
-}
-
 #[derive(Debug, Clone)]
 pub struct OpenAICompatibleConfig {
     pub provider_id: String,
@@ -87,11 +68,6 @@ pub struct OpenAICompatibleConfig {
     /// never a per-adapter mirror. Gateway-level for now; per-model refinement
     /// is the follow-up.
     pub tool_protocol: crate::model_registry::ToolProtocol,
-    /// Whether to suppress the model's chain-of-thought for this gateway (Qwen3
-    /// `/no_think` soft-switch). Sourced from `Provider.capabilities
-    /// .suppress_thinking` (#55). Gateway-level for now; per-task/per-request
-    /// refinement is the follow-up.
-    pub thinking: ThinkingMode,
     /// This endpoint serves ONE resident model and ignores the request's
     /// `model` field, so the adapter must pre-flight model activation before
     /// each generation. From `Provider.capabilities.single_resident_model`
@@ -111,6 +87,8 @@ pub struct OpenAICompatibleConfig {
     /// `Provider.capabilities.llamacpp_sampling_extensions` (#55) — replaces
     /// the `id == "docker-model-runner"` `repeat_penalty` branch.
     pub llamacpp_sampling_extensions: bool,
+    /// The server accepts `tail_tools`. From `Provider.capabilities.tail_tools`.
+    pub tail_tools: bool,
 }
 
 /// What the serving backend told us when we asked it `GET /lora-adapters`.
@@ -139,11 +117,6 @@ enum LoraSupport {
 pub struct OpenAICompatibleAdapter {
     config: OpenAICompatibleConfig,
     api_key: Option<String>,
-    /// Runtime base URL set via `with_runtime_base_url` — overrides
-    /// `config.base_url` without mutating the registry-sourced config.
-    /// Used when DMR reaches us at `model-runner.docker.internal` instead
-    /// of `localhost:12434` (detected by `probe_dmr`).
-    runtime_base_url: Option<String>,
     /// This adapter OWNS a dedicated, single-purpose serving lane (an
     /// `EphemeralServingLane` the eval spawned) rather than sharing the global
     /// gateway. Set via [`with_dedicated_lane`]. When true, the single-resident
@@ -164,13 +137,13 @@ pub struct OpenAICompatibleAdapter {
     /// available. Without this, supports_model falls back to static
     /// `supported_model_prefixes()` which for docker-model-runner returned
     /// `[]` → DMR never won routing → every user silently landed on Candle.
-    runtime_models: std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<String>>>>,
+    runtime_models: std::sync::Arc<parking_lot::RwLock<Option<std::collections::HashSet<String>>>>,
     /// Discovered LoRA page-in capability + catalog, populated by probing the
     /// serving backend's `GET /lora-adapters` (see [`LoraSupport`]). Starts
     /// `Unknown`; the first generation that carries `active_adapters` triggers
     /// the probe. This is the self-organizing alternative to a hardcoded
     /// "which provider supports LoRA" table — the endpoint describes itself.
-    lora_support: std::sync::Arc<std::sync::RwLock<LoraSupport>>,
+    lora_support: std::sync::Arc<parking_lot::RwLock<LoraSupport>>,
     /// Throttle for concurrent POSTs to this provider's endpoint.
     /// llama.cpp-backed providers (DMR) are single-slot in practice:
     /// one prompt at a time gets the full GPU. Letting N personas
@@ -184,24 +157,9 @@ pub struct OpenAICompatibleAdapter {
     ///
     /// DMR → 1 slot (single-slot llama.cpp backend).
     /// Cloud providers (OpenAI / Groq / etc.) → high slot count (no throttle).
+    /// Only for an endpoint with no slot pool (cloud): a pooled endpoint's admissions take ITS
+    /// permits, shared by every adapter and the learner (`slots::EndpointConcurrency`, card 23069702).
     concurrency: std::sync::Arc<tokio::sync::Semaphore>,
-    /// How many permits `concurrency` currently represents — the reconciler's
-    /// bookkeeping for tracking the served slot count both directions.
-    permit_target: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    /// One reconciler per adapter instance (spawned on first `initialize`).
-    permit_reconciler_started: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-
-/// Served PER-SLOT context window by server root, captured from the same
-/// `/props` probe that discovers slots (`default_generation_settings.n_ctx` —
-/// llama-server reports the per-slot share there, already divided by
-/// `--parallel`). This is the ground truth the registry row can only claim:
-/// a consumer budgeting against the model's trained window while the server
-/// slices `-c` across N slots silently overshoots (#139). Keyed per SERVER
-/// like the slot directory (`inference::slots`), shared across adapter instances.
-fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
-    static CTX: std::sync::OnceLock<dashmap::DashMap<String, u32>> = std::sync::OnceLock::new();
-    CTX.get_or_init(dashmap::DashMap::new)
 }
 
 // Serving-guard predicates live in `crate::inference::serving_guard` (S3b decompose).
@@ -231,26 +189,15 @@ fn apply_llamacpp_sampling_knobs(
     obj: &mut serde_json::Map<String, serde_json::Value>,
     request: &TextGenerationRequest,
 ) {
-    obj.insert(
-        "repeat_penalty".to_string(),
-        json!(request.repeat_penalty.unwrap_or(1.1)),
-    );
+    let floor = || crate::model_registry::types::ModelSampling::default().repeat_penalty;
+    let repeat_penalty = request.repeat_penalty.unwrap_or_else(floor); // omitted: the substrate floor's one owner (#181), since a gateway at 1.0 loops
+    obj.insert("repeat_penalty".to_string(), json!(repeat_penalty));
     if let Some(rln) = request.repeat_last_n {
         obj.insert("repeat_last_n".to_string(), json!(rln));
     }
     if let Some(fp) = request.frequency_penalty {
         obj.insert("frequency_penalty".to_string(), json!(fp));
     }
-}
-
-/// Does this `/props` status PROVE the endpoint does not exist — the only verdict
-/// allowed to latch the slot directory Unsupported for the process's life? 404/501
-/// are the server saying "no such surface"; everything else (above all the 503 of a
-/// model still loading) is a statement about NOW, and a permanent conclusion drawn
-/// from a transient state is the [[unknown-is-not-a-quantity]] error with a cache
-/// bolted on.
-fn props_status_proves_endpoint_absent(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::NOT_IMPLEMENTED
 }
 
 mod embedding;

@@ -9,7 +9,6 @@
 //!     │       ↓ trait calls (no IPC)
 //!     └── StorageAdapter trait implementations
 //!         ├── SqliteAdapter
-//!         ├── PostgresAdapter (future)
 //!         ├── MysqlAdapter (future)
 //!         └── etc.
 //! ```
@@ -26,8 +25,8 @@ pub mod connection_manager;
 pub mod entity;
 pub mod legacy_grant_watermark;
 pub mod migration;
-pub mod postgres;
 pub mod query;
+pub mod record_decode;
 pub mod sqlite;
 pub mod store;
 pub mod types;
@@ -51,13 +50,12 @@ pub use entity::{
 // import path for the whole ORM, derive macros included.
 pub use continuum_orm_derive::Entity;
 pub use migration::{MigrationEngine, MigrationHandle};
-pub use postgres::PostgresAdapter;
 pub use query::{QueryBuilder, QueryOperator, SortDirection, StorageQuery};
-pub use sqlite::SqliteAdapter;
-pub use store::{OrmStore, OrmStoreError};
+pub use sqlite::{IndexFailure, IndexPass, SqliteAdapter};
+pub use store::{commit_appending, OrmStore, OrmStoreError};
 pub use types::{
     CascadeRule, CollectionSchema, DataRecord, FieldType, ForeignKeyRef, RecordMetadata,
-    SchemaField, SchemaIndex, StorageResult,
+    SchemaField, SchemaIndex, SequenceSpec, Sequenced, StorageResult,
 };
 pub use vector::{
     BackfillVectorsProgress, BackfillVectorsRequest, EmbeddingModel, GenerateEmbeddingRequest,

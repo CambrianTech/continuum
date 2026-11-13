@@ -13,9 +13,8 @@
 //! that store on first touch after boot — the DB is the truth, the corpus is the
 //! derived cache. Same late-bound-executor shape as `ChatModule` (task #224).
 
-use crate::memory::PersonaMemoryManager;
 use crate::runtime::{
-    CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority,
+    CommandExecutor, CommandResult, ModuleConfig, ModuleContext, ModulePriority,
     ServiceModule,
 };
 use async_trait::async_trait;
@@ -23,37 +22,7 @@ use serde_json::Value;
 use std::any::Any;
 use std::sync::Arc;
 
-/// Shared state for memory module.
-pub struct MemoryState {
-    /// Per-persona memory manager — pure compute on in-memory MemoryCorpus.
-    pub memory_manager: Arc<PersonaMemoryManager>,
-    /// Substrate-wide command executor, installed by `start_server` via
-    /// [`ServiceModule::install_executor`]. The `memory/*` commands use it to
-    /// write memories through to the persona's durable `longterm.db` (via
-    /// `data/create`) and to hydrate a missing corpus from it (via `data/list`)
-    /// — the cross-module dual-write pattern `ChatModule` established.
-    pub executor_slot: Arc<LateBound<CommandExecutor>>,
-}
-
-impl MemoryState {
-    pub fn new(memory_manager: Arc<PersonaMemoryManager>) -> Self {
-        Self {
-            memory_manager,
-            executor_slot: Arc::new(LateBound::new("memory::executor")),
-        }
-    }
-
-    /// Resolve the executor, or a loud error naming the boot-ordering contract.
-    /// Per [[fallbacks-are-illegal-fail-loud]]: a memory write that cannot reach
-    /// the durable store must refuse, never silently degrade to cache-only.
-    pub fn executor(&self) -> Result<Arc<CommandExecutor>, String> {
-        self.executor_slot.cloned().ok_or_else(|| {
-            "MemoryState: CommandExecutor not installed — start_server must call \
-             install_executor_on_all before any memory command can persist"
-                .to_string()
-        })
-    }
-}
+pub use continuum_memory::state::MemoryState;
 
 pub struct MemoryModule {
     state: Arc<MemoryState>,

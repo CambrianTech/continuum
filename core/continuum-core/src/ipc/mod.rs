@@ -1,16 +1,14 @@
 use crate::code::{FileEngine, ShellSession};
 use crate::gpu::GpuMemoryManager;
-use crate::modules::agent::AgentModule;
 use crate::modules::ai_provider::AIProviderModule;
 use crate::modules::airc::AircModule;
 use crate::modules::airc_bridge_directive::AircBridgeDirectiveModule;
 use crate::modules::airc_bridge_dispatch::AircBridgeDispatchModule;
 use crate::modules::auth::ExternalWebviewAuthModule;
-use crate::modules::avatar::AvatarModule;
+use continuum_live::consumers::avatar::AvatarModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
 use crate::modules::code::{CodeModule, CodeState};
 use crate::modules::cognition::{CognitionModule, CognitionState};
-use crate::modules::data::DataModule;
 use crate::modules::dataset::DatasetModule;
 use crate::modules::embedding::EmbeddingModule;
 use crate::modules::events::EventsModule;
@@ -25,7 +23,7 @@ use crate::modules::memory::{MemoryModule, MemoryState};
 use crate::modules::models::ModelsModule;
 use crate::modules::persona_allocator::PersonaAllocatorModule;
 use crate::modules::rag::{RagModule, RagState};
-use crate::modules::sentinel::SentinelModule;
+use continuum_sentinel::SentinelModule;
 use crate::modules::system_resources::SystemResourceModule;
 use crate::modules::vision::VisionModule;
 /// IPC server for continuum-core
@@ -39,19 +37,14 @@ use crate::modules::vision::VisionModule;
 /// - JSON protocol (JTAGRequest/JTAGResponse)
 /// - Performance timing on every request
 /// - Modular runtime routes commands through ServiceModule trait (Phase 1+)
-use crate::persona::{ChannelRegistry, PersonaState};
-use crate::rag::RagEngine;
+use crate::persona::ChannelRegistry;
+use crate::cognition::conversation::types::PersonaState;
 use crate::runtime::{CommandResult, Runtime};
 use crate::system_resources::SystemResourceMonitor;
 use crate::{log_debug, log_error, log_info};
 use dashmap::DashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-// Unix-domain socket is the primary IPC transport on Unix. On Windows there is
-// no Unix socket; the server binds ONLY the TCP loopback listener (below) and
-// local callers connect over TCP. These imports are Unix-only.
-#[cfg(unix)]
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -59,8 +52,8 @@ use uuid::Uuid;
 // ============================================================================
 // Request/Response Protocol + Memory Diagnostics
 // ============================================================================
-// Split out of this file 2026-05-18 — see ipc/protocol.rs (InboxMessageRequest,
-// Response) and ipc/diagnostics.rs (per-command RSS tracking). Re-exported
+// Split out of this file 2026-05-18 — see ipc/protocol.rs
+// (Response) and ipc/diagnostics.rs (per-command RSS tracking). Re-exported
 // here so existing call sites resolve unchanged.
 pub mod command_ingress;
 pub mod diagnostics;
@@ -106,7 +99,6 @@ pub mod ws;
 
 use diagnostics::{current_rss_mb, dump_memory_report, log_command_rss_delta};
 
-pub use protocol::InboxMessageRequest;
 
 use protocol::Response;
 

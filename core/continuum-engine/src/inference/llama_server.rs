@@ -53,18 +53,20 @@ pub use liveness::{
     NeverStartedClass, RealDecodeOutcome, SmokeMissVerdict,
 };
 
+mod convergence_attempt;
 mod reconcile;
+mod shared_pool;
+pub use shared_pool::PoolLaunch;
 pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
-#[cfg(test)]
-pub(crate) use reconcile::{grow_refused_by_memory_gate, lane_grow_would_narrow_the_window};
 
 mod smoke;
 use smoke::{
-    smoke_attempt, smoke_verdict, SmokeVerdict, QUICK_SMOKE_BUDGET, THINKING_SMOKE_BUDGET,
+    scratch_slot_for, smoke_answer_tokens, smoke_attempt, smoke_attempt_verdict, smoke_seat,
+    smoke_verdict, SmokeCap, SmokeSeat, SmokeVerdict,
 };
 mod target;
 pub use target::{
-    cold_expert_offload_ot, main_lane_placement, placement_from_config, AdapterEntry,
+    cold_expert_offload_ot, main_lane_placement, placement_from_config, serving_pool_kind, AdapterEntry,
     LanePlacement, ServingTarget,
 };
 mod kv_support;
@@ -77,23 +79,36 @@ use pages::{
     PAGE_DIR_GUARD,
 };
 mod genome;
+mod learn_ledger;
+pub use learn_ledger::{GrantId, GrantShare, LearningEngine, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
+mod learn_residency;
+mod learn_step;
+pub use learn_step::{LearnExample, LearnOutcome, RestoreCheckpoint, RestoreOutcome};
+pub use learn_residency::{Checkpoint, CheckpointAnswer, CoveringLease, FreshShadow, LeaseKind, LearningPlan, LoadedAdapter, MeasuredRow, PlannedRow, Preflight, PreflightRefusal, RegisteredResidency, ResidencyId, ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind, WeightsPlan};
+mod gene_pages;
+pub use gene_pages::{gene_seats, page_gene, GeneMove, GenePageError, GeneSeat};
 pub(crate) use genome::gene_stage_name;
+#[cfg(test)]
+use genome::genome_paths_of;
 pub use genome::{engine_accepts_train_dir, engine_train_dir, GenomeInPlace};
-use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR};
+use genome::engine_help_lists_train_dir;
+#[cfg(test)]
+use genome::{answer_for, needs_asking, train_dir_known, train_dir_support, ProbeOutcome};
 mod engine_install;
-#[cfg(windows)]
-pub(crate) use engine_install::engine_override;
+mod engine_features;
+mod template_overhead;
+pub use template_overhead::{probe_messages, serving_template_overhead, MessageKind, MessageShape, TemplateMeasurement, TemplateSample};
+pub use engine_features::serving_engine_takes_tail_tools;
+use engine_features::{observe_served_engine, serving_lane_evidence, LaunchedEvidence, ServedEvidence};
 pub(crate) use engine_install::{installed_engine_commit, lane_runs_installed_engine};
-pub use engine_install::{
-    engine_stale, warm_build_jobs_for_memory, WARM_BUILD_FIRST_JOB_BYTES, WARM_BUILD_JOB_BYTES,
-    WARM_BUILD_MIN_FREE_BYTES, WARM_BUILD_RESERVE_BYTES, WARM_BUILD_UNCAPPED_FREE_BYTES,
-};
+pub use engine_install::engine_override;
+pub use engine_install::engine_stale;
 use engine_install::{
     mark_engine_proven, roll_back_engine_after_failed_launch, server_bin, ENGINE_CONVERGE_TRIED,
     ENGINE_STALE,
 };
 mod snapshot;
-use snapshot::SERVING_STATE;
+pub mod serving_hold;
 pub use snapshot::{
     await_ready_serving, await_snapshot_resettle, current_serving, has_reconciled,
     install_serving_state, mark_first_reconcile, serving_state_receiver, MultimodalSupport,
@@ -103,27 +118,33 @@ mod vision;
 pub use vision::vision_lane_ready;
 use vision::{main_lane_mmproj_decision_for, MainLaneMmproj};
 mod external;
-pub use external::{external_serving_pin, probe_external_serving, wait_for_serving_window_settle};
+pub use external::{external_serving_pin, probe_external_serving};
 
 mod progress;
 pub(crate) use progress::{
-    engine_probe, engine_props, restore_probe, wait_while_engine_progresses, EngineProbe,
+    engine_probe, engine_props, restore_probe, slots_probe, unmoved_window, wait_while_engine_progresses, EngineProbe,
+    EngineProgress, WaitBounds, UNMOVED_CEILING,
 };
 #[cfg(test)]
-pub(crate) use progress::{engine_probe_within, slots_progress, EngineProgress};
+pub(crate) use progress::{engine_probe_within, slots_progress, window_at_rate, window_rate};
 
 mod slot_work;
-pub use progress::engine_condemned;
+pub use progress::{condemn, condemnations, engine_condemned, note_serving_ready, until_condemned};
+#[cfg(test)]
+pub(crate) use progress::Condemnations;
+pub(crate) use progress::until_condemned_on;
 pub use slot_work::{in_flight_slot, slot_advanced, slot_work, InFlightSlot, SlotWork};
 pub(crate) use slot_work::InFlightSlotGuard;
 #[cfg(test)]
 pub(crate) use slot_work::slot_work_of;
 
 mod control;
+mod retirement_refusal;
+pub use retirement_refusal::RetirementRefusal;
 pub use control::{
     EngineRetirementError, EngineRetirementReceipt, EngineRetirementStatus, EnsureOutcome,
     LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
-    OwnedServingTarget, ServingLifecycleCheck,
+    ObservedGeometry, OwnedServingTarget, ServingLifecycleCheck,
 };
 mod prepared_launch;
 use prepared_launch::{unsupported_launch_environment, PreparedLocalLaunch};
@@ -138,6 +159,10 @@ pub use ephemeral::{
 
 mod control_impl;
 mod launch;
+mod ready_tail;
+mod late_ready;
+mod stderr_sink;
+mod adopted_retirement;
 mod placement_stamp;
 mod prepare;
 
