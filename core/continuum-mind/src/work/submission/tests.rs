@@ -404,7 +404,8 @@
         let e = super::room_of_card(&airc, None, &whole, "work/submit")
             .await
             .expect_err("a whole id on no readable board and no room: nothing to act in");
-        assert!(e.to_string().contains("room/join") && e.to_string().contains("room="), "{e}");
+        // the way out without naming a command in the sentence (`commands_in_refusal_text`): name its room
+        assert!(e.to_string().contains("room=") && !e.to_string().contains("room/join"), "{e}");
     }
 
     // what this catches (Kimi's verdict on #4825, 2026-10-06): work/review's card fields were
