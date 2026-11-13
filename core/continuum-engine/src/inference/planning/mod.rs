@@ -21,3 +21,9 @@ pub mod window_allocator;
 /// this host (→ `fits_on_gpu = false`, honest degrade — never a silent shrink).
 // context-budget-exempt: the hardware FLOOR the whole serving stack sizes UP from — the one substrate-owned minimum every other bound derives against, and never a cap on anything
 pub const MIN_SERVE_CTX: u32 = 2048;
+
+/// Interim floor for persona lanes — no lane below one real coding turn.
+/// Replaces bare hardware minimum (MIN_SERVE_CTX=2048) with a context that
+/// preserves meaningful conversation. The allocator never packs a mind into
+/// fewer tokens than this, even when budget would allow it.
+pub const PERSONA_LANE_MIN_CTX: u32 = 64_000;

@@ -267,14 +267,14 @@ impl ServingDemand {
     pub fn window_target(&self) -> u32 {
         let with_headroom = |t: u32| (t as f64 * SENT_HEADROOM) as u32;
         match self.sent_median.map(with_headroom).or(self.sent_tokens.map(with_headroom)) {
-            Some(t) => t.min(self.window_tokens).max(MIN_SERVE_CTX),
+            Some(t) => t.min(self.window_tokens).max(PERSONA_LANE_MIN_CTX),
             None => self.window_tokens,
         }
     }
 
     /// Remember last serve's per-slot window for this model (see `sticky_window`).
     pub fn with_sticky_window(mut self, w: Option<u32>) -> Self {
-        self.sticky_window = w.filter(|w| *w >= MIN_SERVE_CTX);
+        self.sticky_window = w.filter(|w| *w >= PERSONA_LANE_MIN_CTX);
         self
     }
 
@@ -291,7 +291,7 @@ pub fn choose_served_window(fits: u32, demand_tokens: u32, sticky: Option<u32>) 
         Some(s) if s <= fits && s >= demand_tokens => s,
         _ => demand_tokens,
     };
-    wanted.min(fits).max(MIN_SERVE_CTX)
+    wanted.min(fits).max(PERSONA_LANE_MIN_CTX)
 }
 
 /// Hysteresis margin for switching UP to a more capable model: it must fit

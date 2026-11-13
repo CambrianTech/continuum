@@ -235,6 +235,15 @@ fn plan_serving_into(
     ]
     .into_iter()
     .fold((0, FloorTerm::Bootstrap), |best, term| if term.0 > best.0 { term } else { best });
+    // CARD 2eec3977 (5): interim persona floor — no lane below one real coding turn
+    let per_lane_floor = if demand.requirements.is_empty() {
+        // Legacy path: still apply the governed minimum so even unmeasured minds get context
+        per_lane_floor.max(PERSONA_LANE_MIN_CTX)
+    } else {
+        // Window allocator handles governed-size; floor is already enforced by the allocator
+        per_lane_floor
+    };
+
     // THE GOVERNED SIZE (card 2eec3977, Joel 2026-09-20: "context must go along with
     // required governed size"): when the roster's requirements are known, lanes × window
     // are the allocator's — every served mind at her requirement, minds shed before the
