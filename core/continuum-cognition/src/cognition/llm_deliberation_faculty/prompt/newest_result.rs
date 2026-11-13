@@ -53,30 +53,92 @@ enum Cut {
     Bytes { bytes: usize },
 }
 
-/// The saved output one slot's page continues in, and how she knows it.
+/// The saved output one slot's page continues in, and how she knows it. A page starts at
+/// `first_line` (1-based), `first_byte` into the whole: line 1 for a first page, further on when she
+/// reopens an output whose earlier page she already has (`continuation`).
 struct Saved<'a> {
     label: &'a str,
     handle: &'a str,
+    first_line: usize,
+    first_byte: usize,
+}
+
+/// Where this mind's last page of a saved output ended, so reopening the SAME output (one
+/// content-addressed handle) shows its next page instead of its first again. Eitan on the IntelMac,
+/// 2026-11-11 to 11-13: every act reopened a 26,863-token output into a 19,022-token room and was
+/// shown lines 1-K each time, for two days; a reopen is exempt from the repeat rule (it assumes the
+/// whole is shown), so nothing stopped it. Owned by the mind's faculty, one entry (the output she
+/// is reading), so it never grows; a different output, or the end of this one, starts at line 1.
+#[derive(Default)]
+pub(in crate::cognition::llm_deliberation_faculty) struct Reading(parking_lot::Mutex<Option<ReadPage>>);
+
+/// The output she is reading, the act it was last paged for, where that page began, and the line
+/// after its end.
+#[derive(Clone)]
+struct ReadPage {
+    handle: String,
+    act: u64,
+    began: usize,
+    next: usize,
+}
+
+impl Reading {
+    /// The first line of act `act`'s page of `handle`. The same act renders the same page again (a
+    /// retry or a grant change re-renders her act; it must not skip ahead); a LATER act that
+    /// reopens the same output starts after the last page she was shown. Anything else: line 1.
+    fn first_line(&self, handle: &str, act: u64) -> usize {
+        match self.0.lock().as_ref() {
+            Some(read) if read.handle == handle && read.act == act => read.began,
+            Some(read) if read.handle == handle && read.act < act => read.next,
+            _ => 1,
+        }
+    }
+
+    /// Act `act` was shown `handle` from line `began` through line `last`.
+    fn record(&self, handle: &str, act: u64, began: usize, last: usize) {
+        *self.0.lock() = Some(ReadPage { handle: handle.to_owned(), act, began, next: last + 1 });
+    }
+}
+
+/// The byte where 1-based `line` starts in `text`, or `None` past its end (read to the end: she
+/// starts again at line 1).
+fn byte_of(text: &str, line: usize) -> Option<usize> {
+    let mut byte = 0;
+    for (at, piece) in text.split_inclusive('\n').enumerate() {
+        if at + 1 == line {
+            return Some(byte);
+        }
+        byte += piece.len();
+    }
+    None
 }
 
 impl Saved<'_> {
+
     /// What she reads before the page: how much there is, what the page is, and the call that
     /// reads on, written as she makes it.
     fn note(&self, chars: usize, tokens: usize, cut: Cut) -> String {
+        // Line numbers are the whole output's: `shown` and `total` count from this page's first line.
+        let first = self.first_line;
         let (shown, next) = match cut {
             Cut::Lines { shown, total } => (
-                format!("lines 1-{shown} of {total}"),
+                format!("lines {first}-{} of {}", first + shown.saturating_sub(1), first - 1 + total),
                 // To the output's own end: a range with no end reads through its last line.
-                Reopen::Lines { output: self.handle, range: crate::cognition::tool_executor::spill::LineRange { start: shown + 1, end: None } }.to_string(),
+                Reopen::Lines { output: self.handle, range: crate::cognition::tool_executor::spill::LineRange { start: first + shown, end: None } }.to_string(),
             ),
-            Cut::Bytes { bytes } => (
+            Cut::Bytes { bytes } if first == 1 => (
                 format!("its first {bytes} bytes (its first line alone is longer than the room)"),
                 Reopen::Bytes { output: self.handle, offset: bytes as u64 }.to_string(),
             ),
+            Cut::Bytes { bytes } => (
+                format!("the first {bytes} bytes of line {first} (that line alone is longer than the room)"),
+                Reopen::Bytes { output: self.handle, offset: (self.first_byte + bytes) as u64 }.to_string(),
+            ),
         };
+        let which = if first == 1 { "its first page".to_owned() } else { format!("its next page (you were shown lines 1-{} of it before)", first - 1) };
         format!(
             "[{}: {chars} chars, about {tokens} tokens, more than your window holds beside the rest, \
-             so this is its first page: {shown}. Nothing is lost: read on with {next}]",
+             so this is {which}: {shown}. Nothing is lost: read on with {next}]",
             self.label
         )
     }
@@ -84,22 +146,28 @@ impl Saved<'_> {
     /// `text`'s page holding its first `upto` bytes: whole lines when at least one fits, else
     /// the first line cut at a character boundary.
     fn page_at(&self, text: &str, upto: usize, chars: usize, tokens: usize) -> String {
+        let (end, cut) = Self::cut_at(text, upto);
+        format!("{}\n{}", self.note(chars, tokens, cut), &text[..end])
+    }
+
+    /// Where a page holding `text`'s first `upto` bytes ends, and how it is cut: whole lines when
+    /// at least one fits, else the first line cut at a character boundary. Decided once, here, so
+    /// the page and the record of what she was shown never disagree.
+    fn cut_at(text: &str, upto: usize) -> (usize, Cut) {
         let upto = text.floor_char_boundary(upto.min(text.len()));
         let first_line = text.find('\n').map_or(text.len(), |end| end + 1); // map_or: a one-line text is its first line
         if upto >= first_line {
             let end = text[..upto].rfind('\n').map_or(first_line, |at| at + 1); // map_or: no line end before upto keeps the first line
-            let total = text.lines().count();
-            let shown = text[..end].lines().count();
-            return format!("{}\n{}", self.note(chars, tokens, Cut::Lines { shown, total }), &text[..end]);
+            return (end, Cut::Lines { shown: text[..end].lines().count(), total: text.lines().count() });
         }
-        format!("{}\n{}", self.note(chars, tokens, Cut::Bytes { bytes: upto }), &text[..upto])
+        (upto, Cut::Bytes { bytes: upto })
     }
 
-    /// `text`'s first page within `target` tokens: the most content whose page fits, and never
-    /// less than its least page (as much content as its note, so a page is never a bare handle).
-    fn first_page(&self, text: &str, target: usize) -> String {
-        let chars = text.chars().count();
-        let tokens = estimate_guard_tokens(text);
+    /// The page of `text` (this page's part of the output, from its first line) within `target`
+    /// tokens, its note sized by the WHOLE output (`chars`, `tokens`), and how it was cut.
+    fn page(&self, text: &str, target: usize, chars: usize, tokens: usize) -> (String, Cut) {
+        // The most content whose page fits, and never less than its least page (as much content as
+        // its note, so a page is never a bare handle).
         // As much content as its note at its longest (either form, with this text's own counts).
         let total = text.lines().count();
         let note = self.note(chars, tokens, Cut::Lines { shown: total, total }).len().max(self.note(chars, tokens, Cut::Bytes { bytes: text.len() }).len());
@@ -113,7 +181,8 @@ impl Saved<'_> {
                 over = mid;
             }
         }
-        self.page_at(text, fits, chars, tokens)
+        let (_, cut) = Self::cut_at(text, fits);
+        (self.page_at(text, fits, chars, tokens), cut)
     }
 }
 
@@ -218,9 +287,21 @@ impl LlmDeliberationFaculty {
                 break;
             }
             let Some(handle) = handle.as_deref() else { continue };
-            let saved = Saved { label: &label, handle };
             let tokens = estimate_guard_tokens(text);
-            let page = saved.first_page(text, tokens.saturating_sub(over));
+            let chars = text.chars().count();
+            // A LATER act reopening the same output continues where her last page of it ended; the
+            // same act re-rendered shows the same page. Only the rendered pass reads or records it.
+            let act = active.map(|(_, seq)| seq);
+            let wanted = match (report, act) {
+                (true, Some(act)) => self.reading.first_line(handle, act),
+                _ => 1,
+            };
+            let (first_line, first_byte) = byte_of(text, wanted).map_or((1, 0), |byte| (wanted, byte)); // map_or: past the end she has read it all; she starts again at line 1
+            let saved = Saved { label: &label, handle, first_line, first_byte };
+            let (page, cut) = saved.page(&text[first_byte..], tokens.saturating_sub(over), chars, tokens);
+            if let (true, Some(act), Cut::Lines { shown, .. }) = (report, act, cut) {
+                self.reading.record(handle, act, first_line, first_line + shown.saturating_sub(1));
+            }
             cost = cost.saturating_sub(tokens).saturating_add(estimate_guard_tokens(&page));
             **text = page;
         }
@@ -248,7 +329,7 @@ mod tests {
     fn multiline_page_cut_inside_replacement_character_preserves_first_line() {
         let text = format!("ok tool/output(outputId=f68053e3b2bad9c9)\n{}\u{fffd}tail", "x".repeat(1456));
         let Some(at) = text.find('\u{fffd}') else { panic!("fixture must contain the replacement character") };
-        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9" };
+        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9", first_line: 1, first_byte: 0 };
         for split in [at + 1, at + 2] {
             let page = saved.page_at(&text, split, text.chars().count(), estimate_guard_tokens(&text));
             assert!(page.ends_with("ok tool/output(outputId=f68053e3b2bad9c9)\n"));
@@ -258,7 +339,7 @@ mod tests {
     // what this catches: the same Sahar abort across every UTF-8 byte split and page-search budget.
     #[test]
     fn every_byte_cut_keeps_a_prefix_and_exact_continuation() {
-        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9" };
+        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9", first_line: 1, first_byte: 0 };
         for text in ["", "ASCII", "é中😀tail", "header\né中😀tail", "é\n中\n😀tail"] {
             for upto in 0..=text.len() + 2 {
                 let page = saved.page_at(text, upto, text.chars().count(), estimate_guard_tokens(text));
@@ -275,10 +356,35 @@ mod tests {
                 }
             }
             for target in 0..=estimate_guard_tokens(text) + 5 {
-                let page = saved.first_page(text, target);
+                let (page, _) = saved.page(text, target, text.chars().count(), estimate_guard_tokens(text));
                 let Some((_, content)) = page.split_once('\n') else { panic!("page must separate note and content") };
                 assert!(text.starts_with(content));
             }
         }
+    }
+
+    // what this catches: Eitan on the IntelMac, 2026-11-11 to 11-13: every act reopened one output
+    // too large for his room and was shown lines 1-K, for two days. A later act reopening the same
+    // output gets its next page; the same act re-rendered keeps its page; another output, or the
+    // end of this one, starts again at line 1.
+    #[test]
+    fn a_later_reopen_of_the_same_output_continues_and_a_rerender_does_not() {
+        let reading = Reading::default();
+        let text: String = (1..=30).map(|n| format!("line {n}\n")).collect();
+        assert_eq!(reading.first_line("h", 7), 1, "nothing read yet");
+        reading.record("h", 7, 1, 10);
+        assert_eq!(reading.first_line("h", 7), 1, "the same act re-rendered keeps its page");
+        assert_eq!(reading.first_line("h", 8), 11, "a later act continues after line 10");
+        assert_eq!(reading.first_line("other", 8), 1, "another output starts at line 1");
+        let byte = byte_of(&text, 11).expect("line 11 exists");
+        let saved = Saved { label: "result", handle: "h", first_line: 11, first_byte: byte };
+        let whole_tokens = estimate_guard_tokens(&text);
+        let (page, cut) = saved.page(&text[byte..], whole_tokens / 3, text.chars().count(), whole_tokens);
+        let Some((note, content)) = page.split_once('\n') else { panic!("a note, then the page") };
+        assert!(content.starts_with("line 11\n"), "the page starts at line 11: {content}");
+        assert!(note.contains("its next page (you were shown lines 1-10 of it before)") && note.contains("of 30"), "{note}");
+        let Cut::Lines { shown, .. } = cut else { panic!("whole lines fit") };
+        assert!(note.contains(&format!("lines 11-{}", 10 + shown)), "{note}");
+        assert_eq!(byte_of(&text, 31), None, "past the end: she has read it all");
     }
 }
