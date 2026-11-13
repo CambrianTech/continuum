@@ -30,6 +30,7 @@
 //! | §5b.1 | the restore-outcome proof list (restart, reclamation, oversize, incompatible, corrupt, concurrent, late receipt, torn ledger) | as 4 | as 4 |
 //! | 6 | an admission hold with no releaser | removed with its cause: the pool-growth relaunch and its quiesce are deleted (it froze the M5 for 2.5 h on 2026-11-10) | none: no hold exists |
 //! | 7 | an overflowing view | not drivable here yet: [`expected::MissingSeam::ViewTurnoverPolicy`] | `dyno/tests.rs` `view` |
+//! | 8 | idle pool, one mind, censored demand: her grant follows a demand her collapses measured | `LaneRequirement` -> `window_grant::Demand::of` -> `DemandFollowing`, her wish ring as the working set keeps it | `dyno/tests.rs` `censored_demand` |
 
 pub mod conservation;
 pub mod expected;
