@@ -11,9 +11,69 @@ use super::*;
 /// duplicates (the bench cards' titles are identical); the body catches engineering cards that name
 /// the same defect in different words. The embedder takes the text whole and owns its own length.
 pub(super) fn card_text(c: &WorkCard) -> String {
-    match c.body.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
-        Some(body) => format!("{}\n{}", c.title, body),
-        None => c.title.clone(),
+    title_and_body(&c.title, c.body.as_deref())
+}
+
+/// The same text for a card not yet on the board (a create's request).
+pub(super) fn title_and_body(title: &str, body: Option<&str>) -> String {
+    match body.map(str::trim).filter(|b| !b.is_empty()) {
+        Some(body) => format!("{title}\n{body}"),
+        None => title.to_string(),
+    }
+}
+
+/// The ranked hits as the board names them: a hit whose card is gone is dropped.
+fn board_hits(
+    ranked: continuum_embedding::commands::similar::SimilarResult,
+    cards: &[WorkCard],
+) -> Vec<WorkSimilarHit> {
+    let by_id: std::collections::HashMap<String, &WorkCard> =
+        cards.iter().map(|c| (short8(c.card_id.as_uuid()), c)).collect();
+    ranked
+        .results
+        .into_iter()
+        .filter_map(|h| {
+            by_id.get(&h.id).map(|c| WorkSimilarHit {
+                id: h.id,
+                title: c.title.clone(),
+                state: state_str(&c.state).to_string(),
+                similarity: h.similarity,
+                z: h.z,
+                significant: h.significant,
+            })
+        })
+        .collect()
+}
+
+/// A new card's near matches on the board it was filed on (the board BEFORE it, so never
+/// itself): information in `work/create`'s result, never a refusal. Only the significant
+/// hits ([`RELATED_MIN_Z`]) among unfinished cards. Ranking that cannot
+/// run (an uncalibrated embedder) leaves the card created and the list empty, probed.
+pub(super) async fn near_matches(
+    embedder: &Arc<dyn crate::ai::embedding::EmbeddingProvider>,
+    filed: &super::work_create_command::Filed,
+) -> Vec<WorkSimilarHit> {
+    let unfinished: Vec<WorkCard> = filed
+        .board
+        .cards
+        .iter()
+        .filter(|c| !matches!(c.state, CardState::Merged | CardState::Closed))
+        .cloned()
+        .collect();
+    if unfinished.is_empty() {
+        return Vec::new();
+    }
+    let candidates = card_candidates(&unfinished, &[]);
+    match continuum_embedding::commands::similar::rank_texts(embedder, &filed.text, &candidates, default_similar_k(), 0.0, RELATED_MIN_Z).await {
+        Ok(ranked) => board_hits(ranked, &unfinished).into_iter().filter(|h| h.significant).collect(),
+        Err(error) => {
+            continuum_base::probe!(
+                class = "work.create.near_matches_unranked",
+                error = %error,
+                "the card was created; its near matches could not be ranked"
+            );
+            Vec::new()
+        }
     }
 }
 
@@ -34,6 +94,10 @@ pub(super) fn card_candidates(
 pub(super) fn parse_states(states: &[String]) -> Result<Vec<CardState>, CommandError> {
     states.iter().map(|s| parse_state(s)).collect()
 }
+
+/// "Related", in standard deviations above the embedder's unrelated-pair mean: `work/similar`'s
+/// floor and a new card's near matches. "The same card" is `work/duplicates`' tighter 6.
+const RELATED_MIN_Z: f32 = 3.0;
 
 pub(super) fn default_similar_k() -> usize {
     10
@@ -157,34 +221,16 @@ impl ActionCommand for WorkSimilar {
             &candidates,
             p.k,
             0.0,
-            3.0,
+            RELATED_MIN_Z,
         )
         .await?;
-        let by_id: std::collections::HashMap<String, &WorkCard> = board
-            .cards
-            .iter()
-            .map(|c| (short8(c.card_id.as_uuid()), c))
-            .collect();
-        let hits = ranked
-            .results
-            .into_iter()
-            .filter_map(|h| {
-                by_id.get(&h.id).map(|c| WorkSimilarHit {
-                    id: h.id,
-                    title: c.title.clone(),
-                    state: state_str(&c.state).to_string(),
-                    similarity: h.similarity,
-                    z: h.z,
-                    significant: h.significant,
-                })
-            })
-            .collect();
+        let (space, gate) = (ranked.space.clone(), ranked.gate.clone());
         Ok(WorkSimilarResult {
             query: query_label,
             searched,
-            space: ranked.space,
-            gate: ranked.gate,
-            hits,
+            space,
+            gate,
+            hits: board_hits(ranked, &board.cards),
         })
     }
 }
@@ -576,6 +622,7 @@ impl ServiceModule for WorkModule {
             }),
             Arc::new(WorkCreate {
                 registry: self.registry.clone(),
+                embedder: self.embedder.clone(),
             }),
             Arc::new(submission::WorkSubmit {
                 registry: self.registry.clone(),
