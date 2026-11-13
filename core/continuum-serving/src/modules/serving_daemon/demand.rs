@@ -176,44 +176,16 @@ impl ServingDaemonModule {
             );
         }
         let lanes = clamped;
-        // Both ceilings are over the RESIDENTS, never the whole persisted registry
-        // (490 entries: every test fixture and departed mind); the sent ceiling is what
-        // the window follows, the untrimmed one only bounds it.
+        // The untrimmed ceiling is over the RESIDENTS, never the whole persisted registry (490
+        // entries: every test fixture and departed mind), once a registry exists; before it, every
+        // measured mind's. It sizes only a seat with no measured requirement (the cold start).
         let live: Vec<uuid::Uuid> =
             crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                 .map(|r| r.live_personas())
-                .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no registry yet (boot) = no residents measured = cold-start prior
-                                      // The prompt sizes of the generates this seat served for OTHER nodes join the
-                                      // typical-prompt pool (c84d885a): a seat that plans lanes for leased-in minds must
-                                      // size them to the prompts those minds send, not to one local resident's. A seat
-                                      // with no residents of its own but leased-in minds still gets a floor from them.
-        let leased_samples = (self.leased_in_sent)();
-        let leased_sent: Vec<u32> = leased_samples
-            .iter()
-            .filter_map(|s| s.requested())
-            .collect();
-        let (demand, sent, median) = if live.is_empty() {
-            // No registry yet (boot): the residents the working set REMEMBERS (rehydrated
-            // from their last boot) are the demand pool — not only the leased-in ring. A
-            // node reboots with the same minds; their last prompts are the best floor it
-            // has, and a harness with no registry seeds the pool the same way.
-            let remembered: Vec<uuid::Uuid> = self
-                .working_set
-                .all()
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect();
-            (
-                self.working_set.ceiling(),
-                None,
-                self.working_set.sent_median_with(&remembered, &leased_sent),
-            )
-        } else {
-            (
-                self.working_set.ceiling_of(&live),
-                self.working_set.sent_ceiling_of(&live),
-                self.working_set.sent_median_with(&live, &leased_sent),
-            )
+                .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no registry yet (boot) = no live roster; the remembered residents stand below
+        let demand = match live.is_empty() {
+            true => self.working_set.ceiling(),
+            false => self.working_set.ceiling_of(&live),
         };
         // The minds this seat served for OTHER nodes since the last plan — the peak
         // concurrent leased-in generates (c84d885a), DEBOUNCED: the planner acts on the
@@ -237,8 +209,6 @@ impl ServingDaemonModule {
             crate::cognition::working_set::requirements_for(&seated_minds, &self.working_set);
         ServingDemand::new(lanes, demand)
             .with_requirements(requirements)
-            .with_sent_tokens(sent)
-            .with_sent_median(median)
             .with_leased_in(leased_in.min(u32::MAX as usize) as u32)
             // The knee bounds the TOTAL the plan serves, leased-in included: the clamp
             // above covers the roster and the scratch slot; the plan re-applies it over

@@ -2,6 +2,8 @@
 
 Owner: card 7028c695, Codex helper. Source design before edits.
 
+**Superseded in part (card 8569b03d, 2026-11-13):** the growth sample (`sent_peak`, the sent rings), `sent_median_with`, `typical_prompt_floor` and `window_target` are deleted. A post-fit size is bounded by the window that fitted it, so every window, floor and veto now reads a mind's requirement through `capacity::window_grant::Demand::of` (`largest_target`, `working_set::seat_target_of`). The Requested/Served admission samples and the served-window store below stand.
+
 The current registry stores a substituted growth sample in `sent_peak`: if a turn's untrimmed candidate pool exceeds its window, the sample is that entire pool. `sent_median_with` and the leased-in ring then feed both growth planning and `typical_prompt_tokens`, which rejects remembered geometry. A refused leased-in prompt also enters the same ring as a successful server usage count. These are distinct facts.
 
 Measured Windows6218: stored62720/1 with typical2866096; boot6144, then32000/1,45312/1,51968/2. The 2.86M value includes all unfitted room history and all offered grounding, not admitted context. It remains a requested growth signal; it cannot certify that a lane served a 2.86M prompt.

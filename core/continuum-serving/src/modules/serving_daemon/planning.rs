@@ -254,9 +254,13 @@ impl ServingDaemonModule {
                 // the requirement at all — IntelMac's 1.5B is 32k trained against a 58k typical
                 // — and a dark node is worse than a starved seat; placement routes her turns to
                 // a seat that holds them. Emitted once per (model, window, lanes).
-                // Typed per-mind allocation already enforces its own requirements.
-                // Only legacy plans need this additional historical floor.
-                let requirement = demand.publication_prompt_floor(&plan);
+                // Typed per-mind allocation already enforces its own requirements; a plan the
+                // allocator did not make (the no-fit fallback, or a cold seat with nothing
+                // measured) is held to the largest seated mind's grant target (card 8569b03d).
+                let requirement = match demand.requirements.is_empty() || !plan.fits_on_gpu || plan.lanes == 0 {
+                    true => crate::capacity::window_grant::largest_target(&demand.requirements, plan.base_model.context_window),
+                    false => None,
+                };
                 if !crate::inference::planning::serving_plan::persona_lane_holds(
                     plan.served_context_window,
                     requirement,

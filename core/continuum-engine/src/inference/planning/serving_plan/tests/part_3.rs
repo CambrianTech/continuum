@@ -137,21 +137,15 @@ use super::*;
         assert_eq!(kv_free.window_within(physical.usable_bytes, 1), kv_free.context_window);
     }
 
+    // what this catches: a boot relaunching only to re-key its KV pages. The window holds still
+    // while the remembered one fits and covers the target (the M5's 67,584 over a 64,052 target,
+    // 2026-09-19), and the target stands when the remembered one no longer covers it.
     #[test]
-    pub(super) fn the_window_follows_the_sent_prompt_with_headroom_and_the_sticky_window_can_cover_it() {
-        let d = ServingDemand::new(4, Some(505_342)).with_sent_tokens(Some(30_000));
-        assert_eq!(d.window_target(), 37_500, "sent × 1.25, not the untrimmed 505k");
-        // The M5's boot, 2026-09-19 19:37Z: peak 144,891 (one prompt, ever), typical 51,242.
-        let m5 = ServingDemand::new(5, Some(505_342)).with_sent_tokens(Some(144_891)).with_sent_median(Some(51_242));
-        assert_eq!(m5.window_target(), 64_052, "the typical prompt with headroom, not the outlier's 181,114");
-        assert_eq!(choose_served_window(505_342, 64_052, Some(67_584)), 67_584, "and the remembered 67,584 covers it — served verbatim, no boot relaunch");
-        assert_eq!(ServingDemand::new(4, Some(505_342)).window_target(), 505_342, "unmeasured sent: the untrimmed demand, as before");
-        assert_eq!(ServingDemand::new(4, Some(20_000)).with_sent_tokens(Some(30_000)).window_target(), 20_000, "the untrimmed demand is the upper bound");
+    pub(super) fn the_sticky_window_stands_while_it_covers_the_target() {
+        assert_eq!(choose_served_window(505_342, 64_052, Some(67_584)), 67_584, "the remembered 67,584 covers it — served verbatim, no boot relaunch");
         assert_eq!(choose_served_window(137_222, 37_500, Some(47_280)), 47_280, "the remembered 47k window covers a 37.5k target: served verbatim — pages carry over");
-        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
-        let m = fp("m", 14, 112 * 1024, 131_072, 3);
-        let plan = plan_serving(&host, std::slice::from_ref(&m), &d).unwrap();
-        assert!(plan.served_context_window <= 37_500 + 4_096 && plan.served_context_window >= 37_500 - 4_096, "served near the target: {}", plan.served_context_window);
+        assert_eq!(choose_served_window(137_222, 64_052, Some(47_280)), 64_052, "a remembered window below the target gives way to it");
+        assert_eq!(choose_served_window(40_000, 64_052, None), 40_000, "never past what fits");
     }
 
     // what this catches (card eb8d1839; the 5090, 2026-10-12, build 6160): a one-lane plan that
@@ -172,18 +166,16 @@ use super::*;
             fixed_per_lane_bytes: 922_859_520,
         };
         let models = std::slice::from_ref(&model);
-        // A typical prompt of ~60k: two lanes on a tight host cannot each clear that floor.
-        let demand = ServingDemand::new(2, Some(60_000)).with_sent_median(Some(60_000));
-        let tight = HostBudget { usable_bytes: 23 * GB, perf_cores: 8 };
+        // No mind measured: two lanes on a tight host cannot each clear the bootstrap floor.
+        let demand = ServingDemand::new(2, Some(60_000));
+        let tight = HostBudget { usable_bytes: 20 * GB, perf_cores: 8 };
         let plan = plan_serving(&tight, models, &demand).expect("plan");
         assert_eq!(plan.lanes, 1, "{}", plan.rationale);
         match plan.lanes_bound {
-            LanesBound::PerLaneFloor { floor_tokens, floor_term, rejected_lanes, rejected_window } => {
+            LanesBound::PerLaneFloor { floor_tokens, rejected_lanes, rejected_window } => {
                 assert_eq!(rejected_lanes, 2, "the candidate it rejected was a second lane");
                 assert!(rejected_window < floor_tokens, "and that lane's window fell below the floor: {rejected_window} < {floor_tokens}");
-                let typical = demand.typical_prompt_floor().expect("a sent median");
-                assert_eq!(floor_tokens, typical.max(BOOTSTRAP_WORKING_SET));
-                assert_eq!(floor_term, FloorTerm::TypicalPrompt, "the typical prompt set the floor");
+                assert_eq!(floor_tokens, BOOTSTRAP_WORKING_SET, "the bootstrap floor: no mind measured");
             }
             other => panic!("one lane on a tight host is the floor's decision, not {other:?}"),
         }

@@ -244,20 +244,15 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     daemon.set_leased_in_sent_source(Arc::new(Vec::new));
     let rx = daemon.subscribe();
     let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 262_144, true, None).unwrap()];
-    // The residents' requirement: a 56k typical prompt (the 5090's p50), with headroom.
-    // No residents are live in this harness, so the seat's leased-in samples carry it —
-    // the same ring #4256 votes refused prompts into.
-    // …in the daemon's OWN working set, never the process-global leased-in ring: that
-    // ring is shared by every test in the binary, and eight 56k samples there re-homed
-    // a 65k lane in `a_jittering_gain_never_accumulates_into_a_re_home` (CI, 2026-09-20).
+    // The residents' requirement: a 56k turn (the 5090's p50) held eight times, so her grant
+    // targets 56,057 x 1.25 = 70,071. No registry is live in this harness, so she is a
+    // remembered resident, in the daemon's OWN working set (a process-global one is shared by
+    // every test in the binary).
     let resident = uuid::Uuid::new_v4();
     for i in 0..8 {
-        daemon.working_set.record_sent_in_memory(resident, 56_057, 1 + i);
+        daemon.working_set.record_in_memory(resident, 56_057, 1 + i);
+        daemon.working_set.record_need_in_memory(resident, crate::cognition::working_set::NeedSample::Exact(56_057), 1 + i);
     }
-    // …and a measured demand ceiling above it (the assembled context a turn wanted),
-    // as every live node has — without it the demand cap is the bootstrap prior and no
-    // plan can hold a 56k requirement, which is a harness artifact, not a law.
-    daemon.working_set.record_in_memory(uuid::Uuid::new_v4(), 200_000, 1);
     // A roomy budget: a real window is published.
     daemon.publish_plan(
         HostBudget {

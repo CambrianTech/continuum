@@ -5,7 +5,7 @@
     // what this catches (card 2eec3977, the 5090 at 2 × 2048 on 2026-09-20): with the
     // roster's REQUIREMENTS on the demand, the plan's lanes × window are the
     // allocator's — two coders at 70k on a 30 GB budget serve at 2 × 70k, never a
-    // starved window and never the sent-median path; a squeeze sheds a mind (grid
+    // starved window; a squeeze sheds a mind (grid
     // overflow), not the window; a sticky window stands in only while it covers the
     // requirement; and when no candidate holds one lane at the smallest requirement
     // the plan says so with fits_on_gpu=false instead of planning a 2k lane.
@@ -26,9 +26,8 @@
             LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000)),
             LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000)),
         ];
-        // The poisoned inputs the 5090 had: a sent median of 828 and a sticky 2048.
+        // The poisoned input the 5090 had: a sticky 2048.
         let demand = ServingDemand::new(2, Some(56_057))
-            .with_sent_median(Some(828))
             .with_sticky_window(Some(2048))
             .with_requirements(two.clone());
         let plan = plan_serving(&host, std::slice::from_ref(&qwen), &demand).expect("plan");
@@ -40,28 +39,16 @@
         assert_eq!((squeezed.lanes, squeezed.served_context_window), (2, 70_000), "minds shed, window kept");
         assert_eq!(squeezed.grid_overflow_lanes, 3);
 
-        // Regression: the 5090's publication gate retained a 26,880-token lane
-        // after rejecting improved plans against a historical 176,730 floor.
-        // The allocator's per-mind requirements, not that second owner, govern.
-        let stale_history = demand.clone().with_sent_median(Some(141_384));
-        assert_eq!(stale_history.typical_prompt_floor(), Some(176_730));
-        let governed = plan_serving(&host, std::slice::from_ref(&qwen), &stale_history).expect("governed plan");
-        assert!(persona_lane_holds(governed.served_context_window, stale_history.publication_prompt_floor(&governed)),
-            "publication must accept the allocator's feasible per-mind window");
-        let legacy = ServingDemand::new(2, None).with_sent_median(Some(141_384));
-        assert!(!persona_lane_holds(governed.served_context_window, legacy.publication_prompt_floor(&governed)),
-            "without per-mind allocation, the legacy safety floor must still apply");
-
         let covering = plan_serving(&host, std::slice::from_ref(&qwen), &demand.clone().with_sticky_window(Some(72_000))).expect("plan");
         assert_eq!(covering.served_context_window, 72_000, "a sticky window that covers the requirement and fits stands");
 
         // The no-fit early return precedes typed allocation: it must not inherit
         // the successful allocator's exemption and replace a working incumbent.
         let impossible = HostBudget { usable_bytes: GB, perf_cores: 8 };
-        let fallback = plan_serving(&impossible, std::slice::from_ref(&qwen), &stale_history).expect("fallback");
+        let fallback = plan_serving(&impossible, std::slice::from_ref(&qwen), &demand).expect("fallback");
         assert!(!fallback.fits_on_gpu);
-        assert!(!persona_lane_holds(fallback.served_context_window, stale_history.publication_prompt_floor(&fallback)),
-            "unallocated no-fit fallback must retain the historical guard");
+        assert!(!persona_lane_holds(fallback.served_context_window, Some(70_000)),
+            "the no-fit fallback holds no mind's requirement, so publication's guard refuses it");
 
         // 21 GB: the weights fit and a 2048 lane would "fit" — the legacy path served
         // exactly that; the governed path refuses to plan a lane below the requirement.
@@ -125,37 +112,6 @@
     // healthy. Parallelism is capability; selection maximizes achievable lanes
     // toward demand FIRST, capability second. Degrade honesty is pinned too:
     // when demand is one lane, the capability order stands unchanged.
-    // what this catches: 16 residents planned onto 3 lanes because ONE mind's 96k
-    // sent prompt became every lane's size (2026-09-14, 40 GB of KV idle). With the
-    // floor at the residents' TYPICAL prompt the same host multiplies lanes toward
-    // the roster; the ceiling shapes the window only when it still fits.
-    #[test]
-    pub(super) fn lanes_multiply_to_the_roster_at_the_typical_prompt_not_the_outlier() {
-        // 51.85 GB — what the old 15% plan reserve left of 61 GB; the outlier/typical
-        // contrast below was measured there (#4230: the plan sizes to the budget as handed).
-        let host = HostBudget { usable_bytes: 51_850_000_000, perf_cores: 12 };
-        let ornith = fp("ornith", 21, 41_984, 262_144, 200);
-        let c = vec![ornith];
-        let outlier_only = ServingDemand::new(17, Some(120_000)).with_sent_tokens(Some(96_000));
-        let typical = ServingDemand::new(17, Some(120_000))
-            .with_sent_tokens(Some(96_000))
-            .with_sent_median(Some(40_000));
-        let a = plan_serving(&host, &c, &outlier_only).expect("plan");
-        let b = plan_serving(&host, &c, &typical).expect("plan");
-        assert!(b.lanes >= 5, "the roster gets its lanes at the typical prompt: {}", b.lanes);
-        assert!(
-            b.served_context_window >= 50_000,
-            "each lane holds a typical turn with headroom (40k × 1.25): {}",
-            b.served_context_window
-        );
-        // Without the median the planner packs the most lanes at the bootstrap floor —
-        // more lanes, each too small for a real turn. The floor trades at most a lane or
-        // two for windows the roster can actually use. (Unchanged by the target following
-        // the typical prompt, card 29e4ab34: the floor, not the target, is what packs.)
-        assert!(a.served_context_window < b.served_context_window, "{} vs {}", a.served_context_window, b.served_context_window);
-        assert!(b.lanes + 2 >= a.lanes, "the floor costs at most two lanes: {} vs {}", b.lanes, a.lanes);
-    }
-
     #[test]
     pub(super) fn a_one_lane_giant_never_outranks_a_model_that_serves_the_fleet() {
         // 60GB budget. "giant" rank 5 fits ONE bootstrap lane and no more;

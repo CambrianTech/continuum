@@ -90,21 +90,13 @@ pub const MAX_LANES: u32 = 8;
 pub const BOOTSTRAP_WORKING_SET: u32 = MIN_SERVE_CTX * 8;
 
 /// PURE: a plan's per-slot window is a persona seat only if it holds what the residents
-/// REQUIRE. The requirement is not a number in this file: today it is the residents'
-/// typical prompt with headroom (`ServingDemand::typical_prompt_floor`, the same measured
-/// demand the plan targets, sealed against a starved window by #4256); when a role
-/// declares its requirement (card 2eec3977, the allocator) it is that declaration. Joel,
-/// 2026-09-20, reading the 5090 at 2 × 2,048 refusing 2,932 prompts (p50 56k): "2k context
-/// is a complete waste of a lane" — and, on a fixed floor: "you're making rigid laws that
-/// concern me". So the seam holds a comparison, never a constant: `None` requirement (no
-/// prompt ever measured or declared) imposes nothing beyond the engine's runnable floor.
-/// The per-lane floor a typical sent prompt implies: the prompt with headroom, never
-/// under the serve floor. PURE; the one arithmetic behind `typical_prompt_floor` and the
-/// placement rule's requirement.
-pub fn prompt_floor_of(sent_median: u32) -> u32 {
-    ((sent_median as f64 * SENT_HEADROOM) as u32).max(MIN_SERVE_CTX)
-}
-
+/// REQUIRE. The requirement is not a number in this file: it is a mind's grant target
+/// (`capacity::window_grant::Demand::of`, what her view holds at full detail, card 8569b03d),
+/// or a role's declaration (card 2eec3977). Joel, 2026-09-20, reading the 5090 at 2 × 2,048
+/// refusing 2,932 prompts (p50 56k): "2k context is a complete waste of a lane" — and, on a
+/// fixed floor: "you're making rigid laws that concern me". So the seam holds a comparison,
+/// never a constant: `None` requirement (nothing measured or declared) imposes nothing beyond
+/// the engine's runnable floor.
 pub fn persona_lane_holds(served_context_window: u32, requirement: Option<u32>) -> bool {
     match requirement {
         Some(r) => served_context_window >= r,
@@ -165,25 +157,14 @@ pub struct ServingDemand {
     /// `leased_in` (1) was added, so the plan said 3 lanes against a knee of 2 and the
     /// [health] hour read "AT THE KNEE: 16 minds on 3 lanes, the measured decode knee is 2".
     pub knee: Option<u32>,
-    /// The largest prompt any resident actually SENT (post-fit), when measured. The
-    /// served window follows THIS with [`SENT_HEADROOM`], never the untrimmed
-    /// `window_tokens` (which is the whole assembled context and saturates at
-    /// 225k–505k): a 25k working set provisions ~32k per slot, leaving the host RAM
-    /// for more lanes and the prompt-cache tier instead of a 137k slot nobody fills.
-    pub sent_tokens: Option<u32>,
-    /// The residents' TYPICAL sent prompt (median of sent peaks). The per-lane floor
-    /// follows this so lanes multiply to the roster; `sent_tokens` (the ceiling)
-    /// still shapes the window target when it fits.
-    pub sent_median: Option<u32>,
-    /// Per-mind lane requirements (see `with_requirements`). Empty = the legacy
-    /// median/bootstrap derivation below, kept for callers that have not migrated
-    /// (card 2eec3977: to be deleted with them).
+    /// Per-mind lane requirements (see `with_requirements`). Empty only when no seated mind
+    /// has been measured: the cold start, planned at the bootstrap floor and `window_tokens`.
     pub requirements: Vec<crate::inference::planning::window_allocator::LaneRequirement>,
 }
 
-/// Headroom over the largest sent prompt: a mind held at a too-small window fills it,
-/// so a window sized from what-was-sent must GROW past it to escape the clamp — 25%
-/// per plan, geometric, until the demand is met. The untrimmed demand still caps it.
+/// Headroom over what a mind's held turns measured: room to grow into before her grant moves
+/// (`window_grant::Demand::of`, `working_set::requirements_for`), about one regrant per headroom
+/// of growth.
 pub const SENT_HEADROOM: f64 = 1.25;
 
 impl ServingDemand {
@@ -203,8 +184,6 @@ impl ServingDemand {
             window_tokens: measured.unwrap_or(BOOTSTRAP_WORKING_SET), // JUSTIFIED unwrap_or: cold start is a real state, not a missing measurement; the substituted value is a declared PRIOR and its provenance is preserved on `measured` below rather than discarded here
             measured: measured.is_some(), // the provenance `unwrap_or` would otherwise destroy — UNKNOWN must stay distinguishable from a quantity
             sticky_window: None,
-            sent_tokens: None,
-            sent_median: None,
             requirements: Vec::new(),
             leased_in: 0,
             knee: None,
@@ -220,64 +199,18 @@ impl ServingDemand {
         self.knee = knee;
         self
     }
-    pub fn with_sent_median(mut self, median: Option<u32>) -> Self {
-        self.sent_median = median.filter(|m| *m > 0);
-        self
-    }
     /// What each mind on this seat REQUIRES of a lane (`window_allocator`). When
     /// present, lanes × window come from the allocator over these — the governed
-    /// size — and the sent-median / bootstrap path below is not consulted.
+    /// size — and the bootstrap path is not consulted.
     pub fn with_requirements(mut self, requirements: Vec<crate::inference::planning::window_allocator::LaneRequirement>) -> Self {
         self.requirements = requirements;
         self
     }
-    /// The per-lane floor the residents actually need: their typical sent prompt with
-    /// headroom. `None` until a turn has been sent — the bootstrap prior stands then.
-    pub fn typical_prompt_floor(&self) -> Option<u32> {
-        self.sent_median.map(prompt_floor_of)
-    }
-
-    /// Post-plan validation only needs the legacy floor when no per-mind
-    /// requirements were supplied. Otherwise the window allocator already chose
-    /// a feasible subset; a fleet-wide historical floor must not veto that choice.
-    pub fn publication_prompt_floor(&self, plan: &ServingPlan) -> Option<u32> {
-        self.typical_prompt_floor().filter(|_| {
-            self.requirements.is_empty() || !plan.fits_on_gpu || plan.lanes == 0
-        })
-    }
-
-    /// The largest SENT prompt among residents (see `sent_tokens`).
-    pub fn with_sent_tokens(mut self, sent: Option<u32>) -> Self {
-        self.sent_tokens = sent.filter(|s| *s > 0);
-        self
-    }
-
-    /// The window a plan should TARGET per slot: the roster's TYPICAL sent prompt with
-    /// headroom when one is known (measured this boot, or remembered from the last
-    /// serve), else the largest sent prompt with headroom, else the untrimmed demand —
-    /// always capped by the untrimmed demand, an upper bound by construction.
-    ///
-    /// The typical, not the outlier (2026-09-19 19:37Z, the M5, card 29e4ab34): the
-    /// lanes already follow the typical prompt (the per-lane floor), but the window
-    /// followed the PEAK — one 144,891-token prompt ever sent made the target 181,114
-    /// on every boot, the remembered 67,584 could not "cover" it and was discarded, and
-    /// under the boot's transient budget the plan launched 2 × 179k (44 GB of serving on
-    /// a box whose steady budget is 27 GB), then Eco, then the collapse. A single outlier
-    /// prompt is that turn's cost (it is trimmed to the window); it does not size the box.
-    pub fn window_target(&self) -> u32 {
-        let with_headroom = |t: u32| (t as f64 * SENT_HEADROOM) as u32;
-        match self.sent_median.map(with_headroom).or(self.sent_tokens.map(with_headroom)) {
-            Some(t) => t.min(self.window_tokens).max(MIN_SERVE_CTX),
-            None => self.window_tokens,
-        }
-    }
-
     /// Remember last serve's per-slot window for this model (see `sticky_window`).
     pub fn with_sticky_window(mut self, w: Option<u32>) -> Self {
         self.sticky_window = w.filter(|w| *w >= MIN_SERVE_CTX);
         self
     }
-
 }
 
 /// The served per-slot window: the window this host served LAST time when it
@@ -638,11 +571,10 @@ pub enum LanesBound {
     /// One more lane would have left each lane a window below the per-lane floor, so the
     /// budget stopped there. The evaluated candidate is reported, not just the verdict:
     /// `rejected_lanes` lanes would each have had `rejected_window` tokens, against
-    /// `floor_tokens`, which `floor_term` set.
+    /// `floor_tokens` (the bootstrap floor, one full turn: a cold start with no mind measured).
     #[serde(rename_all = "camelCase")]
     PerLaneFloor {
         floor_tokens: u32,
-        floor_term: FloorTerm,
         rejected_lanes: u32,
         rejected_window: u32,
     },
@@ -662,15 +594,4 @@ pub enum LaneCapBy {
     MaxLanes,
     /// The demanded lane count (residents plus leased-in, knee-bounded).
     Demand,
-}
-
-/// Which term set the per-lane floor: the largest of the two wins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
-#[ts(export, export_to = "../../../protocol/typescript/serving/FloorTerm.ts")]
-#[serde(rename_all = "camelCase")]
-pub enum FloorTerm {
-    /// `BOOTSTRAP_WORKING_SET`, one full turn: no larger term applied.
-    Bootstrap,
-    /// The residents' typical sent prompt, with headroom.
-    TypicalPrompt,
 }

@@ -221,7 +221,7 @@ impl ServingDaemonModule {
         // boot the sidecar admitted a 35B against a 2,048-token main lane's headroom, and
         // when the 27B came back it got what was left — one lane at 2,048.
         let pinned_off: Vec<String> = intent.suppressed.iter().cloned().collect();
-        let persona_floor: Option<u32> = self.serving_demand().typical_prompt_floor();
+        let persona_floor: Option<u32> = crate::capacity::window_grant::largest_target(&self.serving_demand().requirements, target.model.context_window);
         let last_healthy_window = self.last_healthy_window.clone();
         let last_healthy_lanes = self.last_healthy_lanes.clone();
         // ARM the discrete footprint arm's baseline: every tick until the lane is ready
