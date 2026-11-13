@@ -110,7 +110,6 @@ mod interleavings {
     // may be running, so the holder's cells stay charged until an engine fence. No request was
     // sent; the dispatch path has no settlement for "proven unsent" except a retry's re-reserve.
     #[test]
-    #[ignore = "ONE-ACT 4a: a cancellation after reserve and before POST releases its proven-unsent reservation"]
     fn a_cancellation_before_post_releases_its_proven_unsent_reservation() {
         let mut world = two_on_a_small_pool();
         run(&mut world, &[Step::Publish, Step::Quote(0), Step::Reserve(0), Step::CancelReserved(0)]);
