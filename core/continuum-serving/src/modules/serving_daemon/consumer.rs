@@ -68,13 +68,14 @@ pub fn attribute_serving(peak_resident_bytes: u64, lanes: u32, granted_cache_mib
     peak_resident_bytes.saturating_add((granted_cache_mib as u64).saturating_mul(1024 * 1024))
 }
 
-/// The serving engine's host prompt cache, driven through this daemon's control: serving's
-/// first lever under pressure (card 494c99f1). The launch grant it lowers from is the one on
-/// the serving snapshot (the spawn fact, or `--cache-ram` read off an adopted engine's argv).
+/// The serving engine's host prompt cache, driven through this daemon's control: the first holder
+/// to give host RAM back under the host's memory deficit (card 0f631c46). The launch grant it
+/// lowers from and takes back to is the one on the serving snapshot (the spawn fact, or
+/// `--cache-ram` read off an adopted engine's argv).
 struct EnginePromptCache(Arc<dyn LlamaServerControl>);
 
 #[async_trait::async_trait]
-impl crate::modules::serving_consumer::PromptCacheControl for EnginePromptCache {
+impl crate::modules::serving_prompt_cache::PromptCacheControl for EnginePromptCache {
     fn engine(&self) -> Option<crate::inference::engine_residency::EngineIncarnation> {
         self.0.served_incarnation()
     }
@@ -88,6 +89,22 @@ impl crate::modules::serving_consumer::PromptCacheControl for EnginePromptCache 
 }
 
 impl ServingDaemonModule {
+    /// Register the engine's host prompt cache with the memory monitor: the first holder asked
+    /// for the host's deficit, and taken back when the OS reads normal (card 0f631c46). The one
+    /// reclaim path for host RAM; steps run on `runtime`.
+    pub fn give_host_memory_back_first(
+        &self,
+        monitor: &crate::system_resources::MemoryPressureMonitor,
+        runtime: tokio::runtime::Handle,
+    ) {
+        crate::modules::serving_prompt_cache::PromptCacheShedder::register(
+            Arc::new(EnginePromptCache(self.server.clone())),
+            self.subscribe_serving(),
+            monitor,
+            runtime,
+        );
+    }
+
     /// The current lane demand (≥ 1).
     /// Register serving's autonomic PLANNER to run on the memory authority's tick
     /// (MEMORY-AUTHORITY-DAEMON slice 1b). The lane plan — which model, how many lanes,
@@ -209,10 +226,7 @@ impl ServingDaemonModule {
         )
         // On a discrete GPU the board credits serving with what its ENGINE holds on the
         // device, recorded by this daemon's footprint tick (card 741f5eec).
-        .with_engine_device_credit(self.engine_device_credit.clone())
-        // Under pressure the engine's host prompt cache is given back first, before a tier-down
-        // or an unload (card 494c99f1).
-        .with_prompt_cache(Arc::new(EnginePromptCache(self.server.clone())));
+        .with_engine_device_credit(self.engine_device_credit.clone());
         self.resource_daemon.add_consumer(Arc::new(consumer));
 
         // THE VISION HOLDER declares itself (#106/#395/#56). Measured on the live board

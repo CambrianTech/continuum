@@ -1,5 +1,7 @@
-//! macOS: Mach `host_statistics64(HOST_VM_INFO64)` for the page counts and the
-//! `vm.vm_page_free_target` sysctl for the pageout daemon's target, converted by `MachVmCounts`.
+//! macOS: Mach `host_statistics64(HOST_VM_INFO64)` for the page counts, the
+//! `vm.vm_page_free_target` sysctl for the pageout daemon's target and the
+//! `kern.memorystatus_vm_pressure_level` sysctl for the kernel's own pressure verdict, converted
+//! by `MachVmCounts`.
 //! The struct layout is `mach/vm_statistics.h`'s `vm_statistics64_data_t` (stable since 10.7).
 
 use std::mem::size_of;
@@ -71,28 +73,30 @@ pub(super) fn read() -> Option<HostMemoryReading> {
             compressor_page_count: u64::from(info.compressor_page_count),
             swapins: info.swapins,
             swapouts: info.swapouts,
-            free_target_pages: free_target_pages()?,
+            free_target_pages: u64::from(sysctl_u32(c"vm.vm_page_free_target")?),
+            // Unreadable: no verdict, the counters still stand.
+            memorystatus_pressure_level: sysctl_u32(c"kern.memorystatus_vm_pressure_level"),
         }
         .reading(),
     )
 }
 
-/// `vm.vm_page_free_target`, an unsigned int of pages.
-fn free_target_pages() -> Option<u64> {
-    let mut pages: libc::c_uint = 0;
+/// A 32-bit integer sysctl by name (`vm.vm_page_free_target` pages, the memorystatus level).
+fn sysctl_u32(name: &std::ffi::CStr) -> Option<u32> {
+    let mut value: libc::c_uint = 0;
     let mut len = size_of::<libc::c_uint>();
-    // SAFETY: the name is NUL-terminated and `pages`/`len` describe a writable c_uint; sysctl
+    // SAFETY: the name is NUL-terminated and `value`/`len` describe a writable c_uint; sysctl
     // writes at most `len` bytes and updates `len`.
     let rc = unsafe {
         libc::sysctlbyname(
-            c"vm.vm_page_free_target".as_ptr(),
-            &mut pages as *mut libc::c_uint as *mut libc::c_void,
+            name.as_ptr(),
+            &mut value as *mut libc::c_uint as *mut libc::c_void,
             &mut len,
             std::ptr::null_mut(),
             0,
         )
     };
-    (rc == 0 && len == size_of::<libc::c_uint>()).then_some(u64::from(pages))
+    (rc == 0 && len == size_of::<libc::c_uint>()).then_some(value)
 }
 
 #[cfg(test)]
@@ -100,13 +104,14 @@ mod tests {
     use super::*;
 
     // what this catches: the count handed to host_statistics64 drifting from the struct (the
-    // kernel writes past the buffer or truncates it), and the call or sysctl failing on a live
-    // Mac, which would read every Mac as unknown.
+    // kernel writes past the buffer or truncates it), and the call or a sysctl failing on a live
+    // Mac, which would read every Mac as unknown (or with no pressure verdict).
     #[test]
     fn a_live_mac_reads_and_the_count_matches_the_struct() {
         assert_eq!(HOST_VM_INFO64_COUNT as usize, size_of::<VmStatistics64>() / size_of::<libc::c_int>());
         let reading = read().expect("test: host_statistics64 and the sysctl succeed on a Mac");
         assert!(reading.free_target_bytes > 0, "the pageout daemon always has a target");
         assert!(reading.available_bytes() > 0, "a live Mac has free or cached pages");
+        assert!(reading.pressure.is_some(), "the kernel always has a memorystatus level");
     }
 }

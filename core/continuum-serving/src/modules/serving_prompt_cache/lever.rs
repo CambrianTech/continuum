@@ -1,16 +1,6 @@
-//! Serving's lightest reclaim lever: give the engine's host prompt cache back first (card
-//! 494c99f1).
-//!
-//! The M5 (64 GB, Qwen3.6-35B-A3B, four residents) on 2026-11-13: 60 MB free, 34 GB in the
-//! compressor, swap 8.6 of 10 GB, prefill 92 tok/s against ~190, while the engine held a FIXED
-//! 9,369 MiB host prompt cache that never gave memory back. The cache is the cheapest memory
-//! serving holds: a dropped state costs one re-prefill of an old prompt, while the heavy levers
-//! (tier-down to a smaller model, unload) cost every mind its model. So under pressure serving
-//! lowers the cache's limit by what the authority asked for, through the fork's live route, and
-//! reaches for a heavy lever only when the cache is at its floor or the engine refuses.
-//!
-//! This file owns the cache limit serving last set on each engine and the pure step that picks
-//! the next one; [`super::ServingConsumer::reclaim`] carries it out and confirms it physically.
+//! The lever on the engine's host prompt cache: the limit serving last set on each engine, the
+//! pure step that picks the next one, and the calls that carry a step out (lower by a share, or
+//! take back to the launch grant). [`super::PromptCacheShedder`] decides when.
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -68,9 +58,9 @@ impl Known {
 
 /// The cache an engine holds now, as far as serving knows. A different engine (both identities
 /// known and unequal) starts from its own launch grant, its contents unknown. Otherwise what
-/// serving last learned stands, the limit never above the launch grant: an engine this lever
-/// cannot tell apart is never handed a RAISE by a reclaim (raising when pressure clears is its
-/// own slice). No last set and no launch grant (`0` = unknown on the snapshot) is `None`.
+/// serving last learned stands, the limit never above the launch grant: a lowering is never a
+/// RAISE (taking the cache back is [`PromptCacheLever::take_back`], only when the OS reads
+/// normal). No last set and no launch grant (`0` = unknown on the snapshot) is `None`.
 pub(super) fn current_limit(last: Option<LastSet>, now: Option<EngineIncarnation>, launched_mib: u32) -> Option<Known> {
     let launched = NonZeroU64::new(u64::from(launched_mib));
     match last {
@@ -124,6 +114,15 @@ pub(super) struct Applied {
     pub calls: u64,
 }
 
+/// What taking the cache back did: the limit before and after, and what the engine said the
+/// cache held after it (the `/prompt-cache/limit` reply).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Raised {
+    pub before_mib: NonZeroU64,
+    pub after_mib: NonZeroU64,
+    pub held_bytes: u64,
+}
+
 /// The lever: the engine seam plus what serving last learned of its cache.
 pub(super) struct PromptCacheLever {
     control: Arc<dyn PromptCacheControl>,
@@ -134,6 +133,28 @@ pub(super) struct PromptCacheLever {
 impl PromptCacheLever {
     pub(super) fn new(control: Arc<dyn PromptCacheControl>) -> Self {
         Self { control, last: Mutex::new(None) }
+    }
+
+    /// What serving last learned of the cache, on whichever engine it set it.
+    pub(super) fn last(&self) -> Option<LastSet> {
+        *self.last.lock()
+    }
+
+    /// Take the cache back to the engine's launch grant, when serving lowered it below that grant
+    /// on this engine. `Ok(None)` = nothing to take back (never lowered, or a relaunched engine
+    /// that already starts at its grant). The whole grant at once: a raised limit allocates
+    /// nothing, the cache fills only as prompts are stored, and the next deficit lowers it again.
+    pub(super) async fn take_back(&self, launched_mib: u32) -> Result<Option<Raised>, LlamaServerError> {
+        let engine = self.control.engine();
+        let Some(grant) = NonZeroU64::new(u64::from(launched_mib)) else {
+            return Ok(None);
+        };
+        let Some(known) = current_limit(*self.last.lock(), engine, launched_mib).filter(|known| known.limit_mib < grant) else {
+            return Ok(None);
+        };
+        let reply = self.control.set_limit(grant).await?;
+        self.learned(engine, grant, reply.held_bytes);
+        Ok(Some(Raised { before_mib: known.limit_mib, after_mib: grant, held_bytes: reply.held_bytes }))
     }
 
     /// Plan the step for a reclaim of `target_bytes`, from what the cache holds when known,

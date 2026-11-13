@@ -103,6 +103,7 @@ mod tests {
             swapped_in_bytes: 0,
             swapped_out_bytes: 0,
             free_target_bytes: 0,
+            pressure: None,
         }
     }
 
