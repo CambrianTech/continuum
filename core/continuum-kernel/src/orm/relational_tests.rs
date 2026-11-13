@@ -356,34 +356,3 @@ async fn restart_verifies_physical_declaration_and_refuses_unmanaged_tables() ->
     assert!(rejected.contains("no declared-schema receipt"), "{rejected}");
     Ok(())
 }
-
-#[derive(Serialize, Deserialize, Entity)]
-#[entity(collection = "array_stat_rows")]
-struct ArrayStatRow {
-    #[serde(flatten)]
-    base: BaseEntity,
-    #[entity(json)]
-    embedding: Option<Vec<f64>>,
-}
-
-#[tokio::test]
-async fn numeric_array_statistics_count_beyond_old_clip_and_reject_bad_elements() -> Result<(), Box<dyn std::error::Error>> {
-    let store = store(":memory:").await?;
-    store.ensure(ArrayStatRow::collection_schema()).await?;
-    let empty = store.numeric_array_stats(ArrayStatRow::COLLECTION, "embedding").await?;
-    assert_eq!(empty.total_records, 0);
-    assert_eq!(empty.max_length, 0);
-    let operations = (0..10003).map(|n| BatchOperation {
-        operation_type: BatchOperationType::Create,
-        collection: ArrayStatRow::COLLECTION.into(), id: Some(format!("{n:06}")),
-        data: Some(json!({"embedding": match n { 0 => json!(null), 1 => json!([]), _ => json!([1.0, 2.0, 3.0]) }})),
-    }).collect();
-    store.batch(operations).await?;
-    let stats = store.numeric_array_stats(ArrayStatRow::COLLECTION, "embedding").await?;
-    assert_eq!(stats.total_records, 10003);
-    assert_eq!(stats.non_empty_records, 10001);
-    assert_eq!((stats.min_length, stats.max_length), (3, 3));
-    store.insert(&store.db, &record("bad", ArrayStatRow::COLLECTION, json!({"embedding":[1,"not a number"]}))).await?;
-    assert!(store.numeric_array_stats(ArrayStatRow::COLLECTION, "embedding").await.is_err());
-    Ok(())
-}

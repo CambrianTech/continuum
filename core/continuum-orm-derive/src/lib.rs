@@ -224,6 +224,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
             InferredFieldType::Number => quote!(#core::orm::FieldType::Number),
             InferredFieldType::Boolean => quote!(#core::orm::FieldType::Boolean),
             InferredFieldType::Date => quote!(#core::orm::FieldType::Date),
+            InferredFieldType::Binary => quote!(#core::orm::FieldType::Binary),
             InferredFieldType::Json => quote!(#core::orm::FieldType::Json),
             InferredFieldType::Uuid => quote!(#core::orm::FieldType::Uuid),
         };
@@ -310,6 +311,7 @@ enum InferredFieldType {
     #[allow(dead_code)]
     Date,
     Json,
+    Binary,
     Uuid,
 }
 
@@ -532,6 +534,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
     let mut unique = false;
     let mut nullable_override: Option<bool> = None;
     let mut force_json = false;
+    let mut binary = false;
     let mut skip = false;
     let mut primary_key = false;
     let mut serde_rename: Option<String> = None;
@@ -548,6 +551,8 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
                     nullable_override = Some(true);
                 } else if meta.path.is_ident("json") {
                     force_json = true;
+                } else if meta.path.is_ident("binary") {
+                    binary = true;
                 } else if meta.path.is_ident("skip") {
                     skip = true;
                 } else if meta.path.is_ident("primary_key") {
@@ -591,7 +596,10 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
     }
 
     // Infer FieldType from the (unwrapped) Rust type, unless overridden.
-    let field_type = if force_json {
+    if force_json && binary { return Err(syn::Error::new_spanned(field, "json and binary are mutually exclusive codecs")); }
+    let field_type = if binary {
+        InferredFieldType::Binary
+    } else if force_json {
         InferredFieldType::Json
     } else {
         infer_field_type(inner_ty)

@@ -1,41 +1,51 @@
-//! Numeric-array summaries stay in the database; no embedding payload is hydrated.
-use super::{adapter::{naming, NumericArrayStats}, types::FieldType};
-use sea_orm::{ConnectionTrait, DbBackend};
-use sea_orm::sea_query::{Alias, CaseStatement, Condition, Expr, Func, Query, SimpleExpr};
+//! Aggregate descriptor groups in storage; never transfer or decode payload bodies.
+use super::{adapter::{naming, NumericArrayStats}, binary::{BinaryDescriptor, descriptor_column}};
+use futures::StreamExt;
+use sea_orm::{DbBackend, StreamTrait};
+use sea_orm::sea_query::{Alias, Expr, Func, Query};
 
 impl super::relational::RelationalStore {
     pub async fn numeric_array_stats(&self, collection: &str, field: &str) -> Result<NumericArrayStats, String> {
-        let schema = self.schema(collection)?;
-        let declaration = schema.fields.iter().find(|f| f.name == field).ok_or("array statistics require a declared field")?;
-        if declaration.field_type != FieldType::Json { return Err("array statistics require a JSON field".into()); }
-        let column = super::relational_query::column(&schema, field)?;
-        let value = Expr::col((Alias::new("records"), column));
-        let length = Func::cust(Alias::new("json_array_length")).arg(value.clone());
-        let bad_element = Query::select().expr(Expr::val(1))
-            .from_function(Func::cust(Alias::new("json_each")).arg(value.clone()), Alias::new("element"))
-            .and_where(Expr::col((Alias::new("element"), Alias::new("type"))).is_not_in(["integer", "real"]))
-            .to_owned();
-        let invalid = Condition::any()
-            .add(Condition::all().add(value.clone().is_not_null())
-                .add(Expr::expr(Func::cust(Alias::new("json_type")).arg(value.clone())).ne("array")))
-            .add(Expr::exists(bad_element));
-        let positive = Expr::expr(length.clone()).gt(0);
-        let counted: SimpleExpr = CaseStatement::new().case(positive.clone(), 1).finally(0).into();
-        let dimension: SimpleExpr = CaseStatement::new().case(positive, length).finally(Expr::val(Option::<i64>::None)).into();
-        let invalid: SimpleExpr = CaseStatement::new().case(invalid, 1).finally(0).into();
-        let query = Query::select().from_as(Alias::new(naming::to_table_name(collection)), Alias::new("records"))
-            .expr_as(Expr::col((Alias::new("records"), Alias::new("id"))).count(), Alias::new("total"))
-            .expr_as(Expr::expr(counted).sum(), Alias::new("nonempty"))
-            .expr_as(Expr::expr(dimension.clone()).min(), Alias::new("minimum"))
-            .expr_as(Expr::expr(dimension).max(), Alias::new("maximum"))
-            .expr_as(Expr::expr(invalid).sum(), Alias::new("invalid"))
-            .to_owned();
-        let row = self.db.query_one(DbBackend::Sqlite.build(&query)).await.map_err(|e| e.to_string())?.ok_or("array aggregate returned no row")?;
-        let number = |name: &str| -> Result<usize, String> {
-            let value: Option<i64> = row.try_get("", name).map_err(|e| e.to_string())?;
-            usize::try_from(value.unwrap_or(0)).map_err(|_| format!("array statistic {name} exceeds usize"))
-        };
-        if number("invalid")? != 0 { return Err(format!("{collection}.{field} contains a non-numeric array value")); }
-        Ok(NumericArrayStats { total_records: number("total")?, non_empty_records: number("nonempty")?, min_length: number("minimum")?, max_length: number("maximum")? })
+        let column = self.binary_column(collection, field)?;
+        let descriptor = Alias::new(descriptor_column(field));
+        let length = Func::char_length(Expr::col(column.clone()));
+        let query = Query::select().from(Alias::new(naming::to_table_name(collection)))
+            .expr_as(Expr::col(descriptor.clone()), Alias::new("descriptor"))
+            .expr_as(Expr::col(Alias::new("id")).count(), Alias::new("rows"))
+            .expr_as(Expr::col(column).count(), Alias::new("payloads"))
+            .expr_as(Expr::expr(length.clone()).min(), Alias::new("minimum"))
+            .expr_as(Expr::expr(length).max(), Alias::new("maximum"))
+            .group_by_col(descriptor).to_owned();
+        let statement = DbBackend::Sqlite.build(&query);
+        let mut groups = self.db.stream(statement).await.map_err(|e| e.to_string())?;
+        let mut stats = NumericArrayStats { total_records: 0, non_empty_records: 0, min_length: 0, max_length: 0 };
+        while let Some(row) = groups.next().await {
+            let row = row.map_err(|e| e.to_string())?;
+            let count: i64 = row.try_get("", "rows").map_err(|e| e.to_string())?;
+            let payloads: i64 = row.try_get("", "payloads").map_err(|e| e.to_string())?;
+            let count = usize::try_from(count).map_err(|_| "invalid binary count")?;
+            stats.total_records = stats.total_records.checked_add(count).ok_or("binary count overflow")?;
+            let header: Option<Vec<u8>> = row.try_get("", "descriptor").map_err(|e| e.to_string())?;
+            match header {
+                None if payloads == 0 => {},
+                None => return Err("binary payload is missing its descriptor".into()),
+                Some(header) => {
+                    if usize::try_from(payloads).map_err(|_| "invalid payload count")? != count { return Err("binary descriptor is missing its payload".into()); }
+                    let descriptor = BinaryDescriptor::decode(&header)?;
+                    let [dimension] = descriptor.shape.as_slice() else { return Err("vector statistics require rank-one payloads".into()); };
+                    let bytes = i64::try_from(descriptor.byte_len()?).map_err(|_| "binary size exceeds i64")?;
+                    let min: Option<i64> = row.try_get("", "minimum").map_err(|e| e.to_string())?;
+                    let max: Option<i64> = row.try_get("", "maximum").map_err(|e| e.to_string())?;
+                    if min != Some(bytes) || max != Some(bytes) { return Err("binary payload length disagrees with descriptor".into()); }
+                    let dimension = usize::try_from(*dimension).map_err(|_| "dimension exceeds usize")?;
+                    if dimension != 0 {
+                        stats.min_length = if stats.non_empty_records == 0 { dimension } else { stats.min_length.min(dimension) };
+                        stats.max_length = stats.max_length.max(dimension);
+                        stats.non_empty_records = stats.non_empty_records.checked_add(count).ok_or("binary count overflow")?;
+                    }
+                }
+            }
+        }
+        Ok(stats)
     }
 }

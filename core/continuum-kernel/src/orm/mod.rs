@@ -77,3 +77,9 @@ pub use vector::{
 pub mod client_read;
 
 mod relational_array_stats;
+
+pub mod binary;
+mod relational_binary;
+
+#[cfg(test)]
+mod binary_tests;

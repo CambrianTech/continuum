@@ -38,10 +38,7 @@ impl super::relational::RelationalStore {
         increment: bool,
     ) -> Result<bool, String> {
         let schema = self.schema(collection)?;
-        let mut statement = Query::update();
-        statement
-            .table(Alias::new(naming::to_table_name(collection)))
-            .and_where(Expr::col(Alias::new("id")).eq(id));
+        let mut fields = Vec::new();
         for (name, value) in data.as_object().ok_or("update requires an object")? {
             if super::types::METADATA_KEYS.contains(&name.as_str()) {
                 return Err(format!("metadata {name} is owned by storage"));
@@ -51,11 +48,17 @@ impl super::relational::RelationalStore {
                 .iter()
                 .find(|f| f.name == *name)
                 .ok_or_else(|| format!("undeclared update field {collection}.{name}"))?;
-            statement.value(
-                Alias::new(naming::to_snake_case(name)),
-                super::relational_codec::encode(field, value)?,
-            );
+            fields.push((Alias::new(naming::to_snake_case(name)), super::relational_codec::encode(field, value)?));
         }
+        self.update_fields_on(connection, collection, id, fields, increment).await
+    }
+
+    /// Shared metadata/custody mutation for already schema-validated typed bindings.
+    pub(super) async fn update_fields_on<C: ConnectionTrait>(&self, connection: &C, collection: &str, id: &str,
+        fields: Vec<(Alias, sea_orm::sea_query::Value)>, increment: bool) -> Result<bool, String> {
+        let mut statement = Query::update();
+        statement.table(Alias::new(naming::to_table_name(collection)))
+            .and_where(Expr::col(Alias::new("id")).eq(id)).values(fields.into_iter().map(|(column, value)| (column, Expr::val(value).into())));
         statement.value(Alias::new("updated_at"), chrono::Utc::now().to_rfc3339());
         if increment {
             statement.value(

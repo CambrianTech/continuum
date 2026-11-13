@@ -27,6 +27,7 @@ pub(super) fn encode(field: &SchemaField, value: &Value) -> Result<SqlValue, Str
             .ok_or_else(|| format!("{} requires a boolean", field.name)),
         FieldType::Number if value.is_number() => super::relational_query::value(value),
         FieldType::Number => Err(format!("{} requires a number", field.name)),
+        FieldType::Binary => Err("binary payload requires the native typed storage interface".into()),
         FieldType::Json => serde_json::to_string(value)
             .map(Into::into)
             .map_err(|e| e.to_string()),
@@ -51,6 +52,7 @@ pub(super) fn scalar(
             .try_get::<String, _>(index)
             .map(Value::String)
             .map_err(|e| e.to_string()),
+        FieldType::Binary => Err("binary payload requires the native typed storage interface".into()),
         FieldType::Json => {
             let text: String = row.try_get(index).map_err(|e| e.to_string())?;
             serde_json::from_str(&text)

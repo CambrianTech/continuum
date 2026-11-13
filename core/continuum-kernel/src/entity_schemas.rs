@@ -190,7 +190,8 @@ pub fn to_collection_schema(es: &EntitySchema) -> Result<crate::orm::types::Coll
             "date" => FieldType::Date,
             "number" => FieldType::Number,
             "boolean" => FieldType::Boolean,
-            "json" | "blob" => FieldType::Json,
+            "json" => FieldType::Json,
+            "binary" => FieldType::Binary,
             "primary" | "foreign_key" | "text" | "enum" => FieldType::String,
             other => return Err(format!("{}.{}: undeclared field type {other}", es.collection, f.field_name)),
         };

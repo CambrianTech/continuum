@@ -1,7 +1,7 @@
 {
   "$schemaVersion": 1,
   "$generatedAt": "2026-06-11T17:50:50.044Z",
-  "$sha256": "ae79b8b55b594e7f7dcebde22daf2ac33acf2b34a670c0e40a68f825151fa952",
+  "$sha256": "707ae2f01f2bf0ccf387fa996fe2eb5649595dcd92913d0f96496b8a73c7ade3",
   "entities": {
     "users": {
       "collection": "users",
@@ -1776,7 +1776,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "json",
+          "fieldType": "binary",
           "options": {
             "nullable": false
           }
@@ -2890,7 +2890,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "json",
+          "fieldType": "binary",
           "options": {
             "nullable": true
           }
@@ -5189,7 +5189,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "json",
+          "fieldType": "binary",
           "options": {
             "nullable": true
           }
@@ -5344,7 +5344,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "json",
+          "fieldType": "binary",
           "options": {
             "nullable": true
           }
@@ -6268,7 +6268,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "blob",
+          "fieldType": "binary",
           "options": {
             "nullable": true
           }
@@ -6502,7 +6502,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "json",
+          "fieldType": "binary",
           "options": {
             "nullable": true
           }

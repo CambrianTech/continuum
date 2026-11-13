@@ -207,6 +207,14 @@ impl RelationalStore {
         &self,
         record: &DataRecord,
     ) -> Result<sea_orm::sea_query::InsertStatement, String> {
+        self.insert_statement_with_binary(record, std::collections::BTreeMap::new())
+    }
+
+    pub(super) fn insert_statement_with_binary(
+        &self,
+        record: &DataRecord,
+        mut payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
+    ) -> Result<sea_orm::sea_query::InsertStatement, String> {
         let schema = self.schema(&record.collection)?;
         let fields = record
             .data
@@ -215,6 +223,18 @@ impl RelationalStore {
         let mut values = Vec::new();
         let mut columns = Vec::new();
         for field in &schema.fields {
+            if let Some(payload) = payloads.remove(&field.name) {
+                if field.field_type != super::types::FieldType::Binary {
+                    return Err(format!("{}.{} is not a declared binary field", record.collection, field.name));
+                }
+                if fields.contains_key(&field.name) { return Err("binary field supplied through two representations".into()); }
+                let (descriptor, bytes) = payload.into_parts();
+                columns.push(Alias::new(super::adapter::naming::to_snake_case(&field.name)));
+                values.push(Expr::val(bytes).into());
+                columns.push(Alias::new(super::binary::descriptor_column(&field.name)));
+                values.push(Expr::val(descriptor.encode()?).into());
+                continue;
+            }
             let metadata;
             let value = match field.name.as_str() {
                 "id" => {
@@ -245,6 +265,7 @@ impl RelationalStore {
             )));
             values.push(Expr::val(super::relational_codec::encode(field, value)?).into());
         }
+        if !payloads.is_empty() { return Err("native write contains undeclared binary fields".into()); }
         for name in fields.keys() {
             super::relational_query::column(&schema, name)?;
         }

@@ -46,6 +46,7 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, String
             FieldType::String | FieldType::Uuid | FieldType::Date | FieldType::Json => {
                 column.text();
             }
+            FieldType::Binary => { column.binary(); }
             FieldType::Boolean => {
                 column.boolean();
             }
@@ -74,6 +75,16 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, String
             column.check(Expr::expr(Func::cust(Alias::new("length")).arg(Expr::col(Alias::new(&name)))).lte(max));
         }
         create.col(&mut column);
+        if field.field_type == FieldType::Binary {
+            let descriptor_name = super::binary::descriptor_column(&field.name);
+            if !columns.insert(descriptor_name.clone()) { return Err("binary descriptor column collision".into()); }
+            let mut descriptor = ColumnDef::new(Alias::new(&descriptor_name));
+            descriptor.binary();
+            if !field.nullable { descriptor.not_null(); }
+            descriptor.check(Expr::expr(Expr::col(Alias::new(&descriptor_name)).is_null())
+                .eq(Expr::col(Alias::new(&name)).is_null()));
+            create.col(&mut descriptor);
+        }
         if let Some(reference) = &field.foreign_key {
             if !field.nullable
                 && (reference.on_delete == CascadeRule::SetNull

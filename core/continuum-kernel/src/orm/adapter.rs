@@ -19,7 +19,7 @@ use super::types::{
     BatchOperation, CollectionSchema, CollectionStats, DataRecord, StorageResult, UUID,
 };
 
-/// Database-side summary of a declared JSON numeric-array field.
+/// Database-side summary of a declared binary vector field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NumericArrayStats {
     pub total_records: usize,
@@ -165,7 +165,11 @@ pub trait StorageAdapter: Send + Sync {
     /// List all collections
     async fn list_collections(&self) -> StorageResult<Vec<String>>;
 
-    /// Get collection statistics
+    /// Bounded native payload reads; scalar projections use the normal query owner.
+    async fn binary_page(&self, collection: &str, field: &str, after: Option<String>, limit: usize) -> StorageResult<Vec<super::binary::BinaryRecord>>;
+    async fn create_binary(&self, record: DataRecord, payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>) -> StorageResult<String>;
+    async fn update_binary(&self, collection: &str, id: &str, field: &str, value: super::binary::BinaryValue) -> StorageResult<bool>;
+
     async fn numeric_array_stats(&self, collection: &str, field: &str) -> StorageResult<NumericArrayStats>;
 
     async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats>;

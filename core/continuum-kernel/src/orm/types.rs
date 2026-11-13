@@ -35,6 +35,8 @@ pub enum FieldType {
     Boolean,
     Date,
     Json,
+    /// Producer-native bytes with a typed descriptor, stored as paired BLOBs.
+    Binary,
     Uuid,
 }
 
