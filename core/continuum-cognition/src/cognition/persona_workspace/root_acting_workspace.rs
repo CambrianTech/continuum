@@ -352,10 +352,10 @@ impl PersonaWorkspaceRegistry {
     /// Periodic crash checkpoint. A busy writer coalesces this tick; no queue
     /// of blocking jobs accumulates behind slow storage.
     pub fn checkpoint_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
-        let Some(stopped) = self.checkpoint_stopped.try_lock() else {
+        let Some(_writer) = self.checkpoint_writer.try_lock() else {
             return Vec::new();
         };
-        if *stopped {
+        if self.checkpoint_stopped.load(std::sync::atomic::Ordering::Acquire) {
             return Vec::new();
         }
         self.write_volatile_all(SaveReason::Periodic)
@@ -363,21 +363,27 @@ impl PersonaWorkspaceRegistry {
 
     /// Explicit save is repeatable and leaves periodic persistence running.
     pub fn flush_volatile_all(&self) -> Vec<(Uuid, std::io::Result<()>)> {
-        let _checkpoint = self.checkpoint_stopped.lock();
+        let _checkpoint = self.checkpoint_writer.lock();
         self.write_volatile_all(SaveReason::Seam)
     }
 
-    /// Shutdown boundary: drain the admitted checkpoint, close periodic writes,
+    /// Close terminal admission independently of checkpoint IO. An already admitted
+    /// writer retains custody; the final save still waits for the writer gate.
+    pub fn close_volatile_checkpoints(&self) {
+        self.checkpoint_stopped.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Shutdown boundary: close periodic writes, drain the admitted checkpoint,
     /// then snapshot CURRENT residents. The caller must quiesce mutation first.
     /// Blocking work can outlive an async timeout; callers must receipt that as
     /// uncertain, never successful. No later periodic write can overtake this one.
     pub fn stop_volatile_checkpoints(&self) -> Vec<(Uuid, std::io::Result<()>)> {
-        let mut stopped = self.checkpoint_stopped.lock();
-        *stopped = true;
+        self.close_volatile_checkpoints();
+        let _checkpoint = self.checkpoint_writer.lock();
         self.write_volatile_all(SaveReason::Seam)
     }
 
-    // Only called under checkpoint_stopped. The cycle lookup lock is released
+    // Only called under checkpoint_writer. The cycle lookup lock is released
     // before snapshot/serialization/IO, keeping room turns and roster reads free.
     pub(super) fn write_volatile_all(&self, reason: SaveReason) -> Vec<(Uuid, std::io::Result<()>)> {
         // ONE staged-read budget for the whole seam, shared by every resident, so the save
