@@ -4,6 +4,19 @@ use continuum_client::{ClientError, Connection, Transport};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Map, Value};
 
+// Decode the requested projection at the command transport boundary. Collection,
+// metadata and count are not inputs to keyset traversal and are not hydrated.
+#[derive(serde::Deserialize)]
+struct SelectedRecord<E> {
+    id: String,
+    data: E,
+}
+
+#[derive(serde::Deserialize)]
+struct SelectedPage<E> {
+    items: Vec<SelectedRecord<E>>,
+}
+
 pub async fn matching<T: Transport, E: DeserializeOwned>(
     conn: &Connection<T>, handle: &str, collection: &str,
     filter: Map<String, Value>, select: Option<Vec<String>>,
@@ -17,19 +30,18 @@ pub async fn matching<T: Transport, E: DeserializeOwned>(
     loop {
         let mut page_filter = filter.clone();
         if let Some(id) = &after { page_filter.insert("id".into(), json!({"$gt": id})); }
-        let page: crate::orm::list_result::DataListResult = conn.commands().execute("data/list", json!({
+        let page: SelectedPage<E> = conn.commands().execute("data/list", json!({
             "dbPath": handle, "collection": collection, "filter": page_filter,
             "select": select, "sort": [{"field": "id", "direction": "asc"}], "limit": size,
         })).await?;
         let count = page.items.len();
         if count > size { return Err(ClientError::Transport("storage returned more rows than requested".into())); }
-        for value in page.items {
-            let record: crate::orm::DataRecord = serde_json::from_value(value)?;
+        for record in page.items {
             if after.as_ref().is_some_and(|previous| record.id <= *previous) {
                 return Err(ClientError::Transport("storage keyset page did not advance in identity order".into()));
             }
-            after = Some(record.id.clone());
-            output.push(record.decode()?);
+            after = Some(record.id);
+            output.push(record.data);
         }
         if count < size { return Ok(output); }
     }
@@ -75,5 +87,24 @@ mod tests {
         mock.respond_with("data/list", page(0, size, size * 2));
         let result = matching::<_, Row>(&Connection::new(mock), "fixture", "fixture", Map::new(), None).await;
         assert!(matches!(result, Err(ClientError::Transport(message)) if message.contains("did not advance")));
+    }
+    #[tokio::test]
+    async fn projected_values_keep_exact_integers_and_reject_null_required_fields() -> Result<(), ClientError> {
+        #[derive(Debug, serde::Deserialize, PartialEq)]
+        struct Projection { sequence: u64, note: Option<String> }
+        let mock = MockTransport::new();
+        mock.respond_with("data/list", json!({"items":[{
+            "id":"a", "data":{"sequence":u64::MAX,"note":null}
+        }]}));
+        let rows: Vec<Projection> = matching(&Connection::new(mock), "fixture", "fixture",
+            Map::new(), Some(vec!["sequence".into(), "note".into()])).await?;
+        assert_eq!(rows, vec![Projection { sequence: u64::MAX, note: None }]);
+        let mock = MockTransport::new();
+        mock.respond_with("data/list", json!({"items":[{
+            "id":"a", "data":{"sequence":null,"note":null}
+        }]}));
+        assert!(matching::<_, Projection>(&Connection::new(mock), "fixture", "fixture",
+            Map::new(), Some(vec!["sequence".into(), "note".into()])).await.is_err());
+        Ok(())
     }
 }
