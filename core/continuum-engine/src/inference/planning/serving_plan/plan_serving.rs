@@ -269,7 +269,7 @@ fn plan_serving_into(
                         .cmp(&b.weights_bytes)
                         .then(a.model_id.cmp(&b.model_id))
                 }).expect("candidates non-empty checked above");
-                (best.clone(), None)
+                (best, None)
             }
         }
     };
