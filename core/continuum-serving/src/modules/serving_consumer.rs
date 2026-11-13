@@ -433,7 +433,7 @@ impl ServingConsumer {
         };
         let measure = || self.measures_physically.then(|| (self.measured_of)(active)).flatten();
         let before = measure();
-        let receipt = match lever.apply(step).await {
+        let receipt = match lever.apply(step, request.target_bytes).await {
             Ok(receipt) => receipt,
             Err(error) => {
                 continuum_base::probe!(
@@ -455,7 +455,8 @@ impl ServingConsumer {
         continuum_base::probe!(
             class = "serving.reclaim.prompt_cache",
             limit_before_mib = step.before_mib.get(),
-            limit_after_mib = step.after_mib.get(),
+            limit_after_mib = receipt.limit_after_mib.get(),
+            calls = receipt.calls,
             target_bytes = request.target_bytes,
             reported_freed_bytes = receipt.freed_bytes,
             held_bytes = receipt.held_bytes,
@@ -474,7 +475,7 @@ impl ServingConsumer {
         };
         let detail = format!(
             "host prompt cache lowered {} -> {} MiB, freed {freed} bytes{confirmation}",
-            step.before_mib, step.after_mib
+            step.before_mib, receipt.limit_after_mib
         );
         let status = if freed >= request.target_bytes { ReclaimStatus::Released } else { ReclaimStatus::Partial };
         Some(ReclaimOutcome { freed_bytes: freed, status, detail: Some(detail) })
