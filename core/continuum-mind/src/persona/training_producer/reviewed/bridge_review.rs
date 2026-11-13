@@ -471,26 +471,11 @@ pub async fn staged_evidence<T: Transport>(
     submitted: &airc_work::WorkSubmission,
 ) -> Result<Vec<StagedCreditEvidence>, ClientError> {
     ensure_storage(conn, persona_name).await?;
-    let value = conn
-        .commands()
-        .execute_value(
-            "data/list",
-            json!({
-                "collection": StagedCredit::COLLECTION,
-                "dbPath": format!("@persona:{persona_name}"),
-                "filter": {"cardId": submitted.card_id.as_uuid().to_string()},
-                "select": ["cardId", "claimId", "owner", "stagedAtMs", "receipts"],
-            }),
-        )
-        .await?;
-    let listed: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // Decode the projected storage response.
-    if listed.items.len() != listed.total as usize {
-        return Err(ClientError::Transport("staged evidence list is incomplete".into()));
-    }
-    let rows = listed.items.into_iter().map(|value| {
-        let record: crate::orm::types::DataRecord = serde_json::from_value(value)?; // Decode the ORM envelope.
-        record.decode::<StagedEvidenceRow>()
-    }).collect::<Result<Vec<_>, _>>()?;
+    let rows: Vec<StagedEvidenceRow> = crate::orm::client_read::matching(
+        conn, &format!("@persona:{persona_name}"), StagedCredit::COLLECTION,
+        serde_json::Map::from_iter([("cardId".into(), json!(submitted.card_id.as_uuid().to_string()))]),
+        Some(["cardId", "claimId", "owner", "stagedAtMs", "receipts"].into_iter().map(str::to_owned).collect()),
+    ).await?;
     let mut evidence = Vec::with_capacity(rows.len());
     for row in rows {
         if row.card_id != submitted.card_id.as_uuid() {

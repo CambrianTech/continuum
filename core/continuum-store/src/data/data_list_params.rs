@@ -29,10 +29,9 @@ pub struct DataListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub sort: Option<Vec<OrderByClause>>,
-    /// Max records to return. Omit for all matching (bounded by the store).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub limit: Option<u32>,
+    /// Required positive page size. Use data/count for counts and cursor pages for traversal.
+    #[ts(type = "number")]
+    pub limit: std::num::NonZeroU32,
     /// Records to skip before returning (paging alongside `limit`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

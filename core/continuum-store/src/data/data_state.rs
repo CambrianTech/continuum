@@ -206,7 +206,7 @@ impl DataState {
                 filter,
                 sort,
                 select: params.select,
-                limit: params.limit.map(|n| n as usize),
+                limit: Some(params.limit.get() as usize),
                 offset: params.offset.map(|n| n as usize),
                 ..Default::default()
             })

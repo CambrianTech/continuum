@@ -16,7 +16,7 @@ async fn list_projects_in_storage_and_preserves_count_and_identity() -> Result<(
     let params = DataListParams {
         collection: "projection".into(), handle: Some(path.clone()),
         filter: Some(json!({"cardId":"card"})), select: Some(vec!["state".into()]),
-        limit: Some(1), offset: None, sort: None,
+        limit: std::num::NonZeroU32::new(1).expect("positive fixture page"), offset: None, sort: None,
     };
     let result = module.state.list(params).await?;
     assert_eq!(result.total, 3);
@@ -30,8 +30,17 @@ async fn list_projects_in_storage_and_preserves_count_and_identity() -> Result<(
     let invalid = DataListParams {
         collection: "projection".into(), handle: Some(path),
         filter: None, select: Some(vec!["(select payload from projection)".into()]),
-        limit: Some(1), offset: None, sort: None,
+        limit: std::num::NonZeroU32::new(1).expect("positive fixture page"), offset: None, sort: None,
     };
     assert!(module.state.list(invalid).await.is_err());
     Ok(())
+}
+
+#[test]
+fn list_schema_requires_a_positive_page_size() {
+    for params in [json!({"collection":"rows"}), json!({"collection":"rows","limit":0}), json!({"collection":"rows","limit":null})] {
+        assert!(serde_json::from_value::<DataListParams>(params).is_err());
+    }
+    let params: DataListParams = serde_json::from_value(json!({"collection":"rows","limit":7})).expect("positive page");
+    assert_eq!(params.limit.get(), 7);
 }
