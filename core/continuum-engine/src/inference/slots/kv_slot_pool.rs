@@ -294,18 +294,18 @@ impl KvSlotPool {
         Some(self.operation_permit(slot, permit))
     }
 
-    /// The slot's permit when it is free now, or the wait for its next release, registered before
-    /// the try so a release between them is never missed. The waiter takes nothing while it waits:
-    /// queued in the slot's semaphore it was HANDED the permit only to drop it, and two such waiters
-    /// (her learning step and a dream consolidation) passed it between them while each one's retry
-    /// found it taken: 35,000 lane grants a second on the M5, 2026-11-13 (card 6742aad1).
-    pub(crate) fn slot_or_release(&self, slot: u32) -> Result<Result<SlotPermit, SlotRelease>, String> {
-        if slot as usize >= self.operations.len() {
-            return Err("unknown physical KV slot".to_owned());
-        }
+    /// The wait for a busy slot's next release, or `None` when it is free now (the caller tries
+    /// again at once). Registered before the check, so a release between them is never missed;
+    /// the caller lets go of everything first (an admission's dropped pin announces a release,
+    /// and a wait registered before that drop was woken by its own announcement). It takes no
+    /// permit: queued in the slot's semaphore a waiter was HANDED the permit only to drop it, and
+    /// two such waiters (her learning step and a dream consolidation) passed it between them while
+    /// each one's retry found it taken: 35,000 lane grants a second on the M5, 2026-11-13 (card 6742aad1).
+    pub(crate) fn busy_until_release(&self, slot: u32) -> Result<Option<SlotRelease>, String> {
+        let operation = self.operations.get(slot as usize).ok_or("unknown physical KV slot")?;
         let mut release = Box::pin(Arc::clone(self.release_signal(slot)).notified_owned());
         release.as_mut().enable();
-        Ok(self.try_acquire_slot(slot).ok_or(release))
+        Ok((operation.available_permits() == 0).then_some(release))
     }
 
     /// A scratch release wakes only scratch's waiters, never citizen admission:

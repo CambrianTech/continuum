@@ -184,7 +184,7 @@ pub struct KvSlotPool {
     /// over a resident's KV. A wake signal, not a queue: the order stays the server's own.
     pub(super) released: Arc<tokio::sync::Notify>,
     /// The scratch slot's own release signal: scratch cannot satisfy citizen admission, so its
-    /// release wakes only what waits for scratch ([`Self::slot_or_release`]).
+    /// release wakes only what waits for scratch ([`Self::busy_until_release`]).
     pub(super) scratch_released: Arc<tokio::sync::Notify>,
     /// Where [`Self::saved`] persists, set once when the engine is ready under a contract
     /// that has a page dir and a fingerprint ([`SavedLedger`]). Unset = in-memory only.
@@ -217,7 +217,7 @@ impl Drop for SlotPermit {
     }
 }
 
-/// The wait for a slot's next release, registered before the try that found it busy.
+/// The wait for a slot's next release, registered before the check that found it busy.
 pub(crate) type SlotRelease = std::pin::Pin<Box<tokio::sync::futures::OwnedNotified>>;
 
 /// What a Turn must do AROUND its request to honor the KV paging design — the

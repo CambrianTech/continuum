@@ -528,19 +528,19 @@ async fn admit(
             if let Some((slot, pin)) = pinned {
                 admission._pin = Some(pin);
                 admission.released = Some(pool.released());
-                admission._slot_permit = Some(match pool.slot_or_release(slot)? {
-                    Ok(permit) => permit,
+                admission._slot_permit = Some(match pool.try_acquire_slot(slot) {
+                    Some(permit) => permit,
                     // A keyed dream waits for her busy slot holding nothing: no pin, no lane, no
                     // gate (Codex on #5898), no permit (card 6742aad1). A turn keeps its pin
                     // through the wait (a same-page returner must await the prior owner without
                     // permitting eviction).
-                    Err(release) if keyed_dream => {
+                    None if keyed_dream => {
                         drop(admission);
                         lane = None;
-                        release.await;
+                        if let Some(release) = pool.busy_until_release(slot)? { release.await; }
                         continue 'admit;
                     }
-                    Err(_) => pool.acquire_slot(slot).await?,
+                    None => pool.acquire_slot(slot).await?,
                 });
                 admission._endpoint.check_ready()?;
                 if keyed_dream {
@@ -664,14 +664,11 @@ async fn admit(
             // BEFORE the await so cancellation cannot leave the next page treating
             // transient KV as its own warm tail.
             let slot = pool.transient_slot();
-            let permit = match pool.slot_or_release(slot)? {
-                Ok(permit) => permit,
-                Err(release) => {
-                    drop(admission);
-                    lane = None;
-                    release.await;
-                    continue 'admit;
-                }
+            let Some(permit) = pool.try_acquire_slot(slot) else {
+                drop(admission);
+                lane = None;
+                if let Some(release) = pool.busy_until_release(slot)? { release.await; }
+                continue 'admit;
             };
             admission = admission
                 .borrow_slot_for_transient(pool, slot, permit, client, root, crate::inference::slots::page_io::gate())
@@ -688,13 +685,10 @@ async fn admit(
             // Queued behind the scratch slot's holder, it holds NOTHING: not the adapter
             // permit (sized to every slot, so a held one blocks traffic that could run now)
             // and no serving lane (card 920c43bc).
-            let permit = match pool.slot_or_release(scratch)? {
-                Ok(permit) => permit,
-                Err(release) => {
-                    drop(admission);
-                    release.await;
-                    continue 'admit;
-                }
+            let Some(permit) = pool.try_acquire_slot(scratch) else {
+                drop(admission);
+                if let Some(release) = pool.busy_until_release(scratch)? { release.await; }
+                continue 'admit;
             };
             admission._slot_permit = Some(permit);
             admission._endpoint.check_ready()?;
