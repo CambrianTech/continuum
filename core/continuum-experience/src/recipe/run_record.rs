@@ -149,6 +149,7 @@ pub struct RunCursor {
 #[serde(rename_all = "camelCase")]
 #[entity(collection = "recipe_runs")]
 #[entity(index(name = "idx_recipe_run_active", fields = ["isActive", "id"]))]
+#[entity(index(name = "idx_recipe_run_caller_active", fields = ["callerPeerId", "isActive", "id"]))]
 pub struct RecipeRunRecord {
     #[serde(flatten)]
     pub base: BaseEntity,
@@ -165,8 +166,8 @@ pub struct RecipeRunRecord {
     pub args: Option<Value>,
     #[entity(json)]
     pub seed: Map<String, Value>,
-    #[entity(json)]
-    pub caller: Option<CallerRecord>,
+    pub caller_peer_id: Option<Uuid>,
+    pub caller_source: Option<String>,
     /// The activity room this run belongs to, if it is a birth's pipeline.
     pub room_id: Option<Uuid>,
     #[entity(json)]
@@ -221,7 +222,8 @@ impl RecipeRunRecord {
             pipeline,
             args: (!args.is_null()).then_some(args),
             seed,
-            caller,
+            caller_peer_id: caller.as_ref().map(|c| c.peer_id),
+            caller_source: caller.map(|c| c.source),
             room_id: origin.room,
             phase: RunPhase::Running,
             is_active: true,
@@ -302,11 +304,14 @@ impl RecipeRuns {
 
     /// One stable id-ordered page of nonterminal runs. This is a live scan, not
     /// a snapshot spanning pages; boot recovery runs before dispatch starts.
-    pub async fn active_page(&self, after: Option<Uuid>, size: std::num::NonZeroUsize) -> Result<Vec<RecipeRunRecord>, String> {
+    pub async fn active_page(&self, after: Option<Uuid>, size: std::num::NonZeroUsize, caller_peer: Option<Uuid>) -> Result<Vec<RecipeRunRecord>, String> {
         let mut query = QueryBuilder::new(RecipeRunRecord::COLLECTION)
             .filter_eq("isActive", true).sort_asc("id").limit(size.get());
         if let Some(after) = after {
             query = query.filter("id", crate::orm::query::QueryOperator::Gt(after.to_string().into()));
+        }
+        if let Some(peer) = caller_peer {
+            query = query.filter_eq("callerPeerId", peer.to_string());
         }
         let rows = self.store.find_matching(query.build()).await.map_err(|e| e.to_string())?;
         Ok(rows.into_iter().map(|(_, run)| run).collect())
@@ -344,7 +349,7 @@ impl RecipeRuns {
             .ok_or("ORM replay page size is zero")?;
         let mut after = None;
         loop {
-            let page = self.active_page(after, size).await?;
+            let page = self.active_page(after, size, None).await?;
             if page.is_empty() { break; }
             after = page.last().map(RecipeRunRecord::run_id).transpose()?;
             let last_page = page.len() < size.get();

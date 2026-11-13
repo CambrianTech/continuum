@@ -3,6 +3,10 @@ import type { RecipeRunResult } from "./RecipeRunResult";
 
 export type RecipeListResult = { 
 /**
- * Every run that is not over: running, held, interrupted, or waiting on recovery.
+ * Visible runs in this page: running, held, interrupted, or waiting on recovery.
  */
-active: Array<RecipeRunResult>, };
+active: Array<RecipeRunResult>, 
+/**
+ * Continue from this identity; a full final page may be followed by an empty page.
+ */
+next: string | null, };

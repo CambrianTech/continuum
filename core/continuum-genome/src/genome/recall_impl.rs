@@ -94,6 +94,9 @@ pub trait CandidateSource: Send + Sync {
     export_to = "../../../protocol/typescript/genome/RecallDecision.ts"
 )]
 pub struct RecallDecision {
+    #[entity(primary_key)]
+    #[ts(type = "string")]
+    pub id: uuid::Uuid,
     pub schema_version: u32,
     pub policy_revision: String,
     #[ts(type = "number")]
@@ -460,6 +463,7 @@ impl DemandAlignedRecall for LocalDemandAlignedRecall {
         let trace = RecallTrace(ArtifactId::new(uuid::Uuid::new_v4()));
         let result = self.rank_borrowed(now_ms, &candidates, trace);
         let decision = RecallDecision {
+            id: trace.0.as_uuid(),
             schema_version: 1,
             policy_revision: RecallDecision::POLICY_REVISION.into(),
             now_ms,

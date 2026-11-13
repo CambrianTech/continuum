@@ -93,7 +93,7 @@ use crate::orm::types::CollectionSchema;
                 let error = command.invoke(json!({
                     "collection": collection, "dbPath": "invalid-handle",
                     "id": "record", "data": {}, "embedding": [1.0],
-                    "queryVector": [1.0], "textField": "need"
+                    "queryVector": [1.0], "textField": "need", "limit": 1
                 }), None).await.expect_err(name);
                 assert!(error.contains("protected collection"), "{name}: {error}");
             }

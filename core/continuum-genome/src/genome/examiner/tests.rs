@@ -102,7 +102,7 @@ fn what_is_owed_follows_the_trials_and_their_receipts() {
 // retention re-run reading nothing.
 #[tokio::test]
 async fn a_receipt_round_trips_through_the_orm() {
-    let (adapter, _tmp) = crate::orm::store::fresh_adapter().await;
+    let (adapter, tmp) = crate::orm::store::fresh_adapter().await;
     let receipts = crate::orm::OrmStore::<GeneExamReceipt>::new(adapter).await.expect("test: store");
     let dir = tempfile::tempdir().expect("test: dir");
     let store = GeneTrials::at(dir.path().join("trials.json"));
@@ -110,6 +110,11 @@ async fn a_receipt_round_trips_through_the_orm() {
     let mut r = admitted(&t, Uuid::from_u128(0xb1));
     r.correction = Some(CorrectionSummary { trained_from: "/job".into(), examples: 1, cards: vec!["c".into()], sources: vec!["card-credit".into()] });
     receipts.save(receipt_id(t.id), &r).await.expect("test: save");
+    drop(receipts);
+    let reopened = crate::orm::SeaOrmAdapter::open(&tmp.path().join("orm-store-test.sqlite"))
+        .await.expect("test: reopen receipt database");
+    let receipts = crate::orm::OrmStore::<GeneExamReceipt>::new(std::sync::Arc::new(reopened))
+        .await.expect("test: reopen typed receipt owner");
     let back = receipts.find_by_id(receipt_id(t.id)).await.expect("test: read").expect("test: present");
     assert_eq!(back, r);
 }

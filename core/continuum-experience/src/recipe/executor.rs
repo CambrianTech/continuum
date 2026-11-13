@@ -751,7 +751,7 @@ mod tests {
             assert!(failed.contains("forbidden"), "{failed}");
             assert_eq!(gate_calls.load(std::sync::atomic::Ordering::SeqCst), 3);
             assert_eq!(canned.calls(), 0);
-            let active = runs.active_page(None, std::num::NonZeroUsize::MIN).await.unwrap();
+            let active = runs.active_page(None, std::num::NonZeroUsize::MIN, None).await.unwrap();
             assert!(active.is_empty(), "a failed run is over: {active:?}");
         }
 
@@ -759,6 +759,33 @@ mod tests {
         /// `Running` rows are exposed at boot: one with an invocation still `Dispatching`
         /// becomes RecoveryRequired (its outcome is unknown), one stopped between
         /// invocations becomes Interrupted, and a held run is left exactly as it was.
+        #[tokio::test]
+        async fn active_pages_filter_owners_before_limiting_and_survive_removal() {
+            let (runs, _dir) = store().await;
+            let owner = Uuid::from_u128(41);
+            for n in 1..=7 {
+                let mut run = RecipeRunRecord::begin(Default::default(), "t/page", vec![], Value::Null,
+                    Default::default(), Some(crate::recipe::run_record::CallerRecord {
+                        peer_id: if n % 2 == 0 { owner } else { Uuid::from_u128(42) },
+                        source: "local_persona".into(),
+                    }));
+                run.base.id = Uuid::from_u128(n).to_string();
+                runs.write(&run).await.unwrap();
+            }
+            let size = std::num::NonZeroUsize::new(2).unwrap();
+            let first = runs.active_page(None, size, Some(owner)).await.unwrap();
+            assert_eq!(first.iter().map(|r| r.run_id().unwrap()).collect::<Vec<_>>(),
+                vec![Uuid::from_u128(2), Uuid::from_u128(4)]);
+            let mut removed = first[0].clone();
+            removed.phase = RunPhase::Cancelled;
+            removed.is_active = false;
+            runs.write(&removed).await.unwrap();
+            let second = runs.active_page(Some(Uuid::from_u128(4)), size, Some(owner)).await.unwrap();
+            assert_eq!(second.iter().map(|r| r.run_id().unwrap()).collect::<Vec<_>>(), vec![Uuid::from_u128(6)]);
+            assert!(runs.active_page(Some(Uuid::from_u128(6)), size, Some(owner)).await.unwrap().is_empty());
+            assert_eq!(runs.active_page(None, size, None).await.unwrap().len(), 2);
+        }
+
         #[tokio::test]
         async fn boot_exposes_every_run_the_last_process_left_running() {
             let (runs, _dir) = store().await;
