@@ -328,3 +328,31 @@ async fn declared_defaults_and_length_are_enforced_by_storage() -> Result<(), Bo
     assert_eq!(store.count(QueryBuilder::new("declared_defaults").build()).await?, 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn restart_verifies_physical_declaration_and_refuses_unmanaged_tables() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::{ConnectionTrait, DbBackend};
+    use sea_orm::sea_query::{Alias, ColumnDef, Table};
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("declarations.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let first = store(path).await?;
+    first.insert(&first.db, &record("p", Parent::COLLECTION, json!({"label":"retained"}))).await?;
+    first.db.clone().close().await?;
+    let reopened = store(path).await?;
+    assert_eq!(reopened.count(QueryBuilder::new(Parent::COLLECTION).build()).await?, 1);
+    let altered = Table::alter().table(Alias::new(Parent::COLLECTION))
+        .add_column(ColumnDef::new(Alias::new("undeclared_column")).text()).to_owned();
+    reopened.db.execute(DbBackend::Sqlite.build(&altered)).await?;
+    reopened.db.clone().close().await?;
+    let rejected = store(path).await.err().ok_or("physical drift was admitted")?;
+    assert!(rejected.contains("physical schema changed"), "{rejected}");
+
+    let unmanaged = RelationalStore::open(AdapterConfig { connection_string: ":memory:".into(), ..Default::default() }).await?;
+    let schema = Parent::collection_schema();
+    let declared = super::relational_schema::compile(&schema)?;
+    unmanaged.db.execute(DbBackend::Sqlite.build(&declared.create)).await?;
+    let rejected = unmanaged.ensure(schema).await.expect_err("unmanaged existing table must require migration");
+    assert!(rejected.contains("no declared-schema receipt"), "{rejected}");
+    Ok(())
+}

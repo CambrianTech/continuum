@@ -71,6 +71,10 @@ impl RelationalStore {
         db.execute(DbBackend::Sqlite.build(&heads))
             .await
             .map_err(|e| e.to_string())?;
+        let declarations = sea_orm::Schema::new(DbBackend::Sqlite)
+            .create_table_from_entity(super::relational_declaration::Entity)
+            .if_not_exists().to_owned();
+        db.execute(DbBackend::Sqlite.build(&declarations)).await.map_err(|e| e.to_string())?;
         Ok(Self {
             db,
             in_memory,
@@ -97,15 +101,14 @@ impl RelationalStore {
         let declared = super::relational_schema::compile(&schema)?;
         let _write = self.writer_gate.lock().await;
         let transaction = self.db.begin().await.map_err(|e| e.to_string())?;
-        transaction
-            .execute(DbBackend::Sqlite.build(&declared.create))
-            .await
-            .map_err(|e| e.to_string())?;
-        for index in declared.indexes {
-            transaction
-                .execute(DbBackend::Sqlite.build(&index))
-                .await
-                .map_err(|e| e.to_string())?;
+        if super::relational_declaration::admit(&transaction, &schema).await? {
+            transaction.execute(DbBackend::Sqlite.build(&declared.create))
+                .await.map_err(|e| e.to_string())?;
+            for index in declared.indexes {
+                transaction.execute(DbBackend::Sqlite.build(&index))
+                    .await.map_err(|e| e.to_string())?;
+            }
+            super::relational_declaration::record(&transaction, &schema).await?;
         }
         transaction.commit().await.map_err(|e| e.to_string())?;
         self.schemas
