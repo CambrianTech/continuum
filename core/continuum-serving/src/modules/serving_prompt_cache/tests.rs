@@ -1,6 +1,8 @@
 //! The cache lever on the host's deficit path (card 0f631c46): asked first, by its share, and
 //! taken back when the OS reads normal. The fake engine is shared with the serving dyno.
 
+#![cfg(test)]
+
 use super::*;
 use crate::inference::engine_residency::EngineIncarnation;
 use crate::inference::llama_server::{LlamaServerError, PromptCacheLimit, PromptCacheRefusal};
