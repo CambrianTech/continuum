@@ -52,6 +52,10 @@ from the first sample row.
 String-backed enums used in predicates declare `#[entity(text)]`: their stored value
 is the scalar string, not a quoted JSON document. The shared write codec refuses
 nonstrings; indexes and query bindings operate on the same declared representation.
+Predicates and cursors bind through the declared scalar write codec. Wrong-type
+values and scalar comparisons against opaque JSON/BLOB fields fail before execution,
+including count/delete on empty collections; they must never masquerade as zero
+matches. NULL/existence predicates remain available for opaque fields.
 
 Integers stay exact; NULL is distinct from missing, empty and zero. A creation default
 applies only where the declaration explicitly permits it. A default never repairs an

@@ -2,7 +2,7 @@
 use super::{
     adapter::naming,
     query::{CursorDirection, FieldFilter, QueryOperator, SortDirection, StorageQuery},
-    types::CollectionSchema,
+    types::{CollectionSchema, SchemaField, FieldType},
 };
 use sea_orm::sea_query::{
     Alias, Condition, Expr, Order, Query, SelectStatement, SimpleExpr, Value as SqlValue,
@@ -25,6 +25,14 @@ pub(super) fn column(schema: &CollectionSchema, field: &str) -> Result<Alias, St
     }
 }
 
+/// Predicates bind through the same declared scalar codec as writes. Opaque payloads
+/// have no relational ordering: promote their searchable facts into declared columns.
+fn bound_value(field: &SchemaField, value: &Value) -> Result<SqlValue, String> {
+    if matches!(field.field_type, FieldType::Json | FieldType::Binary) {
+        return Err(format!("{} is an opaque payload; compare declared scalar columns", field.name));
+    }
+    super::relational_codec::encode(field, value)
+}
 pub(super) fn value(value: &Value) -> Result<SqlValue, String> {
     Ok(match value {
         Value::Null => SqlValue::String(None),
@@ -58,7 +66,8 @@ pub(super) fn condition(
         for (field, filter) in fields {
             all = all.add(field_condition(
                 table.clone(),
-                column(schema, field)?,
+                schema.fields.iter().find(|declared| naming::to_snake_case(&declared.name) == naming::to_snake_case(field))
+                    .ok_or_else(|| format!("{}.{} is not a declared field", schema.collection, field))?,
                 filter,
             )?);
         }
@@ -92,8 +101,8 @@ pub(super) fn condition(
         let descending = query.sort.as_ref().and_then(|sort| sort.first())
             .is_some_and(|sort| sort.direction == SortDirection::Desc);
         all = all.add(match (cursor.direction, descending) {
-            (CursorDirection::After, false) | (CursorDirection::Before, true) => col.gt(value(&cursor.value)?),
-            (CursorDirection::Before, false) | (CursorDirection::After, true) => col.lt(value(&cursor.value)?),
+            (CursorDirection::After, false) | (CursorDirection::Before, true) => col.gt(bound_value(field, &cursor.value)?),
+            (CursorDirection::Before, false) | (CursorDirection::After, true) => col.lt(bound_value(field, &cursor.value)?),
         });
     }
     if query.tags.is_some() {
@@ -198,39 +207,40 @@ pub(super) fn select(
     Ok(statement)
 }
 
-fn field_condition(table: Alias, field: Alias, filter: &FieldFilter) -> Result<Condition, String> {
-    let col = Expr::col((table.clone(), field.clone()));
+fn field_condition(table: Alias, field: &SchemaField, filter: &FieldFilter) -> Result<Condition, String> {
+    let col = Expr::col((table.clone(), Alias::new(naming::to_snake_case(&field.name))));
     let expr: SimpleExpr = match filter {
         FieldFilter::Value(v) | FieldFilter::Operator(QueryOperator::Eq(v)) if v.is_null() => {
             col.is_null()
         }
-        FieldFilter::Value(v) | FieldFilter::Operator(QueryOperator::Eq(v)) => col.eq(value(v)?),
+        FieldFilter::Value(v) | FieldFilter::Operator(QueryOperator::Eq(v)) => col.eq(bound_value(field, v)?),
         FieldFilter::Operator(op) => match op {
             QueryOperator::And(operators) => {
                 let mut conjunction = Condition::all();
                 for operator in operators {
                     conjunction = conjunction.add(field_condition(
                         table.clone(),
-                        field.clone(),
+                        field,
                         &FieldFilter::Operator(operator.clone()),
                     )?);
                 }
                 return Ok(conjunction);
             }
-            QueryOperator::Eq(v) => col.eq(value(v)?),
+            QueryOperator::Eq(v) => col.eq(bound_value(field, v)?),
             QueryOperator::Ne(v) if v.is_null() => col.is_not_null(),
-            QueryOperator::Ne(v) => col.ne(value(v)?),
-            QueryOperator::Gt(v) => col.gt(value(v)?),
-            QueryOperator::Gte(v) => col.gte(value(v)?),
-            QueryOperator::Lt(v) => col.lt(value(v)?),
-            QueryOperator::Lte(v) => col.lte(value(v)?),
-            QueryOperator::In(v) => col.is_in(v.iter().map(value).collect::<Result<Vec<_>, _>>()?),
+            QueryOperator::Ne(v) => col.ne(bound_value(field, v)?),
+            QueryOperator::Gt(v) => col.gt(bound_value(field, v)?),
+            QueryOperator::Gte(v) => col.gte(bound_value(field, v)?),
+            QueryOperator::Lt(v) => col.lt(bound_value(field, v)?),
+            QueryOperator::Lte(v) => col.lte(bound_value(field, v)?),
+            QueryOperator::In(v) => col.is_in(v.iter().map(|value| bound_value(field, value)).collect::<Result<Vec<_>, _>>()?),
             QueryOperator::NotIn(v) => {
-                col.is_not_in(v.iter().map(value).collect::<Result<Vec<_>, _>>()?)
+                col.is_not_in(v.iter().map(|value| bound_value(field, value)).collect::<Result<Vec<_>, _>>()?)
             }
             QueryOperator::Exists(true) | QueryOperator::IsNotNull => col.is_not_null(),
             QueryOperator::Exists(false) | QueryOperator::IsNull => col.is_null(),
             QueryOperator::Contains(text) => {
+                if field.field_type != FieldType::String { return Err("contains requires a declared text column".into()); }
                 // Escape LIKE wildcards: contains is literal, not a pattern language.
                 let escaped = text
                     .replace('!', "!!")

@@ -394,3 +394,28 @@ async fn colliding_index_names_refuse_adoption_and_roll_back_schema() -> Result<
     assert_eq!(reopened.count(QueryBuilder::new("index_victim").build()).await?, 1);
     Ok(())
 }
+
+// A misdeclared enum predicate used to return zero rows rather than report that its
+// stored JSON representation differed from the scalar comparison. Wrong-type queries
+// must not become a false absence (including count, delete and empty collections).
+#[tokio::test]
+async fn predicates_use_declared_scalar_codecs_before_execution() -> Result<(), Box<dyn std::error::Error>> {
+    let store = store(":memory:").await?;
+    store.insert(&store.db, &record("a", Child::COLLECTION,
+        json!({"parentId":null,"token":"pending","seq":7,"body":"pending","joinedLabel":null}))).await?;
+    assert_eq!(store.count(QueryBuilder::new(Child::COLLECTION).filter_eq("token", "pending").build()).await?, 1);
+    for query in [
+        QueryBuilder::new(Child::COLLECTION).filter_eq("body", "pending").build(),
+        QueryBuilder::new(Child::COLLECTION).filter_eq("seq", "7").build(),
+        QueryBuilder::new(Child::COLLECTION).filter("seq", QueryOperator::In(vec![json!(7), json!("8")])).build(),
+        QueryBuilder::new(Child::COLLECTION).filter("body", QueryOperator::Contains("pending".into())).build(),
+    ] {
+        assert!(store.count(query.clone()).await.is_err());
+        assert!(store.delete_matching(query).await.is_err());
+    }
+    assert_eq!(store.count(QueryBuilder::new(Child::COLLECTION).build()).await?, 1);
+    assert_eq!(store.count(QueryBuilder::new(Child::COLLECTION).filter_eq("parentId", serde_json::Value::Null).build()).await?, 1);
+    store.delete_matching(QueryBuilder::new(Child::COLLECTION).build()).await?;
+    assert!(store.count(QueryBuilder::new(Child::COLLECTION).filter_eq("seq", "7").build()).await.is_err());
+    Ok(())
+}
