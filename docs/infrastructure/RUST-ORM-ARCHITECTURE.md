@@ -204,3 +204,51 @@ independent review and live proof are unfinished. The uncommitted f64-specific c
 was rejected; its per-element conversions must be deleted, not published. Existing
 JSON row hydration, optional unbounded query surfaces and static resource caps remain
 implementation gaps. This document states the contract, not that those gaps are fixed.
+
+## 8. Simulation is part of every iteration
+
+Before changing a data path, capture a reproducible workload and a failing or costly
+case through the existing test/replay machinery. Derive the scenario from observed
+faults, measured workload distributions and architectural failure modes. An isolated
+happy-path microbenchmark is insufficient. Simulation supplements the live comparison;
+it never substitutes for runtime adoption or genuine resident learning.
+
+Use Rust fixtures and isolated databases, never the serving home or AIRC identity
+store. A workload manifest records source revision, schema, seed, hardware/capabilities,
+row counts, payload-size distribution, NULL fraction, query mix, arrival rate,
+concurrency, cache state and injected delays/faults. Sanitize captured traces: retain
+timing, shape and causality without copying credentials or private bodies. Synthetic
+payload bytes should match observed sizes and compressibility. Mark extrapolated
+loads as extrapolated, not measured production traffic.
+
+| Observed fault or architectural risk | Required simulation | Invariant and performance evidence |
+|---|---|---|
+| Multi-GB staged credit bodies loaded during replay | Observed skewed body sizes, metadata-only replay, concurrent readers and restart | Bounded transient memory; exact replay order; unrelated bodies never fetched |
+| A badge/list materializes rows to count or clips after 10,000 | Collections above the former cutoff with large opaque payloads; count and summary-page mix | Exact cardinality; no payload decoding; rows/bytes returned proportional to requested projection |
+| Native payload converted per element | Multiple producer representations and large buffers; cold/warm/restarted reads | Exact bytes and descriptor; no numeric conversion; account for every bulk copy |
+| Paging waits or stalls compete with useful work | Inject slow read/transfer completion while neighbors submit ready operations | Waiting holds no execution worker/MindTurn; source custody retained; neighbor progress measured |
+| Requester cancellation or shutdown during a write | Cancel before dispatch, during transaction and around commit; restart | One committed outcome or rollback; no mixed payload/descriptor; no premature revision event |
+| Concurrent writes disturb paged traversal | Duplicate sort keys, inserts/updates/deletes at cursor boundaries and outer joins | Declared snapshot semantics, stable ordering/cardinality and exact NULL handling |
+| Unknown/corrupt metadata, schema drift or interrupted migration | Truncated headers, overflow shapes, wrong producer, interrupted bounded migration and reopen | Explicit refusal; no guessed type, fallback, silently dropped rows or identity substitution |
+| A query is fast alone but queues under resident load | Replay measured inter-arrival times with bursts, mixed readers/writers and shared resource pressure | Queue wait and end-to-end p50/p90/p99, backlog drain, throughput and fairness |
+
+Run the same manifest against the baseline and candidate. Keep both arrival-to-complete
+latency and execution latency; a stalled system must not look fast because the load
+generator stopped submitting while it waited. Record offered, admitted, completed,
+failed and cancelled operations, outstanding work and useful completions. Test measured
+normal load, observed bursts and saturation with available compatible capacity. Do not
+mask overload with an arbitrary cap or by shrinking the tested workload.
+
+Choose numerical performance/quality thresholds before the candidate run, based on the
+measured baseline and the affected engine budget. Correctness and custody invariants
+have zero tolerated violations. Inspect database plans, query counts, materialized
+bytes, allocations, CPU time and transfer receipts to attribute any improvement.
+Simulation must expose regressions in neighboring workloads as well as the target query.
+
+For every iteration: baseline -> reproduce -> change the shared owner -> replay the
+same workload/fault schedule -> compare -> independent review -> live comparison.
+Save the manifest, exact heads, raw measurements and verdict with the change. A new
+production failure becomes a retained regression scenario. A discovered unmodeled
+queue or transfer updates the simulation before another performance claim. Use the
+existing owners and harnesses; do not create a parallel simulator scheduler or bypass
+resource, causality, identity or completion contracts to make a benchmark pass.
