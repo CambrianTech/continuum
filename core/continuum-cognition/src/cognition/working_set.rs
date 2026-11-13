@@ -858,6 +858,23 @@ impl WorkingSetRegistry {
     pub fn observed_personas(&self) -> usize {
         self.observed.len()
     }
+
+    /// The `count` minds this host served most recently, newest first: the residents a boot plans
+    /// for before its persona registry exists. Only a mind a held turn measured counts (her need is
+    /// what a turn held here, and her wish what her view holds at full detail); a departed mind or a
+    /// test fixture that never held a turn is not a resident. On the M5, 2026-11-13 19:36Z, a boot
+    /// with no residents in its demand launched the engine at a 2,048-token pool beside four minds
+    /// whose requirements were 68-110k each.
+    pub fn remembered_residents(&self, count: usize) -> Vec<Uuid> {
+        let mut held: Vec<(u64, Uuid)> = self
+            .observed
+            .iter()
+            .filter(|e| resident_need(e.value()).is_some() && requirement_tokens(e.value()) > 0)
+            .map(|e| (e.value().last_seen_ms, *e.key()))
+            .collect();
+        held.sort_unstable_by(|a, b| b.cmp(a));
+        held.into_iter().take(count).map(|(_, mind)| mind).collect()
+    }
 }
 
 /// Each mind's requirement, from the untrimmed demand her turns assemble with the
