@@ -110,6 +110,28 @@ fn a_collapsed_item_stays_collapsed_and_a_new_one_arrives_in_full() -> Result<()
     Ok(())
 }
 
+// what this catches (Aris on the M5, 2026-11-13, 2b17c41df): her demand measured from a collapsed
+// render, so each grant sized from it collapsed more and the window fell 109,745 -> 43,807 on an
+// idle pool. What her view holds at full detail is the render plus what its collapses took away;
+// a view that collapsed nothing adds nothing.
+#[test]
+fn a_collapsed_view_says_what_it_holds_at_full_detail() -> Result<(), GrantMismatch> {
+    let mut actions = Fake::new("actions", 1);
+    for act in 1..=3 {
+        actions.push(&format!("#{act}"), &"r".repeat(1_000));
+    }
+    let pointer = |item: &Item<String>| item.pointer.as_ref().map_or(0, String::len);
+    let floor: usize = actions.items().iter().map(pointer).sum();
+    let grant = floor + 2 * (1_000 - pointer(&actions.items()[0]));
+    let (view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |_| vec![grant])?;
+    assert_eq!(start.collapsed, 1);
+    let whole: usize = actions.items().iter().map(|item| item.full.len()).sum();
+    assert_eq!(view.chars() + view.collapsed_growth(&crate::cost::Chars, &[&actions]), whole, "the render plus its collapses is every item whole");
+    let (roomy, _) = View::start(&crate::cost::Chars, vec![], &[&actions], all_full)?;
+    assert_eq!(roomy.collapsed_growth(&crate::cost::Chars, &[&actions]), 0, "nothing collapsed adds nothing");
+    Ok(())
+}
+
 // what this catches: a grant spent on the oldest items (she reads stale results in full and
 // her latest ones as pointers), or a grant overspent past what the allocator gave.
 #[test]

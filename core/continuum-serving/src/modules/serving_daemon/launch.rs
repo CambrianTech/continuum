@@ -146,6 +146,25 @@ impl ServingDaemonModule {
         let one_conversation_mib = prompt_cache.one_conversation_mib;
         let host_prompt_cache_mib = prompt_cache.mib;
         let (per_sequence, sequences) = self.engine_pool(&model, served_ctx, lanes);
+        // A launch with no engine on its port, below what the seated minds need, waits while the
+        // host is still returning memory: the one launch keeps its pool for life, and a pool sized
+        // from that reading left the M5 dark at 2,048 tokens (2026-11-13 19:36Z, `settle`).
+        if (self.inherited_lane)().is_none() {
+            let pool = u64::from(per_sequence) * u64::from(sequences);
+            let need: u64 = self.seated_needs(&model).iter().sum();
+            let host = *self.host_settle.lock(); // its own statement: the guard is released before the gate and its probe
+            if let settle::LaunchGate::AwaitSettle { pool, need, settle: host } = settle::launch_gate(host, pool, need) {
+                continuum_base::probe!(
+                    target: "continuum_core::modules::serving_daemon", class = "serving.launch.await_settle",
+                    model = desired.as_str(),
+                    pool,
+                    need,
+                    settle = ?host,
+                    "the launch pool is below the seated minds' needs while the host is still returning memory: the next reconcile sizes it from the settled reading"
+                );
+                return None;
+            }
+        }
         let target = ServingTarget {
             host_prompt_cache_mib,
             model,
@@ -772,9 +791,20 @@ impl ServingDaemonModule {
     /// The launch floor for `model`: the seated minds' needs (the working set keeps them across an
     /// engine exit), and while the budget is a gap reading, the largest pool this model ran at.
     pub(super) fn seated_for(&self, model: &crate::model_registry::types::Model) -> Seated {
+        let need = self.seated_needs(model).iter().sum();
+        let steady = matches!(*self.planned_budget.lock(), Some(PlannedBudget { credit: OwnCredit::Included { .. }, .. }));
+        let proven = match steady {
+            true => None,
+            false => crate::inference::proven_pool::proven(&model.id),
+        };
+        Seated { need, proven }
+    }
+
+    /// Each seated mind's HELD need on `model`, capped at its trained window: the residents a boot
+    /// remembers before its registry exists, else the live roster (`serving_demand`).
+    pub(super) fn seated_needs(&self, model: &crate::model_registry::types::Model) -> Vec<u64> {
         let trained = u64::from(model.context_window);
-        let need = self
-            .serving_demand()
+        self.serving_demand()
             .requirements
             .iter()
             .filter_map(|requirement| match requirement.measure {
@@ -783,12 +813,6 @@ impl ServingDaemonModule {
                 Measure::Held { need, .. } => Some(u64::from(need.value().get()).min(trained)),
                 Measure::Unmeasured | Measure::Wished { .. } | Measure::Declared { .. } => None,
             })
-            .sum();
-        let steady = matches!(*self.planned_budget.lock(), Some(PlannedBudget { credit: OwnCredit::Included { .. }, .. }));
-        let proven = match steady {
-            true => None,
-            false => crate::inference::proven_pool::proven(&model.id),
-        };
-        Seated { need, proven }
+            .collect()
     }
 }
