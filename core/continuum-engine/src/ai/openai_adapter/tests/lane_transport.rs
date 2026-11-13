@@ -562,13 +562,22 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         (turn.clone(), false),
     ] {
         fail_save.store(fails, Ordering::SeqCst);
-        tokio::time::timeout(
+        let before = operations.lock().expect("HTTP operations").len();
+        let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             adapter.generate_text(request, crate::ai::adapter::Dispatched::fixture()),
         )
         .await
-        .expect("bounded adapter fixture")
-        .expect("fixture generation");
+        .expect("bounded adapter fixture");
+        if fails {
+            assert!(result.expect_err("rejected save must refuse background work")
+                .contains("resident checkpoint save was rejected"));
+            let observed = operations.lock().expect("HTTP operations");
+            assert_eq!(observed.len(), before + 1, "no generation POST after rejected save");
+            assert_eq!(observed[before]["action"], "save");
+        } else {
+            result.expect("fixture generation");
+        }
     }
     // Another MIND's turn: hers in another room would be her own page (one page per mind).
     let failed_turn = TextGenerationRequest {
@@ -604,7 +613,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     assert_eq!(
         actions,
         [
-            "generate", "save", "generate", "restore", "generate", "save", "generate",
+            "generate", "save", "generate", "restore", "generate", "save",
             "generate", "save", "generate", "restore", "generate"
         ]
     );
@@ -617,7 +626,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
         assert_eq!(body["id_slot"], 0, "every request uses the one actual slot");
         assert_eq!(
             body["cache_prompt"],
-            [true, false, true, false, true, true, true][index]
+            [true, false, true, true, true, true][index]
         );
     }
 
