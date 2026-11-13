@@ -22,6 +22,18 @@ pub(super) fn title_and_body(title: &str, body: Option<&str>) -> String {
     }
 }
 
+/// Cards ranked against a text, significant at "related" (3 standard deviations above the
+/// embedder's unrelated-pair mean; "the same card" is `work/duplicates`' tighter 6): the one
+/// ranking `work/similar` and a new card's near matches share.
+async fn rank_related(
+    embedder: &Arc<dyn crate::ai::embedding::EmbeddingProvider>,
+    query: &str,
+    candidates: &[continuum_embedding::commands::similar::SimilarCandidate],
+    k: usize,
+) -> Result<continuum_embedding::commands::similar::SimilarResult, CommandError> {
+    continuum_embedding::commands::similar::rank_texts(embedder, query, candidates, k, 0.0, 3.0).await
+}
+
 /// The ranked hits as the board names them: a hit whose card is gone is dropped.
 fn board_hits(
     ranked: continuum_embedding::commands::similar::SimilarResult,
@@ -47,7 +59,7 @@ fn board_hits(
 
 /// A new card's near matches on the board it was filed on (the board BEFORE it, so never
 /// itself): information in `work/create`'s result, never a refusal. Only the significant
-/// hits ([`RELATED_MIN_Z`]) among unfinished cards. Ranking that cannot
+/// hits ([`rank_related`]) among unfinished cards. Ranking that cannot
 /// run (an uncalibrated embedder) leaves the card created and the list empty, probed.
 pub(super) async fn near_matches(
     embedder: &Arc<dyn crate::ai::embedding::EmbeddingProvider>,
@@ -64,7 +76,7 @@ pub(super) async fn near_matches(
         return Vec::new();
     }
     let candidates = card_candidates(&unfinished, &[]);
-    match continuum_embedding::commands::similar::rank_texts(embedder, &filed.text, &candidates, default_similar_k(), 0.0, RELATED_MIN_Z).await {
+    match rank_related(embedder, &filed.text, &candidates, default_similar_k()).await {
         Ok(ranked) => board_hits(ranked, &unfinished).into_iter().filter(|h| h.significant).collect(),
         Err(error) => {
             continuum_base::probe!(
@@ -94,10 +106,6 @@ pub(super) fn card_candidates(
 pub(super) fn parse_states(states: &[String]) -> Result<Vec<CardState>, CommandError> {
     states.iter().map(|s| parse_state(s)).collect()
 }
-
-/// "Related", in standard deviations above the embedder's unrelated-pair mean: `work/similar`'s
-/// floor and a new card's near matches. "The same card" is `work/duplicates`' tighter 6.
-const RELATED_MIN_Z: f32 = 3.0;
 
 pub(super) fn default_similar_k() -> usize {
     10
@@ -215,15 +223,7 @@ impl ActionCommand for WorkSimilar {
             .filter(|c| exclude.as_deref() != Some(c.id.as_str()))
             .collect();
         let searched = candidates.len();
-        let ranked = continuum_embedding::commands::similar::rank_texts(
-            &self.embedder,
-            &query_text,
-            &candidates,
-            p.k,
-            0.0,
-            RELATED_MIN_Z,
-        )
-        .await?;
+        let ranked = rank_related(&self.embedder, &query_text, &candidates, p.k).await?;
         let (space, gate) = (ranked.space.clone(), ranked.gate.clone());
         Ok(WorkSimilarResult {
             query: query_label,
@@ -333,7 +333,7 @@ impl ActionCommand for WorkDuplicates {
                 titles: g
                     .ids
                     .iter()
-                    .map(|id| title_of.get(id).cloned().unwrap_or_default())
+                    .map(|id| title_of.get(id).cloned().unwrap_or_default()) // unwrap_or_default: every grouped id came from this board's cards
                     .collect(),
                 ids: g.ids,
                 cohesion: g.cohesion,
@@ -439,7 +439,7 @@ impl WorkGet {
             .await
             .unwrap_or(None); // unwrap_or: an unreadable wall reads as no ledger, named by the store's own probe
         let mut receipt = Self::receipt(room, card, ledger, EpochMs::now().millis(), reader);
-        let parent = card.reviews.and_then(|id| board.card(id)).unwrap_or(card);
+        let parent = card.reviews.and_then(|id| board.card(id)).unwrap_or(card); // unwrap_or: a card reviewing nothing on this board is its own subject
         receipt.reviews = parent.submissions.iter()
             .flat_map(|s| board.submission_reviews_for(s.submission_id))
             .filter(|r| r.card_id == parent.card_id)

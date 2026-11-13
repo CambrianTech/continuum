@@ -466,7 +466,7 @@ async fn review_once(
     submission: Option<airc_work::SubmissionId>,
     card: CreateWorkCard,
 ) -> Result<WorkCardId, String> {
-    crate::work::create_once::create_once(airc, room, crate::work::create_once::NewCard::Review { parent, submission, card })
+    super::create_once::create_once(airc, room, super::create_once::NewCard::Review { parent, submission, card })
         .await
         .map(|made| made.card.card_id())
         .map_err(|e| e.to_string())

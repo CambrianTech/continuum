@@ -37,7 +37,6 @@ use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority,
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
 pub mod card_staging;
-pub mod create_once;
 pub mod submission;
 pub use submission::BenchmarkSubmissionAdapter;
 

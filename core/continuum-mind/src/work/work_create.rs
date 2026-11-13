@@ -53,12 +53,12 @@ impl WorkCreate {
         );
         req.body = p.body;
         let text = super::work_similar::title_and_body(&req.title, req.body.as_deref());
-        let made = super::create_once::create_once(airc, &room, super::create_once::NewCard::Filed(req))
+        let made = crate::persona::work_board::create_once::create_once(airc, &room, crate::persona::work_board::create_once::NewCard::Filed(req))
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))?;
         let (card_id, outcome) = match made.card {
-            super::create_once::CardCreation::Created(id) => (id, CardOutcome::Created),
-            super::create_once::CardCreation::Exists(id) => (id, CardOutcome::Exists),
+            crate::persona::work_board::create_once::CardCreation::Created(id) => (id, CardOutcome::Created),
+            crate::persona::work_board::create_once::CardCreation::Exists(id) => (id, CardOutcome::Exists),
         };
         Ok((
             WorkCreateResult { card_id: card_id.as_uuid().to_string(), outcome, similar: Vec::new() },

@@ -142,7 +142,7 @@ pub(super) async fn repos_she_holds(airc: &Airc) -> Vec<String> {
 /// The words when nothing supplies a repo: her one argument first, with an example
 /// she can copy; the room's option second; the org-room fact last.
 pub(crate) fn repo_refusal(room: &str, repos_she_holds: &[String]) -> String {
-    let example = repos_she_holds.first().map(String::as_str).unwrap_or("owner/name");
+    let example = repos_she_holds.first().map(String::as_str).unwrap_or("owner/name"); // unwrap_or: she holds no card, so the example names the repo shape
     let seen = if repos_she_holds.is_empty() {
         String::new()
     } else {

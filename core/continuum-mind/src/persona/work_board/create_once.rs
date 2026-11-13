@@ -25,7 +25,7 @@ use airc_lib::{Airc, AircError, CardState, CreateWorkCard, Room, WorkCard, WorkC
 use airc_work::{BoardSnapshot, SubmissionId};
 use continuum_base::time::EpochMs;
 
-use crate::persona::work_board::board_index;
+use super::board_index;
 
 /// The card a create asks for, typed by what makes it unique.
 pub enum NewCard {
