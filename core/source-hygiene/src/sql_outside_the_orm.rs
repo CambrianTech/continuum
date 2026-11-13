@@ -32,8 +32,12 @@ const MANIFESTS_ALLOWED: &[&str] = &["core/continuum-kernel/Cargo.toml", "Cargo.
 /// The crates that open a database connection by hand.
 const SQL_CRATES: &[&str] = &["rusqlite", "sqlx"];
 
-/// The directories whose Rust is read.
-const ROOTS: &[&str] = &["core", "apps", "client", "tools"];
+/// The directories whose Rust, manifests and scripts are read.
+const ROOTS: &[&str] = &["core", "apps", "client", "tools", "scripts"];
+
+/// Script files read for SQL: a migration or repair script is a second schema owner as much as a
+/// Rust file is (2026-11-13: a Python migration ran raw `UPDATE ... SET` through `sqlite3`, #5954).
+const SCRIPT_EXTENSIONS: &[&str] = &[".py", ".sh", ".js", ".mjs", ".ts"];
 
 /// Directory names never descended into: vendored upstreams and build output.
 const SKIPPED_DIRS: &[&str] = &["vendor", "target", "node_modules"];
@@ -81,6 +85,24 @@ pub fn rust_sites(repo: &str, src: &str) -> Vec<Violation> {
         .collect()
 }
 
+/// The SQL sites in one script at repository path `repo`: a `sqlite3` driver or shell call, or a
+/// line shaped like a statement. Scripts have no ORM to go through, so any is a site.
+pub fn script_sites(repo: &str, text: &str) -> Vec<Violation> {
+    text.lines()
+        .enumerate()
+        .filter_map(|(i, line)| {
+            let what = if line.contains("sqlite3") {
+                "a hand-opened SQL driver"
+            } else if is_statement(line) {
+                "an SQL statement"
+            } else {
+                return None;
+            };
+            Some(Violation { rule: "sql_outside_the_orm", file: repo.to_owned(), line: i + 1, source: format!("{what}: {}", line.trim()) })
+        })
+        .collect()
+}
+
 /// The SQL-crate dependencies in one manifest at repository path `repo`.
 pub fn manifest_sites(repo: &str, toml: &str) -> Vec<Violation> {
     if MANIFESTS_ALLOWED.contains(&repo) {
@@ -118,6 +140,8 @@ pub fn scan_checkout(root: &Path) -> Vec<Violation> {
                     rust_sites
                 } else if name == "Cargo.toml" {
                     manifest_sites
+                } else if SCRIPT_EXTENSIONS.iter().any(|ext| name.ends_with(ext)) {
+                    script_sites
                 } else {
                     continue;
                 };
@@ -176,6 +200,16 @@ mod tests {
     }
 
     // what this catches: a crate other than the kernel taking a database driver as a dependency.
+    // what this catches (#5954, 2026-11-13): a Python migration that imports sqlite3 and runs a
+    // hand-written UPDATE: invisible to a rule that read only Rust and manifests.
+    #[test]
+    fn a_script_that_opens_sqlite_or_writes_a_statement_is_a_site() {
+        let s = |parts: &[&str]| parts.join(" "); // split so this file holds no statement literal itself
+        let migration = format!("import sqlite3\nwith sqlite3.connect(p) as db:\n    db.execute(\"{}\")\n", s(&["UPDATE", "t SET learned = 0 WHERE learned IS NULL"]));
+        assert_eq!(script_sites("tools/migrations/m.py", &migration).len(), 3, "the import, the connect, the statement");
+        assert_eq!(script_sites("tools/x.py", "print('select the rows you want from the list')\n").len(), 0, "prose is not a statement");
+    }
+
     #[test]
     fn only_the_kernel_and_the_workspace_table_name_a_driver() {
         let dep = format!("{} = {{ workspace = true }}\n", SQL_CRATES[0]);
