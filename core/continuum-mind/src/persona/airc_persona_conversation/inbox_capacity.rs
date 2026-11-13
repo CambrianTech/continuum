@@ -261,11 +261,37 @@ impl AircPersonaConversation {
                                 self.runtime.peer_id(),
                             )
                             .await;
-                            if let Ok(message) = perceptual_from_event(event) {
-                                if message.peer_id != self.own_peer_id {
-                                    replayed += 1;
-                                    self.rejoin_backlog.push_back(message);
-                                }
+
+                            // Classify the replayed turn: try typed work schemas first
+                            // (verdicts, state changes), then fall back to chat decoding.
+                            // This mirrors AttentionEvent::classify so verdict events
+                            // reach rejoin_backlog instead of being silently dropped.
+                            let message = match crate::cognition::conversation::room_event::room_work_from_event(&event) {
+                                Ok(Some(work)) => IncomingMessage {
+                                    event_id: event.event_id.as_uuid(),
+                                    lamport: event.lamport,
+                                    peer_id: event.peer_id.as_uuid(),
+                                    room_id: event.room_id.as_uuid(),
+                                    text: String::new(),
+                                    media: Vec::new(),
+                                    work: Some(work),
+                                },
+                                Ok(None) => {
+                                    match perceptual_from_event(event) {
+                                        Ok(msg) => msg,
+                                        Err("non_chat_schema"
+                                        | "no_continuum_body_hint"
+                                        | "work_presence"
+                                        | "work_lease_renewal") => continue,
+                                        Err(_) => continue, // decode fault for both paths
+                                    }
+                                },
+                                Err(_) => continue, // work_event_decode_error
+                            };
+
+                            if message.peer_id != self.own_peer_id {
+                                replayed += 1;
+                                self.rejoin_backlog.push_back(message);
                             }
                             // Commit only after the async bridge and queue write;
                             // cancellation must not skip an unqueued receipt.
