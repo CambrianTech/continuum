@@ -58,7 +58,7 @@
         assert_eq!(d.peak_tokens, 176_154);
         assert_eq!(typical_tokens(&d), Some(45_000), "the median of recent turns");
         assert_eq!(requirement_tokens(&d), 45_000);
-        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [NeedSample::default(); RECENT_TURNS], need_next: 0, sent_recent: [0; RECENT_TURNS], sent_next: 0, floor_tokens: None };
+        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [NeedSample::default(); RECENT_TURNS], need_next: 0, sent_recent: [0; RECENT_TURNS], sent_next: 0, floor_tokens: None, overflow_tokens: None };
         assert_eq!(requirement_tokens(&legacy), 29_911, "no ring: the last turn, never the peak");
         let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
         assert_eq!(typical_tokens(&ser), None);
@@ -68,6 +68,28 @@
         }
         let d = reg.demand_of(kimi).expect("recorded");
         assert!(typical_tokens(&d).expect("ring") >= 100_024, "the old small turns aged out");
+    }
+
+    // what this catches (Aris on the M5, 2026-11-13, 2b17c41df): a ring her collapses filled
+    // (median 35,046 against a full-detail view past her 43,807 grant) kept her requirement low
+    // for up to eight more collapses. Her newest demand past the window she was served is her
+    // requirement at once; a turn that fits returns her to her typical turn.
+    #[test]
+    fn a_turn_that_overflowed_its_window_raises_her_requirement_at_once() {
+        let reg = WorkingSetRegistry::new();
+        let aris = Uuid::new_v4();
+        for (i, t) in [34_508u32, 37_283, 41_123, 35_046, 36_287].iter().enumerate() {
+            reg.record_in_memory(aris, *t, i as u64);
+            reg.record_overflow_in_memory(aris, *t, 109_745);
+        }
+        let typical = requirement_tokens(&reg.demand_of(aris).expect("recorded"));
+        assert_eq!(typical, 36_287, "every turn fit: her typical turn");
+        reg.record_in_memory(aris, 63_000, 10);
+        reg.record_overflow_in_memory(aris, 63_000, 43_807);
+        assert_eq!(requirement_tokens(&reg.demand_of(aris).expect("recorded")), 63_000, "the overflowing turn is her requirement");
+        reg.record_in_memory(aris, 40_000, 11);
+        reg.record_overflow_in_memory(aris, 40_000, 80_000);
+        assert!(requirement_tokens(&reg.demand_of(aris).expect("recorded")) < 63_000, "a turn that fits ends the probe");
     }
 
     // what this catches (card 70706a9e): the NEED ring learns only from turns the fit
@@ -332,7 +354,7 @@
 
         let persona = p(9);
         let before = WorkingSetRegistry::with_store(class());
-        before.record(persona, 24_126, 1_000);
+        before.record(persona, 24_126, 32_768, 1_000);
         let _ = before.record_emission(persona, 321, 200, EmissionStop::Landed, 1_001);
         assert_eq!(before.ceiling(), Some(24_126));
 
@@ -412,7 +434,7 @@
         assert_eq!(reg.ceiling(), None);
         assert_eq!(reg.observed_personas(), 0);
         // A zero-token turn is a defect signal elsewhere, not an observation here.
-        reg.record(p(1), 0, 1_000);
+        reg.record(p(1), 0, 32_768, 1_000);
         assert_eq!(
             reg.ceiling(),
             None,

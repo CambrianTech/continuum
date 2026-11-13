@@ -154,6 +154,13 @@ pub struct PersonaDemand {
     /// `None` until a turn measured it.
     #[serde(default)]
     pub floor_tokens: Option<u32>,
+    /// Her newest turn's demand when it exceeded the window she was served: what her view holds at
+    /// full detail did not fit her grant, so her view collapsed. `None` when her newest turn fit.
+    /// The upward probe: her requirement is at least it ([`requirement_tokens`]), so the next grant
+    /// holds what overflowed instead of waiting for the median of a ring her collapses filled (Aris
+    /// on the M5, 2026-11-13, 2b17c41df). Legacy files read `None`.
+    #[serde(default)]
+    pub overflow_tokens: Option<u32>,
 }
 
 /// How many recent turns define "typical". Sixteen: a working session, not a
@@ -208,9 +215,12 @@ use held_need::push_need;
 pub use held_need::{need_sample, need_tokens, resident_need, NeedSample};
 
 /// What a lane must hold for her: the typical turn, else the last one — one honest
-/// sample, never the peak.
+/// sample, never the peak — and at least her newest turn when it overflowed the window she was
+/// served ([`PersonaDemand::overflow_tokens`]): a ring her collapses filled lags her by up to eight
+/// turns, every one of them another collapse.
 pub fn requirement_tokens(d: &PersonaDemand) -> u32 {
-    typical_tokens(d).unwrap_or(d.last_tokens) // unwrap_or: no ring yet (a legacy record) = her last measured turn, a measurement, never the peak or a constant
+    let typical = typical_tokens(d).unwrap_or(d.last_tokens); // unwrap_or: no ring yet (a legacy record) = her last measured turn, a measurement, never the peak or a constant
+    d.overflow_tokens.map_or(typical, |overflow| typical.max(overflow)) // map_or: her newest turn fit, so the typical turn stands
 }
 
 /// One mind's observed REPLY size — the output-side twin of [`PersonaDemand`].
@@ -334,11 +344,14 @@ impl WorkingSetRegistry {
     /// component's true size — including the parts it then had to drop. A zero
     /// demand is not recorded: it means the assembly produced nothing, which is a
     /// defect to be seen elsewhere, not a data point that would drag a peak down.
-    pub fn record(&self, persona: Uuid, demand_tokens: u32, now_ms: u64) {
+    /// `served_window` is the window the turn was assembled in: a demand past it overflowed
+    /// ([`PersonaDemand::overflow_tokens`]).
+    pub fn record(&self, persona: Uuid, demand_tokens: u32, served_window: u32, now_ms: u64) {
         if demand_tokens == 0 {
             return;
         }
-        let updated = self.record_in_memory(persona, demand_tokens, now_ms);
+        self.record_in_memory(persona, demand_tokens, now_ms);
+        let updated = self.record_overflow_in_memory(persona, demand_tokens, served_window);
         // Persist EVERY observation. A restart must not re-strangle her: the
         // registry is in-memory, so before this the reboot erased the measurement
         // and the planner fell back to the cold-start constant until enough turns
@@ -389,6 +402,14 @@ impl WorkingSetRegistry {
                 push_recent(&mut d, demand_tokens);
                 d
             })
+    }
+
+    /// The in-memory half of the overflow [`Self::record`] notes: her newest demand when it
+    /// exceeded `served_window`, else none.
+    pub fn record_overflow_in_memory(&self, persona: Uuid, demand_tokens: u32, served_window: u32) -> PersonaDemand {
+        let mut entry = self.observed.entry(persona).or_default();
+        entry.overflow_tokens = (demand_tokens > served_window).then_some(demand_tokens);
+        *entry
     }
 
     /// The prompt size a turn contributes to the seat's typical-prompt pool: what it
