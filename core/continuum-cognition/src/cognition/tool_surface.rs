@@ -489,7 +489,7 @@ pub fn tool_surface_tokens_of(specs: &[NativeToolSpec]) -> usize {
     specs
         .iter()
         .map(|spec| {
-            let serialized = serde_json::to_string(spec).unwrap_or_default();
+            let serialized = serde_json::to_string(spec).unwrap_or_default(); // boundary: the tool schema as the model's request wire carries it, priced in tokens; unwrap_or_default: a spec of strings and a JSON value always serializes
             estimate_tool_schema_tokens(&serialized)
         })
         .sum()

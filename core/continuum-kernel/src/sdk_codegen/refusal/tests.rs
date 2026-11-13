@@ -134,7 +134,8 @@ async fn a_refusal_leaves_dispatch_with_its_next_moves_typed() {
         Err(failure) => failure,
         Ok(_) => panic!("the handler refuses"),
     };
-    assert!(failure.message.contains("reopen_fixture({\"act\":3})"), "the sentence renders the call as offered: {}", failure.message);
+    let sentence = &failure.message;
+    assert!(sentence.contains("reopen_fixture({\"act\":3})"), "the sentence renders the call as offered: {sentence}");
     let Some(refusal) = failure.refusal else { panic!("a refusal with next moves crosses typed: {}", failure.message) };
     assert_eq!(refusal.category, Category::NotFound);
     assert_eq!(refusal.next.commands().collect::<Vec<_>>(), ["fixture/refusal-reopen"]);

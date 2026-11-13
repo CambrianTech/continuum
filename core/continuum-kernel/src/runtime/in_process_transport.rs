@@ -83,7 +83,7 @@ fn command_result_to_value(command: &str, result: CommandResult) -> Result<Value
     match result {
         CommandResult::Json(v) => Ok(v),
         CommandResult::Handle(handle) => {
-            serde_json::to_value(&handle).map_err(|e| ClientError::Codec(e.to_string()))
+            serde_json::to_value(&handle).map_err(|e| ClientError::Codec(e.to_string())) // boundary: the client API's result is a JSON value, the same shape every transport returns
         }
         // Mirror `CommandResult::to_json_value`: a Binary result surfaces its
         // metadata JSON (the raw bytes travel out-of-band via a handle, not on
