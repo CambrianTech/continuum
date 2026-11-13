@@ -49,7 +49,7 @@ impl Actions<'_> {
     /// Her newest act (the one in flight, which her act's tail carries) as this source's item,
     /// following the act before it in its room: its element, cause, identity and outcome hash are
     /// what her tail's result item carries, so her view judges it on its arrival
-    /// (`tail::Tail`, MIND-CONTEXT invariant 4). `None` with no act in flight.
+    /// (`tail::Tail`, CONTINUUM-ENGINE section 5 invariant 4). `None` with no act in flight.
     pub(crate) fn newest(&self) -> Option<Item<ContextMessage>> {
         let act = self.memory.in_flight_rendering()?;
         let (earlier, _) = self.memory.action_renderings();
@@ -168,7 +168,7 @@ impl Source<ContextMessage> for Actions<'_> {
 
     /// An act the view found repeats an earlier one whose whole she has in front of her (the same
     /// request to a command that only observes, the same outcome): one line naming it and how to
-    /// reopen it, never a second copy of the whole (MIND-CONTEXT invariant 4).
+    /// reopen it, never a second copy of the whole (CONTINUUM-ENGINE section 5 invariant 4).
     /// A repeated reopen (the same saved output reopened again, its whole still in front of her)
     /// names that whole and never invites a further reopen: the reopen was the repeat (IntelMac,
     /// 2026-11-11: one saved output reopened 20+ times, each arriving byte-identical).

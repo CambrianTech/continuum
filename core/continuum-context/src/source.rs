@@ -40,7 +40,7 @@ pub struct Item<T> {
     /// from governed RAM, never from the window).
     pub(crate) stored: Option<StoredWhole>,
     /// What this occurrence asked for and what its tool declares it does, when it is an act
-    /// (MIND-CONTEXT invariant 4); `None` for an element that is not one (a message, a notice).
+    /// (CONTINUUM-ENGINE section 5 invariant 4); `None` for an element that is not one (a message, a notice).
     pub(crate) act: Option<Act>,
 }
 
@@ -207,7 +207,7 @@ pub trait Source<T: Block> {
     /// act was refused, the M5, 2026-11-09). `None` is a decision a source states and justifies.
     fn fold(&self, folded: &[Item<T>]) -> Option<T>;
 
-    /// The block `item` renders as when the view finds it repeats `ancestor` (MIND-CONTEXT
+    /// The block `item` renders as when the view finds it repeats `ancestor` (CONTINUUM-ENGINE section 5
     /// invariant 4: the same request to a tool that only observes, with the same outcome). The
     /// view decides; the source words it, naming the ancestor and how to reopen it even when the
     /// ancestor is folded or paged out, never "as above". The default words none, so its items

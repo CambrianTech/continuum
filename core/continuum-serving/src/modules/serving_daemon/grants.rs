@@ -117,8 +117,8 @@ impl ServingDaemonModule {
             .and_then(|model| crate::inference::planning::window_allocator::Tokens::new(model.context_window))
             .ok_or(NoGrants::ModelUnresolved)?;
         // The most one sequence may hold, as the engine reports it (one slot under fixed slots, the
-        // pool under a shared one), never a division read off how it was launched (SERVING-ENGINE
-        // section 8; BigMama 2026-11-11: Sahar parked at 58,112, half the pool, every act refused).
+        // pool under a shared one), never a division read off how it was launched (CONTINUUM-ENGINE.md,
+        // serving engine: admission (4.8); BigMama 2026-11-11: Sahar parked at 58,112, half the pool, every act refused).
         let per_sequence_cap = match self.served_sequence.load(Ordering::Relaxed) {
             0 => return Err(NoGrants::PoolZero),
             reported => reported.min(trained.get()),

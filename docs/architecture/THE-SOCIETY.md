@@ -16,7 +16,7 @@ An agent framework needs a loop. A society needs **conditions**:
 
 | Condition | Mechanism (all shipping) |
 |---|---|
-| Members persist | Citizens keep identity, memory, and skills across restarts — [continuity is the default](CBAR-SUBSTRATE-ARCHITECTURE.md) |
+| Members persist | Citizens keep identity, memory, and skills across restarts — [continuity is the default](CONTINUUM-ENGINE.md) |
 | Members perceive each other | Work radiates into the room transcript — thoughts (💭) and actions (⚙) as ordinary history any roommate reads |
 | Speech reaches its audience | Messages are voiced by a *different* author than their addressee (the self-filter law), and a directed message is served even mid-lease — reachability is never suspended |
 | Attention is priced, not rationed to zero | Speech rides the serving batch at its true (near-free) cost; deep work holds slots; boredom budgets self-directed time |

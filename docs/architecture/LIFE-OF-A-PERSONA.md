@@ -221,7 +221,7 @@ Slice 13.5 — `&ctx` doctrine + `PersonaSpawnSupervisor` extract-class + `AircC
 
 ## Where to look next
 
-- **CBAR substrate**: `docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md` — why ServiceModule has the shape it does.
+- **CBAR substrate**: `docs/architecture/CONTINUUM-ENGINE.md` — why ServiceModule has the shape it does.
 - **The inference floor**: `docs/architecture/INFERENCE-LANES-REALISTIC.md` — what the realistic-tier serving looks like (ONE base model + N persona lanes).
 - **The inference ceiling**: `docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md` — what M5 hosting multi-modal Qwen across multiple lanes will look like.
 - **Observability**: `docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md` — why half the substrate is structured capture of load-bearing decisions.

@@ -1,6 +1,6 @@
 # Brain-Regions Substrate
 
-**Status:** design spec. Sibling to [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) and [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md). Defines the structural contract that every cognitive subsystem (hippocampus, motor cortex, attention, sensory, sleep) inherits. No code changes from this PR — implementation slices follow per region.
+**Status:** design spec. Sibling to [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) and [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md). Defines the structural contract that every cognitive subsystem (hippocampus, motor cortex, attention, sensory, sleep) inherits. No code changes from this PR — implementation slices follow per region.
 
 **Companion:** [COGNITION-ALGORITHMS.md](COGNITION-ALGORITHMS.md) — the algorithmic content (recall, cross-context, budget) that runs *inside* these regions.
 
@@ -77,7 +77,7 @@ Per the CBAR pattern, adding a new region must be cheap:
 2. **Derive macro** (`#[derive(BrainRegion)]` planned) — for regions that only need to override `tick()`, the macro generates registration boilerplate from `#[region(id = "hippocampus", pressure = "memory-heavy")]` attributes.
 3. **Scaffold generator** (`cargo run -p substrate-cli new-region <name>`) — emits the module file, a smoke test, a CLI command shim, and a TS binding stub. The new region compiles and runs with a no-op tick on first commit.
 
-Same pattern as `engram-analyzer` in CBAR-SUBSTRATE — by the time a contributor authors the interesting body, scheduling/pressure/telemetry/binding are already wired.
+Same pattern as `engram-analyzer` in CONTINUUM-ENGINE — by the time a contributor authors the interesting body, scheduling/pressure/telemetry/binding are already wired.
 
 ## The ready-buffer contract
 

@@ -88,7 +88,7 @@ impl std::error::Error for GrantMismatch {}
 pub struct Advance {
     pub items: usize,
     pub chars: usize,
-    /// Arrivals rendered as a repeat of an occurrence held whole (MIND-CONTEXT invariant 4): the
+    /// Arrivals rendered as a repeat of an occurrence held whole (CONTINUUM-ENGINE section 5 invariant 4): the
     /// health line's repeats.
     pub repeats: usize,
 }

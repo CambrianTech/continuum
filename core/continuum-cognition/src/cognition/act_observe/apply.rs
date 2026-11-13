@@ -343,7 +343,7 @@ pub async fn apply_act(
     // verb, and the typed paths, so no downstream consumer re-parses the receipt string.
     let mut acts: Vec<Observation> = Vec::new();
     // Each call's fingerprint (name+args) into the recent window her verb tally reads. Whether an
-    // act repeats one she holds is her view's to say (MIND-CONTEXT invariant 4), never here.
+    // act repeats one she holds is her view's to say (CONTINUUM-ENGINE section 5 invariant 4), never here.
     for call in fg_calls.iter() {
         // The tally reads only the tool name (`action_verb_tally`); the arguments were serialized
         // for nothing.
