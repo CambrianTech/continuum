@@ -160,6 +160,11 @@ fn plan_serving_into(
             resident_models: 1,
             fits_on_gpu: false,
             lanes_bound: LanesBound::NoFit,
+            closeness: if demand.window_target() > 0 {
+                (MIN_SERVE_CTX as f64 / demand.window_target() as f64).min(1.0)
+            } else {
+                0.0
+            },
             rationale: format!(
                 "no candidate fits the {:.1}GB GPU budget; smallest is {} ({:.1}GB) — \
                  caller must CPU-serve (Intel-Mac exception) or route to a grid peer",
@@ -255,22 +260,16 @@ fn plan_serving_into(
                     .unwrap_or(model); // JUSTIFIED unwrap_or: the allocator returns one of `candidates` by construction; `model` only if that invariant ever broke
                 (chosen, Some(a))
             }
-            Err(why) => {
-                // This model cannot hold ONE lane at the smallest requirement: it is not a
-                // serving option here — the same honest degrade as "does not fit", never
-                // a starved lane. The rationale carries the numbers.
-                return Some(ServingPlan {
-                    base_model: model.clone(),
-                    served_context_window: 0,
-                    lanes: 0,
-                    grid_overflow_lanes: demand.lanes,
-                    resident_models: 1,
-                    fits_on_gpu: false,
-                    lanes_bound: LanesBound::NoFit,
-                    rationale: format!(
-                        "no candidate holds one lane at the roster's smallest requirement within the budget: {why:?} — shed the model, never the window"
-                    ),
-                });
+            Err(_why) => {
+                // Allocation failed — don't trap with lanes=0 (card 53a8d49b). Fall through
+                // to compute whatever fits against the budget. Use the smallest candidate
+                // as a fallback base.
+                let best = candidates.iter().min_by(|a, b| {
+                    a.weights_bytes
+                        .cmp(&b.weights_bytes)
+                        .then(a.model_id.cmp(&b.model_id))
+                }).expect("candidates non-empty checked above");
+                (best.clone(), None)
             }
         }
     };
@@ -358,6 +357,16 @@ fn plan_serving_into(
         },
         None => choose_served_window(window_for(lanes as u64), demand.window_target(), demand.sticky_window),
     };
+    // Closeness: fraction of requirement actually satisfied (card 53a8d49b). A value of
+    // 0 means no window at all (fits_on_gpu=false); values < 1 mean the node is below
+    // target but still serving something — the ratchet walks this upward monotonically.
+    let closeness = (
+        if demand.window_target() > 0 {
+            served_context_window as f64 / demand.window_target() as f64
+        } else {
+            1.0
+        }
+    ).min(1.0).max(0.0);
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
     // `peak_resident_bytes` — ONE formula (`prefill_compute_reserve`), never two that
@@ -407,6 +416,7 @@ fn plan_serving_into(
         resident_models: resident,
         fits_on_gpu: true,
         lanes_bound,
+        closeness,
         rationale: format!(
             "most-capable model fitting {:.1}GB GPU budget: {} ({:.1}GB weights, rank {}), \
              {} lane(s) @ {} ctx, {} model(s) warm",

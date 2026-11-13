@@ -602,6 +602,11 @@ pub struct ServingPlan {
     /// 5090 (2026-10-12, build 6160: `demand_lanes=2`, `fits_on_gpu=true`) could not say
     /// whether the GPU, the per-lane floor or a cold boot's memory chose one lane.
     pub lanes_bound: LanesBound,
+    /// Fraction of the requirement actually satisfied (card 53a8d49b). Computed as
+    /// served_context_window / demand.window_target(), clamped [0.0, 1.0]. A value of
+    /// 0 means no window at all (fits_on_gpu=false); values < 1 mean the node is below
+    /// target but still serving something — the ratchet walks this upward monotonically.
+    pub closeness: f64,
 }
 
 /// What decided a plan's lane count. Each variant is a term the planner evaluated, so a
