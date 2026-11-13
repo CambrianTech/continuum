@@ -111,6 +111,7 @@ impl super::relational::RelationalStore {
             .query_all(DbBackend::Sqlite.build(&statement))
             .await
             .map_err(|e| e.to_string())?;
+        let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &joined_columns);
         rows.into_iter()
             .map(|result| {
                 let row = result.try_as_sqlite_row().ok_or("SQLite result required")?;
@@ -138,7 +139,7 @@ impl super::relational::RelationalStore {
                     nested.insert(join.alias.clone(), Value::Object(fields));
                 }
                 let mut record =
-                    super::relational_codec::decode_primary(result, &schema, &joined_columns)?;
+                    decoder.decode(result)?;
                 record
                     .data
                     .as_object_mut()

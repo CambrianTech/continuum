@@ -16,6 +16,7 @@ impl super::relational::RelationalStore {
         id: &str,
     ) -> Result<Option<DataRecord>, String> {
         let schema = self.schema(collection)?;
+        let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &[]);
         let query = QueryBuilder::new(collection)
             .filter_eq("id", id)
             .limit(1)
@@ -25,7 +26,7 @@ impl super::relational::RelationalStore {
             .query_one(DbBackend::Sqlite.build(&statement))
             .await
             .map_err(|e| e.to_string())?
-            .map(|row| super::relational_codec::decode(row, &schema))
+            .map(|row| decoder.decode(row))
             .transpose()
     }
 
@@ -38,6 +39,7 @@ impl super::relational::RelationalStore {
         increment: bool,
     ) -> Result<bool, String> {
         let schema = self.schema(collection)?;
+
         let mut fields = Vec::new();
         for (name, value) in data.as_object().ok_or("update requires an object")? {
             if super::types::METADATA_KEYS.contains(&name.as_str()) {

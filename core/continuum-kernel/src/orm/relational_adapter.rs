@@ -80,12 +80,13 @@ impl StorageAdapter for SeaOrmAdapter {
         use futures::StreamExt;
         use sea_orm::StreamTrait;
         let schema = self.store.schema(&query.collection)?;
+        let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &[]);
         let statement = super::relational_query::select(
             &schema, &query, super::relational_query::Selection::Stream)?;
         let rows = self.store.db.stream(sea_orm::DbBackend::Sqlite.build(&statement))
             .await.map_err(|error| error.to_string())?;
         Ok(rows.map(move |row| row.map_err(|error| error.to_string())
-            .and_then(|row| super::relational_codec::decode(row, &schema))).boxed())
+            .and_then(|row| decoder.decode(row))).boxed())
     }
     async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
         receipt(self.store.query_joined(query).await)

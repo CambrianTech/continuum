@@ -82,55 +82,61 @@ pub(super) fn scalar(
     }
 }
 
-pub(super) fn decode(result: QueryResult, schema: &CollectionSchema) -> Result<DataRecord, String> {
-    decode_primary(result, schema, &[])
+/// Compile physical field names once per query, not once per cell in every row.
+/// The schema allocation stays shared; the plan stores only names and field ordinals.
+pub(super) struct RowDecoder {
+    schema: std::sync::Arc<CollectionSchema>,
+    fields: std::collections::HashMap<String, usize>,
+    joined_columns: std::collections::HashSet<String>,
 }
 
-pub(super) fn decode_primary(
-    result: QueryResult,
-    schema: &CollectionSchema,
-    joined_columns: &[String],
-) -> Result<DataRecord, String> {
-    let row = result.try_as_sqlite_row().ok_or("SQLite result required")?;
-    use sea_orm::sqlx::Column;
-    let mut fields = Map::new();
-    for (index, col) in row.columns().iter().enumerate() {
-        if joined_columns.iter().any(|name| name == col.name()) {
-            continue;
-        }
-        let field = schema
-            .fields
-            .iter()
-            .find(|f| naming::to_snake_case(&f.name) == col.name())
-            .ok_or_else(|| format!("{}.{} has no declared codec", schema.collection, col.name()))?;
-        fields.insert(field.name.clone(), scalar(row, index, field)?);
+impl RowDecoder {
+    pub(super) fn new(schema: std::sync::Arc<CollectionSchema>, joined_columns: &[String]) -> Self {
+        let fields = schema.fields.iter().enumerate()
+            .map(|(index, field)| (naming::to_snake_case(&field.name), index)).collect();
+        Self { schema, fields, joined_columns: joined_columns.iter().cloned().collect() }
     }
-    let metadata_string = |name: &str| -> Result<String, String> {
-        match fields.get(name) {
-            Some(Value::String(s)) => Ok(s.clone()),
-            _ => Err(format!("projection omitted required metadata {name}")),
+
+    pub(super) fn decode(&self, result: QueryResult) -> Result<DataRecord, String> {
+        let schema = &self.schema;
+        let row = result.try_as_sqlite_row().ok_or("SQLite result required")?;
+        use sea_orm::sqlx::Column;
+        let mut fields = Map::new();
+        for (index, col) in row.columns().iter().enumerate() {
+            if self.joined_columns.contains(col.name()) {
+                continue;
+            }
+            let field = self.fields.get(col.name()).map(|index| &schema.fields[*index])
+                .ok_or_else(|| format!("{}.{} has no declared codec", schema.collection, col.name()))?;
+            fields.insert(field.name.clone(), scalar(row, index, field)?);
         }
-    };
-    // Entity decoding consumes data, including flattened BaseEntity fields. The
-    // record envelope also exposes those small values for generic storage callers.
-    let id = metadata_string("id")?;
-    let created_at = metadata_string("createdAt")?;
-    let updated_at = metadata_string("updatedAt")?;
-    let version = fields
-        .get("version")
-        .and_then(|v| v.as_u64())
-        .ok_or("missing version")?;
-    Ok(DataRecord {
-        id,
-        collection: schema.collection.clone(),
-        data: Value::Object(fields),
-        metadata: RecordMetadata {
-            created_at,
-            updated_at,
-            version: version.try_into().map_err(|_| "version exceeds u32")?,
-            tags: None,
-            schema: None,
-            ttl: None,
-        },
-    })
+        let metadata_string = |name: &str| -> Result<String, String> {
+            match fields.get(name) {
+                Some(Value::String(s)) => Ok(s.clone()),
+                _ => Err(format!("projection omitted required metadata {name}")),
+            }
+        };
+        // Entity decoding consumes data, including flattened BaseEntity fields. The
+        // record envelope also exposes those small values for generic storage callers.
+        let id = metadata_string("id")?;
+        let created_at = metadata_string("createdAt")?;
+        let updated_at = metadata_string("updatedAt")?;
+        let version = fields
+            .get("version")
+            .and_then(|v| v.as_u64())
+            .ok_or("missing version")?;
+        Ok(DataRecord {
+            id,
+            collection: schema.collection.clone(),
+            data: Value::Object(fields),
+            metadata: RecordMetadata {
+                created_at,
+                updated_at,
+                version: version.try_into().map_err(|_| "version exceeds u32")?,
+                tags: None,
+                schema: None,
+                ttl: None,
+            },
+        })
+    }
 }
