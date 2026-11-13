@@ -24,7 +24,6 @@ bytemuck.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-rayon.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
 schemars = { workspace = true }

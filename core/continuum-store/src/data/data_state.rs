@@ -387,75 +387,10 @@ impl DataState {
         })
     }
 
-    // =========================================================================
-    // Vector Search (migrated from data-daemon-worker)
-    // =========================================================================
-
-    /// Parse embedding from record data (supports BLOB and JSON array)
-    pub(super) fn parse_embedding(value: &Value) -> Result<Vec<f64>, String> {
-        match value {
-            Value::Array(arr) => arr.iter().map(|v| v.as_f64()
-                .ok_or_else(|| "Embedding contains a non-numeric component".to_string())).collect(),
-            Value::String(s) => {
-                // Serialized vectors are decoded only after the embedding field is selected.
-                serde_json::from_str(s).map_err(|e| format!("Invalid stored embedding: {e}"))
-            }
-            _ => Err("Embedding must be a numeric array or its JSON encoding".into()),
-        }
-    }
-
-    /// Cosine similarity between two vectors
-    /// Uses 4-way loop unrolling for SIMD-like performance
-    pub(super) fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
-        if a.len() != b.len() || a.is_empty() {
-            return 0.0;
-        }
-
-        let len = a.len();
-        let limit = len - (len % 4);
-
-        let mut dot = 0.0;
-        let mut norm_a = 0.0;
-        let mut norm_b = 0.0;
-
-        // 4-way unrolled loop
-        let mut i = 0;
-        while i < limit {
-            let a0 = a[i];
-            let a1 = a[i + 1];
-            let a2 = a[i + 2];
-            let a3 = a[i + 3];
-            let b0 = b[i];
-            let b1 = b[i + 1];
-            let b2 = b[i + 2];
-            let b3 = b[i + 3];
-
-            dot += a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
-            norm_a += a0 * a0 + a1 * a1 + a2 * a2 + a3 * a3;
-            norm_b += b0 * b0 + b1 * b1 + b2 * b2 + b3 * b3;
-            i += 4;
-        }
-
-        // Handle remainder
-        while i < len {
-            dot += a[i] * b[i];
-            norm_a += a[i] * a[i];
-            norm_b += b[i] * b[i];
-            i += 1;
-        }
-
-        let denominator = (norm_a * norm_b).sqrt();
-        if denominator == 0.0 {
-            0.0
-        } else {
-            dot / denominator
-        }
-    }
-
-    /// Index a vector - store embedding for a record
-    /// Updates the record's 'embedding' field with the provided vector
-    /// Store an embedding on a record (the record's `embedding` field) and drop
-    /// the collection's cached vector set so the next search reloads it.
+    /// Store a record's embedding as a native unit vector and retire the collection's
+    /// resident matrix, so the next search rebuilds it. The wire carries f64 numbers; this
+    /// is their producer, so it normalizes them once here (refusing a zero or non-finite
+    /// vector) and every later search scores them with one dot product.
     pub(crate) async fn index_vector(
         &self,
         handle: &str,
@@ -468,11 +403,11 @@ impl DataState {
         let start = Instant::now();
 
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
-
-        // Update the record's embedding field
-        let update_data = json!({ "embedding": embedding });
-
-        let result = adapter.update(collection, &id, update_data, false).await;
+        let payload = super::vector_index::unit_f32(embedding.iter().map(|value| *value as f32), "vector/index")
+            .map_err(|error| format!("vector/index {collection}/{id}: {error}"))?;
+        let written = adapter
+            .update_binary(collection, &id, super::vector_corpus::EMBEDDING_FIELD, payload, crate::orm::binary::BinaryWriteCondition::Replace)
+            .await;
 
         // Invalidate vector cache for this collection since we modified an embedding
         self.vector_cache.invalidate(&scope, collection);
@@ -484,8 +419,12 @@ impl DataState {
             "Indexed vector for {} in {}ms, success={}",
             id,
             total_ms,
-            result.success
+            written.success
         );
+        let result = match written.into_result() {
+            Ok(_) => adapter.read(collection, &id).await,
+            Err(error) => StorageResult::err(error),
+        };
 
         Ok(result)
     }
@@ -502,7 +441,7 @@ impl DataState {
 
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
-        let stats = adapter.numeric_array_stats(collection, "embedding").await.into_result()
+        let stats = adapter.numeric_array_stats(collection, super::vector_corpus::EMBEDDING_FIELD).await.into_result()
             .map_err(|e| format!("vector stats for {collection}: {e}"))?;
         if stats.min_length != stats.max_length {
             return Err(format!("{collection} contains inconsistent embedding dimensions: {} to {}", stats.min_length, stats.max_length));
@@ -512,8 +451,8 @@ impl DataState {
         let vector_dimensions = stats.max_length;
 
         // Check cache status
-        let cached_count = self.vector_cache.get::<Vec<CachedVector>>(&scope, collection)
-            .map_or(0, |vectors| vectors.len());
+        let cached_count = self.vector_cache.get::<super::vector_index::CpuMatrix>(&scope, collection)
+            .map_or(0, |matrix| <super::vector_index::CpuMatrix as super::vector_index::ResidentMatrix>::len(&matrix));
 
         let total_ms = start.elapsed().as_millis();
         log_info!(

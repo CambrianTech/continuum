@@ -1,27 +1,51 @@
 #![cfg(test)]
-//! Vector indexing, ranking and cache behavior on the shared SQLite fixture.
+//! Vector indexing, ranking and cache behavior on the shared SQLite fixture. Embeddings are
+//! native unit-vector payloads written through `vector/index`, never JSON numbers.
 use super::*;
+use crate::data::vector_index::ResidentMatrix;
 
+/// A vector collection: optional text and an optional native embedding.
+async fn declare_vectors(adapter: &dyn StorageAdapter, collection: &str) {
+    let mut fields = crate::orm::base_entity_fields();
+    for (name, field_type) in [("content", crate::orm::FieldType::String), ("embedding", crate::orm::FieldType::Binary)] {
+        fields.push(crate::orm::SchemaField {
+            name: name.into(), field_type, default_value: None,
+            nullable: true, indexed: false, unique: false, max_length: None, foreign_key: None,
+        });
+    }
+    adapter.ensure_schema(CollectionSchema { collection: collection.into(), fields, indexes: vec![] })
+        .await.into_result().expect("test: declared vector schema");
+}
+
+async fn create_row(adapter: &dyn StorageAdapter, collection: &str, id: &str) {
+    adapter.create(DataRecord {
+        id: id.into(), collection: collection.into(),
+        data: json!({"content": format!("document {id}")}),
+        metadata: crate::orm::types::RecordMetadata::default(),
+    }).await.into_result().expect("test: row");
+}
+
+// what this catches: a page of rows without vectors must not end corpus traversal.
 #[tokio::test]
 async fn vector_corpus_pages_past_rows_without_embeddings() {
     let module = DataModule::new(no_substrate_entities);
     let (_tmp, db_path) = test_db_path("vector_pages");
     let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
-    declare_fixture(adapter.as_ref(), "test_vector_pages", &[("embedding", crate::orm::FieldType::Json), ("content", crate::orm::FieldType::String)]).await;
+    declare_vectors(adapter.as_ref(), "test_vector_pages").await;
     let page_size = crate::data::max_concurrent_queries::default_page_size();
     for index in 0..page_size + 3 {
-        let embedding = if index < page_size { json!([]) } else { json!([index as f64, 1.0]) };
-        adapter.create(DataRecord {
-            id: format!("row-{index:06}"), collection: "test_vector_pages".into(),
-            data: json!({"embedding": embedding, "content": "payload".repeat(1000)}),
-            metadata: crate::orm::types::RecordMetadata::default(),
-        }).await.into_result().expect("test: row");
+        let id = format!("row-{index:06}");
+        create_row(adapter.as_ref(), "test_vector_pages", &id).await;
+        if index >= page_size {
+            let indexed = module.state.index_vector(&db_path, "test_vector_pages", id, vec![index as f64, 1.0])
+                .await.expect("test: index");
+            assert!(indexed.success, "{indexed:?}");
+        }
     }
     let vectors = module.state.vector_corpus(&db_path, "test_vector_pages").await.expect("test: corpus");
-    assert_eq!(vectors.len(), 3, "an empty-vector page must not end corpus traversal");
-    for (offset, vector) in vectors.iter().enumerate() {
-        assert_eq!(vector.id, format!("row-{:06}", page_size + offset));
-        assert_eq!(vector.embedding, vec![(page_size + offset) as f64, 1.0]);
+    assert_eq!(vectors.len(), 3, "an unindexed page must not end corpus traversal");
+    for offset in 0..3 {
+        assert_eq!(vectors.id(offset), Some(format!("row-{:06}", page_size + offset).as_str()));
     }
 }
 
@@ -34,58 +58,26 @@ async fn backfill_rejects_zero_batch_before_opening_an_embedder() {
     assert!(matches!(result, Err(ref error) if error == "vector/backfill: batch_size must be positive"));
 }
 
-#[test]
-fn malformed_embedding_is_not_silently_shortened_or_emptied() -> Result<(), String> {
-    for valid in [json!([1.0, 2.0]), json!("[1.0,2.0]")] {
-        assert_eq!(DataState::parse_embedding(&valid)?, vec![1.0, 2.0]);
-    }
-    for invalid in [json!([1.0, "bad", 2.0]), json!("broken"), json!("[1,null]"), Value::Null] {
-        assert!(DataState::parse_embedding(&invalid).is_err());
-    }
-    Ok(())
+// what this catches: a zero vector from the wire is refused, never stored as NaN.
+#[tokio::test]
+async fn zero_vector_is_refused_at_index() {
+    let module = DataModule::new(no_substrate_entities);
+    let (_tmp, db_path) = test_db_path("vector_zero");
+    let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
+    declare_vectors(adapter.as_ref(), "test_zero").await;
+    create_row(adapter.as_ref(), "test_zero", "zero").await;
+    let refused = module.state.index_vector(&db_path, "test_zero", "zero".into(), vec![0.0; 384]).await;
+    assert!(matches!(refused, Err(ref error) if error.contains("zero vector")), "{refused:?}");
+    assert!(module.state.vector_corpus(&db_path, "test_zero").await.expect("test: corpus").is_empty());
 }
 
 #[tokio::test]
 async fn test_vector_index_and_stats() {
     let module = DataModule::new(no_substrate_entities);
     let (_tmp, db_path) = test_db_path("vector_index");
+    let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
+    declare_vectors(adapter.as_ref(), "test_vectors").await;
 
-    // Create schema with embedding field
-    let mut schema = CollectionSchema {
-        collection: "test_vectors".to_string(),
-        fields: vec![
-            crate::orm::types::SchemaField {
-                default_value: None,
-                name: "content".to_string(),
-                field_type: crate::orm::types::FieldType::String,
-                indexed: false,
-                unique: false,
-                nullable: true,
-                max_length: None,
-                foreign_key: None,
-            },
-            crate::orm::types::SchemaField {
-                default_value: None,
-                name: "embedding".to_string(),
-                field_type: crate::orm::types::FieldType::Json,
-                indexed: false,
-                unique: false,
-                nullable: true,
-                max_length: None,
-                foreign_key: None,
-            },
-        ],
-        indexes: vec![],
-    };
-
-    // Tests bypass the IPC surface (which now requires a REGISTERED
-    // entity collection per Phase 2 Step 3) — call the adapter directly
-    // with a synthetic test CollectionSchema.
-    let adapter = module.state.get_adapter(&db_path).await.unwrap();
-    schema.fields.extend(crate::orm::base_entity_fields());
-        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
-
-    // Create a record
     let create_result = create_via_state(
         &module,
         json!({
@@ -95,28 +87,16 @@ async fn test_vector_index_and_stats() {
         }),
     )
     .await;
-
-    assert!(
-        create_result.is_ok(),
-        "create_result failed: {:?}",
-        create_result
-    );
-    let record_id = if let Ok(CommandResult::Json(result)) = &create_result {
-        result["data"]["id"].as_str().unwrap().to_string()
-    } else {
-        panic!("Create failed");
+    let record_id = match &create_result {
+        Ok(CommandResult::Json(result)) => result["data"]["id"].as_str().expect("test: created id").to_string(),
+        other => panic!("create failed: {other:?}"),
     };
 
     // A nullable embedding means this document has not been indexed yet.
-    let before = module.state.vector_stats(&db_path, "test_vectors").await;
-    assert!(before.is_ok(), "{before:?}");
-    if let Ok(stats) = before {
-        assert_eq!(stats.records_with_vectors, 0);
-    }
-    let corpus = module.state.vector_corpus(&db_path, "test_vectors").await;
-    assert!(matches!(corpus, Ok(ref vectors) if vectors.is_empty()));
+    let before = module.state.vector_stats(&db_path, "test_vectors").await.expect("test: stats");
+    assert_eq!(before.records_with_vectors, 0);
+    assert!(module.state.vector_corpus(&db_path, "test_vectors").await.expect("test: corpus").is_empty());
 
-    // Index a vector for this record
     let test_embedding: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
     let index_result = index_via_state(
         &module,
@@ -128,14 +108,11 @@ async fn test_vector_index_and_stats() {
         }),
     )
     .await;
-
-    assert!(index_result.is_ok());
-    if let Ok(CommandResult::Json(result)) = &index_result {
-        assert!(result["success"].as_bool().unwrap_or(false));
+    match &index_result {
+        Ok(CommandResult::Json(result)) => assert!(result["success"].as_bool().unwrap_or(false), "{result}"), // test: absent success is a failure
+        other => panic!("index failed: {other:?}"),
     }
 
-    // Get vector stats — the typed VectorStats serializes at top level (no
-    // `data` envelope), the new contract the `vector/stats` command returns.
     let stats_result = stats_via_state(
         &module,
         json!({
@@ -144,13 +121,14 @@ async fn test_vector_index_and_stats() {
         }),
     )
     .await;
-
-    assert!(stats_result.is_ok());
-    if let Ok(CommandResult::Json(stats)) = stats_result {
-        assert_eq!(stats["collection"], "test_vectors");
-        assert_eq!(stats["totalRecords"], 1);
-        assert_eq!(stats["recordsWithVectors"], 1);
-        assert_eq!(stats["vectorDimensions"], 384);
+    match stats_result {
+        Ok(CommandResult::Json(stats)) => {
+            assert_eq!(stats["collection"], "test_vectors");
+            assert_eq!(stats["totalRecords"], 1);
+            assert_eq!(stats["recordsWithVectors"], 1);
+            assert_eq!(stats["vectorDimensions"], 384);
+        }
+        other => panic!("stats failed: {other:?}"),
     }
 }
 
@@ -158,66 +136,21 @@ async fn test_vector_index_and_stats() {
 async fn test_vector_search_basic() {
     let module = DataModule::new(no_substrate_entities);
     let (_tmp, db_path) = test_db_path("vector_search");
+    let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
+    declare_vectors(adapter.as_ref(), "test_search").await;
 
-    // Create schema
-    let mut schema = CollectionSchema {
-        collection: "test_search".to_string(),
-        fields: vec![
-            crate::orm::types::SchemaField {
-                default_value: None,
-                name: "content".to_string(),
-                field_type: crate::orm::types::FieldType::String,
-                indexed: false,
-                unique: false,
-                nullable: true,
-                max_length: None,
-                foreign_key: None,
-            },
-            crate::orm::types::SchemaField {
-                default_value: None,
-                name: "embedding".to_string(),
-                field_type: crate::orm::types::FieldType::Json,
-                indexed: false,
-                unique: false,
-                nullable: true,
-                max_length: None,
-                foreign_key: None,
-            },
-        ],
-        indexes: vec![],
-    };
-
-    // Tests bypass the IPC surface (which now requires a REGISTERED
-    // entity collection per Phase 2 Step 3) — call the adapter directly
-    // with a synthetic test CollectionSchema.
-    let adapter = module.state.get_adapter(&db_path).await.unwrap();
-    schema.fields.extend(crate::orm::base_entity_fields());
-        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
-
-    // Create records with embeddings
     let embeddings: Vec<Vec<f64>> = vec![
         (0..384).map(|i| (i as f64) * 0.001).collect(),
         // Identical vectors exercise ties at the top-k boundary.
         (0..384).map(|i| (i as f64) * 0.001).collect(),
         (0..384).map(|i| (i as f64) * 0.003).collect(),
     ];
-
     for (idx, emb) in embeddings.iter().enumerate() {
-        let _ = create_via_state(
-            &module,
-            json!({
-                "dbPath": &db_path,
-                "collection": "test_search",
-                "data": {
-                    "content": format!("Document {}", idx),
-                    "embedding": emb
-                }
-            }),
-        )
-        .await;
+        let id = format!("document-{idx}");
+        create_row(adapter.as_ref(), "test_search", &id).await;
+        assert!(module.state.index_vector(&db_path, "test_search", id, emb.clone()).await.expect("test: index").success);
     }
 
-    // Search for similar vectors
     let query_vector: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
     let search_result = search_via_state(
         &module,
@@ -231,103 +164,63 @@ async fn test_vector_search_basic() {
         }),
     )
     .await;
-
-    assert!(search_result.is_ok());
-    if let Ok(CommandResult::Json(result)) = search_result {
-        let results = result["results"].as_array().unwrap();
-        assert_eq!(results.len(), 3);
-        // First result should be most similar (score close to 1.0)
-        let first_score = results[0]["score"].as_f64().unwrap();
-        assert!(
-            first_score > 0.9,
-            "Expected high similarity, got {}",
-            first_score
-        );
-        assert_eq!(result["count"], results.len());
-        // Partial selection must equal the complete ranking at every k boundary.
-        for k in [0, 1, 2, 3, 99] {
-            let selected = module
-                .state
-                .vector_search(&db_path, "test_search", query_vector.clone(), k, 0.0, false)
-                .await
-                .expect("rank cached corpus");
-            assert_eq!(selected.count, k.min(results.len()));
-            assert_eq!(selected.corpus_size, results.len());
-            for (hit, expected) in selected.results.iter().zip(results) {
-                assert_eq!(Some(hit.id.as_str()), expected["id"].as_str());
-                assert_eq!(Some(hit.score), expected["score"].as_f64());
-            }
-        }
-        let filtered = module
+    let Ok(CommandResult::Json(result)) = search_result else { panic!("search failed: {search_result:?}") };
+    let results = result["results"].as_array().expect("test: results array");
+    assert_eq!(results.len(), 3);
+    let first_score = results[0]["score"].as_f64().expect("test: score");
+    assert!(first_score > 0.9, "Expected high similarity, got {first_score}");
+    assert_eq!(result["count"], results.len());
+    // Hydration returns the record's scalar fields; the native payload stays in storage.
+    assert!(results[0]["data"].get("embedding").is_none(), "{}", results[0]);
+    // Partial selection must equal the complete ranking at every k boundary.
+    for k in [0, 1, 2, 3, 99] {
+        let selected = module
             .state
-            .vector_search(&db_path, "test_search", query_vector.clone(), 2, 2.0, false)
+            .vector_search(&db_path, "test_search", query_vector.clone(), k, 0.0, false)
             .await
-            .expect("filter cached corpus");
-        assert_eq!(filtered.count, 0);
-
-        // A cached hit can disappear before hydration. Surface the read failure,
-        // rather than return partial results with a contradictory count.
-        let Some(id) = results[0]["id"].as_str() else {
-            panic!("vector hit must carry its record id");
-        };
-        assert!(adapter.delete("test_search", &id.to_owned()).await.success);
-        let hydrated = module
-            .state
-            .vector_search(&db_path, "test_search", query_vector, 3, 0.0, true)
-            .await;
-        assert!(
-            matches!(hydrated, Err(ref error) if error.contains(id)),
-            "missing cached record must reach the caller: {hydrated:?}"
-        );
+            .expect("rank cached corpus");
+        assert_eq!(selected.count, k.min(results.len()));
+        assert_eq!(selected.corpus_size, results.len());
+        for (hit, expected) in selected.results.iter().zip(results) {
+            assert_eq!(Some(hit.id.as_str()), expected["id"].as_str());
+            assert_eq!(Some(hit.score), expected["score"].as_f64());
+        }
     }
+    let filtered = module
+        .state
+        .vector_search(&db_path, "test_search", query_vector.clone(), 2, 2.0, false)
+        .await
+        .expect("filter cached corpus");
+    assert_eq!(filtered.count, 0);
+
+    // A cached hit can disappear before hydration. Surface the read failure,
+    // rather than return partial results with a contradictory count.
+    let id = results[0]["id"].as_str().expect("vector hit must carry its record id");
+    assert!(adapter.delete("test_search", &id.to_owned()).await.success);
+    let hydrated = module
+        .state
+        .vector_search(&db_path, "test_search", query_vector, 3, 0.0, true)
+        .await;
+    assert!(
+        matches!(hydrated, Err(ref error) if error.contains(id)),
+        "missing cached record must reach the caller: {hydrated:?}"
+    );
 }
 
 #[tokio::test]
 async fn test_vector_cache_invalidation() {
     let module = DataModule::new(no_substrate_entities);
-    let home = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().expect("test: home");
     let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
     let db_path = "@node".to_string();
     let alias = module.state.resolve_handle(&db_path).expect("resolve isolated node store");
     assert_ne!(db_path, alias);
+    let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
+    declare_vectors(adapter.as_ref(), "test_cache").await;
+    create_row(adapter.as_ref(), "test_cache", "resident").await;
+    assert!(module.state.index_vector(&db_path, "test_cache", "resident".into(), vec![1.0; 384]).await.expect("test: index").success);
 
-    // Create schema
-    let mut schema = CollectionSchema {
-        collection: "test_cache".to_string(),
-        fields: vec![crate::orm::types::SchemaField {
-                default_value: None,
-            name: "embedding".to_string(),
-            field_type: crate::orm::types::FieldType::Json,
-            indexed: false,
-            unique: false,
-            nullable: true,
-            max_length: None,
-            foreign_key: None,
-        }],
-        indexes: vec![],
-    };
-
-    // Tests bypass the IPC surface (which now requires a REGISTERED
-    // entity collection per Phase 2 Step 3) — call the adapter directly
-    // with a synthetic test CollectionSchema.
-    let adapter = module.state.get_adapter(&db_path).await.unwrap();
-    schema.fields.extend(crate::orm::base_entity_fields());
-        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
-
-    // Create a record with embedding
-    let _ = create_via_state(
-        &module,
-        json!({
-            "dbPath": &db_path,
-            "collection": "test_cache",
-            "data": {
-                "embedding": vec![1.0; 384]
-            }
-        }),
-    )
-    .await;
-
-    // First search populates cache
+    // First search populates the resident matrix.
     let query: Vec<f64> = vec![1.0; 384];
     let _ = search_via_state(
         &module,
@@ -339,23 +232,8 @@ async fn test_vector_cache_invalidation() {
         }),
     )
     .await;
+    assert!(module.state.vector_stats(&db_path, "test_cache").await.expect("test: stats").cached_vectors > 0);
 
-    // Verify cache has vectors via stats (top-level VectorStats, new contract)
-    let stats_result = stats_via_state(
-        &module,
-        json!({
-            "dbPath": &db_path,
-            "collection": "test_cache"
-        }),
-    )
-    .await;
-
-    if let Ok(CommandResult::Json(stats)) = &stats_result {
-        assert!(stats["cachedVectors"].as_u64().unwrap() > 0);
-    }
-
-    // Invalidate cache — VectorCacheInvalidation carries `cacheInvalidated`
-    // (and the collection), the typed contract `vector/invalidate-cache` returns.
     let invalidate_result = invalidate_via_state(
         &module,
         json!({
@@ -364,33 +242,20 @@ async fn test_vector_cache_invalidation() {
         }),
     )
     .await;
-
-    assert!(invalidate_result.is_ok());
-    if let Ok(CommandResult::Json(result)) = invalidate_result {
-        assert!(result["cacheInvalidated"].as_bool().unwrap_or(false));
+    match invalidate_result {
+        Ok(CommandResult::Json(result)) => assert!(result["cacheInvalidated"].as_bool().unwrap_or(false), "{result}"), // test: absent flag is a failure
+        other => panic!("invalidate failed: {other:?}"),
     }
+    assert_eq!(module.state.vector_stats(&db_path, "test_cache").await.expect("test: stats").cached_vectors, 0);
 
-    // Verify cache is empty
-    let stats_after = stats_via_state(
-        &module,
-        json!({
-            "dbPath": &db_path,
-            "collection": "test_cache"
-        }),
-    )
-    .await;
-
-    if let Ok(CommandResult::Json(stats)) = stats_after {
-        assert_eq!(stats["cachedVectors"].as_u64().unwrap(), 0);
-    }
-    // Each acknowledged mutation must retire the warmed corpus before the next search.
+    // Each acknowledged mutation must retire the warmed matrix before the next search.
     for operation in ["delete", "batch", "truncate", "clear"] {
         module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before create");
         let created = module.state.create_record(
-            &alias, "test_cache".into(), Some("mutation-target".into()),
-            json!({"embedding": vec![1.0; 384]}),
+            &alias, "test_cache".into(), Some("mutation-target".into()), json!({}),
         ).await.expect("create through mutation owner");
         assert!(created.success, "{created:?}");
+        assert!(module.state.index_vector(&alias, "test_cache", "mutation-target".into(), vec![1.0; 384]).await.expect("alias index").success);
         let warm = module.state.vector_search(
             &db_path, "test_cache", vec![1.0; 384], 10, 0.0, true,
         ).await.expect("warm corpus");
@@ -399,15 +264,10 @@ async fn test_vector_cache_invalidation() {
         assert_eq!(alias_stats.cached_vectors, warm.corpus_size);
         assert!(module.state.invalidate_vector_cache(&alias, "test_cache").await.expect("alias invalidation").cache_invalidated);
         assert_eq!(module.state.vector_stats(&db_path, "test_cache").await.expect("sentinel stats").cached_vectors, 0);
-        module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before index");
-        assert!(module.state.index_vector(&alias, "test_cache", "mutation-target".into(), vec![1.0; 384]).await.expect("alias index").success);
-        assert_eq!(module.state.vector_stats(&db_path, "test_cache").await.expect("indexed stats").cached_vectors, 0);
-        module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before update");
-        let updated = module.state.update_record(&alias, "test_cache".into(), "mutation-target".into(),
-            json!({"embedding": vec![-1.0; 384]}), false).await.expect("update embedding");
-        assert!(updated.success);
+        module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before reindex");
+        assert!(module.state.index_vector(&alias, "test_cache", "mutation-target".into(), vec![-1.0; 384]).await.expect("reindex").success);
         let changed = module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.5, true)
-            .await.expect("search updated corpus");
+            .await.expect("search reindexed corpus");
         assert!(changed.results.iter().all(|hit| hit.id != "mutation-target"));
         match operation {
             "batch" => {
@@ -429,5 +289,4 @@ async fn test_vector_cache_invalidation() {
         let expected = if matches!(operation, "truncate" | "clear") { 0 } else { warm.corpus_size - 1 };
         assert_eq!(after.corpus_size, expected, "{operation} must refresh the corpus");
     }
-
 }

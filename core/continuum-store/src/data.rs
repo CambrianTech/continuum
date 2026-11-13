@@ -36,9 +36,9 @@ mod mutations;
 
 mod vector_corpus;
 
-mod vector_search;
+mod vector_index;
 
-use vector_corpus::CachedVector;
+mod vector_search;
 
 /// Phase 1 typed-IPC: deserialize raw IPC params into the typed struct
 /// the handler expects, uniformly logging the parse error with
@@ -54,7 +54,7 @@ use vector_corpus::CachedVector;
 /// string back to the IPC dispatch layer.
 macro_rules! deserialize_params {
     ($command:expr, $params:expr) => {
-        serde_json::from_value($params).map_err(|e| {
+        serde_json::from_value($params).map_err(|e| { // IPC wire boundary: legacy dispatch params arrive as JSON
             log_error!("data", "handle_command", "{} parse error: {}", $command, e);
             format!("Invalid params for {}: {}", $command, e)
         })

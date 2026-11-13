@@ -1,56 +1,51 @@
-//! Immutable vector snapshots; cache cell detachment owns invalidation.
-use super::{DataState, StorageQuery};
-use crate::orm::query::{Cursor, CursorDirection, SortDirection, SortSpec};
+//! The resident vector matrix per collection; cache cell detachment owns invalidation.
+use super::vector_index::{CpuMatrix, RecallTarget, ResidentMatrix};
+use super::DataState;
 use std::sync::Arc;
 
-pub(super) struct CachedVector {
-    pub(super) id: String,
-    pub(super) embedding: Vec<f64>,
-}
+/// The binary field every vector collection declares for its embeddings.
+pub(super) const EMBEDDING_FIELD: &str = "embedding";
 
 impl DataState {
+    /// Builds the collection's resident matrix from native pages: raw producer bytes are
+    /// appended into one buffer, never decoded into JSON numbers. The storage owner's bulk
+    /// `binary_page_into` replaces the per-record append below with one page append (and a
+    /// revision watermark replaces whole rebuilds with deltas).
     pub(super) async fn vector_corpus(
         &self,
         handle: &str,
         collection: &str,
-    ) -> Result<Arc<Vec<CachedVector>>, String> {
+    ) -> Result<Arc<CpuMatrix>, String> {
         let scope = self.resolve_handle(handle)?;
         self.vector_cache
             .get_or_try_compute(&scope, collection, async {
                 let adapter = self.adapter_for_backend(handle, scope.clone()).await?;
-                // Reuse the store's page size for transient decoding, not a cap on
-                // the searchable corpus. Every page is visited before publication.
+                // The store's page size bounds one transfer, not the searchable corpus:
+                // every page is visited before the matrix is published.
                 let page_size = super::default_page_size();
-                let mut cursor = None;
-                let mut vectors = Vec::new();
+                let mut matrix = CpuMatrix::default();
+                let mut after = None;
                 loop {
-                    let records = adapter.query(StorageQuery {
-                        collection: collection.to_owned(),
-                        select: Some(vec!["embedding".into()]),
-                        sort: Some(vec![SortSpec { field: "id".into(), direction: SortDirection::Asc }]),
-                        cursor,
-                        limit: Some(page_size),
-                        ..Default::default()
-                    }).await.into_result()?;
-                    let page_len = records.len();
-                    let last_id = records.last().map(|record| record.id.clone());
-                    for record in records {
-                        if let Some(embedding) = record.data.get("embedding").filter(|value| !value.is_null()) {
-                            let embedding = Self::parse_embedding(embedding)
-                                .map_err(|e| format!("vector corpus record {}: {e}", record.id))?;
-                            if !embedding.is_empty() {
-                                vectors.push(CachedVector { id: record.id, embedding });
-                            }
-                        }
+                    let page = adapter
+                        .binary_page(collection, EMBEDDING_FIELD, after.take(), page_size)
+                        .await
+                        .into_result()?;
+                    let full = page.len() == page_size;
+                    let last = page.last().map(|record| record.id.clone());
+                    for record in page {
+                        // A row without a vector is not indexed yet; it is not an error.
+                        let Some(value) = record.value else { continue };
+                        matrix
+                            .append_rows(value.descriptor(), value.bytes(), vec![record.id.clone()])
+                            .map_err(|error| format!("vector corpus record {}: {error}", record.id))?;
                     }
-                    if page_len < page_size { break; }
-                    cursor = Some(Cursor {
-                        field: "id".into(),
-                        value: last_id.ok_or("full vector page has no final identity")?.into(),
-                        direction: CursorDirection::After,
-                    });
+                    if !full {
+                        break;
+                    }
+                    after = Some(last.ok_or("full vector page has no final identity")?);
                 }
-                Ok::<_, String>(vectors)
+                matrix.calibrate(RecallTarget::STORE);
+                Ok::<_, String>(matrix)
             })
             .await
             .map_err(|error| error.to_string())

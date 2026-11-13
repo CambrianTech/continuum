@@ -2,7 +2,7 @@
 use super::{
     adapter::naming,
     query::{CursorDirection, FieldFilter, QueryOperator, SortDirection, StorageQuery},
-    types::CollectionSchema,
+    types::{CollectionSchema, FieldType},
 };
 use sea_orm::sea_query::{
     Alias, Condition, Expr, Order, Query, SelectStatement, SimpleExpr, Value as SqlValue,
@@ -150,7 +150,11 @@ pub(super) fn select(
     }
     let mut fields = match &query.select {
         Some(fields) => fields.clone(),
-        None => schema.fields.iter().map(|f| f.name.clone()).collect(),
+        // A native payload is opened only by its consumer through the binary interface;
+        // the default projection carries the record's scalars, never its payload bodies.
+        None => schema.fields.iter()
+            .filter(|f| f.field_type != FieldType::Binary)
+            .map(|f| f.name.clone()).collect(),
     };
     if fields.is_empty() {
         return Err("empty projection".into());
