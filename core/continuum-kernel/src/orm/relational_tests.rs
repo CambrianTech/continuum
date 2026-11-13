@@ -299,6 +299,16 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
         second.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
         ["c"]
     );
+    query.sort = Some(vec![super::query::SortSpec {
+        field: "id".into(), direction: SortDirection::Desc,
+    }]);
+    let descending_tail = store.query(query.clone()).await?;
+    assert_eq!(descending_tail.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["a"],
+        "after b in descending order must advance toward a, not repeat c");
+    query.cursor.as_mut().ok_or("cursor disappeared")?.direction = super::query::CursorDirection::Before;
+    let descending_head = store.query(query.clone()).await?;
+    assert_eq!(descending_head.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["c"]);
+    query.sort = None;
     query.cursor = Some(super::query::Cursor {
         field: "seq".into(),
         value: json!(1),

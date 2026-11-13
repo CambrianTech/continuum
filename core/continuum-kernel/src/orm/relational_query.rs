@@ -88,9 +88,12 @@ pub(super) fn condition(
             return Err("cursor field must match the query's unique ordering field".into());
         }
         let col = Expr::col((table, column(schema, &cursor.field)?));
-        all = all.add(match cursor.direction {
-            CursorDirection::After => col.gt(value(&cursor.value)?),
-            CursorDirection::Before => col.lt(value(&cursor.value)?),
+        // Before/after follow the declared traversal order, not numeric magnitude.
+        let descending = query.sort.as_ref().and_then(|sort| sort.first())
+            .is_some_and(|sort| sort.direction == SortDirection::Desc);
+        all = all.add(match (cursor.direction, descending) {
+            (CursorDirection::After, false) | (CursorDirection::Before, true) => col.gt(value(&cursor.value)?),
+            (CursorDirection::Before, false) | (CursorDirection::After, true) => col.lt(value(&cursor.value)?),
         });
     }
     if query.tags.is_some() {
