@@ -2028,6 +2028,51 @@ does per byte), the transfer rows of the checklist in section 2.4, and section 3
 
 ## 7. Measurement and validators
 
+### 7.0 Simulation first: every design section has its simulator, every fault becomes a scenario
+
+Joel, 2026-11-13: "Simulation needs to be part of each document and our iteration. We can run
+realistic load testing using what we learn from our own systems faults or architecture in general."
+A live node under real residents is a road test in traffic; the simulator is the dyno. A change is
+iterated on the simulator until its numbers move, then confirmed live, and what the live node teaches
+goes back into the simulator as a new scenario. No section of this design is complete without the
+simulator that exercises it.
+
+**The simulators (one per layer; real policy code, recorded inputs, seconds, any machine, no residents):**
+- **Admission and capacity: the dyno** (`core/continuum-engine/src/capacity/dyno`). The real
+  allocator, grants and conservation (weights + resident KV + staging <= device) driven by a recorded
+  day (`fixtures/dyno/<date>.json`, every value beside its receipt). Each recorded failure is a
+  failing assertion of the design's invariant; the fixing slice turns it green.
+- **Serving: `serving-replay`** (`core/serving-replay`, section 4.5, plan row SV-S0). Captured act
+  sequences against a small hybrid model: reuse, fresh prefill, page-ins by kind, evictions with
+  page-out and restore milliseconds, relaunches.
+- **A mind's context: the context replay** (`core/continuum-context/examples/replay`). Captured
+  prompts replayed through the codec: the token prefix shared by consecutive acts, fresh tokens per
+  act, levels chosen, collapses.
+- **Data path: the vector search bench** (to build with plan step 2 of section 2.6): a recorded
+  corpus at 10k/100k/1M vectors, search latency, recall@k against the exact answer, CPU time and
+  bytes moved per search.
+
+**Load is realistic because it is ours.** Scenarios are recorded from the live nodes: the minds,
+their act shapes and prompt sizes, the node's memory and its other residents. A synthetic load is
+allowed only as a sweep around a recorded one (more minds, longer contexts, a smaller machine).
+
+**The scenario library (each a recorded fault; the simulator must reproduce it before the fix and
+pass after):**
+
+| Scenario | Recorded | Layer | What the simulator must show |
+|---|---|---|---|
+| 2026-11-04 the M5 day | dyno fixture `2026-11-04.json` | admission | each failure of the day as a failing invariant, green after its slice |
+| A share bounds an admitted act | M5 2026-11-11 16:06-16:21Z, 9 of 15 acts refused (#5947) | admission | 0 refusals of an act within its grant |
+| A reply sized from the estimate overshoots the grant | M5 2026-11-11 17:47-18:02Z, 7 refusals (#5950) | admission | the reply sized from the measured prompt; 0 refusals when the prompt fits |
+| A fixed host cache starves the engine | M5 2026-11-13: 60 MB free, 34 GB compressed, prefill 92 tok/s against ~190 | serving | prefill and decode tok/s held as memory pressure rises; the cache gives memory back (fork #110) |
+| A reopen too large for the view loops | Eitan, IntelMac, 2026-11-11 to 11-13 (#5966) | context | consecutive reopens of one output advance through its pages |
+| A per-element store codec and per-pair norms | 2026-11-13 review of #5954, `similarity::cosine` | data path | bytes moved and CPU time per search fall to the copy and the GPU dispatch |
+| A Windows core's private commit runs away | BigMama 2026-11-13, 10.8 to 32.7 GB in 8 min | serving | resident memory flat over a recorded day |
+
+Every row of the plan (section 8) names the scenario that proves it, alongside its gate and
+validator. A fault found live and not yet a scenario is the next scenario to record.
+
+
 Frame time is act time (section 2.5). Every workstream proves itself first on a validator that runs
 in seconds with no live residents, then on the live node. This table indexes what each layer measures
 and where its validator is specified; the specifications themselves are in the sections named.
@@ -2167,6 +2212,10 @@ state: the order-of-work and gap sections of the three merged documents, section
 "Goal 11 workstreams" table, its order-of-work lines 2, 3, 3b, 5, 6 and 13, and plan goals 2, 7, 9, 10
 and 11. Owners and gates are as those sources state them; "gate: to set" and "validator: to set" mean
 the source states none. "Not stated" in the owner column means the same.
+
+Every row is proven on its simulator (section 7.0) before it reaches a live node: a row names the
+recorded scenario that shows its gain, iterates there until the numbers move, then confirms live,
+and a live finding that the simulator missed becomes a new scenario (Joel, 2026-11-13).
 
 Rules that apply to every row (from the sources): each step deletes what it replaces in the same PR
 (section 4.1a); each step lands with its validator and a 15-minute live read (section 5); each change

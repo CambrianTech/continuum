@@ -372,8 +372,9 @@ A new layer implements `Source`, builds its items with `levels`, and gets cachin
 substrate is a game engine's renderer (study Unreal: RDG, streaming pools, Nanite LOD, GPU-driven culling, instancing,
 temporal reuse). Bytes stay bytes (BLOB + typed descriptor), no per-element CPU loops, translation only on the GPU, never
 parse until the last step, no SQL outside the ORM and no Python anywhere, squared distances and unit vectors (no roots or
-per-pair norms), no CPU/GPU transfers that are not needed, and its exhaustive checklist walked line by line. Every change
-posts act time, stage time, memory and quality before and after.
+per-pair norms), no CPU/GPU transfers that are not needed, and its exhaustive checklist walked line by line. Every change is
+iterated on its simulator first (section 7.0: the dyno, serving-replay, the context replay; scenarios recorded from our own
+faults), then posts act time, stage time, memory and quality before and after on a live node.
 
 ## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
 
