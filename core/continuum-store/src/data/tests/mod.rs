@@ -358,34 +358,14 @@ use crate::orm::types::CollectionSchema;
                 "personas/e2f0e022-04ac-4f66-a26c-7146551745b4/longterm.db",
             ),
         ];
-        for (home_override, native_home, expected_home) in [
-            (
-                Some("/tmp/explicit-home"),
-                "C:/Users/native",
-                "/tmp/explicit-home",
-            ),
-            (None, "C:/Users/native", "C:/Users/native"),
-            (None, "/Users/native", "/Users/native"),
-        ] {
+        for home in ["/tmp/explicit-continuum", "C:/Users/native/.continuum", "/Users/native/.continuum"] {
             for (handle, suffix) in handles {
-                let resolved = DataState::resolve_handle_with(
-                    handle,
-                    |key| match key {
-                        "HOME" => home_override.map(str::to_owned),
-                        // Empty DATABASE_URL must still select local SQLite.
-                        "DATABASE_URL" => Some(String::new()),
-                        _ => panic!("unexpected environment lookup: {key}"),
-                    },
-                    || {
-                        assert!(home_override.is_none(), "explicit HOME takes precedence");
-                        Some(PathBuf::from(native_home))
-                    },
-                )
-                .expect("local handle resolves");
-                assert_eq!(resolved, format!("{expected_home}/.continuum/{suffix}"));
+                let resolved = DataState::resolve_handle_with(handle,
+                    |key| { assert_eq!(key, "DATABASE_URL"); Some(String::new()) },
+                    || Ok(PathBuf::from(home))).expect("local handle resolves");
+                assert_eq!(resolved, format!("{home}/{suffix}"));
             }
         }
-
         let url = "/var/shared/continuum.db";
         assert_eq!(
             DataState::resolve_handle_with(
@@ -400,10 +380,10 @@ use crate::orm::types::CollectionSchema;
             url,
         );
         for (handle, _) in handles {
-            let error = DataState::resolve_handle_with(handle, |_| None, || None).unwrap_err();
+            let error = DataState::resolve_handle_with(handle, |_| None, || Err("home unavailable".into())).unwrap_err();
             assert_eq!(
                 error,
-                format!("resolve_handle('{handle}'): home directory unavailable")
+                "home unavailable"
             );
         }
 
@@ -431,6 +411,17 @@ use crate::orm::types::CollectionSchema;
         }
     }
 
+    #[tokio::test]
+    async fn local_database_handles_use_the_shared_home_owner() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+        let root = crate::paths::continuum_home().unwrap();
+        let state = DataState::new();
+        for (handle, suffix) in [("main", "database/main.db"), ("@metrics", "metrics/metrics.sqlite"),
+            ("@persona:Asha", "personas/Asha/data/longterm.db"), ("@node", "database/node.db")] {
+            assert_eq!(PathBuf::from(state.resolve_handle(handle).unwrap()), root.join(suffix));
+        }
+    }
     #[test]
     pub(super) fn data_create_params_drop_the_db_path_leak_but_alias_legacy_callers() {
         // what this catches: the persona-facing `data/create` contract dropped the

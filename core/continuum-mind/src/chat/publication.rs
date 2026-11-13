@@ -77,6 +77,7 @@ pub enum PublicationState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, crate::orm::Entity)]
 #[serde(rename_all = "camelCase")]
 #[entity(collection = "chat_publications")]
+#[entity(index(name = "idx_chat_publications_pending_room", fields = ["room", "state", "id"]))]
 pub struct PublicationObligation {
     /// The message id (the stored row's, and the envelope's `continuum.event_id` header).
     #[entity(primary_key)]
@@ -86,6 +87,7 @@ pub struct PublicationObligation {
     /// The authenticated transport this core publishes relayed lines as: only it may deliver this line.
     pub relay: PeerId,
     pub digest: [u8; 32],
+    #[entity(text)]
     pub state: PublicationState,
 }
 
@@ -222,32 +224,38 @@ impl ChatModule {
     /// room's attach owner on every (re)attach; an error ends that attach and its backoff retries it.
     /// Returns how many were re-published.
     pub async fn republish_pending(&self, room: RoomId) -> Result<usize, String> {
-        let pending = self
-            .query_rows(<PublicationObligation as crate::orm::OrmEntity>::COLLECTION, serde_json::json!({ "state": { "$eq": "pending" }, "room": { "$eq": room.as_uuid().to_string() } }), None, None)
-            .await?;
+        let size = crate::orm::query::default_page_size();
+        let mut after: Option<Uuid> = None;
         let mut republished = 0;
-        for row in pending {
-            let parsed = serde_json::from_value::<PublicationObligation>(row); // storage boundary: the adapter's row format
-            let obligation = parsed.map_err(|e| format!("publication: malformed row: {e}"))?;
-            // A confirmed-absent line (never stored, or pruned) has nothing to publish; a failed
-            // read is an error, never mistaken for absence.
-            let Some((params, at_ms)) = self.sent_line(obligation.id).await? else {
-                continue;
-            };
-            // `broadcast_envelope` reports a refused publish as a warning (chat/send's partial
-            // success); for recovery a line not published is a failure, never "recovered".
-            let sent = self
-                .broadcast_envelope(obligation.id, &params, at_ms)
-                .await?;
-            if let Some(warning) = sent.warning {
-                return Err(format!(
-                    "publication: line {} not re-published: {warning}",
-                    obligation.id
-                ));
+        loop {
+            let mut filter = serde_json::json!({ "state": { "$eq": "pending" }, "room": { "$eq": room.as_uuid() } });
+            if let Some(id) = after { filter["id"] = serde_json::json!({"$gt": id}); }
+            let pending = self.query_ids(<PublicationObligation as crate::orm::OrmEntity>::COLLECTION, filter, size).await?;
+            let count = pending.len();
+            if count > size { return Err("publication: oversized identity page".into()); }
+            for id in pending {
+                if after.is_some_and(|previous| id <= previous) { return Err("publication: identity page did not advance".into()); }
+                after = Some(id);
+                // A confirmed-absent line (never stored, or pruned) has nothing to publish; a failed
+                // read is an error, never mistaken for absence.
+                let Some((params, at_ms)) = self.sent_line(id).await? else {
+                    continue;
+                };
+                // `broadcast_envelope` reports a refused publish as a warning (chat/send's partial
+                // success); for recovery a line not published is a failure, never "recovered".
+                let sent = self
+                    .broadcast_envelope(id, &params, at_ms)
+                    .await?;
+                if let Some(warning) = sent.warning {
+                    return Err(format!(
+                        "publication: line {} not re-published: {warning}",
+                        id
+                    ));
+                }
+                republished += 1;
             }
-            republished += 1;
+            if count < size { return Ok(republished); }
         }
-        Ok(republished)
     }
 
     /// The parameters `chat/send` stored a line with, read back from its row, and its time; `None`

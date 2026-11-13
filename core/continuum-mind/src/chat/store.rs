@@ -103,6 +103,17 @@ impl ChatModule {
         records(collection, self.store("data/query", query).await?)
     }
 
+    /// Only the identities needed for bounded reconciliation, ordered by the store.
+    pub(super) async fn query_ids(&self, collection: &str, filter: Value, limit: usize) -> Result<Vec<Uuid>, String> {
+        let response = self.store("data/query", json!({
+            "collection": collection, "filter": filter, "select": ["id"],
+            "sort": [{"field": "id", "direction": "asc"}], "limit": limit,
+        })).await?;
+        records(collection, response)?.into_iter().map(|row| {
+            let id = row.get("id").and_then(Value::as_str).ok_or("chat identity projection omitted id")?;
+            Uuid::parse_str(id).map_err(|e| format!("chat identity projection: {e}"))
+        }).collect()
+    }
     /// The row `id` names in `collection`, `None` only when the store confirms there is none.
     pub(super) async fn row<T: serde::de::DeserializeOwned>(
         &self,
