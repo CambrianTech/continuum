@@ -88,9 +88,7 @@ impl RelationalStore {
     pub async fn ensure(&self, schema: CollectionSchema) -> Result<(), String> {
         let _guard = self.schema_gate.lock().await;
         if let Some(existing) = self.schemas.read().get(&schema.collection) {
-            if serde_json::to_value(existing.as_ref()).map_err(|e| e.to_string())?
-                != serde_json::to_value(&schema).map_err(|e| e.to_string())?
-            {
+            if !super::entity::schemas_equivalent(existing.as_ref(), &schema) {
                 return Err(format!(
                     "{} has conflicting entity declarations",
                     schema.collection

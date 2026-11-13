@@ -100,7 +100,7 @@ pub struct ForeignKeyRef {
 }
 
 /// Schema field definition
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../../protocol/typescript/orm/SchemaField.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaField {
@@ -127,7 +127,7 @@ pub struct SchemaField {
 }
 
 /// Composite index definition
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../../protocol/typescript/orm/SchemaIndex.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaIndex {
@@ -141,7 +141,7 @@ pub struct SchemaIndex {
 }
 
 /// Collection schema - defines table structure
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/orm/CollectionSchema.ts"
