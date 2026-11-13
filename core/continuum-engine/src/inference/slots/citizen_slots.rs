@@ -143,6 +143,8 @@ impl Drop for KvSlotLease {
 /// Recency tie-break window: within it, a fresher equal-cost tail outranks a
 /// staler one; beyond it equal-cost tails are genuinely equivalent. Strictly
 /// smaller than [`COST_STEP`] so pricing always dominates recency.
+/// derived-or-floor: it only orders slots whose measured prices are exactly equal; any window
+/// below `COST_STEP` leaves every priced eviction unchanged, so no measurement would move it.
 pub(super) const RECENCY_TIEBREAK_MS: u64 = 600_000;
 
 /// One token-cost step in the eviction score — must exceed the largest possible
