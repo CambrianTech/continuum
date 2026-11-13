@@ -659,3 +659,140 @@ async fn exhausted_intent_never_schedules_reclaim_or_claims_credit() {
         assert!(matches!(intent_rx.has_changed(), Ok(false)));
     }
     }
+
+/// Serving gives its host prompt cache back first (card 494c99f1): the M5 starved at 60 MB free
+/// and 8.6 GB swap while a fixed 9,369 MiB cache held its states.
+mod prompt_cache_first {
+    use super::*;
+    use crate::inference::engine_residency::EngineIncarnation;
+    use crate::inference::llama_server::{LlamaServerError, PromptCacheLimit, PromptCacheRefusal};
+    use std::num::NonZeroU64;
+
+    const LAUNCH_GRANT_MIB: u32 = 9_369;
+
+    /// An engine's cache route: records each limit it is given and answers a configured
+    /// receipt (or refusal); `on_set` plays the process giving pages back.
+    struct FakeCache {
+        asked: std::sync::Mutex<Vec<u64>>,
+        answer: Result<u64, PromptCacheRefusal>,
+        on_set: Box<dyn Fn() + Send + Sync>,
+    }
+
+    impl FakeCache {
+        fn answering(answer: Result<u64, PromptCacheRefusal>) -> Arc<Self> {
+            Arc::new(Self { asked: std::sync::Mutex::new(Vec::new()), answer, on_set: Box::new(|| {}) })
+        }
+        fn asked(&self) -> Vec<u64> {
+            self.asked.lock().unwrap().clone() // JUSTIFIED unwrap: a test mutex
+        }
+    }
+
+    #[async_trait]
+    impl PromptCacheControl for FakeCache {
+        fn engine(&self) -> Option<EngineIncarnation> {
+            None
+        }
+        async fn set_limit(&self, limit_mib: NonZeroU64) -> Result<PromptCacheLimit, LlamaServerError> {
+            self.asked.lock().unwrap().push(limit_mib.get()); // JUSTIFIED unwrap: a test mutex
+            (self.on_set)();
+            match &self.answer {
+                Ok(freed) => Ok(PromptCacheLimit { held_bytes: 1_000_000, freed_bytes: *freed }),
+                Err(refusal) => Err(LlamaServerError::PromptCacheRefused(refusal.clone())),
+            }
+        }
+    }
+
+    /// A pressured serve whose tier-down policy would re-home it, with the cache lever wired.
+    fn pressured(cache: Arc<FakeCache>, grant_mib: u32) -> (ServingConsumer, watch::Sender<ServingSnapshot>) {
+        let policy = Arc::new(AlwaysTierDown { target: "coder-7b".into(), resident_after: 6_000 });
+        let (consumer, serving_tx, _pin_rx) = tier_down_rig("coder-30b", 18_000, policy);
+        serving_tx.send_modify(|s| s.host_prompt_cache_mib = grant_mib);
+        (consumer.with_prompt_cache(cache), serving_tx)
+    }
+
+    fn heavy_lever_untouched(consumer: &ServingConsumer) -> bool {
+        let intent = consumer.intent.snapshot();
+        intent.pinned.is_none() && intent.suppressed.is_empty() && consumer.pending.lock().is_empty()
+    }
+
+    // what this catches: serving reaching for a tier-down while its prompt cache still holds
+    // gigabytes. Under pressure the cache is lowered by the target (8,000 bytes = 1 whole MiB)
+    // and the engine's freed bytes are the answer; no pin, no suppress, nothing pending.
+    #[tokio::test]
+    async fn a_reclaim_lowers_the_prompt_cache_before_any_heavy_lever() {
+        let cache = FakeCache::answering(Ok(9_000));
+        let (consumer, _tx) = pressured(cache.clone(), LAUNCH_GRANT_MIB);
+        let outcome = consumer.reclaim(ask()).await;
+        assert_eq!(cache.asked(), vec![u64::from(LAUNCH_GRANT_MIB) - 1]);
+        assert_eq!(outcome.status, ReclaimStatus::Released);
+        assert_eq!(outcome.freed_bytes, 9_000, "the engine's receipt, not the plan");
+        assert!(heavy_lever_untouched(&consumer));
+        // The next ask lowers from the limit serving set, never from the launch grant again.
+        consumer.reclaim(ask()).await;
+        assert_eq!(cache.asked(), vec![u64::from(LAUNCH_GRANT_MIB) - 1, u64::from(LAUNCH_GRANT_MIB) - 2]);
+    }
+
+    // what this catches: an engine older than fork 9269444f6 (no route) leaving serving unable
+    // to yield. The refusal falls through to the heavy lever exactly as before.
+    #[tokio::test]
+    async fn a_refused_limit_falls_through_to_the_heavy_lever() {
+        let cache = FakeCache::answering(Err(PromptCacheRefusal::RouteMissing));
+        let (consumer, _tx) = pressured(cache.clone(), LAUNCH_GRANT_MIB);
+        let outcome = consumer.reclaim(ask()).await;
+        assert_eq!(cache.asked().len(), 1, "the cache was asked first");
+        assert_eq!(outcome.status, ReclaimStatus::Deferred);
+        assert_eq!(consumer.intent.snapshot().pinned.as_deref(), Some("coder-7b"), "the tier-down carried the reclaim");
+    }
+
+    // what this catches: a spent lever answering forever. A cache at the route's floor (1 MiB),
+    // or one whose launch grant is unknown (0 on the snapshot), is never asked; the heavy lever
+    // decides.
+    #[tokio::test]
+    async fn a_cache_at_its_floor_or_of_unknown_size_falls_through() {
+        for grant in [1, 0] {
+            let cache = FakeCache::answering(Ok(9_000));
+            let (consumer, _tx) = pressured(cache.clone(), grant);
+            let outcome = consumer.reclaim(ask()).await;
+            assert!(cache.asked().is_empty(), "grant {grant}: nothing to lower");
+            assert_eq!(outcome.status, ReclaimStatus::Deferred);
+            assert_eq!(consumer.intent.snapshot().pinned.as_deref(), Some("coder-7b"));
+        }
+    }
+
+    // what this catches: crediting bytes the process still holds. The engine says it evicted
+    // 9,000 bytes; the process measured only 3,000 lower (the allocator keeps the rest a
+    // while), so 3,000 is what serving reports, Partial against an 8,000-byte target.
+    #[tokio::test]
+    async fn a_measured_drop_smaller_than_the_receipt_is_what_is_reported() {
+        let live = Arc::new(std::sync::Mutex::new(30_000u64));
+        let process = live.clone();
+        let cache = Arc::new(FakeCache {
+            asked: std::sync::Mutex::new(Vec::new()),
+            answer: Ok(9_000),
+            on_set: Box::new(move || *process.lock().unwrap() -= 3_000), // JUSTIFIED unwrap: a test mutex
+        });
+        let (consumer, _tx) = pressured(cache, LAUNCH_GRANT_MIB);
+        let consumer = consumer.with_measured(Arc::new(move |_m: &str| Some(*live.lock().unwrap()))); // JUSTIFIED unwrap: a test mutex
+        let outcome = consumer.reclaim(ask()).await;
+        assert_eq!(outcome.freed_bytes, 3_000);
+        assert_eq!(outcome.status, ReclaimStatus::Partial);
+        assert!(outcome.detail.unwrap_or_default().contains("measured 3000 lower")); // unwrap_or_default: a missing detail fails the assert
+        assert!(heavy_lever_untouched(&consumer));
+    }
+
+    // what this catches: a reclaim RAISING the cache. Only a different engine (both identities
+    // known) starts again from its launch grant; an engine the lever cannot tell apart keeps the
+    // lower of what serving set and its grant.
+    #[test]
+    fn only_a_different_engine_starts_again_from_its_launch_grant() {
+        use crate::modules::serving_consumer::prompt_cache::{current_limit, LastSet};
+        let engine = |pid| Some(EngineIncarnation { pid, started_s: 100, port: 8080 });
+        let set = |engine, mib| Some(LastSet { engine, limit_mib: NonZeroU64::new(mib).unwrap() }); // JUSTIFIED unwrap: test literals are nonzero
+        let mib = |n: u64| NonZeroU64::new(n);
+        assert_eq!(current_limit(set(engine(7), 4_000), engine(7), 9_369), mib(4_000), "the same engine");
+        assert_eq!(current_limit(set(engine(7), 4_000), engine(8), 9_369), mib(9_369), "a relaunched engine");
+        assert_eq!(current_limit(set(engine(7), 4_000), None, 9_369), mib(4_000), "an unknown engine is never raised");
+        assert_eq!(current_limit(set(None, 4_000), engine(8), 0), mib(4_000), "no grant: what serving set");
+        assert_eq!(current_limit(None, engine(7), 0), None, "nothing known: no lever");
+    }
+}
