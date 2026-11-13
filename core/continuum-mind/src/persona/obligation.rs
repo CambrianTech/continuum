@@ -193,6 +193,7 @@ pub async fn find<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uu
                 "collection": PersonaObligation::COLLECTION,
                 "dbPath": handle(persona_name),
                 "filter": { "id": id.to_string() },
+                "limit": 1,
             }),
         )
         .await?;
