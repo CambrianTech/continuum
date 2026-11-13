@@ -50,6 +50,56 @@ fn descriptor(element_type: ElementType, shape: Vec<u64>) -> BinaryDescriptor {
     BinaryDescriptor { element_type, byte_order: ByteOrder::Little, shape, producer: "fixture/native-v1".into() }
 }
 
+#[tokio::test]
+async fn native_write_fault_replay_keeps_bytes_after_request_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+    use std::{sync::Arc, time::Duration};
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("cancelled-native.db");
+    let path = path.to_str().ok_or("non-UTF8 fixture path")?;
+    let real = Arc::new(SeaOrmAdapter::connect(AdapterConfig {
+        connection_string: path.into(), ..Default::default()
+    }).await?);
+    real.ensure_schema(RequiredNativeRow::collection_schema()).await.into_result()?;
+    let gated = Arc::new(super::gated_adapter::GatedAdapter::new(real.clone()));
+    for creating in [true, false] {
+        let gate = gated.pause_next_write();
+        let caller = gated.clone();
+        let payload = BinaryValue::new(descriptor(ElementType::F16, vec![2]),
+            if creating { vec![0, 0x80, 0xff, 0x7f] } else { vec![0xff, 0x7f, 0, 0x80] })?;
+        let request = tokio::spawn(async move {
+            if creating {
+                caller.create_binary(DataRecord {
+                    id: "cancelled".into(), collection: RequiredNativeRow::COLLECTION.into(),
+                    data: json!({"label":"native cancellation"}), metadata: RecordMetadata::default(),
+                }, std::collections::BTreeMap::from([("payload".into(), payload)])).await.into_result().map(|_| ())
+            } else {
+                caller.update_binary(RequiredNativeRow::COLLECTION, "cancelled", "payload", payload)
+                    .await.into_result().map(|_| ())
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(5), gate.entered.notified()).await?;
+        request.abort();
+        assert!(request.await.is_err_and(|error| error.is_cancelled()));
+        // A pending write must not block an independent metadata reader.
+        let count = tokio::time::timeout(Duration::from_secs(5),
+            real.count(QueryBuilder::new(RequiredNativeRow::COLLECTION).build())).await?.into_result()?;
+        assert_eq!(count, usize::from(!creating));
+        gate.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), gate.done.notified()).await?;
+        let page = real.binary_page(RequiredNativeRow::COLLECTION, "payload", None, 1).await.into_result()?;
+        let payload = page[0].value.as_ref().ok_or("cancelled write lost payload")?;
+        assert_eq!(payload.bytes(), if creating { &[0, 0x80, 0xff, 0x7f] } else { &[0xff, 0x7f, 0, 0x80] });
+        assert_eq!(payload.descriptor(), &descriptor(ElementType::F16, vec![2]));
+    }
+    drop(gated);
+    drop(real);
+    let reopened = open(path).await?;
+    reopened.ensure(RequiredNativeRow::collection_schema()).await?;
+    let page = reopened.binary_page(RequiredNativeRow::COLLECTION, "payload", None, 1).await?;
+    assert_eq!(page[0].value.as_ref().ok_or("restart lost payload")?.bytes(), &[0xff, 0x7f, 0, 0x80]);
+    Ok(())
+}
+
 #[test]
 fn native_payload_moves_allocation_and_checks_only_descriptor() -> Result<(), String> {
     // Arbitrary bit patterns must survive; storage is not a numeric validator.
