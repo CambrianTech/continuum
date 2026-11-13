@@ -64,7 +64,7 @@ async fn engine(residency: &'static str) -> (LearningEngine, Arc<Mutex<Vec<serde
         .route("/learn/residency/release", axum::routing::post(|| async { axum::Json(ledger("none")) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let port = listener.local_addr().expect("test: addr").port();
-    (LearningEngine::serving_here(port).expect("test: this process's start time is readable"), seen, tokio::spawn(async move { axum::serve(listener, app).await }))
+    (LearningEngine::serving_here(port).expect("test: this process's start time is readable"), seen, tokio::spawn(async move { axum::serve(listener, crate::inference::llama_server::learn_events::ticketing(app)).await }))
 }
 
 fn leased(authority: &Authority) -> u64 {
@@ -168,7 +168,7 @@ async fn engine_relaunched_after_the_load(after: &'static str, release: &'static
         .route("/learn/residency/release", axum::routing::post(move || async move { axum::Json(ledger_of(after, release)) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let port = listener.local_addr().expect("test: addr").port();
-    (LearningEngine::serving_here(port).expect("test: this process's start time is readable"), tokio::spawn(async move { axum::serve(listener, app).await }))
+    (LearningEngine::serving_here(port).expect("test: this process's start time is readable"), tokio::spawn(async move { axum::serve(listener, crate::inference::llama_server::learn_events::ticketing(app)).await }))
 }
 
 // what this catches: a lost load reply read as proof that nothing loaded (Codex's audit of fed5f3f64).
@@ -284,7 +284,7 @@ async fn a_cancelled_seat_leaves_its_lease_in_custody_until_settled() {
         .route("/learn/residency/release", axum::routing::post(|| async { axum::Json(ledger("none")) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let port = listener.local_addr().expect("test: addr").port();
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let server = tokio::spawn(async move { axum::serve(listener, crate::inference::llama_server::learn_events::ticketing(app)).await });
     let cancelled = tokio::time::timeout(std::time::Duration::from_millis(500), seat(&authority, LearningEngine::serving_here(port).expect("test: this process's start time is readable"), "learning:her", shadow())).await;
     assert!(cancelled.is_err(), "test: the caller stopped waiting mid-load");
     assert_eq!((leased(&authority), authority.custody.held()), (WEIGHTS, (1, 1)), "the lease outlives the dropped future");
@@ -317,7 +317,7 @@ async fn a_refused_stop_hands_the_mind_back_with_its_lease() {
         .route("/learn/residency/release", axum::routing::post(|| async { axum::Json(ledger("busy")) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let port = listener.local_addr().expect("test: addr").port();
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let server = tokio::spawn(async move { axum::serve(listener, crate::inference::llama_server::learn_events::ticketing(app)).await });
     let mind = crate::genome::learner::mind::MindLearner::start(&authority, LearningEngine::serving_here(port).expect("test: this process's start time is readable"), "learning:her", shadow(), std::time::Duration::from_secs(60))
         .await
         .map_err(|why| why.to_string())

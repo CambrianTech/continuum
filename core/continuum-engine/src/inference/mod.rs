@@ -43,6 +43,7 @@ pub mod lane_demand;
 pub mod lane_health;
 pub mod lane_send;
 pub mod stream_liveness;
+pub mod sse_frames;
 pub mod lane;
 pub mod lane_pidfile;
 pub mod lane_process;

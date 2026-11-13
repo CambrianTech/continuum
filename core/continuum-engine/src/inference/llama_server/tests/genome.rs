@@ -60,7 +60,7 @@ async fn a_busy_second_retire_leaves_the_served_set_naming_what_the_engine_holds
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let root = format!("http://{}", listener.local_addr().expect("test: addr"));
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let server = tokio::spawn(async move { axum::serve(listener, crate::inference::llama_server::learn_events::ticketing(app)).await });
     let process = LlamaServerProcess::with_root(root);
     *process.served_adapters.lock().unwrap() = Some(vec!["/genes/a.gguf".into(), "/genes/b.gguf".into()]); // JUSTIFIED: test-owned lock, never poisoned
     let dir = tempfile::tempdir().expect("test: tempdir");
@@ -94,7 +94,7 @@ async fn a_fresh_process_reads_an_adopted_engines_genes_from_its_report() {
         .route("/lora-adapters", axum::routing::get(move || { let report = report.clone(); async move { axum::Json(report) } }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let root = format!("http://{}", listener.local_addr().expect("test: addr"));
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let server = tokio::spawn(async move { axum::serve(listener, crate::inference::llama_server::learn_events::ticketing(app)).await });
     let fresh = LlamaServerProcess::with_root(root);
     let target = target_with_adapters("coder-14b", &["/genes/a.gguf", "/genes/b.gguf"]);
     let held = fresh.active_adapters(&target).await.expect("test: the engine reported its set");
@@ -106,7 +106,7 @@ async fn a_fresh_process_reads_an_adopted_engines_genes_from_its_report() {
         .route("/lora-adapters", axum::routing::get(|| async { axum::Json(serde_json::json!({"not": "an array"})) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let root = format!("http://{}", listener.local_addr().expect("test: addr"));
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let server = tokio::spawn(async move { axum::serve(listener, crate::inference::llama_server::learn_events::ticketing(app)).await });
     let fresh = LlamaServerProcess::with_root(root);
     assert!(fresh.active_adapters(&target).await.is_err(), "a malformed report is an error, never an empty set");
     assert_eq!(*fresh.served_adapters.lock().unwrap(), None, "and nothing is recorded"); // JUSTIFIED: test-owned lock, never poisoned
