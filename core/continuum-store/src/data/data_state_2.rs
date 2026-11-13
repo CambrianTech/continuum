@@ -551,7 +551,7 @@ impl DataState {
             );
             match engine.run().await {
                 Ok(status) => {
-                    log_info!("data", "migration/start", "Migration completed: {}", status);
+                    log_info!("data", "migration/start", "Migration completed: {:?}", status);
                 }
                 Err(e) => {
                     log_error!("data", "migration/start", "Migration failed: {}", e);

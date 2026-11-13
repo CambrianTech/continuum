@@ -11,7 +11,8 @@
 //! - Configurable batch size and throttle
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+#[cfg(test)]
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -207,12 +208,6 @@ impl MigrationHandle {
         }
     }
 
-    /// Get current migration status as JSON — thin projection of [`status`](Self::status)
-    /// for the `run()` return and other Value-shaped callers.
-    pub fn status_json(&self) -> Value {
-        serde_json::to_value(self.status()).unwrap_or_else(|_| json!({}))
-    }
-
     /// Pause the migration (atomic flag — no lock needed)
     pub fn pause(&self) {
         self.paused.store(true, Ordering::Relaxed);
@@ -313,7 +308,7 @@ impl MigrationEngine {
     }
 
     /// Run the full migration
-    pub async fn run(&mut self) -> Result<Value, String> {
+    pub async fn run(&mut self) -> Result<MigrationProgress, String> {
         self.running.store(true, Ordering::Relaxed);
 
         // Step 1: Discover collections
@@ -370,7 +365,7 @@ impl MigrationEngine {
         }
 
         self.running.store(false, Ordering::Relaxed);
-        Ok(self.handle().status_json())
+        Ok(self.handle().status())
     }
 
     /// Migrate a single collection with streaming pagination
@@ -473,11 +468,6 @@ impl MigrationEngine {
         Ok(())
     }
 
-    /// Convenience: get current status
-    pub fn status_json(&self) -> Value {
-        self.handle().status_json()
-    }
-
     /// Convenience: pause
     pub fn pause(&self) {
         self.paused.store(true, Ordering::Relaxed);
@@ -561,9 +551,9 @@ mod tests {
         );
 
         let status = engine.run().await.unwrap();
-        assert_eq!(status["total"], 25);
-        assert_eq!(status["migrated"], 25);
-        assert_eq!(status["failed"], 0);
+        assert_eq!(status.total, 25);
+        assert_eq!(status.migrated, 25);
+        assert_eq!(status.failed, 0);
 
         // Verify
         let verify = engine.verify().await.unwrap();
@@ -630,12 +620,12 @@ mod tests {
         engine.pause();
         let status = engine.run().await.unwrap();
         // Should have paused before migrating (or after first batch)
-        assert!(status["paused"].as_bool().unwrap());
+        assert!(status.paused);
 
         // Resume and complete
         engine.resume();
         let status = engine.run().await.unwrap();
-        assert_eq!(status["migrated"], 10);
+        assert_eq!(status.migrated, 10);
     }
 
     #[tokio::test]
@@ -659,8 +649,8 @@ mod tests {
             MigrationEngine::new(source.clone(), target.clone(), MigrationConfig::default());
 
         let status = engine.run().await.unwrap();
-        assert_eq!(status["total"], 0);
-        assert_eq!(status["migrated"], 0);
+        assert_eq!(status.total, 0);
+        assert_eq!(status.migrated, 0);
     }
 
     #[tokio::test]
