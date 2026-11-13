@@ -25,6 +25,39 @@ fn assert_clean(world: &World) {
     assert!(world.violations.is_empty(), "violations {:?}\n{}", world.violations, world.log.join("\n"));
 }
 
+/// Characterization of the missing preparation interval, NOT the desired service contract.
+/// Windows 2026-11-12T23:14:32Z measured a 21,566 ms restore, followed by an
+/// ungranted verdict and immediate save. Only that duration is recorded here;
+/// the two 10 s publications and the small pool are scripted interleavings.
+/// This drives the real grant owner, but does not simulate copies or claim that
+/// a quoted lease accounts for physical paging custody.
+#[test]
+fn slow_preparation_can_lose_its_grant_before_dispatch() {
+    use super::clock::Clock;
+
+    for (preparation_ms, loses_grant) in [(1, false), (21_566, true)] {
+        let mut world = two_on_a_small_pool();
+        world.apply(Step::Publish);
+        world.apply(Step::Quote(0));
+        assert_eq!(world.phase(0), Phase::Quoted);
+        let mut clock = Clock::new();
+        clock.at(10_000, Step::Publish);
+        clock.at(20_000, Step::Publish);
+        clock.at(preparation_ms, Step::Reserve(0));
+        while let Some(step) = clock.next() {
+            let applied = world.apply(step);
+            if step == Step::Reserve(0) {
+                assert_eq!(applied.refused.is_some(), loses_grant, "{}", world.log.join("\n"));
+                assert_eq!(clock.virtual_ms(), preparation_ms);
+                world.apply(Step::Send(0));
+                assert_eq!(world.phase(0) == Phase::Sent, !loses_grant);
+                assert_clean(&world);
+                break;
+            }
+        }
+    }
+}
+
 /// Safety only: for a scenario about something else that crosses an engine replacement, where
 /// the known missed opportunity (`an_engine_replacement_keeps_the_oldest_waiters_place`) recurs.
 fn assert_safe(world: &World) {
