@@ -9,8 +9,9 @@
 //! What costs a node is paging, not occupancy: the model server reading weights back
 //! from swap (2026-09-08, decode at 1–9 t/s) or a build pushing pages out. So the swap
 //! axis is the smoothed rate of bytes swapped in plus out, which decays once the paging
-//! stops. Occupancy keeps one role: a swap file nine tenths full has nowhere left to
-//! page, and that stays Critical whatever the rate.
+//! stops. Occupancy keeps one role: a swap file the current paging would fill within one
+//! half-life has nowhere left to page, and that is Critical (measured: free swap against
+//! the rate, never a fixed fraction of the file).
 //!
 //! Where the kernel's counters are unreadable (Windows, a Mach error), the level falls
 //! back to occupancy as before. An unknown rate is never read as calm.
@@ -55,8 +56,13 @@ pub(crate) const SWAP_WARNING_BYTES_PER_SEC: f64 = 4.0 * 1024.0 * 1024.0;
 // model server reading weights back from swap dropped decode to single digits (9/08).
 pub(crate) const SWAP_HIGH_BYTES_PER_SEC: f64 = 32.0 * 1024.0 * 1024.0;
 
-/// Occupancy at or above this is Critical whatever the rate: nowhere left to page to.
-pub(crate) const SWAP_FULL_FRACTION: f64 = 0.90;
+/// Is swap about to run out? The free swap (`total - used`) is less than what the current
+/// smoothed paging rate moves in one [`SWAP_RATE_HALF_LIFE`]: at this rate the node has
+/// nowhere left to page before the rate itself could decay. Idle paging never fills it.
+pub(crate) fn fills_within_half_life(swap_used: u64, swap_total: u64, bytes_per_sec: f64) -> bool {
+    let free = swap_total.saturating_sub(swap_used) as f64;
+    swap_total > 0 && bytes_per_sec > 0.0 && free < bytes_per_sec * SWAP_RATE_HALF_LIFE.as_secs_f64()
+}
 
 /// The smoothed swap rate, fed one counter reading per poll.
 #[derive(Debug, Default)]

@@ -241,7 +241,7 @@ impl MemoryPressureMonitor {
             let level = PressureLevel::worse(
                 PressureLevel::worse(
                     PressureLevel::from_pressure(pressure),
-                    PressureLevel::from_swap_activity(swap_pct, swap_rate),
+                    PressureLevel::from_swap_activity(swap_used, swap_total, swap_rate),
                 ),
                 PressureLevel::from_deficit(deficit),
             );
