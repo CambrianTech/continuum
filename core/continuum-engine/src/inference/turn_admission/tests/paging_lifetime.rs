@@ -107,7 +107,7 @@ async fn abandoned_context_switch_finishes_save_without_starting_restore() {
     let root = format!("http://{}", listener.local_addr().expect("test: address"));
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let directory = crate::inference::slots::directory();
-    let pool = directory.ensure_pool(&root, 1);
+    let pool = directory.ensure_pool(&root, 2);
     assert!(
         directory
             .negotiate_page_admission(&root, &pool, None, None)
@@ -115,7 +115,7 @@ async fn abandoned_context_switch_finishes_save_without_starting_restore() {
     );
     let old = PageKey::mind(Uuid::new_v4()).expect("test: old activity");
     let next = PageKey::mind(Uuid::new_v4()).expect("test: next activity");
-    let sem = Arc::new(Semaphore::new(1));
+    let sem = Arc::new(Semaphore::new(2));
     let client = reqwest::Client::new();
     let mut resident = admit_turn(
         &sem, crate::inference::slots::SlotClass::Turn,
@@ -130,6 +130,10 @@ async fn abandoned_context_switch_finishes_save_without_starting_restore() {
     .expect("test: cold resident");
     resident.generation_completed();
     drop(resident);
+    let warm_key = PageKey::mind(Uuid::new_v4()).expect("test: independent warm activity");
+    let mut warm = admit_turn(&sem, crate::inference::slots::SlotClass::Turn,
+        Some(warm_key), Some(pool.clone()), &client, &root, 100, Duration::ZERO)
+        .await.expect("test: second resident");
     pool.note_saved(next);
     let mut admitting = Box::pin(admit_turn(
         &sem, crate::inference::slots::SlotClass::Turn,
@@ -148,6 +152,21 @@ async fn abandoned_context_switch_finishes_save_without_starting_restore() {
     })
     .await
     .expect("test: save reached engine");
+    // A pending save owns its slot, not the whole endpoint. Another resident
+    // can finish and reacquire her live sequence before that save completes.
+    warm.generation_completed();
+    drop(warm);
+    let mut resumed = tokio::time::timeout(Duration::from_secs(5),
+        admit_turn(&sem, crate::inference::slots::SlotClass::Turn,
+            Some(warm_key), Some(pool.clone()), &client, &root, 100, Duration::ZERO))
+        .await.expect("test: warm work is not blocked by unrelated save")
+        .expect("test: warm admission");
+    assert!(resumed.page_confirmed);
+    assert!(!pool.confirms(&old), "save receipt has not landed");
+    assert!(futures::poll!(Box::pin(pool.acquire_slot(0)).as_mut()).is_pending(),
+        "save retains source slot until terminal receipt");
+    resumed.generation_completed();
+    drop(resumed);
     drop(admitting);
     release.notify_one();
     let permit = tokio::time::timeout(Duration::from_secs(5), pool.acquire_slot(0))
