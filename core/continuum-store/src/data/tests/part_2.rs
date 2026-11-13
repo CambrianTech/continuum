@@ -8,10 +8,11 @@ use super::*;
         let (_tmp, db_path) = test_db_path("backfill");
 
         // Create schema with content and embedding fields
-        let schema = CollectionSchema {
+        let mut schema = CollectionSchema {
             collection: "test_backfill".to_string(),
             fields: vec![
                 crate::orm::types::SchemaField {
+                default_value: None,
                     name: "content".to_string(),
                     field_type: crate::orm::types::FieldType::String,
                     indexed: false,
@@ -21,6 +22,7 @@ use super::*;
                     foreign_key: None,
                 },
                 crate::orm::types::SchemaField {
+                default_value: None,
                     name: "embedding".to_string(),
                     field_type: crate::orm::types::FieldType::Json,
                     indexed: false,
@@ -37,7 +39,8 @@ use super::*;
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
+        schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
         // Create records without embeddings
         for i in 0..5 {
@@ -154,9 +157,10 @@ use super::*;
         let module = DataModule::new(no_substrate_entities);
         let (tmp, db_path) = test_db_path(suffix);
 
-        let schema = CollectionSchema {
+        let mut schema = CollectionSchema {
             collection: "test_handle_cursor".to_string(),
             fields: vec![crate::orm::types::SchemaField {
+                default_value: None,
                 name: "name".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -168,7 +172,8 @@ use super::*;
             indexes: vec![],
         };
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
+        schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
         for i in 0..rows {
             let _ = create_via_state(

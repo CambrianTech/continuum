@@ -20,7 +20,7 @@ impl super::relational::RelationalStore {
             .filter_eq("id", id)
             .limit(1)
             .build();
-        let statement = super::relational_query::select(&schema, &query, false)?;
+        let statement = super::relational_query::select(&schema, &query, super::relational_query::Selection::Page)?;
         connection
             .query_one(DbBackend::Sqlite.build(&statement))
             .await

@@ -41,9 +41,7 @@
             .require()
             .unwrap()
             .submissions
-            .find_all()
-            .await
-            .unwrap()
+            .scan().await.unwrap().try_collect::<Vec<_>>().await.unwrap()
             .is_empty());
         trigger.shutdown().await.unwrap();
         // A late initialization publication cannot override authoritative stop.

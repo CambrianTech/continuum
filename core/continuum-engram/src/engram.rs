@@ -45,6 +45,8 @@
 //!   enable the `serde` feature and the existing persona modules use the
 //!   u64-epoch shape consistently.
 
+#[cfg(test)]
+use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -895,13 +897,13 @@ mod tests {
     #[tokio::test]
     async fn engram_round_trips_through_orm_store_with_derived_schema() {
         use continuum_kernel::orm::adapter::StorageAdapter;
-        use continuum_kernel::orm::sqlite::SqliteAdapter;
+        use continuum_kernel::orm::SeaOrmAdapter;
         use continuum_kernel::orm::OrmStore;
         use std::sync::Arc;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("engrams.sqlite");
-        let adapter = SqliteAdapter::open(&path).await.expect("adapter open");
+        let adapter = SeaOrmAdapter::open(&path).await.expect("adapter open");
         let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
 
         let store = OrmStore::<Engram>::new(adapter).await.expect("store");
@@ -931,7 +933,7 @@ mod tests {
             other => panic!("expected Airc origin, got {other:?}"),
         }
 
-        let all = store.find_all().await.expect("find_all");
+        let all = store.scan().await.expect("find_all").try_collect::<Vec<_>>().await.expect("test: stream rows");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].0, original_id);
         // tmp drops at function end, removing the tempdir cleanly.

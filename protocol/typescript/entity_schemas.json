@@ -1,7 +1,7 @@
 {
   "$schemaVersion": 1,
   "$generatedAt": "2026-06-11T17:50:50.044Z",
-  "$sha256": "44cbbfb1662c4514d7ea77c5432d5f7d6e99e2ea091726f2baa52b73b24ed2a2",
+  "$sha256": "ae79b8b55b594e7f7dcebde22daf2ac33acf2b34a670c0e40a68f825151fa952",
   "entities": {
     "users": {
       "collection": "users",
@@ -36,15 +36,6 @@
           "fieldType": "number",
           "options": {
             "nullable": false
-          }
-        },
-        {
-          "fieldName": "personaId",
-          "fieldType": "foreign_key",
-          "options": {
-            "index": true,
-            "nullable": true,
-            "references": "personas.id"
           }
         },
         {
@@ -145,7 +136,8 @@
           "options": {
             "index": true,
             "nullable": true,
-            "references": "genomes.id"
+            "references": "genomes.id",
+            "onDelete": "set_null"
           }
         },
         {
@@ -498,7 +490,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "Room.id"
+            "references": "rooms.id"
           }
         },
         {
@@ -507,7 +499,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "User.id"
+            "references": "users.id"
           }
         },
         {
@@ -516,7 +508,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "User.id"
+            "references": "users.id"
           }
         },
         {
@@ -816,7 +808,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "User.id"
+            "references": "users.id"
           }
         },
         {
@@ -1020,7 +1012,8 @@
           "options": {
             "nullable": false,
             "maxLength": 256,
-            "index": true
+            "index": true,
+            "unique": true
           }
         },
         {
@@ -1391,7 +1384,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "forge_recipes"
+            "references": "forge_recipes.id"
           }
         },
         {
@@ -2998,7 +2991,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "users"
+            "references": "users.id"
           }
         },
         {
@@ -3109,7 +3102,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "users"
+            "references": "users.id"
           }
         },
         {
@@ -3139,7 +3132,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "fine_tuning_datasets"
+            "references": "fine_tuning_datasets.id"
           }
         },
         {
@@ -3148,7 +3141,7 @@
           "options": {
             "index": true,
             "nullable": true,
-            "references": "fine_tuning_datasets"
+            "references": "fine_tuning_datasets.id"
           }
         },
         {
@@ -3287,7 +3280,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "users"
+            "references": "users.id"
           }
         },
         {
@@ -3324,7 +3317,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "fine_tuning_jobs"
+            "references": "fine_tuning_jobs.id"
           }
         },
         {
@@ -6963,7 +6956,8 @@
           "options": {
             "index": true,
             "nullable": true,
-            "references": "academy_curricula.id"
+            "references": "academy_curricula.id",
+            "onDelete": "set_null"
           }
         },
         {

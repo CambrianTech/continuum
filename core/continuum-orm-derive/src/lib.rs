@@ -248,6 +248,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 
         field_pushes.push(quote! {
             fields.push(#core::orm::SchemaField {
+                default_value: None,
                 name: #name_str.to_string(),
                 field_type: #field_type_tokens,
                 indexed: #indexed,
@@ -270,6 +271,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         let unique = idx.unique;
         index_pushes.push(quote! {
             indexes.push(#core::orm::SchemaIndex {
+                descending: false,
                 name: #name.to_string(),
                 fields: ::std::vec![#(#fields_lit),*],
                 unique: #unique,

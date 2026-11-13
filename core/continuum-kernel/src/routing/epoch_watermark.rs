@@ -34,7 +34,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::orm::query::{QueryBuilder, QueryOperator};
-use crate::orm::{Entity, OrmEntity, OrmStore, OrmStoreError, SqliteAdapter, StorageAdapter};
+use crate::orm::{Entity, OrmEntity, OrmStore, OrmStoreError, SeaOrmAdapter, StorageAdapter};
 
 /// The outcome of presenting `epoch` for a grantee against the watermark.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,7 +175,7 @@ impl OrmEpochWatermark {
     /// Open (creating if absent) the watermark database at `path` — the grant
     /// watermark of one airc home. Runs once at boot, not on the dispatch path.
     pub async fn open(path: &std::path::Path) -> Result<Self, WatermarkError> {
-        let adapter = Arc::new(SqliteAdapter::open(path).await.map_err(|detail| WatermarkError::Open {
+        let adapter = Arc::new(SeaOrmAdapter::open(path).await.map_err(|detail| WatermarkError::Open {
             path: path.to_path_buf(),
             detail,
         })?);

@@ -150,12 +150,15 @@ pub(super) fn condition(
     Ok(all)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Selection { Page, Stream, Count }
+
 pub(super) fn select(
     schema: &CollectionSchema,
     query: &StorageQuery,
-    count: bool,
+    selection: Selection,
 ) -> Result<SelectStatement, String> {
-    if !count && query.limit.is_none() {
+    if selection == Selection::Page && query.limit.is_none() {
         return Err(
             "record reads require an explicit page limit; use count for cardinality".into(),
         );
@@ -168,7 +171,7 @@ pub(super) fn select(
     statement
         .from(table.clone())
         .cond_where(condition(schema, query)?);
-    if count {
+    if selection == Selection::Count {
         statement.expr_as(
             Expr::col((table, column(schema, "id")?)).count(),
             Alias::new("count"),

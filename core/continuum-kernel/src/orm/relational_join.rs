@@ -30,7 +30,7 @@ impl super::relational::RelationalStore {
         let schema = self.schema(&query.collection)?;
         let mut primary = query.clone();
         primary.joins = None;
-        let mut statement = super::relational_query::select(&schema, &primary, false)?;
+        let mut statement = super::relational_query::select(&schema, &primary, super::relational_query::Selection::Page)?;
         let table = Alias::new(naming::to_table_name(&schema.collection));
         let mut joined = Vec::new();
         let mut aliases = std::collections::BTreeSet::new();

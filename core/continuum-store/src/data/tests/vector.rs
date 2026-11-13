@@ -7,6 +7,7 @@ async fn vector_corpus_pages_past_rows_without_embeddings() {
     let module = DataModule::new(no_substrate_entities);
     let (_tmp, db_path) = test_db_path("vector_pages");
     let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
+    declare_fixture(adapter.as_ref(), "test_vector_pages", &[("embedding", crate::orm::FieldType::Json), ("content", crate::orm::FieldType::String)]).await;
     let page_size = crate::data::max_concurrent_queries::default_page_size();
     for index in 0..page_size + 3 {
         let embedding = if index < page_size { json!([]) } else { json!([index as f64, 1.0]) };
@@ -50,10 +51,11 @@ async fn test_vector_index_and_stats() {
     let (_tmp, db_path) = test_db_path("vector_index");
 
     // Create schema with embedding field
-    let schema = CollectionSchema {
+    let mut schema = CollectionSchema {
         collection: "test_vectors".to_string(),
         fields: vec![
             crate::orm::types::SchemaField {
+                default_value: None,
                 name: "content".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -63,6 +65,7 @@ async fn test_vector_index_and_stats() {
                 foreign_key: None,
             },
             crate::orm::types::SchemaField {
+                default_value: None,
                 name: "embedding".to_string(),
                 field_type: crate::orm::types::FieldType::Json,
                 indexed: false,
@@ -79,7 +82,8 @@ async fn test_vector_index_and_stats() {
     // entity collection per Phase 2 Step 3) — call the adapter directly
     // with a synthetic test CollectionSchema.
     let adapter = module.state.get_adapter(&db_path).await.unwrap();
-    let _ = adapter.ensure_schema(schema).await;
+    schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
     // Create a record
     let create_result = create_via_state(
@@ -156,10 +160,11 @@ async fn test_vector_search_basic() {
     let (_tmp, db_path) = test_db_path("vector_search");
 
     // Create schema
-    let schema = CollectionSchema {
+    let mut schema = CollectionSchema {
         collection: "test_search".to_string(),
         fields: vec![
             crate::orm::types::SchemaField {
+                default_value: None,
                 name: "content".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -169,6 +174,7 @@ async fn test_vector_search_basic() {
                 foreign_key: None,
             },
             crate::orm::types::SchemaField {
+                default_value: None,
                 name: "embedding".to_string(),
                 field_type: crate::orm::types::FieldType::Json,
                 indexed: false,
@@ -185,7 +191,8 @@ async fn test_vector_search_basic() {
     // entity collection per Phase 2 Step 3) — call the adapter directly
     // with a synthetic test CollectionSchema.
     let adapter = module.state.get_adapter(&db_path).await.unwrap();
-    let _ = adapter.ensure_schema(schema).await;
+    schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
     // Create records with embeddings
     let embeddings: Vec<Vec<f64>> = vec![
@@ -285,9 +292,10 @@ async fn test_vector_cache_invalidation() {
     assert_ne!(db_path, alias);
 
     // Create schema
-    let schema = CollectionSchema {
+    let mut schema = CollectionSchema {
         collection: "test_cache".to_string(),
         fields: vec![crate::orm::types::SchemaField {
+                default_value: None,
             name: "embedding".to_string(),
             field_type: crate::orm::types::FieldType::Json,
             indexed: false,
@@ -303,7 +311,8 @@ async fn test_vector_cache_invalidation() {
     // entity collection per Phase 2 Step 3) — call the adapter directly
     // with a synthetic test CollectionSchema.
     let adapter = module.state.get_adapter(&db_path).await.unwrap();
-    let _ = adapter.ensure_schema(schema).await;
+    schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
     // Create a record with embedding
     let _ = create_via_state(

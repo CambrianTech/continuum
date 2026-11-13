@@ -336,7 +336,7 @@ impl DataState {
         {
             rust_schema
         } else if let Some(entity) = crate::entity_schemas::resolve(collection).map_err(|e| e.to_string())? {
-            crate::entity_schemas::to_collection_schema(entity)
+            crate::entity_schemas::to_collection_schema(entity)?
         } else {
             return Err(format!(
                 "Unknown collection '{collection}' — not in the Rust ORM registry and not in \

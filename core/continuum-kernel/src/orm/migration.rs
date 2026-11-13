@@ -341,7 +341,14 @@ impl MigrationEngine {
                     ..Default::default()
                 })
                 .await;
-            counted.push((collection.clone(), count.data.unwrap_or(0)));
+            let total = match count.into_result() {
+                Ok(total) => total,
+                Err(error) => {
+                    self.running.store(false, Ordering::Relaxed);
+                    return Err(format!("count source {collection}: {error}"));
+                }
+            };
+            counted.push((collection.clone(), total));
         }
         {
             let mut states = self.states.write();
@@ -378,7 +385,10 @@ impl MigrationEngine {
 
         *state.status.write() = MigrationStatus::InProgress;
 
-        // Ensure target schema exists by reading first record
+        // Copy the admitted entity contract even when the collection is empty.
+        // Constraints and codecs come from declarations, never the first row.
+        let schema = self.source.collection_schema(collection).into_result()?;
+        self.target.ensure_schema(schema).await.into_result()?;
         let total = state.total.load(Ordering::Relaxed);
         if total == 0 {
             *state.status.write() = MigrationStatus::Completed;
@@ -488,13 +498,11 @@ impl MigrationEngine {
 mod tests {
     use super::*;
     use crate::orm::adapter::AdapterConfig;
-    use crate::orm::sqlite::SqliteAdapter;
+    use crate::orm::SeaOrmAdapter;
     use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
 
     async fn setup_sqlite(path: &str) -> Arc<dyn StorageAdapter> {
-        let mut adapter = SqliteAdapter::new();
-        adapter
-            .initialize(AdapterConfig {
+        let adapter = SeaOrmAdapter::connect(AdapterConfig {
                 connection_string: path.to_string(),
                 ..Default::default()
             })
@@ -516,7 +524,8 @@ mod tests {
         source
             .ensure_schema(CollectionSchema {
                 collection: "items".to_string(),
-                fields: vec![SchemaField {
+                fields: crate::orm::base_entity_fields().into_iter().chain([SchemaField {
+                default_value: None,
                     name: "name".to_string(),
                     field_type: FieldType::String,
                     indexed: false,
@@ -524,10 +533,10 @@ mod tests {
                     nullable: true,
                     max_length: None,
                     foreign_key: None,
-                }],
+                }]).collect(),
                 indexes: vec![],
             })
-            .await;
+            .await.into_result().expect("test: storage operation succeeds");
 
         for i in 0..25 {
             source
@@ -537,7 +546,7 @@ mod tests {
                     data: json!({"name": format!("Item {}", i)}),
                     metadata: RecordMetadata::default(),
                 })
-                .await;
+                .await.into_result().expect("test: storage operation succeeds");
         }
 
         // Run migration
@@ -566,8 +575,8 @@ mod tests {
                 collection: "items".to_string(),
                 ..Default::default()
             })
-            .await;
-        assert_eq!(target_count.data.unwrap(), 25);
+            .await.into_result().expect("test: storage operation succeeds");
+        assert_eq!(target_count, 25);
     }
 
     #[tokio::test]
@@ -582,7 +591,8 @@ mod tests {
         source
             .ensure_schema(CollectionSchema {
                 collection: "items".to_string(),
-                fields: vec![SchemaField {
+                fields: crate::orm::base_entity_fields().into_iter().chain([SchemaField {
+                default_value: None,
                     name: "val".to_string(),
                     field_type: FieldType::String,
                     indexed: false,
@@ -590,10 +600,10 @@ mod tests {
                     nullable: true,
                     max_length: None,
                     foreign_key: None,
-                }],
+                }]).collect(),
                 indexes: vec![],
             })
-            .await;
+            .await.into_result().expect("test: storage operation succeeds");
 
         for i in 0..10 {
             source
@@ -603,7 +613,7 @@ mod tests {
                     data: json!({"val": format!("V{}", i)}),
                     metadata: RecordMetadata::default(),
                 })
-                .await;
+                .await.into_result().expect("test: storage operation succeeds");
         }
 
         let mut engine = MigrationEngine::new(
@@ -640,10 +650,10 @@ mod tests {
         source
             .ensure_schema(CollectionSchema {
                 collection: "empty".to_string(),
-                fields: vec![],
+                fields: crate::orm::base_entity_fields(),
                 indexes: vec![],
             })
-            .await;
+            .await.into_result().expect("test: storage operation succeeds");
 
         let mut engine =
             MigrationEngine::new(source.clone(), target.clone(), MigrationConfig::default());
@@ -665,7 +675,8 @@ mod tests {
         source
             .ensure_schema(CollectionSchema {
                 collection: "verifyable".to_string(),
-                fields: vec![SchemaField {
+                fields: crate::orm::base_entity_fields().into_iter().chain([SchemaField {
+                default_value: None,
                     name: "x".to_string(),
                     field_type: FieldType::Number,
                     indexed: false,
@@ -673,10 +684,10 @@ mod tests {
                     nullable: true,
                     max_length: None,
                     foreign_key: None,
-                }],
+                }]).collect(),
                 indexes: vec![],
             })
-            .await;
+            .await.into_result().expect("test: storage operation succeeds");
 
         for i in 0..5 {
             source
@@ -686,7 +697,7 @@ mod tests {
                     data: json!({"x": i}),
                     metadata: RecordMetadata::default(),
                 })
-                .await;
+                .await.into_result().expect("test: storage operation succeeds");
         }
 
         let mut engine = MigrationEngine::new(

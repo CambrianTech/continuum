@@ -63,13 +63,12 @@ impl DataState {
             log_info!(
                 "data",
                 "get_adapter",
-                "Creating SqliteAdapter for handle='{}' → {}",
+                "Creating SeaOrmAdapter for handle='{}' → {}",
                 handle,
                 connection_string
             );
-            let mut sqlite = SqliteAdapter::new();
-            sqlite.initialize(config).await?;
-            ensure_declared_indexes(&sqlite, handle).await?;
+            let sqlite = SeaOrmAdapter::connect(config).await?;
+            ensure_declared_schemas(&sqlite).await?;
             Arc::new(sqlite)
         };
 
@@ -78,52 +77,15 @@ impl DataState {
     }
 }
 
-/// Apply every TS-declared entity's indexes over the tables this store already has.
-/// Those collections are written row by row (`data/create` creates the table from the
-/// row), and since the core went headless nothing calls `data/ensure-schema` for them,
-/// so their declared indexes never reached the database: `chat_messages` scanned
-/// 103,319 rows per room page (27-29 ms; with the declared index, under 1 ms, measured
-/// on a copy of the M5's main.db 2026-10-26). Rust-authored entities are ensured by
-/// their own stores. Once per store open; `IF NOT EXISTS` makes a repeat a lookup.
-///
-/// An index is performance, never correctness: one the database refuses is a loud
-/// probe naming the entity, the index and the error, counted in the store's report,
-/// and the store opens without it (Cormac's review of #5466).
-async fn ensure_declared_indexes(sqlite: &SqliteAdapter, handle: &str) -> Result<(), String> {
-    let schemas = crate::entity_schemas::get_entity_schemas()
-        .map_err(|e| e.to_string())?
-        .values()
-        .map(crate::entity_schemas::to_collection_schema)
-        .collect();
-    let pass = sqlite.ensure_declared_indexes(schemas).await;
-    for failure in &pass.failed {
-        continuum_base::probe!(
-            class = "orm.declared_index.failed",
-            handle = handle,
-            entity = failure.collection.as_str(),
-            index = failure.index.as_str(),
-            error = failure.error.as_str(),
-            "a declared index could not be built; the store serves without it"
-        );
-        crate::log_warn!(
-            "data",
-            "declared_index",
-            "index {} on {} (handle '{}') failed, store open without it: {}",
-            failure.index,
-            failure.collection,
-            handle,
-            failure.error
-        );
+/// Decorator declarations are the schema authority, including constraints and indexes.
+/// A failed declaration refuses admission; the store never serves a partial schema.
+async fn ensure_declared_schemas(adapter: &SeaOrmAdapter) -> Result<(), String> {
+    for schema in crate::entity_schemas::get_entity_schemas()
+        .map_err(|e| e.to_string())?.values()
+    {
+        adapter.ensure_schema(crate::entity_schemas::to_collection_schema(schema)?)
+            .await.into_result()?;
     }
-    continuum_base::probe!(
-        class = "orm.declared_indexes.report",
-        handle = handle,
-        declared = pass.declared as u64,
-        applied = pass.ensured as u64,
-        awaiting_columns = pass.awaiting_columns as u64,
-        failed = pass.failed.len() as u64,
-        "declared entity indexes at store open"
-    );
     Ok(())
 }
 

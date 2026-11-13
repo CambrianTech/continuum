@@ -5,7 +5,11 @@ import type { ForeignKeyRef } from "./ForeignKeyRef";
 /**
  * Schema field definition
  */
-export type SchemaField = { name: string, fieldType: FieldType, indexed: boolean, unique: boolean, nullable: boolean, maxLength?: number, 
+export type SchemaField = {
+/**
+ * Explicit declared insertion value; absence never invents a value.
+ */
+defaultValue?: unknown, name: string, fieldType: FieldType, indexed: boolean, unique: boolean, nullable: boolean, maxLength?: number,
 /**
  * Optional FK reference to another collection's field. Adapters
  * emit `FOREIGN KEY (this.name) REFERENCES <collection>(<field>)

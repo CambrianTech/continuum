@@ -283,6 +283,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
     use crate::orm::types::{FieldType, SchemaField};
     vec![
         SchemaField {
+                default_value: None,
             name: "id".to_string(),
             field_type: FieldType::Uuid,
             indexed: true,
@@ -292,6 +293,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
             foreign_key: None,
         },
         SchemaField {
+                default_value: None,
             name: "createdAt".to_string(),
             field_type: FieldType::Date,
             indexed: true,
@@ -301,6 +303,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
             foreign_key: None,
         },
         SchemaField {
+                default_value: None,
             name: "updatedAt".to_string(),
             field_type: FieldType::Date,
             indexed: true,
@@ -310,6 +313,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
             foreign_key: None,
         },
         SchemaField {
+                default_value: None,
             name: "version".to_string(),
             field_type: FieldType::Number,
             indexed: false,
@@ -383,6 +387,7 @@ mod tests {
             CollectionSchema {
                 collection: "alpha_test_collection".to_string(),
                 fields: vec![SchemaField {
+                default_value: None,
                     name: "id".to_string(),
                     field_type: FieldType::String,
                     indexed: true,
@@ -404,6 +409,7 @@ mod tests {
                 collection: "beta_test_collection".to_string(),
                 fields: vec![
                     SchemaField {
+                default_value: None,
                         name: "id".to_string(),
                         field_type: FieldType::String,
                         indexed: true,
@@ -413,6 +419,7 @@ mod tests {
                         foreign_key: None,
                     },
                     SchemaField {
+                default_value: None,
                         name: "value".to_string(),
                         field_type: FieldType::Number,
                         indexed: false,
@@ -423,6 +430,7 @@ mod tests {
                     },
                 ],
                 indexes: vec![SchemaIndex {
+                    descending: false,
                     name: "idx_value".to_string(),
                     fields: vec!["value".to_string()],
                     unique: false,
@@ -440,6 +448,7 @@ mod tests {
             CollectionSchema {
                 collection: "beta_test_collection".to_string(),
                 fields: vec![SchemaField {
+                default_value: None,
                     name: "different_field".to_string(),
                     field_type: FieldType::Boolean,
                     indexed: false,
@@ -570,6 +579,7 @@ mod tests {
                     collection: "order_test".to_string(),
                     fields: vec![
                         SchemaField {
+                default_value: None,
                             name: "a".to_string(),
                             field_type: FieldType::String,
                             indexed: false,
@@ -579,6 +589,7 @@ mod tests {
                             foreign_key: None,
                         },
                         SchemaField {
+                default_value: None,
                             name: "b".to_string(),
                             field_type: FieldType::Number,
                             indexed: false,
@@ -600,6 +611,7 @@ mod tests {
                     collection: "order_test".to_string(),
                     fields: vec![
                         SchemaField {
+                default_value: None,
                             name: "b".to_string(),
                             field_type: FieldType::Number,
                             indexed: false,
@@ -609,6 +621,7 @@ mod tests {
                             foreign_key: None,
                         },
                         SchemaField {
+                default_value: None,
                             name: "a".to_string(),
                             field_type: FieldType::String,
                             indexed: false,

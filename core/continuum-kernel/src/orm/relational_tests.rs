@@ -220,7 +220,7 @@ async fn monotonic_updates_refuse_stale_values_and_preserve_exact_integers(
 async fn typed_store_uses_seaorm_adapter_and_database_side_statistics(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let adapter = std::sync::Arc::new(
-        super::relational_adapter::SeaOrmAdapter::open(AdapterConfig {
+        super::relational_adapter::SeaOrmAdapter::connect(AdapterConfig {
             connection_string: ":memory:".into(),
             max_connections: 1,
             ..Default::default()
@@ -308,5 +308,23 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
         store.query(query).await.is_err(),
         "a repeated sequence value cannot identify a page boundary"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn declared_defaults_and_length_are_enforced_by_storage() -> Result<(), Box<dyn std::error::Error>> {
+    let store = store(":memory:").await?;
+    let mut schema = CollectionSchema { collection: "declared_defaults".into(), fields: base_entity_fields(), indexes: vec![] };
+    schema.fields.push(SchemaField {
+        name: "label".into(), field_type: FieldType::String, default_value: Some(json!("abc")),
+        nullable: false, indexed: false, unique: false, max_length: Some(3), foreign_key: None,
+    });
+    store.ensure(schema).await?;
+    store.insert(&store.db, &record("default", "declared_defaults", json!({}))).await?;
+    let rows = store.query(QueryBuilder::new("declared_defaults").limit(1).build()).await?;
+    assert_eq!(rows[0].data["label"], json!("abc"));
+    assert!(store.insert(&store.db, &record("too-long", "declared_defaults", json!({"label":"abcd"}))).await.is_err());
+    assert!(store.insert(&store.db, &record("null", "declared_defaults", json!({"label":null}))).await.is_err());
+    assert_eq!(store.count(QueryBuilder::new("declared_defaults").build()).await?, 1);
     Ok(())
 }

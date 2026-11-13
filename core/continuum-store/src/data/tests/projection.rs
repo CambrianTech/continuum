@@ -6,6 +6,8 @@ use super::*;
 async fn list_projects_in_storage_and_preserves_count_and_identity() -> Result<(), Box<dyn std::error::Error>> {
     let module = DataModule::new(no_substrate_entities);
     let (_tmp, path) = test_db_path("projection");
+    let adapter = module.state.get_adapter(&path).await?;
+    declare_fixture(adapter.as_ref(), "projection", &[("cardId", crate::orm::FieldType::String), ("state", crate::orm::FieldType::Number), ("payload", crate::orm::FieldType::String)]).await;
     for n in 0..3 {
         let created = module.state.create_record(&path, "projection".into(), Some(format!("row-{n}")),
             json!({"cardId": "card", "state": n, "payload": "x".repeat(1_000_000)})).await?;

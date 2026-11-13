@@ -72,9 +72,6 @@ pub trait StorageAdapter: Send + Sync {
     /// Get adapter capabilities
     fn capabilities(&self) -> AdapterCapabilities;
 
-    /// Initialize the adapter with configuration
-    async fn initialize(&mut self, config: AdapterConfig) -> Result<(), String>;
-
     /// Close the adapter connection
     async fn close(&mut self) -> Result<(), String>;
 
@@ -88,6 +85,12 @@ pub trait StorageAdapter: Send + Sync {
 
     /// Query records with filters
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>>;
+
+    /// Stream declared records for replay without materializing a result set.
+    /// Dropping the stream releases its database read and connection.
+    async fn scan(&self, query: StorageQuery)
+        -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, String>;
+
 
     /// Query with JOINs for optimal loading of related data
     /// Returns records with joined data nested under alias keys
@@ -146,6 +149,9 @@ pub trait StorageAdapter: Send + Sync {
 
     /// Ensure collection schema exists
     async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool>;
+
+    /// Return the admitted declaration, never infer a schema from row values.
+    fn collection_schema(&self, collection: &str) -> StorageResult<CollectionSchema>;
 
     /// List all collections
     async fn list_collections(&self) -> StorageResult<Vec<String>>;

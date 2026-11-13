@@ -8,7 +8,7 @@ use super::{
 use async_trait::async_trait;
 use serde_json::Value;
 
-pub(super) struct SeaOrmAdapter {
+pub struct SeaOrmAdapter {
     store: RelationalStore,
 }
 
@@ -20,7 +20,15 @@ fn receipt<T>(result: Result<T, String>) -> StorageResult<T> {
 }
 
 impl SeaOrmAdapter {
-    pub async fn open(config: AdapterConfig) -> Result<Self, String> {
+    /// Open the file owned by a typed ORM store.
+    pub async fn open(path: &std::path::Path) -> Result<Self, String> {
+        let connection_string = path.to_str()
+            .ok_or_else(|| format!("database path {} is not valid UTF-8", path.display()))?
+            .to_owned();
+        Self::connect(AdapterConfig { connection_string, ..AdapterConfig::default() }).await
+    }
+
+    pub async fn connect(config: AdapterConfig) -> Result<Self, String> {
         Ok(Self {
             store: RelationalStore::open(config).await?,
         })
@@ -42,9 +50,6 @@ impl StorageAdapter for SeaOrmAdapter {
             supports_batch: true,
             max_record_size: 1_000_000_000,
         }
-    }
-    async fn initialize(&mut self, _config: AdapterConfig) -> Result<(), String> {
-        Err("SeaORM adapters are initialized by open; close and open a new owner to change databases".into())
     }
     async fn close(&mut self) -> Result<(), String> {
         let _guard = self.store.writer_gate.lock().await;
@@ -68,6 +73,19 @@ impl StorageAdapter for SeaOrmAdapter {
     }
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
         receipt(self.store.query(query).await)
+    }
+    async fn scan(&self, query: StorageQuery)
+        -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, String>
+    {
+        use futures::StreamExt;
+        use sea_orm::StreamTrait;
+        let schema = self.store.schema(&query.collection)?;
+        let statement = super::relational_query::select(
+            &schema, &query, super::relational_query::Selection::Stream)?;
+        let rows = self.store.db.stream(sea_orm::DbBackend::Sqlite.build(&statement))
+            .await.map_err(|error| error.to_string())?;
+        Ok(rows.map(move |row| row.map_err(|error| error.to_string())
+            .and_then(|row| super::relational_codec::decode(row, &schema))).boxed())
     }
     async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
         receipt(self.store.query_joined(query).await)
@@ -114,6 +132,9 @@ impl StorageAdapter for SeaOrmAdapter {
     }
     async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool> {
         receipt(self.store.ensure(schema).await.map(|()| true))
+    }
+    fn collection_schema(&self, collection: &str) -> StorageResult<CollectionSchema> {
+        receipt(self.store.schema(collection).map(|schema| schema.as_ref().clone()))
     }
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
         StorageResult::ok(self.store.collections())

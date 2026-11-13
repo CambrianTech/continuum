@@ -1,6 +1,6 @@
 //! A test adapter that can hold ONE write mid-flight, the way a real write runs.
 //!
-//! [`SqliteAdapter`](super::SqliteAdapter) runs every write on `spawn_blocking`, so a
+//! [`SeaOrmAdapter`](super::SeaOrmAdapter) runs every write on its detached transaction owner, so a
 //! caller dropped while awaiting a write does not stop it: the write lands later, on its
 //! own. [`GatedAdapter`] reproduces that shape deterministically. Every write runs on a
 //! detached task; [`GatedAdapter::pause_next_write`] makes the next one wait at a gate
@@ -16,7 +16,7 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use tokio::sync::Notify;
 
-use super::adapter::{AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter};
+use super::adapter::{AdapterCapabilities, ClearAllResult, StorageAdapter};
 use super::query::StorageQuery;
 use super::types::{BatchOperation, CollectionSchema, CollectionStats, DataRecord, StorageResult, UUID};
 
@@ -81,9 +81,6 @@ impl StorageAdapter for GatedAdapter {
     fn capabilities(&self) -> AdapterCapabilities {
         self.inner.capabilities()
     }
-    async fn initialize(&mut self, _config: AdapterConfig) -> Result<(), String> {
-        Err("the gated fixture wraps an adapter that is already initialized".to_string())
-    }
     async fn close(&mut self) -> Result<(), String> {
         Err("the gated fixture does not own its adapter".to_string())
     }
@@ -96,6 +93,9 @@ impl StorageAdapter for GatedAdapter {
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
         self.inner.query(query).await
     }
+    async fn scan(&self, query: StorageQuery)
+        -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, String>
+    { self.inner.scan(query).await }
     async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
         self.inner.query_with_join(query).await
     }
@@ -126,6 +126,9 @@ impl StorageAdapter for GatedAdapter {
     }
     async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool> {
         self.inner.ensure_schema(schema).await
+    }
+    fn collection_schema(&self, collection: &str) -> StorageResult<CollectionSchema> {
+        self.inner.collection_schema(collection)
     }
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
         self.inner.list_collections().await

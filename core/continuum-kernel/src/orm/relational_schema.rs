@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use sea_orm::sea_query::{
-    Alias, ColumnDef, ForeignKey, ForeignKeyAction, Index, IndexCreateStatement, Table,
+    Alias, Expr, Func, IndexOrder, ColumnDef, ForeignKey, ForeignKeyAction, Index, IndexCreateStatement, Table,
     TableCreateStatement,
 };
 
@@ -63,6 +63,16 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, String
         if field.unique {
             column.unique_key();
         }
+        if let Some(default) = &field.default_value {
+            column.default(super::relational_codec::encode(field, default)?);
+        }
+        if let Some(max) = field.max_length {
+            if !matches!(field.field_type, FieldType::String | FieldType::Uuid | FieldType::Date) {
+                return Err(format!("{}.{}: max_length requires a text field", schema.collection, field.name));
+            }
+            let max = i64::try_from(max).map_err(|_| "max_length exceeds integer range")?;
+            column.check(Expr::expr(Func::cust(Alias::new("length")).arg(Expr::col(Alias::new(&name)))).lte(max));
+        }
         create.col(&mut column);
         if let Some(reference) = &field.foreign_key {
             if !field.nullable
@@ -111,7 +121,7 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, String
             .name(&declared.name)
             .table(Alias::new(&table))
             .if_not_exists();
-        for field in &declared.fields {
+        for (position, field) in declared.fields.iter().enumerate() {
             let name = naming::to_snake_case(field);
             if !columns.contains(&name) {
                 return Err(format!(
@@ -119,7 +129,8 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, String
                     schema.collection, declared.name
                 ));
             }
-            index.col(Alias::new(name));
+            let order = if declared.descending && position + 1 == declared.fields.len() { IndexOrder::Desc } else { IndexOrder::Asc };
+            index.col((Alias::new(name), order));
         }
         if declared.unique {
             index.unique();
@@ -150,6 +161,7 @@ mod tests {
             indexes: vec![],
         };
         child.fields.push(SchemaField {
+                default_value: None,
             name: "parentId".into(),
             field_type: FieldType::Uuid,
             indexed: true,
@@ -164,6 +176,7 @@ mod tests {
             }),
         });
         child.indexes.push(SchemaIndex {
+                descending: false,
             name: "unique_parent".into(),
             fields: vec!["parentId".into()],
             unique: true,

@@ -30,6 +30,13 @@ impl RelationalStore {
             return Err("SQLite namespaces require separate database owners".into());
         }
         let in_memory = config.connection_string == ":memory:";
+        if !in_memory {
+            let path = std::path::Path::new(&config.connection_string);
+            if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+                continuum_host::confine::open_root(parent)
+                    .map_err(|error| format!("database directory {}: {error}", parent.display()))?;
+            }
+        }
         let url = if in_memory {
             "sqlite::memory:".into()
         } else {
@@ -146,7 +153,7 @@ impl RelationalStore {
 
     pub async fn query(&self, query: StorageQuery) -> Result<Vec<DataRecord>, String> {
         let schema = self.schema(&query.collection)?;
-        let statement = super::relational_query::select(&schema, &query, false)?;
+        let statement = super::relational_query::select(&schema, &query, super::relational_query::Selection::Page)?;
         let started = std::time::Instant::now();
         let rows = self
             .db
@@ -169,7 +176,7 @@ impl RelationalStore {
 
     pub async fn count(&self, query: StorageQuery) -> Result<usize, String> {
         let schema = self.schema(&query.collection)?;
-        let statement = super::relational_query::select(&schema, &query, true)?;
+        let statement = super::relational_query::select(&schema, &query, super::relational_query::Selection::Count)?;
         let row = self
             .db
             .query_one(DbBackend::Sqlite.build(&statement))
@@ -227,6 +234,7 @@ impl RelationalStore {
                 }
                 name => match fields.get(name) {
                     Some(value) => value,
+                    None if field.default_value.is_some() => field.default_value.as_ref().ok_or("declared default disappeared")?,
                     None if field.nullable => &serde_json::Value::Null,
                     None => return Err(format!("{}.{} is required", record.collection, name)),
                 },
@@ -270,6 +278,7 @@ mod tests {
             indexes: vec![],
         };
         schema.fields.push(SchemaField {
+                default_value: None,
             name: "body".into(),
             field_type: FieldType::Json,
             indexed: false,

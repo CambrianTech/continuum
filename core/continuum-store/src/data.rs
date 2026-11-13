@@ -13,7 +13,7 @@ use crate::orm::{
         MigrationConfig, MigrationEngine, MigrationHandle, MigrationProgress, MigrationVerification,
     },
     query::{FieldFilter, SortDirection, SortSpec, StorageQuery},
-    sqlite::SqliteAdapter,
+    SeaOrmAdapter,
     types::{DataRecord, StorageResult, UUID},
 };
 use crate::runtime::{CommandRequest, CommandResponse, CommandResult, ModuleContext};

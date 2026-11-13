@@ -104,6 +104,10 @@ pub struct ForeignKeyRef {
 #[ts(export, export_to = "../../../protocol/typescript/orm/SchemaField.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaField {
+    /// Explicit declared insertion value; absence never invents a value.
+    #[serde(default)]
+    #[ts(optional, type = "unknown")]
+    pub default_value: Option<Value>,
     pub name: String,
     pub field_type: FieldType,
     #[serde(default)]
@@ -127,6 +131,9 @@ pub struct SchemaField {
 #[ts(export, export_to = "../../../protocol/typescript/orm/SchemaIndex.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaIndex {
+    /// Direction of the final indexed column, matching decorator metadata.
+    #[serde(default)]
+    pub descending: bool,
     pub name: String,
     pub fields: Vec<String>,
     #[serde(default)]

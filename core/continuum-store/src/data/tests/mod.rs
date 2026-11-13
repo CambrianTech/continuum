@@ -130,6 +130,8 @@ use crate::orm::types::CollectionSchema;
         let (_tmp, path) = test_db_path("protected-recall");
         let private = continuum_genome::genome::recall_impl::RecallDecision::COLLECTION;
         let adapter = module.state.get_adapter(&path).await.unwrap();
+        declare_fixture(adapter.as_ref(), private, &[("need", crate::orm::FieldType::String)]).await;
+        declare_fixture(adapter.as_ref(), "public", &[("value", crate::orm::FieldType::Number)]).await;
         let stored = adapter.create(DataRecord {
             id: "private-record".into(), collection: private.into(),
             data: json!({"need": "private need"}), metadata: RecordMetadata::default(),
@@ -151,7 +153,7 @@ use crate::orm::types::CollectionSchema;
             assert!(error.contains("invalid storage identifier"), "{error}");
         }
         let ordinary = module.state.dispatch("data/query", json!({
-            "dbPath": path, "collection": "public", "select": ["value"],
+            "dbPath": path, "collection": "public", "select": ["value"], "limit": 1,
             "filter": {"value": 1}, "sort": [{"field": "value", "direction": "asc"}]
         })).await.unwrap();
         assert!(ordinary.to_json_value().unwrap()["success"].as_bool().unwrap());
@@ -161,6 +163,16 @@ use crate::orm::types::CollectionSchema;
         assert!(module.state.clear_all_collections(&path).await.unwrap().success);
         assert!(!adapter.read(private, &"private-record".into()).await.success);
 
+    }
+
+    async fn declare_fixture(adapter: &dyn StorageAdapter, collection: &str, fields: &[(&str, crate::orm::FieldType)]) {
+        let mut declared = crate::orm::base_entity_fields();
+        declared.extend(fields.iter().map(|(name, kind)| crate::orm::SchemaField {
+            name: (*name).into(), field_type: kind.clone(), default_value: None,
+            nullable: false, indexed: false, unique: false, max_length: None, foreign_key: None,
+        }));
+        adapter.ensure_schema(CollectionSchema { collection: collection.into(), fields: declared, indexes: vec![] })
+            .await.into_result().expect("test: declared fixture schema");
     }
 
     /// Helper: per-test isolated SQLite file routed through resolve_handle's
@@ -455,9 +467,10 @@ use crate::orm::types::CollectionSchema;
         let (_tmp, db_path) = test_db_path("create_and_read");
 
         // Create table first
-        let schema = CollectionSchema {
+        let mut schema = CollectionSchema {
             collection: "test_users".to_string(),
             fields: vec![crate::orm::types::SchemaField {
+                default_value: None,
                 name: "name".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -473,7 +486,8 @@ use crate::orm::types::CollectionSchema;
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
+        schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
         // Create with dbPath
         let create_result = create_via_state(
@@ -521,9 +535,10 @@ use crate::orm::types::CollectionSchema;
         let (_tmp, db_path) = test_db_path("paginated");
 
         // Create schema
-        let schema = CollectionSchema {
+        let mut schema = CollectionSchema {
             collection: "test_paginated".to_string(),
             fields: vec![crate::orm::types::SchemaField {
+                default_value: None,
                 name: "name".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -537,7 +552,8 @@ use crate::orm::types::CollectionSchema;
 
         // Tests bypass the IPC surface (registered-entity-only post-Step 3).
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
+        schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
         // Create 25 records
         for i in 0..25 {
@@ -642,9 +658,10 @@ use crate::orm::types::CollectionSchema;
         let module = DataModule::new(no_substrate_entities);
         let (_tmp, db_path) = test_db_path("count_exact");
 
-        let schema = CollectionSchema {
+        let mut schema = CollectionSchema {
             collection: "test_count_exact".to_string(),
             fields: vec![crate::orm::types::SchemaField {
+                default_value: None,
                 name: "name".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -657,7 +674,8 @@ use crate::orm::types::CollectionSchema;
         };
         // Tests bypass the IPC surface (registered-entity-only post-Step 3).
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
+        schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
         for i in 0..7 {
             let _ = create_via_state(

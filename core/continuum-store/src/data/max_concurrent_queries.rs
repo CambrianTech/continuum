@@ -108,9 +108,9 @@ pub(super) struct PaginatedQueryState {
 /// state the module owns. Database path comes from each request.
 ///
 /// Adapter-agnostic: connection string determines which adapter is used.
-/// - File paths or `:memory:` → SqliteAdapter (worker thread with mpsc)
+/// - File paths or `:memory:` → SeaOrmAdapter (worker thread with mpsc)
 ///
-/// NOTE: SqliteAdapter is internally thread-safe via mpsc channels.
+/// NOTE: SeaOrmAdapter is internally thread-safe via mpsc channels.
 pub struct DataState {
     /// Adapter cache: connection_string -> initialized adapter (polymorphic)
     /// Lazy initialization per unique connection string
