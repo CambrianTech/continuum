@@ -175,9 +175,17 @@ validated destination through supported lifecycle, then delete superseded runtim
 implementations and their callers. A rollback restores a known artifact/data pair;
 it is not a permanently retained alternate runtime backend.
 
-The former Python learned-NULL repair is not the new migration. Replace its required
-operation in the Rust migration with an explicit, evidence-based rule; do not silently
-substitute a progress value for unknown training state.
+The former Python learned-NULL repair and its tests are deleted. Its narrow replacement
+is the Rust `migrate-training-progress` executable; its SeaORM implementation lives in
+the storage owner's offline module and is not included in the runtime ORM. Run
+`cargo run -p continuum-kernel --bin migrate-training-progress -- OFFLINE_DATABASE`
+on an explicitly prepared offline copy for a read-only inventory. After establishing
+from provenance that the historical NULLs mean unstarted, add
+`--apply-historical-unstarted`. This explicit operation changes only those NULLs to
+zero, refuses invalid storage classes/ranges before mutation, and verifies cardinality
+inside one transaction. It never interprets unknown progress as unstarted automatically.
+The receipt records rows, historical NULLs, changed rows and whether changes applied.
+This narrow repair does not perform the full schema/native-payload migration above.
 
 ## 7. Proof and current implementation gaps
 
@@ -198,10 +206,10 @@ comparison with neighboring residents progressing. Tests or a process health lab
 are not adoption, performance recovery or learned behavior.
 
 As of 2026-11-13, PR #5954 is draft and undeployed. Its branch has the SeaORM provider,
-typed schema equality, bounded caller migrations and database-side counts, but the
-native binary boundary, complete typed caller conversion, Rust offline migration,
-independent review and live proof are unfinished. The uncommitted f64-specific codec
-was rejected; its per-element conversions must be deleted, not published. Existing
+typed schema equality, bounded caller migrations and database-side counts. The
+native binary owner and backfill byte path are implemented, but complete typed caller
+conversion, full schema/native-payload migration, independent review and live proof
+are unfinished. The f64-specific codec was rejected and deleted. Existing
 JSON row hydration, optional unbounded query surfaces and static resource caps remain
 implementation gaps. This document states the contract, not that those gaps are fixed.
 
