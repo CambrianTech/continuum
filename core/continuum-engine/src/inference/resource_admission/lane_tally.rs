@@ -18,8 +18,6 @@ pub(super) struct LaneTally {
     waited: AtomicU64,
     released: AtomicU64,
     held_ms: AtomicU64,
-    /// Since boot: what a test reads to bound the grants a scenario took.
-    total_granted: AtomicU64,
     window_opened_ms: AtomicU64,
 }
 
@@ -30,14 +28,14 @@ impl LaneTally {
             waited: AtomicU64::new(0),
             released: AtomicU64::new(0),
             held_ms: AtomicU64::new(0),
-            total_granted: AtomicU64::new(0),
             window_opened_ms: AtomicU64::new(0),
         }
     }
 
     pub(super) fn granted(&self, waited: bool) {
         self.granted.fetch_add(1, Ordering::Relaxed);
-        self.total_granted.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        GRANTED_ON_THIS_THREAD.with(|granted| granted.set(granted.get() + 1));
         if waited {
             self.waited.fetch_add(1, Ordering::Relaxed);
         }
@@ -50,10 +48,6 @@ impl LaneTally {
         self.report_if_due(since_boot_ms());
     }
 
-    pub(super) fn total_granted(&self) -> u64 {
-        self.total_granted.load(Ordering::Relaxed)
-    }
-
     /// The caller that closes a due window reports it; every other caller only counts.
     fn report_if_due(&self, now: u64) {
         let opened = self.window_opened_ms.load(Ordering::Acquire);
@@ -63,16 +57,31 @@ impl LaneTally {
         {
             return;
         }
+        // Reset here, never inside the probe: its fields are evaluated only when a sink listens.
+        let (granted, waited) = (self.granted.swap(0, Ordering::AcqRel), self.waited.swap(0, Ordering::AcqRel));
+        let (released, held_ms) = (self.released.swap(0, Ordering::AcqRel), self.held_ms.swap(0, Ordering::AcqRel));
         continuum_base::probe!(
             class = "admission.lane.tally",
-            granted = self.granted.swap(0, Ordering::AcqRel),
-            waited = self.waited.swap(0, Ordering::AcqRel),
-            released = self.released.swap(0, Ordering::AcqRel),
-            held_ms = self.held_ms.swap(0, Ordering::AcqRel),
+            granted,
+            waited,
+            released,
+            held_ms,
             window_ms,
             "serving-lane grants and releases in this window"
         );
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Grants made on this thread: a `#[tokio::test]` runs on its own current-thread runtime, so a
+    /// scenario counts its own grants, never another test's on the process-wide gate.
+    static GRANTED_ON_THIS_THREAD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn granted_on_this_thread() -> u64 {
+    GRANTED_ON_THIS_THREAD.with(std::cell::Cell::get)
 }
 
 fn since_boot_ms() -> u64 {
@@ -99,6 +108,6 @@ mod tests {
         tally.report_if_due(opened + WINDOW_MS);
         assert_eq!(tally.granted.load(Ordering::Relaxed), 0, "the window closed once: reported and reset");
         assert_eq!(tally.window_opened_ms.load(Ordering::Acquire), opened + WINDOW_MS, "the next window opens at the report");
-        assert_eq!(tally.total_granted(), 10_000, "the boot total is never reset");
+        assert!(granted_on_this_thread() >= 10_000, "and this thread counted every grant");
     }
 }

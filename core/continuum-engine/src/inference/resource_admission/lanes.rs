@@ -554,9 +554,10 @@ pub fn serving_lane_permits_available() -> usize {
     LANES.serving_lanes().available_permits()
 }
 
-/// Serving lanes granted since boot (`lane_tally`): a scenario bounds the grants it took by it.
-pub fn serving_lane_grants() -> u64 {
-    LANES.tally.total_granted()
+/// Serving lanes granted on this test's thread (`lane_tally`): a scenario bounds its own grants.
+#[cfg(test)]
+pub(crate) fn serving_lane_grants() -> u64 {
+    super::lane_tally::granted_on_this_thread()
 }
 
 /// `expected_occupancy`: the call's own bound on how long it will hold the lane (prefill

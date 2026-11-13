@@ -176,8 +176,8 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     let then = tokio::time::timeout(std::time::Duration::from_secs(5), &mut consolidating).await.expect("the other runs when the first releases her slot").expect("test: admitted");
     drop(then);
     // Five passes take one lane each (two per dream to the first release, one to the second's
-    // admission); the spin took thousands. Slack only for another test's lane in the window.
+    // admission); the spin took thousands. Counted on this test's thread only.
     let taken = crate::inference::resource_admission::serving_lane_grants() - grants;
-    assert!(taken <= 8, "each wait is one pass, never a spin: {taken} lane grants");
+    assert!(taken <= 5, "each wait is one pass, never a spin: {taken} lane grants");
     assert_eq!(lanes_free(), before, "and every lane comes back");
 }
