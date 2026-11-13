@@ -51,10 +51,6 @@ pub(crate) const ACTUATE_MAX_ATTEMPTS: u32 = 3;
 /// The Windows consumer task `continuum install --supervisor` registers (S4U, every ten
 /// minutes). Firing it on demand is how the core actuates without becoming the parent of
 /// a process that will stop the core.
-#[cfg(windows)]
-pub(crate) const DEPLOY_TASK: &str = "ContinuumDeploy";
-#[cfg(windows)]
-const TASK_RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// What one actuation recorded about itself. Kept as the standing evidence of the last
 /// action so the next tick can refuse to act twice on one request and the next boot can
