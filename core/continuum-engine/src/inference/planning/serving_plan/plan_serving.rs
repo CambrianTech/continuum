@@ -148,7 +148,7 @@ fn plan_serving_into(
                     .cmp(&b.weights_bytes)
                     .then(a.model_id.cmp(&b.model_id))
             })
-            .expect("candidates non-empty checked above");
+            .expect("candidates non-empty checked above"); // expect: `candidates.is_empty()` returned None at the top of this function
         return Some(ServingPlan {
             base_model: (*smallest).clone(),
             served_context_window: MIN_SERVE_CTX,
@@ -281,7 +281,7 @@ fn plan_serving_into(
             let lanes = (1..=lane_cap)
                 .rev()
                 .find(|&l| window_for(l as u64) >= per_lane_floor)
-                .unwrap_or(1);
+                .unwrap_or(1); // unwrap_or: no lane count clears the floor, so one lane: honest starvation, said by the PerLaneFloor bound
             let bound = if lanes < lane_cap {
                 LanesBound::PerLaneFloor {
                     floor_tokens: per_lane_floor,

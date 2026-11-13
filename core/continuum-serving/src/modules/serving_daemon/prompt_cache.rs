@@ -58,7 +58,7 @@ pub(super) fn derived_prompt_cache_mib(
     let live: std::collections::HashSet<uuid::Uuid> =
         crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
             .map(|r| r.live_personas().into_iter().collect())
-            .unwrap_or_default();
+            .unwrap_or_default(); // unwrap_or_default: no registry yet (first launch) = no live roster; the seeds on disk stand
     let planned: Vec<uuid::Uuid> =
         crate::persona::seed::persona_ids_with_seeds_in(&crate::identity::citizen_path::citizens_kind_dir(
             &crate::paths::continuum_root(),

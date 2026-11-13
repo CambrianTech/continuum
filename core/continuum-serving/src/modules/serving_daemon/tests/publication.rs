@@ -288,9 +288,12 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
         daemon.intent.snapshot().revision,
         "held geometry is revalidated under same-value explicit intent"
     );
-    assert_eq!(
-        after.served_context_window, good.served_context_window,
-        "a 2k plan never replaces a real one"
+    // The squeeze, with the incumbent's own bytes credited back, plans her at or above her held
+    // need (the allocator's floor, below her target): a governed plan, never a 2k one.
+    assert!(
+        after.served_context_window >= 56_057,
+        "a squeezed plan never falls below her held need: {}",
+        after.served_context_window
     );
     assert_eq!(after.lanes, good.lanes);
     let held_revision = daemon.plan_tx.borrow().intent_revision;

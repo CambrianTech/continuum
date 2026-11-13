@@ -364,7 +364,7 @@ impl ServingDaemonModule {
                                 target: "continuum_core::modules::serving_daemon", class = "serving.plan.demotion_refused",
                                 floor = floor.as_str(),
                                 wanted = wanted.as_str(),
-                                incumbent = incumbent.as_deref().unwrap_or("<none>"),
+                                incumbent = incumbent.as_deref().unwrap_or("<none>"), // unwrap_or: probe label for a plan with no incumbent
                                 usable_gb = (budget.usable_bytes / 1_000_000_000),
                                 physical_usable_gb =
                                     (self.physical_budget().usable_bytes / 1_000_000_000),
@@ -468,7 +468,7 @@ impl ServingDaemonModule {
                             continuum_base::probe!(
                                 target: "continuum_core::modules::serving_daemon", class = "serving.plan",
                                 decision = "downshift-held",
-                                incumbent = incumbent.as_deref().unwrap_or("<none>"),
+                                incumbent = incumbent.as_deref().unwrap_or("<none>"), // unwrap_or: probe label for a plan with no incumbent
                                 wanted = plan.base_model.model_id.as_str(),
                                 streak,
                                 needs_streak = DOWNSHIFT_SUSTAINED_TICKS,
@@ -516,7 +516,7 @@ impl ServingDaemonModule {
                     let mut last = self
                         .last_plan_probe
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a poisoned probe cell still holds the last emitted decision
                     let window_moved = |prev: u32| -> bool {
                         plan.served_context_window.abs_diff(prev) > prev / 8
                     };
@@ -636,7 +636,7 @@ impl ServingDaemonModule {
                          spike unknown, publishing 0, which DISABLES the prefill deadband",
                     );
                 }
-                let spike = spike_of_served.unwrap_or(0);
+                let spike = spike_of_served.unwrap_or(0); // unwrap_or: said just above, 0 disables the deadband rather than inventing a spike
                 crate::inference::prefill_spike::publish(spike);
                 // send_replace keeps the latest even with no live receivers yet.
                 self.publish_plan_snapshot(intent_revision, Some(plan));
@@ -650,7 +650,7 @@ impl ServingDaemonModule {
                     let mut last = self
                         .last_plan_probe
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a poisoned probe cell still holds the last emitted decision
                     if last.as_ref().map(|(d, _)| d.as_str()) == Some("<no-servable-model>") {
                         false
                     } else {
