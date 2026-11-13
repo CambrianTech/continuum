@@ -23,7 +23,6 @@ pub mod list_result;
 pub mod adapter;
 pub mod connection_manager;
 pub mod entity;
-pub mod legacy_grant_watermark;
 pub mod migration;
 pub mod query;
 pub mod record_decode;

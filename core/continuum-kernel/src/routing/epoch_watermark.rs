@@ -33,7 +33,6 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::orm::legacy_grant_watermark::{self, LegacyWatermarkImportError};
 use crate::orm::query::{QueryBuilder, QueryOperator};
 use crate::orm::{Entity, OrmEntity, OrmStore, OrmStoreError, SqliteAdapter, StorageAdapter};
 
@@ -53,10 +52,6 @@ pub enum WatermarkError {
     /// The watermark database could not be opened.
     #[error("open epoch watermark store {path}: {detail}")]
     Open { path: std::path::PathBuf, detail: String },
-    /// The pre-ORM watermark in the same file could not be carried forward; the store
-    /// refuses to open rather than start with an empty watermark.
-    #[error("carry the legacy epoch watermark forward: {0}")]
-    LegacyImport(#[source] LegacyWatermarkImportError),
     /// An epoch the store cannot hold exactly (above 2^53).
     #[error("epoch {0} exceeds the exactly-stored range (2^53)")]
     EpochOutOfRange(u64),
@@ -185,19 +180,6 @@ impl OrmEpochWatermark {
             detail,
         })?);
         let watermark = Self::over(Arc::clone(&adapter) as Arc<dyn StorageAdapter>).await?;
-        // The entity table exists now; carry any pre-ORM watermark in the same file into
-        // it, or refuse to open. Never start empty over a node's real anti-replay state.
-        if let Some(rows) = legacy_grant_watermark::import(&adapter, GrantEpochWatermark::COLLECTION, MAX_EXACT_EPOCH)
-            .await
-            .map_err(WatermarkError::LegacyImport)?
-        {
-            continuum_base::probe!(
-                class = "grant.watermark.migrated",
-                rows = rows,
-                path = %path.display(),
-                "the pre-ORM grant epoch watermark was carried into the ORM store and its table dropped"
-            );
-        }
         Ok(watermark)
     }
 
@@ -336,66 +318,6 @@ mod tests {
             WatermarkDecision::Superseded,
             "a superseded epoch stays superseded across restart — the replay window did NOT reopen"
         );
-    }
-
-    // what this catches: a deploy must not reset anti-replay. The pre-ORM table in the
-    // same file is carried into the ORM store on first open (the HIGHER epoch wins over
-    // a row the ORM store already holds) and then dropped; a replay below a carried
-    // epoch is still superseded, and a second open has nothing left to import.
-    #[tokio::test]
-    async fn legacy_watermark_is_carried_forward_and_its_table_dropped() {
-        use crate::orm::legacy_grant_watermark::fixture;
-        use serde_json::json;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("grant_watermark.sqlite");
-        let (kept_higher, carried, fresh) = (peer(1), peer(2), peer(3));
-        {
-            let store = OrmEpochWatermark::open(&path).await.expect("open");
-            store.check_and_advance(kept_higher, 12, 50).await.unwrap();
-            store.check_and_advance(fresh, 7, 50).await.unwrap();
-        }
-        fixture::write_legacy(
-            &path,
-            &[
-                (&kept_higher.as_uuid().to_string(), json!(9), 100),
-                (&carried.as_uuid().to_string(), json!(20), 100),
-                (&fresh.as_uuid().to_string(), json!(30), 100),
-            ],
-        );
-        let store = OrmEpochWatermark::open(&path).await.expect("open imports");
-        assert!(!fixture::legacy_table_exists(&path), "the legacy table is dropped");
-        let decide = |g, e| store.check_and_advance(g, e, 200);
-        assert_eq!(decide(kept_higher, 11).await.unwrap(), WatermarkDecision::Superseded, "the ORM's higher 12 is kept");
-        assert_eq!(decide(carried, 19).await.unwrap(), WatermarkDecision::Superseded, "a carried epoch survives");
-        assert_eq!(decide(carried, 20).await.unwrap(), WatermarkDecision::Accepted);
-        assert_eq!(decide(fresh, 29).await.unwrap(), WatermarkDecision::Superseded, "the legacy's higher 30 wins");
-        drop(store);
-        let again = OrmEpochWatermark::open(&path).await.expect("a second open has nothing to import");
-        assert_eq!(again.check_and_advance(carried, 19, 300).await.unwrap(), WatermarkDecision::Superseded);
-    }
-
-    // what this catches: a legacy row that cannot be carried exactly refuses the open
-    // (fail loud), and the import rolls back whole: the legacy table is still there for
-    // a human to repair, and the store never starts empty over it.
-    #[tokio::test]
-    async fn a_corrupt_legacy_watermark_refuses_the_open() {
-        use crate::orm::legacy_grant_watermark::{fixture, LegacyWatermarkImportError};
-        use serde_json::json;
-        for (grantee, epoch) in [
-            ("not-a-uuid".to_string(), json!(3)),
-            (peer(4).as_uuid().to_string(), json!(-1)),
-            (peer(5).as_uuid().to_string(), json!("seven")),
-        ] {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let path = dir.path().join("grant_watermark.sqlite");
-            fixture::write_legacy(&path, &[(&peer(6).as_uuid().to_string(), json!(5), 100), (&grantee, epoch, 100)]);
-            let refused = OrmEpochWatermark::open(&path).await;
-            assert!(
-                matches!(refused, Err(WatermarkError::LegacyImport(LegacyWatermarkImportError::CorruptRow { .. }))),
-                "open must refuse a corrupt legacy row, got {refused:?}"
-            );
-            assert!(fixture::legacy_table_exists(&path), "the failed import rolled back whole");
-        }
     }
 
     // regression for Codex's review of #5205 at 1e0a8c7ef — what this catches: a write

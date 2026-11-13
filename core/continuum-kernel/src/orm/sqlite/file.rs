@@ -1,9 +1,4 @@
-//! Opening a SQLite file a store owns, and the writer handle an in-`orm/` migration
-//! runs its transaction on.
-
-use std::sync::{Arc, Mutex};
-
-use rusqlite::Connection;
+//! Opening a SQLite file owned by an ORM store.
 
 use super::SqliteAdapter;
 use crate::orm::adapter::{AdapterConfig, StorageAdapter};
@@ -25,11 +20,5 @@ impl SqliteAdapter {
             })
             .await?;
         Ok(adapter)
-    }
-
-    /// The writer connection, for an in-`orm/` migration that must run its statements in
-    /// one transaction on the same file ([`crate::orm::legacy_grant_watermark`]).
-    pub(in crate::orm) fn writer(&self) -> Result<Arc<Mutex<Connection>>, String> {
-        self.get_writer()
     }
 }
