@@ -143,8 +143,29 @@ pub(crate) enum ActuateDecision {
     /// [`ACTUATE_MAX_ATTEMPTS`] launches did not land this tip here. Stop; the
     /// tracker's `deploy.stranded` is the standing receipt and a new tip resets this.
     GaveUp { attempts: u32 },
+}
+
+/// The reason one tick skips actuation (the decision to skip comes from outside
+/// [`decide_actuation`]: either an external claim or one of the pure reasons above).
+pub(crate) enum ActuateSkipReason {
     /// Another deploy-consume build holds the claim on this node — serialise against it.
     ConcurrentClaim,
+    /// [`ActuateDecision`] returned a non-Act outcome; the fields are carried through
+    /// for observability (the probe at each call site already has them).
+    AlreadyActuated { attempt: u32, elapsed_ms: u64 },
+    AwaitingBound { attempt: u32, elapsed_ms: u64, bound_ms: u64 },
+    GaveUp { attempts: u32 },
+}
+
+impl From<ActuateDecision> for ActuateSkipReason {
+    fn from(d: ActuateDecision) -> Self {
+        match d {
+            ActuateDecision::AlreadyActuated { attempt, elapsed_ms } => Self::AlreadyActuated { attempt, elapsed_ms },
+            ActuateDecision::AwaitingBound { attempt, elapsed_ms, bound_ms } => Self::AwaitingBound { attempt, elapsed_ms, bound_ms },
+            ActuateDecision::GaveUp { attempts } => Self::GaveUp { attempts },
+            _ => unreachable!(), // unwrap_or: Act is never converted
+        }
+    }
 }
 
 /// How long after an actuation a stranded request may be re-actuated: the tracker's own
@@ -391,7 +412,7 @@ pub(crate) enum ActuateOutcome {
     Deferred(ExternalOwner),
     Spawned { attempt: u32, pid: Option<u32>, mode: String, child: Option<std::process::Child> },
     SpawnFailed { attempt: u32, error: String },
-    Skipped(ActuateDecision),
+    Skipped(ActuateSkipReason),
 }
 
 pub(crate) struct DeployActuator {
@@ -494,7 +515,7 @@ impl DeployActuator {
                 tip = req.tip_sha.as_str(),
                 "a deploy is in flight for a different tip; this request waits"
             );
-            return ActuateOutcome::Skipped(ActuateDecision::ConcurrentClaim);
+            return ActuateOutcome::Skipped(ActuateSkipReason::ConcurrentClaim);
         }
         let prev = self.receipt();
         let decision = decide_actuation(prev.as_ref(), req, stranded, now_ms);
@@ -511,7 +532,7 @@ impl DeployActuator {
                         "the consumer was launched this many times for this tip and it is not running — not launching again; a new tip resets this"
                     );
                 }
-                return ActuateOutcome::Skipped(decision);
+                return ActuateOutcome::Skipped(decision.into());
             }
             ActuateDecision::AwaitingBound { attempt, elapsed_ms, bound_ms } => {
                 continuum_base::probe!(
@@ -523,9 +544,9 @@ impl DeployActuator {
                     bound_ms,
                     "stranded, but inside the bound derived from the last measured deploy — not re-actuated blindly"
                 );
-                return ActuateOutcome::Skipped(decision);
+                return ActuateOutcome::Skipped(decision.into());
             }
-            ActuateDecision::AlreadyActuated { .. } => return ActuateOutcome::Skipped(decision),
+            ActuateDecision::AlreadyActuated { .. } => return ActuateOutcome::Skipped(decision.into()),
         };
         let plan = SpawnPlan {
             cli: locate_cli(&self.user_home),
@@ -718,12 +739,12 @@ mod tests {
         let receipt = act.receipt().expect("a spawn writes its receipt");
         assert_eq!((receipt.tip_sha.as_str(), receipt.spawned_ms, receipt.pid, receipt.attempt), (req.tip_sha.as_str(), NOW, Some(7), 1));
         // The next ticks: not stranded → quiet, no second launch.
-        assert!(matches!(act.on_deploy_wanted(&req, false, NOW + 300_000), ActuateOutcome::Skipped(ActuateDecision::AlreadyActuated { attempt: 1, .. })));
+        assert!(matches!(act.on_deploy_wanted(&req, false, NOW + 300_000), ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { attempt: 1, .. })));
         assert_eq!(spawner.plans.lock().len(), 1);
         // Stranded, but inside the bound (no measurement yet = the tracker's grace) → wait.
         assert!(matches!(
             act.on_deploy_wanted(&req, true, NOW + STRANDED_GRACE_MS - 1),
-            ActuateOutcome::Skipped(ActuateDecision::AwaitingBound { attempt: 1, bound_ms, .. }) if bound_ms == STRANDED_GRACE_MS
+            ActuateOutcome::Skipped(ActuateSkipReason::AwaitingBound { attempt: 1, bound_ms, .. }) if bound_ms == STRANDED_GRACE_MS
         ));
         assert_eq!(spawner.plans.lock().len(), 1);
         // Stranded and past the bound → the second actuation.
@@ -740,13 +761,13 @@ mod tests {
         assert_eq!(reactuation_bound_ms(None), STRANDED_GRACE_MS);
         assert!(matches!(
             act.on_deploy_wanted(&later, true, NOW + 10_000_000 + 5_400_000 - 1),
-            ActuateOutcome::Skipped(ActuateDecision::AwaitingBound { bound_ms: 5_400_000, .. })
+            ActuateOutcome::Skipped(ActuateSkipReason::AwaitingBound { bound_ms: 5_400_000, .. })
         ));
         // The cap: three launches of one tip, then GaveUp — said, not looped.
         let t = NOW + 10_000_000 + 5_400_000;
         assert!(matches!(act.on_deploy_wanted(&later, true, t), ActuateOutcome::Spawned { attempt: 2, .. }));
         assert!(matches!(act.on_deploy_wanted(&later, true, t + 5_400_000), ActuateOutcome::Spawned { attempt: 3, .. }));
-        assert!(matches!(act.on_deploy_wanted(&later, true, t + 20_000_000), ActuateOutcome::Skipped(ActuateDecision::GaveUp { attempts: 3 })));
+        assert!(matches!(act.on_deploy_wanted(&later, true, t + 20_000_000), ActuateOutcome::Skipped(ActuateSkipReason::GaveUp { attempts: 3 })));
         let n = spawner.plans.lock().len();
         // A request for the SAME tip written after the receipt (a rollback by hand) is new.
         let again = DeployRequest::new("dddddddddddd", t + 30_000_000);
@@ -755,7 +776,7 @@ mod tests {
         // A failed launch is an attempt too — the same ladder, never a fresh try per tick.
         let (failing, failing_spawner) = actuator(&dir.path().join("f"), None, None);
         assert!(matches!(failing.on_deploy_wanted(&req, false, NOW), ActuateOutcome::SpawnFailed { attempt: 1, .. }));
-        assert!(matches!(failing.on_deploy_wanted(&req, false, NOW + 300_000), ActuateOutcome::Skipped(ActuateDecision::AlreadyActuated { .. })));
+        assert!(matches!(failing.on_deploy_wanted(&req, false, NOW + 300_000), ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { .. })));
         assert_eq!(failing_spawner.plans.lock().len(), 1);
     }
 
@@ -814,7 +835,7 @@ mod tests {
         let req_b = DeployRequest::new("bbbbbbbbb222", NOW + 5_000);
         assert!(matches!(
             act.on_deploy_wanted(&req_b, false, NOW + 5_000),
-            ActuateOutcome::Skipped(ActuateDecision::ConcurrentClaim)
+            ActuateOutcome::Skipped(ActuateSkipReason::ConcurrentClaim)
         ));
         assert_eq!(spawner.plans.lock().len(), 1, "concurrent claim prevents a second spawn");
 
