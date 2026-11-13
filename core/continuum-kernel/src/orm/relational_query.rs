@@ -56,48 +56,11 @@ pub(super) fn condition(
         let mut fields: Vec<_> = filters.iter().collect();
         fields.sort_by_key(|(field, _)| *field);
         for (field, filter) in fields {
-            let col = Expr::col((table.clone(), column(schema, field)?));
-            let expr: SimpleExpr = match filter {
-                FieldFilter::Value(v) | FieldFilter::Operator(QueryOperator::Eq(v))
-                    if v.is_null() =>
-                {
-                    col.is_null()
-                }
-                FieldFilter::Value(v) | FieldFilter::Operator(QueryOperator::Eq(v)) => {
-                    col.eq(value(v)?)
-                }
-                FieldFilter::Operator(op) => match op {
-                    QueryOperator::Eq(v) => col.eq(value(v)?),
-                    QueryOperator::Ne(v) if v.is_null() => col.is_not_null(),
-                    QueryOperator::Ne(v) => col.ne(value(v)?),
-                    QueryOperator::Gt(v) => col.gt(value(v)?),
-                    QueryOperator::Gte(v) => col.gte(value(v)?),
-                    QueryOperator::Lt(v) => col.lt(value(v)?),
-                    QueryOperator::Lte(v) => col.lte(value(v)?),
-                    QueryOperator::In(v) => {
-                        col.is_in(v.iter().map(value).collect::<Result<Vec<_>, _>>()?)
-                    }
-                    QueryOperator::NotIn(v) => {
-                        col.is_not_in(v.iter().map(value).collect::<Result<Vec<_>, _>>()?)
-                    }
-                    QueryOperator::Exists(true) | QueryOperator::IsNotNull => col.is_not_null(),
-                    QueryOperator::Exists(false) | QueryOperator::IsNull => col.is_null(),
-                    QueryOperator::Contains(text) => {
-                        // Escape LIKE wildcards: contains is literal, not a pattern language.
-                        let escaped = text
-                            .replace('!', "!!")
-                            .replace('%', "!%")
-                            .replace('_', "!_");
-                        col.like(
-                            sea_orm::sea_query::LikeExpr::new(format!("%{escaped}%")).escape('!'),
-                        )
-                    }
-                    QueryOperator::Regex(_) => {
-                        return Err("SQLite provider does not support regex queries".into())
-                    }
-                },
-            };
-            all = all.add(expr);
+            all = all.add(field_condition(
+                table.clone(),
+                column(schema, field)?,
+                filter,
+            )?);
         }
     }
     if let Some(cursor) = &query.cursor {
@@ -151,7 +114,11 @@ pub(super) fn condition(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Selection { Page, Stream, Count }
+pub(super) enum Selection {
+    Page,
+    Stream,
+    Count,
+}
 
 pub(super) fn select(
     schema: &CollectionSchema,
@@ -226,4 +193,52 @@ pub(super) fn select(
         statement.offset(offset.try_into().map_err(|_| "offset exceeds u64")?);
     }
     Ok(statement)
+}
+
+fn field_condition(table: Alias, field: Alias, filter: &FieldFilter) -> Result<Condition, String> {
+    let col = Expr::col((table.clone(), field.clone()));
+    let expr: SimpleExpr = match filter {
+        FieldFilter::Value(v) | FieldFilter::Operator(QueryOperator::Eq(v)) if v.is_null() => {
+            col.is_null()
+        }
+        FieldFilter::Value(v) | FieldFilter::Operator(QueryOperator::Eq(v)) => col.eq(value(v)?),
+        FieldFilter::Operator(op) => match op {
+            QueryOperator::And(operators) => {
+                let mut conjunction = Condition::all();
+                for operator in operators {
+                    conjunction = conjunction.add(field_condition(
+                        table.clone(),
+                        field.clone(),
+                        &FieldFilter::Operator(operator.clone()),
+                    )?);
+                }
+                return Ok(conjunction);
+            }
+            QueryOperator::Eq(v) => col.eq(value(v)?),
+            QueryOperator::Ne(v) if v.is_null() => col.is_not_null(),
+            QueryOperator::Ne(v) => col.ne(value(v)?),
+            QueryOperator::Gt(v) => col.gt(value(v)?),
+            QueryOperator::Gte(v) => col.gte(value(v)?),
+            QueryOperator::Lt(v) => col.lt(value(v)?),
+            QueryOperator::Lte(v) => col.lte(value(v)?),
+            QueryOperator::In(v) => col.is_in(v.iter().map(value).collect::<Result<Vec<_>, _>>()?),
+            QueryOperator::NotIn(v) => {
+                col.is_not_in(v.iter().map(value).collect::<Result<Vec<_>, _>>()?)
+            }
+            QueryOperator::Exists(true) | QueryOperator::IsNotNull => col.is_not_null(),
+            QueryOperator::Exists(false) | QueryOperator::IsNull => col.is_null(),
+            QueryOperator::Contains(text) => {
+                // Escape LIKE wildcards: contains is literal, not a pattern language.
+                let escaped = text
+                    .replace('!', "!!")
+                    .replace('%', "!%")
+                    .replace('_', "!_");
+                col.like(sea_orm::sea_query::LikeExpr::new(format!("%{escaped}%")).escape('!'))
+            }
+            QueryOperator::Regex(_) => {
+                return Err("SQLite provider does not support regex queries".into())
+            }
+        },
+    };
+    Ok(Condition::all().add(expr))
 }

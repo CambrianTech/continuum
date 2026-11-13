@@ -29,6 +29,9 @@ pub type ComparableValue = Value;
     export_to = "../../../protocol/typescript/orm/QueryOperator.ts"
 )]
 pub enum QueryOperator {
+    /// Conjunction on one declared field; preserves caller predicates when an owner narrows a query.
+    #[serde(rename = "$and")]
+    And(Vec<QueryOperator>),
     /// Equal to
     #[serde(rename = "$eq")]
     Eq(#[ts(type = "string | number | boolean | null")] ComparableValue),

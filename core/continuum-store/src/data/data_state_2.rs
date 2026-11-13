@@ -50,11 +50,30 @@ impl DataState {
 
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
+        use crate::orm::query::QueryOperator;
+        use crate::orm::binary::{BinaryDescriptor, BinaryValue, ByteOrder, ElementType};
+        // Intersect with the caller's predicate; never overwrite it or fetch a
+        // binary body merely to discover that this record already has one.
+        let with_embedding = |condition| {
+            let mut fields = filter.clone().unwrap_or_default();
+            let condition = match fields.remove("embedding") {
+                Some(FieldFilter::Value(value)) => QueryOperator::And(vec![QueryOperator::Eq(value), condition]),
+                Some(FieldFilter::Operator(existing)) => QueryOperator::And(vec![existing, condition]),
+                None => condition,
+            };
+            fields.insert("embedding".into(), FieldFilter::Operator(condition));
+            Some(fields)
+        };
+        let missing_filter = with_embedding(QueryOperator::IsNull);
+        let mut skipped = adapter.count(StorageQuery {
+            collection: collection.into(), filter: with_embedding(QueryOperator::IsNotNull),
+            ..Default::default()
+        }).await.into_result()?;
+
         let mut cursor = None;
-        let mut total = 0usize;
+        let mut total = skipped;
         let mut processed = 0usize;
         let mut failed = 0usize;
-        let mut skipped = 0usize;
 
         log_info!(
             "data",
@@ -69,7 +88,8 @@ impl DataState {
         loop {
             let query = StorageQuery {
                 collection: collection.to_string(),
-                filter: filter.clone(),
+                filter: missing_filter.clone(),
+                select: Some(vec![text_field.to_owned()]),
                 sort: Some(vec![SortSpec { field: "id".into(), direction: SortDirection::Asc }]),
                 limit: Some(batch_size),
                 cursor: cursor.take(),
@@ -87,22 +107,16 @@ impl DataState {
             let mut texts_to_embed: Vec<(usize, &str)> = Vec::new();
 
             for (i, record) in chunk.iter().enumerate() {
-                // Check if already has embedding
-                if let Some(embedding) = record.data.get("embedding") {
-                    if !embedding.is_null() {
-                        skipped += 1;
-                        continue;
-                    }
-                }
-
                 // Extract text from specified field
                 if let Some(text) = record.data.get(text_field) {
                     if let Some(text_str) = text.as_str() {
                         if !text_str.is_empty() {
                             texts_to_embed.push((i, text_str));
+                            continue;
                         }
                     }
                 }
+                skipped += 1;
             }
 
             if texts_to_embed.is_empty() {
@@ -128,15 +142,17 @@ impl DataState {
 
                 let record = &chunk[*idx];
 
-                // Convert f32 to f64 for JSON
-                let embedding_f64: Vec<f64> = embedding.iter().map(|&v| v as f64).collect();
-
-                let update_data = json!({
-                    "embedding": embedding_f64
-                });
+                // One bulk copy preserves the producer's f32 bits. Storage
+                // never promotes precision or serializes vector elements.
+                let payload = BinaryValue::new(BinaryDescriptor {
+                    element_type: ElementType::F32,
+                    byte_order: if cfg!(target_endian = "little") { ByteOrder::Little } else { ByteOrder::Big },
+                    shape: vec![u64::try_from(embedding.len()).map_err(|_| "embedding dimension exceeds u64")?],
+                    producer: embedder.id().to_owned(),
+                }, bytemuck::cast_slice(&embedding).to_vec())?;
 
                 let update_result = adapter
-                    .update(collection, &record.id, update_data, false)
+                    .update_binary(collection, &record.id, "embedding", payload)
                     .await;
 
                 if update_result.success {

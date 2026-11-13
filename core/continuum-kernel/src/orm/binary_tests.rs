@@ -98,6 +98,20 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart() 
     assert_eq!(stats.total_records, 10003);
     assert_eq!(stats.non_empty_records, 3);
     assert_eq!((stats.min_length, stats.max_length), (2, 2));
+    // Backfill narrows an existing field predicate without hydrating payloads
+    // or silently replacing the caller's constraint.
+    for (existing, expected) in [
+        (query::QueryOperator::Eq(json!(null)), 10000),
+        (query::QueryOperator::IsNotNull, 0),
+    ] {
+        let missing = QueryBuilder::new(NativeRow::COLLECTION)
+            .filter("payload", query::QueryOperator::And(vec![existing, query::QueryOperator::IsNull]))
+            .select(vec!["id".into()]).limit(2).build();
+        assert_eq!(store.count(missing.clone()).await?, expected);
+        let rows = store.query(missing).await?;
+        assert_eq!(rows.len(), expected.min(2));
+        assert!(rows.iter().all(|row| row.data.get("payload").is_none()));
+    }
     // Generic scalar writes cannot mutate just the payload of a committed pair.
     assert!(store.update_on(&store.db, NativeRow::COLLECTION, "000000", json!({"payload":null}), true).await.is_err());
     drop(store);
