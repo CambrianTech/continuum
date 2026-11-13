@@ -236,12 +236,23 @@ single source of truth and this file must not drift from it.
 
 ## Machine-level conventions you cannot infer from the code
 
-**Cargo target dir — always set it first.** In the main checkout:
+**Cargo target dir — preserve the configured cache; set the default only if unset.** In the main checkout:
 
 ```bash
 export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"
 ```
 
+Preserve an explicitly configured `CARGO_TARGET_DIR`, including a path on another
+volume. Read the effective environment before building; do not silently replace
+an owner-selected cache with the home-directory default.
+
+In PowerShell, set the default only when no target directory is configured:
+
+```powershell
+if (-not $env:CARGO_TARGET_DIR) {
+    $env:CARGO_TARGET_DIR = Join-Path $HOME '.continuum/cache/cargo-target'
+}
+```
 In a worktree, build into its own copy-on-write clone of that dir instead (CLAUDE.md plan
 phase 2, "Each worktree builds into its own target dir"): a shared dir hands one worktree
 another's stale workspace-crate build.
