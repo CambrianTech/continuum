@@ -1245,7 +1245,7 @@ typed code.
 Per Joel 2026-06-05 and `[[events-are-the-organic-rtos-substrate]]`:
 events are NOT a feature of the substrate — they're the
 **coordination primitive** the RTOS shape rides on.
-`docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md` was designed
+`docs/architecture/CONTINUUM-ENGINE.md` was designed
 around events for this reason: an RTOS made organic by event-driven
 discovery instead of hardcoded wiring.
 
@@ -1738,7 +1738,7 @@ implement:
 ## References
 
 - docs/architecture/AI-COMMAND-NAMESPACE.md — the `ai/*` command surface this rides on
-- docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md — RTOS contract every URI dispatcher inherits
+- docs/architecture/CONTINUUM-ENGINE.md — RTOS contract every URI dispatcher inherits
 - docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md — CaptureSink pattern the verdict log uses
 - docs/architecture/COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md — current command system A.2.1 already lives in
 - docs/architecture/INFERENCE-LANES-REALISTIC.md — lane-allocation surface that becomes addressable per persona-internal URIs

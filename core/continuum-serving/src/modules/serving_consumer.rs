@@ -42,6 +42,15 @@
 //! [`pin`]: ServingConsumer::pin_model
 //! [`TierDownPolicy`]: super::serving_tier_down::TierDownPolicy
 //!
+//! # The lightest lever first: the engine's host prompt cache
+//!
+//! Before either of those, under [`Pressure`], serving lowers its engine's host prompt-cache
+//! limit by the request's target through the fork's live route (card 494c99f1; see
+//! `serving_consumer/prompt_cache.rs`): a dropped cache state costs one re-prefill, a tier-down costs every mind
+//! its model. The engine's receipt is confirmed against the measured process where serving
+//! measures one. A refusal, an unknown limit, or a cache at its floor falls through to the
+//! levers above, unchanged.
+//!
 //! # No new task, no parallel allocator
 //!
 //! This is a thin adapter over handles the daemon already publishes
@@ -65,6 +74,10 @@ use crate::inference::planning::MIN_SERVE_CTX;
 use crate::inference::lane_registry::LaneRecord;
 use crate::inference::llama_server::ServingSnapshot;
 use crate::modules::serving_tier_down::{TierDownContext, TierDownPolicy};
+
+mod prompt_cache;
+pub use prompt_cache::PromptCacheControl;
+use prompt_cache::PromptCacheLever;
 
 /// Size a lane inherited from a previous generation of this core — **a past form of
 /// ourself** — from its custody record alone, with no probe and no clock.
@@ -174,6 +187,13 @@ impl EngineDeviceCredit {
         *self.state.lock().unwrap_or_else(|p| p.into_inner()) = DeviceCreditState::NotDiscrete; // poisoned lock = a reading is still a reading; the next tick overwrites it
     }
 
+    /// Whether serving's pool row is host memory (unified memory, or a CPU-placed lane), so
+    /// the engine's host prompt cache is in the row a reclaim asks for. On a discrete GPU the
+    /// cache is host RAM while the row is VRAM: lowering it frees nothing that was asked for.
+    fn host_memory_is_the_pool(&self) -> bool {
+        matches!(*self.state.lock().unwrap_or_else(|p| p.into_inner()), DeviceCreditState::NotDiscrete) // poisoned lock = read the last reading, the next tick overwrites it
+    }
+
     fn answer(&self, live_pid: Option<u32>) -> DeviceAnswer {
         device_answer(*self.state.lock().unwrap_or_else(|p| p.into_inner()), live_pid) // poisoned lock = read the last reading, the next tick overwrites it
     }
@@ -276,6 +296,12 @@ pub struct ServingConsumer {
     /// Reclaims we've scheduled and are waiting to confirm freed. Brief-locked; no
     /// await is ever held across this guard.
     pending: Mutex<HashMap<String, Pending>>,
+    /// The engine-device reading the physical credit reads; here it also says whether the
+    /// host prompt cache lives in serving's pool row (it does not on a discrete GPU).
+    device: Arc<EngineDeviceCredit>,
+    /// The lightest lever, tried before tier-down and unload under pressure (card 494c99f1).
+    /// `None` = not wired (a backend with no engine cache route): the heavy levers decide.
+    prompt_cache: Option<PromptCacheLever>,
 }
 
 impl ServingConsumer {
@@ -286,25 +312,36 @@ impl ServingConsumer {
         pool_kind: ResourceKind,
         tier_down: Arc<dyn TierDownPolicy>,
     ) -> Self {
+        let device = Arc::new(EngineDeviceCredit::default());
         Self {
             serving,
             intent,
             held_high_water: std::sync::atomic::AtomicU64::new(0),
             decayed_at_verified_ms: std::sync::atomic::AtomicU64::new(0),
             footprint_of,
-            measured_of: physical_measure(Arc::new(EngineDeviceCredit::default())),
+            measured_of: physical_measure(device.clone()),
             measures_physically: true,
             pool_kind,
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             tier_down,
             pending: Mutex::new(HashMap::new()),
+            device,
+            prompt_cache: None,
         }
     }
 
     /// Share the daemon's engine-device reading (see [`EngineDeviceCredit`]): the daemon
     /// records it on its footprint tick, and this consumer's physical credit reads it.
     pub fn with_engine_device_credit(mut self, device: Arc<EngineDeviceCredit>) -> Self {
-        self.measured_of = physical_measure(device);
+        self.measured_of = physical_measure(device.clone());
+        self.device = device;
+        self
+    }
+
+    /// Wire the engine's host prompt cache as the first lever under pressure (card 494c99f1):
+    /// a reclaim lowers its limit before it tiers down or unloads.
+    pub fn with_prompt_cache(mut self, control: Arc<dyn PromptCacheControl>) -> Self {
+        self.prompt_cache = Some(PromptCacheLever::new(control));
         self
     }
 
@@ -365,6 +402,83 @@ impl ServingConsumer {
     /// Unlike suppress this does NOT go dark: the daemon serves the smaller model.
     fn pin_model(&self, id: &str) -> Result<(), super::serving_daemon::IntentRevisionExhausted> {
         self.intent.set_pin(Some(id.to_string()), false).map(|_| ())
+    }
+
+    /// The lightest lever (card 494c99f1): under pressure, lower the engine's host prompt cache
+    /// by the request's target before any heavy lever. `None` = this lever did not answer (not
+    /// wired, not pressure, the cache is not in the asked row, its limit is unknown or at the
+    /// floor, or the engine refused): the tier-down/unload path decides, unchanged.
+    ///
+    /// The receipt's `freed_bytes` is the engine's own account of what it evicted. Where this
+    /// consumer measures the process physically, the claim is confirmed against the measured
+    /// drop: the allocator may keep freed pages a while, so the smaller figure is reported.
+    async fn reclaim_prompt_cache(&self, request: &ReclaimRequest, active: &str, launched_mib: u32) -> Option<ReclaimOutcome> {
+        let lever = self.prompt_cache.as_ref()?;
+        // Shutdown and Rebalance want the whole lease gone from this box; a smaller cache
+        // serves neither, the same reasoning that skips tier-down for them.
+        if request.reason != ReclaimReason::Pressure || !self.device.host_memory_is_the_pool() {
+            return None;
+        }
+        let step = match lever.plan(launched_mib, request.target_bytes) {
+            Ok(step) => step,
+            Err(why) => {
+                continuum_base::probe!(
+                    class = "serving.reclaim.prompt_cache",
+                    target_bytes = request.target_bytes,
+                    no_step = ?why,
+                    "the prompt cache cannot be lowered: the heavy lever decides"
+                );
+                return None;
+            }
+        };
+        let measure = || self.measures_physically.then(|| (self.measured_of)(active)).flatten();
+        let before = measure();
+        let receipt = match lever.apply(step, request.target_bytes).await {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                continuum_base::probe!(
+                    class = "serving.reclaim.prompt_cache",
+                    limit_before_mib = step.before_mib.get(),
+                    limit_after_mib = step.after_mib.get(),
+                    target_bytes = request.target_bytes,
+                    refusal = %error,
+                    "the engine did not lower its prompt cache: the heavy lever decides"
+                );
+                return None;
+            }
+        };
+        let measured_drop = match (before, measure()) {
+            (Some(before), Some(after)) => Some(before.saturating_sub(after)),
+            _ => None,
+        };
+        let freed = measured_drop.map_or(receipt.freed_bytes, |drop| drop.min(receipt.freed_bytes));
+        continuum_base::probe!(
+            class = "serving.reclaim.prompt_cache",
+            limit_before_mib = step.before_mib.get(),
+            limit_after_mib = receipt.limit_after_mib.get(),
+            calls = receipt.calls,
+            target_bytes = request.target_bytes,
+            reported_freed_bytes = receipt.freed_bytes,
+            held_bytes = receipt.held_bytes,
+            measured_drop_bytes = measured_drop.unwrap_or(0), // unwrap_or: probe label; `measured` says whether a reading exists
+            measured = measured_drop.is_some(),
+            freed_bytes = freed,
+            "serving lowered its host prompt cache before any heavy lever"
+        );
+        let confirmation = match measured_drop {
+            Some(drop) if drop < receipt.freed_bytes => format!(
+                "; the engine reported {} bytes freed, the process measured {drop} lower (the allocator has not returned the rest yet)",
+                receipt.freed_bytes
+            ),
+            Some(_) => String::new(),
+            None => "; not physically confirmed (no process measurement)".to_string(),
+        };
+        let detail = format!(
+            "host prompt cache lowered {} -> {} MiB, freed {freed} bytes{confirmation}",
+            step.before_mib, receipt.limit_after_mib
+        );
+        let status = if freed >= request.target_bytes { ReclaimStatus::Released } else { ReclaimStatus::Partial };
+        Some(ReclaimOutcome { freed_bytes: freed, status, detail: Some(detail) })
     }
 }
 
@@ -427,7 +541,7 @@ impl ResourceConsumer for ServingConsumer {
                 .as_ref()
                 .map(|(id, _, _, _)| id.clone())
                 .or_else(|| self.serving.borrow().loading_model.clone())
-                .unwrap_or_default();
+                .unwrap_or_default(); // unwrap_or_default: no model named yet, and the physical read is of the live lane whatever it serves
             return match (self.measured_of)(&model) {
                 Some(bytes) if bytes > 0 => vec![ConsumerFootprint {
                     kind: self.pool_kind,
@@ -480,7 +594,7 @@ impl ResourceConsumer for ServingConsumer {
             // is under-attributed by its grant until the record learns it (named gap).
             inherited_footprint(&rec, |m, w, l| (self.footprint_of)(m, w, l, 0))
         });
-        let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0);
+        let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0); // unwrap_or: no plan, no loading lane, no inherited record = nothing planned resident
 
         // THE HIGH-WATER REQUIRES A PROOF CHANNEL. `ready_verified_at_ms` is stamped the
         // moment readiness is CONFIRMED for the lane now serving, and a verification we
@@ -494,14 +608,13 @@ impl ResourceConsumer for ServingConsumer {
         // unfalsifiable claim on a third of the box is not.
         let Some(verified) = self.serving.borrow().ready_verified_at_ms else {
             return planned
-                .map(|(bytes, detail)| {
-                    vec![ConsumerFootprint {
-                        kind: self.pool_kind,
-                        bytes,
-                        detail,
-                    }]
+                .into_iter()
+                .map(|(bytes, detail)| ConsumerFootprint {
+                    kind: self.pool_kind,
+                    bytes,
+                    detail,
                 })
-                .unwrap_or_default();
+                .collect();
         };
 
         // DECAY ON EVIDENCE, NEVER ON A TIMER.
@@ -610,6 +723,9 @@ impl ResourceConsumer for ServingConsumer {
             // We hold nothing reclaimable — already free, honestly zero.
             return ReclaimOutcome::released(0);
         };
+        if let Some(outcome) = self.reclaim_prompt_cache(&request, &active, grant_mib).await {
+            return outcome;
+        }
         let current = (self.footprint_of)(&active, window, lanes, grant_mib);
 
         // Under Pressure another peer needs room NOW but serving need not go dark:

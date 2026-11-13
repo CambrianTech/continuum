@@ -54,7 +54,7 @@ pub(super) fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
                         grant_mib,
                     )
                 })
-                .unwrap_or(0)
+                .unwrap_or(0) // unwrap_or: a model the catalog does not know, or one with no local weights, holds nothing to attribute
         },
     )
 }
@@ -66,6 +66,25 @@ pub fn attribute_serving(peak_resident_bytes: u64, lanes: u32, granted_cache_mib
         return peak_resident_bytes;
     }
     peak_resident_bytes.saturating_add((granted_cache_mib as u64).saturating_mul(1024 * 1024))
+}
+
+/// The serving engine's host prompt cache, driven through this daemon's control: serving's
+/// first lever under pressure (card 494c99f1). The launch grant it lowers from is the one on
+/// the serving snapshot (the spawn fact, or `--cache-ram` read off an adopted engine's argv).
+struct EnginePromptCache(Arc<dyn LlamaServerControl>);
+
+#[async_trait::async_trait]
+impl crate::modules::serving_consumer::PromptCacheControl for EnginePromptCache {
+    fn engine(&self) -> Option<crate::inference::engine_residency::EngineIncarnation> {
+        self.0.served_incarnation()
+    }
+
+    async fn set_limit(
+        &self,
+        limit_mib: std::num::NonZeroU64,
+    ) -> Result<crate::inference::llama_server::PromptCacheLimit, crate::inference::llama_server::LlamaServerError> {
+        self.0.set_prompt_cache_limit(limit_mib).await
+    }
 }
 
 impl ServingDaemonModule {
@@ -190,7 +209,10 @@ impl ServingDaemonModule {
         )
         // On a discrete GPU the board credits serving with what its ENGINE holds on the
         // device, recorded by this daemon's footprint tick (card 741f5eec).
-        .with_engine_device_credit(self.engine_device_credit.clone());
+        .with_engine_device_credit(self.engine_device_credit.clone())
+        // Under pressure the engine's host prompt cache is given back first, before a tier-down
+        // or an unload (card 494c99f1).
+        .with_prompt_cache(Arc::new(EnginePromptCache(self.server.clone())));
         self.resource_daemon.add_consumer(Arc::new(consumer));
 
         // THE VISION HOLDER declares itself (#106/#395/#56). Measured on the live board

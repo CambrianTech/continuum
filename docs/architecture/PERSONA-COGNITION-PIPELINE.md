@@ -198,7 +198,7 @@ still exists and still has files in it, which reads as "working".
 4. `docs/architecture/COGNITION-ALGORITHMS.md` — Algorithm 4 (recall scoring), decay.
 5. `docs/architecture/BRAIN-REGIONS-SUBSTRATE.md` — hippocampus, motor, sensory as ServiceModules.
 6. `docs/architecture/GENOME-FOUNDRY-SENTINEL.md` — genome paging, foundry-as-JIT, sentinel-AI-as-PGO.
-7. `docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md` — the RTOS contract every Rust module inherits.
+7. `docs/architecture/CONTINUUM-ENGINE.md` — the RTOS contract every Rust module inherits.
 8. `docs/architecture/AI-COMMAND-NAMESPACE.md` — `ai/*` namespace, tool calling protocol.
 9. `docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md` — captures, replay, audit.
 10. `core/continuum-core/src/persona/unified.rs` (the brain struct itself — every field is load-bearing).

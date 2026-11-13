@@ -160,7 +160,7 @@ pub(crate) async fn send_with_lane_retry(
                 header_bound.saturating_sub(quote_started.elapsed()),
             ).await?;
             let count_elapsed_ms = count_started.elapsed().as_millis() as u64;
-            // ONE bound per request (SERVING-ENGINE section 8). An admitted request is bounded
+            // ONE bound per request (CONTINUUM-ENGINE.md, serving engine: admission (4.8)). An admitted request is bounded
             // by its grant: admission sized it against the engine's own geometry and holds
             // that much of the pool for this act, which may be more than an equal share. The
             // lane's published share is the bound only for a caller with no grant. Checking an

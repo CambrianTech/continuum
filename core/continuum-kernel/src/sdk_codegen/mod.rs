@@ -341,7 +341,7 @@ macro_rules! action_command {
             // model reaches for, resolved inbound by tool_dialect). Absent ⇒ the trait
             // default (empty). Emitted only when present, so the default stands otherwise.
             $(const ALIASES: &'static [&'static str] = $aliases;)?
-            // Optional `effect: <ToolEffect variant>,` clause ⟹ EFFECT (MIND-CONTEXT invariant 4:
+            // Optional `effect: <ToolEffect variant>,` clause ⟹ EFFECT (CONTINUUM-ENGINE section 5 invariant 4:
             // only a command that declares it `Observes` can have an unchanged result render as a
             // repeat). Absent ⇒ the trait default, `Undeclared`, which authorizes nothing.
             $(const EFFECT: $crate::sdk_codegen::ToolEffect = $crate::sdk_codegen::ToolEffect::$effect;)?

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 description = """
-Slice S0 of docs/architecture/SERVING-ENGINE.md (plan line 3b): the validator every
+Slice S0 of docs/architecture/CONTINUUM-ENGINE.md (plan line 3b): the validator every
 serving slice proves its gain on before it reaches the live node. It replays act
 sequences (real prompt captures, or synthetic multi-mind interleavings) against an
 engine behind the `ServingTarget` seam and reports per-act reuse, fresh prefill

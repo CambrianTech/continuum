@@ -204,7 +204,7 @@ What changes:
 | Direction | Today | Flowing both ways |
 |---|---|---|
 | A page under pressure | Dropped (evicted), then re-prefilled at minutes per act | Demoted one tier (device to host to flash) at its measured transfer cost, and promoted back by predicted need (warm-ahead) |
-| Engine capacity | Sized at launch; grows only by relaunch, once per run; never gives memory back | `reconfigure` grows or shrinks live at a frame boundary (SERVING-ENGINE S2); a user's game or editor gets its memory back, and gets it again when it quits |
+| Engine capacity | Sized at launch; grows only by relaunch, once per run; never gives memory back | `reconfigure` grows or shrinks live at a frame boundary (CONTINUUM-ENGINE.md slice S2); a user's game or editor gets its memory back, and gets it again when it quits |
 | Seats | Change hands only when an evaluation catches an idle holder | A lease per act, re-decided each tick by temperature and aging (S3, #5914) |
 | Learning | A separate admission waiting on a multi-GB lease | Forward and backward share the frames: learning chunks run in the gaps between decode steps (fork #102), on the transient arena |
 
@@ -223,7 +223,7 @@ its loader and its tier costs:
 
 Build order (each slice proven by its validator first, then a live read):
 
-1. **S2, `reconfigure`** in the fork (SERVING-ENGINE §5): the model never reloads, and grow and
+1. **S2, `reconfigure`** in the fork (CONTINUUM-ENGINE.md 4.5): the model never reloads, and grow and
    shrink are one path. This ends relaunches, the largest live harm (13 in four minutes on
    2026-11-10).
 2. **Tiered demotion in `PagedResourcePool`:** evict means demote one tier, with the KV slots
