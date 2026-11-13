@@ -34,9 +34,9 @@ use crate::orm::types::CollectionSchema;
         // adapter owner must open independently and reuse its resolved backend.
         // The held home guard supplies isolation through both adapter awaits.
         let state = DataState::new();
-        assert_eq!(state.resolve_handle("@node").unwrap(),
-            node.path().join(".continuum/database/node.db").to_str().unwrap());
-        assert!(state.context.read().unwrap().is_none());
+        assert_eq!(std::path::PathBuf::from(state.resolve_handle("@node").unwrap()),
+            node.path().join(".continuum/database/node.db"));
+        assert!(state.context.get().is_none());
         let first = state.get_adapter("@node").await.unwrap();
         let second = state.get_adapter("@node").await.unwrap();
         assert!(Arc::ptr_eq(&first, &second));
@@ -58,9 +58,21 @@ use crate::orm::types::CollectionSchema;
         let refused = runtime.initialize().await.expect_err("a registrar conflict must refuse init"); // expect: the invariant under test
         assert!(refused.contains("data") && refused.contains("staged_credit registered twice"), "{refused}");
         assert!(
-            module.state.context.read().unwrap_or_else(|e| e.into_inner()).is_none(),
+            module.state.context.get().is_none(),
             "a refused data module must not publish its context"
         );
+    }
+
+    #[tokio::test]
+    async fn initialized_context_cannot_be_replaced() {
+        let module = Arc::new(DataModule::new(no_substrate_entities));
+        let runtime = crate::runtime::runtime::Runtime::new();
+        runtime.register(module.clone());
+        runtime.initialize().await.expect("test: initial context publication");
+        let original = module.state.context.get().expect("test: published context").clone();
+        let error = module.initialize(&original).await.expect_err("test: duplicate initialization");
+        assert!(error.contains("already initialized"));
+        assert!(Arc::ptr_eq(module.state.context.get().expect("test: context retained"), &original));
     }
 
     // What this catches: generic data/vector commands cannot bypass the owning

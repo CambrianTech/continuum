@@ -206,30 +206,63 @@ async fn publish_as_sender(
     message_id: Uuid,
     params: &ChatSendParams,
 ) -> Result<(), String> {
-    if params.media.is_empty() {
-        return crate::persona::airc_citizen::publish_text_in_room(
-            airc, params.room_id, &params.text,
-        ).await.map(|_| ()).map_err(|e| e.to_string());
+    let (body, headers) = sender_publication(message_id, params)?;
+    airc.publish(
+        crate::persona::airc_citizen::publish_target_for(params.room_id),
+        airc_protocol::FrameKind::Message,
+        body,
+        headers,
+    ).await.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Local reply IDs belong to the existing consumer envelope, not AIRC's native
+/// event-ID reply field. The sender's authenticated AIRC runtime still publishes.
+fn sender_publication(
+    message_id: Uuid,
+    params: &ChatSendParams,
+) -> Result<(airc_core::Body, airc_core::Headers), String> {
+    if params.media.is_empty() && params.reply_to_id.is_none() {
+        return Ok((airc_core::Body::text(&params.text), airc_core::Headers::default()));
     }
-    let envelope: crate::routing::airc_realtime::AircRealtimeEnvelope = serde_json::from_value(
+    let envelope: crate::routing::airc_realtime::AircRealtimeEnvelope = serde_json::from_value( // wire boundary: shared transcript envelope codec
         crate::cognition::conversation::room_event::chat_transcript_envelope(
             message_id,
             &params.transcript_line(),
             EpochMs::now().millis(),
         ),
     ).map_err(|e| format!("chat transcript envelope invalid: {e}"))?;
-    airc.publish(
-        crate::persona::airc_citizen::publish_target_for(params.room_id),
-        airc_protocol::FrameKind::Message,
+    Ok((
         crate::routing::airc_realtime_wire::body_for_envelope(&envelope)?,
         crate::routing::airc_realtime_wire::headers_for_envelope(&envelope),
-    ).await.map(|_| ()).map_err(|e| e.to_string())
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sdk_codegen::{AccessLevel, ActionCommand};
+
+    #[test]
+    fn text_reply_preserves_consumer_metadata_without_replacing_airc_authority() {
+        let message = Uuid::new_v4();
+        let reply = Uuid::new_v4();
+        let params = ChatSendParams {
+            room_id: Uuid::new_v4(), sender_id: Uuid::new_v4(),
+            text: "reply text".into(), reply_to_id: Some(reply), media: Vec::new(),
+        };
+        let (body, headers) = sender_publication(message, &params).expect("test: reply envelope");
+        let airc_core::Body::Json(body) = body else { panic!("test: JSON envelope required"); };
+        assert_eq!(body["roomId"], params.room_id.to_string());
+        assert_eq!(body["sourceId"], params.sender_id.to_string());
+        assert_eq!(body["payload"]["payload"]["inline"]["replyToId"], reply.to_string());
+        assert_eq!(body["payload"]["payload"]["inline"]["text"], params.text);
+        assert_eq!(headers.get("continuum.event_id"), Some(&message.to_string()));
+        assert!(!headers.contains_key("airc.reply_to"), "local IDs must not impersonate native AIRC event IDs");
+        let plain = ChatSendParams { reply_to_id: None, ..params };
+        let (body, headers) = sender_publication(message, &plain).expect("test: plain text");
+        assert_eq!(body, airc_core::Body::text(&plain.text));
+        assert!(headers.is_empty());
+    }
 
     // what this catches: the command carries its `chat/send` wire name (the routing key
     // every caller binds to) and stays AiSafe — chat/send WRITES, but posting a message

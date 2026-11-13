@@ -279,6 +279,7 @@ fn driver_loop(
     let mut post_sample_total = std::time::Duration::ZERO;
     let mut tokens_sampled_window: u64 = 0;
     // context-budget-exempt: how often the scheduler emits a throughput log line — a logging cadence
+    // derived-or-floor: aggregate 50 samples per diagnostic line; this controls logging only, never work admission or a timeout.
     const PERF_LOG_INTERVAL_TOKENS: u64 = 50;
     loop {
         // ── Phase 1: Accept new requests into free slots ──

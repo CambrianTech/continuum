@@ -153,7 +153,11 @@ impl DataState {
             .await
             .map_err(|_| "query semaphore closed")?;
 
-        let handle = params.handle.as_deref().unwrap_or("main");
+        // The public request schema defines an omitted handle as the shared store.
+        let handle = match params.handle.as_deref() {
+            Some(handle) => handle,
+            None => "main",
+        };
 
         // Plain-JSON filter → typed FieldFilter map. FieldFilter is untagged, so
         // `{"roomId": "general"}` becomes an equality match and

@@ -3,6 +3,28 @@
 use super::*;
 
 #[tokio::test]
+async fn vector_corpus_pages_past_rows_without_embeddings() {
+    let module = DataModule::new(no_substrate_entities);
+    let (_tmp, db_path) = test_db_path("vector_pages");
+    let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
+    let page_size = crate::data::max_concurrent_queries::default_page_size();
+    for index in 0..page_size + 3 {
+        let embedding = if index < page_size { json!([]) } else { json!([index as f64, 1.0]) };
+        adapter.create(DataRecord {
+            id: format!("row-{index:06}"), collection: "test_vector_pages".into(),
+            data: json!({"embedding": embedding, "content": "payload".repeat(1000)}),
+            metadata: crate::orm::types::RecordMetadata::default(),
+        }).await.into_result().expect("test: row");
+    }
+    let vectors = module.state.vector_corpus(&db_path, "test_vector_pages").await.expect("test: corpus");
+    assert_eq!(vectors.len(), 3, "an empty-vector page must not end corpus traversal");
+    for (offset, vector) in vectors.iter().enumerate() {
+        assert_eq!(vector.id, format!("row-{:06}", page_size + offset));
+        assert_eq!(vector.embedding, vec![(page_size + offset) as f64, 1.0]);
+    }
+}
+
+#[tokio::test]
 async fn backfill_rejects_zero_batch_before_opening_an_embedder() {
     let module = DataModule::new(no_substrate_entities);
     let result = module.state.backfill_vectors(

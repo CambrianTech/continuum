@@ -206,6 +206,20 @@ use super::*;
     }
 
     #[tokio::test]
+    async fn cursor_refuses_nonprogressing_and_overflowing_page_sizes() {
+        let module = DataModule::new(no_substrate_entities);
+        for page_size in [0, usize::MAX] {
+            let result = module.handle_command("data/query-open", json!({
+                "dbPath": "must-not-open",
+                "collection": "test_handle_cursor",
+                "pageSize": page_size,
+            })).await;
+            let error = result.expect_err("invalid page size must fail before opening storage");
+            assert!(error.contains("pageSize"), "unexpected error: {error}");
+        }
+    }
+
+    #[tokio::test]
     pub(super) async fn query_open_returns_handle_alongside_legacy_query_id() {
         let (module, _tmp, db_path) = setup_paginated_for_handle_tests("handle_open", 3).await;
         let response = open_cursor(&module, &db_path, 10).await;
@@ -240,6 +254,30 @@ use super::*;
         );
         // Both fields are real UUIDs.
         uuid::Uuid::parse_str(handle_id).expect("handle.id must parse as a UUID");
+    }
+
+    #[tokio::test]
+    async fn cursor_projection_is_kept_on_every_page_and_count_is_exact() {
+        let (module, _tmp, db_path) = setup_paginated_for_handle_tests("projected_cursor", 5).await;
+        let opened = module.handle_command("data/query-open", json!({
+            "dbPath": db_path, "collection": "test_handle_cursor", "pageSize": 3,
+            "select": ["id"], "countExact": true,
+        })).await.expect("test: open projected cursor");
+        let CommandResult::Json(opened) = opened else { panic!("test: JSON response") };
+        assert_eq!(opened["data"]["totalCount"], 5);
+        for (count, more) in [(3, true), (2, false)] {
+            let page = module.handle_command("data/query-next", json!({"handle": opened["handle"]}))
+                .await.expect("test: projected page");
+            let CommandResult::Json(page) = page else { panic!("test: JSON response") };
+            let items = page["data"]["items"].as_array().expect("test: items");
+            assert_eq!(items.len(), count);
+            assert_eq!(page["data"]["hasMore"], more);
+            assert_eq!(page["data"]["totalCount"], 5);
+            for item in items {
+                assert!(item["data"]["id"].is_string());
+                assert!(item["data"].get("name").is_none(), "unselected field was materialized");
+            }
+        }
     }
 
     #[tokio::test]

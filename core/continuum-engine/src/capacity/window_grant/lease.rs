@@ -166,7 +166,7 @@ impl Reservations {
         held.next_id += 1;
         let id = held.next_id;
         held.entries.entry(persona).or_default().push(Entry { id, tokens: leased.tokens, engine: leased.engine, custody: Custody::Live });
-        Ok(GrantReservation { owner: self, persona, id })
+        Ok(GrantReservation { owner: self, persona, id, dispatch: ReservationDispatch::Unsent })
     }
 
     /// Run a regrant with every reservation held: the publisher computes and publishes under this
@@ -255,16 +255,35 @@ impl Reservations {
     }
 }
 
-/// A request's reservation of its lease. [`Self::complete`] on the engine's terminal receipt;
-/// dropped without it, the reservation stays held, unresolved, until a fence.
+#[derive(Clone, Copy)]
+enum ReservationDispatch {
+    Unsent,
+    Dispatched,
+}
+
+/// A request's reservation of its lease. Cancellation before dispatch releases it;
+/// after dispatch, missing terminal evidence retains unresolved custody.
 #[must_use = "a reservation released at once protects nothing"]
 pub struct GrantReservation {
     owner: &'static Reservations,
     persona: uuid::Uuid,
     id: u64,
+    dispatch: ReservationDispatch,
 }
 
 impl GrantReservation {
+    /// Transfer to engine custody BEFORE polling the transport future. A lost
+    /// response after this point cannot be interpreted as an unsent request.
+    pub fn mark_dispatched(&mut self) {
+        self.dispatch = ReservationDispatch::Dispatched;
+    }
+
+    /// A preparation IO received its terminal receipt. Keep its grant charged
+    /// for the subsequent quote/dispatch without counting it as served work.
+    pub(crate) fn preparation_io_completed(&mut self) {
+        self.dispatch = ReservationDispatch::Unsent;
+    }
+
     /// The engine's terminal receipt for this request: its own reservation ends.
     fn complete(self) {
         self.owner.release(self.persona, self.id, true);
@@ -289,7 +308,10 @@ pub fn settle(reservation: GrantReservation, receipt: Option<&TerminalReceipt>) 
 
 impl Drop for GrantReservation {
     fn drop(&mut self) {
-        self.owner.abandon(self.persona, self.id);
+        match self.dispatch {
+            ReservationDispatch::Unsent => self.owner.release(self.persona, self.id, false),
+            ReservationDispatch::Dispatched => self.owner.abandon(self.persona, self.id),
+        }
     }
 }
 
@@ -364,10 +386,10 @@ fn record_refused(&self, proof: crate::inference::slots::grant_handoff::RefusedG
 }
 }
 
-/// One dispatch ATTEMPT's reservation, re-made before every POST: the previous attempt's (never
-/// sent: a connect refusal or a 503 before any token) is released, and her lease is compared and
-/// reserved against her grant as published NOW, so a retry that reaches a replacement engine or a
-/// shrunken grant is refused typed and nothing is POSTed under the old lease.
+/// Revalidate before every POST, retaining custody while acquiring the successor.
+/// The previous attempt must be unsent or positively refused by the transport.
+/// Overlapping reservations charge the same mind's maximum, not their sum. A
+/// changed incarnation or grant refuses the successor and releases the old attempt.
 pub fn reserve_attempt(
     slot_for: &mut Option<GrantReservation>,
     persona: uuid::Uuid,
@@ -385,10 +407,14 @@ fn reserve_attempt_with(
     needed: u32,
     current: impl FnOnce() -> Option<GrantLease>,
 ) -> Result<(), ReserveRefused> {
+    // Reserve first: releasing the previous claim first lets a publication
+    // retire the mind between preparation and dispatch (or between retries).
+    // Both claims are owned by the same authority and physical grant.
+    let next = owner.reserve_against(persona, leased, needed, current);
     if let Some(previous) = slot_for.take() {
         previous.release_unsent();
     }
-    *slot_for = Some(owner.reserve_against(persona, leased, needed, current)?);
+    *slot_for = Some(next?);
     Ok(())
 }
 
@@ -533,8 +559,9 @@ mod tests {
         assert_eq!(owner.begin_handoff(mind, lease, revision + 1, || Some(lease)), Err(HandoffRefused::ReceiptChanged));
         let changed = publish(Some(&grant), mind, 70, engine(7)).lease_for(mind).expect("changed");
         assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(changed)), Err(HandoffRefused::GrantChanged));
-        let overlapping = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("second request");
+        let mut overlapping = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("second request");
         assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(lease)), Err(HandoffRefused::CustodyOutstanding));
+        overlapping.mark_dispatched();
         drop(overlapping);
         assert_eq!(owner.begin_handoff(mind, lease, revision, || Some(lease)), Err(HandoffRefused::CustodyOutstanding));
         assert_eq!(reserved_now(owner, engine(7)).get(&mind), Some(&60));
@@ -553,13 +580,14 @@ mod tests {
         });
         let second = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("reserved again");
         settle(second, Some(&TerminalReceipt { finish: "stop".into() }));
-        let third = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("another active request");
+        let mut third = owner.reserve_against(mind, lease, 50, || Some(lease)).expect("another active request");
         let revision = owner.honoring_with_receipts(engine(7), |fixed, receipts| {
             assert_eq!(fixed.get(&mind), Some(&60), "new request still owns capacity");
             let revision = *receipts.get(&mind).expect("completion was not lost to restart");
             assert!(revision > first_revision);
             revision
         });
+        third.mark_dispatched();
         drop(third);
         owner.honoring_with_receipts(engine(7), |fixed, receipts| {
             assert_eq!(fixed.get(&mind), Some(&60), "unresolved custody remains fixed");
@@ -604,10 +632,12 @@ mod tests {
         let atlas = uuid::Uuid::new_v4();
         let owner = owner();
         let lease = publish(None, atlas, 148_838, engine(7)).lease_for(atlas).expect("granted");
-        let cancelled = owner.reserve_against(atlas, lease, 141_007, || Some(lease)).expect("reserved");
+        let mut cancelled = owner.reserve_against(atlas, lease, 141_007, || Some(lease)).expect("reserved");
+        cancelled.mark_dispatched();
         drop(cancelled);
         assert_eq!(reserved_now(owner, engine(7)).get(&atlas), Some(&148_838), "unresolved: still held");
-        let eof = owner.reserve_against(atlas, lease, 1_000, || Some(lease)).expect("reserved");
+        let mut eof = owner.reserve_against(atlas, lease, 1_000, || Some(lease)).expect("reserved");
+        eof.mark_dispatched();
         settle(eof, None);
         assert_eq!(reserved_now(owner, engine(7)).get(&atlas), Some(&148_838), "an EOF without a finish is no receipt");
         assert_eq!(reserved_now(owner, engine(8)).get(&atlas), None, "a fence: the engine incarnation changed");
@@ -646,5 +676,25 @@ mod tests {
         assert_eq!(retried, Err(ReserveRefused::Changed { leased: lease_a, current: Some(on_b) }), "refused: the old lease reserves nothing");
         assert!(attempt.is_none(), "no reservation carried to the retry");
         assert_eq!(reserved_now(owner, engine(7)).get(&atlas), None, "the unsent attempt released its own");
+    }
+
+    #[test]
+    fn preparation_refinement_keeps_one_claim_and_refusal_releases_it_without_credit() {
+        let mind = uuid::Uuid::new_v4();
+        let owner = owner();
+        let lease = publish(None, mind, 60, engine(7)).lease_for(mind).expect("granted");
+        let mut attempt = None;
+        for needed in [0, 20, 59] {
+            reserve_attempt_with(owner, &mut attempt, mind, lease, needed, || Some(lease)).expect("refined");
+            assert_eq!(reserved_now(owner, engine(7)).get(&mind), Some(&60));
+            let held = owner.lock();
+            assert_eq!(held.entries.get(&mind).expect("one owner").len(), 1);
+            assert!(held.receipts.is_empty(), "preparation is not completed service");
+        }
+        assert_eq!(reserve_attempt_with(owner, &mut attempt, mind, lease, 60, || Some(lease)),
+            Err(ReserveRefused::Over { count: 60, grant: 60 }));
+        assert!(attempt.is_none());
+        assert!(reserved_now(owner, engine(7)).is_empty());
+        assert!(owner.lock().receipts.is_empty());
     }
 }

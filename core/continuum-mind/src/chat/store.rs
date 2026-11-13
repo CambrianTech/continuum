@@ -100,7 +100,7 @@ impl ChatModule {
         if let Some(limit) = limit {
             query["limit"] = json!(limit);
         }
-        records(collection, &self.store("data/query", query).await?)
+        records(collection, self.store("data/query", query).await?)
     }
 
     /// The row `id` names in `collection`, `None` only when the store confirms there is none.
@@ -157,26 +157,55 @@ fn refusal(command: &str, result: &Value) -> Option<String> {
     let reason = result
         .get("error")
         .and_then(Value::as_str)
-        .unwrap_or("success=false without an error");
+        .unwrap_or("success=false without an error"); // diagnostic text only: the malformed receipt still fails
     Some(format!("chat store: the store refused {command}: {reason}"))
 }
 
 /// The entities of a successful `data/query` response (`{ success, data: [{ id, data: <entity> }] }`).
 /// Only a well-formed empty list means no rows: a missing list or a record without its entity is a
 /// malformed answer, an error, never fewer rows (Codex on #5696).
-fn records(collection: &str, query_result: &Value) -> Result<Vec<Value>, String> {
+fn records(collection: &str, mut query_result: Value) -> Result<Vec<Value>, String> {
     let malformed = |what: &str| format!("chat store: malformed {collection} query answer: {what}");
     let records = query_result
-        .get("data")
-        .and_then(Value::as_array)
+        .as_object_mut()
+        .and_then(|fields| fields.remove("data"))
         .ok_or_else(|| malformed("no record list"))?;
+    let Value::Array(records) = records else {
+        return Err(malformed("no record list"));
+    };
     records
-        .iter()
-        .map(|record| {
+        .into_iter()
+        .map(|mut record| {
             record
-                .get("data")
-                .cloned()
+                .as_object_mut()
+                .and_then(|fields| fields.remove("data"))
                 .ok_or_else(|| malformed("a record without its entity"))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod owned_rows_tests {
+    use super::*;
+
+    #[test]
+    fn transcript_payload_moves_without_copying() {
+        let payload = "transcript".repeat(4096);
+        let allocation = payload.as_ptr();
+        let mut row = serde_json::Map::new();
+        row.insert("data".into(), Value::String(payload));
+        let mut response = serde_json::Map::new();
+        response.insert("data".into(), Value::Array(vec![Value::Object(row)]));
+        let rows = records("chat_messages", Value::Object(response)).expect("test: valid row");
+        assert_eq!(rows[0].as_str().expect("test: text").as_ptr(), allocation);
+    }
+
+    #[test]
+    fn malformed_rows_are_not_silently_omitted() {
+        for response in [json!({}), json!({"data": null}), json!({"data": [{}]}),
+                         json!({"data": [{"data": 1}, null]})] {
+            assert!(records("chat_messages", response).is_err());
+        }
+        assert_eq!(records("chat_messages", json!({"data": []})).expect("test: empty page"), Vec::<Value>::new());
+    }
 }

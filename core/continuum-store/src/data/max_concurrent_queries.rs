@@ -85,6 +85,7 @@ pub(super) struct PaginatedQueryState {
     pub(super) collection: String,
     pub(super) filter: Option<std::collections::HashMap<String, FieldFilter>>,
     pub(super) sort: Option<Vec<crate::orm::query::SortSpec>>,
+    pub(super) select: Option<Vec<String>>,
     pub(super) page_size: usize,
     /// Exact row count from the open-time COUNT(*). Only populated when the
     /// caller passed `count_exact: true`; otherwise 0 means "not requested",
@@ -92,7 +93,7 @@ pub(super) struct PaginatedQueryState {
     /// the caller only needs has_more, which is derived from LIMIT N+1).
     pub(super) total_count: u64,
     pub(super) current_page: usize,
-    /// Cursor: last ID from previous page for efficient keyset pagination
+    /// Last returned ID; page execution currently uses OFFSET, not this value.
     pub(super) cursor_id: Option<String>,
     pub(super) has_more: bool,
     /// Creation time for future TTL-based cleanup of stale queries
@@ -136,8 +137,8 @@ pub struct DataState {
     /// the minimum required for cursor-state correctness.
     pub(super) paginated_queries: DashMap<String, Arc<tokio::sync::Mutex<PaginatedQueryState>>>,
     /// Module context for inter-module communication (event bus, shared compute)
-    /// Set during initialize(), used to publish data change events
-    pub(crate) context: RwLock<Option<Arc<ModuleContext>>>,
+    /// Published once after successful initialization; readers never take a lock.
+    pub(crate) context: OnceLock<Arc<ModuleContext>>,
     /// Active migration handle for status/pause/verify (lightweight, lock-free)
     pub(super) active_migration: Mutex<Option<MigrationHandle>>,
     /// Pre-cutover connection string (for rollback)
@@ -161,7 +162,7 @@ impl DataState {
             init_lock: Mutex::new(()),
             vector_cache: crate::runtime::shared_compute::SharedCompute::new(),
             paginated_queries: DashMap::new(),
-            context: RwLock::new(None),
+            context: OnceLock::new(),
             active_migration: Mutex::new(None),
             previous_connection: Mutex::new(None),
             query_semaphore: Semaphore::new(MAX_CONCURRENT_QUERIES),
@@ -172,8 +173,7 @@ impl DataState {
     /// Events follow pattern: data:{collection}:{action}
     /// Actions: created, updated, deleted, batch
     pub(super) fn publish_event(&self, collection: &str, action: &str, payload: serde_json::Value) {
-        let ctx_guard = self.context.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(ctx) = ctx_guard.as_ref() {
+        if let Some(ctx) = self.context.get() {
             let event_name = format!("data:{}:{}", collection, action);
             ctx.bus.publish_async_only(&event_name, payload);
         }
@@ -185,8 +185,7 @@ impl DataState {
         if duration_ms < 50 {
             return;
         }
-        let ctx_guard = self.context.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(ctx) = ctx_guard.as_ref() {
+        if let Some(ctx) = self.context.get() {
             let logger = ctx.logger("data");
             logger.timing_with_meta(
                 operation,
@@ -416,6 +415,9 @@ pub(super) struct QueryOpenParams {
     pub(super) filter: Option<std::collections::HashMap<String, FieldFilter>>,
     #[serde(default)]
     pub(super) sort: Option<Vec<crate::orm::query::SortSpec>>,
+    /// Fields to materialize for every page; identity metadata remains included.
+    #[serde(default)]
+    pub(super) select: Option<Vec<String>>,
     #[serde(default = "default_page_size")]
     pub(super) page_size: usize,
     /// Opt in to a SELECT COUNT(*) at open time so callers that show

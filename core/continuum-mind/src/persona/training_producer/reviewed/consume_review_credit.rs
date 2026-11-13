@@ -288,16 +288,47 @@ pub async fn credit_status<T: Transport>(
     submission_id: Uuid,
 ) -> Result<ReviewedCredit, ClientError> {
     let id = submission_id.to_string();
-    let Some(binding) = read_one::<_, WorkCreditBinding>(conn, persona_name, &id).await? else {
+    let Some(CreditSnapshot { binding, decision, accepted }) = read_credit(conn, persona_name, submission_id).await? else {
         return Ok(ReviewedCredit::pending(ReviewedCreditState::Unbound));
     };
-    let decision = read_one::<_, CreditReviewDecision>(conn, persona_name, &id).await?;
-    let accepted = read_one::<_, CreditReviewAcceptance>(conn, persona_name, &id).await?;
     // A decided credit the trigger refused names the refusal as its destination (card 99b2773a).
     let refused = match (&accepted, &decision) {
         (None, Some(_)) => read_one::<_, CreditSubmitRefusal>(conn, persona_name, &id).await?.map(|r| r.receipt),
         _ => None,
     };
+    Ok(ReviewedCredit {
+        state: if accepted.is_some() {
+            ReviewedCreditState::Accepted
+        } else if decision.is_some() {
+            ReviewedCreditState::AwaitingAcceptance
+        } else {
+            ReviewedCreditState::AwaitingReview
+        },
+        staged_revision_id: Some(binding.selection.staged_revision_id),
+        decision_review_id: decision.map(|d| d.review.review_id.as_uuid()),
+        destination: accepted.map(|a| a.receipt).or(refused),
+    })
+}
+
+/// One validated set of credit rows. Status and boundary recovery share the
+/// same causality checks and keep the evidence they already read.
+pub(super) struct CreditSnapshot {
+    pub(super) binding: WorkCreditBinding,
+    pub(super) decision: Option<CreditReviewDecision>,
+    pub(super) accepted: Option<CreditReviewAcceptance>,
+}
+
+pub(super) async fn read_credit<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    submission_id: Uuid,
+) -> Result<Option<CreditSnapshot>, ClientError> {
+    let id = submission_id.to_string();
+    let Some(binding) = read_one::<_, WorkCreditBinding>(conn, persona_name, &id).await? else {
+        return Ok(None);
+    };
+    let decision = read_one::<_, CreditReviewDecision>(conn, persona_name, &id).await?;
+    let accepted = read_one::<_, CreditReviewAcceptance>(conn, persona_name, &id).await?;
     if accepted.as_ref().is_some_and(|accepted| {
         accepted.decision_id != submission_id
             || decision.as_ref().is_none_or(|decision| {
@@ -314,18 +345,7 @@ pub async fn credit_status<T: Transport>(
             "review acceptance does not match its decision and selected revision".into(),
         ));
     }
-    Ok(ReviewedCredit {
-        state: if accepted.is_some() {
-            ReviewedCreditState::Accepted
-        } else if decision.is_some() {
-            ReviewedCreditState::AwaitingAcceptance
-        } else {
-            ReviewedCreditState::AwaitingReview
-        },
-        staged_revision_id: Some(binding.selection.staged_revision_id),
-        decision_review_id: decision.map(|d| d.review.review_id.as_uuid()),
-        destination: accepted.map(|a| a.receipt).or(refused),
-    })
+    Ok(Some(CreditSnapshot { binding, decision, accepted }))
 }
 
 /// An indexed one-row list distinguishes absence from storage/decoding failure;

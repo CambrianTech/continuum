@@ -1,5 +1,112 @@
 # Rust ORM Architecture
 
+## Current direction — 2026-11-12
+
+Joel's direction is ORM-only access with SeaORM as the relational implementation.
+The historical design below is not a description of the current implementation:
+`continuum-kernel::orm` currently owns `OrmStore`, `StorageQuery`, and a handwritten
+rusqlite adapter; `continuum-store` resolves application handles to that owner.
+SeaORM is declared in workspace dependencies but has not replaced this backend yet.
+
+Entity declarations own field types, nullability, relationships and indexes. Existing
+Rust `OrmEntity` registrations and the generated TS entity schema must feed the same
+provider translation; do not add independently maintained table definitions. Shared
+dependency versions live in the workspace, while consuming owners select coherent
+provider/runtime feature groups.
+
+This is a development migration with effectively no users. Joel authorizes
+handwritten one-time migration scripts and best-effort preservation of local data;
+compatibility is not a reason to retain fallback implementations or legacy codecs.
+Protect AIRC identity/key authority and unrelated work. Switch callers and delete
+superseded paths rather than running two backends for compatibility.
+
+The shared row decoder now consumes the owned JSON value once. It refuses NULL
+for non-nullable fields rather than removing all NULL fields and retrying with
+defaults. Missing fields still follow their declared serde schema. Before deploying
+this change to existing homes, explicitly migrate historical non-nullable columns;
+the known `training_trigger_submissions.learned` NULL rows require the documented
+pre-learning value of zero. Do not apply that substitution to nullable fields or
+unknown progress. This migration has not yet been run on the fleet.
+The offline tool `tools/migrations/2026-11-12-training-learned.py DATABASE`
+reports affected counts read-only; with serving stopped, `--apply` updates only
+the historical NULL progress in one transaction. It refuses invalid non-NULL
+progress and does not discover databases, touch AIRC keys or rewrite bodies.
+
+Migration acceptance belongs at the storage boundary:
+
+- Verify the intended identities and migrated rows across open and restart. Failed
+  transactions and cancelled callers must preserve the existing commit contracts.
+- Exercise inner/left joins, unmatched rows, projection, ordering and cardinality.
+  A provider must never advertise a capability it silently ignores.
+- Preserve exact integers, strings that look like JSON, nullability and declared JSON
+  through one consistent codec. Measure row materialization separately from database
+  execution and typed decoding; avoid copying a generic tree into another owned tree.
+- Positron badges use count operations; views request only their projected fields.
+  Cursor pages apply filtering, stable ordering and limits in storage. Never retrieve
+  all bodies to count them or clip an unbounded result after materialization.
+- Prove declared indexes and relationships in provider integration tests, plus the
+  same public query semantics on each supported provider. Query construction uses the
+  ORM's typed APIs, not SQL strings in callers or repair tools.
+
+Replace the backend under these existing interfaces in verified slices, then remove
+the superseded implementation. Do not create a second live pool or schema owner as a
+compatibility path. Performance and semantic parity are required before live adoption.
+
+### Schema-owned lifecycle and shared reclamation
+
+### AIRC authority boundary — Joel, 2026-11-12
+
+AIRC owns room membership, peer identity and authenticated chat provenance.
+The ORM stores local projections, import watermarks and publication obligations;
+it must not mint substitute identities, choose another room when an explicit room
+is unavailable, or treat a local row as independent membership authority.
+Resolve and authorize through AIRC, preserving the requested room and peer IDs.
+
+Audit finding: the shared generic-data gate consults `ProtectedCollection`, but
+chat messages, arrivals, watermarks and publication obligations are not registered
+there. Generic writes are privileged, not unrestricted, but this still leaves an
+owner bypass for trusted callers. Chat itself currently uses generic `data/*`
+commands, so merely marking these tables protected would also break its importer.
+Move chat's internal storage access behind its typed owner interface, then protect
+the collections and test generic-write refusal alongside normal AIRC import/replay.
+Publication attribution already checks the exact relay, room, sender and digest;
+those checks must survive this migration. This gap is not yet closed.
+
+Joel also confirms that AIRC metadata is an intended extension point for fields
+needed by Continuum and other integrations. The pinned AIRC protocol (`a3a7396`)
+already defines namespaced headers (`airc.*`, `forge.*`, `continuum.*`, and other
+consumer namespaces), opaque JSON/binary bodies, and content-addressed media.
+Reuse those contracts before adding parallel local schema machinery. Header-based
+routing must not require decoding the body. A local indexed projection may serve
+counts and cursor pages while retaining the source event identity and provenance.
+
+Extension fields supplement the consumer's schema; they do not override AIRC's
+authenticated sender/client, channel, ordering or authoritative reply threading.
+Use typed consumer codecs with explicit schema/version identification where needed,
+and preserve metadata through import/export and replay. Verify unknown extensions
+survive round trips and that conflicting authority fields are refused. These are
+integration acceptance requirements, not a claim that every current path meets them.
+
+### Continuous reclamation
+
+The ORM is a consumer of the existing governor interface, not a separate resource
+authority. Continuous draining means reclaiming caches, idle connections and
+transient materializations, or moving eligible information to cheaper tiers. It is
+distinct from shutdown admission closure and waiting for in-flight operations.
+
+Entity/field declarations should express durability (authoritative, derived or
+disposable), reconstruction dependencies, retention conditions, permitted tiers and
+relationship constraints. Access frequency, actual bytes and reconstruction cost
+come from runtime measurements. These declarations belong beside shape, indexes
+and joins so the concern's author can review the whole lifecycle in one place.
+
+When asked to downsize, the storage owner selects eligible resources within those
+constraints and reports actual reclaimed bytes after completion. It must not delete
+durable knowledge merely because it is rarely read, discard referenced state, or
+release custody before a transfer finishes. Remove old cleanup jobs and redundant
+tables as their owners migrate; decorators must replace scattered mechanisms rather
+than add another policy layer. This lifecycle integration remains implementation work.
+
 > **⚠️ ARCHITECTURE UPDATE**: The data-daemon worker has been absorbed into `continuum-core` as
 > `DataModule` (Phase 4e). The socket is now `/tmp/continuum-core.sock`. TypeScript uses
 > `ORM.ts` → `ORMRustClient.ts` → `DataModule` for all database operations.

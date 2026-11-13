@@ -352,6 +352,15 @@ impl KvSlotPool {
         self.pool.pin(key)
     }
 
+    /// Inspect and pin the physical resident without detaching its live sequence.
+    /// The caller holds the slot permit through save and any subsequent detach:
+    /// a refused save must leave the source available for warm reuse.
+    pub(crate) fn pin_resident(&self, slot: u32) -> (Option<PageKey>, Option<SlotPin>) {
+        let previous = self.holders.lock().get(&slot).copied();
+        let pin = previous.and_then(|key| self.pin(&key));
+        (previous, pin)
+    }
+
     /// Detach the resident identity before transient traffic overwrites a slot.
     /// The caller holds the decode permit and keeps the returned pin through the
     /// request. A later page must restore its saved page, never mistake the

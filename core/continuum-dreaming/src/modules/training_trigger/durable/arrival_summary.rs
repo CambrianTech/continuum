@@ -62,16 +62,14 @@ mod tests {
     use crate::orm::types::{BatchOperation, BatchOperationType};
 
     #[test]
-    fn projected_header_reads_pre_learning_rows_without_inventing_progress() {
+    fn projected_header_requires_explicit_progress() {
         let (id, row) = super::super::arrivals::tests::submission(1, 2);
         let mut header = serde_json::json!({
             "id": id, "sequence": row.sequence, "personaId": row.persona_id,
             "traitKind": row.trait_kind, "baseModel": row.base_model,
             "learned": null, "arrivalSummary": null,
         });
-        let decoded: ArrivalHeader = crate::orm::record_decode::decode_row(header.clone())
-            .expect("test: historical NULL learned column");
-        assert_eq!(decoded.learned, 0);
+        assert!(crate::orm::record_decode::decode_row::<ArrivalHeader>(header.clone()).is_err());
         header["learned"] = serde_json::json!(2);
         let decoded: ArrivalHeader = crate::orm::record_decode::decode_row(header.clone())
             .expect("test: committed progress");

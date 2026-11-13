@@ -82,13 +82,15 @@ mod tests {
     use crate::orm::types::{BatchOperation, BatchOperationType};
 
     #[test]
-    fn legacy_null_progress_is_zero_without_defaulting_identity() {
+    fn null_progress_requires_explicit_migration() {
         let mut value = serde_json::json!({
             "id": Uuid::nil(), "sequence": 1, "personaId": Uuid::nil(),
             "traitKind": "code", "baseModel": "base", "learned": null,
             "pendingCount": {"personaName": "mind", "examples": 3},
         });
-        let header: Header = crate::orm::record_decode::decode_row(value.clone()).expect("old NULL progress");
+        assert!(crate::orm::record_decode::decode_row::<Header>(value.clone()).is_err());
+        value["learned"] = serde_json::json!(0);
+        let header: Header = crate::orm::record_decode::decode_row(value.clone()).expect("explicit progress");
         assert_eq!(header.learned, 0);
         value["personaId"] = serde_json::Value::Null;
         assert!(crate::orm::record_decode::decode_row::<Header>(value).is_err());

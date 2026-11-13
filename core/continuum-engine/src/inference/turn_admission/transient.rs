@@ -1,12 +1,12 @@
-//! Transient slot admission: save and detach a resident before operator traffic borrows its slot.
+//! Transient slot admission: confirm the save before detaching a resident for operator traffic.
 
 use super::{KvSlotPool, PageIn, SlotPermit, TurnAdmission};
 use std::sync::Arc;
 
 impl TurnAdmission {
     /// Borrow physical `slot` for traffic that serves no page: wait for the slot's
-    /// operation permit (event-driven, behind any live decode), detach its resident and
-    /// SAVE the resident's page so its warmth survives, and leave the slot unattributed
+    /// operation permit (event-driven, behind any live decode), SAVE the resident's page
+    /// before detaching it so its warmth survives, and leave the slot unattributed
     /// so no page later mistakes this traffic's KV for its own.
     ///
     /// The `page_io` permit is taken before the resident is detached, as on the keyed
@@ -24,7 +24,7 @@ impl TurnAdmission {
         self._slot_permit = Some(permit);
         self._endpoint.check_ready()?;
         let page_io = crate::inference::slots::admit_page_io(page_io).map_err(|closed| closed.to_string())?;
-        let (previous, pin) = pool.take_resident(slot);
+        let (previous, pin) = pool.pin_resident(slot);
         self._pin = pin;
         if let Some(previous) = previous {
             let pool = pool.clone();
@@ -36,10 +36,14 @@ impl TurnAdmission {
                 pool.note_page_lost(&previous);
                 let saved;
                 (admission, saved) = admission.page_action(&client, &paging_root, slot, &previous, "save").await?;
-                if saved {
-                    pool.note_saved(previous);
-                    admission.saved_evictee = true;
+                if !saved {
+                    return Err("transient borrow refused: resident checkpoint save was rejected".into());
                 }
+                // The slot permit still excludes every writer. Until this confirmed save,
+                // both physical attribution and its sequence generation remain intact.
+                pool.take_resident(slot);
+                pool.note_saved(previous);
+                admission.saved_evictee = true;
                 Ok(admission)
             }).await?;
         }
@@ -96,6 +100,7 @@ pub(super) async fn admit_transient_through(
         _permit: None,
         uncommitted: None,
         dispatch: super::Dispatch::Unsent,
+        preparation: None,
         scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
         _endpoint: endpoint,
         _mind: None,

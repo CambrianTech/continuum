@@ -238,6 +238,7 @@ impl World {
             Step::Send(i) => {
                 let s = self.minds.get_mut(&self.order[i % self.order.len()]).expect("test: indexed mind");
                 if s.phase == Phase::Reserved && s.reserved_on == Some(self.engine) {
+                    s.reservation.as_mut().expect("test: reserved request").mark_dispatched();
                     s.phase = Phase::Sent;
                     s.resident = s.resident.max(s.quoted.map_or(0, |l| l.tokens));
                 }
@@ -270,11 +271,9 @@ impl World {
                 Applied::default()
             }
             Step::CancelReserved(i) => {
-                let engine = self.engine;
                 let s = self.minds.get_mut(&self.order[i % self.order.len()]).expect("test: indexed mind");
                 if s.phase == Phase::Reserved {
                     drop(s.reservation.take());
-                    s.unresolved += u32::from(s.reserved_on == Some(engine));
                     s.phase = Phase::Idle;
                 }
                 Applied::default()
