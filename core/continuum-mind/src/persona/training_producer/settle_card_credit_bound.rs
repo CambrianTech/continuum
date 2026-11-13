@@ -27,21 +27,10 @@ pub async fn settle_card_credit_bound(
         // data/update is refused (modules/grid/acl.rs; cards fd47a804, 44aee459). Her acts
         // (staging, decisions, submits) stay under her identity above.
         let substrate = substrate_connection(&executor);
-        let listed = match conn
-            .commands()
-            .execute_value(
-                "data/list",
-                json!({
-                    "collection": StagedCredit::COLLECTION,
-                    "dbPath": handle,
-                    "filter": { "cardId": card_id.to_string() },
-                }),
-            )
-            .await
-        {
-            Ok(v) => staged_credit_from_list(v),
-            Err(e) => Err(e),
-        };
+        let listed = crate::orm::client_read::matching(
+            &conn, &handle, StagedCredit::COLLECTION,
+            serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]), None,
+        ).await;
         let listed = match (listed, binding) {
             (Ok(rows), Some(binding)) => graded::bound_rows_retained(&conn, &persona_name, binding, rows).await,
             (listed, _) => listed,
@@ -96,7 +85,7 @@ pub async fn settle_card_credit_bound(
             // store, and her own connection resolves to Trusted, where data/update is refused
             // (modules/grid/acl.rs; card fd47a804). Through her identity every mark failed and a
             // later pass trained the rejected rows anyway.
-            mark_rejected(&substrate, &persona_name, card_id, &rows.iter().map(|r| (r.id, r.rejected_at_ms)).collect::<Vec<_>>()).await;
+            mark_rejected(&substrate, &persona_name, card_id, &rows.iter().map(|r| (r.id, r.rejected_at_ms)).collect::<Vec<_>>()).await.map_err(|e| e.to_string())?;
             rows
         };
         let mut submitted = 0usize;
@@ -481,36 +470,21 @@ pub(crate) fn pass_admits(rows: &[StagedCredit]) -> PassAdmits {
 /// A FAILED verdict marks every row staged on the card so far as rejected, on her own
 /// core's clock. `conn` must be the SUBSTRATE's (no caller identity): a persona
 /// identity resolves to Trusted, where data/update is refused. A row already marked keeps its first mark (a second failure doesn't move it).
-/// A write that fails is named; that row may then train on a later pass, which is the
-/// old behaviour, never a new one.
-pub(super) async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[(Uuid, Option<u64>)]) {
+/// All new marks commit in one storage transaction. A failed commit leaves the review
+/// unsettled for retry; already durable marks keep their original timestamp.
+pub(super) async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[(Uuid, Option<u64>)]) -> Result<(), ClientError> {
     let now = EpochMs::now().millis();
-    for (id, _) in rows.iter().copied().filter(|(_, rejected)| rejected.is_none()) {
-        let marked = conn
-            .commands()
-            .execute_value(
-                "data/batch",
-                json!({
-                    "operations": [{
-                        "operationType": "update", "collection": StagedCredit::COLLECTION,
-                        "id": id, "data": { "rejectedAtMs": now }
-                    }],
-                    "dbPath": format!("@persona:{persona_name}"),
-                }),
-            )
-            .await
-            .and_then(|result| storage_ok(&result, "data/batch", StagedCredit::COLLECTION));
-        if let Err(error) = marked {
-            continuum_base::probe!(
-                class = "training.credit.reject_mark_failed",
-                persona = %persona_name,
-                card = %card_id,
-                submission = %id,
-                error = %error,
-                "a row the failure rejected could not be marked; a later pass may still train it"
-            );
-        }
-    }
+    let operations: Vec<_> = rows.iter().filter(|(_, rejected)| rejected.is_none()).map(|(id, _)| json!({
+        "operationType": "update", "collection": StagedCredit::COLLECTION,
+        "id": id, "data": { "rejectedAtMs": now }
+    })).collect();
+    if operations.is_empty() { return Ok(()); }
+    let result = conn.commands().execute_value("data/batch", json!({
+        "operations": operations, "dbPath": format!("@persona:{persona_name}")
+    })).await?;
+    storage_ok(&result, "data/batch", StagedCredit::COLLECTION).map_err(|error| {
+        ClientError::Transport(format!("card {card_id} rejection transaction failed: {error}"))
+    })
 }
 
 /// Once the destination holds a row's lived calls as examples, the row keeps its

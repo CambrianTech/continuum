@@ -107,7 +107,7 @@ async fn decide_review_credit<T: Transport>(
         airc_work::WorkReviewOutcome::Passed => ReviewedCreditState::AwaitingAcceptance,
     };
     if result.state == ReviewedCreditState::FailedReview {
-        correction::reject_on_failed_review(persona_name, submitted.card_id.as_uuid()).await;
+        correction::reject_on_failed_review(persona_name, submitted.card_id.as_uuid()).await?;
     }
     if result.state != ReviewedCreditState::AwaitingAcceptance {
         return Ok(result);
@@ -167,7 +167,7 @@ pub(super) async fn settle_passed<T: Transport>(
     // completed after staging.
     let resolved = with_lived(persona_id, persona_name, row).await;
     // A pass after a reviewed failure on this card is a correction: its own bucket, one trains.
-    let verdict = correction::passing_verdict(persona_name, row.card_id, row.id).await;
+    let verdict = correction::passing_verdict(conn, persona_name, row.card_id, row.id).await?;
     let mut params = match staged_submission_params(persona_id, persona_name, &*resolved, verdict) {
         Ok(params) => params,
         Err(reason) => {
