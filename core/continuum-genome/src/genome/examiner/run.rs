@@ -82,13 +82,18 @@ impl Examiner {
     /// One pass: every sitting owed, in order.
     pub async fn pass(&self) -> Result<PassReport, String> {
         let trials = self.trials.load()?;
-        let receipts: Vec<GeneExamReceipt> =
-            self.receipts.find_all().await.map_err(|e| e.to_string())?.into_iter().map(|(_, r)| r).collect();
         let mut report = PassReport::default();
-        for ExamDue { trial, kind } in due(&trials, &receipts, self.boot) {
-            let Some(t) = trials.iter().find(|t| t.id == trial) else { continue };
-            let receipt = receipts.iter().find(|r| r.trial_id == trial);
-            let outcome = match (kind, receipt) {
+        for t in &trials {
+            if matches!(t.state, TrialState::Retired | TrialState::Expired) {
+                continue;
+            }
+            // Receipt identity is the trial ID. Read only this live trial's row,
+            // rather than hydrating every historical exam and searching it in Rust.
+            let receipt = self.receipts.find_by_id(receipt_id(t.id)).await.map_err(|e| e.to_string())?;
+            let Some(ExamDue { trial, kind }) = due(std::slice::from_ref(t), receipt.as_slice(), self.boot).into_iter().next() else {
+                continue;
+            };
+            let outcome = match (kind, receipt.as_ref()) {
                 (ExamKind::Initial, previous) => self.initial(t, previous.is_some()).await,
                 (ExamKind::Retention, Some(r)) => self.retention(t, r.clone()).await,
                 (ExamKind::Settle, Some(r)) => self.settle(t, r).map(Some),
