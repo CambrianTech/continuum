@@ -526,14 +526,6 @@ impl DeployActuator {
                 return ActuateOutcome::Skipped(decision);
             }
             ActuateDecision::AlreadyActuated { .. } => return ActuateOutcome::Skipped(decision),
-            ActuateDecision::ConcurrentClaim => {
-                continuum_base::probe!(
-                    class = "deploy.actuate.concurrent_claim",
-                    tip = req.tip_sha.as_str(),
-                    "another deploy-consume holds an active claim for this root — skipping to avoid lock contention"
-                );
-                return ActuateOutcome::Skipped(decision);
-            }
         };
         let plan = SpawnPlan {
             cli: locate_cli(&self.user_home),
