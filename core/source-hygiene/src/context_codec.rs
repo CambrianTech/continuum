@@ -69,7 +69,7 @@ mod tests {
     use super::*;
     use crate::scan;
 
-    const RECIPE: &str = "The recipe: docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md, \"How to add a layer\".";
+    const RECIPE: &str = "The recipe: docs/architecture/CONTINUUM-ENGINE.md, section 5, \"How to add a layer\".";
 
     fn hold(rule: &dyn SourceRule, instead: &str) {
         let violations = scan(&[rule]);
