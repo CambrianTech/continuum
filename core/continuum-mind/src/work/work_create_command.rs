@@ -4,6 +4,8 @@ use super::*;
 /// Create a new work card on the shared board.
 pub struct WorkCreate {
     pub registry: PersonaAircRuntimeRegistry,
+    /// Ranks a new card's near matches (`work_similar::near_matches`).
+    pub embedder: Arc<dyn crate::ai::embedding::EmbeddingProvider>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -50,6 +52,26 @@ impl From<CardPriority> for Priority {
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkCreateResult {
     pub card_id: String,
+    /// `created`, or `exists`: this create repeated a card she already filed (same room,
+    /// same title), and `card_id` is that card. Nothing new was put on the board.
+    pub outcome: CardOutcome,
+    /// Unfinished cards on the board that read as related to this one: information, never a
+    /// refusal. Empty for a card that already existed.
+    pub similar: Vec<WorkSimilarHit>,
+}
+
+/// A create's outcome on the wire: a closed set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum CardOutcome {
+    Created,
+    Exists,
+}
+
+/// What a new card's near matches are ranked from: its text and the board it was filed on.
+pub(super) struct Filed {
+    pub(super) text: String,
+    pub(super) board: Arc<airc_work::BoardSnapshot>,
 }
 
 #[async_trait]
@@ -67,7 +89,11 @@ impl ActionCommand for WorkCreate {
 
     async fn run(&self, ctx: &Ctx, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
-        Self::create(&airc, p).await
+        let (mut made, filed) = Self::create(&airc, p).await?;
+        if made.outcome == CardOutcome::Created {
+            made.similar = super::work_similar::near_matches(&self.embedder, &filed).await;
+        }
+        Ok(made)
     }
 }
 
@@ -116,7 +142,7 @@ pub(super) async fn repos_she_holds(airc: &Airc) -> Vec<String> {
 /// The words when nothing supplies a repo: her one argument first, with an example
 /// she can copy; the room's option second; the org-room fact last.
 pub(crate) fn repo_refusal(room: &str, repos_she_holds: &[String]) -> String {
-    let example = repos_she_holds.first().map(String::as_str).unwrap_or("owner/name");
+    let example = repos_she_holds.first().map(String::as_str).unwrap_or("owner/name"); // unwrap_or: she holds no card, so the example names the repo shape
     let seen = if repos_she_holds.is_empty() {
         String::new()
     } else {

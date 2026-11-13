@@ -453,11 +453,23 @@ pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Re
     // The review lands on the PARENT's board, named, never through the shared current-room
     // pointer: parallel dones on two boards would otherwise race one join against the other
     // (IntelMac on #4838; the race #4838 removes from work/state).
-    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
+    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1);
     req.body = Some(body);
-    let created = airc.create_work_card_in(&room, req).await.map_err(|e| e.to_string())?;
-    super::board_index::wrote(airc, &room);
-    Ok(created)
+    review_once(airc, &room, parent, None, req).await
+}
+
+/// A parent's review card, once: a repeat spawn returns the review that stands (`create_once`).
+async fn review_once(
+    airc: &Arc<Airc>,
+    room: &airc_lib::Room,
+    parent: WorkCardId,
+    submission: Option<airc_work::SubmissionId>,
+    card: CreateWorkCard,
+) -> Result<WorkCardId, String> {
+    super::create_once::create_once(airc, room, super::create_once::NewCard::Review { parent, submission, card })
+        .await
+        .map(|made| made.card.card_id())
+        .map_err(|e| e.to_string())
 }
 
 /// Post the review card for a ROOM's own card (not a bench card): titled and described
@@ -485,15 +497,9 @@ pub async fn open_room_review_card(
         card.title
     );
     // on the parent's board, named: never through the shared current-room pointer (#4838)
-    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
+    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1);
     req.body = Some(body);
-    let created = match submission {
-        Some(candidate) => airc.ensure_submission_review_in(room, parent, candidate, req).await,
-        None => airc.create_work_card_in(room, req).await,
-    }
-    .map_err(|e| e.to_string())?;
-    super::board_index::wrote(airc, room);
-    Ok(created)
+    review_once(airc, room, parent, submission, req).await
 }
 
 /// The card a review card reviews, by airc's native link (`reviews`).
