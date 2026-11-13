@@ -35,6 +35,10 @@ pub enum LlamaServerError {
     /// Keep admission suspended and resume observation; never blame the candidate binary.
     #[error("incumbent retirement remains unverified; endpoint suspended: {0}")]
     RetirementPending(String),
+    /// The engine did not apply a host prompt-cache limit (card 494c99f1): it has no host
+    /// cache, it predates the route, or it named its own refusal. Nothing was evicted.
+    #[error("prompt-cache limit refused: {0}")]
+    PromptCacheRefused(super::PromptCacheRefusal),
 }
 
 
@@ -432,6 +436,13 @@ pub trait LlamaServerControl: Send + Sync {
     fn launched_prompt_cache_mib(&self) -> Option<u32> {
         None
     }
+
+    /// Move the running engine's host prompt-cache limit to `limit_mib` (fork route
+    /// `POST /prompt-cache/limit`, 9269444f6): the cache evicts its oldest states to fit and the
+    /// receipt says what it holds and what it freed. Serving's reclaim lowers it before its heavy
+    /// levers (tier-down, unload), card 494c99f1. A refusal is typed
+    /// ([`LlamaServerError::PromptCacheRefused`]); nothing was evicted then.
+    async fn set_prompt_cache_limit(&self, limit_mib: std::num::NonZeroU64) -> Result<super::PromptCacheLimit, LlamaServerError>;
 
     /// Prove the GPU DECODE path works, not just that the HTTP server is up. A
     /// llama-server can answer `/health`, `/v1/models` and `/props` with 200
