@@ -751,7 +751,7 @@ mod tests {
             assert!(failed.contains("forbidden"), "{failed}");
             assert_eq!(gate_calls.load(std::sync::atomic::Ordering::SeqCst), 3);
             assert_eq!(canned.calls(), 0);
-            let active = runs.active().await.unwrap();
+            let active = runs.active_page(None, std::num::NonZeroUsize::MIN).await.unwrap();
             assert!(active.is_empty(), "a failed run is over: {active:?}");
         }
 
@@ -785,7 +785,14 @@ mod tests {
                 runs.write(run).await.unwrap();
             }
 
-            assert_eq!(runs.expose_interrupted().await.unwrap(), (1, 1));
+            // Recovery must traverse beyond its first page, without clipping
+            // active runs or collecting the entire run ledger in memory.
+            let extra = crate::orm::query::default_page_size() + 1;
+            for n in 0..extra {
+                runs.write(&begin(&format!("t/paged-{n}"))).await.unwrap();
+            }
+            assert_eq!(runs.expose_interrupted().await.unwrap(), (1, 1 + extra));
+            assert_eq!(runs.expose_interrupted().await.unwrap(), (0, 0));
             assert!(matches!(run_row(&runs, &mid_dispatch).await.phase, RunPhase::RecoveryRequired { invocation, .. } if invocation == open));
             assert_eq!(run_row(&runs, &between).await.phase, RunPhase::Interrupted);
             assert_eq!(run_row(&runs, &held).await.phase, RunPhase::Held { step: 0 });

@@ -300,10 +300,15 @@ impl RecipeRuns {
         self.store.find_by_id(run_id).await.map_err(|e| e.to_string())
     }
 
-    /// Every run not yet terminal.
-    pub async fn active(&self) -> Result<Vec<RecipeRunRecord>, String> {
-        let query = QueryBuilder::new(RecipeRunRecord::COLLECTION).filter_eq("isActive", true).build();
-        let rows = self.store.find_matching(query).await.map_err(|e| e.to_string())?;
+    /// One stable id-ordered page of nonterminal runs. This is a live scan, not
+    /// a snapshot spanning pages; boot recovery runs before dispatch starts.
+    pub async fn active_page(&self, after: Option<Uuid>, size: std::num::NonZeroUsize) -> Result<Vec<RecipeRunRecord>, String> {
+        let mut query = QueryBuilder::new(RecipeRunRecord::COLLECTION)
+            .filter_eq("isActive", true).sort_asc("id").limit(size.get());
+        if let Some(after) = after {
+            query = query.filter("id", crate::orm::query::QueryOperator::Gt(after.to_string().into()));
+        }
+        let rows = self.store.find_matching(query.build()).await.map_err(|e| e.to_string())?;
         Ok(rows.into_iter().map(|(_, run)| run).collect())
     }
 
@@ -335,26 +340,36 @@ impl RecipeRuns {
     /// Nothing is re-dispatched. Returns how many of each.
     pub async fn expose_interrupted(&self) -> Result<(usize, usize), String> {
         let (mut recovery, mut interrupted) = (0, 0);
-        for mut run in self.active().await? {
-            if run.phase != RunPhase::Running {
-                continue;
-            }
-            match run.invocations.iter().find(|inv| matches!(inv.state, InvocationState::Dispatching { .. })) {
-                Some(inv) => {
-                    run.phase = RunPhase::RecoveryRequired {
-                        invocation: inv.id,
-                        reason: "the core stopped while this invocation was being dispatched; its outcome is unknown".into(),
-                    };
-                    recovery += 1;
+        let size = std::num::NonZeroUsize::new(crate::orm::query::default_page_size())
+            .ok_or("ORM replay page size is zero")?;
+        let mut after = None;
+        loop {
+            let page = self.active_page(after, size).await?;
+            if page.is_empty() { break; }
+            after = page.last().map(RecipeRunRecord::run_id).transpose()?;
+            let last_page = page.len() < size.get();
+            for mut run in page {
+                if run.phase != RunPhase::Running {
+                    continue;
                 }
-                None => {
-                    run.phase = RunPhase::Interrupted;
-                    interrupted += 1;
+                match run.invocations.iter().find(|inv| matches!(inv.state, InvocationState::Dispatching { .. })) {
+                    Some(inv) => {
+                        run.phase = RunPhase::RecoveryRequired {
+                            invocation: inv.id,
+                            reason: "the core stopped while this invocation was being dispatched; its outcome is unknown".into(),
+                        };
+                        recovery += 1;
+                    }
+                    None => {
+                        run.phase = RunPhase::Interrupted;
+                        interrupted += 1;
+                    }
                 }
-            }
-            run.revision += 1;
-            self.write(&run).await?;
-            continuum_base::probe!(class = "recipe.run.exposed_at_boot", run = %run.base.id, recipe = %run.purpose, phase = ?run.phase, "a run left Running by the last process");
+                run.revision += 1;
+                self.write(&run).await?;
+                continuum_base::probe!(class = "recipe.run.exposed_at_boot", run = %run.base.id, recipe = %run.purpose, phase = ?run.phase, "a run left Running by the last process");
+                }
+            if last_page { break; }
         }
         Ok((recovery, interrupted))
     }

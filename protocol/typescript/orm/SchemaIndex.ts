@@ -3,7 +3,7 @@
 /**
  * Composite index definition
  */
-export type SchemaIndex = {
+export type SchemaIndex = { 
 /**
  * Direction of the final indexed column, matching decorator metadata.
  */
