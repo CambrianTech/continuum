@@ -7,8 +7,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// How often the counts are reported: a reporting cadence (one row a second at most, whatever the
-/// rate), not a tuning value.
+/// How often the counts are reported.
+/// derived-or-floor: a reporting cadence for a human reader (one ledger row a second at most,
+/// whatever the grant rate); no admission decision reads it, so no measurement could replace it.
 const WINDOW_MS: u64 = 1_000;
 
 pub(super) struct LaneTally {
