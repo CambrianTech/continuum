@@ -939,7 +939,7 @@ mod tests {
         // 99,096 × 1.25 = 123,870 named her at a 75,776 grid her turns were fitting into
         // every time. With a need of 74,000 she is served there; with a need of 80,000
         // she is still named — the need gates in both directions. An exact need above a
-        // stale target raises the target, never the reverse (#5931, SERVING-ENGINE section 8):
+        // stale target raises the target, never the reverse (#5931, CONTINUUM-ENGINE.md, serving engine: admission (4.8)):
         // what her turns cannot be sent below is the truth the grid names.
         let kimi = Uuid::new_v4();
         let wish = vec![LaneRequirement::wished(kimi, t(99_096), 1.25)];

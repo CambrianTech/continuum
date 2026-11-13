@@ -163,7 +163,7 @@ conclusion.
 
 ## 3. The Substrate
 
-【Compressed architecture section, drawing from CBAR-SUBSTRATE-ARCHITECTURE,
+【Compressed architecture section, drawing from CONTINUUM-ENGINE,
 INFERENCE-LANES-REALISTIC, KV-CACHE-ECONOMY, RECIPE-EXECUTION-RUNTIME docs.
 Subsections: 3.1 Citizens (persistence, multi-room, service loop, boredom/
 activity gating); 3.2 Serving economy (one frozen base model, slot-level KV

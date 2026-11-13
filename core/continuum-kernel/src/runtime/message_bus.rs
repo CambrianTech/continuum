@@ -99,7 +99,7 @@ pub struct MessageBus {
     /// [`SEEN_NAMES_CAP`]. The declared dataflow graph's reality check: the first
     /// publish of a name reports whether any module declares producing it
     /// (`runtime.event_graph.published`), so a declaration cannot drift from what
-    /// actually flows (CBAR gap #2, docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md).
+    /// actually flows (substrate gap #2, plan row SB-2, docs/architecture/CONTINUUM-ENGINE.md).
     seen_names: DashMap<String, ()>,
 
     /// What the registered modules declare they emit, handed over by the runtime at

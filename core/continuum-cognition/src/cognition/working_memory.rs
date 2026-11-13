@@ -234,7 +234,7 @@ pub struct WorkingMemory {
     /// Fingerprints (tool name + args) of her recent ACTIONS, the `capacity`-deep window the
     /// verb tally reads ([`action_verb_tally`](Self::action_verb_tally)): the shape of her recent
     /// investigation. An act repeating one whose whole she holds is her view's to name
-    /// (MIND-CONTEXT invariant 4, `continuum_context::view` `repeat`), her newest act included.
+    /// (CONTINUUM-ENGINE section 5 invariant 4, `continuum_context::view` `repeat`), her newest act included.
     action_fps: Mutex<VecDeque<String>>,
     /// Her actions, one record each ([`action_log`]): the ledger line every act leaves
     /// (#414: act history must survive the chatty `entries` ring, measured 2026-08-14 when

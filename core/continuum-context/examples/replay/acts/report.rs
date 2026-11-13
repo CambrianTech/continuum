@@ -28,7 +28,7 @@ pub struct Summary {
     pub median_input_tokens: Option<f64>,
     /// Cached prompt tokens over prompt tokens (answered acts).
     pub reuse: Option<f64>,
-    /// The context law's health number (MIND-CONTEXT-AND-ENGINE-CONFIG.md, "a context is a
+    /// The context law's health number (CONTINUUM-ENGINE.md, "a context is a
     /// FIFO"): tokens the engine prefilled per act over the tokens her prompt grew since her
     /// previous answered act; healthy is about 1. An act whose prompt shrank (a turnover) has
     /// no append to measure against and is left out.

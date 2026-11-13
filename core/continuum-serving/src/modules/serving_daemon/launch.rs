@@ -330,8 +330,8 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } | EnsureOutcome::Superseded => 0,
             };
-            // The engine's own geometry, read the same way under either launch (SERVING-ENGINE
-            // section 8): the pool and the most one sequence may hold. The grants read both from
+            // The engine's own geometry, read the same way under either launch (CONTINUUM-ENGINE.md,
+            // serving engine: admission (4.8)): the pool and the most one sequence may hold. The grants read both from
             // here, never from argv. What sequences are PUBLISHED as their share still differs by
             // launch: on the shared pool each is a share of the pool the engine reports (never the
             // slot's `n_ctx`, which the fork caps at the trained window, halving the IntelMac's

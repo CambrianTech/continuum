@@ -363,7 +363,7 @@ pub struct ServingDaemonModule {
     /// the launch's ready path last read it; `0` = not read. The grants' one source for the pool.
     served_pool: Arc<std::sync::atomic::AtomicU32>,
     /// The most one sequence may hold, from the same report (`max_tokens_per_sequence`); `0` =
-    /// not read. The grants' one source for a mind's limit (SERVING-ENGINE section 8).
+    /// not read. The grants' one source for a mind's limit (CONTINUUM-ENGINE.md, serving engine: admission (4.8)).
     served_sequence: Arc<std::sync::atomic::AtomicU32>,
 
     /// L10 (#438): consecutive plan ticks wanting a DIFFERENT base model than the

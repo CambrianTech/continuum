@@ -9,7 +9,7 @@ And: "Yes, and the same for the grid itself."
 Companions: [HOW-A-MIND-GETS-WHAT-SHE-NEEDS](HOW-A-MIND-GETS-WHAT-SHE-NEEDS.md) (the requirements and
 scenarios this proves), [ONE-BUDGET](ONE-BUDGET.md), [GRID-MARKET-CLEARING](GRID-MARKET-CLEARING.md) (whose
 slices S1 to S4 call for "the sim as the gym"), [ADAPTIVE-GRID-INTELLIGENCE](ADAPTIVE-GRID-INTELLIGENCE.md),
-[SERVING-ENGINE](SERVING-ENGINE.md) (S0, `serving-replay`).
+[CONTINUUM-ENGINE.md, serving engine](CONTINUUM-ENGINE.md) (S0, `serving-replay`).
 
 ## 0. Why: we keep regressing because nothing proves a change before a resident does
 
@@ -28,7 +28,7 @@ already, built at different times by different agents, and forgotten between ses
 | Context dyno (`continuum-context/examples/replay*`) | real `View` and `levels` on real captures; turnovers, re-reads, reuse | re-models the core's fit rules (a copy that drifts); one mind; no engine, time or memory; asserts nothing; not in CI |
 | `contend` (`continuum-engine/.../planning/contention.rs`) | minds on one engine under admission policies, virtual clock, measured rates required | analytic engine; no view, no memory, no paging; aggregated workload |
 | `continuum-flow::sim` (branch `fable/continuum-flow`, off canary) | the real flow scheduler on an engine calibrated to the M5; reproduced a live gate change | off canary; one calibration; no memory model |
-| `serving-replay` (SERVING-ENGINE S0) | a real `llama-server` with page-in, page-out, slot save and restore | serial acts; generates a fixed count, not her reply; paging policy copied from core; not in CI |
+| `serving-replay` (CONTINUUM-ENGINE.md slice S0) | a real `llama-server` with page-in, page-out, slot save and restore | serial acts; generates a fixed count, not her reply; paging policy copied from core; not in CI |
 | `capacity/sim.rs` ("the gym") | the production `AllocationPolicy` through capacity timelines (a game eats the GPU) | synthetic; no time, latency, KV or paging; scenarios in code, not data |
 | Grid: `capacity/{grid,gossip,grid_budget,market,settlement}.rs`, `run_symmetric_grid` | production placement and gossip on synthetic snapshots; partitions, joins, churn | no prices wired, no time, no transfer cost; `placement-decisions.jsonl` (176K recorded) never replayed; GRID-MARKET-CLEARING's sim scenarios unbuilt |
 | Wire tests (`TwoAircLoopback`, `airc_remote_inference_*`) | two real airc peers, real executor | two peers, fake compute; partly not in CI |
@@ -170,7 +170,7 @@ schema 4; the field list is in `~/.continuum/evidence/2026-10-30-read-loops/READ
   concurrent requests get no attributed budget or allocation, and a known-bad that needs it on those acts
   says so. New captures bind their receipts by request id plus epoch and allocation, so going forward every
   join is `Exact` (Codex).
-- `args fingerprint` is the hash of the tool codec's canonical arguments: MIND-CONTEXT invariant 4's
+- `args fingerprint` is the hash of the tool codec's canonical arguments: CONTINUUM-ENGINE section 5 invariant 4's
   fingerprint. Repeats are visible in a reduction without any of the words.
 - A reduction carries outcome kinds (section 7 of HOW-A-MIND: edit applied, message sent, PR opened, move made,
   tool error, unfulfilled) as typed values reported by the producer, never read from text.
@@ -281,7 +281,7 @@ The proving ground is trusted only as far as it is shown to be right.
    gossip and market clearing; replay `placement-decisions.jsonl`; GRID-MARKET-CLEARING's S1 (byte-identical
    replay) and S3 (n=3 contention, the sim predicts the winner).
 5. **T2:** `serving-replay` made concurrent and calling production paging; it validates the engine verbs
-   (SERVING-ENGINE S1 to S3) and the behaviour model.
+   (CONTINUUM-ENGINE.md slice S1 to S3) and the behaviour model.
 6. **Prediction versus live** wired into every deploy's read.
 
 ## 8a. The harness's shape (Fable's part, for review before code)

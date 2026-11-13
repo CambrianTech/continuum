@@ -9,7 +9,7 @@
 //! piece of it, and Aiko read one 51,827-char file whole 9 times in 43 acts.
 //!
 //! These ratchets count the ways around the codec. Each may only fall
-//! (docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md, "one codec for every layer", has the
+//! (docs/architecture/CONTINUUM-ENGINE.md, "one codec for every layer", has the
 //! recipe for adding a layer the right way):
 //! - `prompt_messages_outside_the_view`: a prompt message built by hand in the prompt assembly.
 //!   A layer is a `Source`, and the view renders it.

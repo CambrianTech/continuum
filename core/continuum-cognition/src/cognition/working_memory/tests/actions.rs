@@ -417,7 +417,7 @@ fn a_run_of_identical_requests_moves_with_every_repeat() {
     assert_eq!(wm.repeat_run(changed), None, "a changed outcome ends the run");
 }
 
-// what this catches: an act's declared effects (`ActionRecord.act`, MIND-CONTEXT invariant 4) are
+// what this catches: an act's declared effects (`ActionRecord.act`, CONTINUUM-ENGINE section 5 invariant 4) are
 // derived, like her view: a record written by a build whose `Act` had another shape must restore
 // with no act (that act is simply never a repeat), never refuse the checkpoint and the resident
 // with it (the 2026-10-31 M5 outage's shape, card c990acbe). A valid act stays whole, and a corrupt

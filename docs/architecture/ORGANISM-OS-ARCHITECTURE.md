@@ -1,7 +1,7 @@
 # Organism OS On The airc Bus — The Integrating Map
 
 **Status**: architecture reference. The map *above*
-[CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) (the runtime
+[CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) (the runtime
 contract) and [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (the
 artifact economy). It does not duplicate either; it shows how five layers —
 the airc bus, the CBAR runtime, personas, activities/rooms, and the immune
@@ -9,7 +9,7 @@ system — are **the same pattern instantiated at five scales**, and grounds eac
 layer in a real repo primitive or marks it a **NAMED GAP**.
 
 **Companion docs (read those for the deep dives, not here):**
-- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — the
+- [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) — the
   `ServiceModule`/`RuntimeModule` contract every cell inherits. **L1 of this
   map is that document.**
 - [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) — what every cell
@@ -145,7 +145,7 @@ them* without a hub.
 **Pattern role:** the RTOS scheduler. One bus carries many runtimes; *inside*
 each runtime, the same advertise/wake/degrade pattern governs modules.
 
-**This layer IS [CBAR-SUBSTRATE-ARCHITECTURE.md].** The contract is
+**This layer IS [CONTINUUM-ENGINE.md].** The contract is
 `ServiceModule` — "the ONE trait every module implements"
 (`continuum-core/src/runtime/service_module.rs:243-251`). A module advertises
 its needs through `ModuleConfig` (`service_module.rs:74-103`): `command_prefixes`,
@@ -163,7 +163,7 @@ minimal clone-template proving the contract routes
 > `ServiceModule` (piece 1 of the "for free" triplet); the typed
 > `ArtifactSelector`/`CadencePolicy`/`RuntimeFrame`/`ModuleResult` superset, the
 > `#[derive(RuntimeModule)]` macro, and `just scaffold-module` are not landed
-> (CBAR-SUBSTRATE §"For Free Triplet", Lane D). This doc does not re-spec them;
+> (CONTINUUM-ENGINE §"For Free Triplet", Lane D). This doc does not re-spec them;
 > see that doc.
 
 **Metering: PressureBroker + the Governor.** The `PressureBroker` is "the
@@ -275,7 +275,7 @@ attach subscribers scoped to its `activity_id`"; `ActivityEnded` lets bound
 subscriptions detach (`continuum.rs:42-46`). On the runtime side, an activity's
 unit of work is the `RuntimeFrame` / `CognitionTurnFrame` — the shared per-turn
 artifact bundle that N personas in one room handle without each rebuilding RAG,
-model selection, and prompt context (CBAR-SUBSTRATE §"Runtime Frame", §"For
+model selection, and prompt context (CONTINUUM-ENGINE §"Runtime Frame", §"For
 Free" coalescing). The airc `PersonaEvent` (`continuum.rs`) is the *bus-level*
 shadow of that frame: the envelope that wakes the runtime to build the frame.
 
@@ -368,7 +368,7 @@ shape: **a strategy choice at a seam.** The rule for all of them:
 > **Heuristic floor now → learned policy (LoRA red-team persona) later →
 > graceful, *visible* fallback always.** Sentinels ARE L4's heuristic adapter
 > today. A hand-rolled substrate concern inside a module is not "module code" —
-> it is a substrate gap (`CBAR-SUBSTRATE §"Extension Bar"`; `airc AGENTS.md` is
+> it is a substrate gap (`CONTINUUM-ENGINE §"Extension Bar"`; `airc AGENTS.md` is
 > the operational mirror).
 
 The real decision points in the repo, layer by layer:
@@ -397,7 +397,7 @@ Extension Bar rule).
 | Layer | Exists today (cite) | Gap | Next card |
 |---|---|---|---|
 | **L0 bus** | PeerId/Identity (`ids.rs:86`, `identity.rs:24-57`); rooms (`ids.rs:80-84`); cost-ordered transports w/ gh-invite-only (`route/policy.rs:64-86`); work-cards+leases (`work/model.rs:183-223`); account-registry discovery (`account_registry.rs:1-90`) | precision: `PeerId` is a UUID (Ed25519 is envelope-stamped, not the peer); "persona IS her keypair" is a continuum aspiration. `registry_refresh` auto-propagation **in flight** | **PR #1134** (`feat/account-registry-autodiscovery`) lands `registry_refresh` — the cross-machine endpoint keystone |
-| **L1 runtime** | `ServiceModule` (`service_module.rs:243-251`); artifact wake (`:340-374`); PressureBroker (`broker.rs:1-104`); arc_swap Governor + cascade (`local.rs:83-391`) | richer `RuntimeModule` trait + derive macro + scaffold not landed (CBAR-SUBSTRATE Lane D) | **Lane D `RuntimeModule` triplet** (specced in CBAR-SUBSTRATE) |
+| **L1 runtime** | `ServiceModule` (`service_module.rs:243-251`); artifact wake (`:340-374`); PressureBroker (`broker.rs:1-104`); arc_swap Governor + cascade (`local.rs:83-391`) | richer `RuntimeModule` trait + derive macro + scaffold not landed (CONTINUUM-ENGINE Lane D) | **Lane D `RuntimeModule` triplet** (specced in CONTINUUM-ENGINE) |
 | **L2 personas** | `PersonaEvent` on airc (`continuum.rs:34-82`); pure capability probe (`probe.rs:52-89`); residency gate (`residency.rs:1-68`); identity binding (`identity.rs:8-10`) | airc `resolve_inference_target` + `capability_registry` + 1/8→8/8 chain **in flight** (built on `feat/cross-grid-inference`); probe-at-spawn not yet wired (probe itself exists) | **PR #1133** (`feat/cross-grid-inference`, APPROVED/auto-merging): registry + resolver + 1/8→8/8 chain; **card `0e7d94fe`** wires the probe at persona spawn; then real model behind 8/8 |
 | **L3 rooms** | activity scoping (`continuum.rs:42-82`); `ROOM-MODE-ARCHITECTURE.md`; `GRID-ADDRESSING-AND-ROUTING.md` | Tron fort/neighborhood/outreach/security-room typing not coded | **Room-mode enum for the four Tron spaces**; **intergrid outreach** |
 | **L4 immune** | PR-review sentinel operational (`airc AGENTS.md §0`, `§8`); `on_artifact_available` monitor seam (`service_module.rs:365-374`); trust demotion (GENOME §10); ForgeAlloy spec | threat/contract sentinel not a coded module; ALLOW-THEN-MONITOR not wired to forge-alloy | **Security/immune activity + forge-alloy governance** (first non-inference organism team) |
@@ -434,7 +434,7 @@ The order is bottom-up, because each layer is the wake-source for the next:
 
 ## See Also
 
-- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — **L1 in
+- [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) — **L1 in
   full.** The `ServiceModule`/`RuntimeModule` contract, the "for free" triplet,
   the Runtime Frame, the VDD record. This map cites it; it owns the detail.
 - [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) — **L2's working set
