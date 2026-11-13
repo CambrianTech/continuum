@@ -139,9 +139,9 @@ impl StorageAdapter for GatedAdapter {
     async fn create_binary(&self, record: DataRecord, payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>) -> StorageResult<String> {
         self.write(move |a| Box::pin(async move { a.create_binary(record, payloads).await })).await
     }
-    async fn update_binary(&self, collection: &str, id: &str, field: &str, value: super::binary::BinaryValue) -> StorageResult<bool> {
+    async fn update_binary(&self, collection: &str, id: &str, field: &str, value: super::binary::BinaryValue, condition: super::binary::BinaryWriteCondition) -> StorageResult<bool> {
         let (collection, id, field) = (collection.to_owned(), id.to_owned(), field.to_owned());
-        self.write(move |a| Box::pin(async move { a.update_binary(&collection, &id, &field, value).await })).await
+        self.write(move |a| Box::pin(async move { a.update_binary(&collection, &id, &field, value, condition).await })).await
     }
 
     async fn numeric_array_stats(&self, collection: &str, field: &str) -> StorageResult<super::adapter::NumericArrayStats> {

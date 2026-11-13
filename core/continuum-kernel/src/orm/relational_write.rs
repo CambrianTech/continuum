@@ -56,8 +56,14 @@ impl super::relational::RelationalStore {
     /// Shared metadata/custody mutation for already schema-validated typed bindings.
     pub(super) async fn update_fields_on<C: ConnectionTrait>(&self, connection: &C, collection: &str, id: &str,
         fields: Vec<(Alias, sea_orm::sea_query::Value)>, increment: bool) -> Result<bool, String> {
+        self.update_fields_matching_on(connection, collection, id, fields, increment, sea_orm::Condition::all()).await
+    }
+
+    pub(super) async fn update_fields_matching_on<C: ConnectionTrait>(&self, connection: &C, collection: &str, id: &str,
+        fields: Vec<(Alias, sea_orm::sea_query::Value)>, increment: bool, condition: sea_orm::Condition) -> Result<bool, String> {
         let mut statement = Query::update();
         statement.table(Alias::new(naming::to_table_name(collection)))
+            .cond_where(condition)
             .and_where(Expr::col(Alias::new("id")).eq(id)).values(fields.into_iter().map(|(column, value)| (column, Expr::val(value).into())));
         statement.value(Alias::new("updated_at"), chrono::Utc::now().to_rfc3339());
         if increment {

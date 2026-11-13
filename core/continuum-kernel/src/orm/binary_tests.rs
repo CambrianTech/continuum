@@ -1,4 +1,4 @@
-use super::{binary::{BinaryDescriptor, BinaryValue, ByteOrder, ElementType}, *};
+use super::{binary::{BinaryDescriptor, BinaryValue, BinaryWriteCondition, ByteOrder, ElementType}, *};
 use super::adapter::AdapterConfig;
 use super::relational::RelationalStore;
 use serde::{Deserialize, Serialize};
@@ -73,7 +73,7 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation() -> R
                     data: json!({"label":"native cancellation"}), metadata: RecordMetadata::default(),
                 }, std::collections::BTreeMap::from([("payload".into(), payload)])).await.into_result().map(|_| ())
             } else {
-                caller.update_binary(RequiredNativeRow::COLLECTION, "cancelled", "payload", payload)
+                caller.update_binary(RequiredNativeRow::COLLECTION, "cancelled", "payload", payload, BinaryWriteCondition::Replace)
                     .await.into_result().map(|_| ())
             }
         });
@@ -123,6 +123,32 @@ async fn open(path: &str) -> Result<RelationalStore, String> {
 }
 
 #[tokio::test]
+async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<(), String> {
+    let store = open(":memory:").await?;
+    store.create(DataRecord { id: "race".into(), collection: NativeRow::COLLECTION.into(),
+        data: json!({"payload":null}), metadata: RecordMetadata::default() }).await?;
+    // Both producers observed the same vacant row. The second completion must
+    // preserve the winner's bytes, descriptor and revision in one SQL mutation.
+    let winner = BinaryValue::new(descriptor(ElementType::I8, vec![2]), vec![0x80, 0xff])?;
+    let delayed = BinaryValue::new(descriptor(ElementType::F32, vec![2]), vec![0; 8])?;
+    assert!(store.update_binary(NativeRow::COLLECTION.into(), "race".into(), "payload".into(),
+        winner.clone(), BinaryWriteCondition::IfAbsent).await?);
+    let metadata_query = || QueryBuilder::new(NativeRow::COLLECTION).filter_eq("id", "race")
+        .select(vec!["id".into()]).limit(1).build();
+    let before = store.query(metadata_query()).await?;
+    assert!(!store.update_binary(NativeRow::COLLECTION.into(), "race".into(), "payload".into(),
+        delayed, BinaryWriteCondition::IfAbsent).await?);
+    let after = store.query(metadata_query()).await?;
+    assert_eq!(before[0].metadata.version, after[0].metadata.version);
+    assert_eq!(before[0].metadata.updated_at, after[0].metadata.updated_at);
+    let page = store.binary_page(NativeRow::COLLECTION, "payload", None, 1).await?;
+    assert_eq!(page[0].value.as_ref(), Some(&winner));
+    assert!(!store.update_binary(NativeRow::COLLECTION.into(), "removed".into(), "payload".into(),
+        winner, BinaryWriteCondition::IfAbsent).await?);
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("native.db");
@@ -141,7 +167,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart() 
     ];
     for (n, (kind, bytes)) in variants.iter().enumerate() {
         store.update_binary(NativeRow::COLLECTION.into(), format!("{n:06}"), "payload".into(),
-            BinaryValue::new(descriptor(*kind, vec![2]), bytes.clone())?).await?;
+            BinaryValue::new(descriptor(*kind, vec![2]), bytes.clone())?, BinaryWriteCondition::Replace).await?;
     }
     assert!(store.binary_page(NativeRow::COLLECTION, "payload", None, 0).await.is_err());
     let stats = store.numeric_array_stats(NativeRow::COLLECTION, "payload").await?;

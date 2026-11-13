@@ -44,16 +44,21 @@ impl super::relational::RelationalStore {
         }).collect()
     }
 
-    pub async fn update_binary(&self, collection: String, id: String, field: String, value: BinaryValue) -> Result<bool, String> {
+    pub async fn update_binary(&self, collection: String, id: String, field: String, value: BinaryValue, condition: super::binary::BinaryWriteCondition) -> Result<bool, String> {
         let column = self.binary_column(&collection, &field)?;
         let (descriptor, bytes) = value.into_parts();
         let header = descriptor.encode()?;
         self.write(move |store, transaction| Box::pin(async move {
+            let predicate = match condition {
+                super::binary::BinaryWriteCondition::Replace => sea_orm::Condition::all(),
+                super::binary::BinaryWriteCondition::IfAbsent => sea_orm::Condition::all().add(Expr::col(column.clone()).is_null()),
+            };
             let fields = vec![(column, bytes.into()), (Alias::new(descriptor_column(&field)), header.into())];
-            if !store.update_fields_on(transaction, &collection, &id, fields, true).await? {
+            let changed = store.update_fields_matching_on(transaction, &collection, &id, fields, true, predicate).await?;
+            if !changed && condition == super::binary::BinaryWriteCondition::Replace {
                 return Err(format!("binary row {collection}:{id} does not exist"));
             }
-            Ok(true)
+            Ok(changed)
         })).await
     }
 }

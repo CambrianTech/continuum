@@ -145,8 +145,8 @@ impl StorageAdapter for SeaOrmAdapter {
     async fn create_binary(&self, record: DataRecord, payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>) -> StorageResult<String> {
         receipt(self.store.create_binary(record, payloads).await)
     }
-    async fn update_binary(&self, collection: &str, id: &str, field: &str, value: super::binary::BinaryValue) -> StorageResult<bool> {
-        receipt(self.store.update_binary(collection.to_owned(), id.to_owned(), field.to_owned(), value).await)
+    async fn update_binary(&self, collection: &str, id: &str, field: &str, value: super::binary::BinaryValue, condition: super::binary::BinaryWriteCondition) -> StorageResult<bool> {
+        receipt(self.store.update_binary(collection.to_owned(), id.to_owned(), field.to_owned(), value, condition).await)
     }
 
     async fn numeric_array_stats(&self, collection: &str, field: &str) -> StorageResult<super::adapter::NumericArrayStats> {

@@ -1,6 +1,14 @@
 //! Producer-owned native payloads. Only the small descriptor is decoded by storage.
 //! Payload bytes are never interpreted, normalized, or converted here.
 
+/// Evaluated atomically by the write owner, never by an earlier read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryWriteCondition {
+    Replace,
+    /// No change if another producer has filled the field or removed the row.
+    IfAbsent,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ElementType { U8 = 1, I8 = 2, F16 = 3, Bf16 = 4, F32 = 5, F64 = 6 }

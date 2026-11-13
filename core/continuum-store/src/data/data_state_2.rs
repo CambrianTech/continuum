@@ -152,21 +152,20 @@ impl DataState {
                 }, bytemuck::cast_slice(&embedding).to_vec())?;
 
                 let update_result = adapter
-                    .update_binary(collection, &record.id, "embedding", payload)
+                    .update_binary(collection, &record.id, "embedding", payload, crate::orm::binary::BinaryWriteCondition::IfAbsent)
                     .await;
 
-                if update_result.success {
-                    processed += 1;
-                    // Keep completed writes visible even if a later page fails.
-                    self.vector_cache.invalidate(&scope, collection);
-                } else {
-                    failed += 1;
+                match update_result.into_result() {
+                    Ok(true) => {
+                        processed += 1;
+                        // Keep completed writes visible even if a later page fails.
+                        self.vector_cache.invalidate(&scope, collection);
+                    }
+                    Ok(false) => skipped += 1,
+                    Err(_) => failed += 1,
                 }
             }
         }
-
-        // Invalidate vector cache since we modified embeddings
-        self.vector_cache.invalidate(&scope, collection);
 
         let total_ms = start.elapsed().as_millis();
         log_info!(
