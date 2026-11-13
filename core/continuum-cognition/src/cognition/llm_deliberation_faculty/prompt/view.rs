@@ -409,6 +409,7 @@ impl LlmDeliberationFaculty {
                 latest_result_tokens = required.latest_result,
                 latest_result_least = newest.least(),
                 latest_results = required.latest_result_count,
+                claims = ?act.claims(),
                 "every part at its hard limit still does not fit the served window: growth no collapse can make, by this much, the binding part named"
             );
         }
