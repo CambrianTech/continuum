@@ -801,11 +801,10 @@ impl ServingDaemonModule {
     }
 
     /// Each seated mind's HELD need on `model`, capped at its trained window: the residents a boot
-    /// remembers before its registry exists, else the live roster (`serving_demand`).
+    /// remembers before its registry exists, else the live roster (`seated_requirements`).
     pub(super) fn seated_needs(&self, model: &crate::model_registry::types::Model) -> Vec<u64> {
         let trained = u64::from(model.context_window);
-        self.serving_demand()
-            .requirements
+        self.seated_requirements()
             .iter()
             .filter_map(|requirement| match requirement.measure {
                 // Only a need a held turn measured: a wish's target carries headroom and untrimmed

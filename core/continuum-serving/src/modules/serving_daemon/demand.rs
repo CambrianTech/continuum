@@ -182,7 +182,7 @@ impl ServingDaemonModule {
         let live: Vec<uuid::Uuid> =
             crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                 .map(|r| r.live_personas())
-                .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no registry yet (boot) = no live roster; the remembered residents stand below
+                .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no registry yet (boot) = no live roster; every measured mind's ceiling stands
         let demand = match live.is_empty() {
             true => self.working_set.ceiling(),
             false => self.working_set.ceiling_of(&live),
@@ -195,25 +195,33 @@ impl ServingDaemonModule {
         // gauge; never invented.
         let leased_in =
             note_leased_in_peak(crate::inference::resource_admission::take_leased_in_peak());
-        // Each seated mind's REQUIREMENT: what her view holds at full detail, with headroom, gated
-        // on what her held turns measured. Built once here and carried on the demand by value into
-        // the one plan: the allocator's input, the governed size (card 2eec3977). Before the
-        // registry exists (boot) the seated minds are the residents this host served last, from
-        // the same working set (card 8569b03d): a boot that planned for nobody launched the M5's
-        // engine at a 2,048-token pool beside four minds needing 68-110k each (2026-11-13 19:36Z).
-        let seated_minds = match live.is_empty() {
-            true => self.working_set.remembered_residents(self.seated() as usize),
-            false => live,
-        };
-        let requirements =
-            crate::cognition::working_set::requirements_for(&seated_minds, &self.working_set);
+        // Built once here and carried on the demand by value into the one plan: the allocator's
+        // input, the governed size (card 2eec3977).
         ServingDemand::new(lanes, demand)
-            .with_requirements(requirements)
+            .with_requirements(self.seated_requirements())
             .with_leased_in(leased_in.min(u32::MAX as usize) as u32)
             // The knee bounds the TOTAL the plan serves, leased-in included: the clamp
             // above covers the roster and the scratch slot; the plan re-applies it over
             // `lanes + leased_in` (2026-09-19 23:14Z: 2 + 1 = 3 lanes against a knee of 2).
             .with_knee(knee)
+    }
+
+    /// Each seated mind's REQUIREMENT: what her view holds at full detail, with headroom, gated on
+    /// what her held turns measured (`requirements_for`). Before the registry exists (boot) the
+    /// seated minds are the residents this host served last, from the same working set (card
+    /// 8569b03d): a boot that planned for nobody launched the M5's engine at a 2,048-token pool
+    /// beside four minds needing 68-110k each (2026-11-13 19:36Z). A read with no side effect, for
+    /// every reader that sizes from the seated minds ([`Self::serving_demand`] also drains the
+    /// leased-in gauge, once per plan).
+    pub(super) fn seated_requirements(&self) -> Vec<crate::inference::planning::window_allocator::LaneRequirement> {
+        let live = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+            .map(|r| r.live_personas())
+            .unwrap_or_default(); // JUSTIFIED unwrap_or_default: no registry yet (boot) = no live roster; the remembered residents stand
+        let seated = match live.is_empty() {
+            true => self.working_set.remembered_residents(self.seated() as usize),
+            false => live,
+        };
+        crate::cognition::working_set::requirements_for(&seated, &self.working_set)
     }
 
     /// Test seam: own the heartbeat's real-decode evidence instead of inheriting whatever
