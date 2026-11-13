@@ -500,6 +500,15 @@ pub struct PressureSnapshot {
     pub timestamp_ms: u64,
     /// Consecutive polls at this level (for hysteresis — don't react to single spikes)
     pub consecutive_at_level: u32,
+    /// Physical memory the OS compressor occupies, from the host reading; null when the host
+    /// gave no reading this poll.
+    #[ts(type = "number | null")]
+    pub compressed_bytes: Option<u64>,
+    /// Bytes the host needs given back to come out of memory pressure (`host_deficit`): what the
+    /// OS has compressed and swapped since it was last clean, plus what it lacks of its own free
+    /// target. Zero on a clean box, or with no host reading.
+    #[ts(type = "number")]
+    pub deficit_bytes: u64,
 }
 
 impl Default for PressureSnapshot {
@@ -516,6 +525,8 @@ impl Default for PressureSnapshot {
             held_by_priority: Vec::new(),
             timestamp_ms: 0,
             consecutive_at_level: 0,
+            compressed_bytes: None,
+            deficit_bytes: 0,
         }
     }
 }
@@ -629,6 +640,8 @@ pub(super) struct MemoryTickState {
     pub(super) started: std::time::Instant,
     /// The smoothed swap traffic the swap axis reads (card f26d6568).
     pub(super) swap_activity: crate::system_resources::swap_activity::SwapActivity,
+    /// The host's memory deficit across polls: what the OS held displaced when last clean.
+    pub(super) host_deficit: super::host_deficit::HostDeficit,
 }
 
 /// Independent memory pressure monitoring system.

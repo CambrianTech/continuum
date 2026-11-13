@@ -51,4 +51,15 @@ timestamp_ms: number,
 /**
  * Consecutive polls at this level (for hysteresis — don't react to single spikes)
  */
-consecutive_at_level: number, };
+consecutive_at_level: number, 
+/**
+ * Physical memory the OS compressor occupies, from the host reading; null when the host
+ * gave no reading this poll.
+ */
+compressed_bytes: number | null, 
+/**
+ * Bytes the host needs given back to come out of memory pressure (`host_deficit`): what the
+ * OS has compressed and swapped since it was last clean, plus what it lacks of its own free
+ * target. Zero on a clean box, or with no host reading.
+ */
+deficit_bytes: number, };

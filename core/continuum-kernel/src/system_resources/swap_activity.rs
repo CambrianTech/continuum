@@ -28,49 +28,15 @@ impl SwapTraffic {
     fn total(self) -> u64 {
         self.swapped_in.saturating_add(self.swapped_out)
     }
-}
 
-/// The kernel's swap counters: Mach `swapins`/`swapouts` on macOS, `pswpin`/`pswpout`
-/// from `/proc/vmstat` on Linux. None where the platform exposes none.
-pub(crate) fn read_swap_traffic() -> Option<SwapTraffic> {
-    #[cfg(target_os = "macos")]
-    {
-        crate::gpu::backends::metal::mach_ffi::read_swap_traffic_bytes().map(
-            |(swapped_in, swapped_out)| SwapTraffic {
-                swapped_in,
-                swapped_out,
-            },
-        )
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let text = std::fs::read_to_string("/proc/vmstat").ok()?;
-        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
-        parse_proc_vmstat(&text, page_size)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        None
-    }
-}
-
-/// PURE: the swap counters from `/proc/vmstat` text, in bytes.
-#[cfg(any(target_os = "linux", test))]
-fn parse_proc_vmstat(text: &str, page_size: u64) -> Option<SwapTraffic> {
-    let mut pages_in = None;
-    let mut pages_out = None;
-    for line in text.lines() {
-        let mut parts = line.split_whitespace();
-        match (parts.next(), parts.next().and_then(|v| v.parse::<u64>().ok())) {
-            (Some("pswpin"), Some(v)) => pages_in = Some(v),
-            (Some("pswpout"), Some(v)) => pages_out = Some(v),
-            _ => {}
+    /// The host reading's cumulative counters (`continuum_host::host_memory`, the one owner of
+    /// Mach `swapins`/`swapouts` and Linux `pswpin`/`pswpout`).
+    pub(crate) fn of(reading: &continuum_host::host_memory::HostMemoryReading) -> Self {
+        Self {
+            swapped_in: reading.swapped_in_bytes,
+            swapped_out: reading.swapped_out_bytes,
         }
     }
-    Some(SwapTraffic {
-        swapped_in: pages_in?.saturating_mul(page_size),
-        swapped_out: pages_out?.saturating_mul(page_size),
-    })
 }
 
 /// How fast the smoothed rate forgets: a burst is half gone after this long. Long enough
@@ -160,18 +126,5 @@ mod tests {
         }
         assert!(rate < SWAP_WARNING_BYTES_PER_SEC, "three quiet minutes read calm ({rate})");
         assert_eq!(activity.observe(t + Duration::from_secs(2), None), None, "no counters is unknown");
-    }
-
-    #[test]
-    fn proc_vmstat_counters_are_read_in_bytes() {
-        let text = "nr_free_pages 1\npswpin 10\npswpout 30\npgfault 9\n";
-        assert_eq!(
-            parse_proc_vmstat(text, 4096),
-            Some(SwapTraffic {
-                swapped_in: 10 * 4096,
-                swapped_out: 30 * 4096
-            })
-        );
-        assert_eq!(parse_proc_vmstat("pswpin 10\n", 4096), None, "a missing counter is no reading");
     }
 }
