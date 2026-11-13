@@ -83,3 +83,6 @@ mod relational_binary;
 
 #[cfg(test)]
 mod binary_tests;
+
+#[cfg(test)]
+mod binary_load_tests;
