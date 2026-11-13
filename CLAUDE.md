@@ -366,6 +366,15 @@ A new layer implements `Source`, builds its items with `levels`, and gets cachin
 
 **The cost of skipping this:** Aiko read one 51,827-char file whole 9 times in 43 acts (the M5, 2026-10-25), because three owners each decided a piece of what she saw.
 
+## 🛑 STOP — If You Are About To Touch Storage, Retrieval, Vectors, Serving, Or Any Data Path
+
+**Required first read:** [docs/architecture/ENGINE-PATTERNS.md](docs/architecture/ENGINE-PATTERNS.md). Joel, 2026-11-13: the
+substrate is a game engine's renderer (study Unreal: RDG, streaming pools, Nanite LOD, GPU-driven culling, instancing,
+temporal reuse). Bytes stay bytes (BLOB + typed descriptor), no per-element CPU loops, translation only on the GPU, never
+parse until the last step, no SQL outside the ORM and no Python anywhere, squared distances and unit vectors (no roots or
+per-pair norms), no CPU/GPU transfers that are not needed. Every change posts act time, stage time, memory and quality
+before and after.
+
 ## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
 
 **Required first read** before adding ANY new tokio task, watch channel, pressure source, resource pool, brain region, or background tick — or before touching any file under `core/continuum-core/src/{runtime,paging,system_resources}/`:
