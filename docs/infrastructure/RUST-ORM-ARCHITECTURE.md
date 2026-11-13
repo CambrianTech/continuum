@@ -1,468 +1,206 @@
-# Rust ORM Architecture
-
-## Current direction — 2026-11-12
-
-Joel's direction is ORM-only access with SeaORM as the relational implementation.
-The historical design below is not a description of the current implementation:
-`continuum-kernel::orm` currently owns `OrmStore`, `StorageQuery`, and a handwritten
-rusqlite adapter; `continuum-store` resolves application handles to that owner.
-SeaORM is declared in workspace dependencies but has not replaced this backend yet.
-
-Entity declarations own field types, nullability, relationships and indexes. Existing
-Rust `OrmEntity` registrations and the generated TS entity schema must feed the same
-provider translation; do not add independently maintained table definitions. Shared
-dependency versions live in the workspace, while consuming owners select coherent
-provider/runtime feature groups.
-
-This is a development migration with effectively no users. Joel authorizes
-handwritten one-time migration scripts and best-effort preservation of local data;
-compatibility is not a reason to retain fallback implementations or legacy codecs.
-Protect AIRC identity/key authority and unrelated work. Switch callers and delete
-superseded paths rather than running two backends for compatibility.
-
-The shared row decoder now consumes the owned JSON value once. It refuses NULL
-for non-nullable fields rather than removing all NULL fields and retrying with
-defaults. Missing fields still follow their declared serde schema. Before deploying
-this change to existing homes, explicitly migrate historical non-nullable columns;
-the known `training_trigger_submissions.learned` NULL rows require the documented
-pre-learning value of zero. Do not apply that substitution to nullable fields or
-unknown progress. This migration has not yet been run on the fleet.
-The offline tool `tools/migrations/2026-11-12-training-learned.py DATABASE`
-reports affected counts read-only; with serving stopped, `--apply` updates only
-the historical NULL progress in one transaction. It refuses invalid non-NULL
-progress and does not discover databases, touch AIRC keys or rewrite bodies.
-
-Migration acceptance belongs at the storage boundary:
-
-- Verify the intended identities and migrated rows across open and restart. Failed
-  transactions and cancelled callers must preserve the existing commit contracts.
-- Exercise inner/left joins, unmatched rows, projection, ordering and cardinality.
-  A provider must never advertise a capability it silently ignores.
-- Preserve exact integers, strings that look like JSON, nullability and declared JSON
-  through one consistent codec. Measure row materialization separately from database
-  execution and typed decoding; avoid copying a generic tree into another owned tree.
-- Positron badges use count operations; views request only their projected fields.
-  Cursor pages apply filtering, stable ordering and limits in storage. Never retrieve
-  all bodies to count them or clip an unbounded result after materialization.
-- Prove declared indexes and relationships in provider integration tests, plus the
-  same public query semantics on each supported provider. Query construction uses the
-  ORM's typed APIs, not SQL strings in callers or repair tools.
-
-Replace the backend under these existing interfaces in verified slices, then remove
-the superseded implementation. Do not create a second live pool or schema owner as a
-compatibility path. Performance and semantic parity are required before live adoption.
-
-### Schema-owned lifecycle and shared reclamation
-
-### AIRC authority boundary — Joel, 2026-11-12
-
-AIRC owns room membership, peer identity and authenticated chat provenance.
-The ORM stores local projections, import watermarks and publication obligations;
-it must not mint substitute identities, choose another room when an explicit room
-is unavailable, or treat a local row as independent membership authority.
-Resolve and authorize through AIRC, preserving the requested room and peer IDs.
-
-Audit finding: the shared generic-data gate consults `ProtectedCollection`, but
-chat messages, arrivals, watermarks and publication obligations are not registered
-there. Generic writes are privileged, not unrestricted, but this still leaves an
-owner bypass for trusted callers. Chat itself currently uses generic `data/*`
-commands, so merely marking these tables protected would also break its importer.
-Move chat's internal storage access behind its typed owner interface, then protect
-the collections and test generic-write refusal alongside normal AIRC import/replay.
-Publication attribution already checks the exact relay, room, sender and digest;
-those checks must survive this migration. This gap is not yet closed.
-
-Joel also confirms that AIRC metadata is an intended extension point for fields
-needed by Continuum and other integrations. The pinned AIRC protocol (`a3a7396`)
-already defines namespaced headers (`airc.*`, `forge.*`, `continuum.*`, and other
-consumer namespaces), opaque JSON/binary bodies, and content-addressed media.
-Reuse those contracts before adding parallel local schema machinery. Header-based
-routing must not require decoding the body. A local indexed projection may serve
-counts and cursor pages while retaining the source event identity and provenance.
-
-Extension fields supplement the consumer's schema; they do not override AIRC's
-authenticated sender/client, channel, ordering or authoritative reply threading.
-Use typed consumer codecs with explicit schema/version identification where needed,
-and preserve metadata through import/export and replay. Verify unknown extensions
-survive round trips and that conflicting authority fields are refused. These are
-integration acceptance requirements, not a claim that every current path meets them.
-
-### Continuous reclamation
-
-The ORM is a consumer of the existing governor interface, not a separate resource
-authority. Continuous draining means reclaiming caches, idle connections and
-transient materializations, or moving eligible information to cheaper tiers. It is
-distinct from shutdown admission closure and waiting for in-flight operations.
-
-Entity/field declarations should express durability (authoritative, derived or
-disposable), reconstruction dependencies, retention conditions, permitted tiers and
-relationship constraints. Access frequency, actual bytes and reconstruction cost
-come from runtime measurements. These declarations belong beside shape, indexes
-and joins so the concern's author can review the whole lifecycle in one place.
-
-When asked to downsize, the storage owner selects eligible resources within those
-constraints and reports actual reclaimed bytes after completion. It must not delete
-durable knowledge merely because it is rarely read, discard referenced state, or
-release custody before a transfer finishes. Remove old cleanup jobs and redundant
-tables as their owners migrate; decorators must replace scattered mechanisms rather
-than add another policy layer. This lifecycle integration remains implementation work.
-
-> **⚠️ ARCHITECTURE UPDATE**: The data-daemon worker has been absorbed into `continuum-core` as
-> `DataModule` (Phase 4e). The socket is now `/tmp/continuum-core.sock`. TypeScript uses
-> `ORM.ts` → `ORMRustClient.ts` → `DataModule` for all database operations.
-> See `workers/continuum-core/src/modules/data.rs`.
-
-## Overview
-
-Unified data access layer where Rust handles all database operations. TypeScript becomes a thin IPC wrapper.
-
-## Current State (Problems)
-
-```
-Code paths today (FRAGMENTED):
-├── DataDaemon.query() → adapter.query() → SQLite
-├── adapter.query() directly (dbHandle cases)
-├── DatabaseHandleRegistry.getAdapter() → adapter.query()
-└── ~30 files with direct DataDaemon.* calls (violations)
-```
-
-**Issues:**
-- Mixed paths, no single entry point
-- TS single-threaded, can't parallelize
-- Violations bypass intended architecture
-- Concurrency handled poorly
-
-## Target State
-
-```
-All code → ORM.execute(params) → IPC → Rust ConnectionManager → SQLite
-```
-
-**Single entry point. Single boundary. Rust handles parallelism.**
-
-## Scale Requirements
-
-- 13 personas × 2-3 DBs each = ~30-40 persona databases
-- Shared DBs: users, rooms, messages, etc.
-- High concurrent query load during active cognition
-- Lots of data movement
-
-## Rust Architecture
-
-### ConnectionManager
-
-```rust
-pub struct ConnectionManager {
-    /// Pool per database file - lazy initialized
-    pools: DashMap<PathBuf, Pool<SqliteConnection>>,
-
-    /// Config
-    max_pools: usize,           // LRU eviction after this
-    conns_per_pool: usize,      // 2-3 for SQLite
-    idle_timeout: Duration,     // Close idle pools
-}
-
-impl ConnectionManager {
-    /// Single entry point for all queries
-    pub async fn execute(&self, params: QueryParams) -> Result<Value> {
-        let db_path = self.resolve_path(&params.db_handle)?;
-        let pool = self.get_or_create_pool(&db_path).await?;
-        let conn = pool.acquire().await?;
-
-        match params.operation {
-            Op::Query(q) => conn.query(q).await,
-            Op::Create(r) => conn.insert(r).await,
-            Op::Update(r) => conn.update(r).await,
-            Op::Delete(id) => conn.delete(id).await,
-            // ... all operations
-        }
-    }
-
-    /// Lazy pool creation
-    async fn get_or_create_pool(&self, path: &Path) -> Result<&Pool> {
-        if let Some(pool) = self.pools.get(path) {
-            return Ok(pool);
-        }
-
-        // LRU eviction if at capacity
-        if self.pools.len() >= self.max_pools {
-            self.evict_lru().await?;
-        }
-
-        // Create new pool
-        let pool = Pool::builder()
-            .max_size(self.conns_per_pool)
-            .build(path)
-            .await?;
-
-        self.pools.insert(path.to_owned(), pool);
-        Ok(self.pools.get(path).unwrap())
-    }
-}
-```
-
-### Pool Design (per DB file)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    ConnectionManager                         │
-│                                                              │
-│  pools: HashMap<DbPath, Pool>                               │
-│                                                              │
-│  ┌────────────┐ ┌────────────┐ ┌────────────┐              │
-│  │  main.db   │ │ persona1/  │ │ persona2/  │   ...        │
-│  │  Pool(3)   │ │ memory.db  │ │ memory.db  │              │
-│  │ ┌──┬──┬──┐ │ │  Pool(2)   │ │  Pool(2)   │              │
-│  │ │C1│C2│C3│ │ │ ┌──┬──┐   │ │ ┌──┬──┐   │              │
-│  │ └──┴──┴──┘ │ │ │C1│C2│   │ │ │C1│C2│   │              │
-│  └────────────┘ └─┴──┴──┴───┘ └─┴──┴──┴───┘              │
-│                                                              │
-│  40+ pools, 80-100 total connections                        │
-│  Lazy init, LRU eviction, idle timeout                      │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Why pool per DB:**
-- SQLite locks are per-file
-- Persona 1's queries don't block Persona 2
-- Natural isolation
-
-**Why small pools (2-3):**
-- SQLite WAL: concurrent reads, serialized writes
-- More connections = diminishing returns
-- Memory efficiency
-
-### IPC Design
-
-Single Unix socket with multiplexed async requests:
-
-```
-TypeScript                          Rust
-    │                                 │
-    ├─── send(req1, id=1) ──────────►│
-    ├─── send(req2, id=2) ──────────►│──► tokio::spawn(handle(req1))
-    ├─── send(req3, id=3) ──────────►│──► tokio::spawn(handle(req2))
-    │                                 │──► tokio::spawn(handle(req3))
-    │◄─── response(id=2) ────────────┤
-    │◄─── response(id=1) ────────────┤    (responses out of order)
-    │◄─── response(id=3) ────────────┤
-```
-
-- Request ID tagging for response matching
-- Non-blocking sends from TS
-- Tokio spawns task per request
-- Responses matched by ID
-
-**Single socket is fine because:**
-- IPC overhead (~0.1ms) << query time (~1-100ms)
-- Tokio handles concurrent tasks
-- Real parallelism in Rust, not socket
-
-### Operations Supported
-
-Must match TypeScript DataStorageAdapter + VectorSearchAdapter:
-
-**CRUD:**
-- create, read, update, delete
-- query, queryWithJoin, count
-- batch, batchDelete
-
-**Schema:**
-- ensureSchema, listCollections, collectionStats
-
-**Maintenance:**
-- truncate, clear, clearAll, cleanup
-
-**Vector (critical for RAG):**
-- vectorSearch
-- generateEmbedding (→ fastembed)
-- indexVector
-- backfillVectors
-- getVectorIndexStats
-
-**Pagination:**
-- openPaginatedQuery
-- getNextPage
-- closePaginatedQuery
-
-## TypeScript Architecture
-
-### Before (Current Mess)
-
-```typescript
-// 30+ files doing this:
-await DataDaemon.query<T>({ collection, filter });
-await DataDaemon.store(collection, entity);
-
-// Commands doing this for dbHandle:
-if (params.dbHandle) {
-    const adapter = registry.getAdapter(params.dbHandle);
-    result = await adapter.query(q);
-} else {
-    result = await DataDaemon.query(q);
-}
-```
-
-### After (Clean)
-
-```typescript
-// Single ORM class - thin IPC wrapper
-export class ORM {
-    private static socket: IPCClient;
-
-    static async execute<T>(params: {
-        operation: 'query' | 'create' | 'update' | 'delete' | ...;
-        collection: string;
-        dbHandle?: string;
-        data?: T;
-        filter?: Filter;
-    }): Promise<Result<T>> {
-        return this.socket.send(params);
-    }
-
-    // Convenience methods
-    static query<T>(q: Query): Promise<Result<T[]>> {
-        return this.execute({ operation: 'query', ...q });
-    }
-
-    static create<T>(collection: string, data: T, dbHandle?: string): Promise<Result<T>> {
-        return this.execute({ operation: 'create', collection, data, dbHandle });
-    }
-
-    // ... etc
-}
-```
-
-### Migration Path
-
-1. Create `ORM` class with same interface as DataDaemon static methods
-2. Initially, ORM calls DataDaemon (TS-only, no Rust)
-3. Fix violations one file at a time: `DataDaemon.query()` → `ORM.query()`
-4. When all violations fixed, swap ORM internals to IPC → Rust
-5. Remove old DataDaemon code
-
-## File Changes Required
-
-### Rust (New)
-
-```
-workers/continuum-core/src/
-├── orm/
-│   ├── mod.rs
-│   ├── connection_manager.rs   ← Pool management
-│   ├── adapter.rs              ← StorageAdapter trait
-│   ├── sqlite.rs               ← SQLite implementation
-│   ├── query.rs                ← Query building
-│   ├── types.rs                ← Shared types (ts-rs)
-│   └── vector.rs               ← Vector operations
-└── modules/
-    └── data.rs                 ← ServiceModule for data/*
-```
-
-### TypeScript (Modify)
-
-```
-daemons/data-daemon/
-├── shared/
-│   ├── ORM.ts                  ← NEW: Single entry point
-│   └── DataDaemon.ts           ← Eventually deprecated
-└── server/
-    └── ORMRustClient.ts        ← NEW: IPC to Rust
-```
-
-### Violations to Fix (~30 files)
-
-```
-system/genome/fine-tuning/server/TrainingDatasetBuilder.ts
-system/rag/builders/ChatRAGBuilder.ts
-system/rag/builders/CodebaseRAGBuilder.ts
-system/rag/sources/ConversationHistorySource.ts
-system/rag/sources/PersonaIdentitySource.ts
-system/rag/sources/SocialMediaRAGSource.ts
-system/user/server/CallerDetector.ts
-system/user/server/modules/cognitive/memory/PersonaMemory.ts
-system/user/server/modules/PersonaAutonomousLoop.ts
-system/user/server/modules/PersonaMessageEvaluator.ts
-system/user/server/modules/PersonaResponseGenerator.ts
-system/user/server/modules/PersonaTaskExecutor.ts
-commands/data/list/server/DataListServerCommand.ts (dbHandle path)
-... and more
-```
-
-## Implementation Order
-
-### Phase 1: Rust ORM (Disconnected) ✅ COMPLETE
-- [x] ConnectionManager with pool-per-db
-- [x] All CRUD operations
-- [x] Vector operations (integrate fastembed)
-- [x] Unit tests with in-memory SQLite
-
-### Phase 2: TypeScript ORM Wrapper ✅ COMPLETE
-- [x] Create ORM.ts with same interface as DataDaemon
-- [x] Initially delegates to DataDaemon (no behavior change)
-- [x] Add feature flag: `FORCE_TYPESCRIPT_BACKEND`
-
-### Phase 3: Fix Violations (Incremental) ✅ COMPLETE
-- [x] Migrated 21+ files from DataDaemon.* to ORM.*
-- [x] All persona modules now use ORM
-- [x] All RAG/embedding code migrated
-- [x] DataDaemon.jtagContext preserved for event context
-
-### Phase 4: Wire Together ✅ COMPLETE
-- [x] Implement ORMRustClient (IPC to /tmp/continuum-core.sock)
-- [x] Flip `FORCE_TYPESCRIPT_BACKEND=false`
-- [x] All collections now route to Rust DataModule
-- [ ] Remove old DataDaemon code (Phase 5 cleanup)
-
-### Phase 5: Cleanup (IN PROGRESS)
-- [x] Removed dead DataDaemon fallback paths from ORM CRUD methods
-- [x] Removed debug console.log spam from ORM.ts
-- [x] Updated ORM header comments to reflect Rust-first architecture
-- [x] ORM.store/update/remove emit events via DataDaemon.jtagContext for browser routing
-- [x] data-daemon-worker disabled (absorbed into continuum-core DataModule)
-- [x] Move batch operations to Rust
-- [x] Move listCollections, clear, clearAll, truncate to Rust
-- [ ] Move paginated queries to Rust
-- [ ] Move vector operations to Rust
-- [ ] Remove DataDaemon once all ops migrated
-- [ ] Remove FORCE_TYPESCRIPT_BACKEND kill switch once stable
-
-### Phase 6: Performance & Optimization (IN PROGRESS)
-
-**Root Cause Identified (2026-02-08)**:
-- **1.7GB database** - 143k ai_generations, 96k memories, 68k cognition records
-- **Queries hitting 140-225ms** on indexed tables (should be <50ms)
-- **All personas share one ORMRustClient socket** - request multiplexing works, but serialization bottleneck
-
-**Priority fixes**:
-- [ ] **Add timing instrumentation** to Rust DataModule (know WHERE time is spent)
-- [ ] **Implement data archiving** - move old ai_generations/memories to cold storage
-- [ ] **Compound indexes** - add (assignee_id, status) compound index for tasks
-- [ ] **Per-persona connection pools** in Rust (eliminate socket serialization)
-- [ ] **Query latency**: Target P99 < 50ms for simple queries
-- [ ] **Payload bloat**: chat/send response includes entire config object - strip it
-- [ ] **Event storm**: cognition:stage-complete, ai:decision:respond hitting 10x/100ms
-- [ ] **Socket traffic**: Too much crossing websocket, consider batching/debouncing
-- [ ] **IndexedDB version mismatch**: Browser cache issues on refresh
-
-## Known Issues
-
-### Performance
-- 1.7GB database with 500k+ total records across tables
-- Queries hitting 140-225ms (ORM slow threshold is 100ms)
-- All personas serialize through single Unix socket
-- Event system creates N events per message × M personas
-
-### Browser State
-- Messages don't appear without refresh (event routing issue)
-- IndexedDB version conflicts
-- User list shows "Unknown User" until refresh
-
-## Success Criteria
-
-1. **Single entry point**: All data access through `ORM.execute()`
-2. **No violations**: Zero direct DataDaemon/adapter calls
-3. **Parallel**: 40 concurrent queries from different personas execute in parallel
-4. **Fast**: P99 query latency < 50ms for simple queries
-5. **Fallback**: Can switch back to TS-only via flag
-6. **Real-time**: Browser updates without refresh when events fire
+# ORM and schema architecture
+
+Design of record, 2026-11-13. Owner: Codex. This document consolidates the former
+Rust ORM, decorator schema, ORM Phase 2, entity adapter, storage adapter and elegant
+CRUD designs. It replaces their competing conversion, fallback and compatibility
+instructions. Historical implementation claims in those documents are not evidence
+of the current runtime.
+
+The engine design owns serving, KV paging, prefix reuse, admission, GPU embeddings
+and vector search. This document owns their storage boundary: native payload bytes,
+typed descriptors, efficient relational selection and durable custody. Neither owner
+introduces another scheduler, resource authority or cache framework.
+
+## 1. One declaration, one storage owner
+
+An entity declaration is the source of truth for fields, exact types, nullability,
+creation defaults, relationships, foreign keys, indexes and named projections.
+Rust derives and generated decorator metadata feed one typed schema representation;
+there must not be a second handwritten table definition or field-name heuristic.
+Unsupported metadata is an error, never silently dropped.
+
+The existing shared storage owner (`continuum-kernel::orm`, exposed through
+`continuum-store`) owns provider connections, statement construction, transactions,
+query execution and committed revisions. SeaORM is the relational implementation.
+Domain code uses typed owner interfaces; it does not instantiate database providers
+or issue SQL. In-process calls stay typed and do not take an IPC/JSON round trip.
+External clients use the same owner through its transport boundary.
+
+Adding an entity extends its declaration and registration. It does not add another
+CRUD implementation, serializer, connection pool, event dispatcher or cache policy.
+Use composition and shared typed interfaces for common behavior. Derived metadata
+is compiled once and reused, not reflected or rebuilt for every row.
+
+## 2. Separate searchable columns from opaque payloads
+
+Choose representation by the operations consumers actually need:
+
+| Data | Declaration and storage | Read behavior |
+|---|---|---|
+| Identity, relationship, status, ordering key | Exact typed scalar column, declared constraints | Bind and decode directly to the requested type |
+| Count, timestamp, revision | Exact integer with explicit range/unit; no float intermediate | Database comparison and aggregate |
+| Embedding, tensor, image or other native payload | BLOB plus typed descriptor | Owned bytes or a valid borrowed/mapped view; no element decoding |
+| Payload whose internal fields must be queried | Promote those fields into declared columns; genuinely document-shaped queries may use declared database-native binary JSON | Execute predicates in storage; materialize only requested result |
+| Opaque addressed document or event | Original bytes plus schema/producer identity | Parse only at its addressed consumer if required |
+
+Do not serialize a whole entity into a JSON body and then deserialize it to find its
+status, owner, timestamp or dimensions. Do not maintain duplicate searchable values
+by ad hoc caller code: the schema and shared write owner declare and atomically
+maintain the needed columns. Do not infer a type from a name such as `embedding` or
+from the first sample row.
+
+Integers stay exact; NULL is distinct from missing, empty and zero. A creation default
+applies only where the declaration explicitly permits it. A default never repairs an
+invalid persisted value on read. Join nullability remains explicit, including an
+unmatched outer-join row. A projection has its own result type: do not deserialize a
+partial row into a full entity and manufacture missing fields.
+
+## 3. Native binary boundary with the engine
+
+The producer supplies bytes and a typed descriptor. The descriptor identifies the
+element representation, shape, byte order, layout and producer/model identity.
+Normalization, quantization parameters and precision/error guarantees must be explicit
+when the consumer depends on them. Opaque nonnumeric payloads identify their format;
+the storage contract is not an f32/f64-vector special case.
+
+The producer chooses its representation and performs normalization or precision
+selection once in its compute path. Storage binds and returns those native bytes.
+It does not iterate through elements to encode, decode, normalize, check finiteness,
+change endianness or promote precision. An incompatible compute consumer performs
+necessary translation on the GPU, retaining the compatible result under the existing
+cache identity rather than converting again per use.
+
+Descriptor validation checks representation support, shape/stride arithmetic overflow,
+payload length, identity and schema compatibility. It visits the small header, not
+payload elements. Any numerical validation belongs to the producer's measured GPU
+work. The descriptor and bytes commit atomically; a failed update cannot pair an old
+payload with a new descriptor. Their revision is one identity for cache invalidation.
+
+Payloads never pass through `serde_json::Value`, textual numbers, base64 or a second
+in-memory numeric array on the native path. A required external encoding terminates
+at the actual transport boundary; it does not become the internal storage contract.
+Generic list/projection APIs must not accidentally hydrate binary bodies.
+
+A returned buffer has explicit lifetime and custody. Mapped pages remain pinned while
+a view is in use; a DMA source remains owned until the existing completion fence
+confirms transfer. Request cancellation is not transfer completion. ResourceDaemon
+remains physical authority for destination, overlap and scratch allocations.
+
+On unified memory, use a valid shared mapping suitable for a no-copy Metal buffer.
+On a discrete GPU, use the existing asynchronous transfer pipeline and overlap useful
+work. SQLite returning a BLOB does not by itself prove mmap-to-Metal compatibility or
+zero copies. Record actual copies, alignment, mapping lifetime and transferred bytes.
+Do not expose SQLite internal pages as stable application buffers or claim zero-copy
+because the machine has unified memory. Bulk copies required by a provider are
+measured explicitly; per-element conversion is not an acceptable substitute.
+
+## 4. Select before materializing
+
+Queries are typed intermediate objects compiled by the shared owner. Entity metadata
+validates fields, relationships, projection and ordering; values are bound parameters.
+No SQL in application callers or repair utilities. Provider-specific operations stay
+inside the ORM. No Python in this design, including the offline migration.
+
+Filtering, joins, ordering, counts, aggregates and limits run in the database. Positron
+badges request counts; lists request declared summary projections. Detail payloads are
+requested explicitly by identity or through a bounded payload read. A count never
+loads rows, and projection never means fetch-all then discard columns in application
+code. There is no missing-projection fallback that returns every body.
+
+Each page requires a positive size and stable cursor order with a unique tie-breaker.
+An example is `(created_at, id)` under an equality predicate on `owner_id` and `status`.
+Declare the matching compound index in the entity, including direction and required
+projection coverage; verify the actual query plan. Indexing every field separately or
+marking a field as summary does not establish a covering index.
+
+Cursor comparison must use the same types, collation, NULL ordering and direction as
+the query. Joined pages specify their cardinality and stable identity. Concurrent
+updates require stated snapshot/revision semantics; a cursor alone is not a snapshot.
+Replay traverses bounded pages through the existing stream owner, preserving its
+required causal order. Never fetch millions of bodies to clip or count afterward.
+
+Cache compiled schema/projection mappings and prepared query shapes where the provider
+supports them. Bind values separately. Decode selected scalars directly into typed
+results; preserve payload ownership through the last consumer. Measure database work,
+row materialization, typed decoding and transport separately to expose hidden CPU work.
+
+## 5. Commit, notify, reclaim
+
+The existing transaction owner retains a submitted write until commit or rollback,
+including when the requesting task is cancelled. Publish revisions and data events
+only after commit, through one shared mechanism. Events carry identity/revision and
+the declared needed projection, not an automatic copy of the whole body. Domain events
+remain with the domain owner. Deleting a record does not justify first hydrating its
+payload merely to emit a deletion event.
+
+Cache identities include the store, collection, record revision, representation and
+producer identity required for compatibility. Committed writes invalidate the relevant
+view. Retained readers hold immutable snapshots; they never observe a half-updated
+payload/descriptor pair.
+
+Connections, cursors, mapped pages and caches consume existing resource grants.
+Waiting releases execution workers and MindTurn ownership. Pools and transient work
+must not introduce arbitrary global caps or independent resource policies.
+
+Entity metadata declares durability, reconstruction dependencies, permitted tiers,
+retention conditions and relationship constraints. The storage owner reclaims only
+eligible resources and reports bytes actually released after completion. Idle data
+may move to a cheaper tier; authoritative knowledge is not deleted because it is cold.
+Do not retain a second cleanup framework beside this owner.
+
+AIRC remains authority for identities, trust, room membership and provenance. Local
+rows are projections or publication obligations, not substitutes for that authority.
+Preserve authenticated source identity, ordering, reply threading and unknown supported
+extensions. Generic data access must not bypass a domain's protected write owner.
+
+## 6. Offline migration and deletion
+
+This is development: there is no compatibility requirement. Implement the one-time
+migration in Rust, using the same complete entity registry and shared storage owner.
+Any unavoidable provider-specific migration operation is contained in that owner's
+migration module, not in runtime application code. No runtime old-format decoder,
+dual backend, automatic fallback or feature flag selecting an obsolete implementation.
+
+The migration takes explicit source/destination scope and an exact schema version.
+Inspect active builds and supported service lifecycle first; quiesce the relevant
+writers, preserve AIRC keys/identity and unrelated work, and produce a recoverable
+copy before transforming authoritative data. Best-effort data preservation must not
+block the redesign, but omissions or invalid rows require an explicit receipt.
+
+Transform in bounded transactions. Validate row identities, exact scalar values,
+NULL handling, relationships, payload byte identity, descriptor compatibility and
+cursor order. Record source/destination schema digests, counts, rejected rows and
+completion. Prove restart and interrupted-migration behavior. Switch the owner to the
+validated destination through supported lifecycle, then delete superseded runtime
+implementations and their callers. A rollback restores a known artifact/data pair;
+it is not a permanently retained alternate runtime backend.
+
+The former Python learned-NULL repair is not the new migration. Replace its required
+operation in the Rust migration with an explicit, evidence-based rule; do not silently
+substitute a progress value for unknown training state.
+
+## 7. Proof and current implementation gaps
+
+Use the same dataset, query shapes, concurrency and exact artifact revisions before
+and after. Measure store operation p50/p99, queue/connection wait, database execution,
+materialization/decoding CPU time, allocations, bytes copied/transferred, memory and
+end-to-end act latency. Separate warm-cache, cold-read and restart results.
+
+Prove joins, exact integers, NULLs, stable cursor pages, transaction rollback,
+cancelled-request custody, descriptor/payload atomicity and restart. Prove byte-for-byte
+retention for multiple native representations without payload interpretation. For
+query improvements, inspect the provider plan and assert that counts/projections do
+not fetch bodies. Integrate Fable's GPU search at 10k/100k vectors and measure latency
+and recall against the stated reference; storage does not claim GPU quality itself.
+
+A deployment requires the exact built/installed/running artifact and a 15-minute live
+comparison with neighboring residents progressing. Tests or a process health label
+are not adoption, performance recovery or learned behavior.
+
+As of 2026-11-13, PR #5954 is draft and undeployed. Its branch has the SeaORM provider,
+typed schema equality, bounded caller migrations and database-side counts, but the
+native binary boundary, complete typed caller conversion, Rust offline migration,
+independent review and live proof are unfinished. The uncommitted f64-specific codec
+was rejected; its per-element conversions must be deleted, not published. Existing
+JSON row hydration, optional unbounded query surfaces and static resource caps remain
+implementation gaps. This document states the contract, not that those gaps are fixed.
