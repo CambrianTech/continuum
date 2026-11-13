@@ -42,8 +42,9 @@ pub struct StoredServedWindow {
     #[serde(default)]
     pub observed_prompt_tokens: Option<u32>,
     pub set_at_ms: u64,
-    /// Current settled launch. It does not replace the last observed geometry
-    /// until successful usage from this exact generation observes it.
+    /// Geometry observed under this generation lease that has not yet been
+    /// promoted into the main record. Does not replace the last observed
+    /// geometry until successful usage from this exact generation observes it.
     #[serde(default)]
     pub candidate: Option<ServedGeometry>,
 }
@@ -59,6 +60,21 @@ impl StoredServedWindow {
             return None;
         }
         Some((self.per_slot_window, self.lanes))
+    }
+
+    /// Explicit initial record created when no prior store exists.
+    /// Lanes=0 because this launch has no successful observation yet; the candidate
+    /// geometry is stored separately and promoted only after terminal usage confirms it.
+    pub fn initial(model_id: String, per_slot_window: u32) -> Self {
+        Self {
+            model_id,
+            per_slot_window,
+            lanes: 0,
+            typical_prompt_tokens: 0,
+            observed_prompt_tokens: None,
+            set_at_ms: continuum_base::time::EpochMs::now().millis(),
+            candidate: None,
+        }
     }
 }
 
@@ -131,15 +147,10 @@ fn record_reconciled_to(path: &Path, geometry: ServedGeometry, settled_now: bool
 }
 
 fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
-    let mut stored = load_from(path).unwrap_or_else(|| StoredServedWindow {
-        model_id: geometry.model_id.clone(),
-        per_slot_window: geometry.per_slot_window,
-        lanes: 0, // This launch has no successful observation yet.
-        typical_prompt_tokens: 0,
-        observed_prompt_tokens: None,
-        set_at_ms: continuum_base::time::EpochMs::now().millis(),
-        candidate: None,
-    });
+    let mut stored = match load_from(path) {
+        Some(s) => s,
+        None => StoredServedWindow::initial(geometry.model_id.clone(), geometry.per_slot_window),
+    };
     let candidate = geometry;
     // Settlement repeats; a later tick cannot rewrite an owned generation's shape.
     if stored.candidate.as_ref().is_some_and(|old| old.generation == candidate.generation) {
@@ -155,16 +166,22 @@ fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
 /// service does not certify that this geometry satisfies future workloads.
 fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
     let Some(mut stored) = load_from(path) else { return };
-    let Some(_) = stored.candidate.as_ref().filter(|c| *c == geometry) else { return };
-    if tokens == 0 || tokens > geometry.per_slot_window || geometry.lanes == 0
+    // Only promote candidates that were recorded under the same generation lease.
+    if !stored.candidate.as_ref().is_some_and(|c| *c == *geometry) {
+        return;
+    }
+    if tokens == 0 || tokens > geometry.per_slot_window || geometry.lanes == 0 {
+        return;
+    }
+    // Idempotent: already recorded this exact observation.
+    if stored.model_id == geometry.model_id
+        && stored.per_slot_window == geometry.per_slot_window
+        && stored.lanes == geometry.lanes
+        && stored.observed_prompt_tokens == Some(tokens)
     {
         return;
     }
-    if stored.model_id == geometry.model_id && stored.per_slot_window == geometry.per_slot_window
-        && stored.lanes == geometry.lanes && stored.observed_prompt_tokens == Some(tokens)
-    {
-        return;
-    }
+    // Steady-state observed — promote immediately (no time gate).
     stored.model_id = geometry.model_id.clone();
     stored.per_slot_window = geometry.per_slot_window;
     stored.lanes = geometry.lanes;
@@ -288,5 +305,61 @@ mod tests {
         assert_eq!(legacy.cache_geometry(), Some((60000, 2)));
         std::fs::write(&path, "broken").unwrap();
         assert!(load_from(&path).is_none());
+    }
+
+    /// A transient one-lane launch (settled_now=false) stores no candidate,
+    /// so observe_to is a no-op.  A steady two-lane settlement
+    /// (settled_now=true) records the candidate; observing it with real tokens
+    /// promotes through observe_to's generation-identity gate, yielding lanes=2.
+    #[test]
+    fn steady_settlement_overrides_transient_observation() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("window.json");
+        let model_id = "llama-3b".to_string();
+
+        // --- transient one-lane launch (not steady) → no candidate stored ---
+        let gen_a = ServedGeometry {
+            model_id: model_id.clone(),
+            generation: uuid::Uuid::new_v4(),
+            per_slot_window: 8_000,
+            lanes: 1,
+        };
+        record_reconciled_to(&path, gen_a.clone(), false, None);
+
+        // observe with tokens on the transient launch does nothing
+        // (no candidate exists for observe_to to match against)
+        let tokens = 5_000u32;
+        observe_to(&path, &gen_a, tokens);
+
+        // Transient reconciliation writes nothing — file must not exist.
+        assert!(
+            load_from(&path).is_none(),
+            "transient (settled_now=false) must not write any record"
+        );
+
+        // --- steady two-lane launch → candidate stored ---
+        let gen_b = ServedGeometry {
+            model_id: model_id.clone(),
+            generation: uuid::Uuid::new_v4(),
+            per_slot_window: 8_000,
+            lanes: 2,
+        };
+        record_reconciled_to(&path, gen_b.clone(), true, None);
+
+        // observe with real tokens on the steady generation promotes via observe_to
+        let steady_tokens = 6_000u32;
+        observe_to(&path, &gen_b, steady_tokens);
+
+        let after_steady = load_from(&path).unwrap();
+        assert_eq!(after_steady.lanes, 2, "steady settlement + usage must promote lanes to 2");
+        assert_eq!(
+            after_steady.cache_geometry(),
+            Some((8_000, 2)),
+            "cache geometry must reflect the steady two-lane layout"
+        );
+
+        // --- restart survives: cache remembers the steady geometry ---
+        let restarted = load_from(&path).unwrap();
+        assert_eq!(restarted.cache_geometry(), Some((8_000, 2)));
     }
 }
