@@ -11,6 +11,7 @@
 # Linux: downloads binary to ~/.continuum/bin/livekit-server
 
 set -e
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared/preflight.sh"
