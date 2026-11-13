@@ -153,6 +153,11 @@ async fn a_pass_sits_receipts_decides_and_retention_retires_a_lost_gene() {
     let lost = sitting((a(1, 6), a(1, 6)), (a(6, 6), a(6, 6)), unmeasured());
     let next = Examiner::new(GeneTrials::at(&path), receipts.clone(), Arc::new(FixedHost(lost)), Uuid::from_u128(2));
     let second = next.pass().await.expect("test: pass");
+    assert_eq!(second.unexaminable, vec![reused.id], "a restart replaces the prior refusal receipt");
+    assert!(second.not_now.is_empty(), "a prior receipt must not cause a duplicate-key refusal: {second:?}");
+    assert_eq!(next.pass().await.expect("test: repeated pass"), Default::default(), "the new boot is durably receipted");
+    let refusal = receipts.find_by_id(receipt_id(reused.id)).await.expect("test: read refusal").expect("test: refusal exists");
+    assert_eq!(refusal.examined_boot, Uuid::from_u128(2));
     assert_eq!(second.decided, vec![(trained.id, TrialState::Retired)], "{second:?} {:?}", store.load());
     let rows = store.load().expect("test: load");
     assert_eq!(rows.iter().find(|t| t.id == trained.id).map(|t| t.state), Some(TrialState::Retired));

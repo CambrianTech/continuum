@@ -89,7 +89,7 @@ impl Examiner {
             let Some(t) = trials.iter().find(|t| t.id == trial) else { continue };
             let receipt = receipts.iter().find(|r| r.trial_id == trial);
             let outcome = match (kind, receipt) {
-                (ExamKind::Initial, _) => self.initial(t).await,
+                (ExamKind::Initial, previous) => self.initial(t, previous.is_some()).await,
                 (ExamKind::Retention, Some(r)) => self.retention(t, r.clone()).await,
                 (ExamKind::Settle, Some(r)) => self.settle(t, r).map(Some),
                 // `due` names Retention and Settle only for a trial with a receipt.
@@ -125,7 +125,7 @@ impl Examiner {
     }
 
     /// The first sitting. `Ok(None)`: receipted as unexaminable, the trial left open.
-    async fn initial(&self, t: &GeneTrial) -> Result<Option<TrialState>, ExamRefusal> {
+    async fn initial(&self, t: &GeneTrial, replaces_refusal: bool) -> Result<Option<TrialState>, ExamRefusal> {
         let now_ms = continuum_base::time::EpochMs::now().millis();
         let receipt = match self.host.sit(&Self::exam(t)).await {
             Ok(sitting) => {
@@ -134,7 +134,7 @@ impl Examiner {
             }
             Err(ExamRefusal::Unexaminable(why)) => {
                 let receipt = GeneExamReceipt::unexaminable(t, why.clone(), self.boot, now_ms);
-                self.create(&receipt).await?;
+                self.write_initial(&receipt, replaces_refusal).await?;
                 continuum_base::probe!(
                     class = "genome.examiner.verdict",
                     trial = %t.id,
@@ -150,7 +150,7 @@ impl Examiner {
         };
         // The receipt first: a stop before the trial file takes it leaves a Settle, never a
         // second sitting.
-        self.create(&receipt).await?;
+        self.write_initial(&receipt, replaces_refusal).await?;
         self.settle(t, &receipt).map(Some)
     }
 
@@ -215,10 +215,16 @@ impl Examiner {
         }
     }
 
-    async fn create(&self, receipt: &GeneExamReceipt) -> Result<(), ExamRefusal> {
-        self.receipts
-            .save(receipt_id(receipt.trial_id), receipt)
-            .await
-            .map_err(|e| ExamRefusal::NotNow(format!("receipt {} did not write: {e}", receipt.trial_id)))
+    async fn write_initial(&self, receipt: &GeneExamReceipt, replaces_refusal: bool) -> Result<(), ExamRefusal> {
+        // `due` re-sits an unexaminable trial once per boot. Its stable trial ID
+        // already has a receipt: replace that refusal, never insert it twice.
+        // New trials still create strictly; a conflicting writer is not hidden.
+        let id = receipt_id(receipt.trial_id);
+        let written = if replaces_refusal {
+            self.receipts.update(id, receipt).await
+        } else {
+            self.receipts.save(id, receipt).await
+        };
+        written.map_err(|e| ExamRefusal::NotNow(format!("receipt {} did not write: {e}", receipt.trial_id)))
     }
 }
