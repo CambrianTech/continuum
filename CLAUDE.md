@@ -850,7 +850,7 @@ clone the repo gets a system that doesn't work. Anything a running core needs mu
 wired into the path `continuum start` / `continuum reboot` actually takes, so a fresh
 clone works with no manual steps (#291). For type-checking while you work,
 `cargo check -p continuum-core` is the right tool — always with a target dir set: in the main
-checkout `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"`, in a worktree its own
+checkout `export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.continuum/cache/cargo-target}"`, in a worktree its own
 clone of it (plan phase 2, "Each worktree builds into its own target dir").
 
 **`npm` is for building the web client, and only that.** If you are changing core
