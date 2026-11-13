@@ -149,6 +149,9 @@ impl DataState {
                     byte_order: if cfg!(target_endian = "little") { ByteOrder::Little } else { ByteOrder::Big },
                     shape: vec![u64::try_from(embedding.len()).map_err(|_| "embedding dimension exceeds u64")?],
                     producer: embedder.id().to_owned(),
+                    // The provider interface does not certify normalization.
+                    unit: false,
+                    scale: None,
                 }, bytemuck::cast_slice(&embedding).to_vec())?;
 
                 let update_result = adapter

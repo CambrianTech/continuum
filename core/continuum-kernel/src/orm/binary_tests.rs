@@ -21,33 +21,52 @@ struct RequiredNativeRow {
     label: String,
     #[entity(binary)]
     payload: Vec<u8>,
+    #[entity(binary)]
+    sketch: Vec<u8>,
 }
 
 #[tokio::test]
 async fn required_native_fields_create_atomically_without_body_readback() -> Result<(), Box<dyn std::error::Error>> {
-    let store = open(":memory:").await?;
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("native-pair.sqlite");
+    let path = path.to_str().ok_or("test path is not UTF-8")?;
+    let store = open(path).await?;
     store.ensure(RequiredNativeRow::collection_schema()).await?;
     let record = || DataRecord {
         id: "native".into(), collection: RequiredNativeRow::COLLECTION.into(),
         data: json!({"label":"typed scalar"}), metadata: RecordMetadata::default(),
     };
     let payloads = || -> Result<_, String> { Ok(std::collections::BTreeMap::from([
-        ("payload".into(), BinaryValue::new(descriptor(ElementType::I8, vec![2]), vec![0xff, 0x80])?),
+        ("payload".into(), BinaryValue::new(BinaryDescriptor {
+            unit: true, scale: Some(0.125), ..descriptor(ElementType::I8, vec![2])
+        }, vec![0, 8])?),
+        ("sketch".into(), BinaryValue::new(descriptor(ElementType::Bit, vec![2]), vec![0])?),
     ])) };
     assert!(store.create(record()).await.is_err());
+    let mut incomplete = payloads()?;
+    incomplete.remove("sketch");
+    assert!(store.create_binary(record(), incomplete).await.is_err());
+    assert_eq!(store.count(QueryBuilder::new(RequiredNativeRow::COLLECTION).build()).await?, 0);
     assert_eq!(store.create_binary(record(), payloads()?).await?, "native");
     assert!(store.create_binary(record(), payloads()?).await.is_err());
     let page = store.binary_page(RequiredNativeRow::COLLECTION, "payload", None, 1).await?;
-    assert_eq!(page[0].value.as_ref().ok_or("missing required payload")?.bytes(), &[0xff, 0x80]);
+    assert_eq!(page[0].value.as_ref().ok_or("missing required payload")?.bytes(), &[0, 8]);
     let query = QueryBuilder::new(RequiredNativeRow::COLLECTION).select(vec!["label".into()]).limit(1).build();
     let rows = store.query(query).await?;
     assert_eq!(rows[0].data["label"], "typed scalar");
     assert!(rows[0].data.get("payload").is_none());
+    drop(store);
+    let store = open(path).await?;
+    store.ensure(RequiredNativeRow::collection_schema()).await?;
+    for (field, expected) in payloads()? {
+        let page = store.binary_page(RequiredNativeRow::COLLECTION, &field, None, 1).await?;
+        assert_eq!(page[0].value.as_ref(), Some(&expected));
+    }
     Ok(())
 }
 
 fn descriptor(element_type: ElementType, shape: Vec<u64>) -> BinaryDescriptor {
-    BinaryDescriptor { element_type, byte_order: ByteOrder::Little, shape, producer: "fixture/native-v1".into() }
+    BinaryDescriptor { element_type, byte_order: ByteOrder::Little, shape, producer: "fixture/native-v1".into(), unit: false, scale: None }
 }
 
 #[tokio::test]
@@ -71,7 +90,10 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation() -> R
                 caller.create_binary(DataRecord {
                     id: "cancelled".into(), collection: RequiredNativeRow::COLLECTION.into(),
                     data: json!({"label":"native cancellation"}), metadata: RecordMetadata::default(),
-                }, std::collections::BTreeMap::from([("payload".into(), payload)])).await.into_result().map(|_| ())
+                }, std::collections::BTreeMap::from([
+                    ("payload".into(), payload),
+                    ("sketch".into(), BinaryValue::new(descriptor(ElementType::Bit, vec![2]), vec![0])?),
+                ])).await.into_result().map(|_| ())
             } else {
                 caller.update_binary(RequiredNativeRow::COLLECTION, "cancelled", "payload", payload, BinaryWriteCondition::Replace)
                     .await.into_result().map(|_| ())
@@ -113,6 +135,36 @@ fn native_payload_moves_allocation_and_checks_only_descriptor() -> Result<(), St
     let header = value.descriptor().encode()?;
     assert_eq!(BinaryDescriptor::decode(&header)?, *value.descriptor());
     assert!(BinaryDescriptor::decode(&header[..header.len() - 1]).is_err());
+    Ok(())
+}
+
+#[test]
+fn packed_bits_and_quantization_headers_are_exact_and_fail_closed() -> Result<(), String> {
+    for (bits, bytes) in [(0, 0), (1, 1), (8, 1), (9, 2), (768, 96)] {
+        assert_eq!(descriptor(ElementType::Bit, vec![bits]).byte_len()?, bytes);
+    }
+    let scaled = BinaryDescriptor { unit: true, scale: Some(0.125),
+        ..descriptor(ElementType::I8, vec![2]) };
+    let bytes = vec![0, 8];
+    let pointer = bytes.as_ptr();
+    let value = BinaryValue::new(scaled.clone(), bytes)?;
+    assert_eq!(value.bytes().as_ptr(), pointer);
+    let header = scaled.encode()?;
+    assert_eq!(BinaryDescriptor::decode(&header)?, scaled);
+    for length in 0..header.len() {
+        assert!(BinaryDescriptor::decode(&header[..length]).is_err());
+    }
+    let mut bad = header.clone();
+    bad[8] |= 4;
+    assert!(BinaryDescriptor::decode(&bad).is_err());
+    bad = header;
+    bad[0] = 1;
+    assert!(BinaryDescriptor::decode(&bad).is_err());
+    for scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        assert!(BinaryDescriptor { scale: Some(scale), ..scaled.clone() }.encode().is_err());
+    }
+    assert!(BinaryDescriptor { element_type: ElementType::F32, ..scaled }.encode().is_err());
+    assert!(BinaryDescriptor { unit: true, ..descriptor(ElementType::Bit, vec![8]) }.encode().is_err());
     Ok(())
 }
 

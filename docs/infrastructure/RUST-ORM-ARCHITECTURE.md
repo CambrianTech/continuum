@@ -63,6 +63,24 @@ Normalization, quantization parameters and precision/error guarantees must be ex
 when the consumer depends on them. Opaque nonnumeric payloads identify their format;
 the storage contract is not an f32/f64-vector special case.
 
+The GPU consumer contract (Fable, 2026-11-13, PR #5954 comment 6866576813) adds
+`unit: bool` as the producer's assertion of L2 normalization and `scale: Option<f32>`
+for symmetric I8 quantization. Absence of scale does not imply a scale of one;
+consumers must reject representations they cannot compute on. A supplied scale is
+finite and positive and applies only to I8. Storage preserves the assertion and
+scale; it does not establish normalization by scanning the bytes. The current
+embedding provider interface does not certify normalization, so backfill records
+`unit=false` until its producer provides that guarantee.
+
+`ElementType::Bit` describes packed sign sketches: low bit first within each byte,
+with shape measured in bits and trailing bits beyond the shape ignored by consumers.
+The vector and its sketch are separate declared binary fields committed by the same
+existing transaction. Descriptor format 2 carries these facts; format 1 is refused,
+not decoded through a compatibility path. Existing persisted format-1 data requires
+the explicit offline migration before adoption. Bulk reads, revision-watermarked
+delta replay and the GPU consumer remain separate implementation obligations; these
+descriptor fields alone do not establish GPU search or its quality.
+
 The producer chooses its representation and performs normalization or precision
 selection once in its compute path. Storage binds and returns those native bytes.
 It does not iterate through elements to encode, decode, normalize, check finiteness,

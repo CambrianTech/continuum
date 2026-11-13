@@ -93,7 +93,7 @@ async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error
     let bytes: Vec<u8> = expected.iter().flat_map(|value| value.to_ne_bytes()).collect();
     let descriptor = BinaryDescriptor { element_type: ElementType::F32,
         byte_order: if cfg!(target_endian = "little") { ByteOrder::Little } else { ByteOrder::Big },
-        shape: vec![768], producer: "isolated-replay/seed17-mod251".into() };
+        shape: vec![768], producer: "isolated-replay/seed17-mod251".into(), unit: false, scale: None };
     let json_payload = serde_json::json!({"payload": expected});
     for first in (0..10003).step_by(100) {
         let mut native_statements = Vec::new();
