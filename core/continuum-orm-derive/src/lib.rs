@@ -597,6 +597,10 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
 
     // Infer FieldType from the (unwrapped) Rust type, unless overridden.
     if force_json && binary { return Err(syn::Error::new_spanned(field, "json and binary are mutually exclusive codecs")); }
+    if binary && !is_byte_buffer(inner_ty) {
+        return Err(syn::Error::new_spanned(&field.ty,
+            "entity(binary) requires Vec<u8> or Option<Vec<u8>>; supply native producer bytes through the binary storage interface"));
+    }
     let field_type = if binary {
         InferredFieldType::Binary
     } else if force_json {
@@ -738,6 +742,16 @@ fn parse_foreign_key(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Forei
 /// Tuple types, fixed-size arrays, `Result<T, E>`, and other non-
 /// path types fall through to `Json` (not silently — the doctrine
 /// is "schema = struct"; if you persist a tuple it becomes JSON).
+fn is_byte_buffer(ty: &Type) -> bool {
+    let Type::Path(path) = ty else { return false };
+    let Some(segment) = path.path.segments.last() else { return false };
+    if segment.ident != "Vec" { return false; }
+    let PathArguments::AngleBracketed(arguments) = &segment.arguments else { return false };
+    if arguments.args.len() != 1 { return false; }
+    matches!(arguments.args.first(), Some(GenericArgument::Type(Type::Path(element)))
+        if element.qself.is_none() && element.path.is_ident("u8"))
+}
+
 fn infer_field_type(ty: &Type) -> InferredFieldType {
     // First strip transparent wrappers (Box, Arc, Rc, Cow) so the
     // wrapper-name doesn't drive inference. The reviewer's example:
@@ -893,6 +907,28 @@ fn to_camel_case(snake: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_declarations_refuse_numeric_arrays_and_text_at_schema_boundary() -> syn::Result<()> {
+        for declaration in [
+            "struct Row { #[entity(binary)] payload: Vec<u8> }",
+            "struct Row { #[entity(binary)] payload: Option<std::vec::Vec<u8>> }",
+        ] {
+            let row: syn::ItemStruct = syn::parse_str(declaration)?;
+            for field in &row.fields { parse_field(field)?; }
+        }
+        for declaration in [
+            "struct Row { #[entity(binary)] payload: Vec<f32> }",
+            "struct Row { #[entity(binary)] payload: Option<Vec<f64>> }",
+            "struct Row { #[entity(binary)] payload: String }",
+            "struct Row { #[entity(binary)] payload: serde_json::Value }",
+            "struct Row { #[entity(binary, json)] payload: Vec<u8> }",
+        ] {
+            let row: syn::ItemStruct = syn::parse_str(declaration)?;
+            for field in &row.fields { assert!(parse_field(field).is_err(), "accepted {declaration}"); }
+        }
+        Ok(())
+    }
 
     /// What this catches: the `to_camel_case` edge cases Reviewer 1
     /// flagged in #9. These don't appear in production entity field
