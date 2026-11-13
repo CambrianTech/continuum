@@ -376,6 +376,11 @@ pub async fn apply_act(
             .iter()
             .find(|v| v.tool_use_id == call.id);
         let verdict = projected.map(|v| v.verdict).unwrap_or_default(); // JUSTIFIED: no record for this call means the command never opted in (or a test double built the batch) — `Unprojected` IS the right answer there, never a failure
+        // A refusal's next moves are callable on her next act: the commands it names load into
+        // her tool head's tail, as a verb `commands/help` found does, whatever her surface holds.
+        if let Some(next) = projected.map(|v| v.next_commands.as_slice()).filter(|next| !next.is_empty()) {
+            body.working_memory.tool_head().load(next);
+        }
 
         // PUSHED SHELL COMPLETION, receive side (2026-08-24): a `code/shell` whose
         // inline window elapsed hands back a RUNNING handle. Register that handle as a

@@ -27,6 +27,7 @@
 pub mod boundary_serialization;
 pub mod budget_discipline;
 pub mod cognition_names_persona;
+pub mod commands_in_refusal_text;
 pub mod context_codec;
 pub mod continuum_home;
 pub mod crate_policy;

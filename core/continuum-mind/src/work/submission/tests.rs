@@ -790,9 +790,9 @@
         assert!(add.status.success());
         let card = uuid::Uuid::new_v4();
         // A submission is a commit (card c3504a71: the merge gate needs its head): an uncommitted
-        // change is refused by name, naming the commit verb.
+        // change is refused with staging it and committing it as her next moves, typed.
         let uncommitted = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.err().expect("an uncommitted change is refused");
-        assert!(uncommitted.to_string().contains("code/git/commit"), "{uncommitted}");
+        assert_eq!(next_commands(&uncommitted), ["code/git/add", "code/git/commit"], "{uncommitted}");
         assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "solution"]).status.success());
         let clean_base = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string();
         let derived = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.expect("derive without ambient hands");
@@ -822,9 +822,17 @@
         let empty = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(clean_base), None, &[]).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
         // Regression for Aris's loop (2026-10-31, investigation card 3a8a243a): a "no patch"
-        // refusal names the open way forward, so it never sends her back to work/submission.
+        // refusal names the open way forward, so it never sends her back to work/submission. And
+        // for Aiko's (the M5, 2026-11-13, review card 149f1391: 8 refused submits while the sentence
+        // named `work/note` and `work/state`, offered on her list as `ledger` and `update_task`): the
+        // moves are typed references to the commands, rendered under the names her list offers.
+        assert_eq!(next_commands(&empty), ["work/note", "work/state"], "{empty}");
         let said = empty.to_string();
-        assert!(said.contains("work/note") && said.contains("work/state closed"), "{said}");
+        let crate::sdk_codegen::CommandError::Refused(refused) = &empty else { panic!("a typed refusal: {empty}") };
+        for call in refused.next().calls() {
+            assert!(said.contains(&call.call()), "the call renders as offered: {said}");
+            assert!(!said.contains(call.verb().canonical()), "never by its canonical name in prose: {said}");
+        }
         // Regression for 6dd8befa: a valid empty submission is not malformed
         // arguments. The real refusal reaches her without advice to retry its schema.
         let refusal = format!("work/submit: {empty}");
@@ -891,3 +899,11 @@
         assert_eq!((answer.outcome, answer.submission_id), (super::SubmitOutcome::AlreadySubmitted, uuid::Uuid::from_u128(1)));
         assert!(answer.next.contains("already your submission"), "{}", answer.next);
     }
+
+/// The commands a refusal's next moves name, by canonical name, first first.
+fn next_commands(error: &crate::sdk_codegen::CommandError) -> Vec<&'static str> {
+    match error {
+        crate::sdk_codegen::CommandError::Refused(refused) => refused.next().calls().map(|call| call.verb().canonical()).collect(),
+        other => panic!("a typed refusal with its next moves, not {other}"),
+    }
+}

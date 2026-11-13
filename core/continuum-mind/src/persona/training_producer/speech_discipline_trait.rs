@@ -503,6 +503,7 @@ pub fn storage_ok(
     Err(ClientError::Refused {
         command: command.to_string(),
         outcome: None,
+        refusal: None,
         reason: format!(
             "`{collection}`: {}",
             decoded

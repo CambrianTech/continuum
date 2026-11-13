@@ -564,6 +564,32 @@ mod tests {
         assert_eq!(surface.vocabulary().expect("vocabulary").len(), authorized.len());
     }
 
+    // what this catches: a refusal telling her to make a call her surface does not offer, so she
+    // repeats the refused one (Aiko on the M5, 2026-11-13 22:40-23:26Z: 8 `work/submit` calls refused
+    // with a sentence naming `work/note` and `work/state`). The commands a refusal's typed next moves
+    // name load into her tool head and ride her next act's tail, whatever the room's recipe declares;
+    // a refusal with no next move loads nothing.
+    #[test]
+    fn a_refusals_next_moves_are_on_her_next_acts_surface() {
+        use continuum_airc_protocol::refusal::{Category, NextMoves, NoMove, SuggestedCall};
+        let registry = [("code/read", Disclosure::Core), ("commands/help", Disclosure::Always), ("work/note", Disclosure::Core), ("work/submit", Disclosure::Core)];
+        let surface = built(registry.iter());
+        let room = surface.select(&["code/**".to_string()], &[]);
+        let floor = room.specs.as_deref().unwrap_or(&[]).to_vec(); // JUSTIFIED: test fixture
+        assert!(!floor.iter().any(|s| s.name == "work/note"), "precondition: the room's recipe leaves it out");
+        let call = |command: &str| SuggestedCall { command: command.to_owned(), args: serde_json::Map::new(), why: "moves her on".to_owned() };
+        let refused = continuum_airc_protocol::CommandRefusal {
+            category: Category::Invalid,
+            cause: vec!["nothing to submit".to_owned()],
+            next: NextMoves::calls(call("work/note"), Vec::new()),
+        };
+        let head = crate::cognition::tool_head::ToolHead::default();
+        head.load(&refused.next.commands().map(str::to_owned).collect::<Vec<_>>());
+        let next = surface.learned(&floor, &[], &head.loaded());
+        assert_eq!(next.tail.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["work/note"], "the move it names is callable");
+        assert_eq!(NextMoves::None(NoMove::NothingMoreExists).commands().count(), 0, "a refusal with no move names none");
+    }
+
     fn spec(name: &str) -> NativeToolSpec {
         NativeToolSpec {
             name: name.to_string(),
