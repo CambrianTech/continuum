@@ -113,11 +113,7 @@ fn byte_of(text: &str, line: usize) -> Option<usize> {
     None
 }
 
-impl<'a> Saved<'a> {
-    /// A first page of `handle`: from line 1.
-    fn new(label: &'a str, handle: &'a str) -> Self {
-        Self { label, handle, first_line: 1, first_byte: 0 }
-    }
+impl Saved<'_> {
 
     /// What she reads before the page: how much there is, what the page is, and the call that
     /// reads on, written as she makes it.
@@ -333,7 +329,7 @@ mod tests {
     fn multiline_page_cut_inside_replacement_character_preserves_first_line() {
         let text = format!("ok tool/output(outputId=f68053e3b2bad9c9)\n{}\u{fffd}tail", "x".repeat(1456));
         let Some(at) = text.find('\u{fffd}') else { panic!("fixture must contain the replacement character") };
-        let saved = Saved::new("result", "f68053e3b2bad9c9");
+        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9", first_line: 1, first_byte: 0 };
         for split in [at + 1, at + 2] {
             let page = saved.page_at(&text, split, text.chars().count(), estimate_guard_tokens(&text));
             assert!(page.ends_with("ok tool/output(outputId=f68053e3b2bad9c9)\n"));
@@ -343,7 +339,7 @@ mod tests {
     // what this catches: the same Sahar abort across every UTF-8 byte split and page-search budget.
     #[test]
     fn every_byte_cut_keeps_a_prefix_and_exact_continuation() {
-        let saved = Saved::new("result", "f68053e3b2bad9c9");
+        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9", first_line: 1, first_byte: 0 };
         for text in ["", "ASCII", "é中😀tail", "header\né中😀tail", "é\n中\n😀tail"] {
             for upto in 0..=text.len() + 2 {
                 let page = saved.page_at(text, upto, text.chars().count(), estimate_guard_tokens(text));
