@@ -38,14 +38,10 @@ mod relational_batch;
 mod relational_transaction;
 mod relational_adapter;
 mod relational_maintenance;
-#[cfg(test)]
-mod relational_tests;
 pub mod store;
 pub mod types;
 pub mod vector;
 
-#[cfg(test)]
-mod derive_test;
 pub(crate) mod gated_adapter; // test-only: the file is `#![cfg(test)]`
 
 pub use adapter::StorageAdapter;
@@ -82,7 +78,4 @@ pub mod binary;
 mod relational_binary;
 
 #[cfg(test)]
-mod binary_tests;
-
-#[cfg(test)]
-mod binary_load_tests;
+mod tests;
