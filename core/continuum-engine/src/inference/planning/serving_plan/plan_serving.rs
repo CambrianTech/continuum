@@ -260,16 +260,23 @@ fn plan_serving_into(
                     .unwrap_or(model); // JUSTIFIED unwrap_or: the allocator returns one of `candidates` by construction; `model` only if that invariant ever broke
                 (chosen, Some(a))
             }
-            Err(_why) => {
-                // Allocation failed — don't trap with lanes=0 (card 53a8d49b). Fall through
-                // to compute whatever fits against the budget. Use the smallest candidate
-                // as a fallback base.
-                let best = candidates.iter().min_by(|a, b| {
-                    a.weights_bytes
-                        .cmp(&b.weights_bytes)
-                        .then(a.model_id.cmp(&b.model_id))
-                }).expect("candidates non-empty checked above");
-                (best, None)
+            Err(why) => {
+                // The allocator said this model cannot hold ONE lane at its requirement:
+                // it is not a serving option here — the same honest degrade as "does
+                // not fit", never a starved lane. The rationale carries the numbers.
+                return Some(ServingPlan {
+                    base_model: model.clone(),
+                    served_context_window: 0,
+                    lanes: 0,
+                    grid_overflow_lanes: demand.lanes,
+                    resident_models: 1,
+                    fits_on_gpu: false,
+                    window_target: demand.window_target(),
+                    lanes_bound: LanesBound::NoFit,
+                    rationale: format!(
+                        "no candidate holds one lane at the roster's smallest requirement within the budget: {why:?} — shed the model, never the window"
+                    ),
+                });
             }
         }
     };
