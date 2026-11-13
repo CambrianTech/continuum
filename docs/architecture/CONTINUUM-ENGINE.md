@@ -2037,6 +2037,20 @@ iterated on the simulator until its numbers move, then confirmed live, and what 
 goes back into the simulator as a new scenario. No section of this design is complete without the
 simulator that exercises it.
 
+**The loop** (Joel, 2026-11-13: "iteration with prod and replicating that in simulation, fixing code to
+maximize speed and limit resources, trying and measuring prod again, replicating in simulation"):
+1. Measure production: act time, stage times, memory, quality, every mind's progress.
+2. Replicate it in simulation: the recorded load and the fault reproduce there, with the same numbers.
+3. Fix the code to maximize speed and limit resources, iterating on the simulator until the numbers move.
+4. Try it in production and measure again with the same instruments.
+5. Replicate what production showed back in simulation, including anything it missed, and repeat.
+
+**The simulator carries every level of production's monitoring.** The same probe classes, the same
+health line, the same prompt captures and the same per-stage timings run in simulation as in
+production, so a simulated number and a live number are read by one instrument and compared
+directly. A metric that exists only in production cannot be tuned; a metric that exists only in
+simulation cannot be confirmed.
+
 **The simulators (one per layer; real policy code, recorded inputs, seconds, any machine, no residents):**
 - **Admission and capacity: the dyno** (`core/continuum-engine/src/capacity/dyno`). The real
   allocator, grants and conservation (weights + resident KV + staging <= device) driven by a recorded
