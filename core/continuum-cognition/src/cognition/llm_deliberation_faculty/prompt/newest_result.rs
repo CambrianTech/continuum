@@ -130,6 +130,10 @@ impl<'a> Saved<'a> {
                 // To the output's own end: a range with no end reads through its last line.
                 Reopen::Lines { output: self.handle, range: crate::cognition::tool_executor::spill::LineRange { start: first + shown, end: None } }.to_string(),
             ),
+            Cut::Bytes { bytes } if first == 1 => (
+                format!("its first {bytes} bytes (its first line alone is longer than the room)"),
+                Reopen::Bytes { output: self.handle, offset: bytes as u64 }.to_string(),
+            ),
             Cut::Bytes { bytes } => (
                 format!("the first {bytes} bytes of line {first} (that line alone is longer than the room)"),
                 Reopen::Bytes { output: self.handle, offset: (self.first_byte + bytes) as u64 }.to_string(),
@@ -349,7 +353,7 @@ mod tests {
                 let first_line = text.find('\n').map_or(text.len(), |at| at + 1);
                 if boundary < first_line {
                     assert_eq!(content, &text[..boundary]);
-                    assert!(page.contains(&format!("the first {boundary} bytes of line 1")));
+                    assert!(page.contains(&format!("its first {boundary} bytes")));
                 } else if !text.is_empty() {
                     let end = text[..boundary].rfind('\n').map_or(first_line, |at| at + 1);
                     assert_eq!(content, &text[..end]);
