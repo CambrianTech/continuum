@@ -240,20 +240,19 @@ impl PressureLevel {
         }
     }
 
-    /// The swap axis from what the node is DOING with swap (card f26d6568). A file nine
-    /// tenths full is Critical whatever the rate (nowhere left to page). Below that the
-    /// smoothed swap-in + swap-out rate decides, so inert pages a build left behind an
-    /// hour ago read Normal while real paging reads High. With no rate (no counters on
-    /// this platform, or the first poll) occupancy decides, as [`Self::from_swap`].
-    pub fn from_swap_activity(swap_pct: f64, bytes_per_sec: Option<f64>) -> Self {
+    /// The swap axis from what the node is DOING with swap (card f26d6568). Paging that
+    /// would fill the free swap within one half-life is Critical (nowhere left to page).
+    /// Otherwise the smoothed swap-in + swap-out rate decides, so inert pages a build left
+    /// behind an hour ago read Normal while real paging reads High. With no rate (no
+    /// counters on this platform, or the first poll) occupancy decides, as [`Self::from_swap`].
+    pub fn from_swap_activity(swap_used: u64, swap_total: u64, bytes_per_sec: Option<f64>) -> Self {
         use crate::system_resources::swap_activity::{
-            SWAP_FULL_FRACTION, SWAP_HIGH_BYTES_PER_SEC, SWAP_WARNING_BYTES_PER_SEC,
+            fills_within_half_life, SWAP_HIGH_BYTES_PER_SEC, SWAP_WARNING_BYTES_PER_SEC,
         };
-        if swap_pct >= SWAP_FULL_FRACTION {
-            return Self::Critical;
-        }
         match bytes_per_sec {
-            None => Self::from_swap(swap_pct),
+            None if swap_total == 0 => Self::Normal,
+            None => Self::from_swap(swap_used as f64 / swap_total as f64),
+            Some(rate) if fills_within_half_life(swap_used, swap_total, rate) => Self::Critical,
             Some(rate) if rate >= SWAP_HIGH_BYTES_PER_SEC => Self::High,
             Some(rate) if rate >= SWAP_WARNING_BYTES_PER_SEC => Self::Warning,
             Some(_) => Self::Normal,
@@ -500,6 +499,15 @@ pub struct PressureSnapshot {
     pub timestamp_ms: u64,
     /// Consecutive polls at this level (for hysteresis — don't react to single spikes)
     pub consecutive_at_level: u32,
+    /// Physical memory the OS compressor occupies, from the host reading; null when the host
+    /// gave no reading this poll.
+    #[ts(type = "number | null")]
+    pub compressed_bytes: Option<u64>,
+    /// Bytes the host needs given back to come out of memory pressure (`host_deficit`): what the
+    /// OS has compressed and swapped since it was last clean, plus what it lacks of its own free
+    /// target. Zero on a clean box, or with no host reading.
+    #[ts(type = "number")]
+    pub deficit_bytes: u64,
 }
 
 impl Default for PressureSnapshot {
@@ -516,6 +524,8 @@ impl Default for PressureSnapshot {
             held_by_priority: Vec::new(),
             timestamp_ms: 0,
             consecutive_at_level: 0,
+            compressed_bytes: None,
+            deficit_bytes: 0,
         }
     }
 }
@@ -629,6 +639,8 @@ pub(super) struct MemoryTickState {
     pub(super) started: std::time::Instant,
     /// The smoothed swap traffic the swap axis reads (card f26d6568).
     pub(super) swap_activity: crate::system_resources::swap_activity::SwapActivity,
+    /// The host's memory deficit across polls: what the OS held displaced when last clean.
+    pub(super) host_deficit: super::host_deficit::HostDeficit,
 }
 
 /// Independent memory pressure monitoring system.
