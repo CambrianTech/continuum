@@ -91,6 +91,8 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
                 settled: true,
                 // the shared pool: one sequence may hold all of it
                 ceiling: scenario.pool_tokens,
+                // her target is her need: no growth is measured in a replayed scenario
+                growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
             },
         );
         let current: Vec<Demand> = demands.values().copied().collect();

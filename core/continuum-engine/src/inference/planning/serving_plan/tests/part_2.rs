@@ -1,8 +1,7 @@
 #![cfg(test)]
 use super::*;
 
-    // what this catches: lanes DEGRADE on a tight host — MAX_LANES is a sanity backstop,
-    // the fit math is the real cap. A 4-persona demand on a budget that can't feed 4 warm
+    // what this catches: lanes DEGRADE on a tight host — the fit math is the real cap. A 4-persona demand on a budget that can't feed 4 warm
     // slots must serve FEWER (well-fed) lanes, never 4 starving ones that OOM. The window
     // still fits every lane it does serve. Guards the 2→4 raise from re-introducing the
     // OOM on a small box.
@@ -50,7 +49,7 @@ use super::*;
             usable_bytes: 5 * GB + 500 * 1_000_000,
             perf_cores: 4,
         };
-        let plan = plan_serving(&host, &candidates(), &ServingDemand::new(MAX_LANES, None)).unwrap();
+        let plan = plan_serving(&host, &candidates(), &ServingDemand::new(ROSTER, None)).unwrap();
         assert!(
             plan.fits_on_gpu,
             "must fit a real model on GPU: {}",
@@ -81,13 +80,13 @@ use super::*;
         let greedy = plan_serving(
             &host,
             &candidates(),
-            &ServingDemand::new(MAX_LANES, Some(u32::MAX)))
+            &ServingDemand::new(ROSTER, Some(u32::MAX)))
         .unwrap();
         let demand2 =
             plan_serving(&host, &candidates(), &ServingDemand::new(2, Some(u32::MAX))).unwrap();
         assert_eq!(
             demand2.lanes, 2,
-            "2 minds → 2 lanes, never the MAX_LANES ceiling"
+            "2 minds → 2 lanes, never the roster's count"
         );
         if greedy.lanes > 2 {
             assert!(
@@ -99,9 +98,9 @@ use super::*;
                 demand2.served_context_window,
             );
         }
-        // Demand can never exceed the physical caps (kv/perf/MAX_LANES)…
+        // Demand can never exceed the physical caps (fit, perf cores)…
         let demand99 = plan_serving(&host, &candidates(), &ServingDemand::new(99, None)).unwrap();
-        assert!(demand99.lanes <= MAX_LANES);
+        assert!(demand99.lanes <= host.perf_cores);
         // …and a zero demand is defensively floored at one lane.
         assert_eq!(
             plan_serving(&host, &candidates(), &ServingDemand::new(0, None))
@@ -180,7 +179,7 @@ use super::*;
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
-        let plan = plan_serving(&host, &candidates(), &ServingDemand::new(MAX_LANES, None)).unwrap();
+        let plan = plan_serving(&host, &candidates(), &ServingDemand::new(ROSTER, None)).unwrap();
         assert_eq!(
             plan.base_model.model_id, "coder-sentinel-14b",
             "most capable, fits easily"
@@ -206,16 +205,20 @@ use super::*;
         );
     }
 
-    // what this catches: the MAX_LANES ceiling holds even with absurd budget —
-    // a single node doesn't run unbounded lanes (grid shares load past that).
+    // what this catches: a guessed ceiling on the lane count. With an absurd budget the lanes are
+    // what the minds demand, bounded by the host's measured cores, never a fixed eight (the
+    // `MAX_LANES` backstop this replaced served 8 of 12 demanded lanes on a 64-core host).
     #[test]
-    pub(super) fn lanes_capped_at_max() {
-        let host = HostBudget {
+    pub(super) fn lanes_follow_demand_and_cores_never_a_fixed_ceiling() {
+        let roomy = HostBudget {
             usable_bytes: 500 * GB,
             perf_cores: 64,
         };
-        let plan = plan_serving(&host, &candidates(), &ServingDemand::new(MAX_LANES, None)).unwrap();
-        assert_eq!(plan.lanes, MAX_LANES);
+        let plan = plan_serving(&roomy, &candidates(), &ServingDemand::new(12, None)).unwrap();
+        assert_eq!((plan.lanes, plan.lanes_bound), (12, LanesBound::Demand), "{}", plan.rationale);
+        let six_cores = HostBudget { perf_cores: 6, ..roomy };
+        let plan = plan_serving(&six_cores, &candidates(), &ServingDemand::new(12, None)).unwrap();
+        assert_eq!((plan.lanes, plan.lanes_bound), (6, LanesBound::Cores), "{}", plan.rationale);
     }
 
     // what this catches: footprint-awareness — a model with a fatter per-token
@@ -223,7 +226,7 @@ use super::*;
     // sized at the MIN window; a fatter floor lane fits fewer times).
     #[test]
     pub(super) fn fatter_kv_means_fewer_lanes() {
-        // Budget chosen so KV (not the MAX_LANES backstop or perf cores) is the binding
+        // Budget chosen so KV (not demand or perf cores) is the binding
         // constraint: each warm slot must clear the full-turn window floor (16384, #266), so a
         // fatter per-token KV rate makes fewer slots clear it. 16GB total, 2GB weights → ~11.6GB
         // (after co-consumer headroom) for (KV + compute buffer) across lanes at a full-turn
@@ -236,12 +239,12 @@ use super::*;
         let lean = plan_serving(
             &host,
             &[fp("lean", 2, 150_000, 32_768, 5)],
-            &ServingDemand::new(MAX_LANES, None))
+            &ServingDemand::new(ROSTER, None))
         .unwrap();
         let fat = plan_serving(
             &host,
             &[fp("fat", 2, 450_000, 32_768, 5)],
-            &ServingDemand::new(MAX_LANES, None))
+            &ServingDemand::new(ROSTER, None))
         .unwrap();
         assert!(
             lean.lanes > fat.lanes,
@@ -252,7 +255,7 @@ use super::*;
     }
 
     // what this catches: the plan CAPS lane count at the binding constraint — the full-turn
-    // window floor (#266), not the raised MAX_LANES backstop — AND reserves the concurrent
+    // window floor (#266) — AND reserves the concurrent
     // compute buffers, so resident KV + those buffers fit the budget (no OOM by construction).
     // The transient prefill compute buffer scales with n_ctx, not weights, so a
     // window-independent reserve under-provisions and 4 concurrent large-window prefills
@@ -269,13 +272,13 @@ use super::*;
         };
 
         // 4 personas demand 4 lanes, but only 2 slots clear the full-turn window floor on this
-        // budget — the window floor (below MAX_LANES=8) is the binding cap. The other 2 minds
+        // budget — the window floor is the binding cap. The other 2 minds
         // surface as grid_overflow rather than thrashing 4 minds across 2 clobbering slots.
         let plan =
             plan_serving(&host, std::slice::from_ref(&m), &ServingDemand::new(4, None)).unwrap();
         assert_eq!(
             plan.lanes, 2,
-            "the full-turn window floor (not the MAX_LANES backstop) caps warm slots here: {}",
+            "the full-turn window floor caps warm slots here: {}",
             plan.rationale
         );
         assert_eq!(
@@ -302,7 +305,7 @@ use super::*;
             usable_bytes: 300 * 1_000_000,
             perf_cores: 2,
         }; // 0.3GB
-        let plan = plan_serving(&host, &candidates(), &ServingDemand::new(MAX_LANES, None)).unwrap();
+        let plan = plan_serving(&host, &candidates(), &ServingDemand::new(ROSTER, None)).unwrap();
         assert!(
             !plan.fits_on_gpu,
             "must report the GPU budget can't hold any candidate"
@@ -316,18 +319,21 @@ use super::*;
 
     // what this catches: a persona seat holds what the residents REQUIRE — a comparison
     // against the measured-or-declared requirement, never a constant. The 5090's 2 × 2,048
-    // against residents sending 56k (× 1.25 headroom = 70k) is not a seat; a 67k window
-    // against a 30k typical is; with nothing measured or declared, only the engine's
-    // runnable floor applies.
+    // against residents sending 56k (grown by their measured growth, a 5/4 fixture: 70k) is
+    // not a seat; a 67k window against a 30k typical is; with nothing measured or declared,
+    // only the engine's runnable floor applies.
     #[test]
     pub(super) fn a_persona_lane_holds_what_the_residents_require() {
-        assert_eq!(prompt_floor_of(56_057), 70_071, "the one arithmetic behind typical_prompt_floor and the placement rule");
-        assert_eq!(prompt_floor_of(1), MIN_SERVE_CTX, "never under the serve floor");
-        let demand = ServingDemand::new(2, Some(200_000)).with_sent_median(Some(56_057));
+        use crate::inference::planning::window_allocator::{test_tokens, Growth, LaneRequirement};
+        assert_eq!(prompt_floor_of(56_057, QUARTER_GROWTH), 70_071, "the one arithmetic behind typical_prompt_floor and the placement rule");
+        assert_eq!(prompt_floor_of(56_057, Growth::Unmeasured), 56_057, "an unmeasured growth adds nothing");
+        assert_eq!(prompt_floor_of(1, QUARTER_GROWTH), MIN_SERVE_CTX, "never under the serve floor");
+        let resident = LaneRequirement::wished(uuid::Uuid::new_v4(), test_tokens(56_057), QUARTER_GROWTH);
+        let demand = ServingDemand::new(2, Some(200_000)).with_sent_median(Some(56_057)).with_requirements(vec![resident]);
         let requirement = demand.typical_prompt_floor();
         assert_eq!(requirement, Some(70_071));
         assert!(!persona_lane_holds(2_048, requirement));
-        assert!(!persona_lane_holds(67_072, requirement), "67k does not hold a 56k typical with headroom");
+        assert!(!persona_lane_holds(67_072, requirement), "67k does not hold a 56k typical grown by its growth");
         assert!(persona_lane_holds(70_071, requirement));
         let thirty = ServingDemand::new(2, Some(200_000)).with_sent_median(Some(30_000)).typical_prompt_floor();
         assert!(persona_lane_holds(67_072, thirty));
@@ -342,7 +348,7 @@ use super::*;
             usable_bytes: 45 * GB,
             perf_cores: 6,
         };
-        assert!(plan_serving(&host, &[], &ServingDemand::new(MAX_LANES, None)).is_none());
+        assert!(plan_serving(&host, &[], &ServingDemand::new(ROSTER, None)).is_none());
     }
 
     // ── hysteresis (plan_serving_stable) ──────────────────────────────────
@@ -363,84 +369,8 @@ use super::*;
             perf_cores: 6,
         };
         assert_eq!(
-            plan_serving_stable(&host, &pair(), None, &ServingDemand::new(MAX_LANES, None)),
-            plan_serving(&host, &pair(), &ServingDemand::new(MAX_LANES, None))
-        );
-    }
-
-    // what this catches: THE thrash guard — fresh prefers `big` (more capable,
-    // fits) but it only fits without headroom, so we KEEP the incumbent `small`
-    // rather than flap the served model on a transient budget bump.
-    #[test]
-    pub(super) fn stable_keeps_incumbent_when_upgrade_lacks_headroom() {
-        // LOCAL fixture, not `pair()`. This test needs `big` to be a LEGITIMATE upgrade
-        // target (clears the full-turn window floor, so selection would really pick it)
-        // that nonetheless fails the switch-UP headroom bar. With the shared `pair()` at
-        // 10GB those two are unsatisfiable together: big (9GB + 90k/tok) needs 10.47GB to
-        // clear one full turn, so at any budget where it lacks 0.9x headroom it also
-        // isn't full-turn viable — and a model that can only be served blind is not an
-        // upgrade worth flapping for. Before the model-choice floor landed, the old
-        // MIN_SERVE_CTX bar admitted big here on 184MB of KV and this fixture read as
-        // "fresh would pick big" when what fresh actually had was a 2048-token 9GB model.
-        // PREMISE CHANGE (2026-08-19), stated as such: this fixture was sized against the
-        // UN-CREDITED budget, because the switch-up bar used to be `0.9 * host`. The bar now
-        // sits on the POST-EVICTION budget (`host` + the incumbent's own weights), since
-        // `serve()` kills the incumbent before launching the candidate and the two are never
-        // co-resident. Crediting `small`'s 1GB moved the bar 18.0 → 18.9, and the old `big`
-        // (18GB + 0.18 KV = 18.18) slid under it — so the test began asserting the OPPOSITE of
-        // its own name. The INVARIANT is untouched: a model that lacks headroom must not be
-        // adopted. Only the fixture is restated for the corrected budget.
-        //
-        // Re-sized so big still clears a full turn at the at-rest budget (19 + 1.47 = 20.47 <=
-        // 21) — a legitimate upgrade target selection would really pick — yet still exceeds the
-        // headroom bar (19 + 0.18 = 19.18 > 0.9 * 21 = 18.9).
-        let host = HostBudget {
-            usable_bytes: 20 * GB,
-            perf_cores: 6,
-        };
-        let models = vec![
-            fp("small", 1, 4_000, 32_768, 1),
-            fp("big", 19, 90_000, 262_144, 3),
-        ];
-        // Setup assertion: big IS what selection would choose, so the refusal below is a real
-        // headroom refusal and not "big was never a candidate". This asks the question at the
-        // budget `fresh` is now computed against — the at-rest one — because that is where the
-        // stabilizer does its selecting. Asking it at `host` would make the setup vacuous: big
-        // (19 + 1.47 = 20.47) does not clear a full turn in 20GB at all, so the test would pass
-        // for the wrong reason, asserting a refusal of something never on offer.
-        let at_rest_for_setup = HostBudget {
-            usable_bytes: host.usable_bytes + 1 * GB, // small's credited weights
-            perf_cores: host.perf_cores,
-        };
-        // PREMISE CHANGE (2026-08-30), stated as such: demand here is now SOLO.
-        // The single-lane gate (the Flash-Next lesson) makes a 19GB-on-21GB
-        // model ineligible under MULTI-lane demand by design — near-budget
-        // weights and fleet parallelism are mutually exclusive premises at this
-        // scale, so under fleet demand this fixture's "big" is correctly never
-        // on offer and the headroom refusal would be vacuous. The INVARIANT
-        // under test — an upgrade lacking headroom must not be adopted — is
-        // demand-independent; solo demand is where both premises coexist.
-        assert_eq!(
-            plan_serving(&at_rest_for_setup, &models, &ServingDemand::new(1, None))
-                .unwrap()
-                .base_model
-                .model_id,
-            "big",
-            "fresh would pick big at the post-eviction budget — so the refusal below is real"
-        );
-        let stable = plan_serving_stable(
-            &host,
-            &models,
-            Some("small"),
-            &ServingDemand::new(1, None))
-        .unwrap();
-        assert_eq!(
-            stable.base_model.model_id, "small",
-            "hysteresis keeps incumbent — no flap"
-        );
-        assert!(
-            stable.lanes >= 1,
-            "lanes still re-tracked for the kept model"
+            plan_serving_stable(&host, &pair(), None, &ServingDemand::new(ROSTER, None)),
+            plan_serving(&host, &pair(), &ServingDemand::new(ROSTER, None))
         );
     }
 
@@ -468,14 +398,14 @@ use super::*;
             usable_bytes: 18 * GB,
             perf_cores: 6,
         };
-        let boot = plan_serving(&at_rest, &models, &ServingDemand::new(MAX_LANES, None))
+        let boot = plan_serving(&at_rest, &models, &ServingDemand::new(ROSTER, None))
             .expect("servable at rest");
 
         let live = HostBudget {
             usable_bytes: at_rest.usable_bytes - models[0].weights_bytes,
             perf_cores: 6,
         };
-        let fresh = plan_serving(&live, &models, &ServingDemand::new(MAX_LANES, None))
+        let fresh = plan_serving(&live, &models, &ServingDemand::new(ROSTER, None))
             .expect("still servable");
         // Guard the guard: if this ever stops being a flap, the test below proves nothing.
         assert!(
@@ -489,7 +419,7 @@ use super::*;
             &live,
             &models,
             Some("big"),
-            &ServingDemand::new(MAX_LANES, None))
+            &ServingDemand::new(ROSTER, None))
         .expect("incumbent still servable");
         assert_eq!(stable.base_model.model_id, "big");
         assert_eq!(
@@ -505,22 +435,22 @@ use super::*;
         );
     }
 
-    // what this catches: a genuine upgrade DOES happen when the better model
-    // fits with headroom — hysteresis isn't a permanent lock-in.
+    // what this catches: a genuine upgrade DOES happen when the better model fits the
+    // (sustained, post-eviction) budget — hysteresis isn't a permanent lock-in.
     #[test]
     pub(super) fn stable_upgrades_when_better_model_fits_with_headroom() {
         let host = HostBudget {
             usable_bytes: 20 * GB,
             perf_cores: 6,
-        }; // big 9.7 << 0.9*20=18
-        // Demand 1: the roster fits either model, so this test isolates the HEADROOM
-        // rule. (With MAX_LANES the bigger model would leave minds cold that were warm
-        // on the small one, and the switch-up guard refuses — its own test below.)
+        }; // big 9.7 << 20 + small's credited 1
+        // Demand 1: the roster fits either model, so this test isolates the FIT rule.
+        // (With a full roster the bigger model would leave minds cold that were warm on the
+        // small one, and the switch-up guard refuses — its own test below.)
         let stable = plan_serving_stable(&host, &pair(), Some("small"), &ServingDemand::new(1, None))
             .unwrap();
         assert_eq!(
             stable.base_model.model_id, "big",
-            "more capable + ample headroom → upgrade"
+            "more capable + fits → upgrade"
         );
     }
 
@@ -589,7 +519,7 @@ use super::*;
             &host,
             &only_small,
             Some("big"),
-            &ServingDemand::new(MAX_LANES, None))
+            &ServingDemand::new(ROSTER, None))
         .unwrap();
         assert_eq!(
             stable.base_model.model_id, "small",
@@ -615,7 +545,7 @@ use super::*;
         // Plain plan at the depressed budget WOULD flap: big (9GB) no longer "fits"
         // 8GB, so fresh prefers the smaller model.
         assert_eq!(
-            plan_serving(&dipped, &pair(), &ServingDemand::new(MAX_LANES, None))
+            plan_serving(&dipped, &pair(), &ServingDemand::new(ROSTER, None))
                 .unwrap()
                 .base_model
                 .model_id,
@@ -627,7 +557,7 @@ use super::*;
             &dipped,
             &pair(),
             Some("big"),
-            &ServingDemand::new(MAX_LANES, None))
+            &ServingDemand::new(ROSTER, None))
         .unwrap();
         assert_eq!(
             stable.base_model.model_id, "big",

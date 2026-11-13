@@ -12,8 +12,8 @@
 //!
 //! It degrades gracefully across the whole hardware range the substrate must
 //! run on: an 8 GB M2 Air (Joel's wife's laptop) figures out *something* to
-//! run; a 64 GB M5 Pro runs the most capable model it can at up to
-//! [`MAX_LANES`] lanes with several models warm.
+//! run; a 64 GB M5 Pro runs the most capable model it can at as many lanes as its
+//! minds demand and its cores and memory hold, with several models warm.
 //!
 //! **Footprint-aware.** A rich coding model (a sentinel, a full persona)
 //! costs more memory, so fewer fit and fewer lanes run — the plan reflects

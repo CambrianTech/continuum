@@ -381,11 +381,10 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
     assert_eq!(measured.reason, "resident_demand_kv_estimate");
     let above_floor =
         (32u64 << 30) - fp.peak_resident_bytes(65536, 1) - host_os_floor_bytes(32 << 30);
-    // The grant leaves the planner's co-consumer headroom — a cache fills to its
-    // grant, so a grant of everything above the floor ends at the floor (the M5,
-    // 2026-09-19: 6 GB of swap under a 19.5 GB grant).
-    let afford =
-        (above_floor as f64 * (1.0 - crate::inference::planning::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
+    // The grant leaves the power mode's Eco exit band free for the co-consumers — a cache
+    // fills to its grant, so a grant of everything above the floor ends at the floor (the
+    // M5, 2026-09-19: 6 GB of swap under a 19.5 GB grant).
+    let afford = grantable_from_physical(32 << 30, fp.peak_resident_bytes(65536, 1));
     assert!(
         afford < above_floor,
         "the cache never gets everything above the floor"
@@ -462,7 +461,7 @@ fn a_discrete_gpu_does_not_charge_vram_residency_against_host_ram() {
         .sum::<u64>();
     assert_eq!(
         on_discrete.affordable_bytes,
-        Some(grantable(physical - host_os_floor_bytes(physical)))
+        Some(grantable_from_physical(physical, discrete))
     );
     assert_eq!(
         on_discrete.desired_mib as u64,
@@ -598,15 +597,15 @@ fn the_cache_never_promises_past_what_is_available_now() {
     let unknown = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, 0);
     assert_eq!(
         unknown.affordable_bytes,
-        Some(grantable(physical - host_os_floor_bytes(physical))),
-        "no availability reading: headroom alone, less the co-consumer share"
+        Some(grantable_from_physical(physical, 0)),
+        "no availability reading: above the floor and the Eco exit band of physical memory"
     );
     let available = 31u64 << 30;
     let bound = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, available);
     assert_eq!(
         bound.affordable_bytes,
         Some(grantable_from_available(physical, available)),
-        "bounded by what the box can give now, less the Eco exit band and the co-consumer share"
+        "bounded by what the box can give now, less the Eco exit band"
     );
     assert!(bound.desired_mib < unknown.desired_mib);
     assert_eq!(bound.available_bytes, available);

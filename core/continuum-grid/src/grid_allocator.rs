@@ -916,8 +916,8 @@ mod tests {
         let aiko = Uuid::new_v4();
         let unmeasured = Uuid::new_v4();
         let reqs = vec![
-            LaneRequirement::wished(benchy, t(110_396), 1.0),
-            LaneRequirement::wished(aiko, t(24_226), 1.0),
+            LaneRequirement::wished(benchy, t(110_396), crate::inference::planning::window_allocator::Growth::Unmeasured),
+            LaneRequirement::wished(aiko, t(24_226), crate::inference::planning::window_allocator::Growth::Unmeasured),
             // no turn yet: Unknown, and an absence is never a number
             LaneRequirement::unmeasured(unmeasured),
         ];
@@ -942,15 +942,15 @@ mod tests {
         // stale target raises the target, never the reverse (#5931, CONTINUUM-ENGINE.md, serving engine: admission (4.8)):
         // what her turns cannot be sent below is the truth the grid names.
         let kimi = Uuid::new_v4();
-        let wish = vec![LaneRequirement::wished(kimi, t(99_096), 1.25)];
+        let wish = vec![LaneRequirement::wished(kimi, t(99_096), crate::inference::planning::window_allocator::Growth::Measured { tail: t(5), typical: t(4) })];
         assert_eq!(minds_over_the_grid(&wish, 75_776), vec![(kimi, 123_870)], "no need known: the wish gates, as before");
-        let fits = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::window_allocator::observed::Observed::Exact(t(74_000)))];
+        let fits = vec![LaneRequirement::wished(kimi, t(99_096), crate::inference::planning::window_allocator::Growth::Measured { tail: t(5), typical: t(4) }).held(crate::inference::planning::window_allocator::observed::Observed::Exact(t(74_000)))];
         assert!(minds_over_the_grid(&fits, 75_776).is_empty(), "her held turns fit this grid: served, trimmed, not exiled");
-        let over = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::window_allocator::observed::Observed::Exact(t(80_000)))];
+        let over = vec![LaneRequirement::wished(kimi, t(99_096), crate::inference::planning::window_allocator::Growth::Measured { tail: t(5), typical: t(4) }).held(crate::inference::planning::window_allocator::observed::Observed::Exact(t(80_000)))];
         assert_eq!(minds_over_the_grid(&over, 75_776), vec![(kimi, 80_000)], "a need the grid cannot hold still names her, by the need");
-        let clamped = vec![LaneRequirement::wished(kimi, t(60_000), 1.0).held(crate::inference::planning::window_allocator::observed::Observed::Exact(t(90_000)))];
+        let clamped = vec![LaneRequirement::wished(kimi, t(60_000), crate::inference::planning::window_allocator::Growth::Unmeasured).held(crate::inference::planning::window_allocator::observed::Observed::Exact(t(90_000)))];
         assert_eq!(minds_over_the_grid(&clamped, 60_000), vec![(kimi, 90_000)], "an exact need past a stale target is her need: named, never hidden under the wish");
-        let bound = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::window_allocator::observed::Observed::AtLeast { at_least: t(99_096) })];
+        let bound = vec![LaneRequirement::wished(kimi, t(99_096), crate::inference::planning::window_allocator::Growth::Measured { tail: t(5), typical: t(4) }).held(crate::inference::planning::window_allocator::observed::Observed::AtLeast { at_least: t(99_096) })];
         assert!(minds_over_the_grid(&bound, 75_776).is_empty(), "a bound past the widest window is not unservable (Cormac on #5773)");
     }
 }

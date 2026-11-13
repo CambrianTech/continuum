@@ -180,8 +180,6 @@ pub enum Excluded {
     NeedUnobserved,
     /// Her requirement has no wish.
     NoWish,
-    /// Her target rounds to no tokens.
-    NoTarget,
 }
 
 /// One run of the grants publisher, published EVERY time it runs, changed or not: the grants it
@@ -298,10 +296,11 @@ pub struct Demand<K> {
     /// The least her turn holds: below it she cannot think (the median of her held turns, else her
     /// wish). Never trimmed here; a need above what one sequence holds waits.
     pub need: Tokens,
-    /// What she would read whole (her wish with headroom), granted when the pool holds every target.
+    /// What she would read whole (her held need grown by her measured growth, never below her wish),
+    /// granted when the pool holds every target.
     pub target: Tokens,
-    /// Her wish without headroom: a grant that covers it is kept; one that does not grows to her
-    /// target, so headroom is room to grow into (about one regrant per headroom of growth).
+    /// Her wish without growth: a grant that covers it is kept; one that does not grows to her
+    /// target, so her growth is room to grow into (about one regrant per growth of her wish).
     pub wish: Tokens,
     pub in_flight: bool,
     /// She has completed a turn since her grant last changed (the fair publisher reads it off her
@@ -309,6 +308,9 @@ pub struct Demand<K> {
     pub settled: bool,
     /// The most she may be granted: what one sequence of the engine can hold.
     pub ceiling: u32,
+    /// How far her act grows past her typical act, measured from her own turns: the room her
+    /// target leaves above her need, and the band within which a settled grant never rebinds.
+    pub growth: crate::inference::planning::window_allocator::Growth,
 }
 
 impl Demand<uuid::Uuid> {
@@ -334,8 +336,9 @@ impl Demand<uuid::Uuid> {
             _ => observed.within(ceiling),
         };
         let wish = r.wish.ok_or(Excluded::NoWish)?.min(trained);
-        // Her target is room to grow over what her turns hold (her held need with the sent
-        // headroom), and never less than what her view holds at full detail (her wish, measured
+        // Her target is room to grow over what her turns hold (her held need grown by her own
+        // measured growth, `Growth`: nothing while it is unmeasured), and never less than what her
+        // view holds at full detail (her wish, measured
         // from her items at their whole level, never from a render a grant collapsed). A grant is a
         // ceiling, not an allocation: KV is paged on use, and the act's priced allocation decides how
         // much of it an act holds (`continuum_context::allocation::priced`). Below her wish, her
@@ -344,8 +347,7 @@ impl Demand<uuid::Uuid> {
         // alone on a 247,040-token pool, six re-reads of one file, no edit). Growing past it stays
         // a priced decision, never "fill because the pool has room" (the M5, 2026-11-07: targets of
         // 150-557k from untrimmed demand grew grants to 197k, 71 acts vs 158; 7b7a696a).
-        let headroom = crate::inference::planning::serving_plan::SENT_HEADROOM;
-        let target = Tokens::new((f64::from(need.get()) * headroom) as u32).ok_or(Excluded::NoTarget)?.max(wish).min(trained);
+        let target = r.growth.grow(need).max(wish).min(trained);
         Ok(Demand {
             mind: r.persona,
             need,
@@ -355,6 +357,7 @@ impl Demand<uuid::Uuid> {
             // read off her receipts by the fair publisher, which owns them (`publish_fair_grants`)
             settled: false,
             ceiling,
+            growth: r.growth,
         })
     }
 }
@@ -374,7 +377,7 @@ pub trait WindowPolicy<K> {
 ///   costs her prompt cache: the M5 rebound all four every 2-3 minutes);
 /// - when the wants fit but the targets do not, the surplus above every need is shared toward the
 ///   targets in proportion to each mind's remaining growth, never leaving room idle; a grant shrinks
-///   toward her share only once she has served on it, and drift within one headroom never rebinds;
+///   toward her share only once she has served on it, and drift within her own growth never rebinds;
 /// - when the wants do not all fit, surplus is reclaimed first: a mind not in a turn gives back what
 ///   she holds above her need; a turn in flight keeps what it holds;
 /// - when the needs still do not all fit, minds are admitted in order (turns in flight, then minds
@@ -452,7 +455,7 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
         // 08:46-09:46Z, a947e4ed1: Atlas granted 14,353 against a 111,165-token view, 18 acts at 42%
         // reuse, while the pool stayed with whoever was filled first; Fable and Cormac on 20b830fb).
         // A grant moves only where it may: a mind whose turn is in flight, or who has not served since
-        // her grant last changed, never shrinks; a settled mind within one headroom of her share keeps
+        // her grant last changed, never shrinks; a settled mind within her growth of her share keeps
         // what she holds (no rebind for drift, Cormac on #5758); anyone else moves toward her share.
         // Every mind gets her low end, and what the low ends leave is filled in the same proportion.
         if total(&want) <= pool {
@@ -464,14 +467,15 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
                 Ok(portion) => need(d) + portion,
                 Err(_) => target(d), // a portion past u32 is past any target
             };
-            // Her low end and her high end. Only a settled mind holding more than one headroom above
+            // Her low end and her high end. Only a settled mind holding more than one growth above
             // her share gives anything back, and only down to her share; every other mind keeps her
             // want and grows toward her share when the room is there (a mind below her share is never
-            // shrunk to feed another).
+            // shrunk to feed another). Her band is her own measured growth (`Growth`): drift inside
+            // what her own acts vary by never rebinds, and with no growth measured nothing is a band.
             let bounds = |d: &Demand<K>| -> (u32, u32) {
                 let share = share(d);
                 let held = holds(d);
-                let above_band = f64::from(held) > f64::from(share) * crate::inference::planning::serving_plan::SENT_HEADROOM;
+                let above_band = Tokens::new(share).is_some_and(|share| held > d.growth.grow(share).get());
                 match d.settled && !d.in_flight && above_band {
                     true => (share, share),
                     false => (want(d), want(d).max(share)),
@@ -547,10 +551,14 @@ mod tests {
 
     use crate::inference::planning::window_allocator::observed::Observed;
     use crate::inference::planning::window_allocator::test_tokens as t;
+    use crate::inference::planning::window_allocator::Growth;
+
+    /// Fixture: a mind whose full ring measured her p95 act at 5/4 of her median act.
+    const QUARTER_GROWTH: Growth = Growth::Measured { tail: t(5), typical: t(4) };
 
     /// A mind whose need is her target (a wish with no held turn yet).
     fn demand(mind: u32, need: u32, in_flight: bool, ceiling: u32) -> Demand<u32> {
-        Demand { mind, need: t(need), target: t(need), wish: t(need), in_flight, settled: true, ceiling }
+        Demand { mind, need: t(need), target: t(need), wish: t(need), in_flight, settled: true, ceiling, growth: QUARTER_GROWTH }
     }
 
     // what this catches: a window divided by a count (Joel, 2026-11-03: "What a mind needs not what
@@ -595,9 +603,10 @@ mod tests {
     fn a_held_grant_survives_drift_and_a_running_turn_keeps_its_grant() {
         let pool = 257_536;
         let held = BTreeMap::from([(1, 50_000), (2, 30_000)]);
-        // Targets as production builds them: her held need with the sent headroom (x1.25). A drift
-        // inside the headroom keeps her grant; that headroom is what makes drift free (7b7a696a).
-        let real = |m, need: u32| Demand { mind: m, need: t(need), target: t(need + need / 4), wish: t(need), in_flight: false, settled: true, ceiling: pool };
+        // Targets as production builds them: her held need grown by her growth (fixture: a ring whose
+        // p95 act is 5/4 of its median). A drift inside her growth keeps her grant; that room is what
+        // makes drift free (7b7a696a).
+        let real = |m, need: u32| Demand { mind: m, need: t(need), target: t(need + need / 4), wish: t(need), in_flight: false, settled: true, ceiling: pool, growth: QUARTER_GROWTH };
         let drift = DemandFollowing.grant(&[real(1, 44_000), real(2, 31_000)], &held, pool);
         assert_eq!(drift[&1], 50_000, "her need drifted down inside her headroom: she keeps what she holds");
         assert_eq!(drift[&2], 38_750, "her need rose above what she holds: she grows to her target");
@@ -660,7 +669,7 @@ mod tests {
     #[test]
     fn needs_are_granted_before_any_target_and_targets_only_when_all_fit() {
         let pool = 524_288;
-        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, settled: true, ceiling: 262_144 };
+        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, settled: true, ceiling: 262_144, growth: QUARTER_GROWTH };
         let wishes = [mind(1, 70_000, 262_144), mind(2, 60_000, 104_015), mind(3, 50_000, 88_380), mind(4, 40_000, 90_000)];
         let grants = DemandFollowing.grant(&wishes, &BTreeMap::new(), pool);
         // 220,000 of needs leave 304,288, shared in proportion to growths 192,144 / 44,015 / 38,380 / 50,000.
@@ -679,7 +688,7 @@ mod tests {
     #[test]
     fn every_mind_grows_to_her_target_when_every_target_fits() {
         let pool = 323_840;
-        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, settled: true, ceiling: 262_144 };
+        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, settled: true, ceiling: 262_144, growth: QUARTER_GROWTH };
         let demands = [mind(1, 19_384, 78_000), mind(2, 14_499, 35_000), mind(3, 16_004, 51_000), mind(4, 14_477, 42_000)];
         let held = BTreeMap::from([(1, 262_144), (2, 14_445), (3, 18_213), (4, 14_242)]);
         let grants = DemandFollowing.grant(&demands, &held, pool);
@@ -699,7 +708,7 @@ mod tests {
     #[test]
     fn surplus_above_every_need_grows_minds_toward_their_targets() {
         let pool = 152_832;
-        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, settled: true, ceiling: pool };
+        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, settled: true, ceiling: pool, growth: QUARTER_GROWTH };
         let demands = [mind(1, 24_012, 150_000), mind(2, 30_195, 557_000), mind(3, 29_589, 200_000), mind(4, 34_018, 180_000)];
         // Negative control: the needs alone leave the surplus this spends.
         let needs: u32 = demands.iter().map(|d| d.need.get()).sum();
@@ -718,7 +727,7 @@ mod tests {
     #[test]
     fn the_largest_demand_gets_the_largest_share_and_only_a_settled_holder_gives_back() {
         let pool = 152_832;
-        let mind = |m, need, target, settled| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, settled, ceiling: pool };
+        let mind = |m, need, target, settled| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, settled, ceiling: pool, growth: QUARTER_GROWTH };
         let held = BTreeMap::from([(1, 80_000), (2, 30_000), (3, 14_353), (4, 28_479)]);
         let demands = [mind(1, 30_000, 60_000, true), mind(2, 30_000, 70_000, true), mind(3, 14_353, 140_000, true), mind(4, 20_000, 120_000, true)];
         let grants = DemandFollowing.grant(&demands, &held, pool);
@@ -741,7 +750,7 @@ mod tests {
     #[test]
     fn a_settled_holder_above_her_target_is_released_to_it() {
         let pool = 755_456;
-        let mind = |m, settled| Demand { mind: m, need: t(30_000), target: t(37_500), wish: t(400_000), in_flight: false, settled, ceiling: pool };
+        let mind = |m, settled| Demand { mind: m, need: t(30_000), target: t(37_500), wish: t(400_000), in_flight: false, settled, ceiling: pool, growth: QUARTER_GROWTH };
         let held = BTreeMap::from([(1, 197_000), (2, 30_000)]);
         let grants = DemandFollowing.grant(&[mind(1, true), mind(2, true)], &held, pool);
         assert_eq!(grants[&1], 37_500, "released to her target: {grants:?}");
@@ -753,12 +762,12 @@ mod tests {
 
     // what this catches (Cormac on #5758): growing on every upward move of a target recomputed every
     // act, which regranted most acts as an append-only view grew. Her wish rises 300 tokens a call
-    // and her target is the wish x 1.25: the grant holds while it covers the wish and regrants only
+    // and her target is the wish grown by a fixture growth of 5/4: the grant holds while it covers the wish and regrants only
     // when the wish passes it, about once per 25% of growth.
     #[test]
     fn a_rising_wish_regrants_only_when_it_passes_the_grant() {
         let pool = 323_840;
-        let at = |wish: u32| Demand { mind: 1u32, need: t(10_000), target: t(wish + wish / 4), wish: t(wish), in_flight: false, settled: true, ceiling: 262_144 };
+        let at = |wish: u32| Demand { mind: 1u32, need: t(10_000), target: t(wish + wish / 4), wish: t(wish), in_flight: false, settled: true, ceiling: 262_144, growth: QUARTER_GROWTH };
         let mut held = BTreeMap::new();
         let mut regrants = 0;
         for call in 0..100u32 {
@@ -782,7 +791,7 @@ mod tests {
     #[test]
     fn a_regime_flip_never_rebinds_a_mind_whose_grant_still_fits() {
         let pool = 200_000;
-        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, settled: true, ceiling: pool };
+        let mind = |m, need, target| Demand { mind: m, need: t(need), target: t(target), wish: t(target), in_flight: false, settled: true, ceiling: pool, growth: QUARTER_GROWTH };
         let first = [mind(1, 14_000, 47_000), mind(2, 20_000, 53_000), mind(3, 20_000, 51_000), mind(4, 14_000, 45_000)];
         let held = DemandFollowing.grant(&first, &BTreeMap::new(), pool);
         assert_eq!(held, BTreeMap::from([(1, 47_000), (2, 53_000), (3, 51_000), (4, 45_000)]), "every target fits");
@@ -807,7 +816,7 @@ mod tests {
     #[test]
     fn a_bound_above_the_ceiling_is_granted_the_ceiling_and_an_exact_need_waits() {
         let (pool, ceiling) = (654_336, 8_192);
-        let at = |need: Tokens| Demand { mind: 1u32, need, target: need, wish: need, in_flight: false, settled: true, ceiling };
+        let at = |need: Tokens| Demand { mind: 1u32, need, target: need, wish: need, in_flight: false, settled: true, ceiling, growth: QUARTER_GROWTH };
         let bound = Observed::AtLeast { at_least: t(65_672) };
         let grants = DemandFollowing.grant(&[at(bound.within(ceiling))], &BTreeMap::new(), pool);
         assert_eq!(grants, BTreeMap::from([(1, ceiling)]), "a bound past one sequence is granted one sequence, never dropped");
@@ -831,7 +840,7 @@ mod tests {
         let (pool, trained) = (247_040, t(262_144));
         let aris = uuid::Uuid::from_u128(0x8044b75b);
         let full_detail = t(63_000);
-        let requirement = LaneRequirement::wished(aris, full_detail, crate::inference::planning::serving_plan::SENT_HEADROOM)
+        let requirement = LaneRequirement::wished(aris, full_detail, QUARTER_GROWTH)
             .held(Observed::Exact(t(38_075)));
         let demand = Demand::of(&requirement, trained, pool, false).expect("test: a held requirement is a demand"); // expect: a wished and held requirement has a need, target and wish
         assert_eq!(demand.wish, full_detail);

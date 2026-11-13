@@ -872,3 +872,27 @@ fn a_boot_remembers_its_newest_held_residents_and_nobody_else() {
     assert_eq!(reg.remembered_residents(9).len(), 3, "a mind that never held a turn is no resident");
     assert!(requirements_for(&reg.remembered_residents(2), &reg).iter().all(|r| r.measure.target().is_some()), "each remembered resident is a measured requirement");
 }
+
+// what this catches: one fleet-wide factor standing in for her growth (`SENT_HEADROOM = 1.25` for
+// every mind on every node). Her target is her wish grown by her own ring, p95 over median; with
+// fewer turns than one working session nothing is added that her turns did not measure.
+#[test]
+fn her_target_is_her_wish_grown_by_her_own_ring() {
+    use crate::inference::planning::window_allocator::Growth;
+    let mut ring = [30_000u32; RECENT_TURNS];
+    ring[0] = 60_000;
+    let seasoned = PersonaDemand { recent: ring, last_tokens: 30_000, ..PersonaDemand::default() };
+    assert!(matches!(growth_of(&seasoned), Growth::Measured { .. }), "a full ring is measured");
+    let mut young_ring = [0u32; RECENT_TURNS];
+    young_ring[..2].copy_from_slice(&[30_000, 60_000]);
+    let young = PersonaDemand { recent: young_ring, last_tokens: 60_000, ..PersonaDemand::default() };
+    assert_eq!(growth_of(&young), Growth::Unmeasured, "two turns are not a working session");
+    let reg = WorkingSetRegistry::new();
+    let (her, newcomer) = (Uuid::new_v4(), Uuid::new_v4());
+    reg.observed.insert(her, seasoned);
+    reg.observed.insert(newcomer, young);
+    let targets: Vec<_> = requirements_for(&[her, newcomer], &reg).iter().map(|r| r.measure.target().map(|t| t.get())).collect();
+    // Hers: her 30k median grown to her 60k p95. The newcomer's: the upper median of her two
+    // recorded turns (60k), ungrown.
+    assert_eq!(targets, vec![Some(60_000), Some(60_000)], "her ring's spike is her room; the newcomer's wish stands alone");
+}

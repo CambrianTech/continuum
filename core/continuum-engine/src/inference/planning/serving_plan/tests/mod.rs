@@ -44,7 +44,7 @@
         // after rejecting improved plans against a historical 176,730 floor.
         // The allocator's per-mind requirements, not that second owner, govern.
         let stale_history = demand.clone().with_sent_median(Some(141_384));
-        assert_eq!(stale_history.typical_prompt_floor(), Some(176_730));
+        assert_eq!(stale_history.typical_prompt_floor(), Some(141_384), "declared requirements grow nothing");
         let governed = plan_serving(&host, std::slice::from_ref(&qwen), &stale_history).expect("governed plan");
         assert!(persona_lane_holds(governed.served_context_window, stale_history.publication_prompt_floor(&governed)),
             "publication must accept the allocator's feasible per-mind window");
@@ -74,6 +74,16 @@
     }
 
     pub(super) const GB: u64 = 1_000_000_000;
+
+    /// Fixture: a roster of eight resident minds, each demanding a lane.
+    pub(super) const ROSTER: u32 = 8;
+
+    /// Fixture: minds whose full rings measured their p95 act at 5/4 of their median act.
+    pub(super) const QUARTER_GROWTH: crate::inference::planning::window_allocator::Growth =
+        crate::inference::planning::window_allocator::Growth::Measured {
+            tail: crate::inference::planning::window_allocator::test_tokens(5),
+            typical: crate::inference::planning::window_allocator::test_tokens(4),
+        };
 
     // what this catches: a bootstrap prior being reported as measured demand. Live
     // 2026-08-20 the plan served 16384 with `bound_by=demand` and 33 GB of VRAM free —

@@ -148,7 +148,7 @@ fn plan_serving_into(
                     .cmp(&b.weights_bytes)
                     .then(a.model_id.cmp(&b.model_id))
             })
-            .expect("candidates non-empty checked above");
+            .expect("candidates non-empty checked above"); // expect: the empty case returned None at the top of this fn
         return Some(ServingPlan {
             base_model: (*smallest).clone(),
             served_context_window: MIN_SERVE_CTX,
@@ -172,8 +172,10 @@ fn plan_serving_into(
 
     // Lanes: DEMAND first (how many minds need a concurrent lane), then capped by
     // how many lanes' (minimum KV **+ transient prefill compute buffer**) fit the
-    // budget left after weights, by perf cores, and by the MAX_LANES safety ceiling;
-    // floored at 1. The per-lane floor now INCLUDES the compute buffer — the term the
+    // budget left after weights, and by perf cores; floored at 1. Every term is measured:
+    // demand (residents plus leased-in, bounded by the measured knee), the host's cores, the
+    // fit. No fixed ceiling stands beside them (an 8-lane `MAX_LANES` backstop did, until it
+    // was the one guess left in the lane count). The per-lane floor now INCLUDES the compute buffer — the term the
     // KV arithmetic used to ignore, which let the plan size N windows to fill the
     // budget with KV and leave no room for the N concurrent compute buffers (the
     // 2026-07-14 OOM). With the buffer accounted, the lane count can follow persona
@@ -183,7 +185,7 @@ fn plan_serving_into(
     // the governor's board subtracts every other holder's live residency, and the power
     // mode withholds its fraction (Comfort keeps 20% of the box free for a spike; Eco
     // 45%). A further 15% here was the same reservation a second time — on the M5 it was
-    // the difference between one lane and two (see `CACHE_GRANT_HEADROOM`).
+    // the difference between one lane and two (#4230).
     let effective = host.usable_bytes;
     let window_for = |l: u64| -> u32 { model.window_within(host.usable_bytes, l as u32) };
 
@@ -193,17 +195,13 @@ fn plan_serving_into(
     // can't hold its own memory + the task, so 1 lane @ 30k beats 2 lanes @ 2k. The old
     // math capped lanes by what fit at the FLOOR window (`kv_at(MIN_SERVE_CTX)`), so it
     // admitted N lanes and let the window collapse — a lane-count target chased off a cliff.
-    // Instead, pick the LARGEST lane count (≤ demand, ≤ cores, ≤ MAX_LANES) whose per-lane
+    // Instead, pick the LARGEST lane count (≤ demand, ≤ cores) whose per-lane
     // window still clears the floor. Fall back to 1 only when the host is genuinely too small
     // for even one real window — honest starvation (surfaced downstream), never a silent
     // collapse. Same lanes-follow-demand-on-a-roomy-host / degrade-on-a-small-one behavior,
     // but the degrade path now SHEDS LANES (queue) instead of shrinking the mind to nothing
     // ([[never-thrash-sticky-hysteresis-on-every-lane]], [[situation-aware-focuser]]).
-    let lane_cap = demand_lanes
-        .max(1)
-        .min(host.perf_cores.max(1))
-        .min(MAX_LANES)
-        .max(1);
+    let lane_cap = demand_lanes.max(1).min(host.perf_cores.max(1));
     // Each RESIDENT persona wants its OWN warm slot so its prefilled KV survives across turns
     // (no LRU clobber → no ~10k cold re-prefill every turn — #266's whole latency story: 96%
     // prefill, two of four citizens at 0% cache reuse when 4 minds shared 2 slots). Grow the
@@ -219,7 +217,7 @@ fn plan_serving_into(
     // the STABLE bootstrap value and NOT the moving measured p95: coupling the lane COUNT to a
     // jittering demand signal is the 718-replan lane-flap that wedged three benchmark runs. The
     // served WINDOW still refines with measurement (below); the slot COUNT rests on a fixed
-    // floor. THIS floor — not the `MAX_LANES` backstop — is the binding constraint (#266).
+    // floor. THIS floor is the binding constraint (#266).
     // Per-lane floor: the stable bootstrap, RAISED by the typical prompt. Lanes
     // multiply only while EVERY lane still fits the floor — parallel to the max, starvation to none.
     // LANES FOLLOW THE ROSTER AT THE TYPICAL PROMPT (2026-09-14). The floor is the
@@ -291,7 +289,7 @@ fn plan_serving_into(
             let lanes = (1..=lane_cap)
                 .rev()
                 .find(|&l| window_for(l as u64) >= per_lane_floor)
-                .unwrap_or(1);
+                .unwrap_or(1); // unwrap_or: no count clears the floor, so one lane serves: honest starvation, named by `lanes_bound`
             let bound = if lanes < lane_cap {
                 LanesBound::PerLaneFloor {
                     floor_tokens: per_lane_floor,
@@ -301,8 +299,6 @@ fn plan_serving_into(
                 }
             } else if lane_cap >= demand_lanes.max(1) {
                 LanesBound::Demand
-            } else if lane_cap == MAX_LANES && MAX_LANES < host.perf_cores.max(1) {
-                LanesBound::MaxLanes
             } else {
                 LanesBound::Cores
             };
@@ -424,8 +420,11 @@ fn plan_serving_into(
 /// Hysteresis wrapper around [`plan_serving`]: stops model THRASH from live-
 /// budget jitter. Keeps the `incumbent` model as long as it still fits the
 /// budget — switching DOWN only when the incumbent no longer fits (forced
-/// eviction) and UP only when a strictly more capable model fits with
-/// [`SWITCH_UP_HEADROOM`] to spare.
+/// eviction) and UP only when a strictly more capable model fits the budget. The budget a
+/// caller hands is its own hysteresis: the serving daemon plans on the SUSTAINED minimum over one
+/// relaunch's duration (`serving_daemon::budget`), so a transient bump never raises it, and a
+/// model change on a ready lane must persist `MODEL_CHANGE_SUSTAINED_TICKS` plans (measured over
+/// 6,322 live plans). A fixed 10% margin on top of both was a third copy of the same guard.
 ///
 /// Lanes and window are sized against the AT-REST budget (the live budget with the
 /// incumbent's own resident weights credited back) for as long as the incumbent keeps
@@ -574,9 +573,9 @@ fn plan_serving_at_rest_into(
     // and re-prefilled cold every turn. One credit, three cards.
     //
     // SAFE because it is still gated: the switch-up below additionally requires strictly
-    // greater `capability_rank` AND `SWITCH_UP_HEADROOM` of margin, so a bigger model is
-    // adopted only when it is genuinely better AND genuinely fits post-eviction. A transient
-    // budget bump cannot flap it. An EXTERNAL squeeze is still not credited back — only the
+    // greater `capability_rank` AND a fit on the budget handed in, which the daemon takes as
+    // the sustained minimum over one relaunch, so a bigger model is adopted only when it is
+    // genuinely better AND genuinely fits post-eviction. A transient budget bump cannot flap it. An EXTERNAL squeeze is still not credited back — only the
     // incumbent's own committed weights are — so a real over-commit still forces the
     // down-switch. [[never-thrash-sticky-hysteresis-on-every-lane]]
     let mut fresh_growth = None;
@@ -588,13 +587,12 @@ fn plan_serving_at_rest_into(
         return fresh;
     }
     // Switch UP to `fresh` ONLY if it is strictly more capable AND fits the POST-EVICTION
-    // budget with headroom. This used to test against `host` on the reasoning that "loading a
-    // bigger NEW model needs actual free memory" — true for a co-resident load, false for the
-    // swap `serve()` actually performs (kill incumbent, then launch). Testing against `host`
-    // made the gate unreachable for any model larger than the free remainder, which on a
-    // healthy box IS every upgrade worth making. `SWITCH_UP_HEADROOM` still supplies the
-    // anti-flap margin; it is now margin on the right budget.
-    let headroom_budget = (at_rest.usable_bytes as f64 * (1.0 - SWITCH_UP_HEADROOM)) as u64;
+    // budget. This used to test against `host` on the reasoning that "loading a bigger NEW
+    // model needs actual free memory" — true for a co-resident load, false for the swap
+    // `serve()` actually performs (kill incumbent, then launch). Testing against `host` made
+    // the gate unreachable for any model larger than the free remainder, which on a healthy
+    // box IS every upgrade worth making. The anti-flap margin is the caller's measured one
+    // (the sustained-minimum budget and the model-change streak, see the fn doc).
     // The plan HOLDS its model, so this is a field read, not a search. It used to be
     // `candidates.iter().find(|c| c.model_id == f.base_model_id)` — a name lookup that
     // returned None whenever the planned name wasn't in the candidate list, silently
@@ -616,7 +614,7 @@ fn plan_serving_at_rest_into(
         let fresh_lanes = fresh_plan.lanes as u32;
         let starves_the_roster = fresh_lanes < inc_lanes && fresh_lanes < demand.lanes;
         f.capability_rank > inc.capability_rank
-            && f.weights_bytes.saturating_add(f.kv_at(MIN_SERVE_CTX)) <= headroom_budget
+            && f.weights_bytes.saturating_add(f.kv_at(MIN_SERVE_CTX)) <= at_rest.usable_bytes
             && !starves_the_roster
     });
     if upgrade_worth_it {

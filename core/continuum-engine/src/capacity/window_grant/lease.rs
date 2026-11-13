@@ -480,7 +480,7 @@ mod tests {
         let owner = owner();
         let lease = publish(None, a, 60, engine(7)).lease_for(a).expect("granted");
         let reservation = owner.reserve_against(a, lease, 50, || Some(lease)).expect("reserved");
-        let b_wants = Demand { mind: b, need: t(30), target: t(100), wish: t(100), in_flight: false, settled: true, ceiling: 100 };
+        let b_wants = Demand { mind: b, need: t(30), target: t(100), wish: t(100), in_flight: false, settled: true, ceiling: 100, growth: crate::inference::planning::window_allocator::Growth::Unmeasured };
         let grants = owner.honoring(engine(7), |reserved| {
             grant_with_reservations(&mut DemandFollowing, &[b_wants], &BTreeMap::from([(a, 60)]), 100, reserved)
         });
