@@ -850,3 +850,25 @@ fn a_stale_target_never_cuts_her_floor_on_the_way_to_admission() {
     assert_eq!(need.within(58_112).get(), 60_000, "past the ceiling her floor stands, and waits");
     assert!(need.within(262_144).get() >= 60_000, "under a roomy ceiling, never below her floor");
 }
+
+// what this catches (the M5, 2026-11-13 19:36Z, card 8569b03d): a boot that plans for nobody. Before
+// the persona registry exists, the residents are the minds this host served most recently, each with
+// a turn held here; a mind that only ever wished (a fixture, a departed mind never served) is not one,
+// and older minds past the population are not counted.
+#[test]
+fn a_boot_remembers_its_newest_held_residents_and_nobody_else() {
+    let reg = WorkingSetRegistry::new();
+    let held_at = |mind: Uuid, demand: u32, at: u64| {
+        reg.record_in_memory(mind, demand, at);
+        reg.record_need_in_memory(mind, NeedSample::Exact(demand / 2), at);
+    };
+    let (oldest, older, newest) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    held_at(oldest, 68_000, 1);
+    held_at(older, 90_000, 2);
+    held_at(newest, 110_000, 3);
+    let wished_only = Uuid::new_v4();
+    reg.record_in_memory(wished_only, 200_000, 4);
+    assert_eq!(reg.remembered_residents(2), vec![newest, older], "the population's newest held residents");
+    assert_eq!(reg.remembered_residents(9).len(), 3, "a mind that never held a turn is no resident");
+    assert!(requirements_for(&reg.remembered_residents(2), &reg).iter().all(|r| r.measure.target().is_some()), "each remembered resident is a measured requirement");
+}

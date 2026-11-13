@@ -353,6 +353,11 @@ pub struct ServingDaemonModule {
     /// The engine process this core last asked to move onto the shared pool: one try per
     /// engine, so a refused move is never retried every tick.
     shared_pool_move_tried: Arc<std::sync::atomic::AtomicU64>,
+    /// The engine process last judged floor-sized (`floor_sized`): one retirement per engine.
+    floor_sized_tried: Arc<std::sync::atomic::AtomicU64>,
+    /// The host's memory as the last two readings saw it (`settle`): a launch below the seated
+    /// minds' needs waits while memory is still being returned.
+    host_settle: parking_lot::Mutex<settle::HostSettle>,
     /// Each local mind's grant on the engine's pool (`grants.rs`): what her binding follows.
     /// `None` until a ready engine has been granted from.
     grants_tx: watch::Sender<Option<crate::capacity::window_grant::PoolGrants>>,
@@ -553,6 +558,8 @@ impl ServingDaemonModule {
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             planned_budget: Arc::new(parking_lot::Mutex::new(None)),
             shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            floor_sized_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            host_settle: parking_lot::Mutex::new(settle::HostSettle::default()),
             grants_tx: watch::channel(None).0,
             evaluations_tx: watch::channel(None).0,
             fair_grants: Arc::new(parking_lot::Mutex::new(crate::capacity::window_grant::FairGrantState::default())),
@@ -686,6 +693,8 @@ mod hold;
 mod own_credit;
 use own_credit::{OwnCredit, PlanBudget, PlannedBudget};
 mod reconcile;
+mod floor_sized;
+mod settle;
 mod tick;
 
 #[cfg(test)]
