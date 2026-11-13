@@ -356,3 +356,31 @@ async fn restart_verifies_physical_declaration_and_refuses_unmanaged_tables() ->
     assert!(rejected.contains("no declared-schema receipt"), "{rejected}");
     Ok(())
 }
+
+#[tokio::test]
+async fn colliding_index_names_refuse_adoption_and_roll_back_schema() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("index-collision.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let owner = store(path).await?;
+    let declaration = |collection: &str, index: &str| CollectionSchema {
+        collection: collection.into(), fields: base_entity_fields(),
+        indexes: vec![SchemaIndex { name: index.into(), fields: vec!["version".into()], unique: true, descending: false }],
+    };
+    owner.ensure(declaration("index_owner", "shared_index_name")).await?;
+    assert!(owner.ensure(declaration("index_victim", "shared_index_name")).await.is_err(),
+        "an index owned by another table must not silently satisfy this declaration");
+    assert!(owner.schema("index_victim").is_err());
+    // The failed DDL transaction must leave neither a table nor a receipt behind.
+    // A repaired declaration is admitted without an offline migration.
+    let repaired = declaration("index_victim", "victim_version_unique");
+    owner.ensure(repaired.clone()).await?;
+    owner.create(record("first", "index_victim", json!({}))).await?;
+    assert!(owner.create(record("second", "index_victim", json!({}))).await.is_err(),
+        "the declared unique index must actually constrain writes");
+    owner.db.clone().close().await?;
+    let reopened = store(path).await?;
+    reopened.ensure(repaired).await?;
+    assert_eq!(reopened.count(QueryBuilder::new("index_victim").build()).await?, 1);
+    Ok(())
+}

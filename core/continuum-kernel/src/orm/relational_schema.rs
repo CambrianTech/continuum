@@ -31,7 +31,8 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, String
     let table = naming::to_table_name(&schema.collection);
     let mut columns = BTreeSet::new();
     let mut create = Table::create();
-    create.table(Alias::new(&table)).if_not_exists();
+    // Admission already verified a new declaration; collisions must fail, not skip DDL.
+    create.table(Alias::new(&table));
     let mut indexes = Vec::new();
     for field in &schema.fields {
         let name = naming::to_snake_case(&field.name);
@@ -112,7 +113,6 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, String
                     .name(format!("idx_{table}_{name}"))
                     .table(Alias::new(&table))
                     .col(Alias::new(&name))
-                    .if_not_exists()
                     .to_owned(),
             );
         }
@@ -130,8 +130,7 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, String
         let mut index = Index::create();
         index
             .name(&declared.name)
-            .table(Alias::new(&table))
-            .if_not_exists();
+            .table(Alias::new(&table));
         for (position, field) in declared.fields.iter().enumerate() {
             let name = naming::to_snake_case(field);
             if !columns.contains(&name) {
