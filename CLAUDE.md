@@ -368,12 +368,12 @@ A new layer implements `Source`, builds its items with `levels`, and gets cachin
 
 ## 🛑 STOP — If You Are About To Touch Storage, Retrieval, Vectors, Serving, Or Any Data Path
 
-**Required first read:** [docs/architecture/ENGINE-PATTERNS.md](docs/architecture/ENGINE-PATTERNS.md). Joel, 2026-11-13: the
+**Required first read:** [docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md), section "Non-negotiable: every optimization, exhausted". Joel, 2026-11-13: the
 substrate is a game engine's renderer (study Unreal: RDG, streaming pools, Nanite LOD, GPU-driven culling, instancing,
 temporal reuse). Bytes stay bytes (BLOB + typed descriptor), no per-element CPU loops, translation only on the GPU, never
 parse until the last step, no SQL outside the ORM and no Python anywhere, squared distances and unit vectors (no roots or
-per-pair norms), no CPU/GPU transfers that are not needed. Every change posts act time, stage time, memory and quality
-before and after.
+per-pair norms), no CPU/GPU transfers that are not needed, and its exhaustive checklist walked line by line. Every change
+posts act time, stage time, memory and quality before and after.
 
 ## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
 
