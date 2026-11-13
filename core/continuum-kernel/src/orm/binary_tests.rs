@@ -49,7 +49,7 @@ async fn required_native_fields_create_atomically_without_body_readback() -> Res
     assert_eq!(store.count(QueryBuilder::new(RequiredNativeRow::COLLECTION).build()).await?, 0);
     assert_eq!(store.create_binary(record(), payloads()?).await?, "native");
     assert!(store.create_binary(record(), payloads()?).await.is_err());
-    let page = store.binary_page(RequiredNativeRow::COLLECTION, "payload", None, 1).await?;
+    let page = read_page(&store, RequiredNativeRow::COLLECTION, "payload", None, 1).await?;
     assert_eq!(page[0].value.as_ref().ok_or("missing required payload")?.bytes(), &[0, 8]);
     let query = QueryBuilder::new(RequiredNativeRow::COLLECTION).select(vec!["label".into()]).limit(1).build();
     let rows = store.query(query).await?;
@@ -59,7 +59,7 @@ async fn required_native_fields_create_atomically_without_body_readback() -> Res
     let store = open(path).await?;
     store.ensure(RequiredNativeRow::collection_schema()).await?;
     for (field, expected) in payloads()? {
-        let page = store.binary_page(RequiredNativeRow::COLLECTION, &field, None, 1).await?;
+        let page = read_page(&store, RequiredNativeRow::COLLECTION, &field, None, 1).await?;
         assert_eq!(page[0].value.as_ref(), Some(&expected));
     }
     Ok(())
@@ -108,7 +108,10 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation() -> R
         assert_eq!(count, usize::from(!creating));
         gate.release.notify_one();
         tokio::time::timeout(Duration::from_secs(5), gate.done.notified()).await?;
-        let page = real.binary_page(RequiredNativeRow::COLLECTION, "payload", None, 1).await.into_result()?;
+        let mut bytes = Vec::new(); let mut ids = Vec::new();
+        let header = real.binary_page_into(RequiredNativeRow::COLLECTION, "payload", None, 1, &mut bytes, &mut ids).await.into_result()?.ok_or("missing descriptor")?;
+        assert_eq!(ids, ["cancelled"]);
+        let page = [TestRecord { id: ids.remove(0), value: Some(BinaryValue::new(header, bytes)?) }];
         let payload = page[0].value.as_ref().ok_or("cancelled write lost payload")?;
         assert_eq!(payload.bytes(), if creating { &[0, 0x80, 0xff, 0x7f] } else { &[0xff, 0x7f, 0, 0x80] });
         assert_eq!(payload.descriptor(), &descriptor(ElementType::F16, vec![2]));
@@ -117,7 +120,7 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation() -> R
     drop(real);
     let reopened = open(path).await?;
     reopened.ensure(RequiredNativeRow::collection_schema()).await?;
-    let page = reopened.binary_page(RequiredNativeRow::COLLECTION, "payload", None, 1).await?;
+    let page = read_page(&reopened, RequiredNativeRow::COLLECTION, "payload", None, 1).await?;
     assert_eq!(page[0].value.as_ref().ok_or("restart lost payload")?.bytes(), &[0xff, 0x7f, 0, 0x80]);
     Ok(())
 }
@@ -193,7 +196,7 @@ async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<()
     let after = store.query(metadata_query()).await?;
     assert_eq!(before[0].metadata.version, after[0].metadata.version);
     assert_eq!(before[0].metadata.updated_at, after[0].metadata.updated_at);
-    let page = store.binary_page(NativeRow::COLLECTION, "payload", None, 1).await?;
+    let page = read_page(&store, NativeRow::COLLECTION, "payload", None, 1).await?;
     assert_eq!(page[0].value.as_ref(), Some(&winner));
     assert!(!store.update_binary(NativeRow::COLLECTION.into(), "removed".into(), "payload".into(),
         winner, BinaryWriteCondition::IfAbsent).await?);
@@ -221,7 +224,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart() 
         store.update_binary(NativeRow::COLLECTION.into(), format!("{n:06}"), "payload".into(),
             BinaryValue::new(descriptor(*kind, vec![2]), bytes.clone())?, BinaryWriteCondition::Replace).await?;
     }
-    assert!(store.binary_page(NativeRow::COLLECTION, "payload", None, 0).await.is_err());
+    assert!(read_page(&store, NativeRow::COLLECTION, "payload", None, 0).await.is_err());
     let stats = store.numeric_array_stats(NativeRow::COLLECTION, "payload").await?;
     assert_eq!(stats.total_records, 10003);
     assert_eq!(stats.non_empty_records, 3);
@@ -246,7 +249,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart() 
     let reopened = open(path).await?;
     let mut cursor = None;
     for (n, (kind, bytes)) in variants.iter().enumerate() {
-        let page = reopened.binary_page(NativeRow::COLLECTION, "payload", cursor, 1).await?;
+        let page = read_page(&reopened, NativeRow::COLLECTION, "payload", cursor, 1).await?;
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].id, format!("{n:06}"));
         let value = page[0].value.as_ref().ok_or("missing native payload")?;
@@ -254,7 +257,52 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart() 
         assert_eq!(value.descriptor(), &descriptor(*kind, vec![2]));
         cursor = Some(page[0].id.clone());
     }
-    let null_page = reopened.binary_page(NativeRow::COLLECTION, "payload", cursor, 1).await?;
-    assert!(null_page[0].value.is_none());
+    let null_page = read_page(&reopened, NativeRow::COLLECTION, "payload", cursor, 1).await?;
+    assert!(null_page.is_empty());
+    Ok(())
+}
+
+// Single-row contract assertions may materialize a value; the production API and
+// load replay use contiguous caller buffers directly.
+struct TestRecord { id: String, value: Option<BinaryValue> }
+async fn read_page(store: &RelationalStore, collection: &str, field: &str,
+    after: Option<String>, limit: usize) -> Result<Vec<TestRecord>, String> {
+    let mut bytes = Vec::new();
+    let mut ids = Vec::new();
+    let descriptor = store.binary_page_into(collection, field, after, limit, &mut bytes, &mut ids).await?;
+    match descriptor {
+        None => Ok(Vec::new()),
+        Some(descriptor) => {
+            if ids.len() != 1 { return Err("single-row assertion received multiple rows".into()); }
+            Ok(vec![TestRecord { id: ids.remove(0), value: Some(BinaryValue::new(descriptor, bytes)?) }])
+        }
+    }
+}
+
+#[tokio::test]
+async fn bulk_native_page_reuses_capacity_and_refuses_mixed_descriptors_atomically() -> Result<(), String> {
+    let store = open(":memory:").await?;
+    // More empty rows than the requested page: filtering must happen before LIMIT.
+    for id in ["0", "1", "2"] {
+        store.create(DataRecord { id: id.into(), collection: NativeRow::COLLECTION.into(),
+            data: json!({"payload": null}), metadata: RecordMetadata::default() }).await?;
+    }
+    for (id, kind, payload) in [("a", ElementType::I8, vec![1, 2]), ("b", ElementType::I8, vec![3, 4]), ("c", ElementType::F16, vec![0, 0, 0, 0])] {
+        store.create_binary(DataRecord { id: id.into(), collection: NativeRow::COLLECTION.into(),
+            data: json!({}), metadata: RecordMetadata::default() },
+            std::collections::BTreeMap::from([("payload".into(), BinaryValue::new(descriptor(kind, vec![2]), payload)?)])) .await?;
+    }
+    let mut bytes = Vec::with_capacity(64);
+    bytes.push(99);
+    let pointer = bytes.as_ptr();
+    let mut ids = vec!["prior".to_owned()];
+    assert!(store.binary_page_into(NativeRow::COLLECTION, "payload", None, 3, &mut bytes, &mut ids).await.is_err());
+    assert_eq!(bytes, [99]);
+    assert_eq!(ids, ["prior"]);
+    let result = store.binary_page_into(NativeRow::COLLECTION, "payload", None, 2, &mut bytes, &mut ids).await?;
+    assert_eq!(result, Some(descriptor(ElementType::I8, vec![2])));
+    assert_eq!(bytes.as_ptr(), pointer);
+    assert_eq!(bytes, [99, 1, 2, 3, 4]);
+    assert_eq!(ids, ["prior", "a", "b"]);
     Ok(())
 }

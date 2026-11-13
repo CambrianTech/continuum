@@ -126,9 +126,3 @@ impl BinaryValue {
 pub(super) fn descriptor_column(field: &str) -> String {
     format!("{}__descriptor", super::adapter::naming::to_snake_case(field))
 }
-
-#[derive(Debug)]
-pub struct BinaryRecord {
-    pub id: String,
-    pub value: Option<BinaryValue>,
-}

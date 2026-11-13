@@ -42,14 +42,17 @@ async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes:
             let cursor = format!("{:06}", (sequence as usize * 73) % 9900);
             let rows;
             if native {
-                let page = store.binary_page(collection, "payload", Some(cursor), 32).await?;
-                rows = page.len();
-                for row in page {
-                    if row.value.as_ref().ok_or("missing native payload")?.bytes() != bytes {
-                        return Err("native replay byte mismatch".to_string());
-                    }
+                let mut contiguous = Vec::new();
+                let mut ids = Vec::new();
+                let descriptor = store.binary_page_into(collection, "payload", Some(cursor), 32, &mut contiguous, &mut ids).await?
+                    .ok_or("missing native descriptor")?;
+                rows = ids.len();
+                if descriptor.byte_len()? != bytes.len() || contiguous.len() != rows * bytes.len() {
+                    return Err("native replay shape mismatch".to_string());
                 }
-            } else {
+                for row in contiguous.chunks_exact(bytes.len()) {
+                    if row != bytes { return Err("native replay byte mismatch".to_string()); }
+                }            } else {
                 let query = QueryBuilder::new(collection).filter("id", QueryOperator::Gt(cursor.into())).limit(32).build();
                 let page = store.query(query).await?;
                 rows = page.len();

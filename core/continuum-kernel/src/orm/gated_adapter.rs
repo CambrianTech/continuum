@@ -133,8 +133,8 @@ impl StorageAdapter for GatedAdapter {
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
         self.inner.list_collections().await
     }
-    async fn binary_page(&self, collection: &str, field: &str, after: Option<String>, limit: usize) -> StorageResult<Vec<super::binary::BinaryRecord>> {
-        self.inner.binary_page(collection, field, after, limit).await
+    async fn binary_page_into(&self, collection: &str, field: &str, after: Option<String>, limit: usize, bytes: &mut Vec<u8>, ids: &mut Vec<String>) -> StorageResult<Option<super::binary::BinaryDescriptor>> {
+        self.inner.binary_page_into(collection, field, after, limit, bytes, ids).await
     }
     async fn create_binary(&self, record: DataRecord, payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>) -> StorageResult<String> {
         self.write(move |a| Box::pin(async move { a.create_binary(record, payloads).await })).await

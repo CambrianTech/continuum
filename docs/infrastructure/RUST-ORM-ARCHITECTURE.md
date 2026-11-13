@@ -89,6 +89,18 @@ the explicit offline migration before adoption. Bulk reads, revision-watermarked
 delta replay and the GPU consumer remain separate implementation obligations; these
 descriptor fields alone do not establish GPU search or its quality.
 
+The bulk reader appends native rows to caller-owned contiguous bytes and parallel
+storage IDs. It borrows SQLite payload/header views while their query results remain
+owned, decodes one common descriptor, validates the whole page, and then copies each
+payload once into the destination. There is no per-row payload/header allocation and
+no numeric materialization. NULL pairs are excluded in storage before LIMIT; a partial
+NULL pair or mixed descriptor refuses the page without appending output. Capacity may
+be reserved on refusal, but existing buffer contents and lengths remain unchanged.
+This is not mmap/Metal zero-copy: SQLite owns its result buffers. The current cursor
+is still an ID-ordered live scan with string storage IDs. Revision-watermarked newest-
+first traversal, typed GPU IDs, deletion replay and the integrated GPU consumer remain
+unfinished; this bulk-copy slice must not be presented as the complete engine seam.
+
 The producer chooses its representation and performs normalization or precision
 selection once in its compute path. Storage binds and returns those native bytes.
 It does not iterate through elements to encode, decode, normalize, check finiteness,
