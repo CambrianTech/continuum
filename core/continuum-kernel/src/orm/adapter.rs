@@ -19,6 +19,15 @@ use super::types::{
     BatchOperation, CollectionSchema, CollectionStats, DataRecord, StorageResult, UUID,
 };
 
+/// Database-side summary of a declared JSON numeric-array field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NumericArrayStats {
+    pub total_records: usize,
+    pub non_empty_records: usize,
+    pub min_length: usize,
+    pub max_length: usize,
+}
+
 /// Storage adapter configuration
 #[derive(Debug, Clone)]
 pub struct AdapterConfig {
@@ -157,6 +166,8 @@ pub trait StorageAdapter: Send + Sync {
     async fn list_collections(&self) -> StorageResult<Vec<String>>;
 
     /// Get collection statistics
+    async fn numeric_array_stats(&self, collection: &str, field: &str) -> StorageResult<NumericArrayStats>;
+
     async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats>;
 
     // ─── Maintenance Operations ──────────────────────────────────────────────

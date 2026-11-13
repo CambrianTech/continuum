@@ -502,41 +502,14 @@ impl DataState {
 
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
-        // Get total record count
-        let total_query = StorageQuery {
-            collection: collection.to_string(),
-            ..Default::default()
-        };
-        let total_result = adapter.count(total_query).await;
-        let total_records = total_result.into_result()
-            .map_err(|e| format!("vector stats count for {collection}: {e}"))?;
-
-        // Read only vectors; unrelated document bodies are not needed for statistics.
-        let query = StorageQuery {
-            collection: collection.to_string(),
-            select: Some(vec!["embedding".into()]),
-            limit: Some(10000), // Reasonable limit
-            ..Default::default()
-        };
-        let result = adapter.query(query).await;
-
-        let mut records_with_vectors = 0;
-        let mut vector_dimensions = 0;
-
-        let records = result.into_result()
-            .map_err(|e| format!("vector stats query for {collection}: {e}"))?;
-        for record in &records {
-            if let Some(embedding) = record.data.get("embedding").filter(|value| !value.is_null()) {
-                let vec = Self::parse_embedding(embedding)
-                    .map_err(|e| format!("vector stats record {}: {e}", record.id))?;
-                if !vec.is_empty() {
-                    records_with_vectors += 1;
-                    if vector_dimensions == 0 {
-                        vector_dimensions = vec.len();
-                    }
-                }
-            }
+        let stats = adapter.numeric_array_stats(collection, "embedding").await.into_result()
+            .map_err(|e| format!("vector stats for {collection}: {e}"))?;
+        if stats.min_length != stats.max_length {
+            return Err(format!("{collection} contains inconsistent embedding dimensions: {} to {}", stats.min_length, stats.max_length));
         }
+        let total_records = stats.total_records;
+        let records_with_vectors = stats.non_empty_records;
+        let vector_dimensions = stats.max_length;
 
         // Check cache status
         let cached_count = self.vector_cache.get::<Vec<CachedVector>>(&scope, collection)

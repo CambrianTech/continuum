@@ -75,3 +75,5 @@ pub use vector::{
     VectorSearchAdapter, VectorSearchOptions, VectorSearchResponse, VectorSearchResult,
 };
 pub mod client_read;
+
+mod relational_array_stats;

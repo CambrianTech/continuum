@@ -139,6 +139,10 @@ impl StorageAdapter for SeaOrmAdapter {
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
         StorageResult::ok(self.store.collections())
     }
+    async fn numeric_array_stats(&self, collection: &str, field: &str) -> StorageResult<super::adapter::NumericArrayStats> {
+        receipt(self.store.numeric_array_stats(collection, field).await)
+    }
+
     async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats> {
         receipt(self.store.stats(collection).await)
     }

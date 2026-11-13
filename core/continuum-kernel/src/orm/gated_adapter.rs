@@ -133,6 +133,10 @@ impl StorageAdapter for GatedAdapter {
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
         self.inner.list_collections().await
     }
+    async fn numeric_array_stats(&self, collection: &str, field: &str) -> StorageResult<super::adapter::NumericArrayStats> {
+        self.inner.numeric_array_stats(collection, field).await
+    }
+
     async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats> {
         self.inner.collection_stats(collection).await
     }
