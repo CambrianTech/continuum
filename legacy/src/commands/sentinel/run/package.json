@@ -1,5 +1,0 @@
-{
-  "name": "sentinel-run",
-  "version": "1.0.0",
-  "description": "Run Sentinels from JSON config - BuildSentinel, OrchestratorSentinel, VisualSentinel, TaskSentinel"
-}

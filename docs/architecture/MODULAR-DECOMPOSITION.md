@@ -7,7 +7,7 @@ live findings #25 (decompose the monolith), #26 (faculties degrade-not-panic),
 [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SUBSTRATE-ARCHITECTURE.md) ·
 [CONCURRENCY-STYLE-GUIDE](CONCURRENCY-STYLE-GUIDE.md) ·
 [ORGANISM-OS-ARCHITECTURE](ORGANISM-OS-ARCHITECTURE.md) ·
-[UNSLOTH-INTEGRATION](UNSLOTH-INTEGRATION.md) · [ADAPTER-SYSTEM-ARCHITECTURE](ADAPTER-SYSTEM-ARCHITECTURE.md)
+[ADAPTER-SYSTEM-ARCHITECTURE](ADAPTER-SYSTEM-ARCHITECTURE.md)
 
 ---
 
@@ -51,7 +51,7 @@ Group modules by *concern* — each group is a candidate process/container:
 |---|---|---|
 | **RuntimeShell** | health, auth, system, events, logger, runtime, mcp, data | Every node. The minimal addressable substrate — commands/events/data/health. A node is *nothing* without this. |
 | **ResourceGov** | gpu, resource-broker, pressure-broker | Per-node hardware governance; co-resident with whatever it governs. |
-| **Inference** | inference, inference-coordinator, ai-inference-handle, inference-llm, ai_provider, embedding, search, tool-parsing, vision, models | The engine. Increasingly **external (unsloth)** behind the `AIProviderAdapter` (see UNSLOTH-INTEGRATION); the in-tree modules become a fallback/local-lane. |
+| **Inference** | inference, inference-coordinator, ai-inference-handle, inference-llm, ai_provider, embedding, search, tool-parsing, vision, models | The engine. Served by `llama-server` from our llama.cpp fork behind the `AIProviderAdapter`; the in-tree modules are the fallback/local-lane. |
 | **Cognition** | cognition, channel, persona_allocator, agent, memory, rag, persona_instance_manager, persona-rag-inspect | The organism's brain. Per-persona hosts (the Docker-citizen model). |
 | **Forge** | forge, sentinel, plasticity, dataset, vdd, cargo, code | Training / dev / self-improvement. Bursty, GPU-heavy, schedulable separately. |
 | **GridTransport** | airc, grid | The bus itself. |
@@ -76,7 +76,7 @@ like an AWS placement group / k8s pod affinity. The hard one:
 - **ResourceGov co-resides with the hardware it governs** (the GPU node runs its
   own gpu/pressure modules).
 - **Inference co-resides with its accelerator** — but since it's becoming
-  external (unsloth's own GPU container), the boundary is the OpenAI-compatible
+  a separate engine process (`llama-server`), the boundary is the OpenAI-compatible
   `/v1` wire, not a continuum process split.
 
 A profile declares its placement constraints; the container layout (§6) honors
@@ -108,9 +108,9 @@ layout"):
 
 ```
 ┌─ node: light citizen (no GPU) ────────────┐   ┌─ node: GPU engine ───────────┐
-│  RuntimeShell + Cognition + GridTransport  │   │  unsloth (inference+train)   │
+│  RuntimeShell + Cognition + GridTransport  │   │  llama-server (fork engine) │
 │  (+ continuum-mcp sidecar)                 │   │  OpenAI-compatible /v1        │
-│  leases ai/generate over the grid ─────────┼──▶│  (its own AGPL app/container) │
+│  leases ai/generate over the grid ─────────┼──▶│  (own process/container)   │
 └────────────────────────────────────────────┘   └───────────────────────────────┘
 ┌─ node: Live (GPU) — CO-LOCATED ───────────┐   ┌─ node: Forge (GPU, bursty) ──┐
 │  Bevy render + LiveKit SFU + GPU           │   │  forge/sentinel/plasticity    │
@@ -172,9 +172,8 @@ payoff of designing everything on one consistent set of primitives:
 
 Because the substrate is one fluent design (concurrency + separation of concerns
 applied uniformly), the grid is not a layer bolted on top — it is what the module
-graph looks like when its nodes are placed across machines. The unsloth move
-already proved the first decomposition: inference pulled out to its own GPU
-process behind `/v1`.
+graph looks like when its nodes are placed across machines. Serving the engine as its own
+GPU process (`llama-server`) behind `/v1` was the first decomposition.
 
 ## 10. Guardrails (per CONCURRENCY-STYLE-GUIDE)
 - No parallel manager/coordinator hierarchy — profiles reuse `Runtime` +

@@ -1,5 +1,8 @@
 # carl-install-smoke — handoff (root-caused; #1 fatal fixed; verify the rest on WSL/Linux)
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 `carl-install-smoke` (the `curl install.sh | bash` gate — Carl's REAL entry point, not the docker-compose
 gate) has been RED for 8+ runs on canary. This is reliability-spine #1 (install). Root-caused from the CI
 artifact; the blocking fatal is fixed + unit-verified here on macOS. What remains needs a real Linux/WSL run
@@ -41,7 +44,7 @@ There are **TWO different `install.sh`** and they've drifted independently (no s
 - **repo-root `install.sh`** — 1183 lines. This is what `curl … | bash` fetches (raw.githubusercontent) and
   what the smoke runs. **This is the one that matters.**
 - **`tools/scripts/install.sh`** — 747 lines. What `npm run install:continuum` runs. (I de-staled THIS one in
-  #1848 — Unsloth step, `cd src`/`jtag` messages — but it is NOT the file the smoke exercises.)
+  #1848 — `cd src`/`jtag` messages — but it is NOT the file the smoke exercises.)
 
 They share the `tools/scripts/lib/install-common.sh` helpers (which is why the one-line fix above lands for
 both). But the two top-level scripts are a real single-source-of-truth violation. **Recommended follow:**
@@ -51,14 +54,14 @@ smoke loop green so you can prove parity.
 
 ## Lower-priority cleanup in repo-root install.sh (cosmetic, non-fatal)
 Stale `src/shared/models.json` references in COMMENTS + user-facing strings (lines ~248, 442, 458, 461, 515,
-517) — models.json now lives at `legacy/src/shared/models.json` and is read by the `model-init` container
+517) — models.json now lives at `docker/model-init/models.json` and is read by the `model-init` container
 (fixed in #1851). These are comments/echoes, not fatal, but worth truing up when you touch the file.
 
 ## What's already done + verified (so you don't redo it)
 - **Container BUILD path build-proven on macOS** (`docker build`, real): core image contexts were vestigial →
   deleted (#1850); model-init context fixed → builds clean (#1851). `docker compose config` green base/+mac/+gpu.
 - The jtag-bin fatal → fixed + unit-verified (this PR).
-- Native genome forge complete + live (Unsloth deleted) — unrelated to install, but that's why `src/` moved.
+- Native genome forge complete + live — unrelated to install, but that's why `src/` moved.
 
 ## The instruments you have
 - `gh run download <run-id> -D <dir>` — pulls the smoke's artifacts (install.log + per-container logs +

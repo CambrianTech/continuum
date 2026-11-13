@@ -57,28 +57,30 @@ scratch lanes, so there's nothing on our side to contend for. The rule is simple
 
 ## The one hard rule
 
-**We never depend on any opponent — Hermes, unsloth, a cloud provider — ever.** Optional
+**We never depend on any opponent — Hermes, a cloud provider — ever.** Optional
 integrations that reach what a user already runs are an asset; a forced dependency is a
 weakness (and off-grid: unmanageable by our daemons).
 
 ## Run OUR models — Rust `benchmark/*` commands (on-grid, persona-callable)
 
-The benchmark catalog + runner are Rust (`core/continuum-core/src/commands/benchmark.rs`),
-mirroring the model catalog. `benchmark/run` is a thin wrapper over `cognition/eval` — one
-grader, never reimplemented.
+The benchmark catalog + adapter are Rust (`core/continuum-core/src/commands/benchmark.rs`),
+mirroring the model catalog. A benchmark is an ADAPTER: it imports task + oracle as card
+rows and the activity's room is the runner; there is no `benchmark/run`/`round`/`dispatch`
+runner any more (see
+[BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER](../docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md)).
 
 ```bash
 continuum benchmark/list                                                 # the catalog (name, grader, tasks, runnable)
-continuum benchmark/round --benchmark humaneval-rs --persona <id> --limit 40   # run a GYM on a persona (resume-able)
+continuum benchmark/import --suite humaneval-rs --limit 40               # preview the cards (task + oracle, no side effects)
+continuum activity/spawn --name hard-rs-40 --recipe benchmark/round \
+  --params='{"suite":"hard-rs","repo":"owner/name","limit":40}'          # a round: cards posted into its own room
 ```
 
-**Running a SWE-bench round?** SWE is NOT a gym — `benchmark/round`/`benchmark/run` refuse it.
-It goes through the kanban adapter `benchmark/dispatch`, and there is a step-by-step,
-failure-mode-annotated runbook: **[`swe/RUNBOOK.md`](swe/RUNBOOK.md)** (the readiness check,
-the exact `benchmark/dispatch --instances` command, how to read a verdict, and the residency /
-airc / zombie-round gotchas that cost a full session on 2026-08-25). Gym-format benchmarks
-(Terminal-Bench, DS-1000, …) replicate via `continuum benchmark/round --benchmark <gym>.jsonl
---persona <id>` — see each result row's `Replication:` note.
+**Running a SWE-bench round?** The same recipe, with a SWE suite: see the step-by-step,
+failure-mode-annotated runbook **[`swe/RUNBOOK.md`](swe/RUNBOOK.md)** (the readiness check,
+how to read a verdict, and the residency / airc gotchas). Gym-format benchmarks
+(Terminal-Bench, DS-1000, …) are the same adapter shape — see each result row's
+`Replication:` note.
 
 Add a respected collection (SWE-bench, LiveCodeBench, MBPP, …) = one `BenchmarkSpec` row in
 `benchmark.rs`. Big datasets pull + cache like a model (follow-up: `benchmark/pull`); the
@@ -89,7 +91,7 @@ registry is how a persona runs a competition by name.
 
 `coder/oneshot_opponent.py` — the lone Python, deliberately toolchain-free: Python stdlib +
 `rustc`, imports nothing from us. Point it at any external OpenAI-compatible `/v1` (a local
-llama-server, an unsloth gateway, ollama, a cloud API, or an airc node) and it scores that
+llama-server, ollama, a cloud API, or an airc node) and it scores that
 model one-shot on the same gym, graded identically. This is how outsiders replicate us and how
 we take a model on its own published claims — same tasks, both numbers.
 

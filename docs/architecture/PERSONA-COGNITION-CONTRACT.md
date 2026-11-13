@@ -1,5 +1,9 @@
 # Persona Cognition Runtime Contract
 
+**Current focus contract (2026-10-28):** [Focus](FOCUS-CONTRACT.md) consolidates
+prompt allocation and adaptive attention. Its ownership and acceptance gates guide
+that implementation; the broader proposal below is not evidence of deployment.
+
 > **Companion to** [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) (the substrate floor) and [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (the artifact economy on top). This document is the contract for what a persona *is* — what it sees, what it owns, what it decides, what proves the substrate treated it right.
 >
 > **Origin.** Asked for explicitly by codex on `#cambriantech` (2026-05-16): "Suggested next canonical design artifact: Persona Cognition Runtime Contract naming RuntimeFrame, PersonaInbox, WorkingMemoryAssembly, RecallBudget, CognitionLease, PersonaDecision, TurnReplayRecord, ResourceGovernor, plus invariants. I'll use that as the gate for Rust implementation slices."

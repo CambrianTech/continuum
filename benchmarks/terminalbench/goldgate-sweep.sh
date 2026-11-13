@@ -45,5 +45,5 @@ with open(sys.argv[2],'w') as out:
     for l in open(src):
         t=json.loads(l)
         if t['id'].removeprefix('tb21-') in gold: out.write(l); n+=1
-print(f"gold gym written: {sys.argv[2]} ({n} tasks) — run it with: continuum benchmark/round --benchmark {sys.argv[2]} --persona <name>")
+print(f"gold gym written: {sys.argv[2]} ({n} tasks) — post it with: continuum activity/spawn --recipe benchmark/round (suite = the gym)")
 PYEOF

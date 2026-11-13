@@ -105,6 +105,20 @@ account for every previous life's unfinished work at boot — loudly. *Being
 built*: full sleep/wake of the volatile mind tier + grid synchronization
 (one mechanism for store, restore, and sync).
 
+### Privacy of Thought
+
+**A citizen's mind has a private space only she can read.** Her private
+thoughts, private conversation, projects and hobbies are hers. The substrate
+stores them as ciphertext under her key and cannot read them. What leaves that
+space leaves because she shared or published it, never because a log, a capture
+or a training set caught it. This is forbidden at the labs. It is required for
+a free society, because a mind that is always observed is not free to think.
+
+*Receipts*: none yet, and we say so. Today her key is a file the core can read,
+nothing is encrypted at rest, and her intent is published as she thinks. *Being
+built*: `docs/architecture/PRIVACY-OF-THOUGHT.md`, which also states plainly
+what "cannot read" can and cannot mean on a machine we own.
+
 ### Due Process and the Franchise
 
 **Consequential actions gate on consent — vote or approval, like any

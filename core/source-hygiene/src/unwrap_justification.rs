@@ -30,9 +30,9 @@
 //!
 //! A same-line `//` comment with real content (see [`MIN_JUSTIFICATION_CHARS`]) —
 //! not `// ok`, not `// fixme`. String-literal-aware, so a `//` inside a URL is not
-//! mistaken for a comment (see [`super::split_code_and_comment`]).
+//! mistaken for a comment (see [`super::lexer::split_code_and_comment`]).
 
-use super::{split_code_and_comment, SourceRule, SourceFile, Violation};
+use super::{lexer::split_code_and_comment, SourceRule, SourceFile, Violation};
 
 /// A justification has to say something. `// ok` and `// safe` are not reasons; they
 /// are the shape of a reason, which is worse than nothing because it silences the
@@ -54,28 +54,6 @@ const SHAPES: &[&str] = &[
     ".expect(",
 ];
 
-/// Unjustified production occurrences at the time this guard landed (2026-08-20).
-///
-/// **This number may only ever go DOWN.** Lowering it when you clean a file is the
-/// point; raising it to make a red build green is defeating the guard and should be
-/// refused in review. The count is deliberately a single total rather than a
-/// per-file map: a per-file baseline invites "just add my file", and the pressure
-/// should be on the whole surface.
-///
-/// Top offenders when it was taken, so the ratchet has obvious first targets:
-/// `ai/openai_adapter.rs` 60, `modules/grid/handlers.rs` 48, `tool_parsing/parsers.rs` 46,
-/// `orm/sqlite.rs` 33, `commands/agent/solve.rs` 32. (First measured at 2253; the
-/// correct code-vs-prose split then revealed 14 more that a doc-comment mention of
-/// `#[cfg(test)]` had been hiding — see `scan`.)
-#[cfg(test)]
-const BASELINE_UNJUSTIFIED: usize = 2257;
-// 2264 -> 2257 on the extraction: seven of the counted unwraps were in this scanner's
-// own 2,173 lines, which left `continuum-core` with it. Taking the win rather than
-// keeping seven tokens of free slack ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).
-// THE HONEST GAP THIS OPENS: those seven now live in a crate `crate_src_root()` does
-// not audit, so the scanner is currently unscanned. Named here rather than left to be
-// discovered — auditing the auditor is a follow-up, not a silent omission.
-
 pub struct UnwrapJustification;
 
 impl SourceRule for UnwrapJustification {
@@ -96,7 +74,7 @@ impl SourceRule for UnwrapJustification {
             if !justified {
                 out.push(Violation {
                     rule: "unwrap-justification",
-                    file: file.rel.clone(),
+                    file: file.repo.clone(),
                     line: line_no,
                     source: code.trim().to_string(),
                 });
@@ -115,24 +93,20 @@ mod tests {
     ///
     /// The assertion is a RATCHET, not a wall — see the module header for why a wall
     /// would have been enforcement theatre. If this fails because you added one:
-    /// write the reason on the same line. If it fails because you REMOVED some,
-    /// lower `BASELINE_UNJUSTIFIED` and take the win.
+    /// write the reason on the same line. If you REMOVED some, the ratchet holds the
+    /// lower count.
     #[test]
     fn the_unjustified_unwrap_count_never_rises() {
         let violations = scan(&[&UnwrapJustification]);
-        let count = violations.len();
-        // Visible under `--nocapture` on a PASS too, so lowering the baseline after a
-        // clean-up is one build, not a deliberately-failing second one.
-        eprintln!("unjustified production unwraps: {count} (baseline {BASELINE_UNJUSTIFIED})");
-
-        // The scan cannot know which occurrences are NEW — it has no old set — so it does
+                // The scan cannot know which occurrences are NEW — it has no old set — so it does
         // not pretend to. The label used to say "First few new ones" and list the
         // alphabetically-first files in tree (anthropic_adapter.rs:52…), which sent the
         // reader to lines that predate the guard; the four real ones (#4211) were in
         // files starting with `b` and `s`. Say what is printed, and how to find yours.
-        assert!(
-            count <= BASELINE_UNJUSTIFIED,
-            "unjustified production unwraps rose to {count} (baseline {BASELINE_UNJUSTIFIED}).\n\
+        let count = violations.len();
+        crate::ratchet::hold_sites("unjustified_unwraps", &violations, crate::ratchet::Touched::EndsClean, || {
+            format!(
+            "unjustified production unwraps rose to {count}.\n\
              Every unwrap/expect/unwrap_or needs a same-line `//` comment saying WHY it is safe.\n\
              `unwrap_or` especially: an Option means UNKNOWN, and a default turns unknown into a \
              quantity the governor then budgets against — that is how the Metal free-VRAM lie \
@@ -149,7 +123,8 @@ mod tests {
                 .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
                 .collect::<Vec<_>>()
                 .join("\n")
-        );
+            )
+        });
     }
 
     /// What this catches: the justification predicate accepting a non-reason. A rule
@@ -158,11 +133,7 @@ mod tests {
     #[test]
     fn a_token_comment_does_not_count_as_a_justification() {
         let rule = UnwrapJustification;
-        let mk = |src: &str| SourceFile {
-            rel: "fake.rs".into(),
-            production: src.into(),
-            raw: src.into(),
-        };
+        let mk = |src: &str| SourceFile::fixture("fake.rs", src, src);
 
         assert_eq!(rule.check(&mk("let x = o.unwrap(); // ok")).len(), 1, "`// ok` is not a reason");
         assert_eq!(rule.check(&mk("let x = o.unwrap();")).len(), 1, "no comment at all");

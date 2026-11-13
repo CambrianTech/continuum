@@ -10,10 +10,9 @@
  * ONLY the [`UniverseInstance`] interface:
  *
  *   - `element`   — the DOM node the host places behind its panels;
- *   - `update()`  — the ambient world-state (citizens, work energy) pushed
+ *   - `update()`  — the ambient world-state (citizens) pushed
  *                   each time the host's data changes;
- *   - `onFact()`  — one call per REAL event (message landed, act radiated,
- *                   verdict settled). Spectacle is fact-driven by contract:
+ *   - `onFact()`  — one call per REAL event (message landed, act radiated). Spectacle is fact-driven by contract:
  *                   a universe never invents motion, it responds to truth.
  *   - `dispose()` — teardown, timers and listeners included.
  *
@@ -32,7 +31,7 @@
  */
 
 /** A real event the interface just learned — the only fuel for spectacle. */
-export type UniverseFactKind = 'message' | 'act' | 'verdict';
+export type UniverseFactKind = 'message' | 'act';
 
 export interface UniverseFact {
   readonly kind: UniverseFactKind;
@@ -42,8 +41,6 @@ export interface UniverseFact {
 export interface UniverseFrame {
   /** The focused room's members (name + liveness) — worlds may personify. */
   readonly citizens: readonly { readonly name: string; readonly active: boolean }[];
-  /** Normalized 0..1 work intensity (live runs over capacity). */
-  readonly energy: number;
 }
 
 /** A mounted universe — what the host holds and speaks to. */

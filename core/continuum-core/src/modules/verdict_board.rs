@@ -34,8 +34,19 @@ pub enum BoardMove {
 
 /// The line the room hears. Pure so it is tested, not restated.
 pub fn verdict_line(verdict: &SweVerdict, holder_name: Option<&str>, moved: &BoardMove) -> String {
+    // A voided test is named, never silently dropped from the count: the reader sees what
+    // the grader set aside and why, and can check it.
+    let voided = if verdict.env_void_p2p.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " ({} set aside as environment faults: they fail on the unpatched tree here too — {})",
+            verdict.env_void_p2p.len(),
+            verdict.env_void_p2p.join(", ")
+        )
+    };
     let score = format!(
-        "FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}",
+        "FAIL_TO_PASS {}/{}, PASS_TO_PASS {}/{}{voided}",
         verdict.f2p_passed, verdict.f2p_total, verdict.p2p_passed, verdict.p2p_total
     );
     let card = match moved {
@@ -53,10 +64,16 @@ pub fn verdict_line(verdict: &SweVerdict, holder_name: Option<&str>, moved: &Boa
         return format!("✅ {} RESOLVED — {score}. {card}", verdict.instance_id);
     }
     let at = holder_name.map(|n| format!("@{n} ")).unwrap_or_default(); // unwrap_or: no live holder → an undirected room line, never a bare "@"
-    let failing = if verdict.failed_tests.is_empty() {
+    let charged: Vec<&str> = verdict
+        .failed_tests
+        .iter()
+        .filter(|t| !verdict.env_void_p2p.contains(t))
+        .map(String::as_str)
+        .collect();
+    let failing = if charged.is_empty() {
         String::new()
     } else {
-        format!(" — still failing: {}", verdict.failed_tests.join(", "))
+        format!(" — still failing: {}", charged.join(", "))
     };
     format!(
         "❌ {at}{} graded: not resolved — {score}{failing}. {card}",
@@ -95,7 +112,7 @@ pub async fn follow(verdict: &SweVerdict) {
 /// duplicate in another round. Idempotent: a card the board already moved is not on
 /// the list; one that cannot be moved is probed and retried next pass. Measured
 /// 2026-09-14: django-12663 resolved 18 h earlier, its parent in review, the round
-/// 7/8 forever, the standing autopilot skipping every tick.
+/// 7/8 forever.
 pub async fn reconcile_verdicted() -> FollowTally {
     let pending = crate::cognition::bench_round::unsettled_cards_with(|instance| {
         crate::cognition::swe_bench::read_verdict(instance)
@@ -119,7 +136,7 @@ pub async fn reconcile_verdicted() -> FollowTally {
         tally.failed += t.failed;
     }
     if tally != FollowTally::default() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.reconciled",
             closed = tally.closed,
             review_closed = tally.review_closed,
@@ -140,7 +157,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
     }
     let short = |c: &Uuid| c.to_string().chars().take(8).collect::<String>();
     let Some(airc) = crate::persona::operator_peer::operator_airc() else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.board_close_failed",
             instance = verdict.instance_id.as_str(),
             card = "-",
@@ -153,13 +170,16 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
     // cards for the same instance — other holders' work — and could not even say so in their
     // rooms). The verdict MOVES the card the graded copy belongs to (the solver's live hold on
     // the board, or the only card when there is one) and only INFORMS the rest.
-    let owners: Vec<(Uuid, Option<Uuid>)> = match airc
+    // Each card's live owner and its open review card (airc's native `reviews` link), read
+    // from one board snapshot.
+    let (owners, open_reviews): (Vec<(Uuid, Option<Uuid>)>, Vec<(Uuid, Uuid)>) = match airc
         .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
         .await
     {
         Ok(board) => {
             let snap = board.snapshot();
-            all.iter()
+            let owners = all
+                .iter()
                 .map(|c| {
                     let owner = snap
                         .cards
@@ -168,9 +188,17 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                         .and_then(|k| k.owner.map(|o| o.as_uuid()));
                     (*c, owner)
                 })
-                .collect()
+                .collect();
+            let open_reviews = snap
+                .cards
+                .iter()
+                .filter(|k| !crate::cognition::card_facts::is_concluded(&k.state))
+                .filter_map(|k| k.reviews.map(|parent| (parent.as_uuid(), k.card_id.as_uuid())))
+                .filter(|(parent, _)| all.contains(parent))
+                .collect();
+            (owners, open_reviews)
         }
-        Err(_) => all.iter().map(|c| (*c, None)).collect(),
+        Err(_) => (all.iter().map(|c| (*c, None)).collect(), Vec::new()),
     };
     let solver = Uuid::parse_str(&verdict.solver).ok();
     let (settle, inform) = cards_to_settle(&owners, solver, verdict.resolved);
@@ -178,7 +206,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         if mode == FollowMode::Reconcile {
             continue;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.card_informed",
             instance = verdict.instance_id.as_str(),
             card = %short(&card),
@@ -195,12 +223,12 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         // review 18 h; the operator's close was a no-op; closing the review card
         // settled parent and round within a second).
         if verdict.resolved {
-            if let Some(review) = crate::cognition::bench_round::review_card_of(card) {
-                match crate::modules::work::advance_card_state(
+            if let Some(review) = open_reviews.iter().find(|(parent, _)| *parent == card).map(|(_, review)| *review) {
+                match crate::persona::work_board::advance::advance_card_state(
                     &airc,
                     airc_lib::WorkCardId::from_uuid(review),
                     airc_lib::CardState::Closed,
-                    crate::modules::work::VIA_VERDICT,
+                    crate::persona::work_board::advance::VIA_VERDICT,
                     None,
                 )
                 .await
@@ -208,7 +236,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                     Ok(()) => {
                         tally.review_closed += 1;
                         tally.closed += 1;
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "benchmark.verdict.review_closed",
                             instance = verdict.instance_id.as_str(),
                             card = %short(&card),
@@ -218,7 +246,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                         say_in_card_room(verdict, card, &airc, &BoardMove::Closed).await;
                         continue;
                     }
-                    Err(e) => crate::probe!(
+                    Err(e) => continuum_base::probe!(
                         class = "benchmark.verdict.board_close_failed",
                         instance = verdict.instance_id.as_str(),
                         card = %short(&review),
@@ -234,17 +262,17 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         } else {
             airc_lib::CardState::InProgress
         };
-        let moved = match crate::modules::work::advance_card_state(
+        let moved = match crate::persona::work_board::advance::advance_card_state(
             &airc,
             card_id,
             next,
-            crate::modules::work::VIA_VERDICT,
+            crate::persona::work_board::advance::VIA_VERDICT,
             None,
         )
         .await
         {
             Ok(()) if verdict.resolved => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.verdict.board_closed",
                     instance = verdict.instance_id.as_str(),
                     card = %short(&card),
@@ -254,7 +282,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                 BoardMove::Closed
             }
             Ok(()) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.verdict.returned_to_holder",
                     instance = verdict.instance_id.as_str(),
                     card = %short(&card),
@@ -264,7 +292,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                 BoardMove::ReturnedToHolder
             }
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.verdict.board_close_failed",
                     instance = verdict.instance_id.as_str(),
                     card = %short(&card),
@@ -299,7 +327,7 @@ async fn say_in_card_room(
 ) {
     let short = card.to_string().chars().take(8).collect::<String>();
     let Some(room) = crate::cognition::bench_round::room_for_card(card) else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.line_not_posted",
             instance = verdict.instance_id.as_str(),
             card = %short,
@@ -310,21 +338,20 @@ async fn say_in_card_room(
     };
     let registry = crate::persona::PersonaAircRuntimeRegistry::try_global();
     // Three answers, kept apart (Astra's review): the board says WHO holds it, the board
-    // says NOBODY holds it (a lapsed or unclaimed card — do not resurrect the dispatch
-    // assignee over the board's word), or the board could not be read at all (then the
-    // dispatch-time assignee is the best historical guess, and is labelled so).
+    // says NOBODY holds it (a lapsed or unclaimed card), or the board could not be read
+    // at all (then nobody is addressed, and the line says the holder is unknown).
     let (holder, historical) = match holder_of(card, room, registry.as_ref()).await {
         HolderRead::Held(h) => (Some(h), false),
         HolderRead::Unheld => (None, false),
         HolderRead::Unavailable(why) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.verdict.holder_unavailable",
                 instance = verdict.instance_id.as_str(),
                 card = %short,
                 why = %why,
-                "the live board could not be read — addressing the dispatch-time assignee as a historical guess"
+                "the live board could not be read — the verdict line addresses nobody"
             );
-            (crate::cognition::bench_round::card_assignee(card), true)
+            (None, true)
         }
     };
     // A holder is a mesh citizen, not necessarily a runtime on this node.
@@ -335,7 +362,7 @@ async fn say_in_card_room(
             let alias = match operator.peer_alias(airc_core::PeerId::from_uuid(id)).await {
                 Ok(alias) => alias,
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.verdict.holder_name_unavailable",
                         instance = verdict.instance_id.as_str(),
                         card = %short,
@@ -357,7 +384,7 @@ async fn say_in_card_room(
         .map(|rt| rt.airc().clone())
         .unwrap_or_else(|| operator.clone()); // unwrap_or: no live citizen other than the holder → the operator speaks (never the holder herself)
     match crate::persona::airc_citizen::publish_text_in_room(&voice, room, &line).await {
-        Ok(_) => crate::probe!(
+        Ok(_) => continuum_base::probe!(
             class = "benchmark.verdict.line_posted",
             instance = verdict.instance_id.as_str(),
             card = %short,
@@ -366,7 +393,7 @@ async fn say_in_card_room(
             resolved = verdict.resolved,
             "the room heard the verdict"
         ),
-        Err(e) => crate::probe!(
+        Err(e) => continuum_base::probe!(
             class = "benchmark.verdict.line_not_posted",
             instance = verdict.instance_id.as_str(),
             card = %short,
@@ -381,7 +408,7 @@ fn holder_label(id: Uuid, alias: Option<&str>, historical: bool) -> String {
     let name = alias
         .filter(|name| !name.trim().is_empty())
         .map(str::to_owned)
-        .unwrap_or_else(|| crate::persona::card_holder::short8(&id)); // unwrap_or: unknown identity uses the board's addressable short id
+        .unwrap_or_else(|| crate::cognition::card_holder::short8(&id)); // unwrap_or: unknown identity uses the board's addressable short id
     if historical {
         format!("{name} (dispatch assignee; live board unavailable)")
     } else {
@@ -427,20 +454,20 @@ async fn holder_of(
         return HolderRead::Unavailable("board read failed");
     };
     let board = board.snapshot();
-    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+    let Ok(now) = continuum_base::time::EpochMs::read() else {
         return HolderRead::Unavailable("clock before the epoch");
     };
-    let now_ms = now.as_millis() as u64;
+    let now_ms = now.millis();
     let Some(found) = board.cards.iter().find(|c| c.card_id.as_uuid() == card) else {
         return HolderRead::Unavailable("card not on the board");
     };
-    match crate::persona::card_holder::hold_of(found, now_ms) {
-        crate::persona::card_holder::Hold::Held => match found.owner {
+    match crate::cognition::card_holder::hold_of(found, now_ms) {
+        crate::cognition::card_holder::Hold::Held => match found.owner {
             Some(o) => HolderRead::Held(o.as_uuid()),
             None => HolderRead::Unheld,
         },
-        crate::persona::card_holder::Hold::Lapsed
-        | crate::persona::card_holder::Hold::Unclaimed => HolderRead::Unheld,
+        crate::cognition::card_holder::Hold::Lapsed
+        | crate::cognition::card_holder::Hold::Unclaimed => HolderRead::Unheld,
     }
 }
 

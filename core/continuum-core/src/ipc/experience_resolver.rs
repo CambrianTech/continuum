@@ -82,7 +82,7 @@ impl LiveExperienceResolver {
 mod tests {
     use super::*;
     use crate::experience::RecipeExperienceSource;
-    use crate::ipc::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
+    use crate::experience::room_purpose::{RoomPurposeSource, SharedRoomPurpose};
     use airc_core::PeerId;
     use airc_lib::RoomMember;
     use async_trait::async_trait;
@@ -136,7 +136,7 @@ mod tests {
         let asha = Uuid::from_u128(2);
 
         let purpose: SharedRoomPurpose = Arc::new(FixedPurpose("benchmark/hard-rs"));
-        let source: SharedExperienceSource = Arc::new(RecipeExperienceSource::builtins(purpose));
+        let source: SharedExperienceSource = Arc::new(RecipeExperienceSource::builtins(purpose).expect("the embedded recipes parse"));
         let roster = Arc::new(StubRoster {
             me: PeerId(asha),
             members: vec![

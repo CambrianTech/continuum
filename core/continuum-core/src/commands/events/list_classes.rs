@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::events::{list_event_classes, ResolvedEventClassConfig};
+use crate::runtime::event_classes::{list_event_classes, ResolvedEventClassConfig};
 
 /// `events/list-classes` takes no input.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
@@ -47,7 +47,7 @@ crate::action_command! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{declare_event_class, EventClassConfig};
+    use crate::runtime::event_classes::{declare_event_class, EventClassConfig};
     use crate::sdk_codegen::{ActionCommand, Ctx};
 
     // what this catches: name/access wiring — listing the contract is a read on the

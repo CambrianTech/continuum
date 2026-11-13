@@ -1,6 +1,6 @@
 # Model Endpoint Fabric — The Self-Healing Adapter Router For All Model Needs
 
-**Status.** Canonical design for how the organism reaches *every* model capability — text, embedding, vision, audio, training — across *many* local and grid endpoints (continuum llama-server, unsloth, grid peers, cloud), through ONE adapter interface mediated by ONE stateful router. Crystallized 2026-06-24 with Joel: *"using and writing quality adapters, self healing and even negotiating across many grid unsloth/continuum endpoints to satisfy the needs of the system; will take stateful intelligent systems akin to advanced routers… develop an elegant adapter based architecture we can rely on for all our model needs. This is everything."*
+**Status.** Canonical design for how the organism reaches *every* model capability — text, embedding, vision, audio, training — across *many* local and grid endpoints (continuum llama-server, grid peers, cloud), through ONE adapter interface mediated by ONE stateful router. Crystallized 2026-06-24 with Joel: *"using and writing quality adapters, self healing and even negotiating across many grid unsloth/continuum endpoints to satisfy the needs of the system; will take stateful intelligent systems akin to advanced routers… develop an elegant adapter based architecture we can rely on for all our model needs. This is everything."*
 
 This doc is the connective tissue **above** the local scheduler and **under** the dumb command surface. It is overwhelmingly *composition of primitives that already exist in tree* — its job is to name the layer, fix the invariants, and stop the recurring slop (reinventing the registry, owning model bytes, bolting policy onto commands, silent fallbacks).
 
@@ -16,7 +16,7 @@ This doc is the connective tissue **above** the local scheduler and **under** th
 
 ## 1. The thesis in one paragraph
 
-A model **need** (generate this text / embed this content / describe this image, for this persona, at this latency class, under this trust context) is a packet. An **endpoint** (a place that can serve some needs — local llama-server, local unsloth, a grid peer, a cloud provider) is a link, reached through an `AIProviderAdapter`. The **fabric** is the router: it holds the live table of endpoints with their state (health, latency, capacity, warm models, capabilities, trust), and for each need it **matches → scores → routes → heals**. The **custodian** (unsloth) owns the bytes underneath every local endpoint; the fabric never copies model bytes — it holds **handles by id** and asks the custodian to make a model or LoRA warm. This is an *advanced router*: stateful, self-describing endpoints; a control plane that probes and quarantines; routing decisions on capability + fit + cost + trust; and self-healing that reroutes around failure **to an equivalent-quality endpoint serving the same model** — never by silently degrading the answer.
+A model **need** (generate this text / embed this content / describe this image, for this persona, at this latency class, under this trust context) is a packet. An **endpoint** (a place that can serve some needs — local llama-server, a grid peer, a cloud provider) is a link, reached through an `AIProviderAdapter`. The **fabric** is the router: it holds the live table of endpoints with their state (health, latency, capacity, warm models, capabilities, trust), and for each need it **matches → scores → routes → heals**. The **custodian** (the forge custodian) owns the bytes underneath every local endpoint; the fabric never copies model bytes — it holds **handles by id** and asks the custodian to make a model or LoRA warm. This is an *advanced router*: stateful, self-describing endpoints; a control plane that probes and quarantines; routing decisions on capability + fit + cost + trust; and self-healing that reroutes around failure **to an equivalent-quality endpoint serving the same model** — never by silently degrading the answer.
 
 ```
             ai/inference/{open,generate,close}   ai/generate   ai/embedding/*   vision/*   (DUMB commands — no policy knobs)
@@ -31,8 +31,8 @@ A model **need** (generate this text / embed this content / describe this image,
              │ local                 │ local                 │ remote                │ cloud
              ▼                       ▼                       ▼                       ▼
      ┌───────────────┐      ┌───────────────┐      ┌────────────────────┐   ┌──────────────┐
-     │ llama-server  │      │ unsloth /v1   │      │ AircRemoteInference │   │ OpenAI/Anthr │
-     │ endpoint      │      │ endpoint      │      │ (grid peer, TEXT)   │   │ endpoint     │
+     │ llama-server  │      │ other local   │      │ AircRemoteInference │   │ OpenAI/Anthr │
+     │ endpoint      │      │ /v1 endpoint  │      │ (grid peer, TEXT)   │   │ endpoint     │
      │ (Coordinator: │      │ (custodian-   │      │ compute-lease only  │   │              │
      │  lanes/slots) │      │  served)      │      └────────────────────┘   └──────────────┘
      └──────┬────────┘      └──────┬────────┘
@@ -40,7 +40,7 @@ A model **need** (generate this text / embed this content / describe this image,
                      │
                      ▼
         ┌─────────────────────────────┐
-        │  CUSTODIAN (unsloth)         │  owns: catalog · storage (~/.unsloth) · downloads ·
+        │  CUSTODIAN (forge custodian)  │  owns: catalog · storage · downloads ·
         │  bytes live here, not here ──┼─ train · fuse/quant/GGUF · serve · share. Continuum
         │  in continuum               │  holds HANDLES by id; never copies bytes.
         └─────────────────────────────┘
@@ -50,12 +50,12 @@ A model **need** (generate this text / embed this content / describe this image,
 
 ## 2. The domain cut: custodian vs organism (non-negotiable)
 
-Joel, 2026-06-24: *"unsloth is the custodian of our models… It manages the model catalog and the storage and probably sharing of some model info. The downloads for sure. You gotta work with it. See what domain separates concerns."*
+Joel, 2026-06-24: *"[the custodian] of our models… It manages the model catalog and the storage and probably sharing of some model info. The downloads for sure. You gotta work with it. See what domain separates concerns."*
 
 | Concern | Owner | Why |
 |---|---|---|
-| Model catalog, storage of bytes (`~/.unsloth`), downloads (HF snapshot) | **Custodian (unsloth)** | One authority for model bytes. Bytes are heavy, shared, content-addressed. |
-| LoRA **training**, fuse, quant, GGUF convert | **Custodian** | These are byte-ops on model weights. Apple → `mlx_lm.lora`/`mlx_lm.fuse`; NVIDIA → unsloth. |
+| Model catalog, storage of bytes, downloads (HF snapshot) | **Custodian (forge custodian)** | One authority for model bytes. Bytes are heavy, shared, content-addressed. |
+| LoRA **training**, fuse, quant, GGUF convert | **Custodian** | These are byte-ops on model weights. Apple → `mlx_lm.lora`/`mlx_lm.fuse`; NVIDIA → in-engine training on our llama.cpp fork. |
 | Serving (`/v1`, `/v1/embeddings`, load/unload, `/lora-adapters`) | **Custodian** | The thing that holds weights in VRAM serves them. |
 | Persona / memory / tools / grounding | **Organism (continuum)** | The being. |
 | Genome-loop **policy** (when to train, what to measure, adopt-or-reject) | **Organism** | `forge/decide` is pure logic — a cognition decision, not a byte-op. |
@@ -64,7 +64,7 @@ Joel, 2026-06-24: *"unsloth is the custodian of our models… It manages the mod
 
 **Continuum holds handles, not bytes.** A trained LoRA is referenced by `(name, path-or-id, scale)` — a handle. The custodian registers it with the server and owns the bytes. The fabric routes a generation that *references* the handle; the byte resolution happens custodian-side.
 
-**The standing trespass to repair** (`modules/forge.rs`): it custodies bytes under `~/.continuum/forge/{lora,export}` (forge.rs:211), shells `mlx_lm.fuse` (forge.rs:692–826), and runs llama.cpp GGUF convert/quantize itself. That is custodian work living in the organism. It is the bug class behind GGUF-gibberish and the adapter no-op (see `[[mlx-serving-gguf-breaks-hybrid-adapter-path-noop]]`). The fix: `forge/train` and `forge/export` become **custodian calls** that return a handle; the bytes land under `~/.unsloth`. `forge/decide` stays in the organism (it's policy). Tracked by task #32.
+**The standing trespass to repair** (`modules/forge.rs`): it custodies bytes under `~/.continuum/forge/{lora,export}` (forge.rs:211), shells `mlx_lm.fuse` (forge.rs:692–826), and runs llama.cpp GGUF convert/quantize itself. That is custodian work living in the organism. It is the bug class behind GGUF-gibberish and the adapter no-op (see `[[mlx-serving-gguf-breaks-hybrid-adapter-path-noop]]`). The fix: `forge/train` and `forge/export` become **custodian calls** that return a handle; the bytes land under the custodian's store. `forge/decide` stays in the organism (it's policy). Tracked by task #32.
 
 ---
 
@@ -79,18 +79,17 @@ This is the most important section. The fabric is ~80% composition. Reinventing 
 | Endpoint health signal | `health_check() -> HealthStatus` | `ai/adapter.rs` (defined; **selector ignores it today**) |
 | LoRA hooks on the adapter | `lora_capabilities()`, `apply_lora()`, `remove_lora()`, `list_lora_adapters()` | `ai/adapter.rs` (default no-op) |
 | Adapter table + device-aware selection + hot-swap | `AdapterRegistry` (`register`/`deregister`/`select`) | `ai/adapter.rs:605` |
-| Concrete endpoints (the two outliers, §6) | `OpenAICompatibleAdapter` (llama-server/unsloth/DMR/cloud), `AircRemoteInferenceAdapter` (grid peer, TEXT-only), `AnthropicAdapter`, `HeuristicInferenceAdapter` (fixture) | `ai/openai_adapter.rs`, `inference/airc_remote/`, `ai/anthropic_adapter.rs`, `ai/heuristic_adapter.rs` |
+| Concrete endpoints (the two outliers, §6) | `OpenAICompatibleAdapter` (llama-server/DMR/cloud), `AircRemoteInferenceAdapter` (grid peer, TEXT-only), `AnthropicAdapter`, `HeuristicInferenceAdapter` (fixture) | `ai/openai_adapter.rs`, `inference/airc_remote/`, `ai/anthropic_adapter.rs`, `ai/heuristic_adapter.rs` |
 | Local slot scheduling within an endpoint | `InferenceCoordinator` + `Lane` + `ThroughputLease` + `FootprintRegistry` + `AdaptiveThroughputPlanner` + `PressureBroker` | `inference/coordinator.rs`, `inference/lane.rs`, et al |
 | The dumb command surface + handle lifecycle | `ai/inference/{open,generate,close,inspect}`, `OpenParams.active_adapters` | `inference/handle_module.rs:100` |
 | Per-request adapter passthrough | `TextGenerationRequest.active_adapters` reaches `generate_text` | `ai/types.rs:259`, `inference/handle_store.rs:294` |
 | Grid peer table + addressing | `NodeRegistry` (address-keyed), `GridRouter` (`RouteDecision::{Local,Remote}`) | `modules/grid/registry.rs`, `modules/grid/router.rs` |
 | Per-peer trust gate (remote capped at Trusted, Blocked denied) | `GridTrustAuthPolicy` + `PeerTrustSource` | `routing/grid_trust_policy.rs` |
-| Custodian control surface | `UnslothHttp` (`status`/`list_models`/`load_model`/`ensure_model_active`) | `inference/unsloth_control.rs` |
-| Serving plan (which base, how many lanes, residency) | `plan_serving()` + `ServingDaemonModule` (5s tick) | `cognition/serving_plan.rs`, `modules/serving_daemon.rs` |
+| Serving plan (which base, how many lanes, residency) | `plan_serving()` + `ServingDaemonModule` (5s tick) | `inference/planning/serving_plan.rs`, `modules/serving_daemon.rs` |
 | Hardware policy (DVFS) | `SubstrateGovernor` | `runtime/substrate_governor.rs` |
 | RTOS monitor template | `MemoryPressureMonitor` (own task + interval + watch + quarantine) | `system_resources/memory_pressure.rs` |
 
-**The fabric is the layer that fuses these.** Today they are islands: `AdapterRegistry.select()` is static and ignores `health_check()`; `GridRouter` routes *commands* but isn't wired to *adapter selection*; `unsloth_control` is called ad hoc, not as a custodian seam behind a routed local endpoint; capability advertisement across peers does not exist. The fabric is the supervisor that makes them one organism.
+**The fabric is the layer that fuses these.** Today they are islands: `AdapterRegistry.select()` is static and ignores `health_check()`; `GridRouter` routes *commands* but isn't wired to *adapter selection*; the custodian is called ad hoc, not as a seam behind a routed local endpoint; capability advertisement across peers does not exist. The fabric is the supervisor that makes them one organism.
 
 ---
 
@@ -139,7 +138,7 @@ Endpoint {
 **Key discipline:** none of this is new *invention* — `health_check()`, `AdapterCapabilities`, and the coordinator's lane/lease accounting all exist. The Endpoint is the *struct that finally consumes them together*.
 
 `EndpointKind` distinguishes the four routing realities:
-- **`LocalServed`** — a custodian-served `/v1` endpoint reached via `OpenAICompatibleAdapter` (llama-server, unsloth). The fabric asks the custodian (`unsloth_control`) to ensure the model/LoRA is warm before routing.
+- **`LocalServed`** — a custodian-served `/v1` endpoint reached via `OpenAICompatibleAdapter` (llama-server). The fabric asks the custodian to ensure the model/LoRA is warm before routing.
 - **`LocalCoordinator`** — the in-process `InferenceCoordinator` with lanes/leases (the realistic local MVP). Capacity = lease headroom.
 - **`GridPeer`** — `AircRemoteInferenceAdapter` over `AircLiveTransport`. TEXT-only. Trust-gated. Capacity/warm-models learned via negotiation (§7).
 - **`Cloud`** — `OpenAICompatibleAdapter`/`AnthropicAdapter`. Effectively infinite capacity, metered cost, never local-secret-bearing.
@@ -159,7 +158,7 @@ Both implement the *same* `AIProviderAdapter` trait and return the *same* `TextG
 
 ## 7. Capability negotiation across the grid (the genuinely-new part)
 
-Today each endpoint knows only its *own* warm models (DMR's `runtime_models`, unsloth's `/v1/models`). There is no cross-peer picture. The fabric needs one, and it must be event-driven, trust-gated, and cheap.
+Today each endpoint knows only its *own* warm models (DMR's `runtime_models`, llama-server's `/v1/models`). There is no cross-peer picture. The fabric needs one, and it must be event-driven, trust-gated, and cheap.
 
 **Mechanism (compose existing pieces, don't build a new gossip stack):**
 - Each node periodically publishes an **endpoint advertisement** over airc — its serveable surface: `{ warm_models, capabilities (modalities/ctx/lora), capacity headroom, trust-origin }`. This is the airc analog of `cognition/personas` roster, for model endpoints. It rides the existing airc event substrate; no new transport.
@@ -193,7 +192,7 @@ This is the smallest end-to-end slice that exercises every layer of the fabric, 
 **The gap (was).** `TextGenerationRequest.active_adapters` (ai/types.rs:259) carries `Vec<ActiveAdapterRequest{ name, path, domain, scale }>`. It flows through `handle_store.rs:294` and reaches `OpenAICompatibleAdapter::generate_text`. But the body builder **never read it** — the LoRA was dropped at the last inch. The page-in was a no-op; this is why a "live" adapter measured as LIFT=0 in the no-op A/B.
 
 **Why it's the custodian boundary in miniature.** llama-server's per-request field is `"lora":[{"id":N,"scale":S}]`, where `id` is the **integer load-index** the *server* assigns — visible via `GET /lora-adapters`. That id exists only after the **custodian** registers the adapter (server launch `--lora`, or a registration call). So the wire has two halves, on the right sides of the boundary:
-- **Custodian half** (the remaining work): register the LoRA with the serving endpoint so it gets an integer id. **Probe validated live** against `llama-server` :58057 — `GET /lora-adapters` → `200 []`, i.e. the adapter correctly discovers *capability present, none registered* (the GGUF base also generates coherent Rust here, so `llama-server` is a viable host — refines the hybrid-GGUF caveat). **Blocker = a custodian-side MLX→GGUF LoRA bridge:** the on-disk LoRA is MLX `adapters.safetensors`, but llama.cpp's `convert_lora_to_gguf.py` wants HF PEFT (`adapter_model.bin`). Bridging it (MLX→PEFT key rename, or llama.cpp-native LoRA) is byte custody = custodian work, not forge.rs in the organism. `[[llama-server-serves-v1-direct-python-gateway-optional]]` `[[unsloth-mlx-train-broken-on-mac]]`
+- **Custodian half** (the remaining work): register the LoRA with the serving endpoint so it gets an integer id. **Probe validated live** against `llama-server` :58057 — `GET /lora-adapters` → `200 []`, i.e. the adapter correctly discovers *capability present, none registered* (the GGUF base also generates coherent Rust here, so `llama-server` is a viable host — refines the hybrid-GGUF caveat). **Blocker = a custodian-side MLX→GGUF LoRA bridge:** the on-disk LoRA is MLX `adapters.safetensors`, but llama.cpp's `convert_lora_to_gguf.py` wants HF PEFT (`adapter_model.bin`). Bridging it (MLX→PEFT key rename, or llama.cpp-native LoRA) is byte custody = custodian work, not forge.rs in the organism. `[[llama-server-serves-v1-direct-python-gateway-optional]]`
 - **Fabric/adapter half** (✅ landed, openai_adapter.rs): per invariant #8 the adapter **discovers** the capability by *asking the endpoint* — `probe_lora_catalog()` calls `GET /lora-adapters` and caches `LoraSupport::{Supported(catalog)|Unsupported}` (200 vs 404), exactly as `runtime_models` is learned from `/v1/models`. It then resolves `ActiveAdapterRequest.name` → server id via the pure `match_lora_index()` and injects `"lora":[{id,scale}]` — *exactly* the shape of the existing `repeat_penalty` extension. No provider-id allow-list: a backend with no `/lora-adapters` reports `Unsupported` and a page-in request **fails loud** (`lora_miss_error`), never a silent drop. `lora_capabilities()` reports the discovered truth so the future health-aware `select()` reads it.
 
 **Acceptance:** with a real trained LoRA registered (custodian half), an `ai/inference/open { active_adapters:[…], persona_id }` then `generate` produces output that *differs from base* (adapter genuinely live), measured through `cognition/eval` (the full organism — memory/tools/grounding), and `forge/decide` adopts-or-rejects on the lift. No bash A/B against a bare server — that measures the wrong subject (`[[asha-coder-baseline-and-spawn-race]]`). The pure name→id matcher + miss paths are unit-tested (`mod lora_page_in`); the probe/HTTP path is exercised by the organism eval, not a unit test (RULE 1).
@@ -204,7 +203,7 @@ This is the smallest end-to-end slice that exercises every layer of the fabric, 
 
 1. **Page-in wire (proof of mechanism).** ✅ *Adapter half landed* (openai_adapter.rs): `probe_lora_catalog` discovers capability via `GET /lora-adapters` (invariant #8), `match_lora_index` resolves name→server-id, `"lora":[{id,scale}]` injected into the body, fail-loud on unsupported/unregistered, `lora_capabilities()` reports discovered truth, unit-tested. *Remaining:* custodian half — stand up the llama.cpp `llama-server` serving path and register the LoRA so it gets an id (`[[llama-server-serves-v1-direct-python-gateway-optional]]`); then validate output differs from base via `cognition/eval`. (Unblocks #32/#35.)
 2. **Endpoint struct + health loop.** Wrap `AdapterRegistry` entries as `Endpoint`s; add the RTOS health/discovery loop publishing `watch<FabricSnapshot>`; `select()` becomes health-aware (skip quarantined). Outliers already proven (§6).
-3. **Custodian boundary repair.** Move forge.rs byte-custody (paths/fuse/quant/GGUF) behind custodian calls returning handles; bytes land under `~/.unsloth`; `forge/decide` stays organism-side. (Task #32 trespass.)
+3. **Custodian boundary repair.** Move forge.rs byte-custody (paths/fuse/quant/GGUF) behind custodian calls returning handles; bytes land under the custodian's store; `forge/decide` stays organism-side. (Task #32 trespass.)
 4. **Match→score→route→heal** over the local endpoints (llama-server + coordinator). Self-healing reroute *within local* first; capture every decision.
 5. **Grid negotiation.** Endpoint advertisement over airc + trust-gated merge (§7), behind the airc↔grid trust bridge (#38). Remote = TEXT-only. RouteSelector picks local-vs-peer (composes `GridRouter`).
 6. **Modality breadth.** Bring embedding (already adapter-routed via `/v1/embeddings`), then vision, then audio into the same match→route path so "all model needs" is literal, not text-only.

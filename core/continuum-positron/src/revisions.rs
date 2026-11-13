@@ -30,7 +30,7 @@
 //! revision-source concern.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 /// In-process monotonic revision generator. Cheap to share via `Arc`.
 ///
@@ -58,7 +58,7 @@ impl Revisions {
     /// a buggy subscriber can't pretend it has seen "the empty state"
     /// by accident.)
     pub fn next(&self, kind: &'static str) -> u64 {
-        let mut next = self.next.lock().expect("Revisions mutex poisoned");
+        let mut next = self.next.lock();
         let slot = next.entry(kind).or_insert(0);
         *slot += 1;
         *slot
@@ -70,7 +70,7 @@ impl Revisions {
     /// `last_seen` (a wire-supplied `&str`) can be checked against
     /// current state.
     pub fn current(&self, kind: &str) -> Option<u64> {
-        let next = self.next.lock().expect("Revisions mutex poisoned");
+        let next = self.next.lock();
         next.get(kind).copied()
     }
 }

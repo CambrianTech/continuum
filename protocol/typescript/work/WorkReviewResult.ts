@@ -3,7 +3,7 @@ import type { ReviewOutcome } from "./ReviewOutcome";
 import type { ReviewedCredit } from "./ReviewedCredit";
 import type { WorkArtifactReference } from "./WorkArtifactReference";
 
-export type WorkReviewResult = { review_id: string, submission_id: string, reviewer: string, outcome: ReviewOutcome, reviewed_at_ms: number, review_card_id: string, review_claim_id: string, artifact: WorkArtifactReference, evidence: WorkArtifactReference, 
+export type WorkReviewResult = { review_id: string, submission_id: string, reviewer: string, outcome: ReviewOutcome, reviewed_at_ms: number, review_card_id: string, review_claim_id: string, artifact: WorkArtifactReference, evidence: WorkArtifactReference, evidence_text: string | null, 
 /**
  * A review can publish even when its local learning transfer is deferred.
  */

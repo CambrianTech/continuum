@@ -29,6 +29,7 @@
 //!     cargo test --package continuum-core --test llamacpp_vision_integration \
 //!       --release -- --ignored --nocapture
 
+use continuum_core::inference::backends::llamacpp::GenerationAllocation;
 use continuum_core::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use continuum_core::inference::backends::SamplingConfig;
 use std::env;
@@ -115,7 +116,6 @@ fn qwen2_vl_describes_image_via_rust_pipeline() {
     let config = LlamaCppConfig {
         model_path: model_path.clone(),
         mmproj_path: Some(mmproj_path.clone()),
-        context_length: None, // = derive from GGUF (32768 for qwen2-vl-7b)
         n_batch: 2048,
         n_gpu_layers: -1,
         n_seq_max: 1,
@@ -176,7 +176,7 @@ fn qwen2_vl_describes_image_via_rust_pipeline() {
     sampling.top_p = 1.0;
     sampling.repeat_penalty = 1.0;
     let (text, tokens) = backend
-        .generate_with_image(
+        .generate_with_image(GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
             &prompt,
             &image,
             120, // max_tokens — keep test cheap

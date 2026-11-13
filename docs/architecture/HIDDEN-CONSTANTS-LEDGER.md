@@ -40,7 +40,6 @@ discovery pair each muted capable models.
 | `persona_workspace::DEFAULT_WORKSPACE_CAPACITY` | 6 | SIX global-workspace slots for every citizen on every hardware tier. Should scale with window (a 160k lane can hold more mind than a 4k lane) or be persona-config. |
 | `recall_faculty::DEFAULT_RECALL_LIMIT` | 16 | Recall breadth capped identically for a 3B and a 35B. Window-derived candidate (`RECALL_DENOM` exists in context_budget — route through it). |
 | `channel_digest::DEFAULT_GROUNDING` / `FIRST_READ_PAGE` | 5 / 20 | How much of a room she perceives on entry. Data-owned candidate (room recipe). |
-| `response_orchestrator::DEFAULT_RELEVANCE_THRESHOLD` | 0.30 | Speaks/silence gate. Should be persona-learned or config, not universal. |
 | `check_redundancy::REDUNDANCY_CONVERSATION_WINDOW` | 10 | Redundancy horizon fixed at 10 turns regardless of window. |
 | `recall_faculty::RECALL_RELEVANCE_FLOOR` | 0.15 | Universal relevance floor; interacts with embedding model choice. |
 

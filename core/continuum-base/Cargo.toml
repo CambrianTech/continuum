@@ -1,0 +1,15 @@
+[package]
+name = "continuum-base"
+version = "0.1.0"
+edition = "2021"
+description = "The floor of the core: leaf utilities every other crate may depend on and that depend on nothing in Continuum (time, config, secrets, ids, portable shell, audio constants)."
+
+[dependencies]
+chrono.workspace = true
+serde = { workspace = true }
+dirs = { workspace = true }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }

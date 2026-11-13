@@ -114,7 +114,9 @@ jobs:
           # suite never counts; a hard failure is red, an incomplete run is pending,
           # all-completed (success / skipped / neutral) is green, no runs is unknown.
           OWN_EVENTS = ("push", "pull_request", "workflow_dispatch")
-          NON_DEPLOY_PATHS = (".github/workflows/promote-main.yml",)
+          # core-binaries publishes the tip's prebuilt core (44-73 min per macOS leg, cancelled by
+          # the next push); it judges no code. Mirrors the tracker's NON_DEPLOY_WORKFLOW_PATHS (#4706).
+          NON_DEPLOY_PATHS = (".github/workflows/promote-main.yml", ".github/workflows/core-binaries.yml")
           HARD_FAIL = ("failure", "timed_out", "cancelled", "action_required")
           checks = json.loads(sys.argv[1]).get("check_runs", [])
           w = json.loads(sys.argv[2]).get("workflow_runs")

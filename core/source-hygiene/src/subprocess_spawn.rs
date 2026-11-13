@@ -15,44 +15,39 @@
 //! # The rule
 //!
 //! 1. The number of `Command::new(` sites in production code may never rise
-//!    ([`BASELINE_SPAWN_SITES`]).
+//!    (the `spawn_sites` ratchet).
 //! 2. For the programs in [`ANSWERED_BY_A_LIBRARY`] — a binary this process already
 //!    links, or a question `std`/`sysinfo` answers — the per-program count may never
 //!    rise, and each carries the replacement that retires it. New code reaches for the
 //!    library; a site that must remain says why on its line.
+//! 3. A program whose count reached zero is [`Standing::Retired`]: any new site fails,
+//!    judged without a base.
 //!
 //! A real subprocess (llama-server, git, cargo, a benchmark's own test runner, the
 //! browser) is fine — through `bounded_command`, with a bound and a named outcome.
-use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
+use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
+
+/// Where a program's spawn count stands: falling toward zero, or already there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// Sites remain; the count may only fall.
+    Falling,
+    /// No site remains; any new one fails, on any tree.
+    Retired,
+}
 
 /// Programs that a library, module, or std already answers for. The replacement is
 /// the rule's message, so the site that trips it also says what to write instead.
-pub const ANSWERED_BY_A_LIBRARY: &[(&str, &str)] = &[
-    ("airc", "airc-lib is linked: Airc::open(scope_home) + current_room() / subscription_set(); the daemon endpoint by its resolver, never by parsing `airc ipc-endpoint`"),
-    ("continuum", "this IS the core: call the command through CommandExecutor, never re-enter through the CLI"),
-    ("gh", "GitHub goes through the code/github module's client, never a CLI on PATH"),
-    ("curl", "the http client (reqwest) is linked; a download is a bounded request, not a shell"),
-    ("wget", "the http client (reqwest) is linked; a download is a bounded request, not a shell"),
-    ("ps", "sysinfo is a dependency: System::new_with_specifics + process(pid) for rss/name/parent"),
-    ("which", "walk PATH in-process: std::env::split_paths(PATH).find(|d| d.join(tool).is_file())"),
-    ("tar", "the tar crate / std::fs — an archive is not a shell"),
-    ("cp", "std::fs::copy / a recursive copy helper — a file is not a shell"),
-];
-
-/// Every `Command::new(` in production code on 2026-09-12 (canary 48fbbfd44). May only fall.
-pub const BASELINE_SPAWN_SITES: usize = 166;
-
-/// Per-program baselines for [`ANSWERED_BY_A_LIBRARY`] on the same day. May only fall.
-pub const BASELINE_BY_PROGRAM: &[(&str, usize)] = &[
-    ("airc", 6),
-    ("continuum", 0),
-    ("gh", 1),
-    ("curl", 1),
-    ("wget", 0),
-    ("ps", 7),
-    ("which", 3),
-    ("tar", 6),
-    ("cp", 4),
+pub const ANSWERED_BY_A_LIBRARY: &[(&str, Standing, &str)] = &[
+    ("airc", Standing::Falling, "airc-lib is linked: Airc::open(scope_home) + current_room() / subscription_set(); the daemon endpoint by its resolver, never by parsing `airc ipc-endpoint`"),
+    ("continuum", Standing::Retired, "this IS the core: call the command through CommandExecutor, never re-enter through the CLI"),
+    ("gh", Standing::Falling, "GitHub goes through the code/github module's client, never a CLI on PATH"),
+    ("curl", Standing::Falling, "the http client (reqwest) is linked; a download is a bounded request, not a shell"),
+    ("wget", Standing::Retired, "the http client (reqwest) is linked; a download is a bounded request, not a shell"),
+    ("ps", Standing::Falling, "sysinfo is a dependency: System::new_with_specifics + process(pid) for rss/name/parent"),
+    ("which", Standing::Falling, "walk PATH in-process: std::env::split_paths(PATH).find(|d| d.join(tool).is_file())"),
+    ("tar", Standing::Falling, "the tar crate / std::fs — an archive is not a shell"),
+    ("cp", Standing::Falling, "std::fs::copy / a recursive copy helper — a file is not a shell"),
 ];
 
 /// The program a spawn names, when it names one as a string literal. `Command::new(&bin)`
@@ -81,7 +76,7 @@ impl SourceRule for SubprocessSpawn {
             }
             out.push(Violation {
                 rule: "subprocess-spawn",
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line: line_no,
                 source: code.trim().to_string(),
             });
@@ -110,29 +105,29 @@ mod tests {
                 per.entry(p).or_default().push(format!("  {}:{}  {}", v.file, v.line, v.source));
             }
         }
-        let mut report = String::new();
-        for (program, why) in ANSWERED_BY_A_LIBRARY {
-            let n = per.get(program).map_or(0, Vec::len);
-            let baseline = BASELINE_BY_PROGRAM
-                .iter()
-                .find(|(p, _)| p == program)
-                .map_or(0, |(_, b)| *b);
-            if n > baseline {
-                report.push_str(&format!(
-                    "\n`{program}` spawned at {n} sites (baseline {baseline}) — {why}\n{}",
-                    per[program].join("\n")
-                ));
+        for (program, standing, why) in ANSWERED_BY_A_LIBRARY {
+            let found = per.get(program).map_or(&[][..], Vec::as_slice);
+            let advice = || {
+                format!(
+                    "a program a library already answers for gained a spawn site: `{program}` \
+                     spawned at {} sites — {why}\n{}",
+                    found.len(),
+                    found.join("\n")
+                )
+            };
+            match standing {
+                Standing::Falling => crate::ratchet::hold(&format!("spawn:{program}"), found.len(), advice),
+                Standing::Retired => crate::ratchet::zero_count(&format!("spawn:{program}"), found.len(), advice),
             }
         }
-        assert!(report.is_empty(), "a program a library already answers for gained a spawn site:{report}");
-        assert!(
-            total <= BASELINE_SPAWN_SITES,
-            "production spawn sites rose to {total} (baseline {BASELINE_SPAWN_SITES}). A subprocess is a \
-             liability the caller inherits (fds, PATH, stdio, a hang) — reach for the library, or \
-             route a real subprocess through system_resources::bounded_command. Newest-looking:\n{}",
-            sites.iter().rev().take(8).map(|v| format!("  {}:{}  {}", v.file, v.line, v.source)).collect::<Vec<_>>().join("\n")
-        );
-        // the calibration read: per-program counts, for the next baseline edit
+        crate::ratchet::hold("spawn_sites", total, || {
+            format!(
+                "production spawn sites rose to {total}. A subprocess is a liability the caller \
+                 inherits (fds, PATH, stdio, a hang) — reach for the library, or route a real \
+                 subprocess through system_resources::bounded_command. Newest-looking:\n{}",
+                sites.iter().rev().take(8).map(|v| format!("  {}:{}  {}", v.file, v.line, v.source)).collect::<Vec<_>>().join("\n")
+            )
+        });
         eprintln!("spawn sites: {total}; by program: {:?}", per.iter().map(|(p, v)| (*p, v.len())).collect::<Vec<_>>());
     }
 

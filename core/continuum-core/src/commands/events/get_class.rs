@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::events::{lookup_event_class, ResolvedEventClassConfig};
+use crate::runtime::event_classes::{lookup_event_class, ResolvedEventClassConfig};
 
 /// Inputs to `events/get-class`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]

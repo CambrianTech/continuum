@@ -10,6 +10,16 @@
 # both sides: the script text carries exactly one literal invocation, and the
 # trace of a run shows one cargo line naming all four bins.
 set -euo pipefail
+# Linux owns the complete shared behavior contract. Windows CI additionally
+# exercises only its native path/receipt/media adapter with this same fixture.
+case "${1:-all}" in
+  all) platforms=(MINGW64_NT-10.0 Linux Darwin); adapter_only=0 ;;
+  --windows-adapter)
+    case "$(uname -s)" in MINGW*|MSYS*) ;; *) echo 'Windows adapter proof requires native Git Bash' >&2; exit 2 ;; esac
+    command -v cygpath >/dev/null || { echo 'Windows adapter proof requires native cygpath' >&2; exit 2; }
+    platforms=(MINGW64_NT-10.0); adapter_only=1 ;;
+  *) echo 'Usage: start-server-build-only.test.sh [--windows-adapter]' >&2; exit 2 ;;
+esac
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 scratch_root="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
 scratch="$(mktemp -d "$scratch_root/continuum-warm-build.XXXXXX")"
@@ -19,9 +29,15 @@ fixture_home="$scratch/home"
 trap 'status=$?; if [ "$status" != 0 ]; then cat "$scratch/output" "$scratch/trace" >&2; fi; rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/repo/tools/scripts/lib" "$scratch/repo/tools/scripts/shared" "$scratch/repo/core/continuum-core/src" "$scratch/home/.cargo/bin"
 cp "$script_dir/../start-server.sh" "$scratch/repo/tools/scripts/start-server.sh"
+cp "$script_dir/../lib/payload-paths.sh" "$scratch/repo/tools/scripts/lib/payload-paths.sh"
+cp "$script_dir/../lib/cuda-targets.sh" "$scratch/repo/tools/scripts/lib/cuda-targets.sh"
+cp "$script_dir/../lib/core-features.sh" "$scratch/repo/tools/scripts/lib/core-features.sh"
+# Media preparation belongs to warm build; startup must still be deferred.
+printf 'echo MEDIA_PREPARE >> "$FIXTURE_TRACE"\n' > "$scratch/repo/tools/scripts/install-livekit.sh"
+printf '# staged media helper\n' > "$scratch/repo/tools/scripts/start-livekit-windows.ps1"
 # Toolchain setup is orthogonal to lifecycle; isolate it from the host machine.
 printf ':\n' > "$scratch/repo/tools/scripts/lib/windows-build-env.sh"
-printf 'CARGO_GPU_FEATURES=--no-default-features\n' > "$scratch/repo/tools/scripts/shared/cargo-features.sh"
+printf 'CARGO_GPU_FEATURES=\n' > "$scratch/repo/tools/scripts/shared/cargo-features.sh"
 printf '// fixture source\n' > "$scratch/repo/core/continuum-core/src/lib.rs"
 export CARGO_TARGET_DIR="$scratch/build cache 雪"
 export CONTINUUM_BUILD_RECEIPT="$scratch/artifact.receipt"
@@ -87,7 +103,7 @@ if ! command -v cygpath >/dev/null 2>&1; then
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$2"\n' > "$fixture_home/.cargo/bin/cygpath"
   chmod +x "$fixture_home/.cargo/bin/cygpath"
 fi
-for platform in MINGW64_NT-10.0 Linux Darwin; do
+for platform in "${platforms[@]}"; do
   printf '#!/usr/bin/env bash\necho %s\n' "$platform" > "$fixture_home/.cargo/bin/uname"
   chmod +x "$fixture_home/.cargo/bin/uname"
   for failure in 0 1; do
@@ -110,7 +126,12 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
     fi
     if [ "$failure" = 0 ]; then
       [ "$status" = 0 ]
-      grep -q 'warm build complete' "$scratch/output"
+      if [ "$platform" = MINGW64_NT-10.0 ]; then
+        grep -q '^MEDIA_PREPARE$' "$FIXTURE_TRACE"
+        grep -q -- '--bin livekit-bridge --release' "$FIXTURE_TRACE"
+        cmp "$scratch/repo/tools/scripts/start-livekit-windows.ps1" "$CARGO_TARGET_DIR/release/start-livekit-windows.ps1"
+      fi
+      grep -q 'build-only pass complete' "$scratch/output"
       artifact="$CARGO_TARGET_DIR/release/continuum-core-server"
       if [ "$platform" = MINGW64_NT-10.0 ]; then
         artifact="$artifact.exe"
@@ -122,7 +143,7 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
       grep -q 'mapped output Access is denied' "$scratch/output"
       grep -q 'leaving the running core untouched' "$scratch/output"
       [ ! -s "$CONTINUUM_BUILD_RECEIPT" ]
-      if grep -q 'warm build complete' "$scratch/output"; then exit 1; fi
+      if grep -q 'build-only pass complete' "$scratch/output"; then exit 1; fi
     fi
     # One library compile: the FIRST cargo line names the core and both sidecars
     # together (the self-build is skipped here, so the CLI is off it), and no
@@ -131,11 +152,15 @@ for platform in MINGW64_NT-10.0 Linux Darwin; do
     # continuum` line is the #296 restore of a swept CLI — the fixture cache
     # starts empty — not a fourth build.)
     core_lines="$(grep -c -- '--bin continuum-core-server' "$FIXTURE_TRACE" || true)"
-    head -1 "$FIXTURE_TRACE" | grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --release --no-default-features$'
+    head -1 "$FIXTURE_TRACE" | grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --release$'
     if [ "$failure" = 0 ]; then [ "$core_lines" = 1 ]; else [ "$core_lines" = 2 ]; fi
     echo "PASS $platform build-only (core build failure=$failure)"
   done
 done
+
+# The native Windows adapter has no Unix engine sidecar or generic feature
+# policy to repeat. The EXIT trap still owns the single scratch teardown.
+if [ "$adapter_only" = 1 ]; then exit 0; fi
 
 # A failed engine build leaves the deploy green: the core still ships, the lanes
 # keep the engine they run, and the warm pass says so.
@@ -144,8 +169,8 @@ printf '#!/usr/bin/env bash\necho Darwin\n' > "$fixture_home/.cargo/bin/uname"
 HOME="$fixture_home" FIXTURE_PLATFORM=Darwin FAIL_CORE_BUILD=0 FAIL_ENGINE_BUILD=1 \
   bash "$scratch/repo/tools/scripts/start-server.sh" > "$scratch/output" 2>&1
 if grep -Eq 'FORBIDDEN|LAUNCHED' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
-grep -q 'engine build failed in the warm pass' "$scratch/output"
-grep -q 'warm build complete' "$scratch/output"
+grep -q 'engine build failed in the build-only pass' "$scratch/output"
+grep -q 'build-only pass complete' "$scratch/output"
 [ -s "$CONTINUUM_BUILD_RECEIPT" ]
 echo "PASS a failed engine build does not fail the deploy"
 
@@ -170,19 +195,50 @@ HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SEL
   bash "$launcher" > "$scratch/output" 2>&1
 if grep -Eq 'FORBIDDEN|LAUNCHED' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
 [ "$(grep -c '^cargo build ' "$FIXTURE_TRACE")" = 1 ]
-grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --bin continuum --release --no-default-features$' "$FIXTURE_TRACE"
+grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --bin continuum --release$' "$FIXTURE_TRACE"
 grep -q 'the library compiles once' "$scratch/output"
+# No profile in config.env: headless, and the build says so rather than guessing.
+grep -q 'node profile: headless' "$scratch/output"
 echo "PASS one cargo invocation names all four bins with one feature set"
 
 # The one sanctioned exception, pinned to its smallest shape: a set that links a GPU
 # runtime (cuda) gives the socket-client CLI its own GPU-free set — a SECOND line, the
 # only one, carrying `--bin continuum` alone; the other three still share one line.
 printf 'CARGO_GPU_FEATURES="--features cuda,load-dynamic-ort"\n' > "$scratch/repo/tools/scripts/shared/cargo-features.sh"
+printf '#!/usr/bin/env bash\necho 8.6\n' > "$fixture_home/.cargo/bin/nvidia-smi"
+printf '#!/usr/bin/env bash\necho compute_86\n' > "$fixture_home/.cargo/bin/nvcc"
+chmod +x "$fixture_home/.cargo/bin/nvidia-smi" "$fixture_home/.cargo/bin/nvcc"
+unset CUDA_PATH CUDA_COMPUTE_CAP
 : > "$FIXTURE_TRACE"; : > "$CONTINUUM_BUILD_RECEIPT"
 HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SELF_BUILD= \
   bash "$launcher" > "$scratch/output" 2>&1
 if grep -Eq 'FORBIDDEN|LAUNCHED' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
 [ "$(grep -c '^cargo build ' "$FIXTURE_TRACE")" = 2 ]
 grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --release --features cuda,load-dynamic-ort$' "$FIXTURE_TRACE"
-grep -q -- '--bin continuum --release --no-default-features$' "$FIXTURE_TRACE"
+grep -q -- '--bin continuum --release$' "$FIXTURE_TRACE"
 echo "PASS a GPU-runtime box separates only the CLI, on exactly one extra line"
+
+# ── The node profile (core-features.sh): calls and 3D avatars come from config.env ──
+# what this catches: `default = []` silently turning calls/avatars off on a node that hosts
+# them, and a misspelled profile building a node without what it asked for.
+mkdir -p "$fixture_home/.continuum"
+printf "CONTINUUM_NODE_FEATURES='avatar-3d, livekit-webrtc'\n" > "$fixture_home/.continuum/config.env"
+: > "$FIXTURE_TRACE"; : > "$CONTINUUM_BUILD_RECEIPT"
+HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SELF_BUILD= \
+  CONTINUUM_NODE_FEATURES=stale-parent-value bash "$launcher" > "$scratch/output" 2>&1
+if grep -Eq 'FORBIDDEN|LAUNCHED' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
+grep -q -- '--bin continuum-core-server --bin continuum-mcp --bin forge-custodian --release --features cuda,load-dynamic-ort,livekit-webrtc,avatar-3d$' "$FIXTURE_TRACE"
+grep -q -- '--bin continuum --release$' "$FIXTURE_TRACE"
+grep -q 'node profile: livekit-webrtc,avatar-3d' "$scratch/output"
+echo "PASS the node profile adds calls and avatars to the core, in canonical order, never to the GPU-free CLI"
+
+printf 'CONTINUUM_NODE_FEATURES=livekit-webrtc,avatars\n' > "$fixture_home/.continuum/config.env"
+: > "$FIXTURE_TRACE"; : > "$CONTINUUM_BUILD_RECEIPT"
+status=0
+HOME="$fixture_home" FIXTURE_PLATFORM=Linux FAIL_CORE_BUILD=0 CONTINUUM_SKIP_SELF_BUILD= \
+  bash "$launcher" > "$scratch/output" 2>&1 || status=$?
+[ "$status" != 0 ]
+if grep -q '^cargo build ' "$FIXTURE_TRACE"; then cat "$FIXTURE_TRACE" >&2; exit 1; fi
+grep -q 'names `avatars`' "$scratch/output"
+rm -f "$fixture_home/.continuum/config.env"
+echo "PASS an unrecognized node profile refuses the build, naming the word"

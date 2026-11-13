@@ -43,9 +43,9 @@ genome loop that is already on `canary`:
 |---|---|---|
 | Capture the work | live `WorkspaceCycle` turns → prompt-captures (glass box = the one turn-truth); legacy `persona::recorder` fixtures | shipped |
 | Work → training data | `dataset/from-captures` (LIVE path) + `dataset/from-turns` (legacy), chat JSONL, room/persona-filtered, structural curation drops empty/tool-JSON turns | shipped (#1691, from-captures 2026-06-22) |
-| Train a LoRA | `forge/train` (drives unsloth, `--dry-run` validated) | shipped (#1695) |
+| Train a LoRA | `forge/train` (drives the engine / `mlx_lm.lora`, `--dry-run` validated) | shipped (#1695) |
 | Package the layer | `forge/export` (LoRA / GGUF, pure arg-builder) | shipped (#1696) |
-| Run any model | unsloth universal gateway (`forge`/`/v1`) | shipped (#1692/#1693) |
+| Run any model | llama-server `/v1` gateway (`forge`/`/v1`) | shipped (#1692/#1693) |
 | Trust boundary | `GridTrustAuthPolicy` (who may exchange) | shipped (#1653) |
 | The geometry | neural `EmbeddingProvider` (compute-once, shared) | shipped (#1657) |
 

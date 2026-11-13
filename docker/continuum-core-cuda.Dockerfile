@@ -8,7 +8,7 @@
 # Usage in docker-compose.yml:
 #   dockerfile: ../../docker/continuum-core-cuda.Dockerfile
 #   args:
-#     GPU_FEATURES: "--no-default-features --features load-dynamic-ort,cuda"
+#     GPU_FEATURES: "--features load-dynamic-ort,cuda,avatar-3d"
 
 # ── Stage 1: Chef base (cargo-chef installed, system deps in place) ──
 # Mirrors the multi-stage cargo-chef pattern from continuum-core.Dockerfile
@@ -71,7 +71,7 @@ ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
 
 # 1. Cook deps from the recipe ONLY (no source yet → no stub binaries
 #    produced for our workspace bins → no incremental-build false-positive).
-ARG GPU_FEATURES="--no-default-features --features load-dynamic-ort,cuda"
+ARG GPU_FEATURES="--features load-dynamic-ort,cuda,avatar-3d"
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 
@@ -83,9 +83,6 @@ COPY . .
 # relative path the `COPY . .` above already provides (the file is checked in). No
 # `--from=shared*` build-context needed; models.json is unreferenced by the Rust core.
 
-# Model registry SSOT used by candle_adapter.rs include_str!:
-# ../../../../shared/models.json resolves to /shared/models.json here.
-COPY --from=shared models.json /shared/models.json
 
 # Fail fast if the host forgot to init submodules. Without this, cmake's
 # CMakeLists-not-found error surfaces deep inside the CUDA build —

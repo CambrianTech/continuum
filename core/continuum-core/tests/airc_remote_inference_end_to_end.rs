@@ -5,8 +5,7 @@
 //! ## What this test adds beyond PR #1560's wire test
 //!
 //! `tests/airc_remote_inference_roundtrip.rs` (PR #1560) proves the
-//! wire SHAPE is correct: substrate's `parse_envelope` + `send_reply`
-//! accept and produce the right envelope, headers, body. But it
+//! wire SHAPE is correct: the substrate's command receiver accepts and produces the right envelope, headers, body. But it
 //! HAND-CANS the response — it never actually runs an adapter. That
 //! left a load-bearing gap: the substrate's `CommandExecutor` →
 //! `ServiceModule` → `AIProviderAdapter` chain is untested across
@@ -15,15 +14,15 @@
 //! This test closes that gap. peer_a runs:
 //!
 //! ```text
-//!   CommandRequestHandler::on_envelope
-//!     -> parse_envelope                      [REAL]
-//!     -> process_request_via(&executor)      [REAL]
+//!   CommandRequestHandler::on_addressed (from the addressed inbox)
+//!     -> ingress contract + decode           [REAL]
+//!     -> process_request(&executor)          [REAL]
 //!        -> CommandExecutor::execute_with_caller
 //!           -> AuthPolicy::gate (AllowAll)   [REAL]
 //!           -> TestInferenceModule::handle_command
 //!              -> HeuristicInferenceAdapter::generate_text  [REAL]
 //!        -> AircCommandResponse::ok(result)
-//!     -> send_reply                          [REAL]
+//!     -> send_reply (bound to the request)  [REAL]
 //! ```
 //!
 //! No hand-canned responses. The heuristic adapter's signature output
@@ -79,12 +78,11 @@ use continuum_core::ai::types::{
     TextGenerationRequest, TextGenerationResponse,
 };
 use continuum_core::inference::airc_remote::{AircLiveTransport, AircRemoteInferenceAdapter};
-use continuum_core::routing::CommandRequestHandler;
+use continuum_core::ipc::command_ingress::CommandRequestHandler;
 use continuum_core::runtime::command_executor::CommandExecutor;
 use continuum_core::runtime::{
     CommandResult, ModuleConfig, ModulePriority, ModuleRegistry, ServiceModule,
 };
-use futures::stream::StreamExt;
 
 /// A minimal test-only ServiceModule that routes `ai/generate` to an
 /// injected `AIProviderAdapter`. Mirrors the shape of
@@ -130,7 +128,7 @@ impl ServiceModule for TestInferenceModule {
     ) -> Result<CommandResult, String> {
         let request: TextGenerationRequest = serde_json::from_value(params)
             .map_err(|e| format!("TestInferenceModule: decode TextGenerationRequest: {e}"))?;
-        let response = self.adapter.generate_text(request).await?;
+        let response = self.adapter.generate_text(request, continuum_core::ai::adapter::Dispatched::fixture()).await?;
         let value = serde_json::to_value(&response)
             .map_err(|e| format!("TestInferenceModule: serialize TextGenerationResponse: {e}"))?;
         Ok(CommandResult::Json(value))
@@ -147,6 +145,8 @@ impl ServiceModule for TestInferenceModule {
 struct AlwaysFailingAdapter {
     message: String,
 }
+
+continuum_engine::dispatch_without_thinking!(AlwaysFailingAdapter);
 
 #[async_trait]
 impl AIProviderAdapter for AlwaysFailingAdapter {
@@ -173,7 +173,7 @@ impl AIProviderAdapter for AlwaysFailingAdapter {
     }
     async fn generate_text(
         &self,
-        _request: TextGenerationRequest,
+        _request: TextGenerationRequest, _dispatched: continuum_core::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         Err(self.message.clone())
     }
@@ -211,10 +211,9 @@ fn build_handler(
     CommandRequestHandler::new(peer_a, executor)
 }
 
-/// Generic substrate-side responder. Subscribes to peer_a's inbound
-/// stream and dispatches every command-request-shaped envelope
-/// through `handler.on_envelope()` — the SAME code path a productized
-/// peer-side adapter registry would call.
+/// Substrate-side responder: reads peer_a's addressed inbox and hands the first
+/// command to `handler.on_addressed()`, the SAME entry point the production pump
+/// calls (ingress contract -> decode -> dispatch -> reply bound to the request).
 ///
 /// Returns the JoinHandle so the test can await task completion.
 async fn spawn_substrate_responder(
@@ -222,46 +221,16 @@ async fn spawn_substrate_responder(
     peer_a: Arc<airc_lib::Airc>,
     ready: Arc<tokio::sync::Notify>,
 ) -> tokio::task::JoinHandle<()> {
-    use airc_lib::adapter::ConsumerAdapter;
+    use continuum_core::routing::addressed_inbox::AddressedHandler;
 
-    let self_id = peer_a.peer_id();
-    let body_hint_filter = handler.body_hint();
     tokio::spawn(async move {
-        let mut stream = peer_a.subscribe().await.expect("peer_a subscribe");
+        let mut inbox = peer_a
+            .addressed_inbox(tokio::time::Instant::now() + airc_ipc::client::DEFAULT_RPC_TIMEOUT)
+            .await
+            .expect("peer_a addressed inbox");
         ready.notify_one();
-        while let Some(event) = stream.next().await {
-            let event = match event {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if event.peer_id == self_id {
-                continue;
-            }
-            let hint = match event
-                .headers
-                .get(continuum_airc_protocol::HEADER_CONTINUUM_BODY_HINT)
-            {
-                Some(h) => h,
-                None => continue,
-            };
-            if hint != body_hint_filter {
-                continue;
-            }
-            // SAME entry point a productized airc adapter-registry
-            // dispatch loop would call. The handler internally goes
-            // parse_envelope -> process_request -> send_reply.
-            //
-            // airc-lib's `subscribe()` yields `Arc<TranscriptEvent>`;
-            // `ConsumerAdapter::on_envelope` takes the owned value, so
-            // clone the inner. Production dispatch loops would do the
-            // same (the Arc only exists to fan-out to multiple
-            // subscribers).
-            handler
-                .on_envelope((*event).clone())
-                .await
-                .expect("substrate handler on_envelope");
-            return;
-        }
+        let frame = inbox.next().await.expect("addressed request arrives");
+        handler.on_addressed(frame).await;
     })
 }
 
@@ -309,7 +278,7 @@ async fn end_to_end_heuristic_dispatch_through_substrate_stack() {
 
     // Dispatch + assert.
     let response = adapter
-        .generate_text(request("hello grid"))
+        .generate_text(request("hello grid"), continuum_core::ai::adapter::Dispatched::fixture())
         .await
         .expect("end-to-end heuristic round-trip");
 
@@ -364,7 +333,7 @@ async fn end_to_end_peer_adapter_failure_surfaces_as_typed_error() {
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
     let err = adapter
-        .generate_text(request("doomed"))
+        .generate_text(request("doomed"), continuum_core::ai::adapter::Dispatched::fixture())
         .await
         .expect_err("AlwaysFailingAdapter must surface as adapter-failure error");
 
@@ -418,39 +387,17 @@ async fn end_to_end_missing_module_returns_typed_error() {
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
     let err = adapter
-        .generate_text(request("ping a void"))
+        .generate_text(request("ping a void"), continuum_core::ai::adapter::Dispatched::fixture())
         .await
         .expect_err("missing module must produce a typed error");
 
-    // What we OBSERVE today: CommandExecutor doesn't shortcut on a
-    // missing Rust module — it tries the TypeScript bridge at
-    // `/tmp/jtag-command-router.sock` (legacy router for unmigrated
-    // commands). The bridge isn't running in tests, so the caller
-    // sees the connect failure verbatim.
-    //
-    // Architecturally this is a `[[no-fallbacks-ever]]` violation —
-    // a Rust-only deployment should hard-error with the missing
-    // module name immediately, not silently route to TS-land. Filed
-    // as task #219.
-    //
-    // Per R1 round 1 on PR #1563: pin EXACTLY the current
-    // bridge-passthrough surface — NOT a permissive OR over plausible
-    // future error shapes. When task #219 lands, this test SHOULD
-    // fail loudly with "actual" not matching "commandrouterserver",
-    // forcing the test author to update to the new typed
-    // missing-module error AND verify the substrate fix actually
-    // produces it. A permissive assertion would silently stay green
-    // and let either a good fix (typed error) or a bad regression
-    // (200 on nothing) pass undetected.
+    // Task #219 landed: CommandExecutor hard-errors on a missing Rust module, naming the
+    // command, instead of falling through to the legacy TS bridge ([[no-fallbacks-ever]]).
+    // Pinned EXACTLY (R1 round 1 on PR #1563), never a permissive OR over plausible shapes.
     let lower = err.to_lowercase();
     assert!(
-        lower.contains("commandrouterserver") || lower.contains("jtag-command-router"),
-        "expected the TS-bridge connect-failure surface — the substrate \
-         currently falls through to /tmp/jtag-command-router.sock on \
-         missing Rust modules. If THIS assertion fired because task #219 \
-         landed and CommandExecutor now hard-errors on missing modules, \
-         update the assertion to pin the new typed-error surface and \
-         verify the substrate change. Got: {err:?}"
+        lower.contains("no rust module handles command: 'ai/generate'"),
+        "expected the missing-module hard error naming ai/generate. Got: {err:?}"
     );
 
     responder.await.expect("responder task joined");

@@ -14,7 +14,7 @@
 //!
 //! Headless-native by design: continuum-core owns this with ZERO Node dependency
 //! — the Node desktop is a dependent client that calls it over IPC, never the
-//! reverse. That's why it lives in the Rust core and reuses [`crate::config_env`]
+//! reverse. That's why it lives in the Rust core and reuses [`continuum_base::config_env`]
 //! (the in-core config.env reader/writer) rather than the TypeScript
 //! `SecretManager`.
 //!

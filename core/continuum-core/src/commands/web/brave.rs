@@ -11,9 +11,9 @@ use crate::sdk_codegen::CommandError;
 /// key works without a core restart) ∪ the boot-cached env/secret reader. Same
 /// logical secret, two legitimate locations — not a fallback.
 fn brave_key() -> Option<String> {
-    crate::config_env::read("BRAVE_API_KEY")
+    continuum_base::config_env::read("BRAVE_API_KEY")
         .filter(|v| !v.trim().is_empty())
-        .or_else(|| crate::secrets::get_secret("BRAVE_API_KEY").map(|s| s.to_string()))
+        .or_else(|| continuum_base::secrets::get_secret("BRAVE_API_KEY").map(|s| s.to_string()))
         .map(|s| s.trim().to_string())
 }
 

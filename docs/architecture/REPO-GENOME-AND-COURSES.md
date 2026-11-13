@@ -331,3 +331,77 @@ any size inherits. The compounding is multiplicative across repos × models
 lineage attestation on every layer (forge-alloy pointed at manifests) →
 impact telemetry → economy. Each stage ships value alone; none blocks the
 previous.
+
+## 17. The addendum: any agent learns from all of its user's work and GitHub (Joel, 2026-10-19)
+
+Joel: *"Adding continual learning and genomics to Hermes and opencode would be sought after"* and
+*"have it learn from all their work and GitHub."* The strategy is to be the addendum: ride the agents
+people already use (Joel grew apps on Pinterest pins and on Instagram's early history; second or
+fiftieth fiddle still gives inroads). §12 learns from the agents working THIS repo; this section
+opens the same rails to anyone's agent on anyone's repo.
+
+**The driver.** Hermes, opencode, Claude Code, or any OpenAI-speaking agent points at continuum and
+changes nothing else. It reaches two seams of the placement map (MODULE-ARCHITECTURE.md §9.2):
+Serving (our engine's speed on the user's own models) and Dreaming (learning). Drivers reach seams,
+not machines, so a laptop's agent can serve on a 5090 and dream on an M5 across the grid.
+
+**What it learns from: all of the user's work, in time order.**
+
+| Source | What becomes perception | Where the correction is |
+|---|---|---|
+| The agent's own sessions through the driver | every request, tool call, result and reply | the user's next message, a rejected edit, a reverted change |
+| The user's GitHub history | commits, diffs, PRs, reviews, issues, CI runs, in time order | review comments and the commit that answered them; a revert; a follow-up "fix" commit; a failed then passing CI run |
+| The team's history | every contributor's PRs and reviews on the shared repos | what reviewers kept repeating (the richest lesson: what agents and people forget) |
+| The team's airc history | every room message, card, claim, submission and review verdict, in time order | a FAILED verdict and the resubmission that passed; a correction in a room and the act that followed it |
+| Claude Code and Codex session histories (`~/.claude/projects/*.jsonl`, Codex's) | every user message, tool call and result of the agents building the repo | the user's correction ("no, not like that") and what the agent did differently after it |
+
+This is the Matrix Dojo applied to every user: a repository's history replayed as perception, time
+order as the curriculum, the same learning verb the residents use (prediction error on what she
+perceives, weighted by her own relevance; never rows picked by a rule). Nothing new is invented for
+drivers: their sessions are captured by the existing recorder, GitHub history is imported through
+an adapter into the same perception stream, and genes are selected by what the mind is on.
+
+**Genomics.** What is learned is a gene: shareable, swappable and revocable. A user's agent wears the
+genes for the repos it works in; a team shares them across the grid; a public gene is published like
+§6 and spreads by usage. Revoking a gene removes the skill. **One genome for drivers and personas** (Joel: "far smarter persona and they can use the
+genome too"): a gene learned from a driver's sessions or a user's GitHub history is the same
+artifact a resident wears, and a resident's genes serve the drivers. Every driver's work makes the
+personas smarter and every persona's learning reaches the drivers; fitness is usage across both.
+
+**Scope and privacy, by default.** `.continuum/scope` (§1) decides what may be learned from, per repo.
+Private repositories and sessions train only on the user's own nodes unless the user publishes a
+gene. Credentials, secrets and anything the scope denies never enter perception, captures or genes.
+The importer reads GitHub with the user's own grant and nothing else.
+
+**The proof (the demo is the acceptance test, never a staged clip).** Point an agent at continuum
+with one command; correct it once; restart; give it an unseen related task: it succeeds, and the same
+task without the gene fails; share the gene with a teammate's agent and theirs succeeds. Scripted,
+reproducible by anyone. Not shown before the residents pass the same test.
+
+**Order (the plan's pipeline).** (1) serving fast, (2) modules cut by the placement map, (3) the
+learning acceptance test passes on our residents, (4) drivers learn. The GitHub importer and the
+driver's Serving seam can be built at (1); learning for drivers ships at (4). Our own dev agents are
+the first drivers: developing continuum through continuum is the first curriculum.
+
+### 17.1 A history becomes a course: corrections are lessons (Joel, 2026-11-11)
+
+Joel: *"one of the best ways we can learn beyond just their own experiences is from literal airc, GitHub history, and Claude and codex histories, lessons of what we've done. As sort of a course for anyone's existing repo."*
+
+Perception alone is not a course. A history becomes one through the lesson path of ONE-RESIDENT-MODEL §11, which every source above feeds the same way:
+
+1. **Find the correction.** Each importer emits a typed correction: what was done, what the reviewer or user said, and what changed after. The evidence points into the history:
+   - GitHub: a review comment and the commit that answered it, a revert, a red CI run then a green one.
+   - airc: a FAILED verdict and the resubmission that passed.
+   - Claude Code and Codex sessions: the user's correction and the agent's next act.
+2. **Name the lesson.** The lesson is one sentence of what to do differently, never the patch, carried as the review's typed lesson field (§11 step 1). Where the history already says it, as in a review or a user's correction, it is taken verbatim. Where it doesn't, the doctor proposes one and a human or a reviewer confirms it.
+3. **The doctor writes its family:** generic tasks with oracles the world grades (§11 step 2), set in scratch repositories, never trivia about the repo the lesson came from.
+4. **A gene is trained and examined** on the lesson's unseen tasks and `lc-unrelated`, then re-sat after a restart (§11 steps 4 and 5). It is kept only when it lifts.
+
+**Order and scope.** The course reads newest first and pages back while lessons still pay (Joel, 2026-11-11: "recency backwards more likely better"). Recent corrections name code that still exists. Older ones may be superseded, like "quarantine legacy, never delete it", which later became "legacy is a git tag", and newest-first meets the current rule before the one it overturned, so a contradicting older lesson is recognised as superseded and never trained. Each correction's own evidence (what was done, the review, the fix) is still read in its local order. `.continuum/scope` decides what may be read. Private history trains only on the user's own nodes. Secrets never enter a correction.
+
+**First course: this repo.** It is the dogfood source. Its PR reviews, the airc rooms and the Claude and Codex sessions that built it hold hundreds of corrections. 2026-11-11 alone produced at least these:
+- *a file named in feedback that is not where you looked is searched for before you conclude it is gone* (Aiko, #5923);
+- *nothing holds what it isn't actively using* (Joel to Fable, on learning's memory);
+- *a wall-clock gate is not a steady-state signal* (Benchy, served_window_store).
+
+**Gate:** the §17 proof, run on a course. Import a slice of this repo's history and train one lesson's gene. It passes its unseen family tasks, holds after a restart, and leaves `lc-unrelated` intact, compared with the same base without the gene.

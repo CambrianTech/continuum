@@ -3,7 +3,7 @@
  *
  * Recipes bind rooms to HIERARCHICAL purposes (`benchmark/hard-rs`,
  * `video-chat`), while the content registry keys renderers by FAMILY
- * (`bench`, `live`). Nothing resolved between them, so 3 of the 4 shipped
+ * (`chat`, `live`). Nothing resolved between them, so 3 of the 4 shipped
  * recipes painted `Interface error rendering this room` — a dispatched
  * benchmark round's room was unrenderable in the browser (measured
  * 2026-08-22; #431's scoreboard region was the whole point).
@@ -11,7 +11,7 @@
  * Resolution is deliberately narrow and data-first:
  *  - a purpose that IS a family passes through unchanged;
  *  - a namespaced purpose resolves by its FIRST SEGMENT through the alias
- *    table (`benchmark/<anything>` → bench — rooms are URI path trees, the
+ *    table (`benchmark/<anything>` → chat — rooms are URI path trees, the
  *    variant after the slash is the recipe's business, not the renderer's);
  *  - anything unknown passes through UNCHANGED so the registry still fails
  *    loud ([[fallbacks-are-illegal-fail-loud]]) — this function widens what
@@ -23,7 +23,6 @@
  */
 
 import { ARENA_PURPOSE } from './arenaContent';
-import { BENCH_PURPOSE } from './benchContent';
 import { CANVAS_PURPOSE } from './canvasContent';
 import { GRID_PURPOSE } from './gridContent';
 import { LIVE_PURPOSE } from './liveContent';
@@ -36,7 +35,6 @@ const FAMILIES: ReadonlySet<string> = new Set([
   'chat',
   'foundry',
   ARENA_PURPOSE,
-  BENCH_PURPOSE,
   CANVAS_PURPOSE,
   GRID_PURPOSE,
   LIVE_PURPOSE,
@@ -48,7 +46,8 @@ const FAMILIES: ReadonlySet<string> = new Set([
 /** Recipe purpose (or its first path segment) → family. Every entry names the
  *  shipped recipe that motivates it. */
 const ALIASES: ReadonlyMap<string, string> = new Map([
-  ['benchmark', BENCH_PURPOSE], // recipes/benchmark.json → purpose "benchmark/hard-rs"
+  ['benchmark', 'chat'], // recipes/benchmark.json → purpose "benchmark/hard-rs": an ordinary conversation
+  ['coursework', 'chat'], // coursework/<anything>: an ordinary conversation
   ['video-chat', LIVE_PURPOSE], // recipes/video-chat.json
   ['profile', PERSONA_PURPOSE], // recipes/profile.json
 ]);

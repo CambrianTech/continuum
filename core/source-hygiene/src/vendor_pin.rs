@@ -50,4 +50,44 @@ mod tests {
              in your worktree first — a stale worktree submodule staged with `git add -A` is how it regressed)."
         );
     }
+
+    // what this catches: the pin moving to an engine that no longer parses `tail_tools` while
+    // the core still offers a mind's learned tool head to every lane that reports the pinned
+    // build (`llama_server::engine_features`): her tail verbs would arrive as text, not calls.
+    #[test]
+    fn the_pinned_engine_source_parses_tail_tools() {
+        let parser = repo_root().join("core/vendor/llama.cpp/tools/server/server-common.cpp");
+        let Ok(source) = std::fs::read_to_string(&parser) else {
+            eprintln!("{} not checked out — nothing to check", parser.display());
+            return;
+        };
+        assert!(
+            source.contains(r#"json_value(body, "tail_tools""#),
+            "the pinned llama.cpp ({}) does not parse `tail_tools`, but the core offers tail verbs to a \
+             lane running exactly this build: move the pin to a fork commit that carries \
+             CambrianTech/llama.cpp#75, or change `engine_features` in the same PR",
+            parser.display()
+        );
+    }
+
+    // what this catches: the pin moving to an engine that ignores `view_messages` and
+    // `keep_view_checkpoints`. It would checkpoint no view end and save only the head
+    // (`turn_admission::page_body` sends `keep_newest_checkpoints: 0` for that engine), so every
+    // page-in would resume from the ~11k head again (card 3512f496).
+    #[test]
+    fn the_pinned_engine_source_checkpoints_the_view_end_and_pages_it() {
+        let server = repo_root().join("core/vendor/llama.cpp/tools/server/server-context.cpp");
+        let Ok(source) = std::fs::read_to_string(&server) else {
+            eprintln!("{} not checked out — nothing to check", server.display());
+            return;
+        };
+        for field in [r#""view_messages""#, r#""keep_view_checkpoints""#] {
+            assert!(
+                source.contains(field),
+                "the pinned llama.cpp ({}) does not read {field}: move the pin to a fork commit that \
+                 checkpoints the view end, or change `turn_admission::page_body` in the same PR",
+                server.display()
+            );
+        }
+    }
 }

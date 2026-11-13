@@ -62,10 +62,10 @@ fn parse_ddg_html(html: &str, count: u32) -> Vec<WebHit> {
     use regex::Regex;
     // Capture the anchor's attrs (any order) + inner text; pull href out of the attrs.
     let a_re = Regex::new(r#"(?s)<a\b([^>]*\bclass="result__a"[^>]*)>(.*?)</a>"#)
-        .expect("static result__a regex");
-    let href_re = Regex::new(r#"href="([^"]+)""#).expect("static href regex");
+        .expect("static result__a regex"); // JUSTIFIED: constant literal pattern; invalid only by edit, caught by the parse tests
+    let href_re = Regex::new(r#"href="([^"]+)""#).expect("static href regex"); // JUSTIFIED: constant literal pattern; invalid only by edit, caught by the parse tests
     let snip_re = Regex::new(r#"(?s)class="result__snippet"[^>]*>(.*?)</a>"#)
-        .expect("static result__snippet regex");
+        .expect("static result__snippet regex"); // JUSTIFIED: constant literal pattern; invalid only by edit, caught by the parse tests
 
     let snippets: Vec<String> = snip_re
         .captures_iter(html)

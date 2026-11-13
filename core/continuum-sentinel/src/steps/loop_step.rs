@@ -1,0 +1,571 @@
+//! Loop step execution — iterates over sub-steps with flexible termination
+//!
+//! Supports four modes:
+//! - **count**: fixed N iterations (original behavior)
+//! - **while**: condition checked before each iteration, continues while truthy
+//! - **until**: condition checked after each iteration, stops when truthy
+//! - **continuous**: no condition, runs until maxIterations (safety limit)
+
+use serde_json::{json, Value};
+use std::time::Instant;
+use tokio::io::AsyncWriteExt;
+
+use crate::interpolation;
+use crate::types::{
+    ExecutionContext, PipelineContext, PipelineStep, StepResult, DEFAULT_MAX_ITERATIONS,
+};
+
+/// Execute a loop step with flexible termination
+#[allow(clippy::too_many_arguments)]
+pub async fn execute(
+    count: Option<usize>,
+    while_condition: Option<&str>,
+    until: Option<&str>,
+    max_iterations: Option<usize>,
+    steps: &[PipelineStep],
+    index: usize,
+    ctx: &mut ExecutionContext,
+    pipeline_ctx: &PipelineContext<'_>,
+) -> Result<StepResult, String> {
+    use continuum_kernel::runtime;
+    let log = runtime::logger("sentinel");
+    let start = Instant::now();
+
+    // Determine loop mode and iteration limit
+    let mode: LoopMode = if let Some(n) = count {
+        LoopMode::Count(n)
+    } else if let Some(cond) = while_condition {
+        LoopMode::While(cond.to_string())
+    } else if let Some(cond) = until {
+        LoopMode::Until(cond.to_string())
+    } else {
+        LoopMode::Continuous
+    };
+
+    // Safety limit: count mode uses exact count, all others use maxIterations or default
+    let limit = match &mode {
+        LoopMode::Count(n) => *n,
+        _ => max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS),
+    };
+
+    log.info(&format!(
+        "[{}] Loop step: mode={}, limit={}",
+        pipeline_ctx.handle_id,
+        mode.name(),
+        limit
+    ));
+
+    let mut iteration: usize = 0;
+    // Collect per-iteration sub-step results for post-loop access.
+    // Each entry is an array of {stepType, data, output, success} for that iteration's sub-steps.
+    let mut iteration_results: Vec<Value> = Vec::new();
+
+    loop {
+        if iteration >= limit {
+            log.info(&format!(
+                "[{}] Loop reached iteration limit {}",
+                pipeline_ctx.handle_id, limit
+            ));
+            break;
+        }
+
+        // While mode: check condition BEFORE executing
+        if let LoopMode::While(ref cond) = mode {
+            let interpolated = interpolation::interpolate(cond, ctx);
+            if !interpolation::evaluate_condition(&interpolated) {
+                log.info(&format!(
+                    "[{}] While condition false at iteration {}",
+                    pipeline_ctx.handle_id, iteration
+                ));
+                break;
+            }
+        }
+
+        // Save parent iteration for nested loop access: {{input.parent_iteration}}
+        // If we're already inside a loop (iteration exists), promote it to parent_iteration
+        if let Some(parent_iter) = ctx.inputs.get("iteration").cloned() {
+            ctx.inputs
+                .insert("parent_iteration".to_string(), parent_iter);
+        }
+
+        // Set iteration variable for interpolation: {{input.iteration}}
+        ctx.inputs.insert("iteration".to_string(), json!(iteration));
+        // Set loop base index for {{loop.N.field}} relative referencing
+        ctx.inputs
+            .insert("_loop_base".to_string(), json!(ctx.step_results.len()));
+
+        // Execute sub-steps
+        for (sub_idx, step) in steps.iter().enumerate() {
+            let sub_result =
+                super::execute_step(step, ctx.step_results.len(), ctx, pipeline_ctx).await?;
+            if !sub_result.success {
+                log.error(&format!(
+                    "[{}] Loop iteration {} sub-step {}/{} ({}) failed: error={:?}, output={:?}, exitCode={:?}",
+                    pipeline_ctx.handle_id, iteration, sub_idx, steps.len(),
+                    sub_result.step_type, sub_result.error, sub_result.output, sub_result.exit_code
+                ));
+                return Ok(StepResult {
+                    step_index: index,
+                    step_type: "loop".to_string(),
+                    success: false,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                    output: None,
+                    error: sub_result.error.clone(),
+                    exit_code: None,
+                    data: json!({
+                        "mode": mode.name(),
+                        "iteration": iteration,
+                        "iterationsCompleted": iteration,
+                        "failedSubStep": {
+                            "subIndex": sub_idx,
+                            "stepType": sub_result.step_type,
+                            "error": sub_result.error,
+                            "output": sub_result.output,
+                            "exitCode": sub_result.exit_code,
+                            "durationMs": sub_result.duration_ms,
+                        },
+                    }),
+                });
+            }
+            // Flush sub-step result to steps.jsonl for real-time observability.
+            // Without this, loop sub-steps are invisible until the entire loop completes.
+            if let Some(log_path) = pipeline_ctx.steps_log_path {
+                if let Ok(json_line) = serde_json::to_string(&sub_result) {
+                    if let Ok(mut file) = tokio::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(log_path)
+                        .await
+                    {
+                        let _ = file.write_all(format!("{json_line}\n").as_bytes()).await;
+                    }
+                }
+            }
+            ctx.step_results.push(sub_result);
+        }
+
+        // Snapshot this iteration's sub-step results for post-loop access.
+        // Enables {{steps.N.data.iterations[i][j].data.field}} references.
+        let loop_base = ctx
+            .inputs
+            .get("_loop_base")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+        let iter_snapshot: Vec<Value> = (loop_base..ctx.step_results.len())
+            .filter_map(|idx| ctx.step_results.get(idx))
+            .map(|r| {
+                json!({
+                    "stepType": r.step_type,
+                    "success": r.success,
+                    "data": r.data,
+                    "output": r.output,
+                })
+            })
+            .collect();
+        iteration_results.push(Value::Array(iter_snapshot));
+
+        iteration += 1;
+
+        // Until mode: check condition AFTER executing
+        if let LoopMode::Until(ref cond) = mode {
+            let interpolated = interpolation::interpolate(cond, ctx);
+            if interpolation::evaluate_condition(&interpolated) {
+                log.info(&format!(
+                    "[{}] Until condition met at iteration {}",
+                    pipeline_ctx.handle_id, iteration
+                ));
+                break;
+            }
+        }
+    }
+
+    Ok(StepResult {
+        step_index: index,
+        step_type: "loop".to_string(),
+        success: true,
+        duration_ms: start.elapsed().as_millis() as u64,
+        output: None,
+        error: None,
+        exit_code: None,
+        data: json!({
+            "mode": mode.name(),
+            "iterationsCompleted": iteration,
+            "iterations": iteration_results,
+        }),
+    })
+}
+
+/// Internal enum to classify the loop's termination strategy
+enum LoopMode {
+    Count(usize),
+    While(String),
+    Until(String),
+    Continuous,
+}
+
+impl LoopMode {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Count(_) => "count",
+            Self::While(_) => "while",
+            Self::Until(_) => "until",
+            Self::Continuous => "continuous",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ExecutionContext, PipelineStep};
+    use continuum_kernel::runtime::{message_bus::MessageBus, ModuleRegistry};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn test_ctx() -> ExecutionContext {
+        ExecutionContext {
+            step_results: Vec::new(),
+            inputs: HashMap::new(),
+            working_dir: PathBuf::from("/tmp"),
+            named_outputs: HashMap::new(),
+        }
+    }
+
+    fn test_pipeline_ctx<'a>(
+        registry: &'a Arc<ModuleRegistry>,
+        bus: &'a Arc<MessageBus>,
+    ) -> PipelineContext<'a> {
+        PipelineContext {
+            handle_id: "test-loop",
+            registry,
+            bus: Some(bus),
+            steps_log_path: None,
+            executor: None,
+        }
+    }
+
+    fn echo_step(msg: &str) -> PipelineStep {
+        PipelineStep::Shell {
+            cmd: "echo".to_string(),
+            args: vec![msg.to_string()],
+            timeout_secs: Some(10),
+            working_dir: None,
+            allow_failure: None,
+            env: None,
+        }
+    }
+
+    fn echo_iteration_step() -> PipelineStep {
+        PipelineStep::Shell {
+            cmd: "echo".to_string(),
+            args: vec!["iter-{{input.iteration}}".to_string()],
+            timeout_secs: Some(10),
+            working_dir: None,
+            allow_failure: None,
+            env: None,
+        }
+    }
+
+    fn failing_step() -> PipelineStep {
+        PipelineStep::Shell {
+            cmd: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "exit 1".to_string()],
+            timeout_secs: Some(10),
+            working_dir: None,
+            allow_failure: None,
+            env: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_count_mode() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            Some(3),
+            None,
+            None,
+            None,
+            &[echo_step("counted")],
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["mode"], "count");
+        assert_eq!(result.data["iterationsCompleted"], 3);
+        assert_eq!(ctx.step_results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_count_zero() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            Some(0),
+            None,
+            None,
+            None,
+            &[echo_step("should-not-run")],
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["iterationsCompleted"], 0);
+        assert_eq!(ctx.step_results.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_while_false_immediate_exit() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            None,
+            Some("false"),
+            None,
+            None,
+            &[echo_step("should-not-run")],
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["mode"], "while");
+        assert_eq!(result.data["iterationsCompleted"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_while_true_hits_limit() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            None,
+            Some("true"),
+            None,
+            Some(5),
+            &[echo_step("looping")],
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["mode"], "while");
+        assert_eq!(result.data["iterationsCompleted"], 5);
+        assert_eq!(ctx.step_results.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_until_true_one_iteration() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        // until "true" → executes once, then condition is true, so stops
+        let result = execute(
+            None,
+            None,
+            Some("true"),
+            None,
+            &[echo_step("once")],
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["mode"], "until");
+        assert_eq!(result.data["iterationsCompleted"], 1);
+        assert_eq!(ctx.step_results.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_until_false_hits_limit() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            None,
+            None,
+            Some("false"),
+            Some(4),
+            &[echo_step("repeating")],
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["mode"], "until");
+        assert_eq!(result.data["iterationsCompleted"], 4);
+    }
+
+    #[tokio::test]
+    async fn test_continuous_mode() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        // No count, no while, no until → continuous, uses maxIterations
+        let result = execute(
+            None,
+            None,
+            None,
+            Some(3),
+            &[echo_step("continuous")],
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["mode"], "continuous");
+        assert_eq!(result.data["iterationsCompleted"], 3);
+    }
+
+    #[tokio::test]
+    async fn test_iteration_variable_interpolated() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            Some(3),
+            None,
+            None,
+            None,
+            &[echo_iteration_step()],
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success);
+        assert_eq!(ctx.step_results.len(), 3);
+        assert_eq!(ctx.step_results[0].output.as_deref(), Some("iter-0\n"));
+        assert_eq!(ctx.step_results[1].output.as_deref(), Some("iter-1\n"));
+        assert_eq!(ctx.step_results[2].output.as_deref(), Some("iter-2\n"));
+    }
+
+    #[tokio::test]
+    async fn test_failing_substep_stops_loop() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            Some(5),
+            None,
+            None,
+            None,
+            &[failing_step()],
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.data["mode"], "count");
+        // Should stop after first iteration's failure
+        assert_eq!(result.data["iteration"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_steps_per_iteration() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        let result = execute(
+            Some(2),
+            None,
+            None,
+            None,
+            &[echo_step("step-a"), echo_step("step-b")],
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.data["iterationsCompleted"], 2);
+        // 2 iterations × 2 steps = 4 step results
+        assert_eq!(ctx.step_results.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_parent_iteration_set_for_nested_loops() {
+        let registry = Arc::new(ModuleRegistry::new());
+        let bus = Arc::new(MessageBus::new());
+        let pipeline_ctx = test_pipeline_ctx(&registry, &bus);
+        let mut ctx = test_ctx();
+
+        // Simulate outer loop: set iteration = 2 (as if we're on topic 2)
+        ctx.inputs.insert("iteration".to_string(), json!(2));
+
+        // Inner loop should promote current iteration to parent_iteration
+        let result = execute(
+            Some(1),
+            None,
+            None,
+            None,
+            &[echo_step("inner")],
+            0,
+            &mut ctx,
+            &pipeline_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert!(result.success);
+
+        // After inner loop, parent_iteration should be set to 2 (outer loop value)
+        assert_eq!(ctx.inputs.get("parent_iteration").unwrap(), &json!(2));
+        // iteration should be 0 (inner loop's last value)
+        assert_eq!(ctx.inputs.get("iteration").unwrap(), &json!(0));
+    }
+}

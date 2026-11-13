@@ -418,6 +418,11 @@ mod tests {
             }
             Ok(self.posts.lock().unwrap().clone())
         }
+
+        // this stub models a wall with no work board behind it
+        async fn card_labels(&self, _room: Option<uuid::Uuid>) -> Option<crate::persona::wall_source::CardLabels> {
+            None
+        }
     }
 
     fn post(room: RoomId, author: PeerId, category: &str, body: &str) -> WallPostPublished {

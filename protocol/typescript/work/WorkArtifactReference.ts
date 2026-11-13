@@ -5,7 +5,7 @@
  */
 export type WorkArtifactReference = { 
 /**
- * Artifact SHA-256: 64 hex characters.
+ * SHA-256 of the patch bytes (64 hex), not a git sha.
  */
 hash: string, 
 /**

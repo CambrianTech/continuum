@@ -13,6 +13,7 @@
 //! speech (voices never overlap — one utterance at a time across the node),
 //! lag on the broadcast channel is skipped and counted, never a crash.
 
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
 use tokio::sync::broadcast::error::RecvError;
@@ -41,13 +42,6 @@ pub(crate) fn fresh_enough(posted_ms: u64, now_ms: u64) -> bool {
     now_ms.saturating_sub(posted_ms) <= MAX_LINE_AGE_MS
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // unwrap_or: a clock before 1970 is not a case this guard needs to reason about
-}
-
 pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
     let mut rx = bus.receiver();
     tokio::spawn(async move {
@@ -55,7 +49,7 @@ pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
             let event = match rx.recv().await {
                 Ok(e) => e,
                 Err(RecvError::Lagged(n)) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "live.tts.bus_lagged",
                         module = "live",
                         skipped = n,
@@ -84,9 +78,10 @@ pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
                 continue;
             };
             // Checked at SPEAK time, after the queue ahead of it drained.
-            let age_ms = now_ms().saturating_sub(posted.timestamp);
-            if !fresh_enough(posted.timestamp, now_ms()) {
-                crate::probe!(
+            // A pre-1970 clock reads 0 here: not a case this guard needs to reason about.
+            let age_ms = EpochMs::now().millis().saturating_sub(posted.timestamp);
+            if !fresh_enough(posted.timestamp, EpochMs::now().millis()) {
+                continuum_base::probe!(
                     class = "live.tts.stale_dropped",
                     module = "live",
                     room = room.as_str(),
@@ -102,7 +97,7 @@ pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
                 .speak_in_room(&room, &persona, &text, None, None, Some(&name))
                 .await
             {
-                Ok((_, duration_ms, _)) => crate::probe!(
+                Ok((_, duration_ms, _)) => continuum_base::probe!(
                     class = "live.tts.spoken",
                     module = "live",
                     room = room.as_str(),
@@ -113,7 +108,7 @@ pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
                     synth_ms = started.elapsed().as_millis() as u64,
                     "a room line became her voice in the call"
                 ),
-                Err(e) => crate::probe!(
+                Err(e) => continuum_base::probe!(
                     class = "live.tts.failed",
                     module = "live",
                     room = room.as_str(),

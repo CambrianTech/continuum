@@ -118,7 +118,6 @@
 //!    and call [`Substrate::store`] on each change, so the projection
 //!    tracks the airc-owned truth (see "State ownership" above).
 
-pub mod bench;
 pub mod broadcast;
 pub mod canvas;
 pub mod cache;
@@ -151,7 +150,7 @@ pub use connection::Connection;
 pub use dispatch::{apply_command, CommandDispatch};
 pub use kanban::{
     KanbanCardState, KanbanCardView, KanbanHold, KanbanLaneState, KanbanLaneView, KanbanPriority,
-    KanbanPullRequest, KanbanViewState,
+    KanbanPullRequest, KanbanReviewOutcome, KanbanReviewView, KanbanViewState,
 };
 pub use observer::{apply_observe, ObserverRegistration};
 pub use revisions::Revisions;

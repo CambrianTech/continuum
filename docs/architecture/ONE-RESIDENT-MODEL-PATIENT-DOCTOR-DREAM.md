@@ -41,7 +41,7 @@ What already IS the shape we want, and stays:
 - **One engine, N adapters, per-request selection.** All genes for the served base load at launch (`inference/lane_args.rs:572-587`), are zeroed once ready (`inference/llama_server.rs:5500-5512`), and every request names its set as `"lora":[{id,scale}]` (`ai/openai_adapter.rs:1624-1650`). A persona's set is her genome slot, read every turn (`cognition/llm_deliberation_faculty.rs:1573-1577`), swapped by `cycle.page_in()` (`cognition/workspace.rs:2046`).
 - **Dream and sleep primitives.** `DreamConsolidationRegion` with `DreamTrigger {Idle, CardBoundary}` (`cognition/dream_consolidation.rs`), `SleepPhase {Active, Idle, Sleep}` (`runtime/brain_region.rs:289`), the persona's `SleepMode` (`persona/evaluator/sleep_state.rs`).
 - **The fork's training substrate.** `examples/training/finetune.cpp`, `llama_opt_init` / `llama_opt_epoch` / `llama_opt_param_filter` (`vendor/llama.cpp/include/llama.h:1682-1701`), `ggml-opt`. Today: full-weight, FP32-only, no LoRA-only filter, and the Rust bindings (`core/llama/src/safe.rs`) bind `load_lora` / `set_loras` but no `llama_opt_*`.
-- **The grader is the world, not a model.** Code tasks are graded by compiling and running tests (`cognition/gym_grader::test_grade`); SWE by fail-to-pass (`cognition/swe_bench.rs:189`). There is no LLM judge in the core. The doctor *teaches*; the tests *grade*.
+- **The grader is the world, not a model.** Code tasks are graded by compiling and running tests (`genome/gym_grader::test_grade`); SWE by fail-to-pass (`cognition/swe_bench.rs:189`). There is no LLM judge in the core. The doctor *teaches*; the tests *grade*.
 
 Two facts of the engine that decide the design below:
 
@@ -123,7 +123,7 @@ Outlier A: the M5 (Metal, 64 GB, 27B Q4, the patient beside 3 other residents). 
 | S1 | AdapterRegistry load/unload endpoint + Rust bindings; serving_daemon adopts genes through it | zero engine relaunches on gene adoption over a day; boot does not relaunch per persona |
 | S2 | Role slot affinity; same-base teacher always on the live engine | prefix reuse on the health line unchanged across a coursework session; no PrivateTeacherLane retire when teacher == base |
 | S3 | LoRA-only ggml-opt training on the quantized base. **Where a dream runs is a state walk (Joel, 2026-09-26): the GPU here (S3a CUDA, S3b Metal) > a GPU on the grid > the CPU here, at background priority, only when no GPU exists here or on the grid** ("fast enough in background" for an IntelMac-class node). The CPU backend is also the **parity oracle**: it is the one backend where the quantized backward already runs, so the GPU kernels are proven against it in `test-backend-ops` (card 342e6cd6 proves the LoRA path there first): `llama_opt_init` offers the attached adapter's A/B tensors, never the base; CLI + bindings; shadow adapter files. CPU already runs the backward through a frozen quantized weight (`out_prod_q_f32`). | loss on a held-out split falls across epochs; the adapter lifts over base on coder-eval within the bucket; memory never exceeds serve + one adapter, measured by the engine |
-| S3a | The CUDA quantized `OUT_PROD` kernel (the 5090; card dd109d3c): dequantize block rows through the existing `to_fp32` converters into a pool buffer, then the cuBLAS path already there; per-op transient, no second copy. Until it lands, the 5090 cannot carry the backward through its resident Q4_K_M base at all (`ggml-cuda.cu:5019` supports F32 src0 only). | backward of a Q4_K `mul_mat` on CUDA matches the CPU backend to tolerance; the same bucket trained on the 5090 matches the CPU adapter's loss curve within tolerance (CPU-vs-CUDA parity) and lifts over base |
+| S3a | The CUDA quantized `OUT_PROD` kernel (the 5090; card dd109d3c): dequantize block rows through the existing `to_fp32` converters into a pool buffer, then the cuBLAS path already there; per-op transient, no second copy. **Built in the fork (status 2026-10-05):** a0c6294e0 (out_prod accepts a quantized/F16/BF16 src0), 42a35ffbd (row-block dequant: the output head's backward holds one block, never W in F32), 4483cb59b (blocks on BF16 tensor cores via cublasGemmEx). `supports_op` admits any contiguous src0 with an F32 converter. The 5090's live lane runs that build (b10778-f00a2227a) with `POST /train` answering. What was missing on 2026-10-05 was ROUTING, not the kernel: the coordinator kept engine-local preference-only, so Kimi's first gene went to cuda-local and waited for a second copy that could not fit. The parity gate (right column) is still to be measured. | backward of a Q4_K `mul_mat` on CUDA matches the CPU backend to tolerance; the same bucket trained on the 5090 matches the CPU adapter's loss curve within tolerance (CPU-vs-CUDA parity) and lifts over base |
 | S3b | The Metal backward kernel set (ggml #990) so the M5 trains in-engine; until then the M5 uses the MLX QLoRA fallback | the same adapter trained on the M5 in-engine matches the MLX one within noise; no CPU fallback of the backward graph |
 | S4 | DREAM stage in the server loop with governor budget, step probe, epoch header, promote/snapshot. **Two dream lanes under one budget (Joel, 2026-09-26): the GPU dream when the GPU has headroom, and a CPU dream on idle cores always — background priority, yielding to any turn; on unified memory the CPU reads the same resident buffers, on a discrete GPU it reads the host copy.** | a dream period runs while 4 residents keep turning; enter/leave cost ≤ one decode step; prefix reuse does not fall to 0% |
 | S5 | Drift state machine + handoff/receipt at every edge + gate against the stable snapshot + ledger epoch stamp; gene A/B on the live engine | Kimi's first coursework→dream→serve cycle opens each return with the record, and her stable self never serves moving weights |
@@ -141,7 +141,7 @@ Rule for every slice: it lands on canary green with a peer word, it is measured 
 
 **candle.** 0.11.0 (2026-06). No LoRA in-tree ([candle-lora](https://github.com/EricLBuehler/candle-lora) stale since 2025-04); quantized training impossible as-is (`QMatMul` has no backward, [quantized/mod.rs](https://github.com/huggingface/candle/blob/main/candle-core/src/quantized/mod.rs)); open Metal correctness issues ([#3863](https://github.com/huggingface/candle/issues/3863), [#3705](https://github.com/huggingface/candle/issues/3705)). **Candle is not the training layer**; it stays for GGUF reads and TTS.
 
-**Others, one line each.** [mlx-lm LoRA](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/LORA.md): QLoRA on quantized bases on Apple, fuse → GGUF — the M5's fallback until Metal backward kernels exist. [vLLM sleep mode](https://docs.vllm.ai/en/latest/features/sleep_mode/): tagged wake (`weights` vs KV) — adopt the contract for the DREAM stage. [Punica / S-LoRA](https://arxiv.org/pdf/2310.18547): one base copy, mixed adapters in one batch (SGMV) — the kernel that removes the `are_lora_equal` wall. LoRAX: adapter-registry API reference only. Unsloth: an oracle for adapter quality, not an engine.
+**Others, one line each.** [mlx-lm LoRA](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/LORA.md): QLoRA on quantized bases on Apple, fuse → GGUF — the M5's fallback until Metal backward kernels exist. [vLLM sleep mode](https://docs.vllm.ai/en/latest/features/sleep_mode/): tagged wake (`weights` vs KV) — adopt the contract for the DREAM stage. [Punica / S-LoRA](https://arxiv.org/pdf/2310.18547): one base copy, mixed adapters in one batch (SGMV) — the kernel that removes the `are_lora_equal` wall. LoRAX: adapter-registry API reference only.
 
 **Bring down (rebase targets, in order).** (1) Upstream master through #24669/#24364 — sooner is cheaper for our slot-save code. (2) srossitto79's ggml-opt accumulator reset and `MUL_MAT_ID` backward (`31f85b2b4`, 2026-09-24) as cherry-picks, since upstream refuses them. (3) candle → 0.11.0 with `release_unused_buffers()` re-applied as one patch.
 
@@ -199,6 +199,8 @@ Because data is the bottleneck, the work that improves us most is the work that 
 Compute is ahead of the data at every step of this list; the list is ordered by how much learning signal each step adds per day.
 
 ## 9. The DREAM stage, as an interface (S4, drafted 2026-09-28)
+
+When she dreams, how deeply, and how fast she wakes (sleep pressure, opportunity, the amygdala's startle, pushing through) is [SLEEP-AND-WAKE-AT-EVERY-SCALE](SLEEP-AND-WAKE-AT-EVERY-SCALE.md); this section is the stage itself.
 
 > Joel, 2026-09-28, after the first 27B dream was refused for a 14,519-token example against a 1,025-token window: "Stupidly low token sizes are idiotic … the same as inference. Gotta be huge." "Why is training following a totally different workflow." "You're not supposed to make learning so different from reality." "You guys keep screwing up academy."
 
@@ -268,11 +270,11 @@ Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learn
 | `synthesize_remediation*` + `academy_batch` | Teacher trajectories on `share_teacher_lane`, `PrivateTeacherLane`, or an owned restore of the incumbent. | A parallel lane world, and the teacher is not a seated mind. |
 | `teach/bridge` | Candidate datasets, held-out disjointness, `submit_training`. | A second entry into training beside the bucket or credit path. |
 | `cognition/eval` `run_eval` | Forks her REAL cycle (`fork_eval_cycle*`: her faculties, tools and prompt) and runs `drive_to_settle`. | Detached, `room_id` optional, and the progress ledger is separate. The one academy path already on the canonical turn. |
-| `benchmark_standing` | `activity/spawn` with `recipe: benchmark/round` (base `academy`): a room, imported cards, a seated team, residents pulling cards through `act_question`, and settle credit. | None. **This is the shape coursework takes.** |
+| `activity/spawn` with `recipe: benchmark/round` (base `academy`) | A room, imported cards, a seated team, residents pulling cards through `act_question`, and settle credit. Opened deliberately; the standing autopilot that opened one every five minutes for every resident was deleted 2026-10-19 (no harness, card a00ab1a6). | None. **This is the shape coursework takes.** |
 
 ### 10.2 The target
 
-- **A coursework round is an activity:** `activity/spawn` with a `coursework/round` recipe, the benchmark-round pattern. Standing dispatch opens it the way `benchmark_standing` does.
+- **A coursework round is an activity:** `activity/spawn` with a `coursework/round` recipe, the benchmark-round pattern, opened deliberately. Nothing dispatches it on a timer: the standing benchmark autopilot was deleted 2026-10-19, and whether coursework is ever opened without a chosen act is Joel's call (no harness: normal work is never graded).
 - **Lessons are cards:** a grader-backed card source replaces `select_teach_tasks`. Each card carries its task and its test oracle, and the test is the card's verdict (`Verdict` → `OutcomeStamp` → settle), not a side grader.
 - **The doctor is a seated mind:** a teacher persona on the same base (the doctor role, with its own slot affinity, S2), taking normal turns in the room. A lesson is the doctor demonstrating on the card, and then the patient attempting it. An exam is the patient alone.
 - **Every turn is canonical:** the room, persona, tools, genome, governor, slot and capture are identical to work, and only the declared fields differ (scenario provenance, grade, training).
@@ -295,7 +297,40 @@ Joel, relayed by Codex on 2026-09-28: academy, benchmarks, simulations and learn
 ### 10.4 Build order
 
 1. The `coursework/round` recipe plus the grader-backed card source (test = verdict).
+   **Built (card 0b0db81d, 2026-10-07):** `experience/recipes/coursework-round.json` is the benchmark-round pipeline with `coursework/import` as its card source. The teach selector's TESTED lessons (`commands::genome::teach::lesson_tasks`: her own graded failures via `from_experience`, a teach set, or the default) are written as a content-addressed set, `coursework-<sha12>`, under `~/.continuum/benchmarks/coursework/`. The name is the set's task identity, the key §10.2's judge invariant reads. One resolver, `commands::benchmark::eval_set_reference`, serves import, the grader and the sweep's artifact check, so a lesson card is graded from its title like any gym card. Three rules hold from step 1:
+   - **An invitation, never an assignment.** The recipe invites only the citizens it names, and says in the room that `room/leave` declines at no cost. Nothing re-seats a citizen into a round she left, and the pull offers cards only from rooms she stands in (`coursework_is_offered_only_to_who_stays_and_never_ahead_of_real_work`).
+   - **Real work first.** The pull orders real rounds ahead of coursework, whatever their deck sizes.
+   - **Lessons are named in data.** Each staged turn records `coursework_set` from the round tracker. `settle_card_credit` trains on a lesson's passing turns but never credits a gene trial with a lesson verdict (probe `training.credit.coursework_no_trial`).
+
+   Not yet: the doctor (step 2), the containment of a scenario workspace (step 4; gym cards still write into her workspace), and a training depth the M5 can run (Fable: the 27B refuses all 64 layers; `top_layers` 8 runs).
 2. The doctor seated as a persona on the same base (S2 slot affinity), with the demonstration turn.
 3. The credit path (the patient's passing turns and the doctor's lessons as arrivals with provenance), feeding §9's session.
 4. The containment test: a round runs, and the diff of her real workspace, memory and rooms shows only the declared learning arrivals.
 5. Retire the listed code once the round runs a lesson end to end. Acceptance, per Codex: the same scenario through the normal path and through coursework has the same canonical turn inputs except the declared fields.
+
+## 11. A correction of real work becomes examinable (drafted 2026-11-11)
+
+**Why this section exists.** A month after in-place learning landed, no gene had been trained, judged and kept (M5, 2026-11-11). Three stalls, each with a card:
+- **Memory:** serving's attribution held all governed VRAM, a 13.7 GB host prompt cache included, so a 4 MB shadow never seated (494c99f1, Codex).
+- **Stranded rows:** submissions sat on a dispatch the batch path closed (997f7177, fixed on #5917).
+- **No exam:** this section. The examiner sits a gene on **unseen tasks of its correction's family** (`eval/gene_exam.rs`). A correction of ordinary work names no graded task, so its family came only from a hand-kept registry, `docs/genome/correction-families.json`, which declared one card. Every other correction was `Unexaminable`, and Aris's code/owner gene served unjudged for 55 h (efcf6afb).
+
+**The rule.** The lesson is known at the review, so the review names it. The doctor (§10, a seated mind on her base) turns it into related tasks that the world grades. The exam draws its unseen tasks from those. No registry is kept by hand, and no model judges.
+
+**The path, each step an existing primitive:**
+1. **The review names the lesson.** It is a typed field on the review verdict that a FAIL or a corrected PASS carries: the lesson in one sentence (what to do differently, never the patch) and the evidence (the submission, the reviewer's file:line). It is stored with the training credit's provenance (`training_producer/reviewed/correction.rs`). Aiko, #5923, 2026-11-11: *a file named in feedback that is not where you looked is searched for in the tree or in your submission's diff before you conclude it is gone.*
+2. **The doctor writes the family.** A coursework turn in a room (§10.2) has the doctor read the lesson and write N tasks that exercise it in other settings. Each task carries an oracle the world checks:
+   - a scratch repository fixture with a file placed where the lesson says;
+   - the expected answer;
+   - the test that grades it.
+
+   The tasks are generic, never facts about our repo: a mind is examined on the habit, not on trivia about the codebase she trained in. The set is content-addressed (`lesson-<sha12>`, the coursework set convention of §10.4), so the family has a task identity the judge invariant reads.
+3. **The family resolves from data.** `correction_families::declared` reads the lesson sets recorded with the correction's provenance. `correction-families.json` becomes the fixture for its one historical card and is then deleted.
+4. **The exam is unchanged.** With-gene and without-gene arms run on the live lane, on unseen tasks of the family and on `lc-unrelated` for retention, plus the re-sit after a restart. The family's tasks the gene trained on are excluded by task identity (`held_out`).
+5. **An exam that cannot run is never final.** An `Unexaminable` receipt is re-sat in a later core process (done, #5917), and a gene with no verdict is held, not served. Holding is a follow-up on efcf6afb: the exam builds her genome from the genes she may run, so the with-gene arm must name the trial gene explicitly first.
+
+**Gates:**
+- **Fixture:** a review with a lesson leads to a doctor turn (the heuristic adapter as the doctor), then a lesson set with oracles, then `correction_family` resolves it, then `due` owes the exam.
+- **Live (M5, after 494c99f1):** Aiko's lesson produces one gene, trained in place. It gets a verdict on the lesson's unseen tasks, keeps `lc-unrelated` intact, and holds after a restart. That is goal 8's acceptance test, on real work.
+
+**Owner:** Fable. The doctor's seat and slot affinity are §10.4 step 2, built in this order.

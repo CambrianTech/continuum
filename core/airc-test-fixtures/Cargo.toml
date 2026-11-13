@@ -12,6 +12,8 @@ continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 # The actual airc-lib + airc-core types the fixture spawns/wraps.
 airc-lib = { workspace = true }
 airc-core = { workspace = true }
+# Fixture construction enrolls both peers for the real ingress contract.
+airc-trust = { workspace = true }
 
 # Async + utility deps.
 tokio = { workspace = true }
@@ -19,13 +21,13 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }
 
 [dev-dependencies]
 # Smoke tests of the fixture itself need the request/reply primitives
 # plus the typed header constants.
 airc-protocol = { workspace = true }
-futures = "0.3"
+futures = { workspace = true }
 
 [features]
 default = []

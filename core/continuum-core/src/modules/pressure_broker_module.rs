@@ -28,7 +28,7 @@
 //! broker the same shutdown / metrics treatment as everything else.
 
 use crate::governor::{governor_alert_sink, SubstrateGovernor};
-use crate::modules::docker_tier_pool::DockerTierPool;
+use crate::docker_tier_pool::DockerTierPool;
 use crate::paging::{BrokerConfig, PressureBroker, ResourcePool};
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
@@ -45,6 +45,7 @@ const SYSTEM_PRESSURE_BROKER_STATE: &str = "system/pressure-broker-state";
 pub struct PressureBrokerModule {
     broker: Arc<PressureBroker>,
     tick_interval: std::time::Duration,
+    disk_data: std::sync::OnceLock<Arc<dyn crate::runtime::StorageProvider>>,
 }
 
 impl PressureBrokerModule {
@@ -84,6 +85,7 @@ impl PressureBrokerModule {
         Self {
             broker,
             tick_interval,
+            disk_data: std::sync::OnceLock::new(),
         }
     }
 
@@ -93,6 +95,15 @@ impl PressureBrokerModule {
     /// downcast, and wire follow-on slices without re-instantiating.
     pub fn broker(&self) -> Arc<PressureBroker> {
         self.broker.clone()
+    }
+
+    async fn restore_disk_ownership(&self) -> Result<(), String> {
+        if let Some(data) = self.disk_data.get() {
+            crate::system_resources::disk_reporters::restore_cargo_roots(
+                data.adapter("@node").await?,
+            ).await?;
+        }
+        Ok(())
     }
 }
 
@@ -119,8 +130,13 @@ impl ServiceModule for PressureBrokerModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
-        Ok(())
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        if !crate::system_resources::disk_reporters::registry_installed() { return Ok(()) }
+        let storage = ctx.storage("disk ownership")?;
+        // Bind before I/O: a transient disk failure or boot deadline must not
+        // strand writer admission forever. The existing broker tick retries.
+        self.disk_data.get_or_init(|| storage);
+        self.restore_disk_ownership().await
     }
 
     /// Contribute the dep-holding `system/pressure-broker-state` verb over this
@@ -166,7 +182,9 @@ impl ServiceModule for PressureBrokerModule {
         })
         .await
         .map_err(|e| format!("pressure-broker tick join error: {e}"))?;
-        Ok(())
+        // Known pools still relieve pressure if opening the ownership catalog
+        // failed (e.g. disk full). New writes remain refused until replay works.
+        self.restore_disk_ownership().await
     }
 
     fn as_any(&self) -> &dyn Any {

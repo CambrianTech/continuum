@@ -137,6 +137,7 @@ describe('DomSurface — the web Surface (Percept · Probe · Actuator · diff)'
   // is cleared, and the final diff here would go nonzero.
   it('hotPatchCss replaces the hot-patch layer wholesale (clearing it restores the page)', { timeout: 45_000 }, async () => {
     surface = await DomSurface.open({ url: FIXTURE, viewport: { width: 320, height: 160 } });
+    await surface.act({ kind: 'click', selector: '#go' });
     const base = await surface.render();
 
     // Patch applied → pixels move.
@@ -148,6 +149,8 @@ describe('DomSurface — the web Surface (Percept · Probe · Actuator · diff)'
     await surface.act({ kind: 'hotPatchCss', css: '' });
     const cleared = await surface.render();
     expect(surface.diff(base, cleared).ratio).toBe(0);
+    // Clearing a visual patch must preserve the prior interaction's DOM state.
+    expect(hasText((await surface.probe()).tree, 'After')).toBe(true);
   });
 
   // what this catches: an identical before/after must diff to ~zero — the money signal is

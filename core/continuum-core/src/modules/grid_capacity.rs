@@ -15,6 +15,7 @@
 //! DISCOVERED default room (AircModule discovery, same dep the persona bootstrap and
 //! node-presence emitter consume) — never a hardcoded id (#124).
 
+use continuum_base::time::EpochMs;
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -25,9 +26,7 @@ use serde_json::{json, Value};
 
 use crate::capacity::gossip::{global_ledger, CapacityOffer, PUBLISH_INTERVAL_MS};
 use crate::resources::{ResourceDaemon, ResourceKind};
-use crate::runtime::{
-    CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority, ServiceModule};
 use airc_core::RoomId;
 
 pub struct GridCapacityModule {
@@ -55,16 +54,8 @@ impl GridCapacityModule {
     /// and offering a guess would be exactly the fabricated-capacity lie the grid's
     /// per-node-fit honesty exists to prevent.
     fn current_offer(&self) -> Option<CapacityOffer> {
-        offer_from_board(&self.resource_daemon.board(), now_ms())
+        offer_from_board(&self.resource_daemon.board(), EpochMs::now().millis())
     }
-}
-
-fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[async_trait]
@@ -107,7 +98,7 @@ impl ServiceModule for GridCapacityModule {
                 .swap(u64::MAX - 1, Ordering::AcqRel)
                 != u64::MAX - 1
             {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "grid.capacity.ungoverned",
                     "no governed memory on this node (neither VRAM nor RAM) — no capacity offer published",
                 );
@@ -115,10 +106,15 @@ impl ServiceModule for GridCapacityModule {
             return Ok(());
         };
 
+        // Published as this core's own scope peer: the beacon's author speaking for itself (a typed
+        // id, never a name). No scope peer means the airc module never attached, so nothing to beacon on.
+        let Some(source) = crate::persona::self_peer::scope() else {
+            return Ok(());
+        };
         let envelope = json!({
             "eventId": uuid::Uuid::new_v4().to_string(),
             "roomId": self.room.as_uuid().to_string(),
-            "sourceId": "grid-capacity",
+            "sourceId": source.to_string(),
             "createdAtMs": offer.at_ms,
             "delivery": "ephemeral_coalesced",
             "payload": {
@@ -138,7 +134,7 @@ impl ServiceModule for GridCapacityModule {
         // Glass box: speak on change (rounded GB), silent on a steady offer.
         let free_gb = offer.gpu_free_bytes_live / 1_000_000_000;
         if self.last_probed_free_gb.swap(free_gb, Ordering::AcqRel) != free_gb {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "grid.capacity.offer",
                 free_gb = free_gb,
                 total_gb = (offer.gpu_total_bytes / 1_000_000_000),
@@ -164,7 +160,10 @@ impl ServiceModule for GridCapacityModule {
 /// lie the grid's per-node-fit honesty exists to prevent). Before 2026-09-14 a
 /// RAM-only host (IntelMac's CPU node) never beaconed at all — one offer all day,
 /// invisible to grid/nodes, the fleet fold and placement (card deb26770).
-pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64) -> Option<CapacityOffer> {
+pub(crate) fn offer_from_board(
+    board: &crate::resources::LeaseBoard,
+    at_ms: u64,
+) -> Option<CapacityOffer> {
     let serving = crate::inference::llama_server::current_serving();
     let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram);
     let ram = board.kinds.iter().find(|k| k.kind == ResourceKind::Ram);
@@ -188,9 +187,21 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
         // flight on them, local and leased-in alike, minus the slots it has GRANTED to
         // spillers that have not arrived yet (card c84d885a, S1) — one owner for the number.
         free_slots_live: crate::persona::placement_reservation::free_slots_live_now(serving.lanes, at_ms),
-        lane_wait_p50_ms: crate::cognition::resource_admission::leased_in_wait_p50_ms().0,
-        lane_wait_samples: crate::cognition::resource_admission::leased_in_wait_p50_ms().1,
+        lane_wait_p50_ms: crate::inference::resource_admission::leased_in_wait_p50_ms().0,
+        lane_wait_samples: crate::inference::resource_admission::leased_in_wait_p50_ms().1,
         served_context_window: serving.served_context_window,
+        // This seat's measured speed for what it serves, so peers can ORDER placement by it
+        // (card 86fef3c3); unmeasured beacons 0.
+        decode_tps_milli: serving
+            .active_model
+            .as_deref()
+            .map_or(0, |model| crate::capacity::gossip::beacon_decode_milli(&crate::inference::decode_knee::rate_for(model))),
+        // The affirmative capability list — one emission source (card 8bd75362, doctrine #3941):
+        // a gate checks membership here and refuses on absence; an older core advertises
+        // nothing (serde default), so typed absence is safe by construction.
+        capabilities: crate::capacity::gossip::this_build_capabilities(),
+        // The residents this node last judged stalled or regressed (card 1c157668).
+        resident_alarms: crate::modules::citizen_health::current_resident_alarms(),
     })
 }
 

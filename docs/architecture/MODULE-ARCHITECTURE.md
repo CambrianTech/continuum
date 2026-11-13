@@ -338,6 +338,40 @@ Pure-Rust modules cannot uninstall mid-run (they're in the binary); they can be 
 
 ---
 
+### 9.2 Placement: Every Major Module Runs On Any Node
+
+Joel, 2026-10-19: *"Serving is also its own thing. Could serve or render at the 1080 Ti and view it
+at any phone's desktop, or serve desktop one place, clients elsewhere. Think of what major modules
+are as one might distribute."* §9 is how a module is shipped; this is where it RUNS. The test for a
+major module: could it run on a different machine from the others, with only a typed protocol
+between them?
+
+| Module | Owns | Natural home | Today (10-19) |
+|---|---|---|---|
+| Mind | personas, activities, memory, recipes, kanban, the one positron truth | any CPU node (M5, AWS, a mini) | the `continuum-core` monolith |
+| Serving | engine lanes, KV and its paging, adapters, slots | GPU nodes (5090, M5, 1080 Ti) | the engine is its own process; its planner (`serving_daemon`) is inside the core |
+| Dreaming | gene training on the served weights | GPU nodes, beside serving | core + the llama.cpp fork |
+| Rendering | avatars (Bevy), video composition | any GPU | compiled into the core by DEFAULT (`avatar-3d`): the worst coupling |
+| Media | call transport (LiveKit), STT/TTS backcompat | near the network edge | core default feature (`livekit-webrtc`) |
+| Perception | vision and audio understanding into the mind | GPU nodes | scattered |
+| Store | ORM, engrams, blobs, vector search | where the disk is | inside the core |
+| Hands | confined workspaces, git, shell | where the repositories are | inside the core |
+| Grid | discovery, trust, routing (airc) | every node | airc + `grid/` |
+| Clients | desktop, web, TUI, phone, MCP: render ViewState, send commands | anywhere | separate, through the generated SDK |
+
+Rules:
+1. **One binary set, placed by capability.** A node advertises what it has (`grid/nodes` already
+   carries compute and VRAM); the governor places modules from that. No machine-specific role in
+   code, no compile-time placement.
+2. **One protocol per seam, local or remote.** In-process and cross-grid calls use the same typed
+   contract (the transparency rule of the two primitives); a seam that only works in-process is not
+   a seam yet.
+3. **The headless core builds headless by default.** Rendering and media are features a node's
+   deploy profile enables, never `default`; a node that hosts calls says so in its profile, so
+   changing the default never silently turns calls off.
+4. **Crate cuts follow this table**, not file sizes: rendering and media leave the core first, then
+   the serving planner, then the store. Each cut is also a build-time win.
+
 ## 10. The Recursive Bootstrap
 
 Every operation that today is a script (`npx tsx generator/CommandGenerator.ts`, `cargo test`, `scripts/generate-structure.ts`, `install.sh`'s ad-hoc steps) is a candidate for promotion to a command. The default state going forward is: if it operates on a module, it is itself a command, and that command lives in a module.

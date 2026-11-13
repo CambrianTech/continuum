@@ -15,7 +15,7 @@
  * standing, which is the seam this proves.
  */
 
-import { listingWidget } from '@continuum/patterns';
+import { contentFamilyOf, listingWidget } from '@continuum/patterns';
 import type {
   CellStatus,
   ContentView,
@@ -142,7 +142,7 @@ export function roomsListing(manifest: Experience, roster?: RosterViewState): Li
  *  any surface. */
 export function experienceWorkspace(state: ExperienceState): WorkspaceView {
   const content: ContentView = {
-    purpose: state.manifest.purpose,
+    purpose: contentFamilyOf(state.manifest.purpose),
     body: state.contentBody,
   };
   return {

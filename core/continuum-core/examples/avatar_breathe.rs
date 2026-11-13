@@ -8,7 +8,7 @@
 //! needs a strip of frames.
 //!
 //! This is the same allocate → drain-frames path the snapshot module uses
-//! (`modules/avatar.rs::capture_snapshot`), extended from one frame to a strip.
+//! (`continuum-live/src/consumers/avatar.rs::capture_snapshot`), extended from one frame to a strip.
 //! It doubles as a rig sanity check: breathing silently no-ops if the VRM's
 //! spine bone matches none of the naming schemes in `breathing.rs`, so a flat
 //! centroid signal below is a real "the rig didn't wire up" signal, not noise.

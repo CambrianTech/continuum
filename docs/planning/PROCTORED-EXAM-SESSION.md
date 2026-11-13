@@ -126,7 +126,7 @@ The served window must satisfy **concurrent-worst-case**:
 compute buffer per lane).
 
 **Audit finding: this is already enforced — do NOT reinvent it.** `plan_serving`
-(`cognition/serving_plan.rs:362-379`) sizes the served window by SOLVING THE FULL FIXPOINT
+(`inference/planning/serving_plan.rs:362-379`) sizes the served window by SOLVING THE FULL FIXPOINT
 `after_weights ≥ l·(kv_per_token·C + compute_floor + compute_rate·C)` where `l = lanes =
 n_seq_max`, so every one of the `l` slots can hold a FULL-window context AND prefill
 concurrently — the concurrent-worst-case invariant verbatim. The plan's original premise

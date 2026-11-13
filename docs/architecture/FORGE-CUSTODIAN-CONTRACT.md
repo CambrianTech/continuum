@@ -2,7 +2,7 @@
 
 **Status:** in progress. Pass 1 + Pass 2 + Pass 3 + Pass 4 + Pass 5a + Pass 5b + Pass 6 (client seam) landed; Pass 6b (real `GridStateDispatch`) gated on TwoAircLoopback #187. Pass 1/2 — `forge::protocol`
 single-sources the wire + `/health` contract-version handshake (custodian a real
-`[[bin]]`), and the gguf-lora export speaks Contract C through a clean de-`unsloth`
+`[[bin]]`), and the gguf-lora export speaks Contract C through a clean
 `forge::custodian_client` aimed at the custodian's own endpoint. **Pass 3 (commit
 `20d60e3b3`)** hardened the binary: R3 bounds (conversion-slot semaphore →
 fast-loud `503` when saturated; per-conversion wall-clock deadline that KILLS a
@@ -17,8 +17,8 @@ provenance, `TrustLevel` scope) is the grid extension of the local `TrainedAdapt
 record — the `#17` two-handle reconciliation, resolved in the forge context (§4).
 **Pass 5a (commit `c0a5f7ebb`)** added the routable endpoint type
 `forge::endpoint::ForgeEndpoint` (§5) — DISCOVERED by probing a custodian's
-`/health`, derived from the Pass 3/4 `HealthResponse` rather than the retiring
-unsloth `ForgeCapability`; `ForgeHealth` (Healthy/Busy/Down) and `ForgeLocator`
+`/health`, derived from the Pass 3/4 `HealthResponse` rather than a
+separate capability type; `ForgeHealth` (Healthy/Busy/Down) and `ForgeLocator`
 (service-reach, distinct from `GeneLocator`'s byte-custody) honor the same `#17`
 discipline at the endpoint tier. **Pass 5b (announce the endpoint over the grid
 bus — `NodeCapability` + `GridTransport::announce`) is next.** This doc is the
@@ -30,14 +30,9 @@ grid-negotiable.
 > design. But perfect the contracts locally first. Solid resilient api, but make
 > plan to make it work with the grid bc that's coming next."*
 
-This is the **third** contract in the family. Read its two siblings first; this
+This is the **third** contract in the family. Read its sibling docs first; this
 doc defers to them and does not re-derive their material:
 
-- **[EXCISE-UNSLOTH-CONTRACT.md](EXCISE-UNSLOTH-CONTRACT.md)** — Contract **A**
-  (the Serving Seam, `inference::llama_server`) and Contract **B** (the Adapter
-  Capability Surface). Its coupling map routes `inference/unsloth_forge.rs`,
-  `modules/forge.rs`, and `inference/model_commands.rs` onto **"#52"** — that
-  deferral *is* this contract. Contract C is what #52 routes onto.
 - **[MODEL-ENDPOINT-FABRIC.md](MODEL-ENDPOINT-FABRIC.md)** — the self-healing
   adapter router that, for any model need, does **match → score → route → heal**
   across many local + grid endpoints. **The fabric does the grid negotiation.**
@@ -57,7 +52,7 @@ A **forge need** (turn this trained checkpoint into a pageable GGUF gene; later:
 train this LoRA from this dataset; fuse; quantize) is a packet. A **forge
 custodian** (a process that owns the byte-ops on model weights — Apple
 `mlx_lm.lora`/`fuse`, the continuum-owned `forge-custodian` for the
-GGUF-LoRA convert unsloth-studio can't do, NVIDIA unsloth) is an endpoint,
+GGUF-LoRA convert) is an endpoint,
 reached through one trait over one wire contract. **The contract is the same
 whether the custodian is `127.0.0.1:8899` or a grid peer's RTX 5090.** Only the
 transport changes. The custodian owns the produced bytes node-locally; continuum
@@ -97,8 +92,7 @@ pub struct HealthResponse { pub status, pub kind, pub capability, pub contract_v
 - **Stateless.** No per-session state on the custodian ⇒ any node can serve any
   request; the fabric can route the *next* request to a *different* node and
   heal around a failure mid-stream. A stateful (load-checkpoint-first) protocol
-  could not be load-balanced this way — that's why unsloth's stateful exporter is
-  retired here.
+  could not be load-balanced this way — that's why the custodian is stateless.
 - **`base_model_id` is in the request, not in custodian config.** The custodian
   is a pure function of its inputs; it holds no opinion about which base. Grid
   nodes need no shared config to agree on a job.
@@ -121,7 +115,7 @@ grid-readiness property — noted inline.
 | # | Invariant | Local reason | Grid amplification |
 |---|---|---|---|
 | R1 | **One wire contract, one source** (`forge::protocol`) | no drift between server/client | a grid client and a remote server compiled from the same crate can't disagree on the wire |
-| R2 | **Typed two-variant client error** `Unreachable` \| `Api` (reuse the `UnslothError` shape) | caller distinguishes "custodian down" from "job failed" | "node down" ⇒ fabric **re-routes**; "job failed" ⇒ fabric **does not** (same job will fail elsewhere) |
+| R2 | **Typed two-variant client error** `Unreachable` \| `Api` | caller distinguishes "custodian down" from "job failed" | "node down" ⇒ fabric **re-routes**; "job failed" ⇒ fabric **does not** (same job will fail elsewhere) |
 | R3 | **Bounded everything** — request timeout, a concurrency **semaphore** (a GPU does one convert at a time), a subprocess **deadline** on the `python3` convert | one wedged convert can't hang the daemon | a node advertises *real* remaining capacity; the fabric's score is honest |
 | R4 | **Liveness + readiness + capability + contract-version on `/health`** | `uu`/curl can tell "up" from "ready to take work" | this IS the fabric's discovery + health-probe input (§5) |
 | R5 | **Graceful shutdown + `probe!` observability** (reuse `ServiceModule`, `watch<Snapshot>`, `PressureBroker`, the `probe!` macro — do NOT reinvent) | clean drain; glass-box every decision | the snapshot a node publishes locally is the same snapshot the fabric aggregates grid-wide |
@@ -129,8 +123,7 @@ grid-readiness property — noted inline.
 
 **Pass 2** = build the core-side client (`ForgeCustodianHttp`) implementing a
 transport-agnostic `ForgeCustodian` trait against `forge::protocol`, with R1+R2.
-This is the #52 convergence: it replaces `inference/unsloth_forge.rs`'s stateful
-client and lets `modules/forge.rs` / `inference/model_commands.rs` route onto
+This is the #52 convergence: it replaced the old stateful forge client and lets `modules/forge.rs` / `inference/model_commands.rs` route onto
 Contract C. **Pass 3** = R3–R6 on the custodian binary (bounds, health detail,
 shutdown, probes, idempotency).
 
@@ -146,9 +139,8 @@ stays in the organism — it's policy, a cognition decision, not a byte-op.
 
 The remaining open question (NOT this contract's scope) is **training**: on Apple
 Silicon, LoRA training already runs in-core via `genome/fine_tuning/`
-(`mlx_lora_adapter.rs` → `mlx_lm.lora` in a `spawn_blocking` job actor), while the
-trait's `train_start`/`train_status` point at unsloth's stateful `/api/train/*`
-(the NVIDIA path). Whether training becomes a Contract-C custodian capability or
+(`mlx_lora_adapter.rs` → `mlx_lm.lora` in a `spawn_blocking` job actor), while NVIDIA
+training runs in-engine on the llama.cpp fork. Whether training becomes a Contract-C custodian capability or
 stays an in-core faculty is a #32/#52 design fork, tracked there — Contract C
 today covers only the **gguf-lora export** the custodian binary actually serves.
 
@@ -236,9 +228,7 @@ pub struct ForgeEndpoint {
 ```
 
 Two corrections to the original sketch, both forced by tree reality:
-- **The seed is NOT the unsloth `ForgeCapability`.** That type
-  (`reachable/busy/phase/held_genes/outputs_dir`) is bound to the *retiring*
-  unsloth `ForgeCustodian` trait (#52). `ForgeEndpoint` is generalized instead
+- **The seed is the custodian's own `/health`.** `ForgeEndpoint` is derived
   from the Pass 3/4 `HealthResponse`, which already carries the honest router
   inputs (R4); the health handshake IS the probe. `ForgeEndpoint::probe()` reads
   `/health` over the clean Contract C trait: `Unreachable` ⇒ an honest `Down`
@@ -430,21 +420,19 @@ Done is done; everything below the line is the plan.
    (`009f16e70`)
 2. ✅ **Pass 2 — make the gguf-lora client speak Contract C (the drift repair).**
    (`6f9797cda`) Two bugs were live, not one: (a) **wrong endpoint** — `package()`'s
-   `GgufLora` arm POSTed to `unsloth_base_url()`, the unsloth host, which *cannot*
+   `GgufLora` arm POSTed to the model-serving host, which *cannot*
    produce a GGUF LoRA (the whole reason the custodian exists); (b) **wrong wire
    shape** — it did a stateful `load_checkpoint()` then sent a body WITHOUT
    `checkpoint` and WITH `push_to_hub`/`repo_id` the stateless
-   `forge::protocol::GgufLoraRequest` rejects. Fix: a clean de-`unsloth`
+   `forge::protocol::GgufLoraRequest` rejects. Fix: a clean
    `forge::custodian_client::{ForgeCustodian, ForgeCustodianHttp}` over
    `forge::protocol` — stateless `export_gguf_lora` (checkpoint-in-body, no
    load-checkpoint, no hub fields), typed `Unreachable|Api` (R2), `ensure_contract()`
    verifies `CONTRACT_VERSION` at `/health` before dispatch (R1), and it targets the
    CUSTODIAN's own address (`DEFAULT_CUSTODIAN_ADDR`/`FORGE_CUSTODIAN_ADDR`, single-
    sourced so the bin and client can't disagree). `modules/forge.rs::forge/export`
-   dispatches gguf-lora to `run_export_gguf_lora` (Contract C); `lora`/`gguf` still
-   route to unsloth until #52; `package_format` now rejects gguf-lora loudly as a
-   guard against the old wrong path. 4 client + 3 rewritten export tests green. The
-   unsloth-only `train_*`/`lora`/`gguf` arms stay until the broader #52 excision.
+   dispatches gguf-lora to `run_export_gguf_lora` (Contract C); `package_format` now rejects gguf-lora loudly as a
+   guard against the old wrong path. 4 client + 3 rewritten export tests green.
 3. ✅ **Pass 3 — harden the custodian binary.** (`20d60e3b3`) **R3 bounds:** a
    `tokio::sync::Semaphore` of `FORGE_MAX_CONCURRENT` conversion slots — a saturated
    custodian `try_acquire`-fails to `503` (fast + loud, router re-routes) instead of
@@ -486,7 +474,7 @@ Done is done; everything below the line is the plan.
 5. **Pass 5 — routable endpoint.**
    - ✅ **5a — the row type.** (`c0a5f7ebb`) `forge::endpoint::ForgeEndpoint` (§5),
      DISCOVERED by probing `/health` and derived from the Pass 3/4 `HealthResponse`
-     — NOT the retiring unsloth `ForgeCapability` (#52). `ForgeHealth`
+     `ForgeHealth`
      (Healthy/Busy/Down, derived not self-declared) + `ForgeLocator` (service-reach,
      distinct from `GeneLocator`'s byte-custody — `#17` at the endpoint tier).
      `probe()` makes `Unreachable` an honest `Down` row but surfaces an `Api` fault
@@ -529,7 +517,7 @@ Done is done; everything below the line is the plan.
 7. **Pass 7 — market exchange.** Trust-scoped `GeneHandle` search + A/B-then-adopt
    (§6); forge-lease a fresh train only when the market comes up short.
 
-**Scope discipline (so this doesn't sprawl like the unsloth excision did):** if a
+**Scope discipline (so this doesn't sprawl):** if a
 change doesn't route onto Contract C or feed the fabric an endpoint row, it is
 not part of this work. The fabric owns routing; GRID-ADDRESSING owns the wire +
 trust gate; FORGE-ALLOY owns provenance. Contract C owns *only* the custodian

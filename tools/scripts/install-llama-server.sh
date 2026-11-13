@@ -2,16 +2,14 @@
 # install-llama-server.sh — build the inference engine WE OWN.
 #
 # continuum's serving daemon launches `llama-server` (llama.cpp's OpenAI-/v1
-# gateway). That binary is OURS now, not a borrowed one: we excised unsloth, so
-# depending on `~/.unsloth/llama.cpp/build/bin/llama-server` made our inference
-# hostage to a tool we no longer ship — and a freshly-cloned public machine has
-# no `~/.unsloth` at all. This script builds llama-server from the llama.cpp
+# gateway). That binary is OURS now, not a borrowed one: a third-party
+# llama-server would make our inference hostage to a tool we do not ship. This script builds llama-server from the llama.cpp
 # submodule we already vendor and build for the in-process FFI lib
 # (core/vendor/llama.cpp — our fork, github.com/CambrianTech/llama.cpp), into a
 # continuum-owned path. ONE llama.cpp source of truth for both the lib and the
 # server; no external dependency.
 #
-# Idempotent: if the installed binary's stamp matches the submodule HEAD + the
+# Idempotent: if the installed binary's stamp matches the tracked gitlink + the
 # detected backend, it's a no-op. Pass --force to rebuild regardless.
 #
 # Backend is detected the same way core/llama/build.rs gates the FFI build:
@@ -28,11 +26,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SUBMODULE="$REPO_ROOT/core/vendor/llama.cpp"
 
 CONTINUUM_HOME="${CONTINUUM_HOME:-$HOME/.continuum}"
-INSTALL_DIR="$CONTINUUM_HOME/bin"
+source "$SCRIPT_DIR/lib/payload-paths.sh"
+PAYLOAD_ROOT="$(managed_payload_root "$CONTINUUM_HOME")" || exit 1
+INSTALL_DIR="$PAYLOAD_ROOT/bin"
 INSTALL_BIN="$INSTALL_DIR/llama-server"
 STAMP_FILE="$INSTALL_DIR/.llama-server.stamp"
 # One shared build cache; source ownership is checked before configuring it.
-BUILD_DIR="$CONTINUUM_HOME/cache/llama-server-build"
+BUILD_DIR="${CONTINUUM_STORAGE_PATH:-$PAYLOAD_ROOT}/cache/llama-server-build"
 
 # ── toolchain ────────────────────────────────────────────────────────
 # cmake on PATH, else the manifest install location — a user who provisioned via
@@ -40,7 +40,7 @@ BUILD_DIR="$CONTINUUM_HOME/cache/llama-server-build"
 # PATH (Windows especially). Discover it rather than falsely failing. (CONTINUUM_HOME is
 # already resolved above.)
 if ! command -v cmake >/dev/null 2>&1; then
-  for c in "$CONTINUUM_HOME/tools/cmake/bin/cmake" "$CONTINUUM_HOME/tools/cmake/bin/cmake.exe"; do
+  for c in "$PAYLOAD_ROOT/tools/cmake/bin/cmake" "$PAYLOAD_ROOT/tools/cmake/bin/cmake.exe"; do
     if [ -x "$c" ]; then PATH="$(dirname "$c"):$PATH"; export PATH; break; fi
   done
 fi
@@ -62,7 +62,13 @@ if [ ! -f "$SUBMODULE/tools/server/CMakeLists.txt" ]; then
   exit 1
 fi
 
-SUBMODULE_HEAD="$(git -C "$SUBMODULE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# The superproject names the required engine, even when the submodule checkout drifted.
+ENGINE_PIN="$(git -C "$REPO_ROOT" rev-parse HEAD:core/vendor/llama.cpp)" || exit 1
+if [[ ! "$ENGINE_PIN" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "FATAL: cannot resolve the tracked llama.cpp gitlink" >&2
+  exit 1
+fi
+SUBMODULE_HEAD="$(git -C "$REPO_ROOT" rev-parse --short "$ENGINE_PIN")" || exit 1
 
 # ── backend detection (mirrors core/llama/build.rs) ──────────────────
 OS="$(uname -s)"
@@ -101,7 +107,7 @@ else
   case "$OS" in
     MINGW*|MSYS*|CYGWIN*)
       EXE=".exe"
-      if command -v nvcc >/dev/null 2>&1 || [ -x "$CONTINUUM_HOME/cuda-toolkit/bin/nvcc.exe" ]; then
+      if command -v nvcc >/dev/null 2>&1 || [ -x "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe" ]; then
         BACKEND="cuda"; WIN_CUDA=1
         # arch=native → build for THIS machine's GPU (portable; NOT a hardcoded sm_120).
         BACKEND_DEFS=(-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native)
@@ -109,6 +115,14 @@ else
       # non-NVIDIA Windows falls through to the CPU build (llama.cpp CPU works on Win).
       ;;
   esac
+fi
+if [[ "$BACKEND" == cuda ]]; then
+  if ! command -v nvcc >/dev/null 2>&1 && [[ -x "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe" ]]; then
+    export CUDA_PATH="$PAYLOAD_ROOT/cuda-toolkit"
+  fi
+  source "$SCRIPT_DIR/lib/cuda-targets.sh"
+  configure_cuda_targets || exit 1
+  BACKEND_DEFS=(-DGGML_CUDA=ON "-DCMAKE_CUDA_ARCHITECTURES=$CMAKE_CUDA_ARCHITECTURES")
 fi
 # Windows binaries carry .exe — apply the suffix to the installed path now, before the
 # idempotency check and every downstream use.
@@ -142,6 +156,7 @@ else
 fi
 
 STAMP_WANT="$SUBMODULE_HEAD:$BACKEND"
+if [[ "$BACKEND" == cuda ]]; then STAMP_WANT+=":$CMAKE_CUDA_ARCHITECTURES"; fi
 
 # ── engine slot (card 7a6a033a; the core half is #4491) ──────────────
 # A deploy builds the engine into the IDLE slot the core names
@@ -159,10 +174,20 @@ SLOT=""
 CLI="${CONTINUUM_CLI:-$(command -v continuum || true)}"
 engine_cli() { CONTINUUM_HOME="$CONTINUUM_HOME" "$CLI" engine "$@"; }
 promote_slot() {
-  engine_cli promote "$SLOT" "$STAMP_WANT" >&2 || {
+  local result=0
+  engine_cli promote "$SLOT" "$STAMP_WANT" >&2 || result=$?
+  if [ "$result" -eq 4 ]; then
+    echo "Engine attempt deferred; verified current engine preserved." >&2
+    local kept
+    kept="$(tr -d '[:space:]' < "$INSTALL_DIR/current")"
+    case "$kept" in engine-a|engine-b|engine-c) ;; *) exit 1 ;; esac
+    printf '%s\n' "$INSTALL_DIR/$kept/llama-server"
+    exit 0
+  fi
+  if [ "$result" -ne 0 ]; then
     echo "✗ FATAL: the engine in $SLOT verified but was not promoted; the lanes keep the engine they have." >&2
     exit 1
-  }
+  fi
 }
 case "$(uname -s)" in
   Darwin|Linux)
@@ -255,6 +280,15 @@ if [ "$FORCE" -eq 0 ] && [ -x "$INSTALL_BIN" ] && [ -f "$STAMP_FILE" ] \
 fi
 
 # ── build ────────────────────────────────────────────────────────────
+# Reusing a verified slot at the pin needs no source checkout mutation. A new build,
+# however, must never stamp another commit (or dirty tracked source) as that pin.
+ACTUAL_ENGINE_HEAD="$(git -C "$SUBMODULE" rev-parse HEAD)" || exit 1
+ENGINE_SOURCE_STATUS="$(git -C "$SUBMODULE" status --porcelain --untracked-files=no)" || exit 1
+if [ "$ACTUAL_ENGINE_HEAD" != "$ENGINE_PIN" ] || \
+   [ -n "$ENGINE_SOURCE_STATUS" ]; then
+  echo "FATAL: llama.cpp source differs from tracked pin $ENGINE_PIN; preserve local work and align the submodule before building" >&2
+  exit 1
+fi
 echo "→ building llama-server ($BACKEND, llama.cpp@$SUBMODULE_HEAD) from $SUBMODULE" >&2
 mkdir -p "$BUILD_DIR" "$INSTALL_DIR"
 
@@ -292,6 +326,9 @@ declare -a CMAKE_ARGS=(
   -DLLAMA_BUILD_TESTS=OFF
   -DLLAMA_BUILD_EXAMPLES=OFF
   -DLLAMA_CURL=OFF
+  # No TLS in the engine: it listens on localhost and loads local GGUF paths, so
+  # cpp-httplib needs no OpenSSL (LLAMA_OPENSSL defaults ON and finds whatever is installed).
+  -DLLAMA_OPENSSL=OFF
   "${BACKEND_DEFS[@]}"
 )
 
@@ -325,9 +362,9 @@ if [ "$WIN_CUDA" -eq 1 ]; then
   vcvars="$vs_path\\VC\\Auxiliary\\Build\\vcvars64.bat"
   # Ninja + nvcc: on PATH, else the manifest install locations (a manifest-provisioned box
   # has these under ~/.continuum but may not export them on PATH).
-  ninja_exe="$(command -v ninja 2>/dev/null || echo "$CONTINUUM_HOME/tools/ninja/ninja.exe")"
+  ninja_exe="$(command -v ninja 2>/dev/null || echo "$PAYLOAD_ROOT/tools/ninja/ninja.exe")"
   [ -x "$ninja_exe" ] || { echo "✗ FATAL: ninja not found (install-manifest toolchain)." >&2; exit 1; }
-  nvcc_exe="$(command -v nvcc 2>/dev/null || echo "$CONTINUUM_HOME/cuda-toolkit/bin/nvcc.exe")"
+  nvcc_exe="$(command -v nvcc 2>/dev/null || echo "$PAYLOAD_ROOT/cuda-toolkit/bin/nvcc.exe")"
   [ -x "$nvcc_exe" ] || { echo "✗ FATAL: nvcc not found (install-manifest 'cuda' module)." >&2; exit 1; }
   cmake_exe="$(command -v cmake)"
   # Windows-native paths for the cmd context.
@@ -418,7 +455,7 @@ if [ -n "$EXE" ]; then
     cp -f "$_dll" "$INSTALL_DIR/" || {
       echo "✗ FATAL: could not install $(basename "$_dll") into $INSTALL_DIR." >&2
       echo "  On Windows this usually means a running llama-server holds it open." >&2
-      echo "  Stop the core (\`continuum stop\`) and rerun; do NOT ship a partial set." >&2
+      echo "  Stop the core and its engine (\`continuum stop --engine\`) and rerun; do NOT ship a partial set." >&2
       exit 1
     }
   done

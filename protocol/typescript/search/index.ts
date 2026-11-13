@@ -10,4 +10,3 @@ export type { SearchOutput } from './SearchOutput';
 export type { SearchParamsParams } from './SearchParamsParams';
 export type { SearchParamsResult } from './SearchParamsResult';
 export type { SearchResult } from './SearchResult';
-export type { VectorSearchInput } from './VectorSearchInput';

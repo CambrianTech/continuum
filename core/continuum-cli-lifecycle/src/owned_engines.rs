@@ -1,12 +1,7 @@
 //! Classify installed engine images without reaping control clients.
 use std::path::Path;
 
-pub fn owned_engine_candidate(
-    executable: &Path,
-    owned_root: &Path,
-    pid: u32,
-    caller: u32,
-) -> bool {
+pub fn owned_engine_candidate(executable: &Path, owned_root: &Path, pid: u32, caller: u32) -> bool {
     // Installed release slots contain the control client as well as engines.
     // Reaping that client kills the reboot command before it can start the core.
     // Other active clients are not engine orphans either, regardless of parentage.

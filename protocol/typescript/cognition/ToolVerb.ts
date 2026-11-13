@@ -7,4 +7,4 @@
  * (a) the `wrote` bool in `apply.rs`, (b) the "I ran code/write(" scans in
  * `perception.rs`, (c) the orientation-prefix scans in `is_redundant_orientation`.
  */
-export type ToolVerb = "Write" | "Edit" | "Apply" | "Commit" | "Run" | "Shell" | "Read" | "Screenshot" | "ListCommands" | "Help" | "Tree" | "Search" | "Other";
+export type ToolVerb = "Write" | "Edit" | "Apply" | "Commit" | "Run" | "Shell" | "Read" | "Screenshot" | "ListCommands" | "Help" | "Tree" | "Search" | "Publish" | "Other";

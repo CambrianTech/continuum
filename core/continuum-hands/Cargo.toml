@@ -1,0 +1,49 @@
+[package]
+name = "continuum-hands"
+version = "0.1.0"
+edition = "2021"
+publish = false
+repository = "https://github.com/CambrianTech/continuum"
+
+[dependencies]
+continuum-process = { path = "../continuum-process" }
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-engine = { path = "../continuum-engine" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" } # durable placement of git metadata and notes in her layer
+continuum-git = { path = "../continuum-git" } # a dead git's index.lock in a citizen's workspace (card d7765b90)
+schemars = { workspace = true }
+reqwest = { workspace = true, features = ["json", "multipart", "stream"] }
+dashmap = { workspace = true }  # Lock-free concurrent HashMap
+inventory = { workspace = true }
+airc-core.workspace = true
+airc-lib.workspace = true
+airc-work.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+futures = { workspace = true }  # For VAD block_on in audio thread
+fs2 = { workspace = true }  # a write's room: the free space measured on the workspace volume
+sysinfo = { workspace = true }  # Cross-platform CPU, memory, system resource monitoring
+tracing.workspace = true
+ts-rs.workspace = true  # TypeScript type generation
+similar = { workspace = true }                  # Unified diff computation
+ignore = { workspace = true }                   # .gitignore-aware file walking (from ripgrep)
+regex = { workspace = true }                      # Regex search for code search
+rustpython-parser = { workspace = true }
+syn = { workspace = true, features = ["parsing"] }
+proc-macro2 = { workspace = true, features = ["span-locations"] }  # Span::start for line numbers in the Rust syntax reader
+
+[dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }                   # Temp directories for code module tests
+futures = { workspace = true }
+
+[features]
+default = []
+test-fixtures = ["continuum-engine/test-fixtures"]

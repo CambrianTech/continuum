@@ -32,7 +32,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use crate::runtime::deploy_tracker::{same_commit, DeployRequest, STRANDED_GRACE_MS};
+use continuum_cli_lifecycle::deploy_tracker::{same_commit, DeployRequest, STRANDED_GRACE_MS};
 
 /// The receipt, beside the request it answered: `<state>/deploy-actuation.json`.
 pub(crate) const ACTUATION_FILE: &str = "deploy-actuation.json";
@@ -309,6 +309,9 @@ impl DeploySpawner for CliSpawner {
 impl DeploySpawner for CliSpawner {
     fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String> {
         use std::os::windows::process::CommandExt;
+        // A disabled task is not permission to bypass maintenance with a child.
+        // Keep the shared permit across both Scheduler and detached spawn paths.
+        let _startup = continuum_cli_lifecycle::supervisor_install::maintenance::StartupPermit::acquire_deploy(&plan.cwd)?;
         // FIRST the registered consumer task: the scheduler runs it under the S4U
         // principal, outside this core's job object, and serializes it against its own
         // ten-minute firing (MultipleInstancesPolicy IgnoreNew) — one consumer at a time
@@ -415,7 +418,7 @@ impl DeployActuator {
             .unwrap_or_else(|| root.clone()); // unwrap_or_else: no home at all = look beside the root; no tracker can be installed there, so the actuator acts
         let switch = std::env::var(ACTUATOR_SWITCH_KEY)
             .ok()
-            .or_else(|| crate::config_env::read(ACTUATOR_SWITCH_KEY));
+            .or_else(|| continuum_base::config_env::read(ACTUATOR_SWITCH_KEY));
         Self::with_spawner(user_home, root, switch, Box::new(CliSpawner))
     }
 
@@ -435,6 +438,14 @@ impl DeployActuator {
             said_deferred: parking_lot::Mutex::new(None),
             said_gave_up: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Capability of THIS actuator, using the same stored switch and live external
+    /// owner check as actuation, never a reread of mutable startup configuration.
+    pub(crate) fn consumer_cli(&self) -> Option<PathBuf> {
+        if external_owner(&self.user_home, self.switch.as_deref()).is_some() { return None; }
+        let cli = locate_cli(&self.user_home);
+        cli.is_absolute().then_some(cli)
     }
 
     fn receipt_path(&self) -> PathBuf {
@@ -467,7 +478,7 @@ impl DeployActuator {
             let mut said = self.said_deferred.lock();
             if said.as_deref() != Some(req.tip_sha.as_str()) {
                 *said = Some(req.tip_sha.clone());
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.actuate.deferred_to_external_owner",
                     tip = req.tip_sha.as_str(),
                     owner = owner.name(),
@@ -485,7 +496,7 @@ impl DeployActuator {
                 let mut said = self.said_gave_up.lock();
                 if said.as_deref() != Some(req.tip_sha.as_str()) {
                     *said = Some(req.tip_sha.clone());
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "deploy.actuate.gave_up",
                         tip = req.tip_sha.as_str(),
                         attempts,
@@ -495,7 +506,7 @@ impl DeployActuator {
                 return ActuateOutcome::Skipped(decision);
             }
             ActuateDecision::AwaitingBound { attempt, elapsed_ms, bound_ms } => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.actuate.decision",
                     verdict = "awaiting_bound",
                     tip = req.tip_sha.as_str(),
@@ -531,7 +542,7 @@ impl DeployActuator {
                     landed_waited_ms: None,
                     last_deploy_ms,
                 });
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.actuate.spawned",
                     tip = req.tip_sha.as_str(),
                     pid = spawned.pid.unwrap_or(0), // unwrap_or: a task run has no pid; 0 is the honest "none" in a numeric field
@@ -557,7 +568,7 @@ impl DeployActuator {
                     landed_waited_ms: None,
                     last_deploy_ms,
                 });
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.actuate.spawn_failed",
                     tip = req.tip_sha.as_str(),
                     attempt,
@@ -575,7 +586,7 @@ impl DeployActuator {
     pub(crate) fn report_boot_outcome(&self, running_sha: &str, now_ms: u64) -> BootOutcome {
         let receipt = self.receipt();
         let outcome = classify_boot(receipt.as_ref(), running_sha);
-        crate::probe!(
+        continuum_base::probe!(
             class = "deploy.actuate.outcome",
             outcome = outcome.word(),
             running = running_sha,
@@ -611,6 +622,24 @@ mod tests {
 
     const NOW: u64 = 1_700_000_000_000;
 
+    #[cfg(windows)]
+    #[test]
+    fn maintenance_blocks_real_spawner_before_scheduler_or_detached_child() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        // Even unreadable/malformed recovery evidence must block deployment.
+        std::fs::write(root.path().join("supervisor-maintenance.json"), b"unfinished")?;
+        let plan = SpawnPlan {
+            cli: root.path().join("must-not-execute.exe"),
+            args: vec![CONSUMER_VERB.into()],
+            cwd: root.path().into(),
+            log: root.path().join("must-not-open.log"),
+        };
+        let result = CliSpawner.spawn(&plan);
+        assert!(matches!(result, Err(ref e) if e.contains("maintenance recovery is pending")));
+        assert!(!plan.log.exists());
+        Ok(())
+    }
+
     fn actuator(dir: &Path, switch: Option<&str>, pid: Option<u32>) -> (DeployActuator, std::sync::Arc<RecordingSpawner>) {
         // Two homes under ONE temp dir: the user home (where a tracker install would be)
         // and the continuum home (where state lives). Never the operator's ~/.continuum.
@@ -643,6 +672,7 @@ mod tests {
         std::fs::write(&plist, "<plist/>").unwrap(); // unwrap: the test's own file
         assert!(matches!(act.on_deploy_wanted(&req, false, NOW), ActuateOutcome::Deferred(ExternalOwner::LaunchdTracker(_))));
         assert!(spawner.plans.lock().is_empty(), "an external owner means no spawn");
+        assert!(act.consumer_cli().is_none(), "capability uses the same external owner");
         assert!(act.receipt().is_none(), "a deferral writes no receipt");
         std::fs::remove_file(&plist).unwrap(); // unwrap: the test's own file
         // The systemd timer is the same owner on Linux.
@@ -655,11 +685,13 @@ mod tests {
         let (off, off_spawner) = actuator(dir.path(), Some("off"), Some(4242));
         assert!(matches!(off.on_deploy_wanted(&req, false, NOW), ActuateOutcome::Deferred(ExternalOwner::OperatorSwitch)));
         assert!(off_spawner.plans.lock().is_empty());
+        assert!(off.consumer_cli().is_none(), "stored off switch cannot be bypassed by rereading current configuration");
         assert_eq!(external_owner(&dir.path().join("home"), Some("on")), None, "any other value is not a switch position");
         // No owner → the actuator acts.
         assert!(matches!(act.on_deploy_wanted(&req, false, NOW), ActuateOutcome::Spawned { attempt: 1, pid: Some(4242), .. }));
         let plans = spawner.plans.lock();
         assert_eq!(plans.len(), 1);
+        assert_eq!(act.consumer_cli(), plans[0].cli.is_absolute().then(|| plans[0].cli.clone()), "capability names the same launcher as actual actuation");
         assert_eq!(plans[0].args, vec![CONSUMER_VERB.to_string()], "the consumer verb, not a bare reboot: the request names a tip, reboot builds HEAD");
         assert_eq!(plans[0].log, dir.path().join("home").join(".continuum").join("logs").join(ACTUATION_LOG));
     }

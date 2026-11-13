@@ -230,7 +230,7 @@ interface PersonaEmbeddingConfig {
 ```
 
 **Key Features**:
-- Real LoRA fine-tuning via Unsloth
+- Real LoRA fine-tuning (in-engine on the llama.cpp fork; `mlx_lm.lora` on Apple silicon)
 - Genome paging (load/unload adapters)
 - Fully local (no API costs)
 - Uses nomic-embed-text (768 dim)

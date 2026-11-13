@@ -21,9 +21,6 @@ pub struct EvictionReport {
 }
 
 impl EvictionReport {
-    pub fn total_freed(&self) -> u64 {
-        self.freed.iter().map(|(_, b)| b).sum()
-    }
 }
 
 /// Owns the artifact catalog across all sources + turns a demand plan into a cache
@@ -102,34 +99,6 @@ impl Provisioner {
         parts.join(" · ")
     }
 
-    /// Find an artifact's on-disk state across the sources (first present wins).
-    fn locate(&self, id: &str) -> Option<DiskState> {
-        self.sources
-            .iter()
-            .map(|s| s.disk_state(id))
-            .find(|d| d.is_present())
-    }
-
-    /// ACT on `decision.evict`: delete the evicted artifacts' files, freeing disk. Only
-    /// touches ids the reconcile marked evictable (unpinned, by construction) — the
-    /// pinned/needed set is never deleted. Batch-resilient + fail-loud: a delete error
-    /// on one file is recorded and the pass continues (a locked file mustn't block
-    /// reclaiming the rest), never silently swallowed. This is the "finite misfit disk"
-    /// reclaim — the counterpart to the Downloader's fetch.
-    pub fn execute_evictions(&self, decision: &CacheDecision) -> EvictionReport {
-        let mut report = EvictionReport::default();
-        for id in &decision.evict {
-            match self.locate(id) {
-                Some(DiskState::Present { path, bytes }) => match std::fs::remove_file(&path) {
-                    Ok(()) => report.freed.push((id.clone(), bytes)),
-                    Err(e) => report.errors.push((id.clone(), e.to_string())),
-                },
-                // Already gone — nothing to reclaim, not an error.
-                _ => {}
-            }
-        }
-        report
-    }
 }
 
 #[cfg(test)]
@@ -175,10 +144,6 @@ mod tests {
             path: PathBuf::from("/x"),
             bytes,
         }
-    }
-
-    fn present_at(path: PathBuf, bytes: u64) -> DiskState {
-        DiskState::Present { path, bytes }
     }
 
     // what this catches: the orchestrator threads pin (from the plan) + disk_state
@@ -235,26 +200,4 @@ mod tests {
         );
     }
 
-    // what this catches: eviction ACTS — the evicted artifact's real file is deleted
-    // and its bytes reported freed, closing the "finite misfit disk" reclaim loop.
-    #[test]
-    fn execute_evictions_deletes_files_and_reports_freed() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let f = dir.path().join("evictable.vrm");
-        std::fs::write(&f, vec![0u8; 1234]).unwrap();
-        let src = MockSource {
-            kind: ArtifactKind::Avatar,
-            specs: vec![("evictable".into(), present_at(f.clone(), 1234))],
-        };
-        let prov = Provisioner::new(vec![Box::new(src)]);
-        let decision = CacheDecision {
-            fetch: vec![],
-            evict: vec!["evictable".into()],
-            shortfall_bytes: 0,
-        };
-        let report = prov.execute_evictions(&decision);
-        assert_eq!(report.total_freed(), 1234);
-        assert!(!f.exists(), "evicted file must actually be deleted");
-        assert!(report.errors.is_empty());
-    }
 }

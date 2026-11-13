@@ -88,9 +88,15 @@ impl InferenceCoordinatorModule {
     /// reports `usage = open lanes' KV bytes`, `capacity = lane budget`; the
     /// broker's tick reads `pressure()` and fires `evict_at_least` (→
     /// `evict_under_pressure`) when the tier crosses its act threshold.
+    ///
+    /// The node's genes are a tenant of the same budget (Cormac, 2026-10-24: genes and minds'
+    /// KV compete for one device): their device bytes count here, and pressure pages them out
+    /// to host RAM before any lane is evicted (`genome::gene_residency`).
     pub fn register_with_broker(&self, broker: &PressureBroker) {
+        let genes: Arc<dyn crate::inference::coordinator_pool::DeviceTenant> =
+            crate::genome::gene_residency::GeneResidency::global().clone();
         broker.register(
-            Arc::new(CoordinatorResourcePool::new(self.coordinator.clone()))
+            Arc::new(CoordinatorResourcePool::new(self.coordinator.clone()).with_tenant(genes))
                 as Arc<dyn ResourcePool>,
         );
     }
@@ -133,9 +139,8 @@ impl ServiceModule for InferenceCoordinatorModule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::adaptive_throughput::{
-        ResourceClass, TargetSilicon, ThroughputLaneBudget,
-    };
+    use crate::resources::throughput_class::{ResourceClass, TargetSilicon};
+    use crate::inference::planning::adaptive_throughput::ThroughputLaneBudget;
     use crate::paging::{BrokerConfig, PressureBroker};
 
     fn test_config() -> CoordinatorConfig {

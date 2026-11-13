@@ -1,0 +1,778 @@
+//! Git Bridge — git status, diff, and branch operations.
+//!
+//! Shells out to `git` CLI for operations. This keeps the implementation
+//! simple and avoids pulling in libgit2 as a dependency.
+//!
+//! Every git child runs OWNED (card bfa87dd5): through `continuum_process::run_owned_with_input`, so a
+//! cancelled command or an expired deadline ends the git and everything it started, its output
+//! is read whole or named as not whole, and it holds the hands' admission until it has ended.
+//! A caller with a deadline runs its git calls [`within`] it: ONE absolute deadline across all
+//! of them, never reset per call (Codex root on bfa87dd5).
+
+use std::path::Path;
+
+use super::git_actor::GitActor;
+use super::types::GitStatusInfo;
+
+/// Get git status for a workspace directory.
+///
+/// Returns branch name, modified/added/deleted/untracked files.
+pub async fn git_status(workspace_root: &Path) -> GitStatusInfo {
+    // Get current branch
+    let branch = run_git(workspace_root, &["rev-parse", "--abbrev-ref", "HEAD"]).await
+        .ok()
+        .map(|s| s.trim().to_string());
+
+    // Get porcelain status (machine-readable)
+    let status_output = match run_git(workspace_root, &["status", "--porcelain=v1"]).await {
+        Ok(output) => output,
+        Err(e) => {
+            return GitStatusInfo {
+                success: false,
+                branch,
+                modified: Vec::new(),
+                added: Vec::new(),
+                deleted: Vec::new(),
+                untracked: Vec::new(),
+                error: Some(format!("git status failed: {}", e)),
+            };
+        }
+    };
+
+    let mut modified = Vec::new();
+    let mut added = Vec::new();
+    let mut deleted = Vec::new();
+    let mut untracked = Vec::new();
+
+    for line in status_output.lines() {
+        // Porcelain v1: the index status, the work-tree status, a space, then the path.
+        let mut chars = line.chars();
+        let (Some(index), Some(tree), Some(' ')) = (chars.next(), chars.next(), chars.next()) else {
+            continue;
+        };
+        let file_path = chars.as_str().trim().to_string();
+        let either = |code: char| index == code || tree == code;
+
+        match (index, tree) {
+            ('?', '?') => untracked.push(file_path),
+            _ if either('A') => added.push(file_path),
+            _ if either('D') => deleted.push(file_path),
+            // M modified, R renamed, C copied, T type changed, U unmerged: the path's content
+            // differs from HEAD. `!` is an ignored path (not reported). Porcelain v1 has no
+            // other codes, so the match names every one.
+            _ if either('M') || either('R') || either('C') || either('T') || either('U') => modified.push(file_path),
+            ('!', '!') => {}
+            (index, tree) => {
+                return GitStatusInfo {
+                    success: false,
+                    branch,
+                    modified: Vec::new(),
+                    added: Vec::new(),
+                    deleted: Vec::new(),
+                    untracked: Vec::new(),
+                    error: Some(format!("git status reported an unknown porcelain status {index:?}{tree:?} for {file_path}")),
+                };
+            }
+        }
+    }
+
+    GitStatusInfo {
+        success: true,
+        branch,
+        modified,
+        added,
+        deleted,
+        untracked,
+        error: None,
+    }
+}
+
+// A resident's edits are checkpointed into wip(...) commits every act, so a working-tree-only
+// diff is always empty and read as "my edits were phantom" (Aiko re-read the same files for 80
+// minutes, 2026-11-02). These doc lines are the schema text every mind reads: keep them short.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/code/DiffScope.ts")]
+pub enum DiffScope {
+    // All her work since her branch started, checkpoints included.
+    #[default]
+    YourWork,
+    Unstaged,
+    Staged,
+}
+
+/// A diff and what it was taken against, so a reader knows what an empty one means.
+pub struct Diff {
+    pub text: String,
+    pub against: String,
+}
+
+/// Git diff output for the workspace, in `scope`. `YourWork` needs the checkout's recorded work
+/// base and refuses without one; it never falls back to a comparison that would read empty.
+pub async fn git_diff(workspace_root: &Path, scope: DiffScope) -> Result<Diff, String> {
+    match scope {
+        DiffScope::Unstaged => Ok(Diff { text: run_git(workspace_root, &["diff"]).await?, against: "the index".into() }),
+        DiffScope::Staged => Ok(Diff { text: run_git(workspace_root, &["diff", "--cached"]).await?, against: "HEAD (staged)".into() }),
+        DiffScope::YourWork => {
+            let base = work_base(workspace_root).await?;
+            Ok(Diff {
+                text: run_git(workspace_root, &["diff", &base.sha]).await?,
+                against: format!("{} (where this branch left {})", base.short, base.from),
+            })
+        }
+    }
+}
+
+/// Where this checkout's work starts: the merge-base of HEAD with the integration ref the
+/// checkout's owner recorded at allocation (airc's `AllocationEvidence`), so a branch rebased
+/// onto a newer integration tip still diffs from where it actually left it.
+pub struct WorkBase {
+    pub sha: String,
+    /// Git's own unambiguous short form of `sha`.
+    pub short: String,
+    /// The recorded integration ref the base was taken on.
+    pub from: String,
+}
+
+/// The recorded work base of the checkout at `workspace_root`. A checkout with no allocation
+/// record (one airc did not allocate) has no known base, and says so; git failures propagate.
+pub async fn work_base(workspace_root: &Path) -> Result<WorkBase, String> {
+    let root = workspace_root.to_path_buf();
+    let evidence = tokio::task::spawn_blocking(move || airc_lib::work_worktree::allocation_evidence(&root))
+        .await
+        .map_err(|e| format!("reading the checkout's allocation record: {e}"))??
+        .ok_or_else(|| {
+            "this checkout has no allocation record, so where its work starts is unknown; \
+             ask for scope `unstaged` or `staged`"
+                .to_owned()
+        })?;
+    let from = evidence.start_ref;
+    let sha = run_git(workspace_root, &["merge-base", "HEAD", &from]).await?.trim().to_owned();
+    let short = run_git(workspace_root, &["rev-parse", "--short", &sha]).await?.trim().to_owned();
+    Ok(WorkBase { sha, short, from })
+}
+
+/// The `owner/name` board key this checkout belongs to, read from `origin`.
+///
+/// The work board keys cards by repo, and that key is a FACT about the checkout —
+/// not a string a caller should have to retype. `benchmark/dispatch` used to infer it
+/// from whatever cards already sat on the board, which worked only while every run
+/// shared one permanent board; once a run gets its own fresh room there are no cards
+/// to infer from, and the inference had to come from the real thing instead.
+///
+/// Returns `None` rather than erroring: not every workspace has an `origin` (a fresh
+/// `git init`, a local-only clone), and a caller that can still pass `repo` explicitly
+/// should get that chance before anything fails.
+pub async fn origin_repo_slug(workspace_root: &Path) -> Option<String> {
+    let url = run_git(workspace_root, &["remote", "get-url", "origin"]).await.ok()?;
+    repo_slug_from_remote_url(url.trim())
+}
+
+/// Parse `owner/name` out of a git remote URL — the part that actually varies and
+/// therefore the part worth testing.
+///
+/// Handles the three forms a clone can carry:
+/// - `https://github.com/owner/name.git`
+/// - `git@github.com:owner/name.git` (scp-style, no scheme, `:` separator)
+/// - `ssh://git@github.com/owner/name`
+///
+/// Host-agnostic on purpose: the board key is `owner/name`, and a GitLab or
+/// self-hosted remote produces exactly as valid a key as a GitHub one. Takes the LAST
+/// two path segments so deeper hosting paths (GitLab subgroups) still yield the
+/// project's own `group/name`.
+pub fn repo_slug_from_remote_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    // Only the repository path may become a board key or model-facing fact.
+    // URL parsing separates credentials, ports, query and fragment from that path.
+    // Local paths are not hosted repository identities, even if they have two parts.
+    let parsed;
+    let path = if url.contains("://") {
+        parsed = reqwest::Url::parse(url).ok()?;
+        if parsed.scheme() == "file" || parsed.host_str().is_none() {
+            return None;
+        }
+        parsed.path()
+    } else {
+        let (host, path) = url.split_once(':')?;
+        if host.len() == 1 || host.contains(['/', '\\']) || host.is_empty() {
+            return None;
+        }
+        // SCP syntax has no query/fragment; refuse ambiguous suffixes rather than
+        // displaying a credential-looking parameter as part of the repository.
+        if path.contains(['?', '#', '@', ':', '\\']) {
+            return None;
+        }
+        path
+    };
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path); // unwrap_or: a remote without the suffix is its own name
+
+    let mut segments = path.rsplit('/').filter(|s| !s.is_empty());
+    let name = segments.next()?;
+    let owner = segments.next()?;
+    if [name, owner].iter().any(|part| {
+        part.is_empty() || matches!(*part, "." | "..") || part.chars().any(char::is_whitespace)
+    }) {
+        return None;
+    }
+    Some(format!("{owner}/{name}"))
+}
+
+/// Get git log (last N commits, one-line format).
+pub async fn git_log(workspace_root: &Path, count: u32) -> Result<String, String> {
+    run_git(
+        workspace_root,
+        &["log", &format!("-{}", count), "--oneline", "--no-decorate"],
+    ).await
+}
+
+/// Stage files for commit.
+///
+/// Pass specific file paths, or `&["--all"]` / `&["."]` to stage everything.
+pub async fn git_add(workspace_root: &Path, paths: &[&str]) -> Result<String, String> {
+    let mut args = vec!["add"];
+    args.extend_from_slice(paths);
+    run_git(workspace_root, &args).await
+}
+
+/// Create a commit with the given message, made by `actor` (author AND committer).
+///
+/// Returns the full commit hash on success.
+pub async fn git_commit(workspace_root: &Path, actor: &GitActor, message: &str) -> Result<String, String> {
+    // Commit through the repository's normal hook path. AI-authored commits
+    // must fail loudly when validation fails; callers surface the git stderr.
+    run_git_as(workspace_root, actor, &["commit", "-m", message]).await?;
+
+    // Return the commit hash
+    run_git(workspace_root, &["rev-parse", "HEAD"]).await.map(|s| s.trim().to_string())
+}
+
+/// Apply a unified diff to the working tree (`git apply`). `check_only` runs
+/// `git apply --check` — validate without touching files. The patch arrives on
+/// stdin so peer-shared diffs of any size apply without temp files. This is the
+/// RECEIVING end of diffs-over-the-room: one citizen `code/git/diff`s, posts the
+/// patch, another applies it — the consolidation verb the Conway team asked for
+/// (2026-07-11) before the full branch/merge rails exist.
+pub async fn git_apply(workspace_root: &Path, patch: &str, check_only: bool) -> Result<String, String> {
+    let mut args = vec!["apply", "--whitespace=nowarn"];
+    if check_only {
+        args.push("--check");
+    }
+    // the patch goes in on stdin; a patch git didn't take whole is not an applied patch
+    run_git_input(workspace_root, None, &args, &[], Some(patch.as_bytes().to_vec())).await?;
+    Ok(if check_only {
+        "patch applies cleanly (checked, not applied)".to_string()
+    } else {
+        "patch applied".to_string()
+    })
+}
+
+/// Ensure `workspace_root` is a git repository: no-op when `.git` exists;
+/// otherwise `git init` + an initial commit of whatever is present, so every
+/// citizen workspace is diff-able/apply-able from birth
+/// ([[workspace-is-a-cow-diff-from-shared-always-git]]). Loud Err if git
+/// itself is unavailable — a workspace that silently can't version work is
+/// the kind of quiet defect the jobs-ledger taught us to refuse. The root commit is made
+/// by `actor`, the citizen whose workspace it is.
+pub async fn git_init_if_needed(workspace_root: &Path, actor: &GitActor) -> Result<bool, String> {
+    if workspace_root.join(".git").exists() {
+        return Ok(false);
+    }
+    run_git(workspace_root, &["init"]).await.map_err(|e| format!("git init failed: {e}"))?;
+    run_git(workspace_root, &["add", "-A"]).await.map_err(|e| format!("workspace initial add failed: {e}"))?;
+    // An empty dir still gets a root commit so diffs have a base.
+    run_git_as(workspace_root, actor, &["commit", "--allow-empty", "-m", "workspace: initial state"])
+        .await
+        .map_err(|e| format!("workspace initial commit failed: {e}"))?;
+    Ok(true)
+}
+
+/// Push the current branch to a remote. Defaults to `origin` if remote is empty.
+pub async fn git_push(workspace_root: &Path, remote: &str, branch: &str) -> Result<String, String> {
+    let remote = if remote.is_empty() { "origin" } else { remote };
+    let mut args = vec!["push", remote];
+    if !branch.is_empty() {
+        args.push(branch);
+    }
+    run_git(workspace_root, &args).await
+}
+
+/// Outcome of a [`git_sync_from_shared`] refresh — drives the "notify" the caller
+/// surfaces to the persona (Joel: "preserve and notify… eventually just learn this").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitSyncReport {
+    /// True when new shared commits were actually merged in (workspace changed).
+    pub synced: bool,
+    /// Short human/persona-readable summary of what happened.
+    pub summary: String,
+}
+
+/// Bring a citizen workspace CURRENT with the shared checkout WITHOUT destroying
+/// the persona's own work — the self-heal for
+/// [[citizen-workspaces-are-stale-one-time-clones]]. Citizen workspaces are
+/// `cp -cR` clones of the shared checkout (including its `.git`), so they share
+/// history with shared; but `ensure_citizen_layer` never refreshed them, so they
+/// drifted stale (one froze before the `workers/→core/` restructure). Because the
+/// histories are related, a fetch + merge brings the framework current while
+/// KEEPING the persona's commits.
+///
+/// Preserve-first (Joel: "preserve and notify"):
+///  1. autocommit any uncommitted persona work, so a merge can't lose it and it
+///     survives on the persona's own history.
+///  2. `git fetch <shared> HEAD` — shared's current HEAD into FETCH_HEAD.
+///  3. `git merge -X theirs --no-edit --allow-unrelated-histories FETCH_HEAD` —
+///     shared wins framework-file conflicts (the persona shouldn't diverge the
+///     framework); the persona's OWN new files are untouched; their commits stay
+///     in history. `-X theirs` is deterministic — never drops to an interactive
+///     conflict. On a merge that truly can't complete we `--abort` so the
+///     workspace is never left half-merged, and surface the cause LOUD.
+///
+/// Returns whether anything changed (+ a summary) so the caller can drop the
+/// teaching note only when there was actually a refresh.
+pub async fn git_sync_from_shared(
+    workspace_root: &Path,
+    shared_checkout: &Path,
+    actor: &GitActor,
+) -> Result<GitSyncReport, String> {
+    // 0. A card branch is the citizen's own work in flight for review, and it gets pushed.
+    // The autosave below would commit her whole workspace onto it, and the shared-wins merge
+    // could overwrite her edits (Kimi's card 63855189: five autosaves swept 3,026 files into
+    // the branch and both its PRs were closed). A card branch reconciles with canary through
+    // card staging, never here, so the sync leaves it untouched and says why.
+    let branch = run_git(workspace_root, &["symbolic-ref", "--short", "-q", "HEAD"]).await
+        .unwrap_or_default() // unwrap_or_default: a detached HEAD (symbolic-ref exits 1) is on no card branch
+        .trim()
+        .to_string();
+    if crate::code::card_branch::is_card_branch(&branch) {
+        continuum_base::probe!(
+            class = "workspace.sync.skipped_card_branch",
+            root = %workspace_root.display(),
+            branch = %branch,
+            "workspace is on a card branch; shared sync left it untouched"
+        );
+        return Ok(GitSyncReport {
+            synced: false,
+            summary: format!(
+                "on card branch {branch}: not synced from shared (a card branch reconciles through card staging)"
+            ),
+        });
+    }
+
+    // 1. Preserve: commit in-flight persona work before merging.
+    // A preserve that fails stops the sync: merging over work that was not committed could lose it.
+    // A submodule checkout that lags its pin is not work to preserve (keep_submodule_pins).
+    let porcelain = run_git(workspace_root, &["status", "--porcelain", "--ignore-submodules=all"]).await
+        .map_err(|e| format!("could not read the workspace's status, so it was not synced (your work is untouched): {e}"))?;
+    if !porcelain.trim().is_empty() {
+        run_git(workspace_root, &["add", "-A"]).await
+            .map_err(|e| format!("could not stage your work to preserve it, so the workspace was not synced (your work is untouched): {e}"))?;
+        keep_submodule_pins(workspace_root).await
+            .map_err(|e| format!("could not keep the submodule pins while preserving your work, so the workspace was not synced (your work is staged, untouched): {e}"))?;
+        run_git_as(workspace_root, actor, &["commit", "-m", "workspace: autosave persona work before shared sync"]).await
+            .map_err(|e| format!("could not commit your work to preserve it, so the workspace was not synced (your work is staged, untouched): {e}"))?;
+    }
+    let before = run_git(workspace_root, &["rev-parse", "HEAD"]).await
+        .unwrap_or_default() // unwrap_or_default: an unborn HEAD has no commit, so nothing reads as synced
+        .trim()
+        .to_string();
+
+    // 2. Fetch shared's current HEAD (a filesystem path is a valid git remote).
+    let shared = shared_checkout.to_string_lossy();
+    run_git(
+        workspace_root,
+        &["fetch", "--no-tags", shared.as_ref(), "HEAD"],
+    ).await
+    .map_err(|e| format!("fetch from shared checkout '{shared}' failed: {e}"))?;
+
+    // 3. Merge shared in — shared wins framework conflicts, persona files kept.
+    if let Err(e) = run_git_as(
+        workspace_root,
+        actor,
+        &[
+            "merge",
+            "--no-edit",
+            "--allow-unrelated-histories",
+            "-X",
+            "theirs",
+            "FETCH_HEAD",
+        ],
+    ).await {
+        // Two conflict shapes live outside `-X theirs` and stranded every citizen
+        // workspace stale (glass-boxed 2026-08-03, rounds 1+2): diverged SUBMODULE
+        // pointers (git refuses non-trivial gitlink merges outright) and
+        // modify/delete (shared deleted debris the persona's autosave had touched
+        // — the #2135 sweep made this the steady state). Resolve every staged
+        // conflict SHARED-WINS — the sync's one documented rule — and conclude the
+        // merge; the persona's versions live on in her autosave history
+        // (preserve-first is the commit, not the tree). A merge that failed
+        // without staging anything still aborts loud, workspace intact.
+        match resolve_conflicts_shared_wins(workspace_root, actor).await {
+            Ok(true) => {
+                continuum_base::probe!(
+                    class = "workspace.sync.conflicts_resolved",
+                    root = %workspace_root.display(),
+                    "merge blocked on gitlink/modify-delete conflicts — resolved shared-wins and concluded"
+                );
+            }
+            _ => {
+                // Never leave a half-merge — abort so the workspace stays usable, fail loud.
+                return Err(match run_git_as(workspace_root, actor, &["merge", "--abort"]).await {
+                    Ok(_) => format!("shared merge failed (aborted; workspace left intact): {e}"),
+                    Err(abort) => format!("shared merge failed AND its abort failed, so the workspace is mid-merge (run `git merge --abort` or resolve it): {e}; abort: {abort}"),
+                });
+            }
+        }
+    }
+
+    let after = run_git(workspace_root, &["rev-parse", "HEAD"]).await
+        .map_err(|e| format!("merged shared in, but could not read the workspace's HEAD after it: {e}"))?
+        .trim()
+        .to_string();
+    let synced = !before.is_empty() && before != after;
+    let summary = if synced {
+        // The sync is done; a count that cannot be read says so in its summary.
+        let count = match run_git(workspace_root, &["rev-list", "--count", &format!("{before}..{after}")]).await {
+            Ok(count) => count.trim().to_string(),
+            Err(e) => format!("an uncounted number of (could not count them: {e})"),
+        };
+        format!("synced {count} shared commit(s) in; your work was preserved")
+    } else {
+        "already current with the shared checkout".to_string()
+    };
+    Ok(GitSyncReport { synced, summary })
+}
+
+/// After a failed `merge -X theirs`, salvage the shapes `-X theirs` cannot
+/// touch, resolving each SHARED-WINS — the sync's one documented rule, extended
+/// uniformly to what git refuses to auto-resolve:
+///
+///  - SUBMODULE pointers (mode 160000): both sides moved the gitlink (the
+///    persona's autosave commits her stale vendored pointer while shared
+///    advances it) — git aborts with "only trivial cases". Resolve to
+///    FETCH_HEAD's recorded sha.
+///  - modify/delete: shared DELETED a path the persona modified (glass-boxed
+///    2026-08-03 round 2: the #2135 debris sweep deleted conway/wordstats from
+///    shared while every citizen's autosave had touched them — the sync then
+///    failed forever on the very files it was supposed to clear). Shared's
+///    deletion wins the WORKING TREE; the persona's version is NOT lost — her
+///    autosave commit holds it in her own history (preserve-first is the
+///    commit, not the tree).
+///  - any other unmerged entry: theirs-stage exists → take theirs; theirs-stage
+///    absent → the path is gone in shared → remove.
+///
+/// Returns Ok(true) on a concluded merge, Ok(false) when there was nothing
+/// staged to salvage (caller aborts loud).
+async fn resolve_conflicts_shared_wins(workspace_root: &Path, actor: &GitActor) -> Result<bool, String> {
+    let unmerged = run_git(workspace_root, &["ls-files", "-u"]).await?;
+    if unmerged.trim().is_empty() {
+        return Ok(false); // merge failed before staging conflicts — nothing to salvage
+    }
+    // path → has a stage-3 (theirs) entry? Stage layout: 1=base, 2=ours, 3=theirs.
+    let mut theirs_present: std::collections::BTreeMap<String, bool> =
+        std::collections::BTreeMap::new();
+    for line in unmerged.lines() {
+        // "<mode> <sha> <stage>\t<path>"
+        let Some((meta, path)) = line.split_once('\t') else {
+            return Ok(false);
+        };
+        let Some(stage) = meta.split_whitespace().nth(2) else {
+            return Ok(false);
+        };
+        let entry = theirs_present.entry(path.to_string()).or_insert(false);
+        if stage == "3" {
+            *entry = true;
+        }
+    }
+    for (p, has_theirs) in &theirs_present {
+        if *has_theirs {
+            // Content/gitlink present on shared's side — adopt it. `checkout
+            // FETCH_HEAD --` covers both regular files and gitlinks (updates the
+            // index entry; for gitlinks the pointer, for files the blob).
+            run_git(workspace_root, &["checkout", "FETCH_HEAD", "--", p]).await
+                .map_err(|e| format!("shared-wins resolve of '{p}' failed: {e}"))?;
+        } else {
+            // Deleted in shared (modify/delete) — the deletion wins the tree.
+            run_git(workspace_root, &["rm", "-f", "--", p]).await
+                .map_err(|e| format!("shared-wins delete of '{p}' failed: {e}"))?;
+        }
+    }
+    run_git_as(workspace_root, actor, &["commit", "--no-edit"]).await
+        .map_err(|e| format!("concluding merge after shared-wins resolve failed: {e}"))?;
+    Ok(true)
+}
+
+tokio::task_local! {
+    /// The absolute deadline every git call on this task runs within, when its caller set one.
+    static DEADLINE: tokio::time::Instant;
+}
+
+/// Run `work` with every git call in it bounded by ONE absolute `deadline`: carried across them
+/// all, never reset per call, so a slow first call leaves the later ones less time, not more.
+pub async fn within<F: std::future::Future>(deadline: tokio::time::Instant, work: F) -> F::Output {
+    DEADLINE.scope(deadline, work).await
+}
+
+/// How a git error renders a git its deadline ended mid-run ([`GitEnd::Interrupted`]).
+const INTERRUPTED: &str = "interrupted at its deadline: its effect is unknown";
+/// How a git error renders a git whose deadline had already passed ([`GitEnd::NeverRan`]).
+const NOT_STARTED: &str = "not started: its deadline had passed";
+
+/// The deadline in force on this task, if its caller set one.
+pub(crate) fn deadline() -> Option<tokio::time::Instant> {
+    DEADLINE.try_with(|at| *at).ok()
+}
+
+/// A submodule's recorded commit is never an autosave's to move. A checkout's submodule can lag its
+/// branch (a rebase moves the pin, the checkout stays), and `add -A` records the lag as a pin
+/// change: Benchy's #5883 was an autosave whose whole diff moved the engine pin back (card
+/// a7a37ce7). After an autosave's `add`, every staged gitlink change goes back to HEAD's pin. The
+/// ONE owner for every autosave (the card's work save and the shared sync, card 432809f4); a pin
+/// moves only by a deliberate commit. Returns the pins it kept.
+pub async fn keep_submodule_pins(root: &Path) -> Result<Vec<String>, String> {
+    // `--raw -z`: each entry is `:<old mode> <new mode> <old sha> <new sha> <status>` NUL `<path>` NUL,
+    // so a path with any character parses whole. 160000 is a gitlink's mode.
+    let staged = run_git(root, &["diff", "--cached", "--raw", "-z", "--no-renames", "HEAD"]).await?;
+    let mut fields = staged.split('\0');
+    let mut pins = Vec::new();
+    while let (Some(meta), Some(path)) = (fields.next(), fields.next()) {
+        let mut modes = meta.trim_start_matches(':').split_whitespace();
+        if let (Some(old_mode), Some(new_mode)) = (modes.next(), modes.next()) {
+            if old_mode == GITLINK_MODE || new_mode == GITLINK_MODE {
+                pins.push(path.to_string());
+            }
+        }
+    }
+    if pins.is_empty() {
+        return Ok(pins);
+    }
+    let mut reset = vec!["reset", "-q", "HEAD", "--"];
+    reset.extend(pins.iter().map(String::as_str));
+    run_git(root, &reset).await?;
+    continuum_base::probe!(
+        class = "workspace.autosave.pin_kept",
+        root = %root.display(),
+        pins = %pins.join(","),
+        "a submodule checkout differed from the branch's pin: the autosave kept the pin, not the checkout"
+    );
+    Ok(pins)
+}
+
+/// git's mode for a submodule entry (a gitlink) in a tree or the index.
+const GITLINK_MODE: &str = "160000";
+
+/// Run a git command in the workspace directory. `pub(crate)` so the one context-clean
+/// runner (env stripped, ceiling set, no terminal prompt) is shared by every crate seam
+/// that shells to git — `persona::workspace_transfer` carries a card's branch between
+/// nodes through it — rather than each seam re-deriving the hygiene below.
+pub async fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
+    Ok(run_git_input(workspace_root, None, args, &[], None).await?)
+}
+
+/// [`run_git`] for a git that writes a commit: made by `actor`, author and committer.
+pub async fn run_git_as(workspace_root: &Path, actor: &GitActor, args: &[&str]) -> Result<String, String> {
+    Ok(run_git_input(workspace_root, Some(actor), args, &[], None).await?)
+}
+
+/// [`run_git`] with extra environment for this one invocation (the citizen layer lifts the
+/// discovery ceiling by name). Same hygiene; the env is applied after it. Identity is never
+/// passed here: it is the `actor` of [`run_git_input`].
+pub async fn run_git_with_env(workspace_root: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
+    Ok(run_git_input(workspace_root, None, args, env, None).await?)
+}
+
+/// How a git that gave no answer ended, for a caller whose next step depends on whether it had
+/// an effect (a push: did the remote take it?).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitEnd {
+    /// It never ran: its deadline had passed before it started. It had no effect.
+    NeverRan,
+    /// It exited non-zero: git's own verdict that it failed. For a push that doesn't prove the
+    /// remote is unchanged (it can take the ref and the connection fail before git hears so).
+    Refused,
+    /// Its effect is unknown: it exited 0 but its input or output wasn't whole or readable, or
+    /// the runner failed around it (Codex reviewer on #5037).
+    Unknown,
+    /// Its effect is unknown because its deadline ended it mid-run (a push may have landed).
+    Interrupted,
+    /// It never ran: it writes a commit and no actor was named for it. A commit is made by the
+    /// peer acting, never by the node's global git config.
+    NoActor,
+}
+
+/// A git that gave no answer: how it ended, its exit code and stdout when it exited, and the one
+/// rendering of why.
+#[derive(Debug)]
+pub struct GitError {
+    pub end: GitEnd,
+    /// Git's exit code when it exited non-zero ([`GitEnd::Refused`]): `ls-remote --exit-code`
+    /// says "no such ref" with 2, a decision no caller reads from the stderr.
+    pub code: Option<i32>,
+    /// What it printed on stdout before it failed: a machine format (`push --porcelain`'s ref
+    /// lines) a caller decides on, never its stderr prose.
+    pub stdout: String,
+    message: String,
+}
+
+impl GitError {
+    fn ended(end: GitEnd, message: String) -> Self {
+        Self { end, code: None, stdout: String::new(), message }
+    }
+
+    /// Did its deadline stop it before it started, or end it mid-run?
+    pub fn out_of_time(&self) -> bool {
+        matches!(self.end, GitEnd::NeverRan | GitEnd::Interrupted)
+    }
+}
+
+impl std::fmt::Display for GitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<GitError> for String {
+    fn from(error: GitError) -> Self {
+        error.message
+    }
+}
+
+/// The ONE git runner: [`run_git`] with optional stdin `input` (a patch for `git apply`). Owned
+/// through `continuum_process::run_owned_with_input`, within the task's [`deadline`] when one is set.
+/// An exit that isn't success is an `Err` with git's stderr; so is an output that wasn't read
+/// whole or an input that wasn't delivered; a deadline that ended it says its effect is UNKNOWN
+/// (a push may have landed), never that nothing happened.
+///
+/// THE ONE ACTOR OWNER: a git that writes a commit runs as `actor`, author AND committer, set
+/// after every other variable; one that names no actor is refused before it runs
+/// ([`GitEnd::NoActor`]), so no commit ever falls to the node's global identity.
+pub async fn run_git_input(workspace_root: &Path, actor: Option<&GitActor>, args: &[&str], env: &[(&str, &str)], input: Option<Vec<u8>>) -> Result<String, GitError> {
+    use continuum_process::{run_owned_with_input, Answer, Why};
+    if actor.is_none() && super::git_actor::commits(args) {
+        return Err(GitError::ended(
+            GitEnd::NoActor,
+            format!("git {} refused: it writes a commit and names no actor (a commit is made by the peer acting, never the node's global config)", args.join(" ")),
+        ));
+    }
+    let bound = match deadline() {
+        Some(at) => {
+            let left = at.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                return Err(GitError::ended(GitEnd::NeverRan, format!("git {} {NOT_STARTED}", args.join(" "))));
+            }
+            Some(left)
+        }
+        None => None,
+    };
+    // A dead git's index.lock blocks every write in this tree until it is removed (card
+    // d7765b90: 6 residents on enrico could not commit for ~10 days). One stat on a clean tree.
+    settle_index_lock(workspace_root, continuum_git::index_lock::STALE_INDEX_LOCK).await;
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(args)
+        .current_dir(workspace_root)
+        // Strip git-context env vars that would otherwise pin git to
+        // the parent repo regardless of cwd. Without this, when
+        // run_git is invoked from a process that itself was launched
+        // by git (the most common case: pre-push / pre-commit hooks
+        // invoking `cargo test`), git sets GIT_DIR/GIT_PREFIX/etc and
+        // those propagate to every child. Concrete failure:
+        // git_bridge::tests' tempdir `git commit` inherited GIT_DIR
+        // pointing at the parent worktree's .git, then ran the
+        // worktree's pre-commit hook (whose paths don't exist in the
+        // tempdir context) and panicked. Caught 2026-05-02 wedging the
+        // whole git_bridge::tests cluster every time the pre-push hook
+        // ran them. Stripping these makes run_git context-clean — git
+        // discovers from current_dir(workspace_root) only, no parent
+        // contamination.
+        // GIT_CEILING_DIRECTORIES caps upward discovery AT workspace_root:
+        // the ceiling is its PARENT, because git never chdirs up INTO a
+        // ceiling but does check the ceiling's children. A ceiling of the
+        // root itself let a root with an invalid or empty `.git` discover
+        // the repository above it (measured on macOS and Windows git,
+        // Codex reviewer on #5041). A root with no parent ("/") has
+        // nothing above it.
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_PREFIX")
+        // Identity comes only from `actor`, never inherited from the process.
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL")
+        .env("GIT_CEILING_DIRECTORIES", workspace_root.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(workspace_root)) // unwrap_or: a root with no parent is its own ceiling
+        // A headless core has no terminal: a fetch or push that would ask for
+        // credentials must FAIL (a named outcome) rather than hang the turn on a prompt
+        // nobody will answer.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        // The caller's env LAST, so a call that means to differ from the hygiene says so
+        // by name (the citizen layer's `rev-parse --show-toplevel` lifts the ceiling: it
+        // IS the upward discovery).
+        .envs(env.iter().copied());
+    if let Some(actor) = actor {
+        cmd.envs(actor.env());
+    }
+    let out = run_owned_with_input(cmd, input, bound, "git", std::sync::Arc::default())
+        .await
+        // the runner's errors aren't all before the spawn (a failed wait, an end that couldn't
+        // run): what the git did is unknown, never "it never ran" (Codex reviewer on #5037)
+        .map_err(|e| GitError::ended(GitEnd::Unknown, format!("Failed to run git: {e}")))?;
+    // the shared projection (continuum_process::OwnedOutput::answer): a non-zero exit is git's own
+    // failure, with its stderr, and any delivery note beside it; a deadline that ended it says
+    // its effect is unknown
+    if let Answer::Not(unanswered) = out.answer() {
+        let ((end, code), at_deadline) = match unanswered.why {
+            Why::Exited(status) => ((GitEnd::Refused, status.code()), String::new()),
+            Why::NotWhole => ((GitEnd::Unknown, None), String::new()),
+            Why::TimedOut { .. } => {
+                // this process just ended that git: its lock is that git's, unless another git
+                // now works in the tree, so it goes now rather than in ten minutes
+                settle_index_lock(workspace_root, std::time::Duration::ZERO).await;
+                ((GitEnd::Interrupted, None), format!(" {INTERRUPTED}"))
+            }
+        };
+        let stdout = String::from_utf8_lossy(&unanswered.stdout.bytes).into_owned();
+        return Err(GitError { end, code, stdout, message: format!("git {}{at_deadline}: {unanswered}", args.join(" ")) });
+    }
+    // it exited 0 with everything read whole, but what it said isn't text: what it did is unknown
+    String::from_utf8(out.stdout.bytes).map_err(|e| GitError::ended(GitEnd::Unknown, format!("git {}: invalid UTF-8 in its output: {e}", args.join(" "))))
+}
+
+/// [`continuum_git::index_lock::settle`] for a citizen's workspace, off the async threads (its
+/// process scan blocks), with the outcome probed: a lock left in place or removed is named with
+/// its path and age, never silent.
+async fn settle_index_lock(workspace_root: &Path, stale_after: std::time::Duration) {
+    use continuum_git::index_lock::{settle, Settled};
+    let root = workspace_root.to_path_buf();
+    let settled = match tokio::task::spawn_blocking(move || settle(&root, stale_after)).await {
+        Ok(settled) => settled,
+        Err(error) => {
+            continuum_base::probe!(class = "hands.git.index_lock_unjudged", root = %workspace_root.display(),
+                error = %error, "the index-lock check did not finish; this git runs without it");
+            return;
+        }
+    };
+    match settled {
+        Settled::Absent => {}
+        Settled::Held { lock, age } => continuum_base::probe!(
+            class = "hands.git.index_lock_held", lock = %lock.display(), age_s = age.as_secs(),
+            stale_after_s = stale_after.as_secs(),
+            "a git index.lock a live git may hold — left in place; this git may fail on it"
+        ),
+        Settled::Cleared { lock, age } => continuum_base::probe!(
+            class = "hands.git.index_lock_cleared", lock = %lock.display(), age_s = age.as_secs(),
+            stale_after_s = stale_after.as_secs(),
+            "removed a dead git's index.lock (no git running in the tree)"
+        ),
+        Settled::Failed { lock, age, error } => continuum_base::probe!(
+            class = "hands.git.index_lock_unremovable", lock = %lock.display(), age_s = age.as_secs(),
+            error = %error, "a dead git's index.lock could not be removed; this git will fail on it"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests;

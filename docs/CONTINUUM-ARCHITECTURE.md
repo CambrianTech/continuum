@@ -20,7 +20,7 @@ Recent substrate-level state changes worth knowing about when reading the rest o
 - Cognition migration is in flight as the 8-PR "oxidization" stack
   (#1284 `should_respond`; #1290 / #1291 / #1293 `rate_proposals`;
   #1298 / #1301 / #1303 `generate_recipe`; #1292 `vision-describe`).
-- `inference-grpc` and `orpheus` hard-fail on no-GPU (#1314) — no silent
+- `orpheus` hard-fails on no-GPU (#1314) — no silent
   CPU fallback. The `no_cpu_fallback_contract.rs` regression test covers
   llama.cpp / ORT and will be widened to the whole workers tree.
 

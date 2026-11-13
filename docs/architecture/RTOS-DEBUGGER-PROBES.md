@@ -52,7 +52,7 @@ A stable set of `class` values so probes from different files compose into a coh
 - `persona.response.render.parsed` — post-processed: silent vs spoke + reason
 - `persona.response.exit` — final PersonaResponse: decision, text length
 
-**Prompt assembly** (`persona/prompt_assembly.rs`):
+**Prompt assembly** (`cognition/prompt_assembly.rs`):
 - `persona.prompt.assemble` — final composition stats: persona, system_message_len, message_count, estimated_tokens, matched_angle_present, engrams_count, social_signals_present, voice_mode, multi_party_strategy
 
 **Inference adapter** (`inference/llamacpp_adapter.rs::generate_text`):
@@ -64,7 +64,7 @@ A stable set of `class` values so probes from different files compose into a coh
   - `inference.forward.multimodal` — mtmd single-flight path (text+image / text+audio)
 - `inference.bound.tripped` — a wait bound tripped and the turn reads as dead from here (`inference/turn_bound.rs`, card ba82d0a0): `at` = the seam (`pre_stream_headers` | `stream_queue` | `remote_deadline`), `name` = lane / model@peer, `bound_secs`, `source` = `floor` | `turn_bound`, `turn_bound_secs` + `expected_secs` (0 = the request carried none). A row whose lane was busy, not dead, says the bound was undersized — that is the number to fix, never the floor.
 
-**Serving: the KV cache decision** (`cognition/kv_cache_plan.rs`, `inference/llama_server.rs`, `ipc/mod.rs`):
+**Serving: the KV cache decision** (`inference/kv_cache_plan.rs`, `inference/llama_server.rs`, `ipc/mod.rs`):
 - `serving.kv_cache.backend` — the host's serving backend, recorded ONCE at the single `gpu::monitor::detect()` site: `platform` (what the monitor said), `backend` (`metal` | `cuda` | `rocm` | `vulkan` | `directml` | `cpu` | `unknown`), `quantized_kv` (the fallback table's answer for it — metal/cuda only; the cpu arm is f16 pending a measurement of the dequant cost, not an incapability).
 - `serving.kv_cache.engine_support` — what the serving binary advertises for `--cache-type-k`, asked once per process with a 10 s bound: `bin`, `outcome` (`answered` | `did_not_enumerate` | `probe_failed` | `probe_timeout`), `answered`, `quantized_kv` (read it WITH `answered` — `false` on an unanswered probe means "did not say", not "no"), `error`.
 - `serving.kv_cache.decided` — **the receipt that makes a half-size lane impossible to miss.** Emitted at every spawn: `model`, `cache_type`, `source` (`decided` | `override`), `backend`, `engine_advertised`, `flash_attn`, `divisor`, `kv_bytes_per_token` (the plan's own post-divisor rate, via `footprint_for`), `kv_rate_answered`, `window` (per-lane, the number the plan derived from that rate), `lanes`, `total_ctx`. The chosen type, where it came from, and the window it bought, on one line — because the defect it exists for was SELF-CONSISTENT: the 5090 and the CPU-serving IntelMac both planned *and* served at half their KV budget (a 26,880-token lane, measured 2026-09-20) and nothing ever disagreed.
@@ -264,7 +264,7 @@ What is INCOMPLETE — the sprinkle that turns the JTAG hardware into a working 
 - [x] `persona/response.rs::run_render` — assembled prompt verbatim + composition stats
 - [x] `cognition/shared_analysis/mod.rs::analyze` — entry, single-specialty noop, L1 cache hit, parsed angles (empty vs non-empty count)
 - [x] `persona/service_loop.rs::serve_persona_loop_inner` — `turn.start` / `turn.spoke` (with full phase decomposition recall+admit+compose+respond+say) / `turn.silent` (with reason) / `turn.error` (with stage=respond|say) — **wired in this PR**
-- [x] `persona/prompt_assembly.rs::assemble` — final composition stats wired at the function tail (system_message_len, message_count, estimated_tokens, matched_angle_present, engrams_count, social_signals_present, voice_mode, multi_party_strategy)
+- [x] `cognition/prompt_assembly.rs::assemble` — final composition stats wired at the function tail (system_message_len, message_count, estimated_tokens, matched_angle_present, engrams_count, social_signals_present, voice_mode, multi_party_strategy)
 - [ ] `cognition/response_orchestrator.rs::score_persona` — per-persona score + matched_angles + decision reason — note: the score_persona gate is currently bypassed (response.rs:288–300); probes go in if/when it's re-wired
 - [x] `inference/llamacpp_adapter.rs::generate_text` — entry probe (`inference.generate.enter`) + timing probes around `render_chat` and the two `forward.*` spawn_blocking paths + exit probe (`inference.generate.exit`) carrying `tok_per_sec`. This is the dominant-cost seam on LCD tier per the inference-latency campaign (task #195).
 

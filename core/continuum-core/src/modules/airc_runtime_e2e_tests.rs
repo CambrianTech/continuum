@@ -3,6 +3,9 @@
 //! `airc_ipc` frames directly so the test cannot pass through CLI subprocesses
 //! or stdout parsing.
 
+// Compiled only under `cargo test`: this whole file is test support.
+#![cfg(test)]
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -21,16 +24,15 @@ use parking_lot::Mutex;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::airc::{
-    default_socket_path_in, AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef,
-    AircRealtimeSchema,
-};
+use crate::airc::default_socket_path_in;
+use crate::routing::airc_realtime::{AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema};
 use crate::modules::airc::AircModule;
 use crate::runtime::{
     CommandResult, MessageBus, ModuleContext, ModuleRegistry, ServiceModule, SharedCompute,
 };
 
 const TEST_ROOM_ID: Uuid = Uuid::from_u128(0xA1);
+const TEST_ENVELOPE_EVENT_ID: Uuid = Uuid::from_u128(0xB2);
 const TEST_AIRC_EVENT_ID: EventId = EventId(Uuid::from_u128(0xB1));
 
 #[tokio::test]
@@ -53,9 +55,9 @@ async fn runtime_publish_attach_and_replay_use_daemon_ipc_path() {
     daemon.wait_for_attach().await;
 
     let envelope = AircRealtimeEnvelope::new(
-        "continuum-runtime-e2e".to_string(),
+        TEST_ENVELOPE_EVENT_ID,
         TEST_ROOM_ID,
-        "continuum-runtime-test".to_string(),
+        airc_core::PeerId::from_u128(0xC2),
         1_000,
         AircRealtimePayload::ExistingSchema {
             payload: AircRealtimePayloadRef::inline(
@@ -102,7 +104,7 @@ async fn runtime_publish_attach_and_replay_use_daemon_ipc_path() {
     assert_eq!(replay_value["events"].as_array().unwrap().len(), 1);
     assert_eq!(
         replay_value["events"][0]["eventId"],
-        "continuum-runtime-e2e"
+        TEST_ENVELOPE_EVENT_ID.to_string()
     );
     assert_eq!(replay_value["cursor"]["lamport"], 1);
     assert_eq!(
@@ -323,5 +325,7 @@ fn transcript_kind_for_frame(kind: FrameKind) -> TranscriptKind {
         FrameKind::Message => TranscriptKind::Message,
         FrameKind::Event => TranscriptKind::Presence,
         FrameKind::Control => TranscriptKind::SessionControl,
+        FrameKind::Command => TranscriptKind::Command,
+        FrameKind::CommandResult => TranscriptKind::CommandResult,
     }
 }

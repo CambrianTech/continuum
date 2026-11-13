@@ -11,7 +11,7 @@ import type { CitizenRequirement } from "./CitizenRequirement";
 export type CitizenRecipe = { 
 /**
  * Role identifier (snake_case: `helper`, `coder`, `sentinel`, …) —
- * `persona/role_template::RoleId`'s own serde form.
+ * `experience::role::RoleId`'s own serde form.
  */
 role: string, 
 /**

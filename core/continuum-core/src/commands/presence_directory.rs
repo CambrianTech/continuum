@@ -3,7 +3,7 @@
 //!
 //! Why this verb exists (Joel, 2026-08-31): the USERS & AGENTS panel is GLOBAL
 //! scope — "who all exists in this continuum and who is online" — but its only
-//! global source was `persona/roster` (residents-only, 4 rows), so every other
+//! global source was the old residents-only roster verb (4 rows), so every other
 //! peer's liveness came from the FOCUSED ROOM's presence and flipped when you
 //! switched tabs ("online means online-for-the-tab"). The daemon has held the
 //! whole answer all along: `room_roster_cards_in(room: None)` is the scope
@@ -67,8 +67,8 @@ pub struct PresenceDirectoryEntry {
     /// ONLINE = heartbeat within the live presence window, OR resident on this
     /// node (residency wins — see module doc).
     pub online: bool,
-    /// Resident on THIS node (live service loop) — the `persona/roster` signal,
-    /// folded in so one read answers the panel.
+    /// Resident on THIS node (live service loop), folded in so one read answers
+    /// the panel.
     pub resident: bool,
     /// Last heartbeat, unix ms — the REAL recency stamp (the "9d ago" rows were
     /// identity-creation dates being passed off as activity).
@@ -135,7 +135,7 @@ impl ActionCommand for PresenceDirectory {
         // (measured 2026-08-31). Files, not paging — existence is durable.
         let mut merged: std::collections::HashMap<uuid::Uuid, PresenceDirectoryEntry> =
             std::collections::HashMap::new();
-        for slot in crate::ipc::positron_presence::scope_directory_slots() {
+        for slot in crate::cognition::room_directory::scope_directory_slots() {
             let peer_uuid = slot.member_id;
             let kind = slot
                 .integrations
@@ -173,10 +173,7 @@ impl ActionCommand for PresenceDirectory {
         // WHO IS ONLINE NOW: the daemon's live heartbeat window, overlaid.
         // Best-effort — a boot window with no airc handle still serves the
         // durable existence list (dots grey, honestly).
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| CommandError::Internal(e.to_string()))?
-            .as_millis() as u64;
+        let now_ms = continuum_base::time::EpochMs::read().map_err(|e| CommandError::Internal(e.to_string()))?.millis();
         let live_window_ms =
             crate::persona::room_roster_source::PRESENCE_WINDOW.as_millis() as u64;
         let airc = self
@@ -200,7 +197,7 @@ impl ActionCommand for PresenceDirectory {
                         .as_ref()
                         .map(|i| i.name.clone())
                         .unwrap_or_else(|| { // JUSTIFIED unwrap_or_else: uncarded peer renders the deliberately-unmistakable provisional label ([[fallbacks-are-illegal-fail-loud]])
-                            crate::ipc::positron_source::provisional_sender_name(peer_uuid)
+                            crate::persona::roster_slot::provisional_sender_name(peer_uuid)
                         });
                     let kind = card
                         .identity

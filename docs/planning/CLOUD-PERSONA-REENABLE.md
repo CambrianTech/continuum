@@ -23,7 +23,7 @@ objects, providers-as-data) are implemented in the core:
   present `*_API_KEY` env. Add keys to `~/.continuum/config.env`
   ([[config-env-single-owner]]) → reboot → cloud citizens join the same
   rooms/kanban/mesh as the locals.
-- **Tool dialect applies unchanged** (`cognition/tool_dialect`) — cloud models
+- **Tool dialect applies unchanged** (`ai/tool_dialect`) — cloud models
   get the same conventional-name surface; they're the models we canNOT
   fine-tune, so meeting their trained dialect matters MOST there.
 - **Key custody**: keys live in the adapter layer only

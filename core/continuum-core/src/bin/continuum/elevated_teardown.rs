@@ -222,7 +222,7 @@ pub(crate) async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Re
     let quote = |s: String| s.replace('\'', "''");
     let script = format!(
         "$ErrorActionPreference='Stop'; $p = Start-Process -FilePath '{}' -ArgumentList \
-         @('stop','--elevated','--plan','{}','--plan-sha','{plan_sha}') -Verb RunAs -Wait \
+         @('stop','--elevated','--plan','{}','--plan-sha','{plan_sha}') -Verb RunAs -WindowStyle Hidden -Wait \
          -PassThru; exit $p.ExitCode",
         quote(exe.display().to_string()),
         quote(plan_path.display().to_string()),

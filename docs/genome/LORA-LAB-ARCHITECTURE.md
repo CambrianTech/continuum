@@ -152,7 +152,7 @@ User's training data (corrections, examples)
 
 # Train locally (Rust/Candle with Metal)
 ./jtag training/start \
-  --base="unsloth/Llama-3.2-3B-Instruct" \
+  --base="meta-llama/Llama-3.2-3B-Instruct" \
   --data="./datasets/my-style.jsonl" \
   --output="./adapters/my-style-v1.safetensors" \
   --epochs=3
@@ -337,7 +337,7 @@ Adapters are stored locally in `~/.continuum/adapters/` with a consistent struct
 │           └── training-data.jsonl  # Optional: keep training data
 │
 ├── models/                          # Base model cache (HuggingFace)
-│   ├── unsloth--Llama-3.2-3B-Instruct/
+│   ├── meta-llama--Llama-3.2-3B-Instruct/
 │   └── Qwen--Qwen2.5-VL-3B-Instruct/
 │
 └── config.json                      # User settings, API keys
@@ -405,7 +405,7 @@ continuum-hub/
   "author": "continuum-team",
   "license": "MIT",
 
-  "base_model": "unsloth/Llama-3.2-3B-Instruct",
+  "base_model": "meta-llama/Llama-3.2-3B-Instruct",
   "adapter_type": "lora",
   "lora_rank": 32,
   "lora_alpha": 64,
@@ -785,7 +785,7 @@ A **Persona** is the complete package - not just adapters:
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │  BASE MODEL (immutable, shared)                                         │
-│  └── unsloth/Llama-3.2-3B-Instruct                                      │
+│  └── meta-llama/Llama-3.2-3B-Instruct                                      │
 │                                                                          │
 │  LORA GENOME (0-N layers, shareable)                                    │
 │  ├── Layer 0: code-style:v2 (scale: 1.0)                                │
@@ -1038,7 +1038,7 @@ Visual genome editor from the persona page:
 │  PERSONA: helper-ai                                        [Save] [Test]│
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                         │
-│  BASE MODEL: unsloth/Llama-3.2-3B-Instruct              [Change]        │
+│  BASE MODEL: meta-llama/Llama-3.2-3B-Instruct              [Change]        │
 │                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
 │  │  GENOME STACK                                      [+ Add Layer] │   │
@@ -1160,7 +1160,7 @@ interface AdapterEntity extends BaseEntity {
   digest: string;              // SHA256 of safetensors (immutable ref)
 
   // Base model dependency
-  baseModelId: string;         // "unsloth/Llama-3.2-3B-Instruct"
+  baseModelId: string;         // "meta-llama/Llama-3.2-3B-Instruct"
 
   // LoRA config
   loraRank: number;            // 8, 16, 32, 64
@@ -1302,7 +1302,7 @@ Sources:
 ```bash
 # Train with Candle (auto-detects Metal or CUDA)
 ./jtag training/start \
-  --base="unsloth/Llama-3.2-3B-Instruct" \
+  --base="meta-llama/Llama-3.2-3B-Instruct" \
   --data="./datasets/training.jsonl" \
   --output="./adapters/output.safetensors" \
   --lora-rank=32 \

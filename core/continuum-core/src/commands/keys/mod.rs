@@ -3,9 +3,9 @@
 //! The elegant shape (Joel 2026-07-10: "the adapters coded elegantly and the
 //! same for the key management"):
 //!
-//! - **ONE writer**: [`crate::config_env::upsert`] into `~/.continuum/config.env`
+//! - **ONE writer**: [`continuum_base::config_env::upsert`] into `~/.continuum/config.env`
 //!   ([[config-env-single-owner]]). No scattered `.env` files, no second store.
-//! - **ONE reader**: [`crate::secrets`] loads that file at boot; adapters pull
+//! - **ONE reader**: [`continuum_base::secrets`] loads that file at boot; adapters pull
 //!   via `get_secret(api_key_env)` at auth time. Keys live in the adapter
 //!   layer only ([[compute-lease-boundary]]) — no persona-visible surface.
 //! - **DYNAMIC key universe**: the accepted names come from the model
@@ -94,7 +94,7 @@ impl ActionCommand for KeysList {
         let keys = known_key_envs()
             .into_iter()
             .map(|(name, provider)| {
-                let present = crate::config_env::read(&name)
+                let present = continuum_base::config_env::read(&name)
                     .filter(|v| !v.trim().is_empty())
                     .is_some()
                     || std::env::var(&name)
@@ -143,7 +143,7 @@ pub struct KeysSetResult {
     pub name: String,
     /// The provider this unlocks.
     pub provider: String,
-    /// When the key takes effect. Secrets load once at boot ([`crate::secrets`]),
+    /// When the key takes effect. Secrets load once at boot ([`continuum_base::secrets`]),
     /// so a newly set key activates on the next core start — stated honestly
     /// rather than pretending hot-reload.
     pub effective: String,
@@ -183,9 +183,9 @@ impl ActionCommand for KeysSet {
                 names.join(", ")
             )));
         };
-        crate::config_env::upsert(&name, value)
+        continuum_base::config_env::upsert(&name, value)
             .map_err(|e| CommandError::Internal(format!("keys/set: config write failed: {e}")))?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "keys.set",
             key = %name,
             provider = %provider,

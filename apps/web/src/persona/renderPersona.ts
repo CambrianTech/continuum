@@ -301,17 +301,11 @@ function heroAvatar(body: PersonaContentBody): TemplateResult {
 
 /** The HOME INTERIOR — an orthographic dollhouse card, furnished entirely by
  *  live facts (CITIZEN-HOMES-ORTHOGRAPHIC.md's mapping table, first cut):
- *  window light = online; desk items = active runs; trophy shelf = resolved
- *  verdicts; the plant grows with her genome. Default geometry until home
+ *  window light = online; the plant grows with her genome. Default geometry until home
  *  recipes carry authored layouts — but every object is TRUE. */
 function homeLegend(body: PersonaContentBody): TemplateResult {
-  const runs = body.runs ?? [];
-  const live = runs.filter((r) => r.state === 'working' || r.state === 'grading' || r.state === 'queued').length;
-  const wins = runs.filter((r) => r.state === 'resolved').length;
   return html`<div class="hi-legend">
     <span>window ${body.online ? 'lit — home' : 'dark — away'}</span>
-    <span>desk · ${live} active</span>
-    <span>shelf · ${wins} trophies</span>
     <span>plant · ${body.genes.length} genes</span>
     <span>screen · awaiting live call</span>
   </div>`;
@@ -320,16 +314,11 @@ function homeLegend(body: PersonaContentBody): TemplateResult {
 /** The persona HOME surface. Every section renders a frame — awaiting/empty
  *  states, never a vanished section (the anti-disappearance rule). */
 /** Identity-numbers strip for the permanent header — the glance that used to
- *  require scrolling (PAGES-IA.md): resolved · rate · genes, tiny chips. */
+ *  require scrolling (PAGES-IA.md): genes, tiny chip. */
 function identityNumbers(body: PersonaContentBody): TemplateResult | typeof nothing {
-  const runs = body.runs ?? [];
-  const settled = runs.filter((r) => r.state === 'resolved' || r.state === 'failed');
-  const wins = settled.filter((r) => r.state === 'resolved').length;
-  if (settled.length === 0 && body.genes.length === 0) return nothing;
+  if (body.genes.length === 0) return nothing;
   return html`<div class="p-idnums">
-    ${settled.length > 0 ? html`<span class="p-idnum" title="resolved / settled">🏅 ${wins}/${settled.length}</span>` : nothing}
-    ${settled.length > 0 ? html`<span class="p-idnum" title="resolve rate">${Math.round((wins / settled.length) * 100)}%</span>` : nothing}
-    ${body.genes.length > 0 ? html`<span class="p-idnum" title="paged-in genes">🧬 ${body.genes.length}</span>` : nothing}
+    <span class="p-idnum" title="paged-in genes">🧬 ${body.genes.length}</span>
   </div>`;
 }
 
@@ -453,74 +442,6 @@ function genomeSection(body: PersonaContentBody): TemplateResult {
   </section>`;
 }
 
-function recordSection(body: PersonaContentBody): TemplateResult {
-  return html`<section class="p-card p-record">
-    <div class="p-card-head">record &amp; awards</div>
-    ${body.runs === undefined
-      ? html`<div class="p-empty">Awaiting the benchmark feed…</div>`
-      : (() => {
-          const settled = body.runs.filter((r) => r.state === 'resolved' || r.state === 'failed');
-          const wins = settled.filter((r) => r.state === 'resolved').length;
-          if (settled.length === 0)
-            return html`<div class="p-empty">No settled runs yet — the record starts with the first verdict.</div>`;
-          return html`<div class="p-trophies">
-              <span class="p-trophy p-trophy-wins" title="benchmark instances resolved">🏅 ${wins} resolved</span>
-              <span class="p-trophy" title="settled runs (resolved + failed)">${settled.length} settled</span>
-              <span class="p-trophy" title="resolve rate over settled runs">${Math.round((wins / settled.length) * 100)}%</span>
-            </div>
-            <ul class="p-runs">
-              ${settled.slice(0, 8).map(
-                (r) => html`<li class="p-run bench-state-${r.state}">
-                  <span class="p-run-instance">${r.instance}</span>
-                  <span class="p-run-state">${r.state === 'resolved' ? '✓ resolved' : '✗ failed'}</span>
-                  ${r.verdict
-                    ? html`<span class="p-run-pulse">f2p ${r.verdict.f2pPassed}/${r.verdict.f2pTotal}</span>`
-                    : nothing}
-                </li>`,
-              )}
-            </ul>`;
-        })()}
-  </section>`;
-}
-
-function workSection(body: PersonaContentBody, limit?: number): TemplateResult {
-  const runs = limit !== undefined ? (body.runs ?? []).slice(0, limit) : (body.runs ?? []);
-  return html`<section class="p-card p-work">
-    <div class="p-card-head">active work${limit !== undefined ? html` <span class="p-home-hint">top ${limit} — full list on the Work tab</span>` : nothing}</div>
-    ${body.runs === undefined
-      ? html`<div class="p-empty">Awaiting the benchmark feed…</div>`
-      : runs.length === 0
-        ? html`<div class="p-empty">No benchmark runs on the board for ${body.name || 'this citizen'}.</div>`
-        : html`<ul class="p-runs">
-            ${runs.map(
-              (r) => html`<li
-                class="p-run bench-state-${r.state}"
-                ?data-door=${r.roomId !== undefined}
-                title=${r.roomId !== undefined ? "open this run's room" : r.runId}
-                @click=${r.roomId !== undefined
-                  ? (e: Event): void => {
-                      (e.currentTarget as HTMLElement).dispatchEvent(
-                        new CustomEvent('bench-run-open', {
-                          detail: { roomId: r.roomId, roomName: r.roomName },
-                          bubbles: true,
-                          composed: true,
-                        }),
-                      );
-                    }
-                  : nothing}
-              >
-                <span class="p-run-instance">${r.instance}</span>
-                <span class="p-run-state">${r.state}</span>
-                ${r.lastGenAgeS === null
-                  ? html`<span class="p-run-pulse">no generations yet</span>`
-                  : html`<span class="p-run-pulse">${r.generations} gens</span>`}
-                ${r.verdict?.resolved ? html`<span class="bench-resolved">✓</span>` : nothing}
-              </li>`,
-            )}
-          </ul>`}
-  </section>`;
-}
-
 function claimsSection(body: PersonaContentBody): TemplateResult {
   return html`<section class="p-card p-claims">
     <div class="p-card-head">work board claims</div>
@@ -574,10 +495,10 @@ export class PersonaPageElement extends LitElement {
     const body = this.body ? bodyWithVitals(this.body) : this.body;
     if (!body) return html``;
     const content: Record<PersonaTab, TemplateResult> = {
-      overview: html`${aboutSection(body)}${homeSection(body)}${workSection(body, 3)}${recordSection(body)}`,
+      overview: html`${aboutSection(body)}${homeSection(body)}`,
       mind: html`${renderPlayback(body.personaId)}${sightSection(body)}${brainSection(body)}${learningSection(body)}${pathwaysSection(body)}`,
       genome: html`${genomeSection(body)}`,
-      work: html`${workSection(body)}${recordSection(body)}${claimsSection(body)}`,
+      work: html`${claimsSection(body)}`,
       wall: html`${writingsSection(body)}`,
     };
     return html`<div class="persona-home" data-persona=${body.personaId}>

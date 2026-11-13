@@ -12,9 +12,14 @@
 use std::env;
 use std::path::PathBuf;
 
+mod cpu_target;
 mod msvc_cache;
+#[path = "../continuum-cli-lifecycle/src/cargo_cache_custody.rs"]
+mod cargo_cache_custody;
 
 fn main() {
+    let producer_out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
+    cargo_cache_custody::invalidate(&producer_out).expect("cannot withdraw native cache custody");
     // Resolve the manifest dir AT RUNTIME, not compile time. `env!(...)
     // expands when build.rs itself is compiled and bakes ONE checkout's
     // absolute path into the cached build-script binary — with our shared
@@ -29,9 +34,20 @@ fn main() {
             .expect("CARGO_MANIFEST_DIR must be set when cargo runs this build script"),
     );
     let submodule = manifest_dir.join("..").join("vendor").join("llama.cpp");
+    println!("cargo:rerun-if-changed=decode_boundary.cpp");
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .flag_if_supported("/EHsc")
+        .include(submodule.join("include"))
+        .include(submodule.join("ggml/include"))
+        .file(manifest_dir.join("decode_boundary.cpp"))
+        .compile("continuum_decode_boundary");
     println!("cargo:rerun-if-changed={}", submodule.display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=msvc_cache.rs");
+    println!("cargo:rerun-if-changed=cpu_target.rs");
+    println!("cargo:rerun-if-env-changed={}", cpu_target::PORTABLE_ENV);
 
     let mut cfg = cmake::Config::new(&submodule);
     cfg.define("LLAMA_BUILD_EXAMPLES", "OFF")
@@ -86,6 +102,10 @@ fn main() {
     // Used to pick the right C++ runtime + OpenMP libs below: MSVC has no
     // GCC-world `stdc++`/`gomp`.
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let portable_cpu = env::var(cpu_target::PORTABLE_ENV).as_deref() == Ok("1");
+    for (name, value) in cpu_target::definitions(&target_arch, portable_cpu) {
+        cfg.define(name, value);
+    }
 
     // windows-msvc: llama.cpp's C/C++ runtime MUST match whatever CRT the final
     // Rust link uses — a mismatch is a hard LNK2038 "RuntimeLibrary mismatch" (or,
@@ -167,6 +187,10 @@ fn main() {
     // CUDA on Linux
     if cfg!(feature = "cuda") && target_os == "linux" {
         cfg.define("GGML_CUDA", "ON");
+        println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
+        if let Ok(targets) = env::var("CMAKE_CUDA_ARCHITECTURES") {
+            cfg.define("CMAKE_CUDA_ARCHITECTURES", targets);
+        }
         println!("cargo:rustc-link-lib=cuda");
         println!("cargo:rustc-link-lib=cudart");
         println!("cargo:rustc-link-lib=cublas");
@@ -333,6 +357,8 @@ fn main() {
     if target_os == "macos" {
         println!("cargo:rustc-link-lib=c++");
     } else if target_env == "msvc" {
+        // ggml's CPU discovery reads the Windows registry directly.
+        println!("cargo:rustc-link-lib=advapi32");
         // windows-msvc: there is NO GCC-world `stdc++`/`gomp`. The MSVC C++
         // runtime is auto-linked through the `/DEFAULTLIB` directives the MSVC
         // compiler embeds in the ggml/llama `.obj` files, and OpenMP (when
@@ -421,4 +447,17 @@ fn main() {
     bindings
         .write_to_file(&out_path)
         .expect("Failed to write bindings");
+    // These children supply static link inputs only; Metal's library is embedded
+    // above. System runtime libraries remain outside this output. The generation
+    // is also recorded in Cargo's captured producer output for legacy rollback.
+    match std::fs::read_to_string(producer_out.join("build/CMakeCache.txt")) {
+        Ok(resolved) if msvc_cache::static_inputs_only(&resolved) => {
+            match cargo_cache_custody::publish_static_inputs(&producer_out) {
+                Ok(generation) => println!("{}{generation}", cargo_cache_custody::METADATA),
+                Err(error) => println!("cargo:warning=native cache remains unreclaimable: cannot certify static inputs: {error}"),
+            }
+        }
+        Ok(_) => println!("cargo:warning=native cache remains unreclaimable: runtime input closure is not static and embedded"),
+        Err(error) => println!("cargo:warning=native cache remains unreclaimable: resolved configuration unavailable: {error}"),
+    }
 }

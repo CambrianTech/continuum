@@ -25,30 +25,54 @@
 //! that is a follow-up, not a reason to hand-roll a fourth.
 
 pub mod boundary_serialization;
-pub mod derived_bounds;
+pub mod budget_discipline;
+pub mod cognition_names_persona;
+pub mod context_codec;
+pub mod continuum_home;
+pub mod crate_policy;
+pub mod crate_wiring;
+pub mod dev_only_deps;
+pub mod error_text_match;
+pub mod fixed_rooms;
+pub mod grab_bag;
+pub mod file_size;
 pub mod identity_discipline;
+pub mod layer_discipline;
+pub mod lexer;
+pub mod module_cycles;
+pub mod os_branches;
+pub mod planner_floor;
 pub mod production_reachability;
+pub mod ratchet;
 pub mod tenant_neutrality;
+pub mod time_bounds;
 pub mod test_mod_singularity;
+pub mod tls_stack;
+pub mod ts_bindings;
+pub mod sql_outside_the_orm;
+pub mod row_decode;
 pub mod subprocess_spawn;
+pub mod swallowed_errors;
 pub mod unwrap_justification;
+pub mod vendor_pin;
+pub mod required_inputs;
+pub mod resident_bounds;
+pub mod store_reads;
+pub mod wall_clock;
 
 use std::path::{Path, PathBuf};
+
+use lexer::{production_half, split_code_and_comment, without_signature};
 
 /// One source file, pre-split so a rule never has to re-derive the split.
 pub struct SourceFile {
     /// Path relative to `src/`, forward-slashed — the form a rule's allow-list and
     /// a failure message should both use.
     pub rel: String,
-    /// The PRODUCTION half: everything before the file's first `#[cfg(test)]` line.
+    /// The PRODUCTION half: everything before the file's first column-zero `#[cfg(test)]`.
     ///
-    /// This is an APPROXIMATION and callers must know which way it errs. Test mods
-    /// conventionally sit at the end of a file, so this captures production exactly
-    /// in the common case. Where a file gates a helper `#[cfg(test)]` mid-file, the
-    /// split lands early and the rule sees LESS production code than exists — it
-    /// under-reports, never over-reports. A hygiene rule that under-reports lets a
-    /// violation slip; one that over-reports cries wolf and gets deleted. Erring
-    /// toward the first is the deliberate choice.
+    /// A test-only helper gated mid-file is scanned as production: this errs toward a
+    /// little noise, never toward the silence an early cut produced (see [`production_half`]).
     pub production: String,
     /// The WHOLE file, test mods included.
     ///
@@ -58,9 +82,53 @@ pub struct SourceFile {
     /// fell back to `production` when the read failed — a fallback that silently
     /// swapped the shape and reintroduced the exact miscount it was written to fix.)
     pub raw: String,
+    /// Path from the root of the scanned checkout (`core/continuum-cognition/src/...`):
+    /// the file's identity in the repository, which `rel` is not (a module crate's `rel`
+    /// carries no crate name). A PR's changed files are matched on it.
+    pub repo: String,
 }
 
 impl SourceFile {
+    /// An in-memory file for a rule's own tests.
+    #[cfg(test)]
+    pub fn fixture(rel: &str, production: &str, raw: &str) -> Self {
+        Self { rel: rel.to_owned(), production: production.to_owned(), raw: raw.to_owned(), repo: format!("fixture/{rel}") }
+    }
+
+    /// The module a file's code belongs to, as the path that names it: `x` for `x.rs`,
+    /// `x/mod.rs`, and for a test module moved out of it (`x/tests.rs`,
+    /// `x/tests/mod.rs`, `x/tests/part_2.rs`, each marked `#![cfg(test)]`). A rule that
+    /// asks "outside its own file" asks "outside its owning module": a test that moved
+    /// to a sibling file to keep its owner readable is still that owner's own test.
+    pub fn owning_module(&self) -> &str {
+        let rel = self.rel.as_str();
+        if self.is_moved_test() {
+            let dir = rel.rsplit_once('/').map_or("", |(d, _)| d);
+            return dir.strip_suffix("/tests").unwrap_or(dir); // unwrap_or: `x/tests.rs` is already at `x`
+        }
+        rel.strip_suffix("/mod.rs")
+            .or_else(|| rel.strip_suffix(".rs"))
+            .unwrap_or(rel) // unwrap_or: every scanned file ends in .rs
+    }
+
+    /// A whole file of test code: a test module moved out of its owner, which declares
+    /// `#![cfg(test)]` before any item.
+    pub fn is_moved_test(&self) -> bool {
+        for line in self.raw.lines() {
+            let code = split_code_and_comment(line).0.trim();
+            if code.is_empty() {
+                continue;
+            }
+            if !code.starts_with("#![") {
+                return false;
+            }
+            if code.starts_with("#![cfg(test)]") {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Production lines paired with their 1-indexed line number in the whole file,
     /// so a violation can point at a real editor line.
     pub fn production_lines(&self) -> impl Iterator<Item = (usize, &str)> {
@@ -71,11 +139,7 @@ impl SourceFile {
     /// unit tests, so predicate regressions are pinned without touching disk.
     #[cfg(test)]
     pub fn for_test(rel: &str, production: &str) -> Self {
-        Self {
-            rel: rel.to_string(),
-            production: production.to_string(),
-            raw: production.to_string(),
-        }
+        Self::fixture(rel, production, production)
     }
 }
 
@@ -96,6 +160,20 @@ pub trait SourceRule {
     fn check(&self, file: &SourceFile) -> Vec<Violation>;
 }
 
+/// The production lines of `file` whose code (comments removed) `hit` names a finding for, as
+/// violations of `rule`, located by repository path. A function's SIGNATURE is a definition,
+/// not a use, so it is never a site; its body is code like any other, including a body on
+/// the signature's own line (`fn cap(&self) -> usize { self.grant.take(8) }`, Codex on #5609).
+pub fn sites(file: &SourceFile, rule: &'static str, hit: impl Fn(&str) -> Option<String>) -> Vec<Violation> {
+    file.production_lines()
+        .filter_map(|(line, text)| {
+            let code = without_signature(split_code_and_comment(text).0);
+            hit(code).map(|what| Violation { rule, file: file.repo.clone(), line, source: format!("{what}: {}", text.trim()) })
+        })
+        .collect()
+}
+
+
 /// `src/` of this crate, resolved from the manifest so the scan is independent of
 /// the process's working directory (a test's cwd is not the crate root under every
 /// runner).
@@ -113,17 +191,79 @@ pub fn crate_src_root() -> PathBuf {
 /// `core/continuum-core` — the crate these rules audit, resolved from this crate's
 /// own manifest so the answer never depends on the process's working directory.
 fn audited_crate_root() -> PathBuf {
+    // A ratchet is judged by measuring the base tree with the head's rules
+    // (`ratchet.rs`): `SOURCE_HYGIENE_CORE` names that tree's `core` directory.
+    if let Some(core) = std::env::var_os("SOURCE_HYGIENE_CORE") {
+        return PathBuf::from(core).join(AUDITED_CRATE);
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent() // core/source-hygiene -> core
         .map(|core| core.join(AUDITED_CRATE))
         // unwrap_or_else: a manifest dir with no parent cannot happen under cargo,
         // and inventing a relative fallback would scan the wrong tree silently.
-        .unwrap_or_else(|| PathBuf::from(AUDITED_CRATE))
+        .unwrap_or_else(|| PathBuf::from(AUDITED_CRATE)) // unwrap_or_else: cargo always gives the manifest dir a parent (see above)
+}
+
+/// The root of the checkout under audit (head, or the base tree a ratchet measures).
+pub(crate) fn scanned_checkout() -> PathBuf {
+    let Some(checkout) = audited_crate_root().ancestors().nth(2).map(Path::to_path_buf) else {
+        panic!("{} has no checkout above core/: repository paths cannot be named", audited_crate_root().display());
+    };
+    checkout
 }
 
 /// The crate under audit. One name, one place — a second spelling of this is how a
 /// rule ends up scanning a directory that does not exist and reporting zero.
-const AUDITED_CRATE: &str = "continuum-core";
+pub(crate) const AUDITED_CRATE: &str = "continuum-core";
+
+/// Crates split out of `continuum-core` (card a31492cb). A split must never move code out
+/// of the gates' sight, so their files are audited too, with the crate name as a path
+/// prefix (`continuum-base/time/mod.rs`): totals stay continuous across a cut and every
+/// per-path rule stays unambiguous. Derived from the workspace ([`crate_policy`]).
+pub fn split_crates() -> Result<Vec<String>, crate_policy::PolicyError> {
+    let (members, policy) = crate_policy::workspace()?;
+    Ok(crate_policy::split(members, policy).iter().map(|m| m.dir.clone()).collect())
+}
+
+/// Crates cut out of `continuum-core` that keep core's module names: `continuum-kernel`'s
+/// `runtime/`, `routing/`, `orm/`… are re-exported by core as `crate::runtime` and so on, so
+/// their files are audited UNPREFIXED (`runtime/registry.rs`), exactly as before the cut.
+/// Every allow-list, ring and count stays continuous; prefixing them would drop 78k lines out
+/// of the ring table and the path allow-lists, and the counts would fall for no change.
+/// Derived from the workspace ([`crate_policy`]), never listed: a new cut is one `members`
+/// line. continuum-core's tree-walking guards (`test_env::source_tree`) read it too.
+pub fn module_crates() -> Result<Vec<String>, crate_policy::PolicyError> {
+    let (members, policy) = crate_policy::workspace()?;
+    Ok(crate_policy::modules(members, policy).iter().map(|m| m.dir.clone()).collect())
+}
+
+/// Every file the per-file and crate-wide rules audit: `continuum-core/src` with paths
+/// relative to it, then each split crate's `src` with its name prefixed. A listed crate
+/// whose `src` is missing fails loudly rather than auditing nothing.
+pub fn audited_files() -> Result<Vec<SourceFile>, crate_policy::PolicyError> {
+    let checkout = scanned_checkout();
+    let mut files = collect_files(&checkout, &format!("core/{AUDITED_CRATE}/src"));
+    for name in &split_crates()? {
+        let dir = format!("core/{name}/src");
+        assert!(checkout.join(&dir).is_dir(), "split crate {name} has no src at {dir}: the gates would audit nothing");
+        files.extend(collect_files(&checkout, &dir).into_iter().map(|f| SourceFile { rel: format!("{name}/{}", f.rel), ..f }));
+    }
+    for name in &module_crates()? {
+        // A tree from before the cut has no such crate: its modules are still in
+        // continuum-core/src and were collected above, so nothing goes unaudited.
+        let dir = format!("core/{name}/src");
+        if checkout.join(&dir).is_dir() {
+            files.extend(collect_files(&checkout, &dir).into_iter().filter(|f| f.rel != "lib.rs"));
+        }
+    }
+    Ok(files)
+}
+
+/// What a scan reports when the crates to audit cannot be derived: one violation naming the
+/// manifest, so the ratchet fails loudly and nothing is silently skipped.
+fn unreadable_policy(error: &crate_policy::PolicyError) -> Vec<Violation> {
+    vec![Violation { rule: "crate_policy", file: error.manifest.display().to_string(), line: 0, source: error.reason.clone() }]
+}
 
 /// The repository root, found by ANCHOR rather than by counting directories up.
 ///
@@ -138,7 +278,17 @@ const AUDITED_CRATE: &str = "continuum-core";
 /// `None` when no ancestor carries the anchor, which callers turn into a loud failure
 /// rather than a silent empty scan.
 pub fn repo_root() -> Option<PathBuf> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+    workspace_root_above(&audited_crate_root())
+}
+
+/// The repository root of THIS checkout (the rules), whatever tree is being audited.
+pub fn checkout_root() -> Option<PathBuf> {
+    workspace_root_above(Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+/// The one anchor walk: the nearest ancestor of `start` holding the workspace manifest.
+fn workspace_root_above(start: &Path) -> Option<PathBuf> {
+    start
         .ancestors()
         .find(|dir| dir.join(WORKSPACE_ANCHOR).is_file() && dir.join("core").is_dir())
         .map(Path::to_path_buf)
@@ -189,15 +339,18 @@ pub fn workspace_src_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Read every `.rs` file under `root`, pre-split into production and test halves.
+
+/// Read every `.rs` file under `dir` (a directory relative to `checkout`, `core/<crate>/src`),
+/// pre-split into production and test halves; each file's repository path is `dir/<rel>`.
 ///
 /// Unreadable files are skipped rather than failing the scan: a hygiene guard must
 /// not turn a transient IO error into a red build that says nothing about hygiene.
-pub fn collect_files(root: &Path) -> Vec<SourceFile> {
+pub fn collect_files(checkout: &Path, dir: &str) -> Vec<SourceFile> {
+    let root = checkout.join(dir);
     let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+    let mut stack = vec![root.clone()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -212,33 +365,13 @@ pub fn collect_files(root: &Path) -> Vec<SourceFile> {
             let Ok(src) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            // Split on the first `#[cfg(test)]` that is CODE, not prose. Matching
-            // the raw string would truncate at the first doc comment that merely
-            // MENTIONS test-gating — and module headers in this crate do exactly
-            // that, including this one. Found by the guard's own positive control:
-            // the naive form excluded nearly all of `source_hygiene/mod.rs` from
-            // its own scan, silently. Match by nature, never by name.
-            let production = match src
-                .lines()
-                .position(|l| split_code_and_comment(l).0.contains("#[cfg(test)]"))
-            {
-                Some(line_idx) => src
-                    .lines()
-                    .take(line_idx)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                None => src.clone(),
+            let Ok(under_root) = path.strip_prefix(&root) else {
+                panic!("{} was found walking {} but is not under it", path.display(), root.display());
             };
-            out.push(SourceFile {
-                rel,
-                production,
-                raw: src,
-            });
+            let rel = under_root.to_string_lossy().replace('\\', "/");
+            let production = production_half(&src);
+            let repo = format!("{dir}/{rel}");
+            out.push(SourceFile { rel, production, raw: src, repo });
         }
     }
     out
@@ -246,7 +379,10 @@ pub fn collect_files(root: &Path) -> Vec<SourceFile> {
 
 /// Walk this crate's `src/` once and apply every per-file rule to every `.rs` file.
 pub fn scan(rules: &[&dyn SourceRule]) -> Vec<Violation> {
-    let files = collect_files(&crate_src_root());
+    let files = match audited_files() {
+        Ok(files) => files,
+        Err(e) => return unreadable_policy(&e),
+    };
     let mut out = Vec::new();
     for file in &files {
         for rule in rules {
@@ -277,7 +413,10 @@ pub trait CrateRule {
 /// Apply crate-wide rules. Reads this crate once for violations and the workspace once
 /// for references.
 pub fn scan_crate(rules: &[&dyn CrateRule]) -> Vec<Violation> {
-    let files = collect_files(&crate_src_root());
+    let files = match audited_files() {
+        Ok(files) => files,
+        Err(e) => return unreadable_policy(&e),
+    };
     // The reference corpus is RAW file text — production AND test halves.
     //
     // This asymmetry against `files` (production-only, the violation source) is
@@ -326,37 +465,6 @@ fn raw_sources(root: &Path) -> Vec<String> {
 
 fn sort_violations(v: &mut [Violation]) {
     v.sort_by(|a, b| (a.file.as_str(), a.line).cmp(&(b.file.as_str(), b.line)));
-}
-
-/// Split a source line into (code, same-line comment), respecting string literals so
-/// a `//` inside `"http://…"` is not read as a comment.
-///
-/// Shared because every rule that asks "is this line justified / is this a real
-/// occurrence" needs exactly this, and getting it subtly different per rule is how
-/// two scanners disagree about the same file.
-pub fn split_code_and_comment(line: &str) -> (&str, Option<&str>) {
-    let bytes = line.as_bytes();
-    let mut in_str = false;
-    let mut escaped = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i];
-        if in_str {
-            if escaped {
-                escaped = false;
-            } else if c == b'\\' {
-                escaped = true;
-            } else if c == b'"' {
-                in_str = false;
-            }
-        } else if c == b'"' {
-            in_str = true;
-        } else if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            return (&line[..i], Some(&line[i + 2..]));
-        }
-        i += 1;
-    }
-    (line, None)
 }
 
 #[cfg(test)]
@@ -442,57 +550,4 @@ mod tests {
             root.display()
         );
     }
-
-    use super::*;
-
-    /// What this catches: a `//` inside a string literal being read as the start of
-    /// a comment — which would let `let u = fetch("http://x").unwrap();` count as
-    /// "justified" because the URL's slashes look like a comment. Real shape: URLs
-    /// and file paths appear on plenty of unwrap lines in this crate.
-    #[test]
-    fn a_double_slash_inside_a_string_is_not_a_comment() {
-        let (code, comment) = split_code_and_comment(r#"let u = get("http://x").unwrap();"#);
-        assert_eq!(comment, None, "the URL's // must not read as a comment");
-        assert!(code.contains("unwrap"));
-
-        let (code, comment) =
-            split_code_and_comment(r#"let u = get("http://x").unwrap(); // JUSTIFIED: seeded"#);
-        assert_eq!(comment, Some(" JUSTIFIED: seeded"));
-        assert!(code.contains("unwrap"));
-
-        // An escaped quote must not end the string early.
-        let (_, comment) = split_code_and_comment(r#"let s = "a\"// b";"#);
-        assert_eq!(comment, None);
-    }
-
-    /// What this catches: the production/test split silently swallowing the whole
-    /// file (or none of it), which would make every rule vacuously green or wildly
-    /// noisy. The split is an approximation and this pins WHICH approximation.
-    #[test]
-    fn production_half_stops_at_the_first_cfg_test() {
-        let root = crate_src_root();
-        assert!(root.join("lib.rs").is_file(), "src root resolved wrong");
-
-        struct Collect;
-        impl SourceRule for Collect {
-            fn name(&self) -> &'static str {
-                "collect"
-            }
-            fn check(&self, file: &SourceFile) -> Vec<Violation> {
-                // This module's own tests live below a `#[cfg(test)]`, so the
-                // production half must NOT contain this very marker string.
-                if file.rel == "source_hygiene/mod.rs" && file.production.contains("mod tests") {
-                    return vec![Violation {
-                        rule: "collect",
-                        file: file.rel.clone(),
-                        line: 0,
-                        source: "test mod leaked into the production half".into(),
-                    }];
-                }
-                Vec::new()
-            }
-        }
-        assert!(scan(&[&Collect]).is_empty());
-    }
 }
-pub mod vendor_pin;

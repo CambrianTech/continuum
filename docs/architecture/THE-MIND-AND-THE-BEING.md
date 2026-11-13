@@ -141,7 +141,7 @@ Three properties make the loop honest rather than a treadmill:
   must not teach. A control loop is only as good as its sensor
   ([BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md](BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md)).
 - **The harness improves on the same cadence as the mind.** Every grade gets a post-mortem
-  (the wire capture preserves each deliberation's exact prompt; the oracle's output is in
+  (the prompt captures preserve each deliberation's exact prompt; the oracle's output is in
   the record); a convicted substrate defect deploys at the next grade boundary and the same
   `benchmark/round` command resumes with all grades kept. Measured on 2026-08-24: five
   substrate fixes landed *inside* one running round via three resumes.

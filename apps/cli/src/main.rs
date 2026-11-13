@@ -5,7 +5,7 @@
 //! - `metrics`    — `runtime/metrics/all` against the substrate, pretty-printed.
 //! - `generate`   — `ai/generate` against the substrate, prints the response text.
 //! - `grid-smoke` — coverage battery across grid-shipped substrate commands.
-//!                   Single-hop in v1; multi-hop composition in v2.
+//!   Single-hop in v1; multi-hop composition in v2.
 //!
 //! Every subcommand dispatches a substrate command via `Connection` /
 //! `CommandClient`. Same wire path the `airc_ipc_roundtrip` integration
@@ -19,6 +19,7 @@
 //! `CONTINUUM_AIRC_HOME`) and targets the substrate's peer UUID via
 //! `--peer` / `CONTINUUM_PEER_ID`. Auto-discovery is pending — see
 //! task #143 follow-ups.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::env;
 use std::path::PathBuf;

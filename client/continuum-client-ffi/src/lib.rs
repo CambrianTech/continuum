@@ -24,6 +24,7 @@
 //! This module is the tool-agnostic Rust core. The uniffi `.udl` / annotations
 //! and the wasm-bindgen layer are thin per-target shells over `ContinuumClient`
 //! + the boundary helpers below.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::sync::Arc;
 

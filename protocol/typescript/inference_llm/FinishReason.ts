@@ -15,4 +15,4 @@
  *   wasn't a budget exhaustion. Per Joel's never-swallow-errors:
  *   error is typed, reason is loud.
  */
-export type FinishReason = { "kind": "stop" } | { "kind": "maxTokens" } | { "kind": "maxDuration" } | { "kind": "stopSequence", matched: string, } | { "kind": "error", reason: string, };
+export type FinishReason = { "kind": "stop" } | { "kind": "maxTokens" } | { "kind": "maxDuration" } | { "kind": "stopSequence", matched: string, } | { "kind": "error", reason: string, } | { "kind": "unreported" };

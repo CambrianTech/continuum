@@ -1,12 +1,10 @@
 # MCP Server Hookup (continuum-mcp) — Runbook
 
-**What:** `continuum-mcp` is the headless-Rust MCP server. An MCP client (unsloth
-Studio, Claude Code, …) spawns it over stdio; it auto-discovers the running local
+**What:** `continuum-mcp` is the headless-Rust MCP server. An MCP client (Claude Code, …) spawns it over stdio; it auto-discovers the running local
 core and exposes continuum's commands as MCP tools. It **replaces the Node
 `src/mcp-server.ts`** — no Node in the loop.
 
-**Design:** [UNSLOTH-INTEGRATION.md](../architecture/UNSLOTH-INTEGRATION.md) §5
-(Seam 1). It's a *client* of the core ([persona-is-a-client]): `tools/list` →
+**Design:** It's a *client* of the core ([persona-is-a-client]): `tools/list` →
 `mcp/list-tools`, `tools/call` → the command path, all through the same gate any
 caller hits.
 
@@ -36,8 +34,8 @@ auto-discovers it (airc liveness probe). The MCP client config is just the binar
 path:
 
 ```jsonc
-// MCP client config (Claude Code ~/.claude.json, or unsloth Studio → Settings →
-// Connections → MCP). Use the ABSOLUTE path to the built binary.
+// MCP client config (Claude Code ~/.claude.json, or another MCP client's
+// connections settings). Use the ABSOLUTE path to the built binary.
 {
   "mcpServers": {
     "continuum": {
@@ -98,8 +96,7 @@ printf '%s\n%s\n' \
 
 ## 5. Retiring `src/mcp-server.ts` (gated on green)
 
-Once §3 verifies `continuum-mcp` against a real MCP client (unsloth Studio at
-`127.0.0.1:8888` and/or Claude Code), retire the Node server it replaces:
+Once §3 verifies `continuum-mcp` against a real MCP client (e.g. Claude Code), retire the Node server it replaces:
 
 1. Delete `src/mcp-server.ts` (871 lines of Node + `@modelcontextprotocol/sdk` +
    `sharp`).

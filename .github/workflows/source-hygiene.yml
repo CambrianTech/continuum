@@ -34,6 +34,68 @@ jobs:
           # The scans read `core/continuum-core/src`; vendor_pin additionally asks git
           # for the recorded submodule pointer, so the checkout must be able to answer.
           submodules: recursive
+          # Two commits, not the whole history: a PR's checkout is GitHub's merge commit, whose
+          # first parent is the exact base it merges onto, and that is all the gates judge against.
+          # `fetch-depth: 0` cloned every commit and sometimes took 9.5 minutes, so the 10-minute
+          # timeout cancelled the job before a ratchet ran (#5728, #5723, canary; 2026-11-03).
+          fetch-depth: 2
+
+      # The commit every gate below judges against. A PR: the merge commit's first parent. A push to a
+      # work branch: canary's tip. A push to canary or main: the commit before it (fetched alone if the
+      # shallow clone lacks it), else canary's tip.
+      - name: the base the gates judge against
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base=$(git rev-parse HEAD^1)
+          elif [ "${{ github.ref }}" != "refs/heads/canary" ] && [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            # A work branch is judged against canary (the ratchets take the merge base): its own
+            # change only. Its previous push is no base once canary has been merged in, the repo's
+            # rule: every canary file the merge brought would read as touched by the branch
+            # (#5936, #5939 on 2026-11-11: continuum-academy benchmark_*.rs, never edited by them).
+            git fetch --no-tags --depth=1 origin canary
+            base=$(git rev-parse FETCH_HEAD)
+          else
+            base="${{ github.event.before }}"
+            if [ -n "$base" ] && [ "$base" != "0000000000000000000000000000000000000000" ] \
+               && ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=1 origin "$base" || true
+            fi
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              echo "::notice::push base '${base}' is absent or unreachable (new branch or force push); judging ratchets against canary"
+              git fetch --no-tags --depth=1 origin canary
+              base=$(git rev-parse FETCH_HEAD)
+            fi
+          fi
+          # The ratchets take the merge base of this and HEAD (ratchets.rs), so the history between
+          # them must be here. A PR's base is HEAD's parent already; a push's base can be many
+          # commits back (a main promotion) or fetched alone (canary's tip), so the head's history is
+          # fetched back to the base commit's own date, and in full only if that still cannot join them
+          # (Cormac on #5738).
+          if ! git merge-base "$base" HEAD >/dev/null 2>&1; then
+            git fetch --no-tags --shallow-since="$(git show -s --format=%cI "$base")" origin "$GITHUB_SHA" || true
+          fi
+          if ! git merge-base "$base" HEAD >/dev/null 2>&1; then
+            git fetch --no-tags --unshallow origin
+          fi
+          git merge-base "$base" HEAD >/dev/null
+          echo "RATCHET_BASE=$base" >> "$GITHUB_ENV"
+
+      # crate_wiring runs tools/scripts/ci-change-scope.cjs through node to check that the selector
+      # and this crate derive the same crate sets; the guard fails when node is missing.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # NEW RULE (Joel, 2026-10-20): "No one can edit a large file." Every Rust file a PR adds or
+      # modifies is at most 1,000 lines at the PR's head: the only PR that touches a monolith is
+      # the one that breaks it apart. The PR's final state is judged, so its commits may split
+      # step by step. Seconds, no build.
+      - name: no edit to an oversized file without breaking it apart
+        if: github.event_name == 'pull_request'
+        run: |
+          tools/scripts/tests/oversized-edits.test.sh
+          tools/scripts/oversized-edits.sh "$RATCHET_BASE"
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup show
@@ -44,7 +106,15 @@ jobs:
           # Its OWN key. Sharing continuum-core's would make a one-minute job wait on
           # (and then save) a multi-gigabyte cache for a crate with zero dependencies.
           shared-key: source-hygiene
+          # PR runs restore canary's cache and never save their own: the repo's 10 GB cache
+          # quota is nearly filled by canary's caches, and one PR save evicted core-binaries.
+          save-if: ${{ github.event_name != 'pull_request' }}
           cache-on-failure: true
 
-      - name: cargo test -p source-hygiene
-        run: cargo test -p source-hygiene
+      # Every ratchet is judged against the tree this one is based on, measured by this tree's
+      # rules (src/ratchet.rs): no count is written into the source, so two PRs that each lower
+      # a count no longer conflict. The head run is the full test suite; the base run only
+      # records counts. Replaces the single `cargo test -p source-hygiene` (same tests, plus one
+      # scan of the base tree).
+      - name: ratchets, judged against the base
+        run: cargo run --locked -q -p source-hygiene --bin ratchets -- "$RATCHET_BASE"

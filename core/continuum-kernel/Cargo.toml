@@ -1,0 +1,84 @@
+[package]
+name = "continuum-kernel"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = """
+The microkernel of the continuum substrate: identity, paths, paging, logging, the ORM,
+system resources and pressure, the runtime (ServiceModule, bus, dispatch, extension
+hooks), the governor, resource pools, GPU accounting, routing and the command contract.
+It depends on nothing above it (MICROKERNEL-DECOMPOSITION.md); every other layer extends
+it through the contracts it owns (dispatch hooks, interceptors, settle-before-stop, the
+command-name resolver, MeshPresence, ClogSink) installed at boot.
+"""
+
+[dependencies]
+continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
+continuum-saved-state = { path = "../continuum-saved-state" }  # the module-init record the boot's init deadline derives from
+continuum-airc-protocol = { path = "../continuum-airc-protocol" }
+continuum-cli-lifecycle = { path = "../continuum-cli-lifecycle" }
+continuum-orm-derive = { path = "../continuum-orm-derive" }
+continuum-client = { path = "../../client/continuum-client" }
+continuum-tool-protocol = { path = "../continuum-tool-protocol" }  # a call's arguments, unparsed or not, are typed where her executor refuses them (ONE-ACT 6b)
+serde_path_to_error = "0.1"  # the path to a refused field, as segments, never read out of a message
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+once_cell.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+ts-rs.workspace = true
+sha2.workspace = true
+rusqlite = { version = "0.32", features = ["bundled"] }
+tokio-stream.workspace = true
+futures-util.workspace = true
+airc-core.workspace = true
+airc-lib.workspace = true
+airc-protocol.workspace = true
+airc-ipc.workspace = true
+airc-bus.workspace = true
+schemars = { workspace = true }
+dashmap = { workspace = true }
+inventory = { workspace = true }
+libc = { workspace = true }
+fs2 = { workspace = true }
+toml = { workspace = true }
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
+futures = { workspace = true }
+dirs = { workspace = true }
+sysinfo = { workspace = true }
+arc-swap = { workspace = true }
+notify = { workspace = true }
+rayon.workspace = true
+# Test fixtures (fresh_adapter) need a temp dir; only fixture builds link it.
+tempfile = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_Security", "Win32_Security_AppLocker", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { workspace = true }
+objc = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
+source-hygiene = { path = "../source-hygiene" }
+
+[features]
+default = []
+cuda = []
+vulkan = []
+ts-codegen = []
+test-fixtures = ["dep:tempfile"]
+stress-tests = []

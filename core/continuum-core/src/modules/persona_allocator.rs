@@ -72,7 +72,8 @@ mod tests {
     use super::*;
 
     fn test_module() -> PersonaAllocatorModule {
-        let manager = Arc::new(GpuMemoryManager::detect());
+        // A fixed device, never the runner's (`detect()` panics with no GPU; card c4d84be3).
+        let manager = Arc::new(GpuMemoryManager::simulated("test:synthetic", 16 * 1024 * 1024 * 1024));
         PersonaAllocatorModule::new(manager)
     }
 

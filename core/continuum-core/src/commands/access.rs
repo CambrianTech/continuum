@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::modules::grid::node::TrustLevel;
-use crate::routing::access_decision::{self, AccessDecision, AccessPolicy};
+use crate::routing::trust_level::TrustLevel;
+use crate::modules::grid::access_decision::{self, AccessDecision, AccessPolicy};
 use crate::sdk_codegen::CommandError;
 
 /// Wire shape for `access/get`.
@@ -82,7 +82,7 @@ crate::action_command! {
     run(_this, _ctx, _p) => {
         let policy = access_decision::policy();
         let rank = access_decision::local_cognitive_rank();
-        let level = policy.citizen_trust(Uuid::nil(), true, rank, None);
+        let level = policy.resident_trust(Uuid::nil());
         Ok(AccessGetResult { policy, local_cognitive_rank: rank, local_citizen_level: level })
     }
 }
@@ -113,7 +113,7 @@ crate::action_command! {
                         level,
                         reason,
                         decided_by: ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()),
-                        decided_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+                        decided_ms: continuum_base::time::EpochMs::now().millis(),
                     });
                 }
             }
@@ -122,7 +122,7 @@ crate::action_command! {
         }
         access_decision::store(policy.clone()).map_err(CommandError::Internal)?;
         let rank = access_decision::local_cognitive_rank();
-        let level = policy.citizen_trust(Uuid::nil(), true, rank, None);
+        let level = policy.resident_trust(Uuid::nil());
         Ok(AccessGetResult { policy, local_cognitive_rank: rank, local_citizen_level: level })
     }
 }

@@ -4,8 +4,7 @@
  * Etched circuit traces between the real panels; a light pulse travels a
  * trace when — and only when — a real event rides that pipe: cyan for a
  * message landing (rail → center), violet for an act receipt (center →
- * board), green for a settling verdict (board → rail: the flywheel,
- * drawn). Idle app = still circuit.
+ * board). Idle app = still circuit.
  *
  * Implements [`Universe`]/[`UniverseInstance`] — the host speaks the
  * interface, never this class's internals. Rendering is one static SVG;
@@ -28,7 +27,6 @@ const TRACES: Readonly<
 > = {
   message: { d: 'M 40 120 H 220 V 300 H 480', via: { x: 40, y: 120 } },
   act: { d: 'M 500 560 V 380 H 760 V 240', via: { x: 500, y: 560 } },
-  verdict: { d: 'M 960 200 H 700 V 80 H 300', via: { x: 960, y: 200 } },
 };
 
 const MAX_LIVE_PULSES = 8;
@@ -42,7 +40,6 @@ const STYLE = `
   .positron-pulse { offset-rotate: 0deg; animation: positron-travel 1.4s cubic-bezier(0.3,0,0.7,1) forwards; }
   .positron-pulse[data-kind='message'] { fill: #35d0e0; }
   .positron-pulse[data-kind='act'] { fill: #b48cff; }
-  .positron-pulse[data-kind='verdict'] { fill: #3fb950; }
   @keyframes positron-travel {
     from { offset-distance: 0%; opacity: 0; }
     12% { opacity: 1; }

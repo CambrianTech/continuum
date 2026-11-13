@@ -11,12 +11,12 @@
   },
   "dataset": {
     "installedName": "design-basics-v1",
-    "format": "mlx chat {messages} JSONL, train/eval split + manifest (the genome/job-create datasetName contract)"
+    "format": "mlx chat {messages} JSONL, train/eval split + manifest"
   },
   "training": {
     "baseModel": "unsloth/Devstral-Small-2507-GGUF",
-    "path": "genome/job-create --datasetName design-basics-v1 --traitKind design-basics",
-    "gate": "training-completion-sentinel: adopt ONLY on measured lift vs the held-out eval split; a gene with lift <= 0 is rejected, same as the 28-example coder gene was"
+    "path": "genome/training-trigger/submit with the dataset's train examples (traitKind design-basics, baseModel = the model her lane serves): learned in place on her live engine, no separate trainer",
+    "gate": "the gene examiner: a candidate opens a trial and is kept ONLY on measured lift on unseen tasks with retention intact; a gene with lift <= 0 is retired"
   },
   "evaluation": {
     "heldOut": "eval.jsonl (same generator, unseen seeds count too)",

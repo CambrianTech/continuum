@@ -25,7 +25,7 @@
 //! restart — every persona using local inference returns `-3` for the
 //! rest of the boot. Chat is unusable.
 //!
-//! The existing `vision_integration.rs` only registers ONE adapter
+//! The single-adapter vision test registered only ONE adapter
 //! (qwen2-vl), so it never exercised the multi-row scenario. Result:
 //! Joel's bug had no test that would have caught it. This file fixes
 //! that — it walks every llamacpp-local row in the Rust catalog (catalog.rs) whose
@@ -152,7 +152,8 @@ async fn llamacpp_local_models_coexist_without_metal_oom() {
             ..Default::default()
         };
         let decode_start = std::time::Instant::now();
-        let result = adapter.generate_text(req).await;
+        let terms = continuum_core::ai::types::DispatchTerms::thinking(continuum_core::ai::types::Think::ModelDefault);
+        let result = adapter.generate_under(req, terms).await;
         match result {
             Ok(_) => eprintln!(
                 "[multi-adapter] smoke-decode '{}' OK ({:.2}s)",
@@ -163,7 +164,7 @@ async fn llamacpp_local_models_coexist_without_metal_oom() {
                 // The specific failure mode this test exists to catch:
                 // any decode error mentioning -3 / command buffer / Metal
                 // OOM means the cumulative backend load wedged the GPU.
-                let lower = e.to_lowercase();
+                let lower = e.to_string().to_lowercase();
                 let is_metal_brick = lower.contains("returned -3")
                     || lower.contains("command buffer")
                     || lower.contains("kiogpu")

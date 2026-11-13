@@ -16,16 +16,6 @@
 
 use super::{SourceFile, SourceRule, Violation};
 
-/// Excess test mods (the 2nd, 3rd, … in a file) when this guard landed
-/// (2026-08-22): 13 files, worst `modules/grid/tests.rs` (6 mods),
-/// `runtime/runtime.rs` and `commands/benchmark.rs` (3 each).
-///
-/// **This number may only ever go DOWN.** Merging a file's mods into one (nested
-/// themes inside it are fine) lowers it; raising it to green a build is defeating
-/// the guard.
-#[cfg(test)]
-const BASELINE_EXCESS_TEST_MODS: usize = 19;
-
 /// 1-indexed lines of `#[cfg(test)]` attributes that gate a `mod`.
 fn test_mod_lines(file: &SourceFile) -> Vec<usize> {
     let lines: Vec<&str> = file.raw.lines().collect();
@@ -63,7 +53,7 @@ impl SourceRule for TestModSingularity {
             .skip(1) // the FIRST test mod is the sanctioned one; every further mod is excess
             .map(|line| Violation {
                 rule: "test-mod-singularity",
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line,
                 source: "#[cfg(test)] mod — a second test mod in this file".to_string(),
             })
@@ -79,15 +69,14 @@ mod tests {
     /// What this catches: a NEW second `#[cfg(test)] mod` landing in any file.
     /// If this fails because you added one: fold your tests into the file's
     /// existing mod (a nested `mod theme_name { use super::*; }` inside it keeps
-    /// the grouping). If it fails because you MERGED some, lower the baseline and
-    /// take the win.
+    /// the grouping). If you MERGED some, the ratchet holds the lower count.
     #[test]
     fn the_excess_test_mod_count_never_rises() {
         let violations = scan(&[&TestModSingularity]);
-        let count = violations.len();
-        assert!(
-            count <= BASELINE_EXCESS_TEST_MODS,
-            "excess test mods rose to {count} (baseline {BASELINE_EXCESS_TEST_MODS}).\n\
+                let count = violations.len();
+                crate::ratchet::hold_sites("excess_test_mods", &violations, crate::ratchet::Touched::EndsClean, || {
+            format!(
+            "excess test mods rose to {count}.\n\
              One `#[cfg(test)] mod` per file — new themes nest INSIDE it as \
              `mod theme {{ use super::*; }}`.\nNew offenders:\n{}",
             violations
@@ -96,7 +85,8 @@ mod tests {
                 .map(|v| format!("  {}:{}", v.file, v.line))
                 .collect::<Vec<_>>()
                 .join("\n")
-        );
+            )
+        });
     }
 
     /// What this catches: the detector counting the wrong thing — a gated helper
@@ -104,11 +94,7 @@ mod tests {
     /// error direction makes the ratchet meaningless.
     #[test]
     fn only_gated_mods_count_and_the_first_is_free() {
-        let mk = |src: &str| SourceFile {
-            rel: "fake.rs".into(),
-            production: String::new(),
-            raw: src.into(),
-        };
+        let mk = |src: &str| SourceFile::fixture("fake.rs", "", src);
         let rule = TestModSingularity;
         assert_eq!(rule.check(&mk("#[cfg(test)]\nmod tests {}")).len(), 0, "one mod is sanctioned");
         assert_eq!(

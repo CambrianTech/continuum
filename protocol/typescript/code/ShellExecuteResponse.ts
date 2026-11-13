@@ -19,4 +19,11 @@ stderr?: string,
 /**
  * Exit code (only present when execution completed).
  */
-exit_code?: number, };
+exit_code?: number, 
+/**
+ * What to do next, for a command still running: its result arrives on its own when it
+ * finishes, and progress reads with `code/shell-poll`. Absent once finished. A bare
+ * `status: running` left a resident reaching for `nohup ... &` to background a build
+ * the shell had already backgrounded (Aris, the M5, 2026-10-21).
+ */
+next?: string, };

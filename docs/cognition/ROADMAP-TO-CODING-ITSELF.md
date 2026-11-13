@@ -35,8 +35,8 @@ phase is a hypothesis — build it first.*
 **DONE — slice 1:** `cognition/eval` test-grades a task by RUNNING the model's code
 (`test_grade`, commit 64eadafe5); proven 3/3 on `docs/genome/coder-gym.jsonl`
 (add/reverse/fizzbuzz). **Reuse, don't reinvent (Joel):** load REAL benchmark task
-DATA via HuggingFace `datasets` (the layer unsloth itself uses). Offload dataset
-management + training (forge→unsloth) + the bare-model A/B (the gateway) to those
+DATA via HuggingFace `datasets` (the standard dataset layer). Offload dataset
+management + training (the forge custodian) + the bare-model A/B (the gateway) to those
 systems; OURS is only the harness that runs the *persona* and test-grades it.
 **DONE — slice (a):** `tools/scripts/prepare-humaneval-rs-gym.py` pulls the STANDARD
 HumanEval benchmark via HF `datasets` and emits `docs/genome/humaneval-rs.jsonl` (156

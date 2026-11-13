@@ -1,0 +1,188 @@
+//! Her actions as one stream: one item per act, keyed by its `#n`. This one rendering
+//! replaces the three her prompt used to carry (the results ring, the collapsed-pointer
+//! index and the steps-taken ledger).
+//!
+//! It is never silent. With no act on record it says so, in one of the two honest forms the
+//! steps ledger established: nothing has executed (an implicit void becomes a confabulation
+//! shelter: Anwen parked fabricated receipts in one within minutes), or acts happened whose
+//! details aged out (denying her own work is the inverse failure, 2026-07-13: Asha).
+
+use continuum_context::cause::{Cause, Content, Origin};
+use continuum_context::source::{Item, Source, StoredWhole};
+
+use super::{element, priority, ContextMessage, Producer};
+use crate::cognition::working_memory::{ActRendering, WorkingMemory};
+use crate::cognition::tool_executor::tool_output::Reopen;
+
+/// The source's name: her view's fold edge for it is what bounds her resident log
+/// (`WorkingMemory::release_folded`).
+pub(crate) const NAME: &str = "actions";
+
+pub(crate) struct Actions<'a> {
+    pub memory: &'a WorkingMemory,
+    /// Whose spill directory a stored whole is read from (`load`).
+    pub persona: uuid::Uuid,
+}
+
+impl Actions<'_> {
+    fn standing(&self, key: &str, text: String) -> Item<ContextMessage> {
+        super::standing(self.persona, "actions", key, ContextMessage::user(text))
+    }
+
+    fn act(&self, seq: u64) -> continuum_context::cause::ElementId {
+        element(self.persona, Producer::Act, &seq.to_be_bytes())
+    }
+
+    /// One act as this source's item, following `cause`: every act's the same way.
+    fn item(&self, act: ActRendering, cause: Cause) -> Item<ContextMessage> {
+        let stored = act.stored.map(|(chars, handle)| StoredWhole { chars, handle, content: Content::Absent });
+        let item = Item::rendered(self.act(act.seq), cause, act.seq.to_string(), ContextMessage::user(act.full), act.content)
+            .with_summary(act.summary.map(ContextMessage::user))
+            .with_pointer(ContextMessage::user(act.pointer))
+            .with_stored(stored);
+        match act.act {
+            Some(identity) => item.with_act(identity),
+            None => item,
+        }
+    }
+
+    /// Her newest act (the one in flight, which her act's tail carries) as this source's item,
+    /// following the act before it in its room: its element, cause, identity and outcome hash are
+    /// what her tail's result item carries, so her view judges it on its arrival
+    /// (`tail::Tail`, MIND-CONTEXT invariant 4). `None` with no act in flight.
+    pub(crate) fn newest(&self) -> Option<Item<ContextMessage>> {
+        let act = self.memory.in_flight_rendering()?;
+        let (earlier, _) = self.memory.action_renderings();
+        let cause = earlier
+            .iter()
+            .rev()
+            .find(|before| before.room == act.room)
+            .map_or(Cause::Root(Origin::ActivityStart), |before| Cause::Of(self.act(before.seq)));
+        Some(self.item(act, cause))
+    }
+}
+
+/// How act `seq` (`item`) reads when it repeats `ancestor`, one of her earlier acts (keyed by its
+/// `#n`): her actions and her act's tail word a repeat the same way. `None` when the ancestor is
+/// not an act.
+pub(super) fn repeat_line(seq: &str, item: &Item<ContextMessage>, ancestor: &Item<ContextMessage>) -> Option<String> {
+    let earlier: u64 = ancestor.key().parse().ok()?;
+    let reopened = item.act().is_some_and(|act| matches!(act.effect, continuum_base::tool_effect::ToolEffect::Reopens));
+    Some(if reopened {
+        format!("[result #{seq}: repeat of #{earlier}, the same saved output, unchanged; its whole is #{earlier} above]")
+    } else {
+        format!("[result #{seq}: repeat of #{earlier}, outcome unchanged; reopen with {}]", Reopen::Act(earlier))
+    })
+}
+
+impl Source<ContextMessage> for Actions<'_> {
+    fn name(&self) -> &str {
+        NAME
+    }
+
+    fn priority(&self) -> u8 {
+        priority::ACTIONS
+    }
+
+    fn items(&self) -> Vec<Item<ContextMessage>> {
+        let banner = self.standing(
+            "banner",
+            "[actions] What I have done this session, oldest first: each #n is one act; a \
+             collapsed one names the handle that reopens it."
+                .to_owned(),
+        );
+        let (acts, in_flight) = self.memory.action_renderings();
+        // Her acts older than what her view shows unfolded live in her archive: one standing line,
+        // the same bytes however many there are, so it never churns her prefix.
+        let archived = self.memory.holds_archived_acts().then(|| {
+            self.standing(
+                "archived",
+                "[actions] My acts older than these are archived on disk, not in this view; each \
+                 still reopens by its #n."
+                    .to_owned(),
+            )
+        });
+        if acts.is_empty() && (in_flight || archived.is_some()) {
+            // Her only act in RAM is the one she just took (it rides whole after her view), or
+            // every earlier one is archived: never "nothing has executed".
+            return std::iter::once(banner).chain(archived).collect();
+        }
+        if acts.is_empty() {
+            let taken = self.memory.actions_taken();
+            let none = if taken == 0 {
+                "(nothing has executed yet — anything described as already run, created, \
+                 tested, committed, or merged does not exist, whether in the messages you can \
+                 see or before them; running a tool is what makes it real)"
+                    .to_owned()
+            } else {
+                // No recall promise: act receipts are deliberately outside semantic recall
+                // (#166, #414), so pointing her there sends her after a door that is not there.
+                format!(
+                    "({taken} step{} executed earlier this session — you did that work; the details \
+                     aged out of working memory and cannot be retrieved, so re-check the workspace \
+                     or the board rather than trusting memory of them. Nothing NEW has executed since.)",
+                    if taken == 1 { "" } else { "s" }
+                )
+            };
+            return vec![banner, self.standing("none", none)];
+        }
+        let mut items = vec![banner];
+        items.extend(archived);
+        // Her acts in one room are one chain: each follows the act before it there; the first is
+        // where that activity's chain starts.
+        let mut last_in_room: std::collections::HashMap<Option<uuid::Uuid>, u64> = std::collections::HashMap::new();
+        for act in acts {
+            let cause = last_in_room.insert(act.room, act.seq).map_or(Cause::Root(Origin::ActivityStart), |prev| Cause::Of(self.act(prev)));
+            items.push(self.item(act, cause));
+        }
+        items
+    }
+
+    /// A whole her working memory evicted from RAM (storage, never visibility: FOCUS-CONTRACT
+    /// rule 7), read back from its spill file when her view grants it whole, labelled as it
+    /// read resident. `None` (the resident pointer renders) when the file is gone or unreadable.
+    fn load(&self, item: &Item<ContextMessage>) -> Option<ContextMessage> {
+        let stored = item.stored()?;
+        let seq: u64 = item.key().parse().ok()?;
+        let label = self.memory.action_whole_label(seq)?;
+        let body = crate::cognition::tool_executor::spill::saved_whole(self.persona, &stored.handle).ok()?;
+        Some(ContextMessage::user(format!("{label}{body}")))
+    }
+
+    /// Her oldest acts as one line: the first and last `#n`, how many, and how one reopens
+    /// (`tool/output` with `act`), so her floor is one block however many acts she has taken
+    /// (Aris, the M5, 2026-10-29: 95 pointers at ~190 chars before anything whole fit). Reads
+    /// only the run's ends: the banner, when it is in the run, is its first item and folds
+    /// with it. `None` for a run with no act in it (the banner alone): nothing to name.
+    fn fold(&self, folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        // The banner stands as itself ahead of the run (the view never folds a standing head),
+        // so the run is her acts alone, keyed by their #n.
+        let first: u64 = folded.first()?.key().parse().ok()?;
+        let last: u64 = folded.last()?.key().parse().ok()?;
+        let count = folded.len();
+        Some(ContextMessage::user(format!(
+            "[actions #{first}-#{last}: {count} earlier acts folded; reopen one by its #n, e.g. {}]",
+            Reopen::Act(first)
+        )))
+    }
+
+    /// An act the view found repeats an earlier one whose whole she has in front of her (the same
+    /// request to a command that only observes, the same outcome): one line naming it and how to
+    /// reopen it, never a second copy of the whole (MIND-CONTEXT invariant 4).
+    /// A repeated reopen (the same saved output reopened again, its whole still in front of her)
+    /// names that whole and never invites a further reopen: the reopen was the repeat (IntelMac,
+    /// 2026-11-11: one saved output reopened 20+ times, each arriving byte-identical).
+    fn repeat(&self, item: &Item<ContextMessage>, ancestor: &Item<ContextMessage>) -> Option<ContextMessage> {
+        repeat_line(item.key(), item, ancestor).map(ContextMessage::user)
+    }
+
+    /// Once she has acted, the void said earlier in this epoch is superseded, never edited:
+    /// her view reads as the timeline it is (the statement was true when it was made).
+    fn retired(&self) -> Vec<Item<ContextMessage>> {
+        let (acts, in_flight) = self.memory.action_renderings();
+        if acts.is_empty() && !in_flight {
+            return Vec::new();
+        }
+        vec![self.standing("none", "(that was before my first act; my acts follow)".to_owned())]
+    }
+}

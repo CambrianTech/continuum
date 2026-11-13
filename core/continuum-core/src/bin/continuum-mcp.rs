@@ -1,6 +1,6 @@
 //! `continuum-mcp` — the headless-Rust MCP server entrypoint.
 //!
-//! An MCP client (unsloth Studio, Claude Code, …) spawns this as a stdio
+//! An MCP client (Claude Code, …) spawns this as a stdio
 //! subprocess; it connects to the running local core over its IPC socket and
 //! exposes continuum's commands as MCP tools. Rust-native replacement for
 //! `src/mcp-server.ts` — no Node in the loop.
@@ -30,11 +30,13 @@
 //! MCP stdio framing means **only** JSON-RPC may go to stdout. All diagnostics
 //! go to stderr. The runner writes solely to stdout; nothing else here prints
 //! there.
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use continuum_client::Connection;
 use continuum_core::modules::mcp_protocol::McpServer;
 use continuum_core::modules::mcp_transport::{ConnectionDispatch, StdioRunner};
-use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
+use continuum_client::core_ipc::CoreIpcTransport;
 
 const SERVER_NAME: &str = "continuum-mcp";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");

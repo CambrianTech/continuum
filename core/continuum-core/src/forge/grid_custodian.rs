@@ -52,7 +52,7 @@ use serde_json::{json, Value};
 use super::custodian_client::{ForgeCustodian, ForgeCustodianError};
 use super::endpoint::{can_accept_gguf_lora, ForgeEndpoint};
 use super::protocol::{ExportResult, GgufLoraRequest, HealthResponse, CONTRACT_VERSION};
-use crate::modules::grid::node::TrustLevel;
+use crate::routing::trust_level::TrustLevel;
 
 /// The remote forge command names — the SAME strings `modules/forge.rs` matches on
 /// (one source so a renamed command can't silently 404 the dispatch).

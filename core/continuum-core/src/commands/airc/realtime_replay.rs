@@ -28,10 +28,8 @@ crate::action_command! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::airc::{
-        AircPresenceEvent, AircPresenceState, AircRealtimeEnvelope, AircRealtimePayload,
-        AircRealtimePublishParams, InMemoryAircRealtimeStore, StoreAircEventTransport,
-    };
+    use crate::airc::{AircRealtimePublishParams, InMemoryAircRealtimeStore, StoreAircEventTransport};
+    use crate::routing::airc_realtime::{AircPresenceEvent, AircPresenceState, AircRealtimeEnvelope, AircRealtimePayload};
     use crate::sdk_codegen::{ActionCommand, Ctx};
     use uuid::Uuid;
 
@@ -62,9 +60,9 @@ mod tests {
         transport
             .publish(AircRealtimePublishParams {
                 envelope: AircRealtimeEnvelope::new(
-                    "typing-1".to_string(),
+                    Uuid::from_u128(0x71),
                     TEST_ROOM_ID,
-                    "persona-1".to_string(),
+                    airc_core::PeerId::from_u128(0xC1),
                     100,
                     AircRealtimePayload::Presence {
                         event: AircPresenceEvent {

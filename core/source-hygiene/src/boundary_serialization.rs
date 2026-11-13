@@ -35,7 +35,7 @@
 //! one is **the unjustified count may never rise** — every new site names its
 //! boundary, every old one touched is a chance to ratchet down.
 
-use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
+use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
 
 /// Same bar as the unwrap rule — a justification has to say something.
 // context-budget-exempt: bounds the length of a COMMENT a human types, never a
@@ -60,15 +60,6 @@ const SHAPES: &[&str] = &[
     "STANDARD_NO_PAD.decode(",
 ];
 
-/// Unjustified production occurrences at the time this guard landed
-/// (2026-08-23, the day the audits ran — measured by running the rule with a
-/// zero baseline and reading the count, so there is no slack for new sites to
-/// hide in).
-///
-/// **This number may only ever go DOWN.** A single total, not a per-file map,
-/// for the same reason as the unwrap ratchet: pressure on the whole surface.
-#[cfg(test)]
-const BASELINE_UNJUSTIFIED: usize = 242;
 
 pub struct BoundarySerialization;
 
@@ -90,7 +81,7 @@ impl SourceRule for BoundarySerialization {
             if !justified {
                 out.push(Violation {
                     rule: "boundary-serialization",
-                    file: file.rel.clone(),
+                    file: file.repo.clone(),
                     line: line_no,
                     source: code.trim().to_string(),
                 });
@@ -110,28 +101,27 @@ mod tests {
     /// see the module header. If this fails because you added one: either the
     /// encode crosses a true boundary (say which, same line) or it shouldn't
     /// exist (pass `&T`/`Arc<T>`/a handle instead). If it fails because you
-    /// removed some, lower `BASELINE_UNJUSTIFIED` and take the win.
+    /// removed some, the ratchet holds the new count from the next PR on.
     #[test]
     fn the_unjustified_serialization_count_never_rises() {
         let violations = scan(&[&BoundarySerialization]);
-        let count = violations.len();
-
-        assert!(
-            count <= BASELINE_UNJUSTIFIED,
-            "unjustified serialization sites rose to {count} (baseline {BASELINE_UNJUSTIFIED}).\n\
-             Serialize ONLY at a true system boundary (socket, disk format, wire protocol, \n\
-             foreign API) and say WHICH boundary on the same line. Between in-process layers, \n\
-             data travels as &T / Arc<T> / a handle — typed → Value → typed is the sickness \n\
-             the 2026-08-23 audits measured as most of the substrate's self-inflicted CPU \n\
-             waste. Base64 pixels inside JSON are never justified on-machine.\n\
-             First few new ones:\n{}",
-            violations
-                .iter()
-                .take(10)
-                .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
+        
+        crate::ratchet::hold_sites("unjustified_serialization", &violations, crate::ratchet::Touched::EndsClean, || {
+            format!(
+                "Serialize ONLY at a true system boundary (socket, disk format, wire protocol, \
+                 foreign API) and say WHICH boundary on the same line. Between in-process layers, \
+                 data travels as &T / Arc<T> / a handle: typed -> Value -> typed is the sickness \
+                 the 2026-08-23 audits measured as most of the substrate's self-inflicted CPU \
+                 waste. Base64 pixels inside JSON are never justified on-machine.\n\
+                 Sites:\n{}",
+                violations
+                    .iter()
+                    .take(10)
+                    .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        });
     }
 
     /// What this catches: the justification predicate accepting a non-reason —

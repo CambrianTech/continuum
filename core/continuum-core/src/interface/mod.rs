@@ -26,7 +26,7 @@ use ts_rs::TS;
 
 /// Image encoding for a capture. Platform-agnostic — every adapter (browser,
 /// native, VR) maps these to its own encoder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[ts(
     export,
@@ -40,7 +40,7 @@ pub enum ScreenshotFormat {
 
 /// Where the captured bytes should land. `File` writes to the substrate and
 /// returns a path; `Bytes` returns a data URL inline; `Both` does each.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[ts(
     export,
@@ -58,7 +58,7 @@ pub enum ScreenshotDestination {
 /// `html2canvasOptions`, no preset arrays, no DOM-only crop knobs. Those are
 /// adapter-private. This is what a browser tab, a phone, and a VR headset can
 /// ALL honor.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -139,6 +139,7 @@ impl crate::sdk_codegen::CommandSpec for ScreenshotCommand {
     const ALIASES: &'static [&'static str] = &["screenshot"];
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
     const NATIVE: bool = true; // observation parity — seeing the screen is a first-class work verb
+    const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::OnDemand;
     const DESCRIPTION: &'static str =
         "Capture a screenshot of the UI — your way to SEE the screen (or a specific \
          element via a CSS selector). Use it to visually verify what a human or a UI is \
@@ -146,6 +147,10 @@ impl crate::sdk_codegen::CommandSpec for ScreenshotCommand {
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = ScreenshotParams;
     type Result = ScreenshotResult;
+
+    fn params_schema() -> Result<serde_json::Value, serde_json::Error> {
+        crate::sdk_codegen::input_schema::<ScreenshotParams>()
+    }
 }
 
 crate::register_command!(ScreenshotCommand);

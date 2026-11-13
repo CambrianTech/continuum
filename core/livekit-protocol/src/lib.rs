@@ -12,8 +12,12 @@
 //!
 //! This crate has ZERO heavy dependencies (no ort, no livekit, no webrtc-sys).
 //! Both sides depend on it for shared types only.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use serde::{Deserialize, Serialize};
+
+/// Windows sidecar IPC uses loopback TCP; Unix hosts retain filesystem sockets.
+pub const WINDOWS_BRIDGE_ADDRESS: &str = "127.0.0.1:9101";
 
 // =============================================================================
 // Audio constants (shared between core and bridge)

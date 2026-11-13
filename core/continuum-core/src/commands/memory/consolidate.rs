@@ -3,8 +3,8 @@
 //! Reads a persona's SHARED lessons (`memory_type == "shared"`, written by
 //! [`memory/share`](super::super) #2025) from its durable corpus and submits each into
 //! the SAME training flywheel a live turn uses: `genome/training-trigger/submit` →
-//! buckets by trait → gym-gated `evalSet` → auto `genome/job-create` → train → eval-lift
-//! (#59) → page-in. This is the LAST WIRE of the received axis: a lesson one agent taught
+//! buckets by trait → learned in place on her live engine → a candidate gene → the
+//! examiner's unseen-task verdict → page-in. This is the LAST WIRE of the received axis: a lesson one agent taught
 //! becomes another agent's trained-in capability — adopted only if it lifts the benchmark,
 //! so telepathy can never make her worse ([[lived-and-eval-experience-are-one-stream-one-being]]).
 //!
@@ -28,11 +28,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::commands::training_trigger::submit::SubmitOutcome;
+use crate::genome::training_outcome::SubmitOutcome;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::memory::MemoryRecord;
-use crate::modules::data::DataListResult;
+use crate::orm::list_result::DataListResult;
 use crate::modules::memory::MemoryState;
 use crate::persona::domain_classifier::DomainClassifier;
 use crate::persona::training_producer::{
@@ -222,13 +222,9 @@ crate::action_command! {
         let _timer = TimingGuard::new("module", "memory_consolidate");
 
         // #164: accept the short-form persona id rosters display, not just a full UUID —
-        // the same id_resolve primitive persona/* and work/* already use.
-        let persona_uuid = crate::id_resolve::resolve(
-            p.persona_id.as_str(),
-            &crate::persona::card::ids(),
-            "persona",
-        )
-        .map_err(CommandError::Invalid)?;
+        // the same Shown reading persona/* and work/* use.
+        let persona_uuid = crate::persona::persona_scope::persona_in(p.persona_id.as_str(), &crate::persona::persona_scope::PersonaCards)
+            .map_err(|e| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::id("persona_id", e)))?;
         let canonical_persona: crate::identity::PersonaRef = persona_uuid.to_string().into();
         let persona_name = p.persona_name.clone().unwrap_or_else(|| persona_uuid.to_string());
 

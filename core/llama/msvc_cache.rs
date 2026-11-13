@@ -3,6 +3,19 @@ use std::{env, fs, io, path::Path};
 
 const STAMP: &str = "msvc-toolchain.identity";
 
+/// The native producer's resolved runtime contract, not merely requested flags.
+/// Unknown/older cache schemas retain their outputs rather than guess custody.
+pub fn static_inputs_only(cache: &str) -> bool {
+    let value = |key: &str| cache.lines().find_map(|line| {
+        line.strip_prefix(key).and_then(|rest| rest.strip_prefix(":BOOL="))
+            .map(str::trim)
+    });
+    value("BUILD_SHARED_LIBS") == Some("OFF")
+        && value("GGML_BACKEND_DL") == Some("OFF")
+        && (value("GGML_METAL") == Some("OFF")
+            || (value("GGML_METAL") == Some("ON") && value("GGML_METAL_EMBED_LIBRARY") == Some("ON")))
+}
+
 pub fn environment_identity() -> String {
     let mut names: Vec<String> = [
         "VSINSTALLDIR",
@@ -124,6 +137,14 @@ mod tests {
     // installed archives together, while preserving unrelated Cargo outputs.
     #[test]
     fn toolchain_changes_reset_only_owned_native_cache() {
+        let resolved = "BUILD_SHARED_LIBS:BOOL=OFF\nGGML_BACKEND_DL:BOOL=OFF\nGGML_METAL:BOOL=OFF\n";
+        assert!(static_inputs_only(resolved));
+        assert!(!static_inputs_only(&resolved.replace("BUILD_SHARED_LIBS:BOOL=OFF", "BUILD_SHARED_LIBS:BOOL=ON")));
+        assert!(!static_inputs_only(&resolved.replace("GGML_BACKEND_DL:BOOL=OFF", "GGML_BACKEND_DL:BOOL=ON")));
+        let metal = resolved.replace("GGML_METAL:BOOL=OFF", "GGML_METAL:BOOL=ON");
+        assert!(!static_inputs_only(&metal));
+        assert!(static_inputs_only(&(metal + "GGML_METAL_EMBED_LIBRARY:BOOL=ON\n")));
+        assert!(!static_inputs_only(""));
         let root = env::temp_dir().join(format!(
             "continuum-msvc-cache-{}-{}",
             std::process::id(),

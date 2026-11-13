@@ -33,6 +33,8 @@ esac
 # resolved to `/generated/manifest.windows.sh` in a plain shell, found
 # nothing, and left nvcc off PATH so the MSVC import below skipped itself.
 _wbe_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_wbe_lib_dir/payload-paths.sh"
+_wbe_payload_root="$(managed_payload_root)" || return 1
 _mf_runtime="$_wbe_lib_dir/../generated/manifest.${_mf_os}.sh"
 # The generated manifest uses bash-4 associative arrays (`declare -A`). macOS ships bash 3.2,
 # where those are a hard `invalid option` error — and under this script's `set -e` a mid-file
@@ -75,7 +77,7 @@ _wbe_cuda_major=""
 _wbe_cuda_rejected=""
 if [ "$_mf_os" = windows ]; then
   _wbe_best_rank=""
-  for _t in "${CONTINUUM_HOME:-$HOME/.continuum}"/cuda-*; do
+  for _t in "$_wbe_payload_root"/cuda-*; do
     [ -d "$_t" ] || continue
     _has_lib=""; _has_dll=""; _maj=""
     for _sub in "Library/lib/x64" "lib/x64"; do
@@ -140,7 +142,8 @@ if [ -f "$_mf_runtime" ] && [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
       IFS=':' read -ra _rp_dirs <<<"${MOD_RUNTIME_PATH[$_mid]}"
       for _rp in "${_rp_dirs[@]}"; do
         # eval expands ~ and the version glob (cuda-*); prepend each existing match once.
-        for _rp_hit in $(eval echo "$_rp"); do
+        case "$_rp" in "~/.continuum/"*) _rp="${_rp#\~/.continuum/}" ;; *) echo "Unsupported managed runtime path: $_rp" >&2; return 1 ;; esac
+        for _rp_hit in "$_wbe_payload_root"/$_rp; do
           [ -d "$_rp_hit" ] || continue
           # A cuda-* dir that is NOT the chosen tree never reaches PATH. Without this the glob
           # puts every major on PATH and the linker picks by position — the whole bug.
@@ -158,6 +161,36 @@ if [ -f "$_mf_runtime" ] && [ "${BASH_VERSINFO[0]:-0}" -ge 4 ]; then
   fi
 fi
 
+# The same rule for the PATH this script INHERITS. A caller can hand it every provisioned
+# tree: the CLI's runtime library dirs did exactly that from #4653 (cuda-toolkit/bin, CUDA 12,
+# ahead of cuda-13.2), so every warm build on the 5090 refused below with "CUDA MAJOR
+# MISMATCH" (28 times, 10-01..10-04). The deploy runs the INSTALLED CLI, so fixing the CLI
+# alone can never reach a node it already broke; this file is read from the checkout on every
+# deploy. Only our own payload's cuda-* dirs are touched; a system CUDA is not ours to remove.
+if [ -n "$_wbe_cuda_tree" ]; then
+  _wbe_tree_lc="$(printf '%s' "$_wbe_cuda_tree" | tr '[:upper:]' '[:lower:]')"
+  _wbe_root_lc="$(printf '%s' "$_wbe_payload_root" | tr '[:upper:]' '[:lower:]')"
+  _wbe_kept=""; _wbe_dropped=""
+  _IFS_SAVE="$IFS"; IFS=':'
+  for _pd in $PATH; do
+    _pd_lc="$(printf '%s' "$_pd" | tr '[:upper:]' '[:lower:]')"
+    case "$_pd_lc" in
+      "$_wbe_root_lc"/cuda-*)
+        if [ "${_pd_lc#"$_wbe_tree_lc"}" = "$_pd_lc" ]; then
+          _wbe_dropped="$_wbe_dropped $_pd"; continue
+        fi
+        ;;
+    esac
+    _wbe_kept="${_wbe_kept:+$_wbe_kept:}$_pd"
+  done
+  IFS="$_IFS_SAVE"
+  if [ -n "$_wbe_dropped" ]; then
+    export PATH="$_wbe_kept"
+    echo "▶ CUDA PATH: dropped inherited non-declared tree dir(s):$_wbe_dropped"
+  fi
+  unset _wbe_tree_lc _wbe_root_lc _wbe_kept _wbe_dropped _pd _pd_lc _IFS_SAVE
+fi
+
 # ── Windows: pin cmake + ninja + the generator ──────────────────────────────────────────────
 # UNCONDITIONAL on Windows, and deliberately so. This block used to live nested inside the
 # CUDA/MSVC import below, behind `command -v nvcc && ! command -v cl.exe`. cmake is a
@@ -173,7 +206,7 @@ if [ "$_mf_os" = windows ]; then
   # clean shell's PATH (measured: absent in a clean subshell → "cmake not found"). Point CMAKE at
   # the known install (same resolution as install-llama-server.sh) and put its dir on PATH for
   # cmake's own sub-tools.
-  _ccmk="$(command -v cmake 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/cmake/bin/cmake.exe")"
+  _ccmk="$(command -v cmake 2>/dev/null || echo "$_wbe_payload_root/tools/cmake/bin/cmake.exe")"
   if [ -x "$_ccmk" ]; then
     export CMAKE="$(cygpath -w "$_ccmk" 2>/dev/null || echo "$_ccmk")"
     case ":$PATH:" in *":$(dirname "$_ccmk"):"*) ;; *) PATH="$(dirname "$_ccmk"):$PATH"; export PATH ;; esac
@@ -182,7 +215,7 @@ if [ "$_mf_os" = windows ]; then
   # a VS18-2026 box that is "Visual Studio 18 2026" — a generator cmake 3.30.x does NOT define
   # ("Could not create named generator"). Ninja is version-agnostic, uses the MSVC env imported
   # below, and matches the llama-server build. [[windows-build-env-drift]]
-  _cninja="$(command -v ninja 2>/dev/null || echo "${CONTINUUM_HOME:-$HOME/.continuum}/tools/ninja/ninja.exe")"
+  _cninja="$(command -v ninja 2>/dev/null || echo "$_wbe_payload_root/tools/ninja/ninja.exe")"
   if [ -x "$_cninja" ]; then
     export CMAKE_GENERATOR="Ninja"
     # ninja must be ON PATH: the cmake crate ignores CMAKE_MAKE_PROGRAM env, so with -G Ninja it
@@ -239,11 +272,21 @@ if [ "$_mf_os" = windows ] && ! command -v cl.exe >/dev/null 2>&1; then
     # `cuda-env` first and took the first linkable hit, so CUDA_PATH named a CUDA 12 tree while
     # PATH (globbed, unordered) handed the linker CUDA 13. One selection, one answer: if these
     # two ever disagree again it is a bug in the chooser, not a race between two searches.
-    if [ -z "$CUDA_PATH" ]; then
-      for _cand in ${_wbe_cuda_tree:+"$_wbe_cuda_tree"}; do
+    # The import-lib step runs whoever set CUDA_PATH. It used to sit inside `if [ -z
+    # "$CUDA_PATH" ]`, so a CUDA_PATH set before this file (NVIDIA's installer sets one
+    # system-wide; an operator or a deploy may export one) skipped the RUSTFLAGS -L below,
+    # and a conda-layout tree (libs in Library/lib/x64, where cudarc's own search does not
+    # look) failed the link with LNK1181 cuda.lib (measured on the 5090, 2026-10-06). A
+    # preset CUDA_PATH is honoured as the tree; only an unset one is filled from THE tree.
+    if [ -n "$CUDA_PATH" ]; then
+      _wbe_cuda_libroot="$(cygpath -u "$CUDA_PATH" 2>/dev/null || echo "$CUDA_PATH")"
+    else
+      _wbe_cuda_libroot="$_wbe_cuda_tree"
+    fi
+      for _cand in ${_wbe_cuda_libroot:+"$_wbe_cuda_libroot"}; do
         for _sub in Library/lib/x64 lib/x64; do
           if [ -f "$_cand/$_sub/curand.lib" ] && [ -f "$_cand/$_sub/cuda.lib" ]; then
-            export CUDA_PATH="$(cygpath -w "$_cand" 2>/dev/null || echo "$_cand")"
+            [ -n "$CUDA_PATH" ] || export CUDA_PATH="$(cygpath -w "$_cand" 2>/dev/null || echo "$_cand")"
             _culibw="$(cygpath -w "$_cand/$_sub" 2>/dev/null || echo "$_cand/$_sub")"
             # pocket-tts links cuda.lib but (unlike cudarc) emits no rustc-link-search, relying on the
             # linker's own search. rustc links with the newest VS's linker + ITS OWN LIB (not ours), so
@@ -261,7 +304,6 @@ if [ "$_mf_os" = windows ] && ! command -v cl.exe >/dev/null 2>&1; then
       if [ -z "$CUDA_PATH" ] && command -v nvcc >/dev/null 2>&1; then
         echo "⚠ nvcc present but no complete CUDA import-lib dir found (cuda-*/**/{cuda,curand}.lib) — the CUDA core link WILL fail. Provisioning gap (#6)." >&2
       fi
-    fi
     # CONSISTENCY ASSERTION, replacing the warning this used to print.
     #
     # The old block DETECTED that several majors were provisioned and told the operator to go

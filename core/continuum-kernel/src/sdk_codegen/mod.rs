@@ -1,0 +1,383 @@
+//! sdk_codegen — the Rust-rooted SDK generator.
+//!
+//! **The single source of truth for the command surface is RUST.** A command
+//! declares, in ONE place, its [`CommandSpec`] — name + [`WireShape`] + typed
+//! `Params`/`Result` (ts-rs types). That ONE declaration drives BOTH sides of the
+//! command, so they can never drift:
+//!
+//! - **Call side** ([`generate_command_api`]) — a typed, string-free accessor per
+//!   command (`api.chatSend(params)`, typed in/out, the command string baked in
+//!   once). Change a `Params` type in Rust → regenerate → wrong call sites fail to
+//!   compile. The change is transferred across the boundary, not left as debt.
+//! - **Write side** ([`handler`]) — one typed `execute(ctx, params) -> Result<…>`;
+//!   the framework [`dispatch`] owns parse + envelope + error→reject, so authors
+//!   write no `from_value`/`match`/`try-catch`/envelope boilerplate.
+//!
+//! This replaces the inverted status quo (hand-authored TS spec JSONs + the old
+//! tsx generator, which made the shallow TS layer the source of truth). Here the
+//! deepest layer — the Rust declaration, whose `Params`/`Result` are the SAME
+//! ts-rs wire types — is the source; every language SDK is output
+//! ([[lock-uniform-client-early]], [[persona-is-a-client]]).
+//!
+//! ## Wire shape, modeled faithfully
+//!
+//! A command's [`WireShape`] is the REAL convention its handler uses, declared per
+//! command and verified against it (an earlier pass modeling a bare handler as
+//! enveloped LIED about the wire — adversarial review caught it): `Bare`
+//! (`P`→`T`), `Enveloped` (`CommandRequest<P>`→`CommandResponse<T>`, the envelope
+//! single-sourced from Rust via ts-rs `#[ts(flatten)]`), `Provided` (adapter,
+//! bare). Command FAILURE is a rejected promise (`ClientError`), never a result
+//! field.
+//!
+//! ## Import / vendor model
+//!
+//! ts-rs exports each type to its own file. The generated surface IMPORTS each
+//! command's params/result + their transitive deps (via [`TS::dependencies`]).
+//! [`emit::write_typescript_sdk`] then VENDORS that closure — copying the ts-rs
+//! output into the SDK's own `generated/wire/**`, following imports transitively
+//! so the tree is closed — so the SDK is self-contained yet single-sourced.
+//!
+//! ## Status
+//!
+//! Registry self-assembles via `inventory` (no central list). A diverse REAL
+//! sampling is migrated across all three wire shapes (`inference/llm/request`,
+//! `interface/screenshot`, `chat/*`, `ai/inference/*`), with the authoring trait
+//! proven on the `ai/inference/*` family. Pending: pointing the emitter at the
+//! live `sdk/typescript/generated` (needs a TS typecheck + reconciling the stub's
+//! event split); the Swift/Kotlin emitters (atop the uniffi facade); reconciling
+//! [`AccessLevel`] with the runtime ACL; the remaining ~250 commands.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+
+use ts_rs::{Config, Dependency, TS};
+
+/// The legacy TypeScript-SDK emitter — OFF by default (`ts-codegen` feature).
+/// Nothing live consumes its output; the headless command framework below is
+/// always compiled. See the `ts-codegen` feature note in Cargo.toml.
+pub mod ai_help;
+mod call_form;
+pub use call_form::CallForm;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use call_form::{read_call, CallFormMiss};
+pub mod command;
+mod defect;
+pub use defect::CodegenDefect;
+pub mod ext;
+pub mod conformance;
+#[cfg(feature = "ts-codegen")]
+pub mod emit;
+pub mod events;
+pub mod handler;
+mod refusal;
+pub use refusal::{Category, CommandId, NextCall, NextCallArgs, NextMoves, NoMove, Refusal, RefusalCause};
+mod verb_ref;
+pub use verb_ref::{offer_style_for, offered_name_of, primary_alias, wire_name, OfferStyle, VerbRef};
+pub use command::{
+    natives_without_an_outcome, outcome_projector, project_result, read_outcome, read_refusals_only, stateless_command_objects,
+    ActVerdict, ActionCommand, DynCommand, OutcomeProjector, ProjectsOutcome, StatelessCommand, ToolVerdict,
+};
+/// A call's arguments, refused typed before it runs (ONE-ACT 6b); re-exported beside
+/// [`CommandError`], whose `Arguments` arm carries it.
+pub use crate::runtime::arguments::{ArgumentsRefusal, FieldProblem, FieldRefusal, JsonKind};
+#[cfg(feature = "ts-codegen")]
+pub use emit::write_typescript_sdk;
+/// What a command does to the world, declared on it (`ActionCommand::EFFECT`); re-exported so
+/// `action_command!`'s `effect:` clause resolves in any crate that expands it.
+pub use continuum_base::tool_effect::ToolEffect;
+/// Where a command's verb sits in a mind's hands, declared on it (`ActionCommand::DISCLOSURE`);
+/// re-exported so `action_command!`'s `disclosure:` clause resolves in any crate that expands it.
+pub use continuum_base::tool_disclosure::Disclosure;
+pub use events::{event_registry, event_registry_defects, EventDescriptor, EventSpec};
+#[cfg(feature = "ts-codegen")]
+pub use events::{generate_event_api, generate_event_map};
+pub use handler::{dispatch, dispatch_with_caller, CommandError, CommandHandler, Ctx, Outcome};
+
+/// Self-register a `CommandSpec` type into the auto-discovered registry. ONE line
+/// at the command's own declaration site — never a central list:
+/// ```ignore
+/// register_command!(MyCommand);
+/// ```
+#[macro_export]
+macro_rules! register_command {
+    ($cmd:ty) => {
+        inventory::submit! {
+            $crate::sdk_codegen::CommandRegistration::new(
+                || $crate::sdk_codegen::CommandDescriptor::of::<$cmd>(),
+            )
+        }
+    };
+}
+
+/// Declare what a command's result means — REQUIRED of every native tool (ONE-ACT 6b):
+/// `action_command!`'s `native: true` submits it, and `natives_without_an_outcome`
+/// holds a hand-written native command to it.
+///
+/// ```ignore
+/// register_outcome!(CodeRun);                  // decodes its result; reads `ProjectsOutcome`
+/// register_outcome!(WorkList, refusals_only);  // its result has no failure state
+/// ```
+///
+/// The first form decodes the dispatched value ONCE as the command's own declared result:
+/// one that does not decode is schema drift (`ActVerdict::Undecodable`), never a success. The
+/// second declares that every failure the command has is a refusal (`Err`), so a value it
+/// returns is the work done.
+#[macro_export]
+macro_rules! register_outcome {
+    ($cmd:ty) => {
+        inventory::submit! {
+            $crate::sdk_codegen::OutcomeProjector::new(
+                <$cmd as $crate::sdk_codegen::CommandSpec>::NAME,
+                $crate::sdk_codegen::read_outcome::<$cmd>,
+            )
+        }
+    };
+    ($cmd:ty, refusals_only) => {
+        inventory::submit! {
+            $crate::sdk_codegen::OutcomeProjector::new(
+                <$cmd as $crate::sdk_codegen::CommandSpec>::NAME,
+                $crate::sdk_codegen::read_refusals_only,
+            )
+        }
+    };
+}
+
+/// `ProjectsOutcome` for commands whose result has no failure state (every failure is a refusal,
+/// `Err`): the projection a macro-declared native tool needs when `register_outcome!(C,
+/// refusals_only)` is not open to it, because `action_command!`'s `native: true` already submits
+/// the decoding form.
+///
+/// ```ignore
+/// projects_success_on_return! { CodeGitAdd => GitAddResult, WebFetch => WebFetchResult }
+/// ```
+#[macro_export]
+macro_rules! projects_success_on_return {
+    ($($cmd:ty => $out:ty),+ $(,)?) => {
+        $(impl $crate::sdk_codegen::ProjectsOutcome for $cmd {
+            fn outcome(_: &$out) -> $crate::sdk_codegen::ToolVerdict {
+                $crate::sdk_codegen::ToolVerdict::Succeeded
+            }
+        })+
+    };
+}
+
+/// Self-register a STATELESS command at its own declaration site — ONE line, no
+/// host module. Registers BOTH the static descriptor (for codegen / ACL / the
+/// persona tool surface) AND a runtime constructor (so the kernel routes the
+/// command name directly to the object). The command type must be `Default`
+/// (stateless ⇒ trivially constructible). Dep-holding commands can't use this —
+/// they come from a module's `commands()` so their deps get constructed.
+/// ```ignore
+/// register_stateless_command!(PingCommand);
+/// ```
+#[macro_export]
+macro_rules! register_stateless_command {
+    ($cmd:ty) => {
+        $crate::register_command!($cmd);
+        inventory::submit! {
+            $crate::sdk_codegen::StatelessCommand::new(
+                || ::std::sync::Arc::new(<$cmd as ::std::default::Default>::default())
+                    as ::std::sync::Arc<dyn $crate::sdk_codegen::DynCommand>,
+            )
+        }
+    };
+}
+
+/// **The command generator** ([docs/architecture/COMMAND-ORGANIZATION.md] §3).
+///
+/// One declarative block ⟹ the struct, the [`ActionCommand`](crate::sdk_codegen::ActionCommand)
+/// impl (and so, via the blanket impls, `CommandSpec` + `CommandHandler` +
+/// `DynCommand`), and — for the stateless form — registration onto the ONE
+/// registry. The author writes a doc comment (⟹ `DESCRIPTION`), four fields, and
+/// a body. No envelope, no `match` arm, no hand-written `CommandSpec` consts, no
+/// `from_value`. This is how every command is authored going forward; porting a
+/// legacy `handle_command` arm is "fill the body, drop the arm".
+///
+/// **Stateless** (no deps ⇒ `Default` ⇒ auto-registered; lives in `commands/<area>.rs`):
+/// ```ignore
+/// action_command! {
+///     /// Health check: confirm the substrate is alive.
+///     pub struct Ping;
+///     name: "ping",
+///     access: AiSafe,
+///     params: PingParams,
+///     output: PingResult,
+///     run(_ctx, _p) => { Ok(PingResult { ok: true }) }
+/// }
+/// ```
+///
+/// **Dep-holding** (captures `Arc<State>` ⇒ NOT auto-registered; the owning
+/// module's `commands()` constructs it with its deps, and the executor routes the
+/// name straight to the object — winning over the legacy prefix arm):
+/// ```ignore
+/// action_command! {
+///     /// Show git status for the caller's workspace.
+///     pub struct CodeGitStatus { state: Arc<CodeState> }
+///     name: "code/git/status",
+///     access: AiSafe,
+///     params: GitStatusParams,
+///     output: GitStatusResult,
+///     run(this, ctx, p) => { /* uses this.state, ctx, p */ }
+/// }
+/// ```
+///
+/// The body is a normal block. The `run(this, ctx, p)` clause names the THREE
+/// bindings in scope: `this` is the receiver (deps live on `this.state`), `ctx`
+/// the [`Ctx`](crate::sdk_codegen::Ctx), `p` the params. (The receiver is named
+/// explicitly rather than `self` because a macro-introduced `self` is invisible to
+/// the call-site body under macro hygiene — naming it threads call-site hygiene
+/// through.) The body returns `Result<Output, CommandError>` — `?` works.
+///
+/// **A native tool says what its result means** (ONE-ACT 6b). `native: true` submits the
+/// command's [`ProjectsOutcome`](crate::sdk_codegen::ProjectsOutcome) projection, so with it the
+/// tool builds:
+/// ```
+/// # use continuum_kernel::sdk_codegen::*;
+/// # #[derive(serde::Deserialize, ts_rs::TS, schemars::JsonSchema)] pub struct P { x: String }
+/// # #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)] pub struct R { success: bool }
+/// continuum_kernel::action_command! {
+///     /// A tool that reports its own failure as data.
+///     pub struct Tool;
+///     name: "doc/tool",
+///     access: AiSafe,
+///     native: true,
+///     params: P,
+///     output: R,
+///     run(_this, _ctx, _p) => { Ok(R { success: true }) }
+/// }
+/// impl ProjectsOutcome for Tool {
+///     fn outcome(r: &R) -> ToolVerdict { ToolVerdict::of_success(r.success) }
+/// }
+/// ```
+/// and without it, the same tool does not compile (what this catches: a native tool whose
+/// failure returned as data renders as a success, `code/edit` before ONE-ACT 6b):
+/// ```compile_fail,E0277
+/// # use continuum_kernel::sdk_codegen::*;
+/// # #[derive(serde::Deserialize, ts_rs::TS, schemars::JsonSchema)] pub struct P { x: String }
+/// # #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)] pub struct R { success: bool }
+/// continuum_kernel::action_command! {
+///     /// A tool that reports its own failure as data.
+///     pub struct Tool;
+///     name: "doc/tool",
+///     access: AiSafe,
+///     native: true,
+///     params: P,
+///     output: R,
+///     run(_this, _ctx, _p) => { Ok(R { success: true }) }
+/// }
+/// ```
+#[macro_export]
+macro_rules! action_command {
+    // ── Stateless: unit struct, auto-registered onto the ONE registry. ──
+    (
+        $(#[doc = $doc:literal])*
+        $vis:vis struct $cmd:ident;
+        name: $name:expr,
+        access: $access:ident,
+        $(native: $native:tt,)?
+        $(aliases: $aliases:expr,)?
+        $(effect: $effect:ident,)?
+        $(disclosure: $disclosure:ident,)?
+        $(withheld: $why:expr => $instead:expr,)?
+        params: $params:ty,
+        output: $output:ty,
+        run($this:ident, $ctx:ident, $p:ident) => $body:block
+    ) => {
+        $(#[doc = $doc])*
+        #[derive(::std::default::Default)]
+        $vis struct $cmd;
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], [$($disclosure)?], [$($why => $instead)?], $params, $output, $this, $ctx, $p, $body);
+        $($crate::action_command!(@outcome $cmd, $native);)?
+        $crate::register_stateless_command!($cmd);
+    };
+
+    // ── Dep-holding: struct carries its deps; registered via the owning
+    //    module's `commands()` (deps need construction, so no Default). ──
+    (
+        $(#[doc = $doc:literal])*
+        $vis:vis struct $cmd:ident { $($(#[$field_meta:meta])* $field:ident : $fty:ty),+ $(,)? }
+        name: $name:expr,
+        access: $access:ident,
+        $(native: $native:tt,)?
+        $(aliases: $aliases:expr,)?
+        $(effect: $effect:ident,)?
+        $(disclosure: $disclosure:ident,)?
+        $(withheld: $why:expr => $instead:expr,)?
+        params: $params:ty,
+        output: $output:ty,
+        run($this:ident, $ctx:ident, $p:ident) => $body:block
+    ) => {
+        $(#[doc = $doc])*
+        $vis struct $cmd { $($(#[$field_meta])* pub $field: $fty),+ }
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], [$($native)?], [$($aliases)?], [$($effect)?], [$($disclosure)?], [$($why => $instead)?], $params, $output, $this, $ctx, $p, $body);
+        $($crate::action_command!(@outcome $cmd, $native);)?
+        // Register the DESCRIPTOR (type-only — no instance needed) so the command
+        // appears in `command_registry()`, the persona tool surface, the ACL, and
+        // codegen. Its RUNTIME object is constructed with deps by the owning
+        // module's `commands()`; the executor routes the name straight to it.
+        $crate::register_command!($cmd);
+    };
+
+    // ── Internal: a native tool says what its result means. `native: true` submits the
+    //    command's `ProjectsOutcome` projection, so a native tool without one does not compile.
+    (@outcome $cmd:ident, true) => {
+        $crate::register_outcome!($cmd);
+    };
+    (@outcome $cmd:ident, false) => {};
+
+    // ── Internal: the shared `ActionCommand` impl both forms expand to. ──
+    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], [$($native:tt)?], [$($aliases:expr)?], [$($effect:ident)?], [$($disclosure:ident)?], [$($why:expr => $instead:expr)?], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
+        #[::async_trait::async_trait]
+        impl $crate::sdk_codegen::ActionCommand for $cmd {
+            const NAME: &'static str = $name;
+            const ACCESS: $crate::sdk_codegen::AccessLevel = $crate::sdk_codegen::AccessLevel::$access;
+            // Doc comment ⟹ model-facing DESCRIPTION. Each `///` line keeps its
+            // leading space, so concatenation separates lines naturally; no docs ⇒ "".
+            const DESCRIPTION: &'static str = ::std::concat!($($doc),*);
+            // Optional `native: true|false,` clause ⟹ NATIVE (`true` also requires the command's
+            // `ProjectsOutcome`, submitted after this impl). Absent ⇒ the trait default, false.
+            $(const NATIVE: bool = $native;)?
+            // Optional `aliases: &[...],` clause ⟹ ALIASES (the trained/former names a
+            // model reaches for, resolved inbound by tool_dialect). Absent ⇒ the trait
+            // default (empty). Emitted only when present, so the default stands otherwise.
+            $(const ALIASES: &'static [&'static str] = $aliases;)?
+            // Optional `effect: <ToolEffect variant>,` clause ⟹ EFFECT (MIND-CONTEXT invariant 4:
+            // only a command that declares it `Observes` can have an unchanged result render as a
+            // repeat). Absent ⇒ the trait default, `Undeclared`, which authorizes nothing.
+            $(const EFFECT: $crate::sdk_codegen::ToolEffect = $crate::sdk_codegen::ToolEffect::$effect;)?
+            // Optional `disclosure: <Disclosure variant>,` clause ⟹ DISCLOSURE (where the verb sits
+            // in her hands: `Core`, `OnDemand` or `Withheld`). Absent ⇒ the trait default, `Core`.
+            $(const DISCLOSURE: $crate::sdk_codegen::Disclosure = $crate::sdk_codegen::Disclosure::$disclosure;)?
+            // Optional `withheld: "why" => "instead",` clause ⟹ WITHHELD: the guidance a withheld
+            // verb gives when she reaches for it, declared beside its disclosure.
+            $(const WITHHELD: ::std::option::Option<continuum_base::tool_disclosure::WithheldGuidance> =
+                ::std::option::Option::Some(continuum_base::tool_disclosure::WithheldGuidance { why: $why, instead: $instead });)?
+            type Params = $params;
+            type Output = $output;
+            async fn run(
+                &self,
+                $ctx: &$crate::sdk_codegen::Ctx,
+                $p: $params,
+            ) -> ::std::result::Result<$output, $crate::sdk_codegen::CommandError> {
+                // Bind the call-site-named receiver to `&self` so the body can reach
+                // deps (`this.state`). Unit-struct (stateless) commands ignore it.
+                #[allow(unused_variables)]
+                let $this = self;
+                $body
+            }
+        }
+    };
+}
+
+mod is;
+pub use is::*;
+
+// No demo/fixture commands: the generator is validated against the REAL
+// registered commands (declared via CommandSpec at their own sites, e.g. the
+// inference module), whose Params/Result are real ts-rs types carrying the
+// production `#[ts(export_to = "../../../protocol/typescript/...")]` escape form.
+// (The adversarial review caught that earlier demo fixtures — with no export_to —
+// hid the export-path resolution bug; validating on real types is the fix.)
+
+#[cfg(test)]
+mod tests;

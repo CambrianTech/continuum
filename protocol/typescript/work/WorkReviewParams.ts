@@ -4,11 +4,11 @@ import type { WorkArtifactReference } from "./WorkArtifactReference";
 
 export type WorkReviewParams = { 
 /**
- * Review room (ID/name).
+ * Optional; the card's board decides.
  */
-room: string, 
+room?: string, 
 /**
- * Full UUID of your linked review card, not the task you authored.
+ * Your linked review card (board handle or full UUID), not the task you authored.
  */
 review_card_id: string, 
 /**
@@ -24,13 +24,13 @@ evidence_text?: string,
  */
 review_id?: string, 
 /**
- * Parent card; defaults to review parent.
+ * Parent card (handle or UUID); defaults to review parent.
  */
 card_id?: string, 
 /**
- * Submission; defaults to latest.
+ * `latest` (default) or a submission id.
  */
-submission_id?: string, 
+submission_id?: "latest" | string, 
 /**
  * Artifact; defaults to board.
  */

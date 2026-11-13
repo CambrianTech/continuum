@@ -91,7 +91,7 @@ the persona's own guess.
   models/lanes**: if a capable model is resident and it falls within a persona's `[floor,
   target]`, serve from it rather than paging in that persona's exact ideal. A rigid "exactly
   model X" forces constant base-model page-in/out (expensive; the same thrash
-  [`serving_plan.rs`](../../core/continuum-core/src/cognition/serving_plan.rs) `plan_serving_stable`
+  [`serving_plan.rs`](../../core/continuum-core/src/inference/planning/serving_plan.rs) `plan_serving_stable`
   hysteresis already fights at the model-choice level). The per-request range generalizes that
   anti-thrash: the scheduler looks at the **whole board** — resident models, warm lanes, live
   grid capacity, all outstanding bids — and packs to minimize paging while honoring every floor.
@@ -136,7 +136,7 @@ time the persona asks for the right resolution up front and the system spends le
 |---|---|---|
 | Lane leases / concurrency budget | `ThroughputLeaseRegistry`, `AdaptiveThroughputPlanner` | `cognition/adaptive_throughput.rs` |
 | Live capacity + preemption | `ResourceGovernor`, `PressureBroker`, quiesce lease | `governor/`, [`EVAL-PREEMPTION-LEASE.md`](EVAL-PREEMPTION-LEASE.md) |
-| Model choice + anti-thrash | `plan_serving` / `plan_serving_stable` | `cognition/serving_plan.rs` |
+| Model choice + anti-thrash | `plan_serving` / `plan_serving_stable` | `inference/planning/serving_plan.rs` |
 | Warm-model catalog | live `ModelCatalog` watch-snapshot | `modules/serving_daemon.rs` (#78) |
 | Verifier (code) | gym grader / compiler+tests | `benchmarks/`, gym runner |
 | Reward on the bus | control-loop reward events | [[self-improvement-is-a-control-loop]] |

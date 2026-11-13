@@ -1,0 +1,199 @@
+import { describe, expect, it } from 'vitest';
+import type { Percept } from '@continuum/perception';
+
+import { IDLE_MS, InteractSessions, MAX_SESSIONS, toDomAction, type OpenWeb } from './interactAdapter';
+
+// A stand-in session: records the actions it was driven with, and whether it was closed. The
+// registry's contract (persist, bound, expire, never lose the page on a failed step) is what
+// is under test, not Playwright, which domSurface.spec.ts already drives for real.
+function fakeOpen(log: { opened: string[]; closed: number; acted: unknown[][] }, failOn?: string): OpenWeb {
+  return async (url) => {
+    log.opened.push(url);
+    const percept: Percept = { kind: 'image', mime: 'image/png', width: 2, height: 2, bytes: new Uint8Array(16) };
+    const observation = { percept, structure: { url, title: 'Tracker', tree: { role: 'document', name: '', children: [] } } };
+    return {
+      observe: async () => observation,
+      interact: async (actions: unknown[]) => {
+        if (failOn && JSON.stringify(actions).includes(failOn)) throw new Error(`no element matches ${failOn}`);
+        log.acted.push(actions);
+        return { observation, delta: { pixelsChanged: 1, totalPixels: 4, ratio: 0.25 } };
+      },
+      close: async () => {
+        log.closed += 1;
+      },
+    } as never;
+  };
+}
+
+describe('perception/interact sessions', () => {
+  // Missing context must never select another citizen's page or an expired handle.
+  it('continues the verified caller last live page without opening another browser', async () => {
+    const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
+    let now = 0;
+    const sessions = new InteractSessions(fakeOpen(log), () => ++now);
+    const call = (owner: string, extra: object = {}) =>
+      sessions.interact({ _callerPeerId: owner, actions: [], ...extra } as never);
+    try {
+      const first = await call('kimi', { target: 'https://first.test/' });
+      const last = await call('kimi', { target: 'https://last.test/' });
+      await call('iris', { target: 'https://other.test/' });
+      expect((await call('kimi', { actions: undefined })).session).toBe(last.session);
+      expect((await call('new')).error).toContain('target');
+      expect((await sessions.interact({ actions: [] })).success).toBe(false);
+      expect((await call('kimi', { session: 'expired' })).success).toBe(false);
+      await call('kimi', { session: first.session });
+      expect((await call('kimi')).session).toBe(first.session);
+      expect(log.opened).toHaveLength(3);
+      now += IDLE_MS;
+      expect((await call('kimi')).success).toBe(false);
+    } finally { await sessions.closeAll(); }
+  });
+
+  // A stuck open must not hold shutdown forever or publish a late browser.
+  it('bounds draining and closes an open that finishes after the deadline', async () => {
+    const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
+    let release!: () => void;
+    let entered!: () => void;
+    const opening = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const sessions = new InteractSessions(async (url, viewport) => {
+      entered();
+      await gate;
+      return fakeOpen(log)(url, viewport);
+    }, Date.now, 1);
+    const call = sessions.interact({ target: 'https://example.test/', actions: [] });
+    await opening;
+    await sessions.closeAll();
+    release();
+    expect((await call).success).toBe(false);
+    expect(log.closed).toBe(1);
+    expect(sessions.size).toBe(0);
+  });
+
+  // Shutdown must include a browser whose asynchronous open finishes after stop.
+  it('drains an accepted open before closing and refuses new work during stop', async () => {
+    const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
+    let release!: () => void;
+    let entered!: () => void;
+    const opening = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const sessions = new InteractSessions(async (url, viewport) => {
+      entered();
+      await gate;
+      return fakeOpen(log)(url, viewport);
+    });
+    const call = sessions.interact({ target: 'https://example.test/', actions: [] });
+    await opening;
+    const stopped = sessions.closeAll();
+    expect(sessions.closeAll()).toBe(stopped);
+    expect((await sessions.interact({ target: 'https://example.test/new', actions: [] })).success).toBe(false);
+    release();
+    await call;
+    await stopped;
+    expect(log.opened).toHaveLength(1);
+    expect(log.closed).toBe(1);
+    expect(sessions.size).toBe(0);
+  });
+
+  // what this catches: a session that does not persist (every call reopening the page, so a
+  // multi-step flow is impossible), actions not reaching the driver, or the delta not coming back.
+  it('opens once, continues on the same page, and returns the delta', async () => {
+    const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
+    const sessions = new InteractSessions(fakeOpen(log));
+    const first = await sessions.interact({ target: 'http://localhost:31004/', actions: [] });
+    expect(first.success).toBe(true);
+    expect(first.session).toBeTruthy();
+    const next = await sessions.interact({
+      session: first.session,
+      actions: [{ kind: 'click', selector: '#approve' }, { kind: 'goto', url: 'http://localhost:31004/gates' }],
+    });
+    expect(next.success).toBe(true);
+    expect(next.delta?.ratio).toBe(0.25);
+    expect(log.opened).toEqual(['http://localhost:31004/']);
+    expect(log.acted[0]).toEqual([
+      { kind: 'click', selector: '#approve' },
+      { kind: 'goto', url: 'http://localhost:31004/gates' },
+    ]);
+    // CSS iteration must retain the navigated page and return image feedback,
+    // rather than opening hot-edit's separate, freshly loaded page.
+    for (const css of ['body{background:purple}', '']) {
+      const patched = await sessions.interact({
+        session: first.session,
+        actions: [{ kind: 'hotPatchCss', css }],
+      });
+      expect(patched.success).toBe(true);
+      expect(patched.session).toBe(first.session);
+      expect(patched.image).toBeDefined();
+      expect(patched.delta?.ratio).toBe(0.25);
+      expect(log.acted.at(-1)).toEqual([{ kind: 'hotPatchCss', css }]);
+    }
+    expect(log.opened).toHaveLength(1);
+    expect(log.closed).toBe(0);
+    await sessions.closeAll();
+  });
+
+  // what this catches: an unknown or missing session silently opening something, a step that
+  // fails costing her the page, and an unbounded number of browsers.
+  it('refuses unknown sessions, keeps the page after a failed step, and bounds the count', async () => {
+    const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
+    const sessions = new InteractSessions(fakeOpen(log, '#missing'));
+    expect((await sessions.interact({ session: 'nope', actions: [] })).success).toBe(false);
+    expect((await sessions.interact({ actions: [] })).error).toMatch(/target/);
+
+    const s = (await sessions.interact({ target: 'http://x/', actions: [] })).session!;
+    const failed = await sessions.interact({ session: s, actions: [{ kind: 'click', selector: '#missing' }] });
+    expect(failed.success).toBe(false);
+    expect(failed.session).toBe(s);
+    expect((await sessions.interact({ session: s, actions: [] })).success).toBe(true);
+
+    for (let i = sessions.size; i < MAX_SESSIONS; i++) await sessions.interact({ target: `http://x/${i}`, actions: [] });
+    const refused = await sessions.interact({ target: 'http://x/over', actions: [] });
+    expect(refused.success).toBe(false);
+    expect(refused.error).toMatch(/session-close/);
+    expect(sessions.size).toBe(MAX_SESSIONS);
+    await sessions.closeAll();
+    expect(log.closed).toBe(MAX_SESSIONS);
+  });
+
+  // what this catches: an abandoned session holding a browser forever.
+  it('closes a session idle past the limit', async () => {
+    const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
+    let now = 1_000;
+    const sessions = new InteractSessions(fakeOpen(log), () => now);
+    const s = (await sessions.interact({ target: 'http://x/', actions: [] })).session!;
+    now += IDLE_MS;
+    await sessions.sweep();
+    expect(sessions.size).toBe(0);
+    expect(log.closed).toBe(1);
+    expect((await sessions.interact({ session: s, actions: [] })).error).toMatch(/expired|no live session/);
+    await sessions.closeAll();
+  });
+
+  // what this catches (Fable on #4551): a handle pasted into a room letting another citizen
+  // drive (or close) her logged-in session, and a file:// page rendering local files into her
+  // observation.
+  it('binds a session to its opener and opens only web pages', async () => {
+    const log = { opened: [] as string[], closed: 0, acted: [] as unknown[][] };
+    const sessions = new InteractSessions(fakeOpen(log));
+    const kimi = { _callerPeerId: 'kimi' };
+    const s = (await sessions.interact({ ...kimi, target: 'https://jobs.example/', actions: [] } as never)).session!;
+    const stolen = await sessions.interact({ _callerPeerId: 'iris', session: s, actions: [] } as never);
+    expect(stolen.success).toBe(false);
+    expect(stolen.error).toMatch(/another citizen/);
+    expect((await sessions.close({ _callerPeerId: 'iris', session: s } as never)).success).toBe(false);
+    expect((await sessions.interact({ ...kimi, session: s, actions: [] } as never)).success).toBe(true);
+
+    expect((await sessions.interact({ ...kimi, target: 'file:///Users/k/.continuum/config.env', actions: [] } as never)).error).toMatch(/http\(s\)/);
+    const viaGoto = await sessions.interact({ ...kimi, session: s, actions: [{ kind: 'goto', url: 'file:///etc/hosts' }] } as never);
+    expect(viaGoto.success).toBe(false);
+    expect(log.acted).toEqual([]);
+    expect((await sessions.close({ ...kimi, session: s } as never)).closed).toBe(true);
+    await sessions.closeAll();
+  });
+
+  // what this catches: a wire kind mapped onto the wrong driver verb.
+  it('maps each wire action onto the driver verb of the same kind', () => {
+    expect(toDomAction({ kind: 'type', selector: 'input', text: 'x' })).toEqual({ kind: 'type', selector: 'input', text: 'x' });
+    expect(toDomAction({ kind: 'press', key: 'Enter' })).toEqual({ kind: 'press', key: 'Enter' });
+  });
+});

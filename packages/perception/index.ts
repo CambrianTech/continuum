@@ -11,6 +11,7 @@
  */
 
 export * from './surface';
+export { PdfSurface, type PdfSurfaceOptions } from './pdfSurface';
 export { imageDiff } from './imageDiff';
 export { DomSurface, findChromium, type DomSurfaceOptions, type DomViewSpec, type DomAction } from './domSurface';
 export { SceneSurface, type SceneSurfaceOptions, type SceneViewSpec, type SceneAction } from './sceneSurface';

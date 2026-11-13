@@ -22,9 +22,28 @@ pub mod elevated_teardown;
 pub mod install_cli;
 pub mod launchd;
 pub mod owned_engines;
+pub mod process;
 pub mod supervisor_install;
+pub mod installed_release;
 
 /// Windows process launch and ownership. Imports `std::os::windows` and
 /// `windows_sys`, so it exists only on Windows.
 #[cfg(windows)]
 pub mod windows_launch;
+
+// Shared pure policies: the CLI must not import these through the server crate.
+pub mod core_bind_guard;
+pub mod deploy_hold;
+pub mod deploy_provenance;
+pub mod deploy_claim;
+pub mod deploy_tracker;
+pub mod deploy_health;
+/// Deploying the core CI built instead of compiling it (card 50ca737e).
+pub mod prebuilt_artifact;
+
+
+#[cfg(windows)]
+pub mod unelevated_service;
+
+pub mod prebuilt_validation;
+pub mod cargo_cache_custody;

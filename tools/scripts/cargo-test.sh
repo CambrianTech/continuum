@@ -34,7 +34,7 @@
 #   CARGO_TEST_NO_FEATURES=1 — skip the auto-feature append (CI-only debug;
 #                              the macOS llama guard will fail without it)
 #
-# Related (#1257): same pattern as `scripts/git-prepush.sh` Phase 3 cargo
+# Related (#1257): same pattern as `tools/scripts/git-prepush.sh` Phase 2 cargo
 # test, hoisted from precommit-internal to a developer-facing entry point.
 
 set -euo pipefail
@@ -46,7 +46,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Source the platform GPU feature detector. This is the single source of
 # truth for "what features does this platform need?" — same file that
-# build-with-loud-failure.sh and git-prepush.sh source. Keeps this wrapper
+# git-prepush.sh sources. Keeps this wrapper
 # from drifting from the rest of the build matrix.
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/shared/cargo-features.sh"

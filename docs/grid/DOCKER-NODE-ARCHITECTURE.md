@@ -216,7 +216,7 @@ docker compose up
 
 The continuum-core Dockerfile uses multi-stage builds with cargo-chef for dependency caching. The dependency layer (~30 min) only rebuilds when Cargo.toml/Cargo.lock change. Source changes rebuild in ~2-3 minutes.
 
-LiveKit WebRTC is excluded from Docker builds (`--no-default-features`) because the C++ dependency doesn't cross-compile cleanly. LiveKit runs as its own container instead.
+LiveKit WebRTC is not in Docker builds (the crate is headless by default; the images name only `load-dynamic-ort`, the GPU backend and `avatar-3d`) because the C++ dependency doesn't cross-compile cleanly. LiveKit runs as its own container instead.
 
 ---
 

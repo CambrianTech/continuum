@@ -1,6 +1,6 @@
 //! `ports/lease`, `ports/release`, `ports/list`: a citizen's services get ports that never
 //! collide with another citizen's or with Continuum's own (card 0c42c0bf). See
-//! `modules::ports` for the range, the bound and the store.
+//! `code::ports` for the range, the bound and the store.
 
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::identity::PeerId;
-use crate::modules::ports::{PortLease, PortLeaseError, PortLeases, CITIZEN_PORT_RANGE};
+use crate::code::ports::{PortLease, PortLeases, CITIZEN_PORT_RANGE};
 use crate::runtime::LateBound;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, DynCommand};
 
@@ -74,17 +74,6 @@ pub struct PortsListResult {
     pub range_last: u16,
 }
 
-impl From<PortLeaseError> for CommandError {
-    fn from(e: PortLeaseError) -> Self {
-        match e {
-            PortLeaseError::Store(_) | PortLeaseError::NodeUnknown => CommandError::Internal(e.to_string()),
-            PortLeaseError::InvalidService(_) | PortLeaseError::AtCap { .. } | PortLeaseError::RangeExhausted { .. } => {
-                CommandError::Invalid(e.to_string())
-            }
-        }
-    }
-}
-
 /// The citizen a lease belongs to: the caller. A lease is hers, so a call with no caller
 /// identity (a bare local invocation) names nobody to hold it.
 fn holder(ctx: &Ctx, verb: &str) -> Result<PeerId, CommandError> {
@@ -147,8 +136,8 @@ impl ActionCommand for PortsList {
 
     async fn run(&self, ctx: &Ctx, _p: Self::Params) -> Result<Self::Output, CommandError> {
         let leases = self.leases.require().map_err(CommandError::Internal)?;
-        let owner = crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref())
-            == crate::modules::grid::node::TrustLevel::Owner;
+        let owner = crate::modules::grid::trust_policy::caller_trust(ctx.caller.as_ref())
+            == crate::routing::trust_level::TrustLevel::Owner;
         let shown = match (&ctx.caller, owner) {
             (Some(caller), false) => leases.held_by(caller.peer_id),
             _ => leases.all(),

@@ -39,7 +39,7 @@
 //! Every event carries the same `contract_id` so the airc cursor replay
 //! can stitch the chain together from a single-channel scan.
 
-use crate::events::EventClassConfig;
+use crate::runtime::event_classes::EventClassConfig;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -335,8 +335,8 @@ declare_event_spec!(
 /// separate event-class declaration; that's an L4-Phase-C decision,
 /// not L1-6.
 pub fn declare_contract_event_classes() -> Result<usize, String> {
-    use crate::events::declare_event_class;
-    use crate::events::EventClassChannelStrategy;
+    use crate::runtime::event_classes::declare_event_class;
+    use crate::runtime::event_classes::EventClassChannelStrategy;
 
     let mut declared = 0;
     for name in ALL_CONTRACT_EVENT_NAMES {
@@ -357,7 +357,7 @@ pub fn declare_contract_event_classes() -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::lookup_event_class;
+    use crate::runtime::event_classes::lookup_event_class;
 
     #[test]
     fn all_8_names_are_distinct() {

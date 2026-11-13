@@ -1,0 +1,69 @@
+# Cron and completed canary checks use the same publication admission owner.
+# Activation and rollback: docs/operations/HOURLY-CORE-PUBLICATION.md.
+name: core-binaries-hourly
+on:
+  workflow_run:
+    workflows: ['Continuum Rust Tests']
+    types: [completed]
+    branches: [canary]
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Inspect admission without dispatching an expensive build'
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - '.github/workflows/core-binaries-hourly.yml'
+      - '.github/workflows/core-binaries.yml'
+      - 'tools/scripts/core-binaries-hourly.mjs'
+      - 'tools/scripts/tests/core-binaries-hourly.test.mjs'
+      - 'tools/scripts/publication-build-key.mjs'
+      - 'tools/scripts/tests/publication-build-key.test.mjs'
+      - 'core/continuum-cli-lifecycle/build-inputs.txt'
+permissions:
+  contents: read
+concurrency:
+  group: core-binaries-hourly-${{ github.event_name == 'pull_request' && github.ref || 'dispatch' }}
+  cancel-in-progress: false
+jobs:
+  fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tools/scripts/tests/core-binaries-hourly.test.mjs tools/scripts/tests/publication-build-key.test.mjs
+  dispatch:
+    needs: fixtures
+    # Successful checks wake the same admission as cron; publisher completion calls it directly.
+    # Failed publication does not create an immediate automatic retry loop.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (vars.CORE_BINARIES_HOURLY_ENABLED == 'true' &&
+       (github.event_name == 'schedule' ||
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.head_branch == 'canary' &&
+         github.event.workflow_run.head_repository.full_name == github.repository &&
+         github.event.workflow_run.name == 'Continuum Rust Tests' &&
+         github.event.workflow_run.event == 'push')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: canary
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node tools/scripts/core-binaries-hourly.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}

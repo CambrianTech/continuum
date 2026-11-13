@@ -164,7 +164,7 @@ fn process_chat_event(name: &str, payload: &Value, bus: &crate::runtime::Message
         return; // plain conversation — leave to the normal chat path
     };
     let action = parsed.action.as_str();
-    crate::probe!(
+    continuum_base::probe!(
         class = "airc.bridge",
         action = action,
         room = parsed.room.as_str(),

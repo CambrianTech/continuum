@@ -1,0 +1,9 @@
+# Intel retry fill retains its request model — card e370a673
+
+At 23:46:59Z on October 8, Saoirse's native stream failed with 91.9 seconds since reported lane progress. Health then cleared the global serving snapshot's active model. The next deliberation reported `rate_source=none` and used the 16,384-token unmeasured fill allowance, although its captured model binding remained the same CPU-served Qwen 1.5B.
+
+The prompt fitter looked up its rate through `current_serving().active_model`, independently of the immutable binding already used for its model request and window. The repair passes that same binding's model through the existing prompt fitter and keeps the existing per-model measurement ladder. No rate, lane count, minimum floor, admission rule or model binding is invented or changed. Required input and recent tool-result preservation remain intact.
+
+The existing binding-fill-budget fixture now verifies the measured rate lookup uses the supplied request model and retains its derived allowance; it does not mutate global rates or live serving state. Independent source review by retirement_review approved the captured-binding flow and isolated lookup fixture. The existing targeted core test passed (1/1, 6m34s compile, 0.00s fixture) after correcting the optional ModelBinding type; parse and diff checks passed. No broader suite or live runtime was invoked.
+
+This does not establish why the earlier stream was classified stalled. Raw prefill-knee windows are not equivalent to qualified per-model samples: the current collector prints its raw window even when no model/PID identity is available, in which case it does not update per-model rates. The stream adapter also has a separate optional-request versus resolved-wire model seam. Those diagnoses remain distinct from the confirmed retry-fill bug. No live jobs, engine configuration, deployment or prompts were changed.

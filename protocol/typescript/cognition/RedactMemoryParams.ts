@@ -19,6 +19,6 @@ redactSecrets: boolean,
 /**
  * Minimum answer length to be redactable (shorter answers are too generic
  * to scrub safely — use `forget-context` for those episodes). Defaults to
- * `ExamKeyDetector::DEFAULT_MIN_LEN`.
+ * `HeldOutAnswerDetector::DEFAULT_MIN_LEN`.
  */
 minAnswerLen?: number, };

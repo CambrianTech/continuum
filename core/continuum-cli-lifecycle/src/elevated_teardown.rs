@@ -52,6 +52,12 @@ pub struct TeardownPlan {
 /// does not know it exists.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct StopOptions {
+    /// `--engine`: stop the engine too. By default a stop ends the core only: the engine is its
+    /// own resource, and its loaded weights and every mind's KV stay up for the next core to
+    /// adopt (`start` and `reboot` adopt it), so a stop, build and start costs no model reload
+    /// and nobody's KV (Joel, 2026-10-29: "The engine is supposed to stay up"). `--engine` is
+    /// for when its memory is wanted back.
+    pub engine: bool,
     pub elevated: bool,
     pub plan: Option<String>,
     pub plan_sha: Option<String>,
@@ -63,6 +69,7 @@ impl StopOptions {
         let mut args = args.peekable();
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--engine" => options.engine = true,
                 "--elevated" => options.elevated = true,
                 "--plan" => options.plan = args.next(),
                 "--plan-sha" => options.plan_sha = args.next(),
@@ -71,13 +78,17 @@ impl StopOptions {
         }
         // The three go together or none do: a child without its digest could act on any
         // file in %TEMP%, and a digest without a child is a flag with nothing to bind.
-        if options.elevated != options.plan.is_some() || options.elevated != options.plan_sha.is_some()
+        if options.elevated != options.plan.is_some()
+            || options.elevated != options.plan_sha.is_some()
         {
             return Err(
                 "stop: --elevated, --plan and --plan-sha go together (the consented child ends \
                  exactly one process, bound by its digest)"
                     .to_string(),
             );
+        }
+        if options.engine && options.elevated {
+            return Err("stop: --engine is an operator's stop; the consented child ends exactly one process".to_string());
         }
         Ok(options)
     }
@@ -126,6 +137,9 @@ pub fn bind_plan_bytes(
 /// recycled into `notepad.exe` fails the directory; a pid recycled into `llama-server`
 /// (which DOES live in that directory) fails the name. The exact image and its digest
 /// are then reported in the receipt, so what was killed is recorded rather than assumed.
+/// For the A/B service layout, either direct service slot under the same `bin`
+/// is accepted: registration may already name the next release. Other layouts
+/// remain restricted to the exact directory in the plan.
 ///
 /// Pure over what was OBSERVED, so the rule is testable without a process to kill.
 /// Paths compare the way Windows means them — case-insensitively, and `/` spelled `\`
@@ -136,7 +150,25 @@ pub fn target_is_our_core(plan: &TeardownPlan, observed_image: &str) -> Result<(
     let root = norm(&plan.install_dir);
     let root = root.trim_end_matches('\\').to_string();
     let image = norm(observed_image);
-    if !image.starts_with(&format!("{root}\\")) {
+    let image_dir = image.rsplit_once('\\').map(|(dir, _)| dir);
+    // Registration selects the next slot before the previous core exits. Bind
+    // consent to this installation's two known service slots, never arbitrary
+    // siblings or descendants. The elevated caller still observes and terminates
+    // through the same held process handle.
+    let other_slot = root.rsplit_once('\\').and_then(|(bin, slot)| {
+        if bin.rsplit('\\').next() != Some("bin") {
+            return None;
+        }
+        match slot {
+            "service-a" => Some(format!("{bin}\\service-b")),
+            "service-b" => Some(format!("{bin}\\service-a")),
+            _ => None,
+        }
+    });
+    let in_other_slot = other_slot
+        .as_deref()
+        .is_some_and(|slot| image_dir == Some(slot));
+    if image_dir != Some(root.as_str()) && !in_other_slot {
         return Err(format!(
             "pid {} is running {observed_image}, which is not under the installation \
              directory {} the consent named — the pid was recycled; refusing to terminate it",
@@ -256,9 +288,16 @@ mod tests {
         let stray = parse(&["--plan-sha", "abc"])
             .expect_err("a digest with no child is a flag bound to nothing");
         assert!(stray.contains("go together"), "{stray}");
-        let unknown = parse(&["--escalate"])
-            .expect_err("there is no operator-facing escalate verb — `continuum install` is the one command");
+        let unknown = parse(&["--escalate"]).expect_err(
+            "there is no operator-facing escalate verb — `continuum install` is the one command",
+        );
         assert!(unknown.contains("unknown option"), "{unknown}");
+
+        // what this catches: a plain stop taking the engine down. The engine stays unless asked.
+        assert!(!parse(&[]).expect("a plain stop").engine, "a plain stop keeps the engine");
+        let all = parse(&["--engine"]).expect("an operator's stop that ends the engine too");
+        assert!(all.engine && !all.elevated);
+        assert!(parse(&["--engine", "--elevated", "--plan", "p.json", "--plan-sha", "abc"]).is_err());
 
         let child = parse(&["--elevated", "--plan", "p.json", "--plan-sha", "abc"])
             .expect("the bound child parses");
@@ -334,8 +373,14 @@ mod tests {
         let elsewhere = "C:\\Windows\\System32\\notepad.exe";
         let refused = target_is_our_core(&p, elsewhere)
             .expect_err("a process outside the installation must be refused");
-        assert!(refused.contains("recycled"), "the reason must name reuse: {refused}");
-        assert!(refused.contains(elsewhere), "the refusal names what is there: {refused}");
+        assert!(
+            refused.contains("recycled"),
+            "the reason must name reuse: {refused}"
+        );
+        assert!(
+            refused.contains(elsewhere),
+            "the refusal names what is there: {refused}"
+        );
 
         let neighbour = "C:\\Users\\a\\.continuum\\bin\\llama-server.exe";
         let sibling = target_is_our_core(&p, neighbour)
@@ -362,6 +407,31 @@ mod tests {
             .expect("a core that outlived its own deploy runs from the parking space");
         target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\core.exe")
             .expect("and the ordinary case still passes");
+    }
+
+    // Regression: registration points at the next slot while the previous core
+    // still serves. Consent must accept that core, but no unrelated sibling.
+    #[test]
+    fn registered_and_running_service_slots_can_differ() {
+        for (registered, running) in [("service-a", "service-b"), ("service-b", "service-a")] {
+            let mut p = plan();
+            p.install_dir = format!("C:\\Users\\a\\.continuum\\bin\\{registered}");
+            let bin = "C:\\Users\\a\\.continuum\\bin";
+            target_is_our_core(&p, &format!("{bin}\\{running}\\continuum-core-server.exe"))
+                .expect("previous slot in the same installation");
+            for rejected in [
+                "continuum-core-server.exe".to_string(),
+                format!("{bin}\\service-c\\continuum-core-server.exe"),
+                format!("{bin}\\{running}\\nested\\continuum-core-server.exe"),
+                format!("{bin}\\{running}\\llama-server.exe"),
+                format!("C:\\Users\\other\\.continuum\\bin\\{running}\\continuum-core-server.exe"),
+            ] {
+                assert!(target_is_our_core(&p, &rejected).is_err(), "{rejected}");
+            }
+        }
+        let mut p = plan();
+        p.install_dir = "C:\\unrelated\\service-a".to_string();
+        assert!(target_is_our_core(&p, "C:\\unrelated\\service-b\\core.exe").is_err());
     }
 
     // A capability whose every act is RECORDED, so the sequence can be asserted rather
@@ -404,7 +474,10 @@ mod tests {
             &p,
             move |_pid| {
                 taken.borrow_mut().push("take");
-                Ok(Recorder { log: taken.clone(), image: ours.clone() })
+                Ok(Recorder {
+                    log: taken.clone(),
+                    image: ours.clone(),
+                })
             },
             || {
                 l.borrow_mut().push("drain");
@@ -487,7 +560,10 @@ mod tests {
             &p,
             move |_pid| {
                 taken.borrow_mut().push("take");
-                Ok(Recorder { log: taken.clone(), image: ours.clone() })
+                Ok(Recorder {
+                    log: taken.clone(),
+                    image: ours.clone(),
+                })
             },
             || {
                 l.borrow_mut().push("drain");
@@ -546,10 +622,16 @@ mod tests {
             "only a DECLINED consent may claim the target is untouched: {silent}"
         );
 
-        let with_receipt =
-            elevation_outcome(25040, Err("exit code 1".to_string()), "elevated teardown failed: X")
-                .expect_err("still an error");
-        assert!(with_receipt.contains("elevated teardown failed: X"), "{with_receipt}");
+        let with_receipt = elevation_outcome(
+            25040,
+            Err("exit code 1".to_string()),
+            "elevated teardown failed: X",
+        )
+        .expect_err("still an error");
+        assert!(
+            with_receipt.contains("elevated teardown failed: X"),
+            "{with_receipt}"
+        );
     }
 
     // what this catches: path spelling read as a different file. The scheduler echoes

@@ -1,0 +1,45 @@
+[package]
+name = "continuum-serving"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+continuum-kernel = { path = "../continuum-kernel" }
+continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" }
+continuum-engine = { path = "../continuum-engine" }
+continuum-mind = { path = "../continuum-mind" }
+continuum-dreaming = { path = "../continuum-dreaming" }
+expert-pager-policy = { path = "../expert-pager-policy" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+schemars = { workspace = true }
+async-trait.workspace = true
+inventory = { workspace = true }
+tracing.workspace = true
+ts-rs.workspace = true
+parking_lot.workspace = true
+futures = { workspace = true }
+num_cpus = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+tempfile = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_ProcessStatus"] }
+
+[dev-dependencies]
+continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build gets the per-process continuum home (card d11d9827)
+continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
+continuum-mind = { path = "../continuum-mind", features = ["test-fixtures"] }
+continuum-dreaming = { path = "../continuum-dreaming", features = ["test-fixtures"] }
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
+axum = { workspace = true }
+
+[features]
+default = []
+metal = ["continuum-engine/metal", "continuum-mind/metal", "continuum-dreaming/metal"]
+test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "continuum-mind/test-fixtures", "continuum-dreaming/test-fixtures", "dep:tempfile"]

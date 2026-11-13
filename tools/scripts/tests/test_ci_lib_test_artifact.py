@@ -4,6 +4,9 @@ from pathlib import Path
 import tempfile
 import unittest
 import sys
+import os
+import io
+import json
 
 sys.dont_write_bytecode = True
 
@@ -38,7 +41,7 @@ class ArtifactReuseTest(unittest.TestCase):
             result = artifact.environment(messages, manifest, root / "rustlib", "/inherited/lib")
             self.assertEqual(result["CONTINUUM_LIB_TEST"], str(executable))
             self.assertEqual(result["CARGO_MANIFEST_DIR"], str(manifest))
-            self.assertEqual(result["CONTINUUM_LIB_TEST_LD_LIBRARY_PATH"], ":".join([
+            self.assertEqual(result["CONTINUUM_LIB_TEST_LD_LIBRARY_PATH"], os.pathsep.join([
                 str(native), str(executable.parent), str(executable.parent.parent),
                 str(root / "rustlib"), "/inherited/lib",
             ]))
@@ -49,6 +52,29 @@ class ArtifactReuseTest(unittest.TestCase):
             executable.unlink()
             with self.assertRaisesRegex(ValueError, "missing or not executable"):
                 artifact.environment([message], manifest, root / "rustlib", "")
+
+            # c1280057: compilation fails before artifact selection/warning checks.
+            # Preserve the original failure and raw stream, but expose its error now.
+            events = [message, {"reason": "compiler-message", "message": {
+                "level": "error", "message": "bad constructor", "rendered": "error: bad constructor 日本語 →\n",
+            }}, {"reason": "build-finished", "success": False}]
+            payload = "".join(json.dumps(event) + "\n" for event in events)
+            log = io.StringIO()
+            raw = root / "compiler.jsonl"
+            code = "import sys; sys.stdout.write(sys.argv[1]); sys.stdout.flush(); sys.exit(7)"
+            self.assertEqual(artifact.capture(raw, [sys.executable, "-c", code, payload], log), 7)
+            self.assertEqual(raw.read_text(encoding="utf-8"), payload)
+            self.assertIn("error: bad constructor", log.getvalue())
+            self.assertIn("target=continuum_core", log.getvalue())
+            self.assertIn("success=False", log.getvalue())
+            encoded = io.BytesIO()
+            constrained = io.TextIOWrapper(encoded, encoding="cp1252", errors="strict")
+            self.assertEqual(artifact.capture(raw, [sys.executable, "-c", code, payload], constrained), 7)
+            constrained.flush()
+            self.assertIn(b"error: bad constructor \\u65e5", encoded.getvalue())
+            self.assertEqual(raw.read_text(encoding="utf-8"), payload)
+            self.assertEqual(artifact.capture(raw, [sys.executable, "-c", "print('invalid')"], io.StringIO()), 1)
+            self.assertEqual(artifact.capture(raw, [sys.executable, "-c", "print('[]')"], io.StringIO()), 1)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,10 @@
 //! refused manifest is probed by file and reason and never refuses the boot.
 
 use crate::runtime::{ModuleConfig, ModulePriority, ServiceModule};
-use crate::sdk_codegen::ext::{install_ext_descriptors, load_manifests, overlay_dir, LoadedCommand};
+pub mod manifest;
+
+use crate::sdk_codegen::ext::install_ext_descriptors;
+use manifest::{load_manifests, overlay_dir, LoadedCommand};
 use crate::sdk_codegen::DynCommand;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -25,13 +28,13 @@ impl ExtCommandsModule {
         let dir = overlay_dir(continuum_root);
         let (loaded, refused) = load_manifests(&dir, &shipped_refs);
         for e in &refused {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "ext.command.refused",
                 reason = %e,
                 "an authored command manifest was refused — fix or remove the named file"
             );
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "ext.command.loaded",
             dir = %dir.display(),
             loaded = loaded.len() as u64,

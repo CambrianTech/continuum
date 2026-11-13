@@ -86,7 +86,7 @@ impl ServiceModule for TestInferenceModule {
     ) -> Result<CommandResult, String> {
         let request: TextGenerationRequest = serde_json::from_value(params)
             .map_err(|e| format!("decode TextGenerationRequest: {e}"))?;
-        let response = self.adapter.generate_text(request).await?;
+        let response = self.adapter.generate_text(request, continuum_core::ai::adapter::Dispatched::fixture()).await?;
         let value = serde_json::to_value(&response)
             .map_err(|e| format!("serialize TextGenerationResponse: {e}"))?;
         Ok(CommandResult::Json(value))
@@ -154,6 +154,10 @@ async fn persona_command_pump_makes_persona_addressable_for_ai_generate() {
     // The runtime's membership epoch: the pump re-opens its stream when it
     // moves and exits only when the sender is DROPPED, so the test holds it.
     let (_membership_tx, membership_rx) = tokio::sync::watch::channel(0u64);
+    // Boot installs the command-ingress responder the pump runs; this process has no boot.
+    continuum_core::persona::command_inbound_pump::install_command_handler(|airc, executor, grants| {
+        continuum_core::ipc::command_ingress::CommandRequestHandler::with_grant_authorizer(airc, executor, grants)
+    });
     let pump = PersonaCommandInboundPump::spawn(
         persona_id,
         Arc::clone(loop_back.peer_a()),
@@ -179,8 +183,8 @@ async fn persona_command_pump_makes_persona_addressable_for_ai_generate() {
     let transport = AircLiveTransport::new(Arc::clone(loop_back.peer_b()), loop_back.peer_a_id());
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
-    let response = adapter
-        .generate_text(request("ping the pump"))
+    let terms = continuum_core::ai::types::DispatchTerms::thinking(continuum_core::ai::types::Think::ModelDefault);
+    let response = continuum_core::ai::adapter::DispatchTermsPolicy::generate_under(&adapter, request("ping the pump"), terms)
         .await
         .expect(
             "PersonaCommandInboundPump must install the handler so that a remote \

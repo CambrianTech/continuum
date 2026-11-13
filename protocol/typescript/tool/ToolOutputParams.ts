@@ -2,40 +2,48 @@
 import type { OutputFilter } from "./OutputFilter";
 
 /**
- * Inputs to `tool/output`. `outputId` is required (from the preview); everything
+ * Inputs to `tool/output`. `outputId` (from the preview) or `act` (one of her act numbers),
+ * or both when they name the same output, or neither for her newest saved output; everything
  * else selects WHAT to pull back.
  */
 export type ToolOutputParams = { 
 /**
- * The output id from the elision marker (e.g. `"deadbeefcafe0001"`). This is
- * the spill the preview told you was saved.
+ * The saved output's id.
  */
-outputId: string, 
+outputId?: string, 
 /**
- * A PREBUILT filter — the easy path, no regex needed: `errors` (what broke?),
- * `warnings`, `failures` (which tests failed?), or `summary` (how did it end?).
- * Start here on a flooded build/test log. Overridden by an explicit `pattern`.
+ * Or an act number (#n): its saved output.
+ */
+act?: number, 
+/**
+ * A preset grep, no regex needed.
  */
 filter?: OutputFilter, 
 /**
- * A regex to grep for — the power-user path when a preset isn't specific enough.
- * e.g. `"error\\[E0308\\]"` for one exact error. Omit to use `filter`, a range,
- * or the tail.
+ * A regex to grep for (overrides filter).
  */
 pattern?: string, 
 /**
- * Lines of context to keep around each grep match (default 2, like `grep -C`).
+ * Context lines per match.
  */
 contextLines?: number, 
 /**
- * Read an explicit 1-based line range instead of grepping: the first line.
+ * First line of a range (1-based).
  */
 startLine?: number, 
 /**
- * Read an explicit 1-based line range instead of grepping: the last line.
+ * Last line of the range.
  */
 endLine?: number, 
 /**
- * Cap on the number of grep match windows returned (default 50).
+ * Most matches shown.
  */
-maxMatches?: number, };
+maxMatches?: number, 
+/**
+ * Exact bytes from here (alone); continue at nextByteOffset.
+ */
+byteOffset?: number, 
+/**
+ * Bytes wanted from byteOffset.
+ */
+byteLength?: number, };

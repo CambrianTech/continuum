@@ -1,5 +1,8 @@
 # Live-call positron controls — one truth, every interface
 
+> `legacy/` was deleted 2026-10-23; every `legacy/` path below is at git tag `legacy-archive-2026-10-23` (restore: `git checkout legacy-archive-2026-10-23 -- legacy/<path>`).
+
+
 **Status:** designed + fully diagnosed 2026-08-07, not yet built. Everything below was
 verified against the running tree, not inferred. Task #58.
 

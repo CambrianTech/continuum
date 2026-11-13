@@ -222,7 +222,7 @@ pub async fn discover_with_patience() -> AircDiscovery {
         let waited = effective_elapsed(started, reset_origin, std::time::Instant::now());
         if !should_retry(&d, waited, DISCOVERY_PATIENCE) {
             if attempt > 1 {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "airc.discovery.settled",
                     attempts = attempt,
                     waited_ms = started.elapsed().as_millis() as u64,
@@ -233,7 +233,7 @@ pub async fn discover_with_patience() -> AircDiscovery {
             }
             return d;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "airc.discovery.retry",
             attempt = attempt,
             waited_ms = started.elapsed().as_millis() as u64,
@@ -266,57 +266,50 @@ impl From<DiscoveryError> for DiscoveryFailure {
     }
 }
 
-/// Recover a daemon whose socket nobody holds: remove the stale file, start a daemon by
-/// the same path `airc status` uses (it starts one when none answers), and wait — bounded
-/// — for the new socket to answer. Returns `true` when a retry is worth making. A socket
-/// some process still holds is NOT stale (a wedged daemon is a different fault) and is
-/// left alone. Every outcome is a probe: `airc.daemon.recovered`.
+/// Recover a dead daemon through the core's ONE airc starter,
+/// [`daemon_supervisor::spawn`](crate::airc::daemon_supervisor::spawn): airc's login
+/// supervisor or its gated autostart, so its maintenance gate and token provisioning
+/// apply. Until 2026-10-03 this ran its own `airc events list` here, a second reviver
+/// beside the liveness owner that undid an intentional stop within 1.3 s and bypassed
+/// the supervisor route (proven by Astra's nonce-c run). Every outcome is a probe:
+/// `airc.daemon.recovered`.
 async fn recover_stale_daemon(socket: &std::path::Path) -> bool {
-    use tokio::process::Command;
-    let bound = std::time::Duration::from_secs(5);
-    let held = tokio::time::timeout(bound, Command::new("lsof").arg("-t").arg(socket).output())
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-        .unwrap_or(false); // JUSTIFIED unwrap_or: lsof absent or hung = cannot prove a holder; treat as unheld and try (the retry is bounded and harmless)
-    if held {
-        crate::probe!(
-            class = "airc.daemon.recovered",
-            socket = %socket.display(),
-            outcome = "held_not_stale",
-            "a process still holds the daemon socket — not a stale file; no recovery attempted"
-        );
-        return false;
-    }
+    use crate::airc::daemon_supervisor::{self, Spawned};
     let existed = socket.exists();
-    if existed {
-        let _ = std::fs::remove_file(socket);
-    }
     let started = std::time::Instant::now();
-    let start = tokio::time::timeout(std::time::Duration::from_secs(30), Command::new("airc").arg("status").output()).await;
-    let start_ok = matches!(&start, Ok(Ok(o)) if o.status.success());
-    if start_ok || socket.exists() {
-        // A daemon was started. Whether it answers within THIS function's wait or not,
-        // the patience loop now measures its budget from here — a slow daemon is a
-        // daemon, and the verdict must not be the one its own start time bought.
+    let outcome = match tokio::time::timeout(
+        daemon_supervisor::SPAWN_BUDGET + std::time::Duration::from_secs(2),
+        tokio::task::spawn_blocking(daemon_supervisor::spawn),
+    )
+    .await
+    {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(e)) => Spawned::Failed(format!("spawn task panicked: {e}")),
+        Err(_) => Spawned::Failed("spawn did not return within its budget".into()),
+    };
+    // A start that was ISSUED resets the patience origin, whether or not the daemon has
+    // answered yet: a 2.4 GB store answers 60-70 s later (the 5090), and noting only
+    // starts that answered let patience run out and refuse full-citizen boot, the
+    // four-days-dark loop (Cormac's review of #4672). See DAEMON_STARTED_AT.
+    let started_one = matches!(outcome, Spawned::Issued(_));
+    if started_one {
         note_daemon_started();
     }
-    let mut answered = false;
-    while started.elapsed() < std::time::Duration::from_secs(25) {
-        if socket.exists() && discover_peer_id(socket).await.is_ok() {
-            answered = true;
-            break;
-        }
+    let mut answered = matches!(outcome, Spawned::Answering | Spawned::Issued(_))
+        && discover_peer_id(socket).await.is_ok();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !answered && started_one && std::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        answered = discover_peer_id(socket).await.is_ok();
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "airc.daemon.recovered",
         socket = %socket.display(),
-        outcome = if answered { "recovered" } else if start_ok { "started_not_answering" } else { "start_failed" },
-        stale_file_removed = existed,
+        outcome = if answered { "recovered" } else { "not_recovered" },
+        spawn = format!("{outcome:?}"),
+        stale_file_present = existed,
         waited_ms = started.elapsed().as_millis() as u64,
-        "dead airc daemon: stale socket cleared and a daemon started by the core itself"
+        "airc daemon recovery through the core's one airc starter"
     );
     answered
 }

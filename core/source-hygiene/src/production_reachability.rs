@@ -58,7 +58,7 @@
 //! against this crate; references are searched across every workspace root. See
 //! [`super::workspace_src_roots`].
 
-use super::{split_code_and_comment, CrateRule, SourceFile, Violation};
+use super::{lexer::split_code_and_comment, CrateRule, SourceFile, Violation};
 use std::collections::HashMap;
 
 /// Constructor shapes that mark a type as machinery someone is meant to stand up.
@@ -74,16 +74,6 @@ const CONSTRUCTOR_SHAPES: &[&str] = &[
     "fn connect(",
     "fn start(",
 ];
-
-/// Unwired public machinery at the time this guard landed (2026-08-20).
-///
-/// **This number may only ever go DOWN.** Raising it to make a red build green is
-/// defeating the guard and should be refused in review — the whole point is that the
-/// five defects above were each individually "not worth blocking on" and collectively
-/// cost days. If your new type trips this, the fix is to WIRE it or to not land it
-/// yet; a type with no caller is not finished work.
-#[cfg(test)]
-const BASELINE_UNWIRED: usize = 107;
 
 pub struct ProductionReachability;
 
@@ -158,22 +148,32 @@ impl ProductionReachability {
     }
 
     /// Does this file stand the type up — an inherent `impl` plus a constructor?
+    /// A type is machinery when one of ITS OWN `impl` blocks holds a constructor. The
+    /// constructor must sit inside `impl {name}` — a `fn new` belonging to another type
+    /// in the same file does not make this one machinery (that file-wide reading flagged
+    /// `Probed` the day `CaptureFile::new` landed beside it, review of #4672).
     fn is_machinery(file: &SourceFile, name: &str) -> bool {
-        let has_impl = file
-            .production
-            .lines()
-            .map(|l| split_code_and_comment(l).0)
-            .any(|code| {
-                let t = code.trim_start();
-                t.starts_with(&format!("impl {name} ")) || t.starts_with(&format!("impl {name}<"))
-            });
-        if !has_impl {
-            return false;
+        let mut depth: i64 = 0;
+        let mut own_impl_depth: Option<i64> = None;
+        for code in file.production.lines().map(|l| split_code_and_comment(l).0) {
+            let t = code.trim_start();
+            let opens_own_impl = own_impl_depth.is_none()
+                && (t.starts_with(&format!("impl {name} ")) || t.starts_with(&format!("impl {name}<")));
+            if opens_own_impl {
+                own_impl_depth = Some(depth);
+            }
+            if own_impl_depth.is_some() && CONSTRUCTOR_SHAPES.iter().any(|s| code.contains(s)) {
+                return true;
+            }
+            let delta = crate::lexer::brace_delta(code);
+            depth += delta;
+            // `delta < 0` closes a multi-line impl; a one-line `impl X {}` (delta 0) opens
+            // and closes on its own line and must not stay open over the rest of the file.
+            if own_impl_depth.is_some_and(|d| depth <= d && (delta < 0 || opens_own_impl)) {
+                own_impl_depth = None;
+            }
         }
-        file.production
-            .lines()
-            .map(|l| split_code_and_comment(l).0)
-            .any(|code| CONSTRUCTOR_SHAPES.iter().any(|s| code.contains(s)))
+        false
     }
 }
 
@@ -184,6 +184,12 @@ impl CrateRule for ProductionReachability {
 
     fn check_crate(&self, files: &[SourceFile], corpus: &str) -> Vec<Violation> {
         let corpus_counts = Self::identifier_counts(corpus);
+        let mut moved_tests = std::collections::HashMap::<&str, String>::new();
+        for test in files.iter().filter(|f| f.is_moved_test()) {
+            let text = moved_tests.entry(test.owning_module()).or_default();
+            text.push('\n');
+            text.push_str(&test.raw);
+        }
         let mut out = Vec::new();
         for file in files {
             // Own-mentions are counted over the SAME text shape as the corpus — raw,
@@ -192,7 +198,15 @@ impl CrateRule for ProductionReachability {
             // `#[cfg(test)]` mod scored corpus>own and read as externally referenced,
             // so `AgentContext` — the defect this guard exists for — went unreported.
             // Symmetry between the two sides IS the arithmetic.
-            let own_counts = Self::identifier_counts(&file.raw);
+            //
+            // "Its own file" is its owning module: a test module moved into a sibling
+            // `tests.rs` still constructs the type in its OWN tests. Read as external, it
+            // made two test-only types look wired the day #5224 moved 69 test modules.
+            let own_text = match moved_tests.get(file.owning_module()) {
+                Some(tests) if !file.is_moved_test() => format!("{}\n{tests}", file.raw),
+                _ => file.raw.clone(),
+            };
+            let own_counts = Self::identifier_counts(&own_text);
             for (line, name) in Self::declared_types(file) {
                 if !Self::is_machinery(file, &name) || Self::surfaced_by_alias(file, &name) {
                     continue;
@@ -205,7 +219,7 @@ impl CrateRule for ProductionReachability {
                 if total <= own {
                     out.push(Violation {
                         rule: "production-reachability",
-                        file: file.rel.clone(),
+                        file: file.repo.clone(),
                         line,
                         source: format!(
                             "pub {name} — constructed nowhere in the workspace outside its own file"
@@ -229,14 +243,14 @@ mod tests {
     ///
     /// A RATCHET, not a wall: thousands of lines predate the rule. If this fails
     /// because you added a type, wire it or don't land it. If it fails because you
-    /// wired one, LOWER the baseline and take the win.
+    /// wired one, the ratchet holds the lower count.
     #[test]
     fn unwired_public_machinery_never_increases() {
         let violations = scan_crate(&[&ProductionReachability]);
-        let count = violations.len();
-        assert!(
-            count <= BASELINE_UNWIRED,
-            "unwired public machinery rose to {count} (baseline {BASELINE_UNWIRED}).\n\
+                let count = violations.len();
+                crate::ratchet::hold_sites("unwired_machinery", &violations, crate::ratchet::Touched::HeldOnly(crate::ratchet::HeldOnly::CrossFile), || {
+            format!(
+            "unwired public machinery rose to {count}.\n\
              A pub type with a constructor and no caller anywhere in the workspace is \
              not finished work — it is the `AgentContext` defect (#27), which sat \
              complete-and-tested while the operator had no airc identity and benchmark \
@@ -248,7 +262,8 @@ mod tests {
                 .map(|v| format!("  {}:{}  {}", v.file, v.line, v.source))
                 .collect::<Vec<_>>()
                 .join("\n")
-        );
+            )
+        });
     }
 
     /// What this catches: the two exclusions that decide whether this rule is useful
@@ -286,11 +301,7 @@ mod tests {
                    impl AgentContext {\n    pub async fn bootstrap() -> Self { Self {} }\n}\n\
                    #[cfg(test)]\nmod tests {\n    fn t() { let _ = AgentContext::bootstrap(); }\n}\n";
         let production = own.split("#[cfg(test)]").next().unwrap_or(own); // the split marker is present by construction above
-        let file = SourceFile {
-            rel: "context/agent.rs".into(),
-            production: production.into(),
-            raw: own.into(),
-        };
+        let file = SourceFile::fixture("context/agent.rs", production, own);
         let corpus = format!(
             "{own}\npub use agent::{{AgentContext, AgentMetadata}};\n/// `AgentContext` (Slice 4)\n"
         );
@@ -305,24 +316,56 @@ mod tests {
         assert!(found[0].source.contains("AgentContext"));
     }
 
+    /// What this catches: the same #27 shape after its test module moved to a sibling
+    /// `context/agent/tests.rs` (`#![cfg(test)]`) to keep the owner readable. Read as a
+    /// different file, the test's construction looked external and the type read as
+    /// wired: two such types vanished from the count the day #5224 moved 69 test modules.
+    #[test]
+    fn a_type_constructed_only_in_its_moved_tests_is_still_reported() {
+        let own = "pub struct AgentContext {}\n\
+                   impl AgentContext {\n    pub async fn bootstrap() -> Self { Self {} }\n}\n\
+                   #[cfg(test)]\nmod tests;\n";
+        let tests = "//! Tests for agent.\n#![cfg(test)]\nuse super::*;\nfn t() { let _ = AgentContext::bootstrap(); }\n";
+        let files = [
+            SourceFile::fixture("context/agent.rs", own, own),
+            SourceFile::fixture("context/agent/tests.rs", "", tests),
+        ];
+        assert_eq!(files[1].owning_module(), "context/agent");
+        let corpus = format!("{own}\n{tests}");
+        let found = ProductionReachability.check_crate(&files, &corpus);
+        assert_eq!(found.len(), 1, "a moved test is still the type's own test: {found:?}");
+    }
+
     /// What this catches: the machinery predicate widening into a dead-code lint. A
     /// plain data carrier has no constructor to call, so asking who constructs it is
     /// the wrong question — and flagging every wire DTO would bury the real findings.
     #[test]
     fn a_plain_data_carrier_is_not_machinery() {
-        let dto = SourceFile {
-            rel: "wire.rs".into(),
-            production: "pub struct Payload {\n    pub id: String,\n}\n".into(),
-            raw: "pub struct Payload {\n    pub id: String,\n}\n".into(),
-        };
+        let dto_src = "pub struct Payload {\n    pub id: String,\n}\n";
+        let dto = SourceFile::fixture("wire.rs", dto_src, dto_src);
         assert!(!ProductionReachability::is_machinery(&dto, "Payload"));
 
-        let machine = SourceFile {
-            rel: "thing.rs".into(),
-            production: "pub struct Runner {}\nimpl Runner {\n    pub fn new() -> Self { Self {} }\n}\n"
-                .into(),
-            raw: "pub struct Runner {}\nimpl Runner {\n    pub fn new() -> Self { Self {} }\n}\n".into(),
-        };
+        let machine_src = "pub struct Runner {}\nimpl Runner {\n    pub fn new() -> Self { Self {} }\n}\n";
+        let machine = SourceFile::fixture("thing.rs", machine_src, machine_src);
         assert!(ProductionReachability::is_machinery(&machine, "Runner"));
+
+        // what this catches (review of #4672): a constructor on ANOTHER type in the file
+        // made every pub type there read as machinery.
+        let neighbour = "pub enum Outcome { A }\nimpl Outcome {\n    pub fn ok(&self) -> bool { true }\n}\nstruct Scratch;\nimpl Scratch {\n    fn new() -> Self { Scratch }\n}\n";
+        let mixed = SourceFile::fixture("mixed.rs", neighbour, neighbour);
+        assert!(!ProductionReachability::is_machinery(&mixed, "Outcome"));
+        assert!(ProductionReachability::is_machinery(&mixed, "Scratch"));
+
+        // what this also catches (Astra, review of #4678): a "}" inside a string closed
+        // the impl early, so the constructor after it was missed.
+        let stringy = "pub struct Runner {}\nimpl Runner {\n    fn label() -> &'static str { \"}\" }\n    pub fn new() -> Self { Runner {} }\n}\n";
+        let quoted = SourceFile::fixture("stringy.rs", stringy, stringy);
+        assert!(ProductionReachability::is_machinery(&quoted, "Runner"));
+
+        // what this also catches (Cormac, review of #4678): a one-line empty impl stayed
+        // open, so a later neighbour's constructor counted as this type's.
+        let empty = "pub struct Marker;\nimpl Marker {}\nstruct Other;\nimpl Other {\n    fn new() -> Self { Other }\n}\n";
+        let one_line = SourceFile::fixture("empty.rs", empty, empty);
+        assert!(!ProductionReachability::is_machinery(&one_line, "Marker"));
     }
 }

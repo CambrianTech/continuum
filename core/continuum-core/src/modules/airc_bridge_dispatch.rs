@@ -111,7 +111,7 @@ fn process_directive_event(name: &str, payload: &Value, bus: &crate::runtime::Me
     let room = payload.get("room").and_then(Value::as_str).unwrap_or("");
     let reply = reply_for(action, payload);
 
-    crate::probe!(
+    continuum_base::probe!(
         class = "airc.bridge",
         action = action,
         room = room,

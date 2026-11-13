@@ -3,9 +3,9 @@ import type { WorkArtifactReference } from "./WorkArtifactReference";
 
 export type WorkSubmitParams = { 
 /**
- * Card room (ID/name).
+ * Optional; the card's board decides.
  */
-room: string, 
+room?: string, 
 /**
  * The card you hold — board handle or full UUID.
  */
@@ -15,7 +15,7 @@ card_id: string,
  */
 submission_id?: string, 
 /**
- * Your claim — handle or UUID; defaults to board.
+ * Your claim; defaults to the board.
  */
 claim_id?: string, 
 /**
@@ -23,14 +23,26 @@ claim_id?: string,
  */
 instance?: string, 
 /**
- * Patch base; defaults to recorded creation/benchmark base. Required for legacy worktrees.
+ * Patch base; defaults to the recorded base.
  */
 base_sha?: string, 
 /**
- * Patch hash/size; computed if omitted.
+ * Omit: your checkout's committed HEAD.
+ */
+head?: string, 
+/**
+ * Omit: computed from your checkout. Not a git sha.
  */
 artifact?: WorkArtifactReference, 
 /**
- * Revision UUID (not artifact/submission ID); bind before publish or no credit.
+ * Staged revision UUID; bind before publish or no credit.
  */
-staged_revision_id?: string, };
+staged_revision_id?: string, 
+/**
+ * Generation that issued this work; not with staged_revision_id.
+ */
+generation_request_id?: string, 
+/**
+ * Submodule paths you mean to move.
+ */
+submodules?: Array<string>, };

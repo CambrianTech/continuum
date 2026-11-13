@@ -39,7 +39,7 @@ prompts) and the BLUEHERON/47823 live tests.
   the [CONCURRENCY-STYLE-GUIDE](../architecture/CONCURRENCY-STYLE-GUIDE.md), own
   task/interval, never blocking a turn.
 - **Inference is available to a background module** — `ai/adapter.rs` `AIProviderAdapter`
-  (the unsloth gateway adapter the persona already uses). The distillation LLM call goes
+  (the inference adapter the persona already uses). The distillation LLM call goes
   through it.
 
 > Verify-at-build (the peer inferred these; confirm signatures before relying on them):

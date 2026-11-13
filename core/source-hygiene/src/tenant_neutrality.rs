@@ -14,18 +14,12 @@
 //! URLs (the airc installer and the model-card attribution link), which name where
 //! the software comes from, not whose org is using it.
 
-use super::{split_code_and_comment, SourceFile, SourceRule, Violation};
+use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
 
 /// The tenant identities that must never appear in production code. Lower-case;
 /// matched case-insensitively against CODE (string literals included — a URL is
 /// code), never against comments.
 const TENANT_TOKENS: &[&str] = &["cambriantech", "joel"];
-
-/// Production occurrences when this guard landed (2026-09-05): `airc/discovery.rs`
-/// (the airc installer URL) and `forge/hf_publisher.rs` (the model-card attribution
-/// link). Both name the product's upstream. A NEW one has to argue.
-#[cfg(test)]
-const BASELINE_TENANT_LINES: usize = 2;
 
 pub struct NoTenantIdentityInProduction;
 
@@ -47,7 +41,7 @@ impl SourceRule for NoTenantIdentityInProduction {
             })
             .map(|(line, l)| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line,
                 source: l.trim().to_string(),
             })
@@ -103,7 +97,7 @@ impl SourceRule for NoRealUserHomePathAnywhere {
             })
             .map(|(i, l)| Violation {
                 rule: self.name(),
-                file: file.rel.clone(),
+                file: file.repo.clone(),
                 line: i + 1,
                 source: l.trim().to_string(),
             })
@@ -160,9 +154,9 @@ mod tests {
     #[test]
     fn tenant_identity_in_production_code_never_rises() {
         let violations = scan(&[&NoTenantIdentityInProduction]);
-        assert!(
-            violations.len() <= BASELINE_TENANT_LINES,
-            "production lines naming our own org rose to {} (baseline {BASELINE_TENANT_LINES}).\n\
+        crate::ratchet::hold_sites("tenant_lines", &violations, crate::ratchet::Touched::EndsClean, || {
+            format!(
+            "production lines naming our own org rose to {}.\n\
              This repo is for other people and their orgs: derive the identity from the \
              git remote or the spawned activity, never a literal.\nOffenders:\n{}",
             violations.len(),
@@ -171,7 +165,8 @@ mod tests {
                 .map(|v| format!("  {}:{} — {}", v.file, v.line, v.source))
                 .collect::<Vec<_>>()
                 .join("\n")
-        );
+            )
+        });
     }
 
     // what this catches: the predicate erring in either direction — a comment

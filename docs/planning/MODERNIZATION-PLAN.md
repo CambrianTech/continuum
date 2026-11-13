@@ -55,7 +55,6 @@
 - PHASE-7-ROADMAP.md - Old roadmap ❌ DELETE
 - TESTING-GENOME-TRAINING.md - Testing notes ❌ DELETE
 - PERSONA_ENDTOEND_PLAN.md - Implementation plan ❌ DELETE
-- UNSLOTH-SETUP.md - Setup guide ❌ DELETE
 - SENTINEL-INTEGRATION-QUICKSTART.md - Quickstart guide ❌ DELETE
 - REPRODUCIBLE-EXPERIMENTS-PLAN.md - Experiment plan ❌ DELETE
 
