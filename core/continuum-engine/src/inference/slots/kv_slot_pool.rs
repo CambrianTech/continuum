@@ -60,6 +60,7 @@ impl KvSlotPool {
                 .map(|_| Arc::new(tokio::sync::Semaphore::new(1)))
                 .collect(),
             released: Arc::new(tokio::sync::Notify::new()),
+            scratch_released: Arc::new(tokio::sync::Notify::new()),
             ledger: std::sync::OnceLock::new(),
             incarnation: std::sync::OnceLock::new(),
             ledger_generation: AtomicU64::new(0),
@@ -293,13 +294,28 @@ impl KvSlotPool {
         Some(self.operation_permit(slot, permit))
     }
 
-    /// A scratch release wakes only its physical semaphore, never citizen admission:
-    /// scratch is excluded from the citizen free list and cannot satisfy those waiters.
-    fn operation_permit(&self, slot: u32, permit: tokio::sync::OwnedSemaphorePermit) -> SlotPermit {
-        SlotPermit {
-            _permit: permit,
-            released: (Some(slot) != self.scratch).then(|| Arc::clone(&self.released)),
+    /// The slot's permit when it is free now, or the wait for its next release, registered before
+    /// the try so a release between them is never missed. The waiter takes nothing while it waits:
+    /// queued in the slot's semaphore it was HANDED the permit only to drop it, and two such waiters
+    /// (her learning step and a dream consolidation) passed it between them while each one's retry
+    /// found it taken: 35,000 lane grants a second on the M5, 2026-11-13 (card 6742aad1).
+    pub(crate) fn slot_or_release(&self, slot: u32) -> Result<Result<SlotPermit, SlotRelease>, String> {
+        if slot as usize >= self.operations.len() {
+            return Err("unknown physical KV slot".to_owned());
         }
+        let mut release = Box::pin(Arc::clone(self.release_signal(slot)).notified_owned());
+        release.as_mut().enable();
+        Ok(self.try_acquire_slot(slot).ok_or(release))
+    }
+
+    /// A scratch release wakes only scratch's waiters, never citizen admission:
+    /// scratch is excluded from the citizen free list and cannot satisfy those waiters.
+    fn release_signal(&self, slot: u32) -> &Arc<tokio::sync::Notify> {
+        if Some(slot) == self.scratch { &self.scratch_released } else { &self.released }
+    }
+
+    fn operation_permit(&self, slot: u32, permit: tokio::sync::OwnedSemaphorePermit) -> SlotPermit {
+        SlotPermit { _permit: permit, released: Arc::clone(self.release_signal(slot)) }
     }
 
     /// The signal a slot release raises; see [`Self::released`] on the struct.

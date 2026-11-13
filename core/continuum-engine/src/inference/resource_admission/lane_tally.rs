@@ -1,0 +1,103 @@
+//! The serving lanes' grants and releases as COUNTS, reported once per window, never a ledger row
+//! per event (card 6742aad1). A livelock in turn admission granted and released 35,000 ambient
+//! lanes a second on the M5 (2026-11-13, canary 0ed0d231b): a row each rotated the probe ledger and
+//! the core log every ~0.3 s and buried every other probe on the node, so nothing else could be
+//! diagnosed while it ran. A count costs two atomic adds at any rate; only a grant that WAITED
+//! still gets its own row (`admission.lane.granted`), because a wait is what a reader looks for.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// How often the counts are reported: a reporting cadence (one row a second at most, whatever the
+/// rate), not a tuning value.
+const WINDOW_MS: u64 = 1_000;
+
+pub(super) struct LaneTally {
+    /// Since the window opened.
+    granted: AtomicU64,
+    waited: AtomicU64,
+    released: AtomicU64,
+    held_ms: AtomicU64,
+    /// Since boot: what a test reads to bound the grants a scenario took.
+    total_granted: AtomicU64,
+    window_opened_ms: AtomicU64,
+}
+
+impl LaneTally {
+    pub(super) const fn new() -> Self {
+        Self {
+            granted: AtomicU64::new(0),
+            waited: AtomicU64::new(0),
+            released: AtomicU64::new(0),
+            held_ms: AtomicU64::new(0),
+            total_granted: AtomicU64::new(0),
+            window_opened_ms: AtomicU64::new(0),
+        }
+    }
+
+    pub(super) fn granted(&self, waited: bool) {
+        self.granted.fetch_add(1, Ordering::Relaxed);
+        self.total_granted.fetch_add(1, Ordering::Relaxed);
+        if waited {
+            self.waited.fetch_add(1, Ordering::Relaxed);
+        }
+        self.report_if_due(since_boot_ms());
+    }
+
+    pub(super) fn released(&self, held_ms: u64) {
+        self.released.fetch_add(1, Ordering::Relaxed);
+        self.held_ms.fetch_add(held_ms, Ordering::Relaxed);
+        self.report_if_due(since_boot_ms());
+    }
+
+    pub(super) fn total_granted(&self) -> u64 {
+        self.total_granted.load(Ordering::Relaxed)
+    }
+
+    /// The caller that closes a due window reports it; every other caller only counts.
+    fn report_if_due(&self, now: u64) {
+        let opened = self.window_opened_ms.load(Ordering::Acquire);
+        let window_ms = now.saturating_sub(opened);
+        if window_ms < WINDOW_MS
+            || self.window_opened_ms.compare_exchange(opened, now, Ordering::AcqRel, Ordering::Acquire).is_err()
+        {
+            return;
+        }
+        continuum_base::probe!(
+            class = "admission.lane.tally",
+            granted = self.granted.swap(0, Ordering::AcqRel),
+            waited = self.waited.swap(0, Ordering::AcqRel),
+            released = self.released.swap(0, Ordering::AcqRel),
+            held_ms = self.held_ms.swap(0, Ordering::AcqRel),
+            window_ms,
+            "serving-lane grants and releases in this window"
+        );
+    }
+}
+
+fn since_boot_ms() -> u64 {
+    static BOOT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    BOOT.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (card 6742aad1): a hot path that writes a ledger row per grant. Ten thousand
+    // grants and releases inside one window report nothing until the window closes, and then once.
+    #[test]
+    fn counts_accumulate_inside_a_window_and_report_once() {
+        let tally = LaneTally::new();
+        let opened = since_boot_ms() + WINDOW_MS; // a window that cannot close while the loop runs
+        tally.window_opened_ms.store(opened, Ordering::Release);
+        for _ in 0..10_000 {
+            tally.granted(false);
+            tally.released(0);
+        }
+        assert_eq!(tally.granted.load(Ordering::Relaxed), 10_000, "still counting: the window has not closed");
+        tally.report_if_due(opened + WINDOW_MS);
+        assert_eq!(tally.granted.load(Ordering::Relaxed), 0, "the window closed once: reported and reset");
+        assert_eq!(tally.window_opened_ms.load(Ordering::Acquire), opened + WINDOW_MS, "the next window opens at the report");
+        assert_eq!(tally.total_granted(), 10_000, "the boot total is never reset");
+    }
+}

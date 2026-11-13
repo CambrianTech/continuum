@@ -92,6 +92,8 @@ pub struct LaneAdmission {
     pub(super) work_waiting: AtomicUsize,
     /// Fires on every permit release so a parked ambient caller re-checks.
     pub(super) released: tokio::sync::Notify,
+    /// Grants and releases as counts, reported once a window (card 6742aad1).
+    pub(super) tally: super::lane_tally::LaneTally,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -260,6 +262,7 @@ impl LaneAdmission {
             resize_lock: Mutex::new(()),
             work_waiting: AtomicUsize::new(0),
             released: tokio::sync::Notify::const_new(),
+            tally: super::lane_tally::LaneTally::new(),
         }
     }
 
@@ -414,15 +417,20 @@ impl LaneAdmission {
                 .await
             }
         };
-        continuum_base::probe!(
-            class = "admission.lane.granted",
-            persona = ?persona,
-            waited_ms = queued_at.elapsed().as_millis() as u64,
-            directed,
-            priority = ?priority,
-            now_available = self.serving_lanes().available_permits() as u64,
-            "serving-lane permit granted"
-        );
+        // A row only for a grant that waited; every grant is counted (`lane_tally`, card 6742aad1).
+        let waited_ms = queued_at.elapsed().as_millis() as u64;
+        self.tally.granted(waited_ms > 0);
+        if waited_ms > 0 {
+            continuum_base::probe!(
+                class = "admission.lane.granted",
+                persona = ?persona,
+                waited_ms,
+                directed,
+                priority = ?priority,
+                now_available = self.serving_lanes().available_permits() as u64,
+                "serving-lane permit granted after a wait"
+            );
+        }
         progress.granted();
         ServingLanePermit {
             gate: self,
@@ -433,7 +441,6 @@ impl LaneAdmission {
             _inflight: InflightModelCall::enter(),
             granted_at: std::time::Instant::now(),
             persona,
-            directed,
             priority,
             released: &self.released,
         }
@@ -545,6 +552,11 @@ impl Default for LaneAdmission {
 /// gate probes, so a starved waiter names the count instead of implying it.
 pub fn serving_lane_permits_available() -> usize {
     LANES.serving_lanes().available_permits()
+}
+
+/// Serving lanes granted since boot (`lane_tally`): a scenario bounds the grants it took by it.
+pub fn serving_lane_grants() -> u64 {
+    LANES.tally.total_granted()
 }
 
 /// `expected_occupancy`: the call's own bound on how long it will hold the lane (prefill

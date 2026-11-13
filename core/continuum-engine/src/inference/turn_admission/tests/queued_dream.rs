@@ -56,7 +56,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     // The inversion Codex named on #5786: a resident holds the adapter permit while it waits for
     // a slot. A dream waiting for the adapter must then hold no slot, or each waits on the other.
     let one = Arc::new(Semaphore::new(1));
-    let resident = one.clone().acquire_owned().await.expect("test: a resident holds the only adapter permit");
+    let resident = DecodeBound::from(&one).try_acquire().expect("test: a resident holds the only adapter permit");
     let waiting = admit_turn(&one, SlotClass::Dream, None, Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
     tokio::pin!(waiting);
     assert!(futures::poll!(&mut waiting).is_pending(), "the dream waits for the adapter permit");
@@ -155,4 +155,29 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     assert!(on_scratch_node._lane.is_some(), "a keyed dream holds the ambient lane even where a scratch slot exists");
     drop(on_scratch_node);
     assert_eq!(lanes_free(), before, "and gives it back");
+    // (4) TWO keyed dreams on her ONE busy slot (card 6742aad1: her learning step and a dream
+    // consolidation, the M5 2026-11-13). Queued in the slot's semaphore, each was handed the permit
+    // only to drop it while the other's retry found it taken: 35,000 lane grants a second, and
+    // neither ran. Now each waits for a release holding nothing, one runs, then the other.
+    let busy = (pool.acquire_slot(0).await.expect("test: a decode holds slot 0"), pool.acquire_slot(1).await.expect("test: a decode holds slot 1"));
+    let grants = crate::inference::resource_admission::serving_lane_grants();
+    let learning = admit_turn(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
+    let consolidating = admit_turn(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
+    tokio::pin!(learning, consolidating);
+    assert!(futures::poll!(&mut learning).is_pending(), "her slot is busy: the learning step waits");
+    assert!(futures::poll!(&mut consolidating).is_pending(), "and so does the consolidation");
+    assert_eq!(lanes_free(), before, "both wait holding no lane");
+    drop(busy);
+    // Bounded: under the handoff ping-pong the first never got the slot and this timed out.
+    let ran = tokio::time::timeout(std::time::Duration::from_secs(5), &mut learning).await.expect("one runs once her slot is released, never a spin").expect("test: admitted");
+    assert!(futures::poll!(&mut consolidating).is_pending(), "the other waits for her slot again, once");
+    assert_eq!(lanes_free(), before - 1, "holding no lane while it waits; the running one holds one");
+    drop(ran);
+    let then = tokio::time::timeout(std::time::Duration::from_secs(5), &mut consolidating).await.expect("the other runs when the first releases her slot").expect("test: admitted");
+    drop(then);
+    // Five passes take one lane each (two per dream to the first release, one to the second's
+    // admission); the spin took thousands. Slack only for another test's lane in the window.
+    let taken = crate::inference::resource_admission::serving_lane_grants() - grants;
+    assert!(taken <= 8, "each wait is one pass, never a spin: {taken} lane grants");
+    assert_eq!(lanes_free(), before, "and every lane comes back");
 }

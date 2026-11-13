@@ -13,6 +13,7 @@
 
 mod gate;
 mod lane_handoff;
+mod lane_tally;
 mod lanes;
 mod metrics;
 mod progress;
