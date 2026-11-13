@@ -49,6 +49,10 @@ by ad hoc caller code: the schema and shared write owner declare and atomically
 maintain the needed columns. Do not infer a type from a name such as `embedding` or
 from the first sample row.
 
+String-backed enums used in predicates declare `#[entity(text)]`: their stored value
+is the scalar string, not a quoted JSON document. The shared write codec refuses
+nonstrings; indexes and query bindings operate on the same declared representation.
+
 Integers stay exact; NULL is distinct from missing, empty and zero. A creation default
 applies only where the declaration explicitly permits it. A default never repairs an
 invalid persisted value on read. Join nullability remains explicit, including an
@@ -255,6 +259,8 @@ loads as extrapolated, not measured production traffic.
 | Paging waits or stalls compete with useful work | Inject slow read/transfer completion while neighbors submit ready operations | Waiting holds no execution worker/MindTurn; source custody retained; neighbor progress measured |
 | Requester cancellation or shutdown during a write | Cancel before dispatch, during transaction and around commit; restart | One committed outcome or rollback; no mixed payload/descriptor; no premature revision event |
 | Concurrent writes disturb paged traversal | Duplicate sort keys, inserts/updates/deletes at cursor boundaries and outer joins | Declared snapshot semantics, stable ordering/cardinality and exact NULL handling |
+| Relay refusal with more than one page of pending publications | 103 committed lines, close/reopen, ID-only indexed pages, exact retry and duplicate-import cases | Every pending line recovered; no body scan to select work; no fabricated sender fields |
+| Local database handle bypasses the shared home owner | Explicit isolated home, main/metrics/persona/node handles, restart | All local handles resolve under the same owner; existing unmanaged schema remains refused |
 | Unknown/corrupt metadata, schema drift or interrupted migration | Truncated headers, overflow shapes, wrong producer, interrupted bounded migration and reopen | Explicit refusal; no guessed type, fallback, silently dropped rows or identity substitution |
 | A query is fast alone but queues under resident load | Replay measured inter-arrival times with bursts, mixed readers/writers and shared resource pressure | Queue wait and end-to-end p50/p90/p99, backlog drain, throughput and fairness |
 

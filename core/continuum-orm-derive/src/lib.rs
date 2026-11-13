@@ -76,6 +76,7 @@
 //! - `#[entity(unique)]` — unique constraint
 //! - `#[entity(nullable)]` — explicit nullable (auto for `Option<T>`)
 //! - `#[entity(json)]` — force JSON column (override inferred type)
+//! - `#[entity(text)]` — string-backed enum/newtype column; the write owner rejects non-string values
 //! - `#[entity(skip)]` — exclude from the schema (in-memory only)
 //! - `#[entity(foreign_key("engrams.id"))]` — declare a foreign-key
 //!   reference. Cascade rules default to `Restrict` on delete and
@@ -534,6 +535,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
     let mut unique = false;
     let mut nullable_override: Option<bool> = None;
     let mut force_json = false;
+    let mut force_text = false;
     let mut binary = false;
     let mut skip = false;
     let mut primary_key = false;
@@ -551,6 +553,8 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
                     nullable_override = Some(true);
                 } else if meta.path.is_ident("json") {
                     force_json = true;
+                } else if meta.path.is_ident("text") {
+                    force_text = true;
                 } else if meta.path.is_ident("binary") {
                     binary = true;
                 } else if meta.path.is_ident("skip") {
@@ -574,7 +578,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
                         .unwrap_or_else(|| "<unknown>".to_string());
                     return Err(meta.error(format!(
                         "unknown field-level entity attribute `{}`. \
-                         Known keys: indexed, unique, nullable, json, skip, \
+                         Known keys: indexed, unique, nullable, json, text, binary, skip, \
                          primary_key, foreign_key.",
                         key
                     )));
@@ -596,13 +600,17 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
     }
 
     // Infer FieldType from the (unwrapped) Rust type, unless overridden.
-    if force_json && binary { return Err(syn::Error::new_spanned(field, "json and binary are mutually exclusive codecs")); }
+    if usize::from(force_json) + usize::from(force_text) + usize::from(binary) > 1 {
+        return Err(syn::Error::new_spanned(field, "json, text and binary are mutually exclusive codecs"));
+    }
     if binary && !is_byte_buffer(inner_ty) {
         return Err(syn::Error::new_spanned(&field.ty,
             "entity(binary) requires Vec<u8> or Option<Vec<u8>>; supply native producer bytes through the binary storage interface"));
     }
     let field_type = if binary {
         InferredFieldType::Binary
+    } else if force_text {
+        InferredFieldType::String
     } else if force_json {
         InferredFieldType::Json
     } else {

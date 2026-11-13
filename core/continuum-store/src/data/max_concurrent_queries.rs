@@ -207,20 +207,20 @@ impl DataState {
     /// - `"main"` — primary database. Uses `DATABASE_URL` env when set
     ///   (a SQLite path); otherwise
     ///   defaults to a local SQLite file at
-    ///   `$HOME/.continuum/database/main.db`.
+    ///   `<continuum-home>/database/main.db`.
     /// - `"@persona:<slug>"` — per-persona long-term memory DB. Resolves
-    ///   to `$HOME/.continuum/personas/<slug>/data/longterm.db` on the
+    ///   to `<continuum-home>/personas/<slug>/data/longterm.db` on the
     ///   host. Mac Option B requires this — TS in container builds
     ///   container-rooted paths (`/root/...`) that the native core on
     ///   host can't open; the sentinel lets each side resolve to its
     ///   own filesystem view of the shared `~/.continuum` mount.
     /// - `"@metrics"` — telemetry SQLite. Resolves to
-    ///   `$HOME/.continuum/metrics/metrics.sqlite` on the host. Same
+    ///   `<continuum-home>/metrics/metrics.sqlite` on the host. Same
     ///   Mac Option B rationale.
     /// - `"@node"` — machine-local SQLite ownership state under the native continuum home;
     ///   never follows the shared DATABASE_URL backend.
     /// - 36-char UUID shape — per-persona database (UUID-keyed variant).
-    ///   Maps to `$HOME/.continuum/personas/<uuid>/longterm.db`. Kept
+    ///   Maps to `<continuum-home>/personas/<uuid>/longterm.db`. Kept
     ///   for back-compat with callers using UUIDs as identity.
     /// - Starts with a filesystem path —
     ///   legacy passthrough. Logged at WARN so remaining leak sites show
@@ -228,11 +228,10 @@ impl DataState {
     ///
     /// This keeps the abstraction enforced at the caller boundary: SQL,
     /// URLs, and filenames simply do not exist in the caller's language.
-    /// `$HOME` remains the explicit home override; otherwise the native home
-    /// directory is used (including Windows launches without a shell's HOME).
+    /// Local paths use the shared continuum-home owner, including test isolation.
     pub(super) fn resolve_handle(&self, handle: &str) -> Result<String, String> {
         Self::resolve_node_or_backend(handle, crate::paths::continuum_home, ||
-            Self::resolve_handle_with(handle, |key| std::env::var(key).ok(), dirs::home_dir))
+            Self::resolve_handle_with(handle, |key| std::env::var(key).ok(), crate::paths::continuum_home))
     }
 
     pub(super) fn resolve_node_or_backend(
@@ -255,15 +254,11 @@ impl DataState {
     pub(super) fn resolve_handle_with(
         handle: &str,
         env: impl Fn(&str) -> Option<String>,
-        native_home: impl FnOnce() -> Option<PathBuf>,
+        native_home: impl FnOnce() -> Result<PathBuf, String>,
     ) -> Result<String, String> {
         // Lazy: configured backends and legacy paths do not need a home lookup.
         let resolve_home = || {
-            if let Some(home) = env("HOME") {
-                return Ok(home);
-            }
-            native_home()
-                .ok_or_else(|| format!("resolve_handle('{handle}'): home directory unavailable"))?
+            native_home()?
                 .into_os_string()
                 .into_string()
                 .map_err(|_| {
@@ -279,7 +274,7 @@ impl DataState {
                 }
             }
             let home = resolve_home()?;
-            return Ok(format!("{}/.continuum/database/main.db", home));
+            return Ok(format!("{}/database/main.db", home));
         }
 
         // Per-CITIZEN slug-shape sentinel: @persona:<slug> / @agent:<slug> /
@@ -307,7 +302,7 @@ impl DataState {
                 }
                 let home = resolve_home()?;
                 return Ok(format!(
-                    "{home}/.continuum/{bucket}/{slug}/data/longterm.db"
+                    "{home}/{bucket}/{slug}/data/longterm.db"
                 ));
             }
         }
@@ -315,7 +310,7 @@ impl DataState {
         // Telemetry SQLite sentinel.
         if handle == "@metrics" {
             let home = resolve_home()?;
-            return Ok(format!("{}/.continuum/metrics/metrics.sqlite", home));
+            return Ok(format!("{}/metrics/metrics.sqlite", home));
         }
 
         // Per-persona UUID shape: 8-4-4-4-12 hex chars with hyphens (36 total).
@@ -323,7 +318,7 @@ impl DataState {
         if is_uuid_shape(handle) {
             let home = resolve_home()?;
             return Ok(format!(
-                "{}/.continuum/personas/{}/longterm.db",
+                "{}/personas/{}/longterm.db",
                 home, handle
             ));
         }
