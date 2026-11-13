@@ -2,6 +2,7 @@
 # Setup Rust toolchain and build all workers
 # Run this on new machines to set up the Rust infrastructure
 set -e
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared/preflight.sh"

@@ -12,8 +12,8 @@ count=0
 missing=()
 
 while IFS= read -r file; do
-  # Skip generated files
-  case "$file" in */generated/*) continue ;; esac
+  # Skip generated files and sourced library files (lib/ is included by callers)
+  case "$file" in */generated/*|*/lib/*) continue ;; esac
   
   # Check if the file has any pipe operators (not just in comments)
   # Strip comment lines, then check for | that's not inside a string or comment
@@ -23,8 +23,9 @@ while IFS= read -r file; do
     stripped="${line#"${line%%[![:space:]]*}"}"
     case "$stripped" in \#*) continue ;; esac
     
-    # Check for pipe that's not inside a heredoc or string context
-    if echo "$line" | grep -q '|'; then
+    # Check for actual pipeline operators (not || logical OR)
+    stripped_line="${line//||/}"
+    if echo "$stripped_line" | grep -q '|'; then
       has_pipe=true
       break
     fi
