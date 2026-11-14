@@ -163,11 +163,11 @@ pub struct MigrationVerification {
 }
 
 /// Shared migration state — safe to read/pause while engine is running.
-/// All fields use atomic or RwLock for lock-free concurrent access.
+/// Progress uses atomics/RwLock; pause/resume is retained watch state.
 #[derive(Clone)]
 pub struct MigrationHandle {
     states: Arc<parking_lot::RwLock<HashMap<String, Arc<CollectionMigrationState>>>>,
-    paused: Arc<AtomicBool>,
+    paused: tokio::sync::watch::Sender<bool>,
     running: Arc<AtomicBool>,
     source: Arc<dyn StorageAdapter>,
     target: Arc<dyn StorageAdapter>,
@@ -196,20 +196,20 @@ impl MigrationHandle {
             total,
             migrated,
             failed,
-            paused: self.paused.load(Ordering::Relaxed),
+            paused: *self.paused.borrow(),
             running: self.running.load(Ordering::Relaxed),
             collections,
         }
     }
 
-    /// Pause the migration (atomic flag — no lock needed)
+    /// Publish pause; the current page completes before the next page waits.
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::Relaxed);
+        self.paused.send_replace(true);
     }
 
-    /// Resume the migration (atomic flag — caller must call engine.run() again)
+    /// Publish resume to the same running migration; no replacement task is needed.
     pub fn resume(&self) {
-        self.paused.store(false, Ordering::Relaxed);
+        self.paused.send_replace(false);
     }
 
     /// Whether the migration is still running
@@ -281,7 +281,7 @@ pub struct MigrationEngine {
     target: Arc<dyn StorageAdapter>,
     config: MigrationConfig,
     states: Arc<parking_lot::RwLock<HashMap<String, Arc<CollectionMigrationState>>>>,
-    paused: Arc<AtomicBool>,
+    paused: tokio::sync::watch::Sender<bool>,
     running: Arc<AtomicBool>,
 }
 
@@ -301,7 +301,7 @@ impl MigrationEngine {
             target,
             config,
             states: Arc::new(parking_lot::RwLock::new(HashMap::new())),
-            paused: Arc::new(AtomicBool::new(false)),
+            paused: tokio::sync::watch::channel(false).0,
             running: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -320,6 +320,7 @@ impl MigrationEngine {
     /// Run the full migration
     pub async fn run(&mut self) -> Result<MigrationProgress, String> {
         self.running.store(true, Ordering::Relaxed);
+        self.wait_until_resumed().await?;
 
         // Step 1: Discover collections
         let collections = match &self.config.collections {
@@ -365,9 +366,7 @@ impl MigrationEngine {
 
         // Step 3: Migrate each collection
         for collection in &collections {
-            if self.paused.load(Ordering::Relaxed) {
-                break;
-            }
+            self.wait_until_resumed().await?;
             if let Err(e) = self.migrate_collection(collection).await {
                 self.running.store(false, Ordering::Relaxed);
                 return Err(e);
@@ -406,9 +405,10 @@ impl MigrationEngine {
         let mut after: Option<String> = None;
 
         loop {
-            if self.paused.load(Ordering::Relaxed) {
+            if *self.paused.borrow() {
                 *state.status.write() = MigrationStatus::Paused;
-                return Ok(());
+                self.wait_until_resumed().await?;
+                *state.status.write() = MigrationStatus::InProgress;
             }
 
             let records = match snapshot.migration_page(&super::migration_snapshot::MigrationPage {
@@ -458,12 +458,19 @@ impl MigrationEngine {
 
     /// Convenience: pause
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::Relaxed);
+        self.paused.send_replace(true);
     }
 
     /// Convenience: resume
     pub fn resume(&self) {
-        self.paused.store(false, Ordering::Relaxed);
+        self.paused.send_replace(false);
+    }
+
+    async fn wait_until_resumed(&self) -> Result<(), String> {
+        let mut control = self.paused.subscribe();
+        control.wait_for(|paused| !*paused).await
+            .map(|_| ())
+            .map_err(|error| format!("migration control closed: {error}"))
     }
 
     /// Convenience: verify
@@ -626,24 +633,51 @@ mod tests {
                 .await.into_result().expect("test: storage operation succeeds");
         }
 
+        let gated = Arc::new(crate::orm::gated_adapter::GatedAdapter::new(target.clone()));
+        let gate = gated.pause_next_write();
         let mut engine = MigrationEngine::new(
             source.clone(),
-            target.clone(),
+            gated,
             MigrationConfig {
-                batch_size: 3,
+                batch_size: 1,
                 collections: None,
             },
         );
 
-        // Pre-pause before running
+        // Poll the real continuation to Pending before publishing resume. No
+        // sleep or timeout stands in for observing the suspended future.
         engine.pause();
-        let status = engine.run().await.unwrap();
-        // Should have paused before migrating (or after first batch)
-        assert!(status.paused);
-
-        // Resume and complete
-        engine.resume();
-        let status = engine.run().await.unwrap();
+        let handle = engine.handle();
+        let mut run = Box::pin(engine.run());
+        std::future::poll_fn(|context| {
+            use std::future::Future;
+            assert!(run.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        }).await;
+        assert!(handle.status().paused);
+        assert!(handle.is_running());
+        assert_eq!(handle.status().migrated, 0);
+        handle.resume();
+        tokio::select! {
+            _ = gate.entered.notified() => {},
+            result = &mut run => panic!("migration finished before held write: {result:?}"),
+        }
+        handle.pause();
+        gate.release.notify_one();
+        std::future::poll_fn(|context| {
+            use std::future::Future;
+            assert!(run.as_mut().poll(context).is_pending());
+            let status = handle.status();
+            if status.migrated == 1 {
+                assert_eq!(status.collections[0].status, "paused");
+                std::task::Poll::Ready(())
+            } else { std::task::Poll::Pending }
+        }).await;
+        assert_eq!(target.count(StorageQuery {
+            collection: "items".into(), ..Default::default()
+        }).await.into_result(), Ok(1));
+        handle.resume();
+        let status = run.await.unwrap();
         assert_eq!(status.migrated, 10);
     }
 
