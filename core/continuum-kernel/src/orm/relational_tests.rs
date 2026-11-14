@@ -463,9 +463,9 @@ async fn restart_verifies_physical_declaration_and_refuses_unmanaged_tables(
     let rejected = unmanaged
         .ensure(schema)
         .await
-        .expect_err("unmanaged existing table must require migration");
+        .expect_err("incomplete physical declaration must be rejected");
     assert!(
-        rejected.contains("no declared-schema receipt"),
+        rejected.contains("physical schema differs"),
         "{rejected}"
     );
     Ok(())

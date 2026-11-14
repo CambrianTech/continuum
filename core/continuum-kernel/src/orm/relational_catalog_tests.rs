@@ -2,6 +2,48 @@
 
 use super::*;
 
+#[tokio::test]
+async fn receipt_free_current_schema_is_proved_without_rewriting_rows()
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    use sea_orm::{EntityTrait, ConnectionTrait, DbBackend};
+    use crate::orm::relational_declaration as declaration;
+    use sea_orm::sea_query::{Alias, ColumnDef, Table};
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("adoption.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let initial = store(path).await?;
+    initial.insert(&initial.db, &record("p", Parent::COLLECTION, json!({"label":"unchanged"}))).await?;
+    initial.insert(&initial.db, &record("c", Child::COLLECTION,
+        json!({"parentId":"p","token":"unique","seq":9007199254740993u64,"body":{"original":true},"joinedLabel":null}))).await?;
+    let query = || QueryBuilder::new(Child::COLLECTION).limit(1).build();
+    let before = initial.query(query()).await?;
+    declaration::Entity::delete_many().exec(&initial.db).await?;
+    initial.db.clone().close().await?;
+
+    let reopened = store(path).await?;
+    let after = reopened.query(query()).await?;
+    assert_eq!(serde_json::to_value(&before)?, serde_json::to_value(&after)?);
+    assert!(declaration::Entity::find_by_id(Child::COLLECTION).one(&reopened.db).await?.is_some());
+    // The receipt remains sufficient on another restart; it is not a repeated adoption.
+    reopened.db.clone().close().await?;
+    let admitted = store(path).await?;
+    assert_eq!(admitted.query(query()).await?.len(), 1);
+
+    declaration::Entity::delete_by_id(Child::COLLECTION).exec(&admitted.db).await?;
+    let drift = Table::alter().table(Alias::new(Child::COLLECTION))
+        .add_column(ColumnDef::new(Alias::new("extra")).text()).to_owned();
+    admitted.db.execute(DbBackend::Sqlite.build(&drift)).await?;
+    admitted.db.clone().close().await?;
+    let refused = RelationalStore::open(AdapterConfig {
+        connection_string: path.into(), max_connections: 1, ..Default::default()
+    }).await?;
+    let error = refused.ensure(Child::collection_schema()).await.err().ok_or("drift accepted")?;
+    assert!(error.contains("physical schema differs"), "{error}");
+    assert!(declaration::Entity::find_by_id(Child::COLLECTION).one(&refused.db).await?.is_none());
+    Ok(())
+}
+
 #[test]
 fn declaration_equivalence_rejects_duplicate_names_on_either_side() {
     use crate::orm::entity::schemas_equivalent;

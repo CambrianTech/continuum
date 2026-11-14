@@ -173,7 +173,7 @@ metadata and payload pages. Scalar changes and FK-driven updates currently do no
 advance native revisions; a filtered corpus must include their invalidations before
 this receipt stream can claim membership completeness.
 The sequence-head declaration now has a composite domain/collection identity; any
-previous development database needs the offline schema migration before adoption.
+previous development database needs an owner-applied schema upgrade before adoption.
 
 The producer chooses its representation and performs normalization or precision
 selection once in its compute path. Storage binds and returns those native bytes.
@@ -275,39 +275,29 @@ rows are projections or publication obligations, not substitutes for that author
 Preserve authenticated source identity, ordering, reply threading and unknown supported
 extensions. Generic data access must not bypass a domain's protected write owner.
 
-## 6. Offline migration and deletion
+## 6. Current declaration and deletion
 
-This is development: there is no compatibility requirement. Implement the one-time
-migration in Rust, using the same complete entity registry and shared storage owner.
-Any unavoidable provider-specific migration operation is contained in that owner's
-migration module, not in runtime application code. No runtime old-format decoder,
-dual backend, automatic fallback or feature flag selecting an obsolete implementation.
+Joel's November 14 clarification, relayed by Fable on PR #5954, is **no legacy
+runtime path**. The ORM owner should upgrade existing databases at boot from the
+current declaration, preserving rows and custody. Apply supported additive changes
+and their declaration-owned defaults or typed backfill in one transaction, then
+record the receipt. Unsupported destructive or ambiguous changes fail explicitly;
+there is no old-format reader, dual backend or fallback afterwards. Replace callers
+and delete superseded paths together. Never reset durable tables to bypass a mismatch.
+A receipt-free table may be admitted when its entire SQLite physical catalog exactly
+matches the current entity declaration. The owner compiles that declaration in an
+empty disposable catalog, compares typed table/index metadata, and records the receipt
+inside the source admission transaction. It neither transforms nor copies resident
+rows. A mismatch remains an error. This establishes physical schema identity only:
+SQLite TEXT does not distinguish historical String, Uuid, Date and Json codecs, and
+the proof does not establish historical row validity or native revision provenance.
 
-The migration takes explicit source/destination scope and an exact schema version.
-Inspect active builds and supported service lifecycle first; quiesce the relevant
-writers, preserve AIRC keys/identity and unrelated work, and produce a recoverable
-copy before transforming authoritative data. Best-effort data preservation must not
-block the redesign, but omissions or invalid rows require an explicit receipt.
-
-Transform in bounded transactions. Validate row identities, exact scalar values,
-NULL handling, relationships, payload byte identity, descriptor compatibility and
-cursor order. Record source/destination schema digests, counts, rejected rows and
-completion. Prove restart and interrupted-migration behavior. Switch the owner to the
-validated destination through supported lifecycle, then delete superseded runtime
-implementations and their callers. A rollback restores a known artifact/data pair;
-it is not a permanently retained alternate runtime backend.
-
-The former Python learned-NULL repair and its tests are deleted. Its narrow replacement
-is the Rust `migrate-training-progress` executable; its SeaORM implementation lives in
-the storage owner's offline module and is not included in the runtime ORM. Run
-`cargo run -p continuum-kernel --bin migrate-training-progress -- OFFLINE_DATABASE`
-on an explicitly prepared offline copy for a read-only inventory. After establishing
-from provenance that the historical NULLs mean unstarted, add
-`--apply-historical-unstarted`. This explicit operation changes only those NULLs to
-zero, refuses invalid storage classes/ranges before mutation, and verifies cardinality
-inside one transaction. It never interprets unknown progress as unstarted automatically.
-The receipt records rows, historical NULLs, changed rows and whether changes applied.
-This narrow repair does not perform the full schema/native-payload migration above.
+Sequence heads are durable high-water marks: deleted rows cannot reconstruct issued
+sequences. Disk-root records carry citizen ownership and eviction custody; a filesystem
+scan does not reconstruct that authority. Neither is a disposable derived cache.
+The live November 14 failure on `orm_sequence_heads.domain` remains unresolved by
+physical receipt adoption. A temporary deployment rollback restores a known artifact;
+it does not authorize retaining an alternate runtime implementation.
 
 ### Runtime orchestration and deterministic completion
 

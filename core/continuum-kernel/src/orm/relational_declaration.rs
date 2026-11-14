@@ -1,5 +1,5 @@
 //! Durable proof that this owner created the declared physical schema.
-//! Existing tables without this receipt require an explicit offline migration.
+//! Receipt-free tables are admitted only after proving the current declaration exactly.
 use super::{adapter::naming, types::CollectionSchema};
 use sea_orm::entity::prelude::*;
 use sea_orm::{QueryOrder, QuerySelect, Set};
@@ -60,11 +60,36 @@ pub(super) async fn admit<C: ConnectionTrait>(
             Ok(false)
         }
         None if actual.is_empty() => Ok(true),
-        None => Err(format!(
-            "{}: existing table has no declared-schema receipt; explicit migration required",
-            schema.collection
-        )),
+        None => {
+            verify_current_declaration(schema, &actual).await?;
+            record(db, schema).await?;
+            Ok(false)
+        }
     }
+}
+
+/// Let SQLite canonicalize the owner's current DDL in a disposable, empty catalog.
+/// This visits schema metadata only: no resident rows are copied or transformed.
+/// There is no alternate declaration, inferred type, or permissive comparison.
+async fn verify_current_declaration(
+    schema: &CollectionSchema,
+    actual: &[catalog::Model],
+) -> Result<(), String> {
+    let declaration = super::relational_schema::compile(schema)?;
+    let expected = sea_orm::Database::connect("sqlite::memory:")
+        .await.map_err(|e| e.to_string())?;
+    expected.execute(sea_orm::DbBackend::Sqlite.build(&declaration.create))
+        .await.map_err(|e| e.to_string())?;
+    for index in &declaration.indexes {
+        expected.execute(sea_orm::DbBackend::Sqlite.build(index))
+            .await.map_err(|e| e.to_string())?;
+    }
+    let declared = physical(&expected, &schema.collection).await?;
+    expected.close().await.map_err(|e| e.to_string())?;
+    if actual != declared {
+        return Err(format!("{}: physical schema differs from its current declaration; admission refused", schema.collection));
+    }
+    Ok(())
 }
 
 pub(super) async fn record<C: ConnectionTrait>(
