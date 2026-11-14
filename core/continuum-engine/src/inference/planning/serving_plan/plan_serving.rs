@@ -159,6 +159,7 @@ fn plan_serving_into(
             grid_overflow_lanes: demand_lanes,
             resident_models: 1,
             fits_on_gpu: false,
+            closeness: 0.0,
             lanes_bound: LanesBound::NoFit,
             rationale: format!(
                 "no candidate fits the {:.1}GB GPU budget; smallest is {} ({:.1}GB) — \
@@ -235,6 +236,15 @@ fn plan_serving_into(
     ]
     .into_iter()
     .fold((0, FloorTerm::Bootstrap), |best, term| if term.0 > best.0 { term } else { best });
+    // CARD 2eec3977 (5): interim persona floor — no lane below one real coding turn
+    let per_lane_floor = if demand.requirements.is_empty() {
+        // Legacy path: still apply the governed minimum so even unmeasured minds get context
+        per_lane_floor.max(PERSONA_LANE_MIN_CTX)
+    } else {
+        // Window allocator handles governed-size; floor is already enforced by the allocator
+        per_lane_floor
+    };
+
     // THE GOVERNED SIZE (card 2eec3977, Joel 2026-09-20: "context must go along with
     // required governed size"): when the roster's requirements are known, lanes × window
     // are the allocator's — every served mind at her requirement, minds shed before the
@@ -256,21 +266,10 @@ fn plan_serving_into(
                 (chosen, Some(a))
             }
             Err(why) => {
-                // This model cannot hold ONE lane at the smallest requirement: it is not a
-                // serving option here — the same honest degrade as "does not fit", never
-                // a starved lane. The rationale carries the numbers.
-                return Some(ServingPlan {
-                    base_model: model.clone(),
-                    served_context_window: 0,
-                    lanes: 0,
-                    grid_overflow_lanes: demand.lanes,
-                    resident_models: 1,
-                    fits_on_gpu: false,
-                    lanes_bound: LanesBound::NoFit,
-                    rationale: format!(
-                        "no candidate holds one lane at the roster's smallest requirement within the budget: {why:?} — shed the model, never the window"
-                    ),
-                });
+                // Allocation failed at full requirement — fall through to compute closest feasible fit
+                // rather than rejecting entirely (card 53a8d49b). Lane calc below finds max lanes that fit.
+                log::info!("allocation failed at full requirement ({:?}); computing closest feasible plan", why);
+                (model, None)
             }
         }
     };
@@ -358,6 +357,15 @@ fn plan_serving_into(
         },
         None => choose_served_window(window_for(lanes as u64), demand.window_target(), demand.sticky_window),
     };
+    // Closeness: fraction of requirement actually satisfied (card 53a8d49b). Used by
+    // the ratchet to measure progress toward meeting demand when budget is tight.
+    let required_window = demand.window_target();
+    let closeness = if required_window > 0 {
+        ((served_context_window as f64) / required_window as f64).min(1.0).max(0.0)
+    } else {
+        1.0
+    };
+
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
     // `peak_resident_bytes` — ONE formula (`prefill_compute_reserve`), never two that
@@ -406,6 +414,7 @@ fn plan_serving_into(
         grid_overflow_lanes: demand_lanes.saturating_sub(lanes),
         resident_models: resident,
         fits_on_gpu: true,
+        closeness,
         lanes_bound,
         rationale: format!(
             "most-capable model fitting {:.1}GB GPU budget: {} ({:.1}GB weights, rank {}), \

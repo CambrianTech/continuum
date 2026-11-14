@@ -37,7 +37,7 @@
 
 pub mod footprint;
 
-use crate::inference::planning::MIN_SERVE_CTX;
+use crate::inference::planning::{MIN_SERVE_CTX, PERSONA_LANE_MIN_CTX};
 
 mod max_lanes;
 pub use max_lanes::*;
