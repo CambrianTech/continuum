@@ -215,10 +215,9 @@ impl EpochWatermarkStore for OrmEpochWatermark {
             .save_monotonic(grantee.as_uuid(), &row, "epoch")
             .await
             .map_err(store_error)?;
-        Ok(if advanced {
-            WatermarkDecision::Accepted
-        } else {
-            WatermarkDecision::Superseded
+        Ok(match advanced {
+            crate::orm::seam::Written::Written => WatermarkDecision::Accepted,
+            crate::orm::seam::Written::Kept => WatermarkDecision::Superseded,
         })
     }
 

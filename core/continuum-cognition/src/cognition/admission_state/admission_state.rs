@@ -189,26 +189,17 @@ impl AdmissionState {
 
         // Ensure the persona's home directory exists. fs::create_dir_all
         // is idempotent and safe to call on every boot.
-        home.ensure_exists()
-            .map_err(|e| crate::orm::OrmStoreError::AdapterFailed {
-                operation: "ensure_persona_home",
-                collection: "engrams".to_string(),
-                detail: format!(
-                    "failed to ensure persona home dir {}: {}",
-                    home.root().display(),
-                    e
-                ),
-            })?;
+        home.ensure_exists().map_err(|source| crate::orm::OrmStoreError::Storage {
+            operation: "ensure_persona_home",
+            collection: "engrams",
+            source: crate::orm::StorageError::Io { path: home.root().to_path_buf(), source },
+        })?;
 
         // Open the per-persona SQLite. The adapter handles WAL + FK
         // pragmas etc; we just hand it the path.
         let adapter = SeaOrmAdapter::open(&home.engrams_db())
             .await
-            .map_err(|e| crate::orm::OrmStoreError::AdapterFailed {
-                operation: "initialize",
-                collection: "engrams".to_string(),
-                detail: e,
-            })?;
+            .map_err(|source| crate::orm::OrmStoreError::Storage { operation: "initialize", collection: "engrams", source })?;
         let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
 
         // Build the typed stores. Each ensure_schema runs on
