@@ -159,7 +159,7 @@ async fn persist_memory_on<T: continuum_client::Transport>(
         .await
         .map_err(|e| {
             CommandError::Internal(format!(
-                "memory/append-memory: durable write to {} failed: {e}",
+                "the durable write of this memory to {} failed: {e}",
                 persona_db_handle(persona_id)
             ))
         })?;
@@ -197,7 +197,7 @@ pub(crate) async fn hydrate_corpus_if_missing(
         .await
         .map_err(|e| {
             CommandError::Internal(format!(
-                "memory hydrate: data/list on {} failed: {e}",
+                "memory hydrate: listing the memories in {} failed: {e}",
                 persona_db_handle(persona_id)
             ))
         })?;

@@ -28,6 +28,7 @@ impl super::relational::RelationalStore {
                         }
                         BatchOperation::Delete(row) => {
                             let deleted = store
+                                // bounded: deletes the one row with this primary key, in the store, loading none
                                 .delete_on(transaction, QueryBuilder::new(&row.collection).filter_eq("id", row.id).build())
                                 .await?;
                             committed.extend(deleted.revisions);

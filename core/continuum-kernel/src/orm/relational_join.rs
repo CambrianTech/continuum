@@ -126,7 +126,7 @@ impl super::relational::RelationalStore {
                             .columns()
                             .iter()
                             .position(|c| c.name() == alias)
-                            .ok_or(StorageError::Corrupt { what: "a joined column is missing from its row" })?;
+                            .ok_or(StorageError::Corrupt { what: "a joined row without its declared column" })?;
                         fields.insert(
                             field.name.clone(),
                             super::relational_codec::scalar(row, index, field)?,

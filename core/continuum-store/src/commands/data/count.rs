@@ -23,9 +23,9 @@ pub struct DataCountParams {
     // `dbPath` on the wire, NOT `handle`: the envelope owns that name and refuses a
     // string for it (`expected struct HandleRef`) — card ea28d2f6. The Rust field keeps
     // its name; only the wire changes.
-    #[serde(default, rename = "dbPath", skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub handle: Option<String>,
+    #[serde(default, rename = "dbPath", skip_serializing_if = "crate::data::StoreHandle::is_main")]
+    #[ts(optional, as = "Option<crate::data::StoreHandle>")]
+    pub handle: crate::data::StoreHandle,
 }
 
 crate::action_command! {
@@ -38,7 +38,7 @@ crate::action_command! {
     params: DataCountParams,
     output: usize,
     run(this, _ctx, p) => {
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_str();
         let result = this.state.count_records(handle, p.collection, p.filter).await?;
         Ok(result)
     }

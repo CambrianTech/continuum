@@ -19,7 +19,7 @@ fn mismatch(field: &SchemaField) -> StorageError {
 pub(super) fn encode_text(field: &SchemaField, value: &str) -> Result<SqlValue, StorageError> {
     match field.field_type {
         FieldType::String | FieldType::Date | FieldType::Uuid => Ok(value.into()),
-        FieldType::Json => Ok(serde_json::to_string(value)?.into()),
+        FieldType::Json => Ok(serde_json::to_string(value)?.into()), // disk: a Json-declared field is stored as SQLite TEXT
         _ => Err(mismatch(field)),
     }
 }
@@ -28,7 +28,7 @@ pub(super) fn encode_text(field: &SchemaField, value: &str) -> Result<SqlValue, 
 pub(super) fn encode_integer(field: &SchemaField, value: i64) -> Result<SqlValue, StorageError> {
     match field.field_type {
         FieldType::Number => Ok(value.into()),
-        FieldType::Json => Ok(serde_json::to_string(&value)?.into()),
+        FieldType::Json => Ok(serde_json::to_string(&value)?.into()), // disk: a Json-declared field is stored as SQLite TEXT
         _ => Err(mismatch(field)),
     }
 }
@@ -49,7 +49,7 @@ pub(super) fn encode(field: &SchemaField, value: &Value) -> Result<SqlValue, Sto
         FieldType::Number if value.is_number() => super::relational_query::value(value),
         FieldType::Number => Err(mismatch(field)),
         FieldType::Binary => Err(StorageError::BinaryThroughJson { field: field.name.clone() }),
-        FieldType::Json => Ok(serde_json::to_string(value)?.into()),
+        FieldType::Json => Ok(serde_json::to_string(value)?.into()), // disk: a Json-declared field is stored as SQLite TEXT
     }
 }
 

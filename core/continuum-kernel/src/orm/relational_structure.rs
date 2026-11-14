@@ -90,6 +90,7 @@ async fn rows<C: ConnectionTrait, T: FromQueryResult>(
     let query = Query::select().column(Asterisk)
         .from_function(Func::cust(Alias::new(function)).arg(table), Alias::new("catalog"))
         .to_owned();
+    // bounded: a pragma table function returns one row per column or index of one table
     Ok(T::find_by_statement(db.get_database_backend().build(&query)).all(db).await?)
 }
 

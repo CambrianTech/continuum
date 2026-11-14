@@ -137,7 +137,7 @@ fn message_row(
     Ok(operation(RowWrite {
         collection: CHAT_MESSAGES_COLLECTION.to_string(),
         id: line.message_id.to_string(),
-        data: serde_json::to_value(row).map_err(|error| format!("chat message: {error}"))?,
+        data: serde_json::to_value(row).map_err(|error| format!("chat message: {error}"))?, // disk: the chat row body is the ORM document column until chat_messages is a typed entity (card d2856ec5)
     }))
 }
 /// Records every imported line and reports each as fresh, in order: the seam's test importer.

@@ -96,14 +96,6 @@ impl DataState {
     pub(super) async fn handle_query(&self, params: QueryParams) -> Result<CommandResult, String> {
         require_public_collection(&params.collection)?;
         require_query_fields(&params.filter, &params.sort, &params.select)?;
-        // Limit concurrent queries to cap peak heap from 15 personas querying simultaneously.
-        // Excess callers wait (not rejected) — bounded concurrency, not dropped work.
-        let _permit = self
-            .query_semaphore
-            .acquire()
-            .await
-            .map_err(|_| "query semaphore closed")?;
-
         use std::time::Instant;
         let start = Instant::now();
 
@@ -149,14 +141,6 @@ impl DataState {
     /// shape its internal Rust callers (chat, channel, self-task) still use.
     pub(crate) async fn list(&self, params: DataListParams) -> Result<DataListResult, String> {
         require_public_collection(&params.collection)?;
-        // Bound peak heap when many personas list concurrently (same gate as
-        // handle_query). Excess callers wait — bounded, not dropped.
-        let _permit = self
-            .query_semaphore
-            .acquire()
-            .await
-            .map_err(|_| "query semaphore closed")?;
-
         // The public request schema defines an omitted handle as the shared store.
         let handle = match params.handle.as_deref() {
             Some(handle) => handle,
@@ -234,12 +218,6 @@ impl DataState {
             require_field_name(&join.foreign_field)?;
             require_query_fields(&None, &None, &join.select)?;
         }
-        let _permit = self
-            .query_semaphore
-            .acquire()
-            .await
-            .map_err(|_| "query semaphore closed")?;
-
         let query = StorageQuery {
             collection: params.collection,
             filter: params.filter,

@@ -23,9 +23,9 @@ pub struct VectorIndexParams {
     // `dbPath` on the wire, NOT `handle`: the envelope owns that name and refuses a
     // string for it (`expected struct HandleRef`) — card ea28d2f6. The Rust field keeps
     // its name; only the wire changes.
-    #[serde(default, rename = "dbPath", skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub handle: Option<String>,
+    #[serde(default, rename = "dbPath", skip_serializing_if = "crate::data::StoreHandle::is_main")]
+    #[ts(optional, as = "Option<crate::data::StoreHandle>")]
+    pub handle: crate::data::StoreHandle,
 }
 
 crate::action_command! {
@@ -38,7 +38,7 @@ crate::action_command! {
     params: VectorIndexParams,
     output: StorageResult<DataRecord>,
     run(this, _ctx, p) => {
-        let handle = p.handle.as_deref().unwrap_or("main"); // an unnamed handle is the shared main store by contract
+        let handle = p.handle.as_str();
         // The wire keeps its receipt shape; the store seam below it is typed.
         let record = this
             .state

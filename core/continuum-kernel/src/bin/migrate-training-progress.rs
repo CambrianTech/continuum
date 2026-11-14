@@ -21,7 +21,7 @@ async fn main() -> Result<(), String> {
     let receipt = migration::run(std::path::Path::new(&path), apply).await?;
     println!(
         "{}",
-        serde_json::to_string(&receipt).map_err(|error| error.to_string())?
+        serde_json::to_string(&receipt).map_err(|error| error.to_string())? // stdout: the migration receipt this CLI prints for its operator
     );
     Ok(())
 }

@@ -248,7 +248,7 @@ use crate::orm::types::CollectionSchema;
     ) -> Result<CommandResult, String> {
         let p: crate::commands::data::create::DataCreateParams =
             serde_json::from_value(params).map_err(|e| e.to_string())?;
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_str();
         let result = module
             .state
             .create_record(handle, p.collection, p.id, p.data)
@@ -265,7 +265,7 @@ use crate::orm::types::CollectionSchema;
     ) -> Result<CommandResult, String> {
         let p: crate::commands::data::read::DataReadParams =
             serde_json::from_value(params).map_err(|e| e.to_string())?;
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_str();
         let result = module
             .state
             .read_record(handle, &p.collection, &p.id)
@@ -284,7 +284,7 @@ use crate::orm::types::CollectionSchema;
         params: serde_json::Value,
     ) -> Result<CommandResult, Box<dyn std::error::Error>> {
         let p: crate::commands::vector::index::VectorIndexParams = serde_json::from_value(params)?;
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_str();
         let record = module.state.index_vector(handle, &p.collection, p.id, p.embedding).await.map_err(|e| e.to_string())?;
         Ok(CommandResult::Json(serde_json::to_value(crate::orm::types::StorageResult::ok(record))?))
     }
@@ -297,7 +297,7 @@ use crate::orm::types::CollectionSchema;
     ) -> Result<CommandResult, String> {
         let p: crate::commands::vector::stats::VectorStatsParams =
             serde_json::from_value(params).map_err(|e| e.to_string())?;
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_str();
         let result = module.state.vector_stats(handle, &p.collection).await.map_err(|e| e.to_string())?;
         Ok(CommandResult::Json(
             serde_json::to_value(result).map_err(|e| e.to_string())?,
@@ -311,7 +311,7 @@ use crate::orm::types::CollectionSchema;
         params: serde_json::Value,
     ) -> Result<CommandResult, Box<dyn std::error::Error>> {
         let p: crate::commands::vector::search::VectorSearchParams = serde_json::from_value(params)?;
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_str();
         let query = crate::data::wire_query(&p.query_vector, p.embedder.as_deref());
         let result = module.state.vector_search(handle, &p.collection, query, p.k, p.threshold, p.include_data).await.map_err(|e| e.to_string())?;
         Ok(CommandResult::Json(serde_json::to_value(result)?))
@@ -325,7 +325,7 @@ use crate::orm::types::CollectionSchema;
     ) -> Result<CommandResult, String> {
         let p: crate::commands::vector::invalidate_cache::VectorInvalidateCacheParams =
             serde_json::from_value(params).map_err(|e| e.to_string())?;
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_str();
         let result = module
             .state
             .invalidate_vector_cache(handle, &p.collection)
@@ -343,7 +343,7 @@ use crate::orm::types::CollectionSchema;
     ) -> Result<CommandResult, String> {
         let p: crate::commands::vector::backfill::VectorBackfillParams =
             serde_json::from_value(params).map_err(|e| e.to_string())?;
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_str();
         let filter: Option<std::collections::HashMap<String, FieldFilter>> = match p.filter {
             Some(map) => Some(
                 serde_json::from_value(serde_json::Value::Object(map))
@@ -461,7 +461,7 @@ use crate::orm::types::CollectionSchema;
                 "data": { "name": "Alice" }
             }))
             .expect("clean params deserialize");
-        assert!(clean.handle.is_none(), "omitted handle stays None (→ main)");
+        assert!(clean.handle.is_main(), "an omitted dbPath addresses the main store");
 
         let legacy: crate::commands::data::create::DataCreateParams =
             serde_json::from_value(json!({
@@ -471,8 +471,8 @@ use crate::orm::types::CollectionSchema;
             }))
             .expect("legacy dbPath params deserialize");
         assert_eq!(
-            legacy.handle.as_deref(),
-            Some("some/store.db"),
+            legacy.handle.as_str(),
+            "some/store.db",
             "dbPath is the wire name of the storage handle (the envelope owns `handle`)"
         );
     }

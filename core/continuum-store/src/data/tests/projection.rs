@@ -11,12 +11,12 @@ async fn list_projects_in_storage_and_preserves_count_and_identity() -> Result<(
     for n in 0..3 {
         let created = module.state.create_record(&path, "projection".into(), Some(format!("row-{n}")),
             json!({"cardId": "card", "state": n, "payload": "x".repeat(1_000_000)})).await?;
-        assert!(created.success, "{:?}", created.error);
+        assert_eq!(created.id, format!("row-{n}"));
     }
     let params = DataListParams {
         collection: "projection".into(), handle: Some(path.clone()),
         filter: Some(json!({"cardId":"card"})), select: Some(vec!["state".into()]),
-        limit: std::num::NonZeroU32::new(1).expect("positive fixture page"), offset: None, sort: None,
+        limit: std::num::NonZeroU32::MIN, offset: None, sort: None,
     };
     let result = module.state.list(params).await?;
     assert_eq!(result.total, 3);
@@ -30,17 +30,18 @@ async fn list_projects_in_storage_and_preserves_count_and_identity() -> Result<(
     let invalid = DataListParams {
         collection: "projection".into(), handle: Some(path),
         filter: None, select: Some(vec!["(select payload from projection)".into()]),
-        limit: std::num::NonZeroU32::new(1).expect("positive fixture page"), offset: None, sort: None,
+        limit: std::num::NonZeroU32::MIN, offset: None, sort: None,
     };
     assert!(module.state.list(invalid).await.is_err());
     Ok(())
 }
 
 #[test]
-fn list_schema_requires_a_positive_page_size() {
+fn list_schema_requires_a_positive_page_size() -> Result<(), serde_json::Error> {
     for params in [json!({"collection":"rows"}), json!({"collection":"rows","limit":0}), json!({"collection":"rows","limit":null})] {
         assert!(serde_json::from_value::<DataListParams>(params).is_err());
     }
-    let params: DataListParams = serde_json::from_value(json!({"collection":"rows","limit":7})).expect("positive page");
+    let params: DataListParams = serde_json::from_value(json!({"collection":"rows","limit":7}))?; // wire: the JSON params a client sends, decoded as the command would
     assert_eq!(params.limit.get(), 7);
+    Ok(())
 }

@@ -308,9 +308,10 @@ async fn test_vector_cache_invalidation() {
 /// Writes `values` as `producer`'s certified unit vector on row `id`.
 async fn write_vector(adapter: &dyn StorageAdapter, collection: &str, id: &str, values: [f32; 2], producer: &Producer) {
     let payload = unit_f32(values.into_iter(), producer).expect("test: certified vector");
+    let id = id.to_owned();
     let written = adapter
         .update_binary(crate::orm::seam::BinaryWrite {
-            row: crate::orm::seam::RowRef { collection, id },
+            row: crate::orm::seam::RowRef { collection, id: &id },
             payloads: BTreeMap::from([("embedding".to_owned(), payload)]),
             condition: BinaryWriteCondition::Replace,
         })
