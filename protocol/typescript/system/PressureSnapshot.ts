@@ -58,8 +58,9 @@ consecutive_at_level: number,
  */
 compressed_bytes: number | null, 
 /**
- * Bytes the host needs given back to come out of memory pressure (`host_deficit`): what the
- * OS has compressed and swapped since it was last clean, plus what it lacks of its own free
- * target. Zero on a clean box, or with no host reading.
+ * Bytes the host needs given back to come out of memory pressure (`host_deficit`): while the
+ * OS reports pressure, what it has compressed and swapped since it last read normal plus what
+ * it lacks of its own free target, never less than that target. Zero while the OS reads
+ * normal, or with no host reading or verdict.
  */
 deficit_bytes: number, };
