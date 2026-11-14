@@ -51,7 +51,7 @@ pub fn command_objects(
 fn may_access(ctx: &Ctx, run: &RecipeRunRecord) -> bool {
     let Some(caller) = &ctx.caller else { return true };
     let peer = caller.peer_id.as_uuid();
-    crate::persona::operator_peer::is_local_identity(peer) || run.caller.as_ref().is_some_and(|c| c.peer_id == peer)
+    crate::persona::operator_peer::is_local_identity(peer) || run.caller_peer_id == Some(peer)
 }
 
 /// The run `run_id` names, if this caller may see it. A run she may not see is
@@ -221,18 +221,26 @@ impl ActionCommand for RecipeStatus {
     }
 }
 
-/// `recipe/list` takes no input.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+/// A bounded page of visible active runs, in stable identity order.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/recipe/RecipeListParams.ts")]
 #[serde(rename_all = "camelCase")]
-pub struct RecipeListParams {}
+pub struct RecipeListParams {
+    #[ts(type = "number")]
+    pub limit: std::num::NonZeroUsize,
+    #[ts(type = "string | null")]
+    pub after: Option<Uuid>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/recipe/RecipeListResult.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct RecipeListResult {
-    /// Every run that is not over: running, held, interrupted, or waiting on recovery.
+    /// Visible runs in this page: running, held, interrupted, or waiting on recovery.
     pub active: Vec<RecipeRunResult>,
+    /// Continue from this identity; a full final page may be followed by an empty page.
+    #[ts(type = "string | null")]
+    pub next: Option<Uuid>,
 }
 
 pub struct RecipeList {
@@ -244,16 +252,22 @@ impl ActionCommand for RecipeList {
     const NAME: &'static str = "recipe/list";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "List every recipe run that is not over: running, held for approval, interrupted by a restart, or waiting on recovery.";
+        "Page through visible active recipe runs. Supply a positive limit and use next as after for the following page.";
     type Params = RecipeListParams;
     type Output = RecipeListResult;
 
-    async fn run(&self, ctx: &Ctx, _p: RecipeListParams) -> Result<RecipeListResult, CommandError> {
-        let active = runs_of(&self.runs)?.active().await.map_err(CommandError::Internal)?;
+    async fn run(&self, ctx: &Ctx, p: RecipeListParams) -> Result<RecipeListResult, CommandError> {
+        let caller_peer = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid())
+            .filter(|peer| !crate::persona::operator_peer::is_local_identity(*peer));
+        let active = runs_of(&self.runs)?.active_page(p.after, p.limit, caller_peer)
+            .await.map_err(CommandError::Internal)?;
+        let next = if active.len() == p.limit.get() {
+            active.last().map(RecipeRunRecord::run_id).transpose().map_err(CommandError::Internal)?
+        } else { None };
         Ok(RecipeListResult {
+            next,
             active: active
                 .iter()
-                .filter(|run| may_access(ctx, run))
                 .map(RecipeRunResult::of)
                 .collect::<Result<_, _>>()?,
         })
@@ -379,11 +393,16 @@ mod tests {
 
         assert!(matches!(status.run(&as_(&bob), RecipeRunRef { run_id: id }).await, Err(CommandError::NotFound(_))));
         assert!(matches!(cancel.run(&as_(&bob), RecipeRunRef { run_id: id }).await, Err(CommandError::NotFound(_))));
-        assert!(list.run(&as_(&bob), RecipeListParams {}).await.unwrap().active.is_empty());
+        assert!(list.run(&as_(&bob), RecipeListParams { limit: std::num::NonZeroUsize::MIN, after: None }).await.unwrap().active.is_empty());
 
         let seen = status.run(&as_(&alice), RecipeRunRef { run_id: id }).await.expect("her own run");
         assert_eq!(seen.bindings["secret"], "alice's");
-        assert_eq!(list.run(&as_(&alice), RecipeListParams {}).await.unwrap().active.len(), 1);
+        let page = list.run(&as_(&alice), RecipeListParams { limit: std::num::NonZeroUsize::MIN, after: None }).await.unwrap();
+        assert_eq!(page.active.len(), 1);
+        assert_eq!(page.next, Some(id));
+        let end = list.run(&as_(&alice), RecipeListParams { limit: std::num::NonZeroUsize::MIN, after: page.next }).await.unwrap();
+        assert!(end.active.is_empty());
+        assert_eq!(end.next, None);
         let cancelled = cancel.run(&as_(&alice), RecipeRunRef { run_id: id }).await.expect("she cancels her own held run");
         assert_eq!(cancelled.phase, RunPhase::Cancelled);
     }

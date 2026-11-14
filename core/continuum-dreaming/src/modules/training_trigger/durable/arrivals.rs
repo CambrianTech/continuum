@@ -23,38 +23,45 @@ pub(crate) struct Arrival {
 impl DurableStore {
     /// Pending submissions with `sequence > after`, oldest first, at most `limit`.
     pub(in crate::modules::training_trigger) async fn arrivals(&self, after: u64, limit: usize) -> Result<Vec<Arrival>, String> {
+        self.arrival_page(None, after, limit).await
+    }
+
+    async fn arrival_page(&self, key: Option<&BucketKey>, after: u64, limit: usize) -> Result<Vec<Arrival>, String> {
+        let query = match key {
+            Some(key) => key.query(Submission::COLLECTION),
+            None => QueryBuilder::new(Submission::COLLECTION),
+        };
         let result = self
             .adapter
             .query(
-                QueryBuilder::new(Submission::COLLECTION)
+                query
                     .filter_eq("isPending", true)
                     .filter("sequence", QueryOperator::Gt(after.into()))
                     .sort_asc("sequence")
                     .limit(limit)
+                    .select(["sequence", "personaId", "traitKind", "baseModel", "learned", "arrivalSummary"].into_iter().map(String::from).collect())
                     .build(),
             )
             .await;
         if !result.success {
             return Err(result.error.unwrap_or_else(|| "training arrivals query refused".into())); // the query failed; this supplies its missing diagnostic, never rows
         }
-        result
-            .data
-            .ok_or("training arrivals query omitted rows")?
-            .into_iter()
-            .map(|row| {
-                let row: Submission = row.decode().map_err(|error| error.to_string())?; // decode the persisted ORM row into its typed owner
-                Ok(Arrival {
-                    id: entity_id(&row.base)?,
-                    sequence: row.sequence,
-                    key: BucketKey { persona_id: row.persona_id, trait_kind: row.trait_kind, base_model: row.base_model },
-                    learned: row.learned,
-                    persona_name: row.batch.persona_name,
-                    lora: row.batch.lora,
-                    schedule: row.batch.schedule,
-                    examples: row.batch.examples,
-                })
-            })
-            .collect()
+        let records = result.data.ok_or("training arrivals query omitted rows")?;
+        let mut arrivals = Vec::with_capacity(records.len());
+        for record in records {
+            let row: super::arrival_summary::ArrivalHeader = record.decode().map_err(|e| e.to_string())?;
+            let summary = match row.arrival_summary {
+                Some(summary) => summary,
+                None => self.migrate_arrival_summary(row.id).await?,
+            };
+            arrivals.push(Arrival {
+                id: row.id, sequence: row.sequence,
+                key: BucketKey { persona_id: row.persona_id, trait_kind: row.trait_kind, base_model: row.base_model },
+                learned: row.learned, persona_name: summary.persona_name,
+                lora: summary.lora, schedule: summary.schedule, examples: summary.examples,
+            });
+        }
+        Ok(arrivals)
     }
 
     /// How many examples bucket `key` holds pending and not yet learned, read from its pending rows.
@@ -62,10 +69,10 @@ impl DurableStore {
         let mut unlearned = 0u32;
         let mut after = 0u64;
         loop {
-            let page = self.pending_page(key, after, 256).await?;
+            let page = self.pending_counts(Some(key), after, 256).await?;
             let full = page.len() == 256;
             for row in &page {
-                unlearned = unlearned.saturating_add((row.batch.examples.len() as u32).saturating_sub(row.learned));
+                if &row.key == key { unlearned = unlearned.checked_add(row.unlearned).ok_or("pending example count exceeds u32")?; }
                 after = after.max(row.sequence);
             }
             if !full {
@@ -127,6 +134,8 @@ pub(super) mod tests {
             persona_id: Uuid::nil(),
             trait_kind: "code".into(),
             base_model: base_model.into(),
+            arrival_summary: Some(crate::modules::training_trigger::durable::arrival_summary::ArrivalSummary::of(&batch)),
+            pending_count: Some(crate::modules::training_trigger::durable::pending_counts::PendingCount::of(&batch)),
             batch,
             is_pending: true,
             dispatch_id: None,

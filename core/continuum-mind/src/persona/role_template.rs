@@ -208,6 +208,7 @@ impl OrmEntity for RoleTemplate {
             // `WHERE role = ?` constantly. Distinct from the record's
             // UUID `id` (BaseEntity primary).
             SchemaField {
+                default_value: None,
                 name: "role".to_string(),
                 field_type: FieldType::String,
                 indexed: true,
@@ -219,6 +220,7 @@ impl OrmEntity for RoleTemplate {
             // SpawnPriority — indexed for "give me all Required roles"
             // queries the spawner runs every tick.
             SchemaField {
+                default_value: None,
                 name: "priority".to_string(),
                 field_type: FieldType::String,
                 indexed: true,
@@ -233,6 +235,7 @@ impl OrmEntity for RoleTemplate {
             // inner fields use JSON-path operators when needed; common
             // lookups stay flat.
             SchemaField {
+                default_value: None,
                 name: "identity".to_string(),
                 field_type: FieldType::Json,
                 indexed: false,
@@ -242,6 +245,7 @@ impl OrmEntity for RoleTemplate {
                 foreign_key: None,
             },
             SchemaField {
+                default_value: None,
                 name: "cognition".to_string(),
                 field_type: FieldType::Json,
                 indexed: false,
@@ -251,6 +255,7 @@ impl OrmEntity for RoleTemplate {
                 foreign_key: None,
             },
             SchemaField {
+                default_value: None,
                 name: "modelPerTier".to_string(),
                 field_type: FieldType::Json,
                 indexed: false,

@@ -223,7 +223,9 @@ fn row_id(lease: &PortLease) -> Result<Uuid, PortLeaseError> {
 impl PortLeases {
     /// Load every lease from `store`; `node` names this node once it is known.
     pub async fn load(store: OrmStore<PortLease>, node: NodeIdentity) -> Result<Self, PortLeaseError> {
-        let leases = store.find_all().await.map_err(|e| PortLeaseError::Store(e.to_string()))?.into_iter().map(|(_, l)| l).collect();
+        use futures::TryStreamExt;
+        let leases = store.scan().await.map_err(|e| PortLeaseError::Store(e.to_string()))?
+            .map_ok(|(_, lease)| lease).try_collect().await.map_err(|e| PortLeaseError::Store(e.to_string()))?;
         Ok(Self { store, leases: parking_lot::RwLock::new(leases), write: tokio::sync::Mutex::new(()), node })
     }
 

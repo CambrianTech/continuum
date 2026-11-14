@@ -13,7 +13,7 @@ use crate::orm::{
         MigrationConfig, MigrationEngine, MigrationHandle, MigrationProgress, MigrationVerification,
     },
     query::{FieldFilter, SortDirection, SortSpec, StorageQuery},
-    sqlite::SqliteAdapter,
+    SeaOrmAdapter,
     types::{DataRecord, StorageResult, UUID},
 };
 use crate::runtime::{CommandRequest, CommandResponse, CommandResult, ModuleContext};
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, Semaphore};
 
 // ============================================================================
@@ -36,9 +36,12 @@ mod mutations;
 
 mod vector_corpus;
 
-mod vector_search;
+/// The embedding contract other crates build on: producers, descriptors, the compatibility
+/// rule, and the typed refusals. Everything else in it stays this crate's.
+pub mod vector_index;
 
-use vector_corpus::CachedVector;
+mod vector_search;
+pub(crate) use vector_search::wire_query;
 
 /// Phase 1 typed-IPC: deserialize raw IPC params into the typed struct
 /// the handler expects, uniformly logging the parse error with
@@ -54,7 +57,7 @@ use vector_corpus::CachedVector;
 /// string back to the IPC dispatch layer.
 macro_rules! deserialize_params {
     ($command:expr, $params:expr) => {
-        serde_json::from_value($params).map_err(|e| {
+        serde_json::from_value($params).map_err(|e| { // IPC wire boundary: legacy dispatch params arrive as JSON
             log_error!("data", "handle_command", "{} parse error: {}", $command, e);
             format!("Invalid params for {}: {}", $command, e)
         })

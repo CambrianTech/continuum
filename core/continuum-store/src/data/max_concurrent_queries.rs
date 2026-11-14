@@ -85,6 +85,7 @@ pub(super) struct PaginatedQueryState {
     pub(super) collection: String,
     pub(super) filter: Option<std::collections::HashMap<String, FieldFilter>>,
     pub(super) sort: Option<Vec<crate::orm::query::SortSpec>>,
+    pub(super) select: Option<Vec<String>>,
     pub(super) page_size: usize,
     /// Exact row count from the open-time COUNT(*). Only populated when the
     /// caller passed `count_exact: true`; otherwise 0 means "not requested",
@@ -92,7 +93,7 @@ pub(super) struct PaginatedQueryState {
     /// the caller only needs has_more, which is derived from LIMIT N+1).
     pub(super) total_count: u64,
     pub(super) current_page: usize,
-    /// Cursor: last ID from previous page for efficient keyset pagination
+    /// Last returned ID; page execution currently uses OFFSET, not this value.
     pub(super) cursor_id: Option<String>,
     pub(super) has_more: bool,
     /// Creation time for future TTL-based cleanup of stale queries
@@ -107,9 +108,9 @@ pub(super) struct PaginatedQueryState {
 /// state the module owns. Database path comes from each request.
 ///
 /// Adapter-agnostic: connection string determines which adapter is used.
-/// - File paths or `:memory:` → SqliteAdapter (worker thread with mpsc)
+/// - File paths or `:memory:` → SeaOrmAdapter (worker thread with mpsc)
 ///
-/// NOTE: SqliteAdapter is internally thread-safe via mpsc channels.
+/// NOTE: SeaOrmAdapter is internally thread-safe via mpsc channels.
 pub struct DataState {
     /// Adapter cache: connection_string -> initialized adapter (polymorphic)
     /// Lazy initialization per unique connection string
@@ -136,8 +137,8 @@ pub struct DataState {
     /// the minimum required for cursor-state correctness.
     pub(super) paginated_queries: DashMap<String, Arc<tokio::sync::Mutex<PaginatedQueryState>>>,
     /// Module context for inter-module communication (event bus, shared compute)
-    /// Set during initialize(), used to publish data change events
-    pub(crate) context: RwLock<Option<Arc<ModuleContext>>>,
+    /// Published once after successful initialization; readers never take a lock.
+    pub(crate) context: OnceLock<Arc<ModuleContext>>,
     /// Active migration handle for status/pause/verify (lightweight, lock-free)
     pub(super) active_migration: Mutex<Option<MigrationHandle>>,
     /// Pre-cutover connection string (for rollback)
@@ -161,7 +162,7 @@ impl DataState {
             init_lock: Mutex::new(()),
             vector_cache: crate::runtime::shared_compute::SharedCompute::new(),
             paginated_queries: DashMap::new(),
-            context: RwLock::new(None),
+            context: OnceLock::new(),
             active_migration: Mutex::new(None),
             previous_connection: Mutex::new(None),
             query_semaphore: Semaphore::new(MAX_CONCURRENT_QUERIES),
@@ -172,8 +173,7 @@ impl DataState {
     /// Events follow pattern: data:{collection}:{action}
     /// Actions: created, updated, deleted, batch
     pub(super) fn publish_event(&self, collection: &str, action: &str, payload: serde_json::Value) {
-        let ctx_guard = self.context.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(ctx) = ctx_guard.as_ref() {
+        if let Some(ctx) = self.context.get() {
             let event_name = format!("data:{}:{}", collection, action);
             ctx.bus.publish_async_only(&event_name, payload);
         }
@@ -185,8 +185,7 @@ impl DataState {
         if duration_ms < 50 {
             return;
         }
-        let ctx_guard = self.context.read().unwrap_or_else(|e| e.into_inner());
-        if let Some(ctx) = ctx_guard.as_ref() {
+        if let Some(ctx) = self.context.get() {
             let logger = ctx.logger("data");
             logger.timing_with_meta(
                 operation,
@@ -208,20 +207,20 @@ impl DataState {
     /// - `"main"` — primary database. Uses `DATABASE_URL` env when set
     ///   (a SQLite path); otherwise
     ///   defaults to a local SQLite file at
-    ///   `$HOME/.continuum/database/main.db`.
+    ///   `<continuum-home>/database/main.db`.
     /// - `"@persona:<slug>"` — per-persona long-term memory DB. Resolves
-    ///   to `$HOME/.continuum/personas/<slug>/data/longterm.db` on the
+    ///   to `<continuum-home>/personas/<slug>/data/longterm.db` on the
     ///   host. Mac Option B requires this — TS in container builds
     ///   container-rooted paths (`/root/...`) that the native core on
     ///   host can't open; the sentinel lets each side resolve to its
     ///   own filesystem view of the shared `~/.continuum` mount.
     /// - `"@metrics"` — telemetry SQLite. Resolves to
-    ///   `$HOME/.continuum/metrics/metrics.sqlite` on the host. Same
+    ///   `<continuum-home>/metrics/metrics.sqlite` on the host. Same
     ///   Mac Option B rationale.
     /// - `"@node"` — machine-local SQLite ownership state under the native continuum home;
     ///   never follows the shared DATABASE_URL backend.
     /// - 36-char UUID shape — per-persona database (UUID-keyed variant).
-    ///   Maps to `$HOME/.continuum/personas/<uuid>/longterm.db`. Kept
+    ///   Maps to `<continuum-home>/personas/<uuid>/longterm.db`. Kept
     ///   for back-compat with callers using UUIDs as identity.
     /// - Starts with a filesystem path —
     ///   legacy passthrough. Logged at WARN so remaining leak sites show
@@ -229,11 +228,10 @@ impl DataState {
     ///
     /// This keeps the abstraction enforced at the caller boundary: SQL,
     /// URLs, and filenames simply do not exist in the caller's language.
-    /// `$HOME` remains the explicit home override; otherwise the native home
-    /// directory is used (including Windows launches without a shell's HOME).
+    /// Local paths use the shared continuum-home owner, including test isolation.
     pub(super) fn resolve_handle(&self, handle: &str) -> Result<String, String> {
         Self::resolve_node_or_backend(handle, crate::paths::continuum_home, ||
-            Self::resolve_handle_with(handle, |key| std::env::var(key).ok(), dirs::home_dir))
+            Self::resolve_handle_with(handle, |key| std::env::var(key).ok(), crate::paths::continuum_home))
     }
 
     pub(super) fn resolve_node_or_backend(
@@ -256,15 +254,11 @@ impl DataState {
     pub(super) fn resolve_handle_with(
         handle: &str,
         env: impl Fn(&str) -> Option<String>,
-        native_home: impl FnOnce() -> Option<PathBuf>,
+        native_home: impl FnOnce() -> Result<PathBuf, String>,
     ) -> Result<String, String> {
         // Lazy: configured backends and legacy paths do not need a home lookup.
         let resolve_home = || {
-            if let Some(home) = env("HOME") {
-                return Ok(home);
-            }
-            native_home()
-                .ok_or_else(|| format!("resolve_handle('{handle}'): home directory unavailable"))?
+            native_home()?
                 .into_os_string()
                 .into_string()
                 .map_err(|_| {
@@ -280,7 +274,7 @@ impl DataState {
                 }
             }
             let home = resolve_home()?;
-            return Ok(format!("{}/.continuum/database/main.db", home));
+            return Ok(format!("{}/database/main.db", home));
         }
 
         // Per-CITIZEN slug-shape sentinel: @persona:<slug> / @agent:<slug> /
@@ -308,7 +302,7 @@ impl DataState {
                 }
                 let home = resolve_home()?;
                 return Ok(format!(
-                    "{home}/.continuum/{bucket}/{slug}/data/longterm.db"
+                    "{home}/{bucket}/{slug}/data/longterm.db"
                 ));
             }
         }
@@ -316,7 +310,7 @@ impl DataState {
         // Telemetry SQLite sentinel.
         if handle == "@metrics" {
             let home = resolve_home()?;
-            return Ok(format!("{}/.continuum/metrics/metrics.sqlite", home));
+            return Ok(format!("{}/metrics/metrics.sqlite", home));
         }
 
         // Per-persona UUID shape: 8-4-4-4-12 hex chars with hyphens (36 total).
@@ -324,7 +318,7 @@ impl DataState {
         if is_uuid_shape(handle) {
             let home = resolve_home()?;
             return Ok(format!(
-                "{}/.continuum/personas/{}/longterm.db",
+                "{}/personas/{}/longterm.db",
                 home, handle
             ));
         }
@@ -367,8 +361,7 @@ pub(super) struct QueryParams {
     pub(super) filter: Option<std::collections::HashMap<String, FieldFilter>>,
     #[serde(default)]
     pub(super) sort: Option<Vec<crate::orm::query::SortSpec>>,
-    #[serde(default)]
-    pub(super) limit: Option<usize>,
+    pub(super) limit: usize,
     #[serde(default)]
     pub(super) offset: Option<usize>,
     #[serde(default)]
@@ -384,8 +377,7 @@ pub(super) struct QueryWithJoinParams {
     pub(super) filter: Option<std::collections::HashMap<String, FieldFilter>>,
     #[serde(default)]
     pub(super) sort: Option<Vec<crate::orm::query::SortSpec>>,
-    #[serde(default)]
-    pub(super) limit: Option<usize>,
+    pub(super) limit: usize,
     #[serde(default)]
     pub(super) offset: Option<usize>,
     #[serde(default)]
@@ -402,9 +394,7 @@ pub(super) struct QueryWithJoinParams {
 // ============================================================================
 // Paginated Query Params
 // ============================================================================
-pub(super) fn default_page_size() -> usize {
-    100
-}
+pub(super) use crate::orm::query::default_page_size;
 
 /// Open paginated query params
 #[derive(Debug, Deserialize)]
@@ -416,6 +406,9 @@ pub(super) struct QueryOpenParams {
     pub(super) filter: Option<std::collections::HashMap<String, FieldFilter>>,
     #[serde(default)]
     pub(super) sort: Option<Vec<crate::orm::query::SortSpec>>,
+    /// Fields to materialize for every page; identity metadata remains included.
+    #[serde(default)]
+    pub(super) select: Option<Vec<String>>,
     #[serde(default = "default_page_size")]
     pub(super) page_size: usize,
     /// Opt in to a SELECT COUNT(*) at open time so callers that show

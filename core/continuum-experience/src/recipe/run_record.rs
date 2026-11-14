@@ -149,6 +149,7 @@ pub struct RunCursor {
 #[serde(rename_all = "camelCase")]
 #[entity(collection = "recipe_runs")]
 #[entity(index(name = "idx_recipe_run_active", fields = ["isActive", "id"]))]
+#[entity(index(name = "idx_recipe_run_caller_active", fields = ["callerPeerId", "isActive", "id"]))]
 pub struct RecipeRunRecord {
     #[serde(flatten)]
     pub base: BaseEntity,
@@ -165,8 +166,8 @@ pub struct RecipeRunRecord {
     pub args: Option<Value>,
     #[entity(json)]
     pub seed: Map<String, Value>,
-    #[entity(json)]
-    pub caller: Option<CallerRecord>,
+    pub caller_peer_id: Option<Uuid>,
+    pub caller_source: Option<String>,
     /// The activity room this run belongs to, if it is a birth's pipeline.
     pub room_id: Option<Uuid>,
     #[entity(json)]
@@ -221,7 +222,8 @@ impl RecipeRunRecord {
             pipeline,
             args: (!args.is_null()).then_some(args),
             seed,
-            caller,
+            caller_peer_id: caller.as_ref().map(|c| c.peer_id),
+            caller_source: caller.map(|c| c.source),
             room_id: origin.room,
             phase: RunPhase::Running,
             is_active: true,
@@ -300,10 +302,18 @@ impl RecipeRuns {
         self.store.find_by_id(run_id).await.map_err(|e| e.to_string())
     }
 
-    /// Every run not yet terminal.
-    pub async fn active(&self) -> Result<Vec<RecipeRunRecord>, String> {
-        let query = QueryBuilder::new(RecipeRunRecord::COLLECTION).filter_eq("isActive", true).build();
-        let rows = self.store.find_matching(query).await.map_err(|e| e.to_string())?;
+    /// One stable id-ordered page of nonterminal runs. This is a live scan, not
+    /// a snapshot spanning pages; boot recovery runs before dispatch starts.
+    pub async fn active_page(&self, after: Option<Uuid>, size: std::num::NonZeroUsize, caller_peer: Option<Uuid>) -> Result<Vec<RecipeRunRecord>, String> {
+        let mut query = QueryBuilder::new(RecipeRunRecord::COLLECTION)
+            .filter_eq("isActive", true).sort_asc("id").limit(size.get());
+        if let Some(after) = after {
+            query = query.filter("id", crate::orm::query::QueryOperator::Gt(after.to_string().into()));
+        }
+        if let Some(peer) = caller_peer {
+            query = query.filter_eq("callerPeerId", peer.to_string());
+        }
+        let rows = self.store.find_matching(query.build()).await.map_err(|e| e.to_string())?;
         Ok(rows.into_iter().map(|(_, run)| run).collect())
     }
 
@@ -335,26 +345,36 @@ impl RecipeRuns {
     /// Nothing is re-dispatched. Returns how many of each.
     pub async fn expose_interrupted(&self) -> Result<(usize, usize), String> {
         let (mut recovery, mut interrupted) = (0, 0);
-        for mut run in self.active().await? {
-            if run.phase != RunPhase::Running {
-                continue;
-            }
-            match run.invocations.iter().find(|inv| matches!(inv.state, InvocationState::Dispatching { .. })) {
-                Some(inv) => {
-                    run.phase = RunPhase::RecoveryRequired {
-                        invocation: inv.id,
-                        reason: "the core stopped while this invocation was being dispatched; its outcome is unknown".into(),
-                    };
-                    recovery += 1;
+        let size = std::num::NonZeroUsize::new(crate::orm::query::default_page_size())
+            .ok_or("ORM replay page size is zero")?;
+        let mut after = None;
+        loop {
+            let page = self.active_page(after, size, None).await?;
+            if page.is_empty() { break; }
+            after = page.last().map(RecipeRunRecord::run_id).transpose()?;
+            let last_page = page.len() < size.get();
+            for mut run in page {
+                if run.phase != RunPhase::Running {
+                    continue;
                 }
-                None => {
-                    run.phase = RunPhase::Interrupted;
-                    interrupted += 1;
+                match run.invocations.iter().find(|inv| matches!(inv.state, InvocationState::Dispatching { .. })) {
+                    Some(inv) => {
+                        run.phase = RunPhase::RecoveryRequired {
+                            invocation: inv.id,
+                            reason: "the core stopped while this invocation was being dispatched; its outcome is unknown".into(),
+                        };
+                        recovery += 1;
+                    }
+                    None => {
+                        run.phase = RunPhase::Interrupted;
+                        interrupted += 1;
+                    }
                 }
-            }
-            run.revision += 1;
-            self.write(&run).await?;
-            continuum_base::probe!(class = "recipe.run.exposed_at_boot", run = %run.base.id, recipe = %run.purpose, phase = ?run.phase, "a run left Running by the last process");
+                run.revision += 1;
+                self.write(&run).await?;
+                continuum_base::probe!(class = "recipe.run.exposed_at_boot", run = %run.base.id, recipe = %run.purpose, phase = ?run.phase, "a run left Running by the last process");
+                }
+            if last_page { break; }
         }
         Ok((recovery, interrupted))
     }

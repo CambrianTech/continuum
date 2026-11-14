@@ -14,3 +14,6 @@ pub mod focus_policy;
 pub mod trace;
 pub mod redaction;
 pub mod home;
+
+#[cfg(test)]
+mod snapshot_replay;

@@ -25,6 +25,78 @@ fn assert_clean(world: &World) {
     assert!(world.violations.is_empty(), "violations {:?}\n{}", world.violations, world.log.join("\n"));
 }
 
+/// Replay the preparation interval against the rendered act's grant hold.
+/// Windows 2026-11-12T23:14:32Z measured a 21,566 ms restore, followed by an
+/// ungranted verdict and immediate save. Only that duration is recorded here;
+/// the two 10 s publications and the small pool are scripted interleavings.
+/// This drives the real grant owner, but does not simulate copies or claim that
+/// an act hold replaces physical paging custody.
+#[test]
+fn slow_preparation_keeps_its_rendered_grant_before_dispatch() {
+    use super::clock::Clock;
+
+    for preparation_ms in [1, 21_566] {
+        let mut world = two_on_a_small_pool();
+        world.apply(Step::Publish);
+        world.apply(Step::Quote(0));
+        assert_eq!(world.phase(0), Phase::Quoted);
+        let mut clock = Clock::new();
+        clock.at(10_000, Step::Publish);
+        clock.at(20_000, Step::Publish);
+        clock.at(preparation_ms, Step::Reserve(0));
+        while let Some(step) = clock.next() {
+            let applied = world.apply(step);
+            if step == Step::Reserve(0) {
+                assert!(applied.refused.is_none(), "{}", world.log.join("\n"));
+                assert_eq!(clock.virtual_ms(), preparation_ms);
+                world.apply(Step::Send(0));
+                assert_eq!(world.phase(0), Phase::Sent);
+                assert_clean(&world);
+                break;
+            }
+            assert!(applied.tickets.is_empty(), "the rendered act still holds its grant");
+            assert_eq!(world.observe().charged.get(&world.mind(0)), Some(&60));
+        }
+        assert!(world.completions.is_empty(), "preparation is not completed work");
+        run(&mut world, &[Step::Terminal(0), Step::Publish, Step::Reclaimed(0), Step::Publish]);
+        assert!(world.published(1) >= 60, "the waiting mind progresses after completion");
+        run(&mut world, &turn(1));
+        world.apply(Step::Terminal(1));
+        assert_eq!(world.completions.get(&world.mind(0)), Some(&1));
+        assert_eq!(world.completions.get(&world.mind(1)), Some(&1));
+        assert_clean(&world);
+    }
+}
+
+/// The same recorded delay with preparation custody acquired first. This proves
+/// the existing owner can protect preparation; the adapter must still carry that
+/// custody inside its physical paging lifetime before this is a runtime fix.
+#[test]
+fn reserved_preparation_survives_publications_then_serves_the_waiter() {
+    use super::clock::Clock;
+    let mut world = two_on_a_small_pool();
+    run(&mut world, &[Step::Publish, Step::Quote(0), Step::Reserve(0)]);
+    let mut clock = Clock::new();
+    clock.at(10_000, Step::Publish);
+    clock.at(20_000, Step::Publish);
+    clock.at(21_566, Step::Send(0));
+    while let Some(step) = clock.next() {
+        let applied = world.apply(step);
+        assert!(applied.tickets.is_empty(), "preparation still owns the grant");
+        assert_eq!(world.observe().charged.get(&world.mind(0)), Some(&60));
+        assert_clean(&world);
+    }
+    assert_eq!(world.phase(0), Phase::Sent);
+    assert!(world.completions.is_empty(), "preparation is not completed work");
+    run(&mut world, &[Step::Terminal(0), Step::Publish, Step::Reclaimed(0), Step::Publish]);
+    assert!(world.published(1) >= 60, "terminal service lets the waiting mind proceed");
+    run(&mut world, &turn(1));
+    world.apply(Step::Terminal(1));
+    assert_eq!(world.completions.get(&world.mind(0)), Some(&1));
+    assert_eq!(world.completions.get(&world.mind(1)), Some(&1));
+    assert_clean(&world);
+}
+
 /// Safety only: for a scenario about something else that crosses an engine replacement, where
 /// the known missed opportunity (`an_engine_replacement_keeps_the_oldest_waiters_place`) recurs.
 fn assert_safe(world: &World) {
@@ -75,9 +147,8 @@ mod interleavings {
     // what this catches (ONE-ACT 4a validator matrix: "cancellation ... before POST: proven-unsent
     // release"): a reservation dropped before its POST is held unresolved like a request the engine
     // may be running, so the holder's cells stay charged until an engine fence. No request was
-    // sent; the dispatch path has no settlement for "proven unsent" except a retry's re-reserve.
+    // sent; dropping its undispatched reservation and act hold must release both claims.
     #[test]
-    #[ignore = "ONE-ACT 4a: a cancellation after reserve and before POST releases its proven-unsent reservation"]
     fn a_cancellation_before_post_releases_its_proven_unsent_reservation() {
         let mut world = two_on_a_small_pool();
         run(&mut world, &[Step::Publish, Step::Quote(0), Step::Reserve(0), Step::CancelReserved(0)]);

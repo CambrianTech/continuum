@@ -27,21 +27,10 @@ pub async fn settle_card_credit_bound(
         // data/update is refused (modules/grid/acl.rs; cards fd47a804, 44aee459). Her acts
         // (staging, decisions, submits) stay under her identity above.
         let substrate = substrate_connection(&executor);
-        let listed = match conn
-            .commands()
-            .execute_value(
-                "data/list",
-                json!({
-                    "collection": StagedCredit::COLLECTION,
-                    "dbPath": handle,
-                    "filter": { "cardId": card_id.to_string() },
-                }),
-            )
-            .await
-        {
-            Ok(v) => staged_credit_from_list(v),
-            Err(e) => Err(e),
-        };
+        let listed = crate::orm::client_read::matching(
+            &conn, &handle, StagedCredit::COLLECTION,
+            serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]), None,
+        ).await;
         let listed = match (listed, binding) {
             (Ok(rows), Some(binding)) => graded::bound_rows_retained(&conn, &persona_name, binding, rows).await,
             (listed, _) => listed,
@@ -96,7 +85,7 @@ pub async fn settle_card_credit_bound(
             // store, and her own connection resolves to Trusted, where data/update is refused
             // (modules/grid/acl.rs; card fd47a804). Through her identity every mark failed and a
             // later pass trained the rejected rows anyway.
-            mark_rejected(&substrate, &persona_name, card_id, &rows).await;
+            mark_rejected(&substrate, &persona_name, card_id, &rows.iter().map(|r| (r.id, r.rejected_at_ms)).collect::<Vec<_>>()).await.map_err(|e| e.to_string())?;
             rows
         };
         let mut submitted = 0usize;
@@ -145,27 +134,6 @@ pub async fn settle_card_credit_bound(
         );
     }
     Ok(())
-}
-
-/// `data/list` returns DataRecord envelopes, not bare entities. Validate the
-/// complete response before transferring any row; malformed evidence stays put.
-pub fn staged_credit_from_list(listed: serde_json::Value) -> Result<Vec<StagedCredit>, ClientError> {
-    let listed: crate::orm::list_result::DataListResult = serde_json::from_value(listed)?; // Decode the Value-native data/list response at its command boundary.
-    if listed.items.len() != listed.total as usize {
-        return Err(ClientError::Transport(format!(
-            "staged-credit list is incomplete: {} of {} rows",
-            listed.items.len(),
-            listed.total,
-        )));
-    }
-    listed
-        .items
-        .into_iter()
-        .map(|item| {
-            let record: crate::orm::types::DataRecord = serde_json::from_value(item)?; // Decode the persisted ORM envelope; move its entity payload without cloning it.
-            Ok(record.decode()?) // Decode one staged-credit entity from its typed storage envelope.
-        })
-        .collect()
 }
 
 /// Transfer one immutable revision using the destination's existing idempotency
@@ -365,6 +333,9 @@ pub async fn settle_staged_row<T: Transport, S: Transport>(
     row: &StagedCredit,
     verdict: impl Into<CardVerdict>,
 ) -> Result<bool, ClientError> {
+    // Staging admits only its payload tables. Settlement must admit its receipt
+    // declarations before the first replay read, including after reopening a store.
+    reviewed::ensure_storage(conn, persona_name).await?;
     // An accepted transfer is done: its lived copy may already be shed, and it needs no
     // params, so it never reaches the lived rule below as a false "incomplete".
     if reviewed::transfer_accepted(conn, persona_name, row.id).await? {
@@ -481,35 +452,21 @@ pub(crate) fn pass_admits(rows: &[StagedCredit]) -> PassAdmits {
 /// A FAILED verdict marks every row staged on the card so far as rejected, on her own
 /// core's clock. `conn` must be the SUBSTRATE's (no caller identity): a persona
 /// identity resolves to Trusted, where data/update is refused. A row already marked keeps its first mark (a second failure doesn't move it).
-/// A write that fails is named; that row may then train on a later pass, which is the
-/// old behaviour, never a new one.
-pub(super) async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[StagedCredit]) {
+/// All new marks commit in one storage transaction. A failed commit leaves the review
+/// unsettled for retry; already durable marks keep their original timestamp.
+pub(super) async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[(Uuid, Option<u64>)]) -> Result<(), ClientError> {
     let now = EpochMs::now().millis();
-    for row in rows.iter().filter(|r| r.rejected_at_ms.is_none()) {
-        let marked = conn
-            .commands()
-            .execute_value(
-                "data/update",
-                json!({
-                    "collection": StagedCredit::COLLECTION,
-                    "id": row.id,
-                    "data": { "rejectedAtMs": now },
-                    "dbPath": format!("@persona:{persona_name}"),
-                }),
-            )
-            .await
-            .and_then(|result| storage_ok(&result, "data/update", StagedCredit::COLLECTION));
-        if let Err(error) = marked {
-            continuum_base::probe!(
-                class = "training.credit.reject_mark_failed",
-                persona = %persona_name,
-                card = %card_id,
-                submission = %row.id,
-                error = %error,
-                "a row the failure rejected could not be marked; a later pass may still train it"
-            );
-        }
-    }
+    let operations: Vec<_> = rows.iter().filter(|(_, rejected)| rejected.is_none()).map(|(id, _)| json!({
+        "operationType": "update", "collection": StagedCredit::COLLECTION,
+        "id": id, "data": { "rejectedAtMs": now }
+    })).collect();
+    if operations.is_empty() { return Ok(()); }
+    let result = conn.commands().execute_value("data/batch", json!({
+        "operations": operations, "dbPath": format!("@persona:{persona_name}")
+    })).await?;
+    storage_ok(&result, "data/batch", StagedCredit::COLLECTION).map_err(|error| {
+        ClientError::Transport(format!("card {card_id} rejection transaction failed: {error}"))
+    })
 }
 
 /// Once the destination holds a row's lived calls as examples, the row keeps its
@@ -569,14 +526,16 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
         }
     };
     let observer = airc.peer_id().as_uuid();
-    let conn = match reviewed::credit_connection(observer) {
-        Ok(conn) => conn,
-        Err(error) => {
-            continuum_base::probe!(class = "training.credit.reconcile_unreadable", persona = %persona_name, error = %error,
-                "no credit connection at registration: reviews already on her boards wait for the next live delivery");
+    let executor = match EXECUTOR.cloned() {
+        Some(executor) => executor,
+        None => {
+            continuum_base::probe!(class = "training.credit.reconcile_unreadable", persona = %persona_name,
+                "no credit executor at registration: reviews remain deferred");
             return;
         }
     };
+    let substrate = substrate_connection(&executor);
+    let conn = Connection::new(InProcessTransport::new(executor, Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(observer)))));
     let mut boards: std::collections::BTreeMap<Uuid, (airc_work::WorkBoardProjection, reviewed::SelfReview)> =
         std::collections::BTreeMap::new();
     let (mut cards, mut reviews) = (0u64, 0u64);
@@ -607,7 +566,7 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
             board.submission_reviews_for_card(card.card_id).map(|r| r.review_id).collect();
         for review_id in ids {
             reviews += 1;
-            let result = reviewed::consume_observed_review(&conn, persona_name, observer, room_id, board, review_id, admission).await;
+            let result = reviewed::consume_observed_review(&reviewed::ReviewConnections { citizen: &conn, substrate: &substrate }, &reviewed::ReviewSelection { persona_name: persona_name, persona_id: observer, room_id: room_id, board: board, review_id: review_id, self_review: admission }).await;
             let Some(why) = tally.note(&result) else { continue };
             continuum_base::probe!(
                 class = "training.credit.review_deferred",

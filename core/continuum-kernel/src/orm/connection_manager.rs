@@ -18,7 +18,7 @@
 //!     │   ├── main.db -> Pool(3 conns)
 //!     │   └── ...
 //!     ↓
-//! SqliteAdapter (per pool)
+//! SeaOrmAdapter (per pool)
 //! ```
 
 use dashmap::DashMap;
@@ -30,7 +30,7 @@ use tokio::sync::RwLock;
 
 use super::adapter::{AdapterConfig, StorageAdapter};
 use super::query::StorageQuery;
-use super::sqlite::SqliteAdapter;
+use super::SeaOrmAdapter;
 use super::types::{BatchOperation, CollectionSchema, DataRecord, StorageResult, UUID};
 use serde_json::Value;
 
@@ -61,7 +61,7 @@ impl Default for ConnectionManagerConfig {
 /// Managed pool with metadata for LRU eviction
 struct ManagedPool {
     /// The underlying adapter
-    adapter: Arc<RwLock<SqliteAdapter>>,
+    adapter: Arc<RwLock<SeaOrmAdapter>>,
     /// Last access for LRU order and idle age, in nanoseconds on a MONOTONIC clock
     /// (since this process's first pool). The wall clock is the wrong clock here: it
     /// can be set backwards, which reorders the LRU and makes a pool read as idle.
@@ -74,7 +74,7 @@ struct ManagedPool {
 }
 
 impl ManagedPool {
-    fn new(adapter: SqliteAdapter, path: PathBuf) -> Self {
+    fn new(adapter: SeaOrmAdapter, path: PathBuf) -> Self {
         Self {
             adapter: Arc::new(RwLock::new(adapter)),
             last_access: AtomicU64::new(Self::now_nanos()),
@@ -141,9 +141,7 @@ impl ConnectionManager {
         }
 
         // Create new adapter
-        let mut adapter = SqliteAdapter::new();
-        adapter
-            .initialize(AdapterConfig {
+        let adapter = SeaOrmAdapter::connect(AdapterConfig {
                 connection_string: db_path.to_string_lossy().to_string(),
                 namespace: None,
                 timeout_ms: self.config.connection_timeout.as_millis() as u64,
@@ -469,7 +467,8 @@ mod tests {
                 &db_path,
                 CollectionSchema {
                     collection: "users".to_string(),
-                    fields: vec![super::super::types::SchemaField {
+                    fields: crate::orm::base_entity_fields().into_iter().chain([super::super::types::SchemaField {
+                default_value: None,
                         name: "name".to_string(),
                         field_type: super::super::types::FieldType::String,
                         indexed: false,
@@ -477,7 +476,7 @@ mod tests {
                         nullable: false,
                         max_length: None,
                         foreign_key: None,
-                    }],
+                    }]).collect(),
                     indexes: vec![],
                 },
             )

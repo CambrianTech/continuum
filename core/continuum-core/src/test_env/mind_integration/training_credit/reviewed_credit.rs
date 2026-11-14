@@ -34,16 +34,7 @@ use super::*;
             Some(json!({"success":true,"acceptance":{"submissionId":selected.id,"replayed":false}})),
         );
         let conn = settlement_connection(executor.clone(), persona, submit, None);
-        let result = reviewed::consume_review_with_boundary(
-            &conn,
-            name,
-            persona,
-            room,
-            &board,
-            own.review_id,
-            &reviewed::SelfReview::Admitted,
-            None,
-        )
+        let result = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: own.review_id, self_review: &reviewed::SelfReview::Admitted }, None)
         .await
         .unwrap();
         assert_eq!(result.state, State::Accepted, "an admitted self-review settles her row");
@@ -54,16 +45,7 @@ use super::*;
         });
         let replay = settlement_connection(executor.clone(), persona, never_submit, None);
         assert_eq!(
-            reviewed::consume_review_with_boundary(
-                &replay,
-                name,
-                persona,
-                room,
-                &board,
-                own.review_id,
-                &reviewed::SelfReview::Admitted,
-                None,
-            )
+            reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &replay, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: own.review_id, self_review: &reviewed::SelfReview::Admitted }, None)
             .await
             .unwrap()
             .state,
@@ -83,8 +65,10 @@ use super::*;
         let (executor, persona, name, reviewer, room) = (fx.executor.clone(), fx.persona, fx.name, fx.reviewer, fx.room);
         let board = fx.project(vec![(WorkEvent::WorkSubmissionReviewed(fx.pass.clone()), reviewer)]);
         let (board, review_id) = (&board, fx.pass.review_id);
+        let substrate = substrate_conn(&fx.executor);
+        let substrate = &substrate;
         let consume = |conn| async move {
-            reviewed::consume_review_with_boundary(&conn, name, persona, room, board, review_id, &reviewed::SelfReview::NotAdmitted, None)
+            reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &conn, substrate }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: board, review_id: review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
                 .await
                 .unwrap() // unwrap: the store under test
                 .state
@@ -120,7 +104,7 @@ use super::*;
             let never_submit = continuum_client::mock::MockTransport::new();
             never_submit.respond_to("genome/training-trigger/submit", |_| panic!("a failed review must not submit"));
             let conn = settlement_connection(executor.clone(), persona, never_submit, None);
-            let state = reviewed::consume_review_with_boundary(&conn, name, persona, room, &board, failed.review_id, &reviewed::SelfReview::NotAdmitted, None)
+            let state = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: failed.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
                 .await
                 .unwrap() // unwrap: the store under test
                 .state;
@@ -152,7 +136,7 @@ use super::*;
             pause: None,
         };
         let lossy = Connection::new(LostAck { inner, collection: reviewed::CreditReviewAcceptance::COLLECTION, lost: lost.clone() });
-        let state = reviewed::consume_review_with_boundary(&lossy, name, persona, room, &board, fx.pass.review_id, &reviewed::SelfReview::NotAdmitted, None)
+        let state = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &lossy, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: fx.pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
             .await
             .unwrap() // unwrap: the store under test
             .state;
@@ -207,16 +191,7 @@ use super::*;
                 ..pass.clone()
             };
             let board = project(vec![(WorkEvent::WorkSubmissionReviewed(review), reviewer)]);
-            let result = reviewed::consume_review_with_boundary(
-                &refused_conn,
-                name,
-                persona,
-                room,
-                &board,
-                pass.review_id,
-                &reviewed::SelfReview::NotAdmitted,
-                Some(&dream),
-            )
+            let result = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &refused_conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&dream))
             .await
             .unwrap();
             assert_eq!(
@@ -242,16 +217,7 @@ use super::*;
             (WorkEvent::WorkSubmissionReviewed(self_review), owner),
         ]);
         assert_eq!(
-            reviewed::consume_review_with_boundary(
-                &refused_conn,
-                name,
-                persona,
-                room,
-                &self_board,
-                pass.review_id,
-                &reviewed::SelfReview::NotAdmitted,
-                Some(&dream)
-            )
+            reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &refused_conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &self_board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&dream))
             .await
             .unwrap()
             .state,
@@ -261,16 +227,7 @@ use super::*;
         // what this catches (Codex root, #5017 review): an unreadable room policy read as
         // admission. It settles nothing and records nothing, so a later replay decides it.
         assert_eq!(
-            reviewed::consume_review_with_boundary(
-                &refused_conn,
-                name,
-                persona,
-                room,
-                &self_board,
-                pass.review_id,
-                &reviewed::SelfReview::Unknown("wall unreachable".into()),
-                Some(&dream)
-            )
+            reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &refused_conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &self_board, review_id: pass.review_id, self_review: &reviewed::SelfReview::Unknown("wall unreachable".into()) }, Some(&dream))
             .await
             .unwrap()
             .state,
@@ -281,16 +238,7 @@ use super::*;
             WorkEvent::WorkSubmissionReviewed(pass.clone()),
             owner,
         )]);
-        assert!(reviewed::consume_review_with_boundary(
-            &refused_conn,
-            name,
-            persona,
-            room,
-            &spoofed,
-            pass.review_id,
-            &reviewed::SelfReview::NotAdmitted,
-            Some(&dream)
-        )
+        assert!(reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &refused_conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &spoofed, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&dream))
         .await
         .is_err());
         let board = project(vec![(
@@ -305,29 +253,11 @@ use super::*;
             panic!("unrelated observer must not transfer publisher credit")
         });
         let unrelated = Connection::new(unrelated_transport);
-        assert!(reviewed::consume_observed_review_with_boundary(
-            &unrelated,
-            "unrelated-resident",
-            reviewer.as_uuid(),
-            room,
-            &board,
-            pass.review_id,
-            &reviewed::SelfReview::NotAdmitted,
-            Some(&dream)
-        )
+        assert!(reviewed::consume_observed_review_with_boundary(&reviewed::ReviewConnections { citizen: &unrelated, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: "unrelated-resident", persona_id: reviewer.as_uuid(), room_id: room, board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&dream))
         .await
         .unwrap()
         .is_none());
-        assert!(reviewed::consume_review_with_boundary(
-            &refused_conn,
-            name,
-            persona,
-            Uuid::new_v4(),
-            &board,
-            pass.review_id,
-            &reviewed::SelfReview::NotAdmitted,
-            Some(&dream)
-        )
+        assert!(reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &refused_conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: Uuid::new_v4(), board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&dream))
         .await
         .is_err());
         assert!(
@@ -353,16 +283,7 @@ use super::*;
             Err(ClientError::Transport("destination ACK lost".into()))
         });
         let conn = settlement_connection(executor.clone(), persona, submit, None);
-        assert!(reviewed::consume_observed_review_with_boundary(
-            &conn,
-            name,
-            persona,
-            room,
-            &board,
-            pass.review_id,
-            &reviewed::SelfReview::NotAdmitted,
-            Some(&dream)
-        )
+        assert!(reviewed::consume_observed_review_with_boundary(&reviewed::ReviewConnections { citizen: &conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&dream))
         .await
         .is_err());
         let pending = reviewed::credit_status(data, name, selection.submission_id)
@@ -399,16 +320,7 @@ use super::*;
             ),
         ]);
         assert_eq!(
-            reviewed::consume_review_with_boundary(
-                &refused_conn,
-                name,
-                persona,
-                room,
-                &board,
-                competing.review_id,
-                &reviewed::SelfReview::NotAdmitted,
-                Some(&dream)
-            )
+            reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &refused_conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: competing.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&dream))
             .await
             .unwrap()
             .state,
@@ -421,17 +333,10 @@ use super::*;
             Some(json!({"success":false,"errorKind":"DispatchFailed",
             "acceptance":{"submissionId":selected.id,"replayed":true}})),
         );
-        let reopened = settlement_connection(data_runtime(), persona, submit, None);
-        let result = reviewed::consume_observed_review_with_boundary(
-            &reopened,
-            name,
-            persona,
-            room,
-            &board,
-            pass.review_id,
-            &reviewed::SelfReview::NotAdmitted,
-            Some(&dream),
-        )
+        let reopened_executor = data_runtime();
+        let reopened_substrate = substrate_conn(&reopened_executor);
+        let reopened = settlement_connection(reopened_executor, persona, submit, None);
+        let result = reviewed::consume_observed_review_with_boundary(&reviewed::ReviewConnections { citizen: &reopened, substrate: &reopened_substrate }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&dream))
         .await
         .unwrap()
         .unwrap();
@@ -450,16 +355,7 @@ use super::*;
             selected.id
         );
         assert_eq!(
-            reviewed::consume_review_with_boundary(
-                &refused_conn,
-                name,
-                persona,
-                room,
-                &board,
-                pass.review_id,
-                &reviewed::SelfReview::NotAdmitted,
-                Some(&dream)
-            )
+            reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &refused_conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&dream))
             .await
             .unwrap()
             .state,
@@ -468,16 +364,7 @@ use super::*;
         );
         assert!(dream.review_boundary_pending(persona, selection.submission_id));
         assert_eq!(
-            reviewed::consume_review_with_boundary(
-                &refused_conn,
-                name,
-                persona,
-                room,
-                &board,
-                competing.review_id,
-                &reviewed::SelfReview::NotAdmitted,
-                Some(&dream)
-            )
+            reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &refused_conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: competing.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&dream))
             .await
             .unwrap()
             .state,
@@ -562,32 +449,14 @@ use super::*;
             .pending
             .is_empty());
         let restarted = region_over_with_store(persona, admission, Some(Arc::new(reopened_store)));
-        reviewed::consume_review_with_boundary(
-            &refused_conn,
-            name,
-            persona,
-            room,
-            &board,
-            competing.review_id,
-            &reviewed::SelfReview::NotAdmitted,
-            Some(&restarted),
-        )
+        reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &refused_conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: competing.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&restarted))
         .await
         .unwrap();
         assert!(
             !restarted.review_boundary_pending(persona, selection.submission_id),
             "another signed review cannot replay the selected acceptance into a fresh owner"
         );
-        reviewed::consume_review_with_boundary(
-            &refused_conn,
-            name,
-            persona,
-            room,
-            &board,
-            pass.review_id,
-            &reviewed::SelfReview::NotAdmitted,
-            Some(&restarted),
-        )
+        reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &refused_conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, Some(&restarted))
         .await
         .unwrap();
         assert!(
@@ -762,10 +631,7 @@ use super::*;
         reviewed::record_pending(&fx.data, name, persona, twin).await?;
         let never_submit = continuum_client::mock::MockTransport::new();
         never_submit.respond_to("genome/training-trigger/submit", |_| panic!("held provenance must not dispatch"));
-        let held = reviewed::consume_review_with_boundary(
-            &settlement_connection(executor.clone(), persona, never_submit, None),
-            name, persona, room, &board, pass.review_id, &reviewed::SelfReview::NotAdmitted, None,
-        )
+        let held = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &settlement_connection(executor.clone(), persona, never_submit, None), substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
         .await?;
         assert_eq!(held.state, State::ProvenanceHeld, "{held:?}");
 
@@ -773,10 +639,7 @@ use super::*;
         let unpublished = fx.project(vec![(WorkEvent::WorkSubmissionReviewed(pass.clone()), fx.reviewer)]);
         let never = continuum_client::mock::MockTransport::new();
         never.respond_to("genome/training-trigger/submit", |_| panic!("an unpublished submission must not dispatch"));
-        assert!(reviewed::consume_review_with_boundary(
-            &settlement_connection(executor, persona, never, None),
-            name, persona, room, &unpublished, pass.review_id, &reviewed::SelfReview::NotAdmitted, None,
-        )
+        assert!(reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &settlement_connection(executor, persona, never, None), substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &unpublished, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
         .await
         .is_err());
         Ok(())
@@ -797,10 +660,7 @@ use super::*;
             &fx.selected,
             Some(json!({"success":true,"acceptance":{"submissionId":fx.selected.id,"replayed":false}})),
         );
-        let accepted = reviewed::consume_review_with_boundary(
-            &settlement_connection(fx.executor.clone(), fx.persona, submit, None),
-            fx.name, fx.persona, fx.room, &board, fx.pass.review_id, &reviewed::SelfReview::NotAdmitted, None,
-        )
+        let accepted = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &settlement_connection(fx.executor.clone(), fx.persona, submit, None), substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: fx.name, persona_id: fx.persona, room_id: fx.room, board: &board, review_id: fx.pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
         .await?;
         assert_eq!(accepted.state, State::Accepted, "{accepted:?}");
         assert_eq!(accepted.staged_revision_id, Some(fx.selected.id), "the issuing turn's row");

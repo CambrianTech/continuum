@@ -114,16 +114,7 @@ async fn consume_own_review(
         (ExactReview::claim(self_card, self_claim, fx.owner), fx.owner),
         (WorkEvent::WorkSubmissionReviewed(own.clone()), fx.owner),
     ]);
-    reviewed::consume_review_with_boundary(
-        conn,
-        fx.name,
-        fx.persona,
-        fx.room,
-        &board,
-        own.review_id,
-        &reviewed::SelfReview::Admitted,
-        None,
-    )
+    reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: fx.name, persona_id: fx.persona, room_id: fx.room, board: &board, review_id: own.review_id, self_review: &reviewed::SelfReview::Admitted }, None)
     .await
     .unwrap() // JUSTIFIED: test fixture
     .state

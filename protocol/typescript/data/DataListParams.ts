@@ -19,13 +19,18 @@ collection: string,
  */
 filter?: Record<string, unknown>, 
 /**
+ * Fields to materialize in storage. ORM identity metadata is always included.
+ * Omit for full records; metadata consumers should name only their fields.
+ */
+select?: Array<string>, 
+/**
  * Optional ordering clauses, applied in order.
  */
 sort?: Array<OrderByClause>, 
 /**
- * Max records to return. Omit for all matching (bounded by the store).
+ * Required positive page size. Use data/count for counts and cursor pages for traversal.
  */
-limit?: number, 
+limit: number, 
 /**
  * Records to skip before returning (paging alongside `limit`).
  */

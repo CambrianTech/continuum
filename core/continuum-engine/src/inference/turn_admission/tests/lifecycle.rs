@@ -27,6 +27,7 @@ pub(super) type Slots = Arc<std::sync::Mutex<HashMap<u32, String>>>;
 #[derive(Default)]
 pub(super) struct SaveHold {
     held: std::sync::atomic::AtomicBool,
+    reject_saves: std::sync::atomic::AtomicBool,
     arrived: tokio::sync::Notify,
     release: tokio::sync::Notify,
     pub(super) cells: std::sync::Mutex<Option<u64>>,
@@ -78,6 +79,11 @@ pub(super) async fn fake_engine(dir: std::path::PathBuf) -> (String, Slots, Arc<
         match action {
             "save-size" => Json(json!({"id_slot": slot, "filename": body["filename"], "projected_bytes": 100})).into_response(),
             "save" => {
+                if hold.reject_saves.load(std::sync::atomic::Ordering::Acquire) {
+                    return (axum::http::StatusCode::BAD_REQUEST, Json(json!({
+                        "error": {"code": 400, "type": "invalid_request_error", "message": "fixture save refused"}
+                    }))).into_response();
+                }
                 let held = slots.get(&slot).cloned().unwrap_or_default(); // unwrap_or_default: an empty slot saves an empty page
                 std::fs::write(&file, held).expect("test: page write");
                 Json(json!({"id_slot": slot, "filename": body["filename"], "n_saved": 10})).into_response()
@@ -251,6 +257,25 @@ async fn two_residents(dir: &std::path::Path) -> (String, Slots, Arc<SaveHold>, 
     let borrowed = slots.lock().expect("test: fixture mutex").get(&pool.transient_slot()).cloned();
     assert_eq!(borrowed.as_deref(), Some("1:100"), "test: a borrow takes mind 1's slot, the cheaper page");
     (root, slots, hold, pool, lanes, server)
+}
+
+#[tokio::test]
+async fn a_rejected_transient_save_preserves_the_resident_and_refuses_the_borrow() {
+    let dir = tempfile::tempdir().expect("test: page dir");
+    let client = reqwest::Client::new();
+    let (root, slots, hold, pool, lanes, server) = two_residents(dir.path()).await;
+    let gate = Box::leak(Box::new(crate::runtime::admission_gate::AdmissionGate::new()));
+    hold.reject_saves.store(true, std::sync::atomic::Ordering::Release);
+
+    let borrowed = admit_transient_through(&client, &root, None, gate).await;
+    assert!(borrowed.is_err(), "a failed save must not authorize overwriting the resident");
+    assert_eq!(gate.in_flight(), 0);
+    assert_eq!(
+        act(&lanes, &pool, &client, &root, &slots, 1, 110).await,
+        PageIn::Resident,
+        "a rejected save leaves the original live state attributed and reusable"
+    );
+    server.abort();
 }
 
 // what this catches (review of #5540 at 3114e285b): a transient borrow (anonymous

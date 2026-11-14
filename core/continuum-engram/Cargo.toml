@@ -18,6 +18,7 @@ ts-rs.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+futures.workspace = true
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

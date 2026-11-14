@@ -52,7 +52,8 @@ pub async fn decided_page<T: Transport>(
                 "collection": CreditReviewDecision::COLLECTION,
                 "dbPath": format!("@persona:{persona_name}"),
                 "filter": after.map(|id| json!({"id": {"$gt": id}})),
-                "sort": [{"field": "id", "direction": "asc"}], "limit": page
+                "sort": [{"field": "id", "direction": "asc"}], "limit": page,
+                "select": ["id"]
             }),
         )
         .await?;

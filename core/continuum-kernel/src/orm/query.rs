@@ -29,6 +29,9 @@ pub type ComparableValue = Value;
     export_to = "../../../protocol/typescript/orm/QueryOperator.ts"
 )]
 pub enum QueryOperator {
+    /// Conjunction on one declared field; preserves caller predicates when an owner narrows a query.
+    #[serde(rename = "$and")]
+    And(Vec<QueryOperator>),
     /// Equal to
     #[serde(rename = "$eq")]
     Eq(#[ts(type = "string | number | boolean | null")] ComparableValue),
@@ -307,3 +310,6 @@ mod tests {
         assert!(filter.contains_key("priority"));
     }
 }
+
+/// Shared transfer granularity for paged storage reads; never a total-result cap.
+pub fn default_page_size() -> usize { 100 }

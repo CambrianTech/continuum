@@ -83,6 +83,8 @@ pub struct ContextParams {
     /// Default false (generation). Required for [`Context::embed`]; a context
     /// built for generation cannot embed and vice-versa.
     pub embeddings: bool,
+    /// Return only pooled embeddings; do not build or allocate vocabulary logits.
+    pub embeddings_only: bool,
     /// How per-token embeddings are pooled into one sequence vector
     /// (`llama_pooling_type`). Only meaningful when `embeddings == true`. Default
     /// `Mean`. Retrieval embedders are trained for a specific pooling — set it to
@@ -132,6 +134,7 @@ impl Default for ContextParams {
             type_k: KvCacheType::F16,
             type_v: KvCacheType::F16,
             embeddings: false,
+            embeddings_only: false,
             pooling_type: PoolingType::Mean,
             expert_observer: None,
         }
@@ -617,5 +620,36 @@ impl SamplerChainBuilder {
 
     pub fn build(self) -> Sampler {
         Sampler { ptr: self.chain }
+    }
+}
+
+#[cfg(test)]
+mod embedding_output_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires CONTINUUM_TEST_EMBED_MODEL; uses isolated CPU contexts"]
+    fn pooled_only_preserves_embedding_and_omits_logits() {
+        let path = std::env::var_os("CONTINUUM_TEST_EMBED_MODEL").expect("fixture model");
+        let model = Model::load(path, ModelParams { n_gpu_layers: 0, use_mmap: true }).expect("load");
+        let tokens = model.tokenize(&"The resident preserves her work. ".repeat(128), true, false).expect("tokenize");
+        let width = u32::try_from(tokens.len()).expect("fixture width");
+        let mut outputs = Vec::new();
+        for only in [false, false, true, true] {
+            let mut ctx = model.new_context(ContextParams {
+                embeddings: true, embeddings_only: only, pooling_type: PoolingType::Last,
+                n_ctx: width, n_batch: width, n_ubatch: width, ..Default::default()
+            }).expect("context");
+            outputs.push(ctx.embed(&tokens).expect("whole sequence"));
+            assert_eq!(ctx.logits_ith(-1).is_empty(), only);
+        }
+        for (run, output) in outputs.iter().enumerate().skip(1) {
+            assert_eq!(outputs[0].len(), output.len());
+            let max_delta = outputs[0].iter().zip(output)
+                .map(|(before, after)| (before - after).abs()).fold(0.0_f32, f32::max);
+            eprintln!("embedding run {run}: max absolute delta {max_delta}");
+            assert!(output.iter().all(|value| value.is_finite()));
+            assert!(max_delta < 1e-5, "embedding changed in run {run}: {max_delta}");
+        }
     }
 }

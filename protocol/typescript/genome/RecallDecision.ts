@@ -9,4 +9,4 @@ import type { RecallScoreWeights } from "./RecallScoreWeights";
  * All inputs and the observed result of one ranking decision. This records
  * selection evidence, not retained weight bytes or proof that a layer was loaded.
  */
-export type RecallDecision = { schemaVersion: number, policyRevision: string, nowMs: number, query: CapabilityQuery, context: RecallContext, weights: RecallScoreWeights, halfLifeMs: number, candidates: Array<CandidateArtifact>, result: RankedPool, };
+export type RecallDecision = { id: string, schemaVersion: number, policyRevision: string, nowMs: number, query: CapabilityQuery, context: RecallContext, weights: RecallScoreWeights, halfLifeMs: number, candidates: Array<CandidateArtifact>, result: RankedPool, };
