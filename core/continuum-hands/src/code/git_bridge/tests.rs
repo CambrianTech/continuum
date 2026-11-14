@@ -567,7 +567,7 @@
         // APFS race guard: a freshly written file can still be "busy" in the kernel
         // when another process tries to execute it (ETXTBUSY). Open + sync_all ensures
         // pending writes are committed before git spawns /bin/sh on this path.
-        let mut f = fs::OpenOptions::new().write(true).open(&hook).unwrap();
+        let f = fs::OpenOptions::new().write(true).open(&hook).unwrap();
         f.sync_all().unwrap();
         drop(f);
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
