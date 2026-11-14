@@ -111,7 +111,9 @@ export const liveCallStyles = css`
     .live-grid {
       flex: 1;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      min-height: 0; /* allow flex item to shrink below content intrinsic size */
+      grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+      grid-template-rows: repeat(var(--rows), minmax(0, 1fr));
       gap: var(--spacing-md);
       align-content: center;
     }
@@ -233,7 +235,6 @@ export const liveCallStyles = css`
     }
     .live-tile {
       position: relative;
-      aspect-ratio: 16 / 10;
       border-radius: var(--radius-lg);
       overflow: hidden;
       display: grid;
