@@ -20,10 +20,12 @@
 //!
 //! The device is a second room (01:22Z the same night: all five slots busy, Aris with four requests
 //! and none completed, and the embedder's 186,908,672 B lease refused at VRAM available 0, so
-//! embeddings lost relevance). Weights, KV and compute must also fit the board's governed device
-//! budget, which already nets every other consumer's reserved floor; it is read only when that
-//! budget holds serving's own bytes (`OwnCredit::Included`), the one view in which it is a reading
-//! of what the launch may have.
+//! embeddings lost relevance). Weights, KV and compute must also fit the device. Steady (the board
+//! holds serving's own bytes, `OwnCredit::Included`), the room is the governed replace-myself
+//! budget, which nets every other consumer's floor. At a boot or a gap it is computed from the
+//! other consumers' claims (`device_budget::boot_device_room`), never read off a board still
+//! carrying a leaving engine: the 03:35Z boot the next night sized with no device room and the
+//! embed lane was refused for the rest of the hour.
 
 use continuum_host::host_memory::HostMemoryReading;
 
@@ -143,7 +145,8 @@ impl PoolFit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Rooms {
     pub(super) host: Option<HostRoom>,
-    /// The device budget in bytes, read only when it already holds serving's own bytes.
+    /// The device room in bytes: the governed budget when it holds serving's own bytes, else the
+    /// capacity beside every other consumer's claim; `None` while the pool has not reported.
     pub(super) device: Option<u64>,
 }
 

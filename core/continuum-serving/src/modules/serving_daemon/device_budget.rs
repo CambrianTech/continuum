@@ -128,6 +128,25 @@ pub(super) fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<
     governed_pool_ceiling(resource_daemon, serving_pool_kind())
 }
 
+/// The device room a launch sizes into while the board does not hold serving's own bytes yet (a
+/// boot, or the gap after an engine exit): the serving pool's capacity less every other
+/// consumer's floor, grant or residency, computed from their claims
+/// (`ResourceDaemon::room_beside_others`), never read off a board that still carries a leaving
+/// engine's bytes unattributed. `None` while the pool's capacity has not reported (no reading).
+///
+/// The M5, 2026-11-14 03:35Z (canary 958ea3056): the boot launch read no device room at all and
+/// the embed lane's 186,908,672 B leases were refused at 0 available twelve times in 26 minutes.
+pub(super) fn boot_device_room(resource_daemon: &ResourceDaemon) -> Option<u64> {
+    let kind = serving_pool_kind();
+    resource_daemon
+        .board()
+        .kinds
+        .iter()
+        .find(|k| k.kind == kind)
+        .filter(|k| k.capacity_bytes > 0)
+        .map(|_| resource_daemon.room_beside_others(SERVING_CONSUMER_ID, kind))
+}
+
 /// [`governed_vram_ceiling`] for a named pool — the row the lane's placement puts its
 /// bytes in (see [`serving_pool_kind`]). Split so the arithmetic is assertable against
 /// a Ram row without a config decision in the test.

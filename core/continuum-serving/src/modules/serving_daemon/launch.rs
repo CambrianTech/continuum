@@ -65,7 +65,7 @@ impl ServingDaemonModule {
         let released = planned.map_or(0, |b| b.credit.own_bytes()); // map_or: no plan yet credits no running engine
         let device = match planned.map(|b| b.credit) {
             Some(OwnCredit::Included { .. }) => governed_vram_ceiling(&self.resource_daemon),
-            Some(OwnCredit::ToApply) | None => None,
+            Some(OwnCredit::ToApply) | None => boot_device_room(&self.resource_daemon),
         };
         let rooms = host_fit::Rooms { host: self.host_room(released), device };
         let fit = host_fit::pool_fit(demand, footprint.as_ref(), rooms, host_cache_bytes, sequences, model.context_window);

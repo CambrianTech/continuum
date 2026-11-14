@@ -346,6 +346,13 @@ impl ResourceDaemon {
         self.governor.lock().budget_for_replacing(consumer_id, kind)
     }
 
+    /// What `consumer_id` may size a successor into before its own bytes are on the board: the
+    /// pool's capacity less every other consumer's floor, grant or residency (see
+    /// [`ResourceLeaseLedger::room_beside_others`](super::ledger::ResourceLeaseLedger::room_beside_others)).
+    pub fn room_beside_others(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.governor.lock().room_beside_others(consumer_id, kind)
+    }
+
     /// Replacement budget, the caller's own bytes it added back, and the leases charged, all
     /// from the same accounting read. Consumers must keep these together when deriving a
     /// smaller planning budget: a later board/holder read cannot justify omitting a future

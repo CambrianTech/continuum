@@ -653,7 +653,7 @@ mod device_budget;
 #[cfg(test)]
 use device_budget::governed_pool_ceiling;
 use device_budget::{
-    device_delta_beyond_weights, engine_props, governed_vram_ceiling,
+    boot_device_room, device_delta_beyond_weights, engine_props, governed_vram_ceiling,
     governed_vram_ceiling_or_report, vram_physical_used,
 };
 pub use device_budget::{plan_fill, plan_fraction, seed_device_vram_prior};
