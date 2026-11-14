@@ -433,18 +433,7 @@ pub(super) fn kill_pid_tree(pid: i32) {
     // nothing a KILL loses — and an unbounded graceful shutdown is where
     // stop's seconds became minutes.
     #[cfg(unix)]
-    unsafe {
-        libc::kill(-pid, libc::SIGTERM);
-        libc::kill(pid, libc::SIGTERM);
-        for _ in 0..30 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            if libc::kill(pid, 0) != 0 {
-                return; // gone — the fast path, usually well under a second
-            }
-        }
-        libc::kill(-pid, libc::SIGKILL);
-        libc::kill(pid, libc::SIGKILL);
-    }
+    KillStep::Tree(pid).execute();
     #[cfg(windows)]
     {
         let _ = KillStep::Tree(pid).command().output();
@@ -485,30 +474,33 @@ impl KillStep {
         cmd
     }
 
+    /// Unix: TERM, then the process's EXIT EVENT watched for [`TERM_GRACE`], then KILL: a tree
+    /// signals the GROUP (negative pid) and the pid, a process the pid alone. The exit is
+    /// delivered by the kernel the moment it happens, never polled (card b5b9bef3); anything
+    /// short of an observed exit escalates to KILL rather than trust a guess.
     #[cfg(unix)]
     pub(super) fn execute(self) {
-        match self {
-            Self::Tree(pid) => kill_pid_tree(pid),
-            Self::Process(pid) => kill_pid_alone(pid),
+        // derived-or-floor: the 3 s TERM deadline the 30 x 100 ms poll spelled out (Joel 2026-09-02).
+        const TERM_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+        let (signalled, watched) = match self {
+            Self::Tree(pid) => (vec![-pid, pid], pid),
+            Self::Process(pid) => (vec![pid], pid),
+        };
+        let signal = |sig: libc::c_int| {
+            for target in &signalled {
+                // SAFETY: a signal to this pid or its group; no memory is touched.
+                unsafe { libc::kill(*target, sig) };
+            }
+        };
+        signal(libc::SIGTERM);
+        let exited = u32::try_from(watched)
+            .is_ok_and(|pid| continuum_host::process_exit_event::exited_blocking(pid, TERM_GRACE).is_ok());
+        if !exited {
+            signal(libc::SIGKILL);
         }
     }
 }
 
-/// Unix: TERM this pid ONLY — never its group — with the same 3 s deadline then KILL as
-/// [`kill_pid_tree`]. The step a plan takes on an ancestor of a protected lane.
-#[cfg(unix)]
-pub(super) fn kill_pid_alone(pid: i32) {
-    unsafe {
-        libc::kill(pid, libc::SIGTERM);
-        for _ in 0..30 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            if libc::kill(pid, 0) != 0 {
-                return;
-            }
-        }
-        libc::kill(pid, libc::SIGKILL);
-    }
-}
 
 /// Split only the branches containing a verified live lane. All other branches
 /// remain tree kills, so new eye/browser children are still owned by the reap.

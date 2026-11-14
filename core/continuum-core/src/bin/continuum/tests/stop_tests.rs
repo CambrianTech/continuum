@@ -94,30 +94,40 @@ fn the_drain_is_decided_over_every_core_this_stop_would_have_to_end() {
         .is_none());
 }
 
-// what this catches (Astra's second objection, 2026-09-22): deciding a kill failed
-// by probing liveness on the next line. SIGTERM and taskkill are asynchronous, so a
-// healthy core is still in the table immediately after — an immediate probe would
-// have reported "kill refused" on every successful deploy. The decider is the
-// bounded deadline: a pid still present when it expires, and only then.
+// what this catches (Astra's second objection, 2026-09-22; card b5b9bef3): deciding a kill
+// failed by probing liveness on the next line, or deciding an exit on a poll's timer. A healthy
+// core is still in the table right after SIGTERM, so only outliving the watchdog is evidence of a
+// failed teardown, reported typed with the pid and the pidfile kept; and the exit itself is the
+// kernel's event, observed the moment it happens rather than at the next poll.
 #[tokio::test]
-async fn only_outliving_the_deadline_is_evidence_that_a_kill_did_not_take() {
-    use super::exited_within;
+async fn only_outliving_the_watchdog_is_evidence_and_the_exit_is_its_event() {
+    use super::{exited_within, CoreExitStall};
     use std::time::Duration;
     // Our own pid cannot exit, so it stands in for a core that refused to go.
     let me = std::process::id() as i32;
     let refused = exited_within(me, Duration::from_millis(300))
         .await
-        .expect_err("a pid still alive at the deadline is a failed teardown");
-    assert!(refused.contains(&me.to_string()), "the surviving pid is named: {refused}");
+        .expect_err("a pid still alive at the watchdog is a failed teardown");
+    assert!(matches!(refused, CoreExitStall::NeverExited { pid, .. } if pid == me), "typed: {refused}");
     assert!(
-        refused.contains("pidfile is left in place"),
+        refused.to_string().contains("pidfile is left in place"),
         "the claim must survive the process it names: {refused}"
     );
-    // And a pid that is gone returns without spending the deadline.
+    // A pid that is gone returns without spending the watchdog.
     let started = std::time::Instant::now();
     assert!(exited_within(i32::MAX, Duration::from_secs(30)).await.is_ok());
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "an already-dead pid must not wait out the deadline"
-    );
+    assert!(started.elapsed() < Duration::from_secs(5), "an already-dead pid must not wait out the watchdog");
+    // And a process that exits WHILE the stop waits is observed by its exit event: this test
+    // binary listing its tests, which exits at once on every OS.
+    let mut child = tokio::process::Command::new(std::env::current_exe().expect("test: own exe"))
+        .arg("--list")
+        .stdout(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("test: the test binary spawns");
+    let pid = child.id().expect("test: a running child has a pid") as i32;
+    let started = std::time::Instant::now();
+    let (exit, _status) = tokio::join!(exited_within(pid, Duration::from_secs(30)), child.wait());
+    assert!(exit.is_ok(), "the child's exit is observed: {exit:?}");
+    assert!(started.elapsed() < Duration::from_secs(10), "by its event, not the 30 s watchdog");
 }

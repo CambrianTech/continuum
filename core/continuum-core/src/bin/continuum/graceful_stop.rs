@@ -263,27 +263,56 @@ pub(super) fn preflight_teardown(
 /// then killed.
 pub(super) const TEARDOWN_EXIT_DEADLINE: Duration = Duration::from_secs(30);
 
-/// Wait, bounded, for `pid` to leave the process table.
-///
-/// NOT an immediate `pid_alive` after the kill: SIGTERM and taskkill are both
-/// asynchronous, so a perfectly healthy core is still in the table on the very next
-/// line, and an immediate probe would manufacture "the kill was refused" on every
-/// ordinary stop (Astra, 2026-09-22). Only failing to go within the deadline is
-/// evidence of anything.
-pub(super) async fn exited_within(pid: i32, deadline: Duration) -> Result<(), String> {
-    let until = std::time::Instant::now() + deadline;
-    while pid_alive(pid) {
-        if std::time::Instant::now() >= until {
-            return Err(format!(
-                "core pid {pid} is still running {}s after being asked to stop and then \
-                 killed; its pidfile is left in place because the process it names still \
-                 exists, and no handoff is issued over a core that did not go",
-                deadline.as_secs()
-            ));
+/// Why a core this stop is waiting on was not seen to exit. Typed, so the stall names itself.
+#[derive(Debug)]
+pub(super) enum CoreExitStall {
+    /// The watchdog elapsed and the core was still running.
+    NeverExited { pid: i32, watchdog: Duration },
+    /// The OS could not deliver this pid's exit event; its words.
+    Unobservable { pid: i32, why: String },
+}
+
+impl std::fmt::Display for CoreExitStall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NeverExited { pid, watchdog } => write!(
+                f,
+                "core pid {pid} is still running {}s after being asked to stop; its pidfile is \
+                 left in place because the process it names still exists, and no handoff is \
+                 issued over a core that did not go",
+                watchdog.as_secs()
+            ),
+            Self::Unobservable { pid, why } => write!(
+                f,
+                "core pid {pid}'s exit cannot be observed ({why}); its pidfile is left in place \
+                 because nothing proved the process it names is gone"
+            ),
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    Ok(())
+}
+
+impl From<CoreExitStall> for String {
+    fn from(stall: CoreExitStall) -> Self {
+        stall.to_string()
+    }
+}
+
+/// Wait for `pid`'s EXIT EVENT, which the kernel delivers the moment the process ends
+/// (`continuum_host::process_exit_event`). Never a liveness poll: the 200 ms poll this replaced
+/// decided on a timer (card b5b9bef3). `watchdog` only reports a core that never went.
+///
+/// NOT an immediate `pid_alive` after a kill: SIGTERM and taskkill are both asynchronous, so a
+/// healthy core is still in the table on the very next line (Astra, 2026-09-22).
+pub(super) async fn exited_within(pid: i32, watchdog: Duration) -> Result<(), CoreExitStall> {
+    let Ok(watched) = u32::try_from(pid) else {
+        return Err(CoreExitStall::Unobservable { pid, why: "not a process id".into() });
+    };
+    use continuum_host::process_exit_event::{exited, ExitWaitError};
+    match exited(watched, watchdog).await {
+        Ok(()) => Ok(()),
+        Err(ExitWaitError::StillRunning { .. }) => Err(CoreExitStall::NeverExited { pid, watchdog }),
+        Err(other) => Err(CoreExitStall::Unobservable { pid, why: other.to_string() }),
+    }
 }
 
 pub(super) async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> GracefulStop {

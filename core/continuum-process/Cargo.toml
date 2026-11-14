@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 continuum-base = { path = "../continuum-base" }
+continuum-host = { path = "../continuum-host" } # process_exit_event: confirm_gone awaits each exit event, never a poll
 tracing.workspace = true
 continuum-kernel = { path = "../continuum-kernel" }
 tokio.workspace = true
