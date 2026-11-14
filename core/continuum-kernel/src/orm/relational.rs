@@ -96,7 +96,7 @@ impl RelationalStore {
             .await
             .map_err(|e| e.to_string())?;
         let catalog_read = db.begin().await.map_err(|e| e.to_string())?;
-        let schemas = super::relational_declaration::restore(&catalog_read).await?;
+        let schemas = super::relational_declaration::restore(&catalog_read).await.map_err(|error| error.to_string())?;
         use super::relational_sequence::{Column, Entity};
         use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
         let mut revisions = HashMap::new();
@@ -169,7 +169,7 @@ impl RelationalStore {
         let declared = super::relational_schema::compile(&schema)?;
         let _write = self.writer_gate.lock().await;
         let transaction = self.db.begin().await.map_err(|e| e.to_string())?;
-        if super::relational_declaration::admit(&transaction, &schema).await? {
+        if super::relational_declaration::admit(&transaction, &schema).await.map_err(|error| error.to_string())? {
             transaction
                 .execute(DbBackend::Sqlite.build(&declared.create))
                 .await
@@ -180,7 +180,7 @@ impl RelationalStore {
                     .await
                     .map_err(|e| e.to_string())?;
             }
-            super::relational_declaration::record(&transaction, &schema).await?;
+            super::relational_declaration::record(&transaction, &schema).await.map_err(|error| error.to_string())?;
         }
         transaction.commit().await.map_err(|e| e.to_string())?;
         self.schemas
