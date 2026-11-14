@@ -6,6 +6,7 @@ mod adopted_checkpoint;
 mod discover;
 mod endpoint_concurrency;
 mod stop_checkpoint;
+mod engine_exit;
 
     // what this catches (card 9e3350bd; the 5090 2026-10-11, build 6148): the heartbeat's smoke
     // probe ran on a one-slot lane's only slot, replacing the resident's KV, and the next save
