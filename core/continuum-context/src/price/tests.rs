@@ -110,3 +110,17 @@ fn a_measured_whole_act_prices_when_its_parts_are_noise() {
     assert!((time.seconds_per_token(40_000.0) - time.observed.slope).abs() < 1e-12);
     assert!(time.seconds(60_000.0) > time.seconds(20_000.0), "the act costs more holding more");
 }
+
+// what this catches (Aris, the M5 2026-11-14): with her measured whole act rising with context and
+// her fitted parts not significant (her fresh tokens fall as her context grows), the cold reading,
+// every held token prefilled again, was chosen ahead of her own whole act and priced her at 671-689 s
+// per act for an 85k window against her measured 67 s mean. Her fit is the fixture, verbatim from her
+// checkpoint (~/.continuum/personas/8044b75b.../volatile.json, act_times, 14:2xZ).
+#[test]
+fn her_measured_whole_act_prices_her_before_the_cold_reading() {
+    let fit: ActTimeFit = serde_json::from_str(r#"{"decode":{"acts":2484,"weight":762530.0,"mean_x":44981.99076757639,"mean_y":0.06237593888109317,"sxx":670945019653890.5,"sxy":175128568.35591927,"syy":2224.892699432976,"min_x":7258.0,"max_x":132266.5},"prefill":{"acts":2484,"weight":15818250.0,"mean_x":25761.17599519545,"mean_y":0.00754510786167876,"sxx":6985109694499162.0,"sxy":174345422.59886006,"syy":6905.242323902458,"min_x":3851.5,"max_x":131838.5},"fresh":{"acts":1182,"weight":1182.0,"mean_x":61863.577834179385,"mean_y":7348.5905245346885,"sxx":844220382790.3387,"sxy":-65974078889.32843,"syy":245420276321.81378,"min_x":13419.0,"max_x":132152.0},"observed":{"acts":2484,"weight":2484.0,"mean_x":37213.57045088565,"mean_y":67.19562282930758,"sxx":2319342863480.6753,"sxy":510658334.61882067,"syy":78041385.97629951,"min_x":7207.0,"max_x":132152.0},"acts":2484,"output":762530.0}"#).expect("her checkpointed fit");
+    let ContextPrice::Measured(time) = fit.price() else { panic!("her whole act is measured: priced") };
+    assert_eq!(time.curve, Curve::Whole, "her own whole act prices her before any assumption: {time:?}");
+    let at_85k = time.seconds(85_000.0);
+    assert!((60.0..120.0).contains(&at_85k), "her act at 85k held is near her measured 67 s mean, not ~690 s: {at_85k}");
+}
