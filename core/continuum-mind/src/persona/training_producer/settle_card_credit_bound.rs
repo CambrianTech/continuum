@@ -333,6 +333,9 @@ pub async fn settle_staged_row<T: Transport, S: Transport>(
     row: &StagedCredit,
     verdict: impl Into<CardVerdict>,
 ) -> Result<bool, ClientError> {
+    // Staging admits only its payload tables. Settlement must admit its receipt
+    // declarations before the first replay read, including after reopening a store.
+    reviewed::ensure_storage(conn, persona_name).await?;
     // An accepted transfer is done: its lived copy may already be shed, and it needs no
     // params, so it never reaches the lived rule below as a false "incomplete".
     if reviewed::transfer_accepted(conn, persona_name, row.id).await? {
