@@ -189,7 +189,12 @@ pub(crate) fn offer_from_board(
         free_slots_live: crate::persona::placement_reservation::free_slots_live_now(serving.lanes, at_ms),
         lane_wait_p50_ms: crate::inference::resource_admission::leased_in_wait_p50_ms().0,
         lane_wait_samples: crate::inference::resource_admission::leased_in_wait_p50_ms().1,
-        served_context_window: serving.served_context_window,
+        // One seat's width, by the same owner as this node's own row (`LanePlan::serving`), so local and
+        // foreign rows agree: never the pool's equal share on a shared pool.
+        served_context_window: crate::capacity::window_grant::seat_window(
+            serving.served_context_window,
+            crate::capacity::window_grant::current_sequence_cap(),
+        ),
         // This seat's measured speed for what it serves, so peers can ORDER placement by it
         // (card 86fef3c3); unmeasured beacons 0.
         decode_tps_milli: serving

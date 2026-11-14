@@ -60,8 +60,11 @@ pub fn published_lanes(served: Option<u32>, target_lanes: u32) -> u32 {
 /// fixed at its one launch (the seated minds, those leased in, and the scratch traffic), so
 /// the share never moves with the plan's per-tick lane guess, and the shares never sum past
 /// the pool: a pool every sequence fills at once fails the WHOLE decode batch ("Context size
-/// has been exceeded", llama.cpp server-context.cpp; Cormac on #5720). Per-mind grants from
-/// measured demand (#5718's contract) replace this equal share.
+/// has been exceeded", llama.cpp server-context.cpp; Cormac on #5720). The share is a KV CHARGE,
+/// never a mind's window or a seat's width: each mind is granted her measured need
+/// (`capacity::window_grant`), and a seat is as wide as one sequence holds
+/// (`window_grant::seat_window`; the M5, 2026-11-14: 132,300 read as the widest lane named two minds
+/// unservable on a pool holding 262,144 per sequence).
 pub fn sequence_share(served_pool: u32, sequences: u32, trained_window: u32) -> (u32, u32) {
     let sequences = sequences.max(1);
     ((served_pool / sequences).min(trained_window), sequences)
