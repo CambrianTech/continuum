@@ -665,7 +665,7 @@ fn a_censored_need_raises_her_residency_by_its_value_never_to_a_whole_sequence()
     assert_eq!(need_tokens(&demand), Some(NeedSample::AtLeast { at_least: would_have_held }), "the measurement keeps the bound, typed as one");
     assert_eq!(resident_need(&demand).map(|need| need.value().get()), Some(would_have_held), "residency reads her need, censored samples included");
     let requirement = &requirements_for(&[aiko], &reg)[0];
-    assert_eq!(requirement.wish.map(|w| w.get()), Some(48_000), "the bound raises no wish");
+    assert_eq!(requirement.measure.wish().map(|w| w.get()), Some(48_000), "the bound raises no wish");
     let Measure::Held { need, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
     assert!(need.is_bound(), "a bound stays a bound, so admission can clamp it: {need:?}");
     // granted its value, within her wish grown by her measured growth (48,000 x 60/48), never a sequence
@@ -706,7 +706,7 @@ fn held_turns_alone_stay_an_exact_need_and_raise_no_wish() {
     }
     assert_eq!(need_tokens(&reg.demand_of(aris).expect("recorded")), Some(NeedSample::Exact(30_004)), "the upper median, as before");
     let requirement = &requirements_for(&[aris], &reg)[0];
-    assert_eq!(requirement.wish.map(|w| w.get()), Some(48_000), "an exact need leaves her wish where her turns measured it");
+    assert_eq!(requirement.measure.wish().map(|w| w.get()), Some(48_000), "an exact need leaves her wish where her turns measured it");
     let Measure::Held { need, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
     assert_eq!(Some(need), std::num::NonZeroU32::new(30_004).map(crate::inference::planning::window_allocator::observed::Observed::Exact), "an exact need, typed as one");
 }
@@ -850,7 +850,7 @@ fn a_stale_target_never_cuts_her_floor_on_the_way_to_admission() {
     reg.record_need_in_memory(her, NeedSample::AtLeast { at_least: 116_240 }, 5);
     reg.record_floor_in_memory(her, 60_000, 5);
     let requirement = &requirements_for(&[her], &reg)[0];
-    let Measure::Held { need, target } = requirement.measure else { panic!("a held need: {requirement:?}") };
+    let Measure::Held { need, target, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
     assert!(target.get() >= 60_000, "her target rises to her floor: {target:?}");
     assert_eq!(need.within(58_112).get(), 60_000, "past the ceiling her floor stands, and waits");
     assert!(need.within(262_144).get() >= 60_000, "under a roomy ceiling, never below her floor");

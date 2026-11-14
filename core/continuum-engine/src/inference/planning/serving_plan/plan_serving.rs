@@ -141,14 +141,12 @@ fn plan_serving_into(
         // smallest candidate, single lane, fits_on_gpu = false. The caller
         // owns the CPU-exception / grid-routing choice; we do not silently
         // CPU-serve.
-        let smallest = candidates
-            .iter()
-            .min_by(|a, b| {
-                a.weights_bytes
-                    .cmp(&b.weights_bytes)
-                    .then(a.model_id.cmp(&b.model_id))
-            })
-            .expect("candidates non-empty checked above"); // expect: the empty case returned None at the top of this fn
+        // No candidate at all is no plan (the caller supplies a registry).
+        let smallest = candidates.iter().min_by(|a, b| {
+            a.weights_bytes
+                .cmp(&b.weights_bytes)
+                .then(a.model_id.cmp(&b.model_id))
+        })?;
         return Some(ServingPlan {
             base_model: (*smallest).clone(),
             served_context_window: MIN_SERVE_CTX,
@@ -201,7 +199,11 @@ fn plan_serving_into(
     // collapse. Same lanes-follow-demand-on-a-roomy-host / degrade-on-a-small-one behavior,
     // but the degrade path now SHEDS LANES (queue) instead of shrinking the mind to nothing
     // ([[never-thrash-sticky-hysteresis-on-every-lane]], [[situation-aware-focuser]]).
-    let lane_cap = demand_lanes.max(1).min(host.perf_cores.max(1));
+    // A plan serves at least its one lane: a zero demand or a zero core count still serves one.
+    let lane_cap = match std::num::NonZeroU32::new(demand_lanes.min(host.perf_cores)) {
+        Some(cap) => cap.get(),
+        None => std::num::NonZeroU32::MIN.get(),
+    };
     // Each RESIDENT persona wants its OWN warm slot so its prefilled KV survives across turns
     // (no LRU clobber → no ~10k cold re-prefill every turn — #266's whole latency story: 96%
     // prefill, two of four citizens at 0% cache reuse when 4 minds shared 2 slots). Grow the
@@ -286,10 +288,11 @@ fn plan_serving_into(
             },
         ),
         None => {
-            let lanes = (1..=lane_cap)
-                .rev()
-                .find(|&l| window_for(l as u64) >= per_lane_floor)
-                .unwrap_or(1); // unwrap_or: no count clears the floor, so one lane serves: honest starvation, named by `lanes_bound`
+            let fit = match (1..=lane_cap).rev().find(|&l| window_for(l as u64) >= per_lane_floor).and_then(std::num::NonZeroU32::new) {
+                Some(lanes) => LaneFit::Fits(lanes),
+                None => LaneFit::Starved,
+            };
+            let lanes = fit.lanes().get();
             let bound = if lanes < lane_cap {
                 LanesBound::PerLaneFloor {
                     floor_tokens: per_lane_floor,
@@ -297,7 +300,7 @@ fn plan_serving_into(
                     rejected_lanes: lanes + 1,
                     rejected_window: window_for(lanes as u64 + 1),
                 }
-            } else if lane_cap >= demand_lanes.max(1) {
+            } else if lane_cap >= demand_lanes {
                 LanesBound::Demand
             } else {
                 LanesBound::Cores
@@ -634,4 +637,23 @@ fn plan_serving_at_rest_into(
 
 pub(super) fn bytes_gb(bytes: u64) -> f64 {
     bytes as f64 / 1_000_000_000.0
+}
+
+/// How many lanes clear the per-lane floor: a count that fits, or none (a host too small for
+/// one real window). A starved host still serves its one lane below the floor, which the plan
+/// names (`LanesBound::PerLaneFloor`); the floor's starvation is never a silent count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaneFit {
+    Fits(std::num::NonZeroU32),
+    Starved,
+}
+
+impl LaneFit {
+    /// The lanes the plan serves: the fitting count, or the one lane a starved host runs.
+    fn lanes(self) -> std::num::NonZeroU32 {
+        match self {
+            Self::Fits(lanes) => lanes,
+            Self::Starved => std::num::NonZeroU32::MIN,
+        }
+    }
 }

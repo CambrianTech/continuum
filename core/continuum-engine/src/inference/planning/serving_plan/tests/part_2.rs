@@ -325,9 +325,9 @@ use super::*;
     #[test]
     pub(super) fn a_persona_lane_holds_what_the_residents_require() {
         use crate::inference::planning::window_allocator::{test_tokens, Growth, LaneRequirement};
-        assert_eq!(prompt_floor_of(56_057, QUARTER_GROWTH), 70_071, "the one arithmetic behind typical_prompt_floor and the placement rule");
-        assert_eq!(prompt_floor_of(56_057, Growth::Unmeasured), 56_057, "an unmeasured growth adds nothing");
-        assert_eq!(prompt_floor_of(1, QUARTER_GROWTH), MIN_SERVE_CTX, "never under the serve floor");
+        assert_eq!(prompt_floor_of(test_tokens(56_057), QUARTER_GROWTH), test_tokens(70_071), "the one arithmetic behind typical_prompt_floor and the placement rule");
+        assert_eq!(prompt_floor_of(test_tokens(56_057), Growth::Unmeasured), test_tokens(56_057), "an unmeasured growth adds nothing");
+        assert_eq!(prompt_floor_of(test_tokens(1), QUARTER_GROWTH).get(), MIN_SERVE_CTX, "never under the serve floor");
         let resident = LaneRequirement::wished(uuid::Uuid::new_v4(), test_tokens(56_057), QUARTER_GROWTH);
         let demand = ServingDemand::new(2, Some(200_000)).with_sent_median(Some(56_057)).with_requirements(vec![resident]);
         let requirement = demand.typical_prompt_floor();

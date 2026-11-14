@@ -122,7 +122,8 @@ pub(super) fn derived_prompt_cache_mib(
         lanes,
         physical_bytes,
         serve_host_bytes,
-        available_bytes,
+        // The monitor reports 0 for a reading it could not take: no reading, never zero bytes.
+        (available_bytes > 0).then_some(available_bytes),
     );
     decision.reason = sized_by(&estimated, &demands, decision.reason);
     // Deduplicate the decision, not just its MiB: a different model or a prior
@@ -168,7 +169,7 @@ pub(super) fn derived_prompt_cache_mib(
             estimated_kv_bytes = ?decision.estimated_kv_bytes,
             affordable_bytes = ?decision.affordable_bytes,
             serve_host_bytes = decision.serve_host_bytes,
-            available_bytes = decision.available_bytes,
+            available_bytes = ?decision.available_bytes,
             serialized_state_bytes = ?measured_state,
             "prompt-cache sizing decision, not engine readback; KV estimate excludes draft state and checkpoints"
         );
@@ -232,7 +233,7 @@ pub(super) struct PromptCacheDecision {
     /// pagefile-backed allocations count), so `physical − commit` is always the hard
     /// floor there; it is the right clamp only where commit ≈ resident, the MoE
     /// mmap'd-expert case the host-cache lease was written for.
-    pub(super) available_bytes: u64,
+    pub(super) available_bytes: Option<u64>,
 }
 
 /// PURE: the prompt STATES the host cache is sized to hold — the law behind the grant.
@@ -343,7 +344,7 @@ pub(super) fn prompt_cache_decision(
     lanes: u32,
     physical_bytes: u64,
     serve_host_bytes: u64,
-    available_bytes: u64,
+    available_bytes: Option<u64>,
 ) -> PromptCacheDecision {
     let mut decision = PromptCacheDecision {
         reason: "prior_missing_footprint",
@@ -409,10 +410,9 @@ pub(super) fn prompt_cache_decision(
         let headroom = physical_bytes
             .saturating_sub(serve_host_bytes)
             .saturating_sub(floor);
-        let afford = if available_bytes > 0 {
-            headroom.min(available_bytes.saturating_sub(floor))
-        } else {
-            headroom
+        let afford = match available_bytes {
+            Some(available) => headroom.min(available.saturating_sub(floor)),
+            None => headroom,
         };
         // A cache that fills INTO the pressure band throttles its own planner. The live
         // budget steps the serving mode to Eco (budget × 0.55) when available RAM drops
@@ -432,10 +432,9 @@ pub(super) fn prompt_cache_decision(
         // the same reservation twice. The power mode's band is the one headroom policy, as
         // it is for the plan (#4230). With no availability reading the band is left of what
         // the serve leaves of physical memory: the same reading with nothing else running.
-        let free = if available_bytes > 0 {
-            available_bytes
-        } else {
-            physical_bytes.saturating_sub(serve_host_bytes)
+        let free = match available_bytes {
+            Some(available) => available,
+            None => physical_bytes.saturating_sub(serve_host_bytes),
         };
         let afford = afford.min(free.saturating_sub(crate::capacity::power_mode::ECO_EXIT_BYTES));
         decision.reason = "resident_demand_kv_estimate";

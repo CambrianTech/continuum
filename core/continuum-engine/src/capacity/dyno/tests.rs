@@ -90,7 +90,7 @@ mod grants {
             RecordedNeed::Exact(n) => Observed::Exact(t(n)).within(pool),
             RecordedNeed::AtLeast(n) => Observed::AtLeast { at_least: t(n) }.within(pool),
         };
-        Demand { mind: resident.mind, need, target: need, wish: need, in_flight, settled: true, ceiling: pool, growth: crate::inference::planning::window_allocator::Growth::Unmeasured }
+        Demand { mind: resident.mind, need, target: need, wish: need, turn: match in_flight { true => crate::capacity::window_grant::Turn::InFlight, false => crate::capacity::window_grant::Turn::Settled }, ceiling: pool, growth: crate::inference::planning::window_allocator::Growth::Unmeasured }
     }
 
     /// The SUPERSEDED composition (before #5793): the bare demand policy regranted on every tick
@@ -282,7 +282,7 @@ mod censored_demand {
         }
 
         fn growth(&self) -> Growth {
-            Growth::of(&self.demands, RING)
+            Growth::of(self.demands.iter().copied().filter_map(crate::inference::planning::window_allocator::Tokens::new), RING)
         }
     }
 
@@ -292,7 +292,7 @@ mod censored_demand {
         let need = Observed::AtLeast { at_least: t(BOUND) }.over(Some(t(FLOOR)));
         let requirement = LaneRequirement::wished(aris, t(ring.wish()), ring.growth()).held(need);
         let demand = Demand::of(&requirement, t(TRAINED), POOL, false).expect("test: a held requirement is a demand"); // expect: wished and held, so measured
-        let grants = DemandFollowing.grant(&[Demand { settled: true, ..demand }], &BTreeMap::from([(aris, held)]), POOL);
+        let grants = DemandFollowing.grant(&[Demand { turn: crate::capacity::window_grant::Turn::Settled, ..demand }], &BTreeMap::from([(aris, held)]), POOL);
         grants[&aris]
     }
 

@@ -12,7 +12,7 @@ fn a_refused_holder_can_grow_into_free_capacity_without_a_terminal_receipt() {
     let mut current = None;
     for floor in [40, 60] {
         let demands = [(a, floor), (b, 40)].map(|(mind, n)| Demand {
-            mind, need: t(n), target: t(n), wish: t(n), in_flight: false, settled: true, ceiling: 100, growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
+            mind, need: t(n), target: t(n), wish: t(n), turn: crate::capacity::window_grant::Turn::Settled, ceiling: 100, growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
         });
         let before = current.clone();
         let (_, tickets) = owner.fair_publish(&mut fair, &demands, 100, 100, engine(),
@@ -29,7 +29,7 @@ fn a_large_waiter_accumulates_reclaimed_capacity_across_two_holders() {
     let owner = Box::leak(Box::new(Reservations::new()));
     let (a, b, c) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(3));
     let demands = [(a, 20), (b, 60), (c, 90)].map(|(mind, n)| Demand {
-        mind, need: t(n), target: t(n), wish: t(n), in_flight: false, settled: true, ceiling: 100, growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
+        mind, need: t(n), target: t(n), wish: t(n), turn: crate::capacity::window_grant::Turn::Settled, ceiling: 100, growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
     });
     let mut fair = FairGrantState::default();
     let mut current = None;
@@ -93,7 +93,7 @@ async fn http_reclamation_proof_publishes_the_waiter_without_freeing_early() {
     let a = key.persona();
     let b = uuid::Uuid::new_v4();
     let demands = [a, b].map(|mind| Demand {
-        mind, need: t(60), target: t(60), wish: t(60), in_flight: false, settled: true, ceiling: 100, growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
+        mind, need: t(60), target: t(60), wish: t(60), turn: crate::capacity::window_grant::Turn::Settled, ceiling: 100, growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
     });
     let mut fair = FairGrantState::default();
     let mut current = None;
@@ -136,8 +136,7 @@ fn tick(
             need: t(60),
             target: t(60),
             wish: t(60),
-            in_flight: *mind == minds[0],
-            settled: true,
+            turn: match *mind == minds[0] { true => crate::capacity::window_grant::Turn::InFlight, false => crate::capacity::window_grant::Turn::Settled },
             ceiling: 100,
             growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
         })
@@ -321,7 +320,7 @@ fn an_unused_seat_yields_to_a_waiter_after_two_idle_evaluations() {
     let mut current = None;
     let publish = |fair: &mut FairGrantState, current: &mut Option<PoolGrants>, minds: &[uuid::Uuid]| {
         let demands: Vec<_> = minds.iter().map(|mind| Demand {
-            mind: *mind, need: t(60), target: t(60), wish: t(60), in_flight: false, settled: true, ceiling: 100, growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
+            mind: *mind, need: t(60), target: t(60), wish: t(60), turn: crate::capacity::window_grant::Turn::Settled, ceiling: 100, growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
         }).collect();
         let before = current.clone();
         owner.fair_publish(fair, &demands, 100, 100, engine(), || before, |next| *current = Some(next)).1
@@ -347,7 +346,7 @@ fn the_holder_that_served_most_is_armed_to_yield() {
     let mut current = None;
     let publish = |fair: &mut FairGrantState, current: &mut Option<PoolGrants>, minds: &[uuid::Uuid]| {
         let demands: Vec<_> = minds.iter().map(|mind| Demand {
-            mind: *mind, need: t(50), target: t(50), wish: t(50), in_flight: false, settled: true, ceiling: 100, growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
+            mind: *mind, need: t(50), target: t(50), wish: t(50), turn: crate::capacity::window_grant::Turn::Settled, ceiling: 100, growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
         }).collect();
         let before = current.clone();
         owner.fair_publish(fair, &demands, 100, 100, engine(), || before, |next| *current = Some(next)).1

@@ -71,26 +71,40 @@ pub enum Measure {
     /// No view assembled yet. Her wish is recorded when her first view is built, before she asks
     /// for the engine, so she leaves this state without being served.
     Unmeasured,
-    /// Her untrimmed assembly is measured (her TARGET, with headroom); no held turn has measured a
-    /// floor yet, so the target is the floor.
-    Wished { target: Tokens },
+    /// Her untrimmed assembly is measured: her `wish` (what her view holds whole, no growth) and
+    /// her TARGET (the wish grown by her measured growth); no held turn has measured a floor yet,
+    /// so the target is the floor.
+    Wished { wish: Tokens, target: Tokens },
     /// A held turn measured her FLOOR: the median post-fit size of turns the fit held, no headroom.
     /// `need <= target` (a floor never exceeds what it floors; the constructor enforces it). The
     /// allocator never serves below the need, and serves the target when the budget holds it (card
     /// 70706a9e: Kimi's wish 99k x 1.25 read as "over the grid" at a 75,776 seat her turns fitted
     /// into every time; a requirement is a target, the need is the gate). Typed exact or a lower
     /// bound ([`Observed`]): a need her grant censored is read as at least, never as a size.
-    Held { need: Observed<Tokens>, target: Tokens },
+    /// `wish` is her untrimmed assembly, or what her first held turn held when no wish was ever
+    /// measured.
+    Held { need: Observed<Tokens>, wish: Tokens, target: Tokens },
     /// Declared on the mind (her recipe or genome): the governed size, target and floor alike.
     Declared { target: Tokens },
 }
 
 impl Measure {
+    /// Her untrimmed assembly without growth: what a grant must cover before she grows
+    /// (`capacity::window_grant`), so growth is room to grow into, not a regrant on every act
+    /// (Cormac on #5758). A declared size is its own wish. `None` only while unmeasured.
+    pub fn wish(self) -> Option<Tokens> {
+        match self {
+            Self::Unmeasured => None,
+            Self::Wished { wish, .. } | Self::Held { wish, .. } => Some(wish),
+            Self::Declared { target } => Some(target),
+        }
+    }
+
     /// Her target, when one is measured.
     pub fn target(self) -> Option<Tokens> {
         match self {
             Self::Unmeasured => None,
-            Self::Wished { target } | Self::Held { target, .. } | Self::Declared { target } => Some(target),
+            Self::Wished { target, .. } | Self::Held { target, .. } | Self::Declared { target } => Some(target),
         }
     }
 
@@ -102,7 +116,7 @@ impl Measure {
         match self {
             Self::Unmeasured => None,
             Self::Held { need, .. } => Some(need),
-            Self::Wished { target } | Self::Declared { target } => Some(Observed::Exact(target)),
+            Self::Wished { target, .. } | Self::Declared { target } => Some(Observed::Exact(target)),
         }
     }
 }
@@ -111,12 +125,8 @@ impl Measure {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LaneRequirement {
     pub persona: Uuid,
-    /// What her turns have measured: her target and floor, or nothing yet.
+    /// What her turns have measured: her wish, target and floor, or nothing yet.
     pub measure: Measure,
-    /// Her untrimmed assembly without headroom, when measured or declared: what a grant must cover
-    /// before she grows (`capacity::window_grant`), so headroom is room to grow into, not a regrant
-    /// on every act (Cormac on #5758).
-    pub wish: Option<Tokens>,
     /// How far her act grows past her typical act, measured from her own turns: the room her
     /// target leaves above her requirement (`capacity::window_grant` grows her held need by it).
     pub growth: Growth,
@@ -186,18 +196,18 @@ impl TrainingReserve {
 impl LaneRequirement {
     /// A mind with no view assembled yet: no number, nothing to size from.
     pub fn unmeasured(persona: Uuid) -> Self {
-        Self { persona, measure: Measure::Unmeasured, wish: None, growth: Growth::Unmeasured, training: None }
+        Self { persona, measure: Measure::Unmeasured, growth: Growth::Unmeasured, training: None }
     }
 
     /// Her measured wish (the untrimmed demand her view assembled) grown by her measured growth:
     /// her target. An unmeasured growth adds nothing.
     pub fn wished(persona: Uuid, wish: Tokens, growth: Growth) -> Self {
-        Self { persona, measure: Measure::Wished { target: growth.grow(wish) }, wish: Some(wish), growth, training: None }
+        Self { persona, measure: Measure::Wished { wish, target: growth.grow(wish) }, growth, training: None }
     }
 
     /// A declared size is the governed size, target and floor alike: nothing grows it.
     pub fn declared(persona: Uuid, window: Tokens) -> Self {
-        Self { persona, measure: Measure::Declared { target: window }, wish: Some(window), growth: Growth::Unmeasured, training: None }
+        Self { persona, measure: Measure::Declared { target: window }, growth: Growth::Unmeasured, training: None }
     }
 
     /// With the need her held turns measured. Her target rises to the need's irreducible part (a
@@ -206,14 +216,17 @@ impl LaneRequirement {
     /// is both need and target, since she was served at that size.
     pub fn held(mut self, need: Observed<Tokens>) -> Self {
         self.measure = match self.measure {
-            Measure::Unmeasured => Measure::Held { need, target: need.value() },
-            Measure::Wished { target } | Measure::Held { target, .. } | Measure::Declared { target } => {
+            // A held turn with no measured wish: what it held is what she wished for.
+            Measure::Unmeasured => Measure::Held { need, wish: need.value(), target: need.value() },
+            Measure::Wished { wish, target } | Measure::Held { wish, target, .. } => {
                 let target = need.irreducible().map_or(target, |floor| target.max(floor));
-                Measure::Held { need: need.under(target), target }
+                Measure::Held { need: need.under(target), wish, target }
+            }
+            Measure::Declared { target } => {
+                let target = need.irreducible().map_or(target, |floor| target.max(floor));
+                Measure::Held { need: need.under(target), wish: target, target }
             }
         };
-        // A held turn with no measured wish: what it held is what she wished for.
-        self.wish = self.wish.or(Some(need.value()));
         self
     }
 
@@ -672,7 +685,7 @@ mod tests {
         let unknown = LaneRequirement::unmeasured(Uuid::new_v4());
         assert_eq!((unknown.measure.target(), unknown.measure.observed_need()), (None, None));
         let measured = LaneRequirement::wished(Uuid::new_v4(), t(56_057), QUARTER_GROWTH);
-        assert_eq!(measured.measure, Measure::Wished { target: t(70_071) });
+        assert_eq!(measured.measure, Measure::Wished { wish: t(56_057), target: t(70_071) });
         let a = allocate(&[measured.clone(), unknown.clone()], &[qwen27b()], &budget(30), u32::MAX).expect("fits");
         assert_eq!((a.lanes, a.window, a.served.clone()), (1, a.window, vec![measured.persona]), "only the measured mind is packed");
         assert_eq!(a.unserved, vec![unknown.persona], "the unmeasured mind waits for her first view, unsized");

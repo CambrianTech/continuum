@@ -102,7 +102,7 @@ fn the_cache_holds_the_active_rosters_states_not_every_seed_on_disk() {
         2,
         physical,
         fp.peak_resident_bytes(67_072, 2),
-        40u64 << 30,
+        Some(40u64 << 30),
     );
     assert_eq!(decision.reason, "resident_demand_kv_estimate");
     let afford_mib = decision.affordable_bytes.expect("afford") / (1024 * 1024);
@@ -234,7 +234,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
         fixed_per_lane_bytes: 0,
         compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(65536),
     };
-    let missing = prompt_cache_decision(None, &[60000], 1, 65536, 1, 32 << 30, 0, 0);
+    let missing = prompt_cache_decision(None, &[60000], 1, 65536, 1, 32 << 30, 0, None);
     assert_eq!(missing.reason, "prior_missing_footprint");
     assert_eq!(missing.estimated_kv_bytes, None);
     assert_eq!(missing.affordable_bytes, None);
@@ -251,7 +251,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
         1,
         32 << 30,
         fp.peak_resident_bytes(65536, 1),
-        0,
+        None,
     );
     assert_eq!(cold.reason, "prior_no_seeds_on_disk");
     let empty = prompt_cache_decision(
@@ -262,7 +262,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
         1,
         32 << 30,
         fp.peak_resident_bytes(65536, 1),
-        0,
+        None,
     );
     assert_eq!(empty.reason, "prior_seeds_without_recorded_demand");
     assert_eq!(
@@ -277,7 +277,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
         1,
         0,
         fp.peak_resident_bytes(65536, 1),
-        0,
+        None,
     );
     assert_eq!(unknown.reason, "prior_unknown_physical_memory");
     assert_eq!(
@@ -315,7 +315,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
                     1,
                     32 << 30,
                     geo.peak_resident_bytes(served_ctx, 1),
-                    0,
+                    None,
                 ),
             ),
             (
@@ -328,7 +328,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
                     1,
                     32 << 30,
                     geo.peak_resident_bytes(served_ctx, 1),
-                    0,
+                    None,
                 ),
             ),
             (
@@ -341,7 +341,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
                     1,
                     0,
                     geo.peak_resident_bytes(served_ctx, 1),
-                    0,
+                    None,
                 ),
             ),
         ] {
@@ -362,7 +362,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
         }
         // The one prior that cannot know the geometry keeps the constant.
         assert_eq!(
-            prompt_cache_decision(None, &[], 2, served_ctx, 1, 32 << 30, 0, 0).desired_mib,
+            prompt_cache_decision(None, &[], 2, served_ctx, 1, 32 << 30, 0, None).desired_mib,
             constant
         );
     }
@@ -374,7 +374,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
         1,
         32 << 30,
         fp.peak_resident_bytes(65536, 1),
-        0,
+        None,
     );
     // Same 4096 MiB result as the prior, but materially different evidence.
     assert_eq!(measured.desired_mib, missing.desired_mib);
@@ -408,7 +408,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
         1,
         1,
         fp.peak_resident_bytes(65536, 1),
-        0,
+        None,
     );
     assert_eq!(squeezed.affordable_bytes, Some(0));
     assert_eq!(
@@ -445,9 +445,9 @@ fn a_discrete_gpu_does_not_charge_vram_residency_against_host_ram() {
     );
 
     let on_unified =
-        prompt_cache_decision(Some(&fp), &demands, 2, ctx, lanes, physical, unified, 0);
+        prompt_cache_decision(Some(&fp), &demands, 2, ctx, lanes, physical, unified, None);
     let on_discrete =
-        prompt_cache_decision(Some(&fp), &demands, 2, ctx, lanes, physical, discrete, 0);
+        prompt_cache_decision(Some(&fp), &demands, 2, ctx, lanes, physical, discrete, None);
     assert_eq!(
         on_unified.affordable_bytes,
         Some(0),
@@ -562,7 +562,7 @@ fn a_full_cache_never_steps_the_serving_mode_down_by_itself() {
             2,
             physical,
             fp.peak_resident_bytes(67_340, 2),
-            available,
+            Some(available),
         );
         let grant = (d.desired_mib as u64) << 20;
         assert!(
@@ -599,23 +599,23 @@ fn the_cache_never_promises_past_what_is_available_now() {
     };
     let physical = 63u64 << 30;
     let demands = [115_000u32, 115_000]; // ~58 GB wanted
-    let unknown = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, 0);
+    let unknown = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, None);
     assert_eq!(
         unknown.affordable_bytes,
         Some(grantable_from_physical(physical, 0)),
         "no availability reading: above the floor and the Eco exit band of physical memory"
     );
     let available = 31u64 << 30;
-    let bound = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, available);
+    let bound = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, Some(available));
     assert_eq!(
         bound.affordable_bytes,
         Some(grantable_from_available(physical, available)),
         "bounded by what the box can give now, less the Eco exit band"
     );
     assert!(bound.desired_mib < unknown.desired_mib);
-    assert_eq!(bound.available_bytes, available);
+    assert_eq!(bound.available_bytes, Some(available));
     // Less available than the floor → nothing to promise → the hard floor, no wrap.
-    let starved = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, 1);
+    let starved = prompt_cache_decision(Some(&fp), &demands, 2, 144_640, 1, physical, 0, Some(1));
     assert_eq!(starved.affordable_bytes, Some(0));
     assert_eq!(
         starved.desired_mib,

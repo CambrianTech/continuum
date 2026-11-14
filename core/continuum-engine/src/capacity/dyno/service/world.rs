@@ -328,7 +328,7 @@ impl World {
         let demands: Vec<Demand<Mind>> = self.order.iter().map(|mind| {
             let s = &self.minds[mind];
             let need = test_tokens(s.need);
-            Demand { mind: *mind, need, target: need, wish: need, in_flight: s.phase != Phase::Idle, settled: s.completed_since_grant, ceiling: self.ceiling, growth: crate::inference::planning::window_allocator::Growth::Unmeasured }
+            Demand { mind: *mind, need, target: need, wish: need, turn: match (&s.phase, s.completed_since_grant) { (Phase::Idle, true) => crate::capacity::window_grant::Turn::Settled, (Phase::Idle, false) => crate::capacity::window_grant::Turn::Unsettled, _ => crate::capacity::window_grant::Turn::InFlight }, ceiling: self.ceiling, growth: crate::inference::planning::window_allocator::Growth::Unmeasured }
         }).collect();
         let (next, tickets) = self.owner.publish(&mut self.fair, &demands, self.pool, self.ceiling, Some(self.engine), self.current.clone());
         self.publications += 1;

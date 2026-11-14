@@ -33,8 +33,9 @@ pub const BOOTSTRAP_WORKING_SET: u32 = MIN_SERVE_CTX * 8;
 /// the minds it stands for (`window_allocator::Growth`: nothing while unmeasured), never under the
 /// serve floor. PURE; the one arithmetic behind `typical_prompt_floor` and the placement rule's
 /// requirement.
-pub fn prompt_floor_of(sent_median: u32, growth: Growth) -> u32 {
-    Tokens::new(sent_median).map_or(MIN_SERVE_CTX, |sent| growth.grow(sent).get()).max(MIN_SERVE_CTX)
+pub fn prompt_floor_of(sent_median: Tokens, growth: Growth) -> Tokens {
+    let grown = growth.grow(sent_median);
+    Tokens::new(MIN_SERVE_CTX).map_or(grown, |floor| grown.max(floor))
 }
 
 pub fn persona_lane_holds(served_context_window: u32, requirement: Option<u32>) -> bool {
@@ -161,7 +162,7 @@ impl ServingDemand {
     /// The per-lane floor the residents actually need: their typical sent prompt grown by
     /// their measured growth. `None` until a turn has been sent — the bootstrap prior stands then.
     pub fn typical_prompt_floor(&self) -> Option<u32> {
-        self.sent_median.map(|median| prompt_floor_of(median, self.growth()))
+        self.sent_median.and_then(Tokens::new).map(|median| prompt_floor_of(median, self.growth()).get())
     }
 
     /// The largest measured growth among the minds this demand carries a requirement for

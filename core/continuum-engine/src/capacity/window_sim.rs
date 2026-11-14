@@ -87,8 +87,11 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
                 need: event.need,
                 target: event.need,
                 wish: event.need,
-                in_flight: event.in_flight,
-                settled: true,
+                // a replayed demand has served on its grant; it is in flight or settled
+                turn: match event.in_flight {
+                    true => crate::capacity::window_grant::Turn::InFlight,
+                    false => crate::capacity::window_grant::Turn::Settled,
+                },
                 // the shared pool: one sequence may hold all of it
                 ceiling: scenario.pool_tokens,
                 // her target is her need: no growth is measured in a replayed scenario
@@ -106,7 +109,7 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
         // are both judged against it (Cormac on #5718: a fallen in-flight demand beside a big
         // neighbour read as fitting when the floors did not).
         let owed = |d: &Demand| -> u64 {
-            let floor = match d.in_flight {
+            let floor = match d.turn.in_flight() {
                 true => held.get(&d.mind).copied().unwrap_or(0), // unwrap_or: a turn that holds nothing yet is owed only her demand
                 false => 0,
             };
@@ -123,7 +126,7 @@ pub fn run(scenario: &WindowScenario, policy: &mut dyn WindowPolicy<MindId>) -> 
             .sum();
         for demand in &current {
             let granted = grants.get(&demand.mind).copied().unwrap_or(0); // unwrap_or: a mind the policy granted nothing holds nothing
-            if demand.in_flight
+            if demand.turn.in_flight()
                 && held
                     .get(&demand.mind)
                     .is_some_and(|&before| granted < before)

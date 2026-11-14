@@ -855,7 +855,8 @@ impl WorkingSetRegistry {
             |e| growth_of(e.value()),
         );
         self.sent_median_of(&[persona])
-            .map(|median| crate::inference::planning::serving_plan::prompt_floor_of(median, growth))
+            .and_then(crate::inference::planning::window_allocator::Tokens::new)
+            .map(|median| crate::inference::planning::serving_plan::prompt_floor_of(median, growth).get())
     }
 
     /// Every observation, for reporting. Order is unspecified (a concurrent map).
@@ -893,7 +894,9 @@ impl WorkingSetRegistry {
 /// median, measured once her ring holds a full working session ([`RECENT_TURNS`]), unmeasured
 /// before (`window_allocator::Growth`).
 pub fn growth_of(d: &PersonaDemand) -> crate::inference::planning::window_allocator::Growth {
-    crate::inference::planning::window_allocator::Growth::of(&d.recent, RECENT_TURNS)
+    // A zero slot is a turn not recorded yet; only recorded demands are samples.
+    let recorded = d.recent.iter().copied().filter_map(crate::inference::planning::window_allocator::Tokens::new);
+    crate::inference::planning::window_allocator::Growth::of(recorded, RECENT_TURNS)
 }
 
 /// Each mind's requirement, from the untrimmed demand her turns assemble grown by her own

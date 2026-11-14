@@ -28,22 +28,33 @@ pub enum Growth {
     Measured { tail: Tokens, typical: Tokens },
 }
 
+/// A quantile, read by nearest rank: the smallest sample at or above that share of them.
+#[derive(Debug, Clone, Copy)]
+struct Quantile {
+    per_hundred: usize,
+}
+
+impl Quantile {
+    /// The 1-based nearest rank of this quantile among `count` samples (0 only for none).
+    fn rank(self, count: usize) -> usize {
+        (count * self.per_hundred).div_ceil(100)
+    }
+}
+
+/// Her tail is read at the 95th percentile.
+const P95: Quantile = Quantile { per_hundred: 95 };
+
 impl Growth {
-    /// Her growth from `demands` (zero slots are unrecorded turns), measured once at least
-    /// `sample_floor` demands are recorded.
-    pub fn of(demands: &[u32], sample_floor: usize) -> Self {
-        let mut recorded: Vec<u32> = demands.iter().copied().filter(|t| *t > 0).collect();
+    /// Her growth from her recorded demands, measured once at least `sample_floor` are recorded.
+    pub fn of(demands: impl IntoIterator<Item = Tokens>, sample_floor: usize) -> Self {
+        let mut recorded: Vec<Tokens> = demands.into_iter().collect();
         if recorded.is_empty() || recorded.len() < sample_floor {
             return Self::Unmeasured;
         }
         recorded.sort_unstable();
-        // Nearest rank: the smallest demand at or above 95% of the recorded ones. Never 0, since
-        // at least one demand is recorded.
-        let rank = (recorded.len() * 95).div_ceil(100);
-        let tail = recorded[rank - 1];
-        let typical = recorded[recorded.len() / 2];
-        match (Tokens::new(tail), Tokens::new(typical)) {
-            (Some(tail), Some(typical)) => Self::Measured { tail: tail.max(typical), typical },
+        let tail = P95.rank(recorded.len()).checked_sub(1).and_then(|index| recorded.get(index));
+        match (tail, recorded.get(recorded.len() / 2)) {
+            (Some(&tail), Some(&typical)) => Self::Measured { tail: tail.max(typical), typical },
             _ => Self::Unmeasured,
         }
     }
@@ -90,13 +101,14 @@ mod tests {
     // and a spiky one gets the room her own spikes measured.
     #[test]
     fn her_growth_is_her_p95_over_her_median_once_her_ring_is_full() {
-        assert_eq!(Growth::of(&[40_000; 15], RING), Growth::Unmeasured, "15 turns is under the floor");
-        assert_eq!(Growth::of(&[0; RING], RING), Growth::Unmeasured, "an empty ring measured nothing");
-        let steady = Growth::of(&[40_000; RING], RING);
+        let ring = |demands: &[u32]| demands.iter().copied().filter_map(Tokens::new).collect::<Vec<_>>();
+        assert_eq!(Growth::of(ring(&[40_000; 15]), RING), Growth::Unmeasured, "15 turns is under the floor");
+        assert_eq!(Growth::of(ring(&[0; RING]), RING), Growth::Unmeasured, "an unrecorded ring measured nothing");
+        let steady = Growth::of(ring(&[40_000; RING]), RING);
         assert_eq!(steady.grow(t(40_000)), t(40_000), "a steady mind grows by nothing: {steady:?}");
         let mut spiky = [30_000u32; RING];
         spiky[3] = 90_000;
-        let growth = Growth::of(&spiky, RING);
+        let growth = Growth::of(ring(&spiky), RING);
         assert_eq!(growth, Growth::Measured { tail: t(90_000), typical: t(30_000) });
         assert_eq!(growth.grow(t(30_000)), t(90_000), "her target holds the act she took");
         assert_eq!(Growth::Unmeasured.grow(t(30_000)), t(30_000), "unmeasured adds nothing");

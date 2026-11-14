@@ -264,7 +264,11 @@ impl LaneAdmission {
     /// capacity (`served_generations::admission_bound`), and the publication grows the
     /// semaphores to what is served. Never a fixed ceiling standing in for the engine's report.
     pub(super) fn lane_count(&self) -> usize {
-        self.served.load(Ordering::Acquire).max(1)
+        match std::num::NonZeroUsize::new(self.served.load(Ordering::Acquire)) {
+            Some(published) => published.get(),
+            // No engine has reported its lanes: one call at a time until it does.
+            None => std::num::NonZeroUsize::MIN.get(),
+        }
     }
 
     /// Lanes a non-directed (ambient / idle) call may occupy: all but one, floored at 1 so a
