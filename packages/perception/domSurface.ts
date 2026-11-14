@@ -404,7 +404,7 @@ const UNSETTLED_FEED = ['booting', 'connecting', 'reconnecting'];
  * a blank page (2026-11-14). A page that declares nothing gives no signal of its own, so it is
  * observed once its DOM stops changing (a quiet window, bounded), as a person waits for a page.
  */
-async function settle(page: Page): Promise<void> {
+export async function settle(page: Page): Promise<void> {
   const declared = await page.evaluate(() => document.documentElement.dataset.feedStatus !== undefined);
   if (declared) {
     await page.waitForFunction(
