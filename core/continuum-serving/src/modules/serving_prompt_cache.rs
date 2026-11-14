@@ -162,43 +162,51 @@ impl Inner {
 
     async fn lower(&self, step: lever::Step, share: u64) {
         match self.lever.apply(step, share).await {
-            Ok(applied) => continuum_base::probe!(
-                class = "serving.reclaim.prompt_cache",
-                limit_before_mib = step.before_mib.get(),
-                limit_after_mib = applied.limit_after_mib.get(),
-                calls = applied.calls,
-                target_bytes = share,
-                freed_bytes = applied.freed_bytes,
-                held_bytes = applied.held_bytes,
-                "serving lowered its host prompt cache by its share of the host's memory deficit, first of every holder"
-            ),
-            Err(error) => continuum_base::probe!(
-                class = "serving.reclaim.prompt_cache",
-                limit_before_mib = step.before_mib.get(),
-                limit_after_mib = step.after_mib.get(),
-                target_bytes = share,
-                refusal = %error,
-                "the engine did not lower its prompt cache: the higher priorities give back the host's deficit"
-            ),
+            Ok(applied) => {
+                continuum_base::probe!(
+                    class = "serving.reclaim.prompt_cache",
+                    limit_before_mib = step.before_mib.get(),
+                    limit_after_mib = applied.limit_after_mib.get(),
+                    calls = applied.calls,
+                    target_bytes = share,
+                    freed_bytes = applied.freed_bytes,
+                    held_bytes = applied.held_bytes,
+                    "serving lowered its host prompt cache by its share of the host's memory deficit, first of every holder"
+                );
+            }
+            Err(error) => {
+                continuum_base::probe!(
+                    class = "serving.reclaim.prompt_cache",
+                    limit_before_mib = step.before_mib.get(),
+                    limit_after_mib = step.after_mib.get(),
+                    target_bytes = share,
+                    refusal = %error,
+                    "the engine did not lower its prompt cache: the higher priorities give back the host's deficit"
+                );
+            }
         }
     }
 
     async fn raise(&self, raise: lever::Raise, headroom: NonZeroU64) {
         match self.lever.raise(raise).await {
-            Ok(raised) => continuum_base::probe!(
-                class = "serving.prompt_cache.take_again",
-                limit_before_mib = raised.before_mib.get(),
-                limit_after_mib = raised.after_mib.get(),
-                headroom_bytes = headroom.get(),
-                held_bytes = raised.held_bytes,
-                "the OS reads normal with room to spare: serving raised its host prompt cache by at most that room"
-            ),
-            Err(error) => continuum_base::probe!(
-                class = "serving.prompt_cache.take_again",
-                limit_after_mib = raise.after_mib.get(),
-                refusal = %error,
-                "the engine did not raise its prompt cache: the next calm poll with room asks again"
-            ),
+            Ok(raised) => {
+                continuum_base::probe!(
+                    class = "serving.prompt_cache.take_again",
+                    limit_before_mib = raised.before_mib.get(),
+                    limit_after_mib = raised.after_mib.get(),
+                    headroom_bytes = headroom.get(),
+                    held_bytes = raised.held_bytes,
+                    "the OS reads normal with room to spare: serving raised its host prompt cache by at most that room"
+                );
+            }
+            Err(error) => {
+                continuum_base::probe!(
+                    class = "serving.prompt_cache.take_again",
+                    limit_after_mib = raise.after_mib.get(),
+                    refusal = %error,
+                    "the engine did not raise its prompt cache: the next calm poll with room asks again"
+                );
+            }
         }
     }
 }
