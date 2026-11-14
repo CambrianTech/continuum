@@ -111,7 +111,7 @@ mod snapshot;
 pub mod serving_hold;
 pub use snapshot::{
     await_ready_serving, current_serving, has_reconciled, install_serving_state,
-    mark_first_reconcile, serving_state_receiver, MultimodalSupport, ServingNotReady,
+    mark_first_reconcile, serving_state_receiver, MultimodalSupport,
     ServingSnapshot, DEFAULT_SERVING_WAIT, PROVIDER_ID,
 };
 mod vision;

@@ -39,10 +39,10 @@ async fn a_reader_before_the_install_awaits_the_install_itself() {
 
 // what this catches: the live wait resolving on a publish that is not live (ready without a
 // model), or parking forever when the daemon drops its sender. It resolves on the daemon's first
-// live publish, and a dropped sender is the typed `DaemonGone`.
+// live publish, and a dropped sender ends it with nothing.
 #[tokio::test]
 async fn the_live_wait_resolves_on_the_first_live_publish_and_names_a_gone_daemon() {
-    use super::super::snapshot::{live_snapshot, ServingNotReady};
+    use super::super::snapshot::live_snapshot;
     let (tx, rx) = tokio::sync::watch::channel(ServingSnapshot::empty());
     let mut waiting = Box::pin(live_snapshot(rx));
     assert_pending(&mut waiting, "an empty snapshot is not live").await;
@@ -51,11 +51,11 @@ async fn the_live_wait_resolves_on_the_first_live_publish_and_names_a_gone_daemo
     tx.send_replace(ready_without_a_model);
     assert_pending(&mut waiting, "ready without a model is not live").await;
     tx.send_replace(live("published-model"));
-    assert_eq!(waiting.await.map(|s| s.active_model), Ok(Some("published-model".into())));
+    assert_eq!(waiting.await.and_then(|s| s.active_model).as_deref(), Some("published-model"));
 
     let (gone, rx) = tokio::sync::watch::channel(ServingSnapshot::empty());
     drop(gone);
-    assert_eq!(live_snapshot(rx).await, Err(ServingNotReady::DaemonGone));
+    assert_eq!(live_snapshot(rx).await, None, "a gone daemon publishes nothing further");
 }
 
 /// what this catches (#350): the two states an EMPTY serving snapshot can mean

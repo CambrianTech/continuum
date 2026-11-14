@@ -323,25 +323,10 @@ pub(super) async fn installed_receiver(
 
 
 /// The first live snapshot `rx` carries: the current one if it is live, else the daemon's next
-/// live publish. `DaemonGone` when the daemon drops its sender, since nothing further can arrive.
-pub(super) async fn live_snapshot(mut rx: watch::Receiver<ServingSnapshot>) -> Result<ServingSnapshot, ServingNotReady> {
-    let live = rx.wait_for(ServingSnapshot::is_live).await.map_err(|_closed| ServingNotReady::DaemonGone)?;
-    Ok(live.clone())
-}
-
-
-/// Why [`await_ready_serving`] has no live snapshot to return.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum ServingNotReady {
-    /// The caller's bound passed with no live publish: the daemon may never have a servable plan.
-    #[error("no served model became ready within {0:?}")]
-    NotWithin(Duration),
-    /// The daemon dropped its sender: nothing further will be published.
-    #[error("the serving daemon stopped publishing its state")]
-    DaemonGone,
-    /// The pinned external endpoint is unreachable or names no context window.
-    #[error("the pinned external serving endpoint is not adoptable (unreachable, or names no context window)")]
-    ExternalNotAdoptable,
+/// live publish. `None` when the daemon drops its sender, since nothing further can arrive.
+pub(super) async fn live_snapshot(mut rx: watch::Receiver<ServingSnapshot>) -> Option<ServingSnapshot> {
+    let live = rx.wait_for(ServingSnapshot::is_live).await.ok()?;
+    Some(live.clone())
 }
 
 
@@ -381,7 +366,6 @@ pub fn current_serving() -> ServingSnapshot {
 /// spawner's window, yet the boot-time inference gate declared failure and
 /// hard-killed the core. Fail LOUD, not fail FAST — a premature false failure is
 /// worse than a slower true one. Bump READY_TIMEOUT and this follows.
-// event-exempt: the daemon's first live publish, which may never come; the wait subscribes to its watch and fails typed here
 pub const DEFAULT_SERVING_WAIT: Duration = Duration::from_secs(READY_TIMEOUT.as_secs() + 30);
 
 
@@ -394,7 +378,7 @@ pub const PROVIDER_ID: &str = "llama-server";
 
 
 /// Await a READY served model, bounded by `within`. Resolves the instant the
-/// daemon's snapshot reports `ready` with an `active_model`; fails typed when the
+/// daemon's snapshot reports `ready` with an `active_model`; `None` when the
 /// bound passes first or the daemon stops publishing.
 ///
 /// This REPLACES the old "HTTP-probe-with-timeout" boot dance: an upstart path
@@ -403,7 +387,7 @@ pub const PROVIDER_ID: &str = "llama-server";
 /// the daemon has installed that `watch` awaits the install itself
 /// (`SERVING_STATE_INSTALLED`): measured 2026-09-01, an early-boot `get()?`
 /// returned at once and a resume burned 13 park attempts in 400µs.
-pub async fn await_ready_serving(within: Duration) -> Result<ServingSnapshot, ServingNotReady> {
+pub async fn await_ready_serving(within: Duration) -> Option<ServingSnapshot> {
     // Lane-source-agnostic readiness (the misfit / grid design): if the operator
     // pinned an EXTERNAL OpenAI-compatible endpoint via `LLAMA_SERVER_BASE_URL`,
     // this node does NOT own a local GPU serving lane — it hosts personas against
@@ -417,10 +401,10 @@ pub async fn await_ready_serving(within: Duration) -> Result<ServingSnapshot, Se
     // a compute-wedged endpoint is rejected, never faked
     // ([[fallbacks-are-illegal-fail-loud]]).
     if external_serving_pin().is_some() {
-        return probe_external_serving(within).await.ok_or(ServingNotReady::ExternalNotAdoptable);
+        return probe_external_serving(within).await;
     }
     // One bound over the install and the first live publish together: the caller
     // asked for one bounded park, never up to double.
     let live = async { live_snapshot(installed_receiver(&SERVING_STATE, &SERVING_STATE_INSTALLED).await).await };
-    tokio::time::timeout(within, live).await.map_err(|_never_live| ServingNotReady::NotWithin(within))?
+    tokio::time::timeout(within, live).await.ok().flatten()
 }
