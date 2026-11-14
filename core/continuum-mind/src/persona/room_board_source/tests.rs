@@ -840,7 +840,7 @@
             c.updated_at_ms = 2_000_000 + i as u64; // every filler changed after the request
             cards.push(c);
         }
-        let reader = Arc::new(StubReader::new(snapshot(cards)));
+        let reader: Arc<dyn RoomBoardReader> = Arc::new(StubReader::new(snapshot(cards)));
 
         // A teammate: the request stands whole, after the claimable group, and the headline counts it.
         let delivery = RoomBoardSource::new(persona(), Arc::clone(&reader)).deliver(&ctx()).await;

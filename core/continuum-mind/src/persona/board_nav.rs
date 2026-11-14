@@ -23,11 +23,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BoardGroup {
-    /// A teammate's newest submission awaiting a reviewer, its review card hers to take.
+    // A teammate's newest submission awaiting a reviewer, its review card hers to take (a plain
+    // comment: a variant doc becomes a described schema entry in every act's work/list tool).
     ReviewRequests,
     Claimable,
     HeldByOthers,
-    /// The review cards that judge her own submissions: another member takes them.
+    // The review cards that judge her own submissions: another member takes them.
     YoursInReview,
     Merged,
     Closed,
