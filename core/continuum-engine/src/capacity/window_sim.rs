@@ -234,7 +234,18 @@ mod tests {
         let demands: Vec<Demand> = scenario
             .events
             .iter()
-            .map(|e| Demand { mind: e.mind, need: e.need, target: e.need, wish: e.need, in_flight: e.in_flight, settled: true, ceiling: 262_144 })
+            .map(|e| Demand {
+                mind: e.mind,
+                need: e.need,
+                target: e.need,
+                wish: e.need,
+                turn: match e.in_flight {
+                    true => crate::capacity::window_grant::Turn::InFlight,
+                    false => crate::capacity::window_grant::Turn::Settled,
+                },
+                ceiling: 262_144,
+                growth: crate::inference::planning::window_allocator::Growth::Unmeasured,
+            })
             .collect();
         let grants = DemandFollowing.grant(&demands, &BTreeMap::new(), scenario.pool_tokens);
         assert_eq!(grants, BTreeMap::from([(1, 143_100), (2, 105_547), (3, 135_619), (4, 148_818)]), "each her own need");
