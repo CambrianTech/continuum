@@ -136,12 +136,17 @@ function renderComposition(body: LiveContentBody): TemplateResult {
       ${audioSinks}
     </div>`;
   }
-  return html`<div class="live-grid" data-composition="grid" data-count=${body.participants.length}>
+  const n = body.participants.length;
+  // Spec: cols from count — ceil(sqrt(n)) gives 2/3/4 for these ranges
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  return html`<div class="live-grid" data-composition="grid" data-count=${n}
+    style="--cols:${cols};--rows:${rows}"
+  >
     ${repeat(body.participants, (p) => p.id, participantTile)}
     ${audioSinks}
   </div>`;
 }
-
 /** The staged permission card (reason before ask; recovery after deny) —
  *  POSITRON-MEDIA-PERMISSIONS.md stage 1/3. Pure: outcomes ride composed
  *  events, the host owns the actual getUserMedia gesture. */
