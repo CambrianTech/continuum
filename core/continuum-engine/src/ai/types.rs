@@ -845,10 +845,7 @@ impl TextGenerationResponse {
 
     /// Check if response has tool calls
     pub fn has_tool_calls(&self) -> bool {
-        self.tool_calls
-            .as_ref()
-            .map(|tc| !tc.is_empty())
-            .unwrap_or(false)
+        self.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty())
     }
 }
 
