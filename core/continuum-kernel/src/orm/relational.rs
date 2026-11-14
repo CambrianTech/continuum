@@ -81,10 +81,13 @@ impl RelationalStore {
             .create_table_from_entity(super::relational_declaration::Entity)
             .if_not_exists().to_owned();
         db.execute(DbBackend::Sqlite.build(&declarations)).await.map_err(|e| e.to_string())?;
+        let catalog_read = db.begin().await.map_err(|e| e.to_string())?;
+        let schemas = super::relational_declaration::restore(&catalog_read).await?;
+        catalog_read.commit().await.map_err(|e| e.to_string())?;
         Ok(Self {
             db,
             in_memory,
-            schemas: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            schemas: Arc::new(parking_lot::RwLock::new(schemas)),
             schema_gate: Arc::new(tokio::sync::Mutex::new(())),
             writer_gate: Arc::new(tokio::sync::Mutex::new(())),
             revisions: Arc::new(parking_lot::Mutex::new(HashMap::new())),

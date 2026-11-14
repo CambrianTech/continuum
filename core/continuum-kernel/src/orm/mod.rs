@@ -35,6 +35,7 @@ mod relational_join;
 mod relational_write;
 mod relational_sequence;
 mod relational_native_revision;
+mod relational_delete_graph;
 mod relational_batch;
 mod relational_transaction;
 mod relational_adapter;

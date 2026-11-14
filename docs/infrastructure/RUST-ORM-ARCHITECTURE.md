@@ -112,8 +112,15 @@ receipts deleted in the same transaction. A database-side identity subquery sele
 victims without materializing bodies or a CPU victim list; no matching receipt means
 no new revision. Delete primitives require a transaction rather than an arbitrary
 connection. Rollback and recreation preserve the head and tombstone contracts.
-These receipts are not yet exposed as a delta watermark: foreign-key cascade recording,
-ordered paging, completion notifications and their replay semantics must land first.
+Declared foreign-key cascades now contribute their transitive identity closure through
+one recursive ORM query, using UNION to deduplicate cycles and converging paths. Only
+reachable native collections receive tombstones; SET NULL survivors stay live and a
+RESTRICT failure rolls back every receipt. The owner restores and physically verifies
+its persisted schema catalog once at open, so children participate even before their
+caller re-admits a declaration. A new external declaration requires admission or a
+new owner before deletion; an incomplete catalog cannot silently miss descendants.
+These receipts are not yet exposed as a delta watermark: ordered paging, completion
+notifications and their replay semantics must land first.
 The sequence-head declaration now has a composite domain/collection identity; any
 previous development database needs the offline schema migration before adoption.
 

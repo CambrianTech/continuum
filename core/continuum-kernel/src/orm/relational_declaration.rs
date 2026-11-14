@@ -1,8 +1,9 @@
 //! Durable proof that this owner created the declared physical schema.
 //! Existing tables without this receipt require an explicit offline migration.
+use super::{adapter::naming, types::CollectionSchema};
 use sea_orm::entity::prelude::*;
 use sea_orm::{QueryOrder, Set};
-use super::{adapter::naming, types::CollectionSchema};
+use serde::Deserialize;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "orm_declarations")]
@@ -36,28 +37,80 @@ async fn physical<C: ConnectionTrait>(db: &C, collection: &str) -> Result<Json, 
     let rows = catalog::Entity::find()
         .filter(catalog::Column::TblName.eq(naming::to_table_name(collection)))
         .order_by_asc(catalog::Column::Name)
-        .all(db).await.map_err(|e| e.to_string())?;
+        .all(db)
+        .await
+        .map_err(|e| e.to_string())?;
     serde_json::to_value(rows).map_err(|e| e.to_string())
 }
 
 /// True means a new table may be created. False means its durable receipt verified.
-pub(super) async fn admit<C: ConnectionTrait>(db: &C, schema: &CollectionSchema) -> Result<bool, String> {
+pub(super) async fn admit<C: ConnectionTrait>(
+    db: &C,
+    schema: &CollectionSchema,
+) -> Result<bool, String> {
     let actual = physical(db, &schema.collection).await?;
-    let expected = serde_json::to_value(schema).map_err(|e| e.to_string())?;
-    match Entity::find_by_id(schema.collection.clone()).one(db).await.map_err(|e| e.to_string())? {
-        Some(receipt) if receipt.declaration == expected && receipt.physical == actual => Ok(false),
-        Some(_) => Err(format!("{}: declared or physical schema changed; explicit migration required", schema.collection)),
+    match Entity::find_by_id(schema.collection.clone())
+        .one(db)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        Some(receipt) => {
+            verify(&receipt, schema, &actual)?;
+            Ok(false)
+        }
         None if actual.as_array().is_some_and(Vec::is_empty) => Ok(true),
-        None => Err(format!("{}: existing table has no declared-schema receipt; explicit migration required", schema.collection)),
+        None => Err(format!(
+            "{}: existing table has no declared-schema receipt; explicit migration required",
+            schema.collection
+        )),
     }
 }
 
-pub(super) async fn record<C: ConnectionTrait>(db: &C, schema: &CollectionSchema) -> Result<(), String> {
+pub(super) async fn record<C: ConnectionTrait>(
+    db: &C,
+    schema: &CollectionSchema,
+) -> Result<(), String> {
     let physical = physical(db, &schema.collection).await?;
     ActiveModel {
         collection: Set(schema.collection.clone()),
         declaration: Set(serde_json::to_value(schema).map_err(|e| e.to_string())?),
         physical: Set(physical),
-    }.insert(db).await.map_err(|e| e.to_string())?;
+    }
+    .insert(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Restore the bounded schema catalog once per connection owner, not per data row.
+/// Receipt and physical verification still precede admission; this is not inference.
+pub(super) async fn restore<C: ConnectionTrait>(
+    db: &C,
+) -> Result<std::collections::HashMap<String, std::sync::Arc<CollectionSchema>>, String> {
+    let receipts = Entity::find().all(db).await.map_err(|e| e.to_string())?;
+    let mut schemas = std::collections::HashMap::with_capacity(receipts.len());
+    for receipt in receipts {
+        let schema: CollectionSchema =
+            CollectionSchema::deserialize(&receipt.declaration).map_err(|e| e.to_string())?;
+        if receipt.collection != schema.collection {
+            return Err("schema receipt identity mismatch".into());
+        }
+        super::relational_schema::compile(&schema)?;
+        verify(&receipt, &schema, &physical(db, &schema.collection).await?)?;
+        schemas.insert(schema.collection.clone(), std::sync::Arc::new(schema));
+    }
+    Ok(schemas)
+}
+fn verify(receipt: &Model, schema: &CollectionSchema, actual: &Json) -> Result<(), String> {
+    let expected = serde_json::to_value(schema).map_err(|e| e.to_string())?;
+    if receipt.collection != schema.collection
+        || receipt.declaration != expected
+        || &receipt.physical != actual
+    {
+        return Err(format!(
+            "{}: declared or physical schema changed; explicit migration required",
+            schema.collection
+        ));
+    }
     Ok(())
 }
