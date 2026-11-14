@@ -3,6 +3,38 @@
 use super::*;
 
 #[tokio::test]
+async fn rebuild_preserves_cascading_children_and_rolls_back_constraint_failure() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("rebuild.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let initial = store(path).await?;
+    initial.insert(&initial.db, &record("p", Parent::COLLECTION, json!({"label":"retained"}))).await?;
+    initial.insert(&initial.db, &record("c", Child::COLLECTION,
+        json!({"parentId":"p","token":"unique","seq":9007199254740993u64,"body":{"kept":true},"joinedLabel":null}))).await?;
+    let mut invalid = Parent::collection_schema();
+    invalid.fields.iter_mut().find(|field| field.name == "label").ok_or("label absent")?.max_length = Some(2);
+    assert!(initial.ensure(invalid).await.is_err());
+    let mut current = Parent::collection_schema();
+    current.fields.retain(|field| field.name != "label");
+    initial.ensure(current.clone()).await?;
+    let query = || QueryBuilder::new(Child::COLLECTION).limit(1).build();
+    let children = initial.query(query()).await?;
+    assert_eq!(children.len(), 1, "DROP during rebuild must not cascade");
+    assert_eq!(children[0].data["seq"], json!(9007199254740993u64));
+    initial.db.clone().close().await?;
+    let reopened = RelationalStore::open(AdapterConfig {
+        connection_string: path.into(), max_connections: 1, ..Default::default()
+    }).await?;
+    reopened.ensure(current).await?;
+    reopened.ensure(Child::collection_schema()).await?;
+    assert_eq!(reopened.query(query()).await?.len(), 1);
+    // Normal writes still enforce FK constraints after the schema connection closes.
+    assert!(reopened.insert(&reopened.db, &record("bad", Child::COLLECTION,
+        json!({"parentId":"absent","token":"bad","seq":2,"body":{},"joinedLabel":null}))).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn declaration_addition_evolves_rows_and_receipt_atomically() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let file = directory.path().join("evolution.db");

@@ -15,6 +15,7 @@ use std::sync::Arc;
 pub(super) struct RelationalStore {
     pub db: DatabaseConnection,
     pub in_memory: bool,
+    schema_url: String,
     schemas: Arc<parking_lot::RwLock<HashMap<String, Arc<CollectionSchema>>>>,
     schema_gate: Arc<tokio::sync::Mutex<()>>,
     pub writer_gate: Arc<tokio::sync::Mutex<()>>,
@@ -45,14 +46,14 @@ impl RelationalStore {
             }
         }
         let url = if in_memory {
-            "sqlite::memory:".into()
+            format!("sqlite:file%3Acontinuum-{}?mode=memory&cache=shared", uuid::Uuid::new_v4())
         } else {
             format!(
                 "sqlite://{}?mode=rwc",
                 config.connection_string.replace('\\', "/")
             )
         };
-        let mut options = ConnectOptions::new(url);
+        let mut options = ConnectOptions::new(url.clone());
         options
             .max_connections(
                 config
@@ -148,6 +149,7 @@ impl RelationalStore {
         Ok(Self {
             db,
             in_memory,
+            schema_url: url,
             schemas: Arc::new(parking_lot::RwLock::new(schemas)),
             schema_gate: Arc::new(tokio::sync::Mutex::new(())),
             writer_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -164,7 +166,15 @@ impl RelationalStore {
         }
         let declared = super::relational_schema::compile(&schema)?;
         let _write = self.writer_gate.lock().await;
-        let transaction = self.db.begin().await.map_err(|e| e.to_string())?;
+        // SQLite DROP TABLE executes FK actions even during a rebuild. Use a
+        // short-lived, pinned schema connection; normal read/write connections
+        // keep FK enforcement enabled. Validate all references before commit.
+        let mut options = ConnectOptions::new(self.schema_url.clone());
+        options.max_connections(1).sqlx_logging(false)
+            .map_sqlx_sqlite_opts(|options| options.foreign_keys(false));
+        let schema_db = Database::connect(options).await.map_err(|error| error.to_string())?;
+        let result = async {
+        let transaction = schema_db.begin().await.map_err(|e| e.to_string())?;
         if super::relational_declaration::admit(&transaction, &schema).await.map_err(|error| error.to_string())? {
             transaction
                 .execute(DbBackend::Sqlite.build(&declared.create))
@@ -178,7 +188,13 @@ impl RelationalStore {
             }
             super::relational_declaration::record(&transaction, &schema).await.map_err(|error| error.to_string())?;
         }
+        super::relational_evolution::verify_references(&transaction).await.map_err(|error| error.to_string())?;
         transaction.commit().await.map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+        }.await;
+        let closed = schema_db.close().await.map_err(|error| error.to_string());
+        result?;
+        closed?;
         self.schemas
             .write()
             .insert(schema.collection.clone(), Arc::new(schema));
