@@ -2,7 +2,12 @@
 //! Vector indexing, ranking and cache behavior on the shared SQLite fixture. Embeddings are
 //! native unit-vector payloads written through `vector/index`, never JSON numbers.
 use super::*;
-use crate::data::vector_index::{RecordId, ResidentMatrix, UnitVectorError, VectorStoreError};
+use crate::data::vector_index::{
+    unit_f32, EmbedderId, Producer, QueryVector, RecallTarget, RecordId, ResidentMatrix, UnitVectorError, VectorIndexError, VectorStoreError,
+};
+use crate::orm::binary::BinaryWriteCondition;
+use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 
 /// A record id the native store accepts: canonical UUIDs, ordered by `n`.
 fn record_id(n: u128) -> RecordId {
@@ -48,9 +53,8 @@ async fn vector_corpus_pages_past_rows_without_embeddings() {
     }
     let vectors = module.state.vector_corpus(&db_path, "test_vector_pages").await.expect("test: corpus");
     assert_eq!(vectors.len(), 3, "an unindexed page must not end corpus traversal");
-    for offset in 0..3 {
-        assert_eq!(vectors.id(offset), Some(record_id((page_size + offset) as u128)));
-    }
+    let expected: Vec<RecordId> = (0..3).map(|offset| record_id((page_size + offset) as u128)).collect();
+    assert_eq!(vectors.record_ids(), expected);
 }
 
 #[tokio::test]
@@ -184,7 +188,7 @@ async fn test_vector_search_basic() {
     for k in [0, 1, 2, 3, 99] {
         let selected = module
             .state
-            .vector_search(&db_path, "test_search", query_vector.clone(), k, 0.0, false)
+            .vector_search(&db_path, "test_search", QueryVector { values: query_vector.clone(), producer: Producer::WireQuery }, k, 0.0, false)
             .await
             .expect("rank cached corpus");
         assert_eq!(selected.count, k.min(results.len()));
@@ -196,7 +200,7 @@ async fn test_vector_search_basic() {
     }
     let filtered = module
         .state
-        .vector_search(&db_path, "test_search", query_vector.clone(), 2, 2.0, false)
+        .vector_search(&db_path, "test_search", QueryVector { values: query_vector.clone(), producer: Producer::WireQuery }, 2, 2.0, false)
         .await
         .expect("filter cached corpus");
     assert_eq!(filtered.count, 0);
@@ -207,7 +211,7 @@ async fn test_vector_search_basic() {
     assert!(adapter.delete("test_search", &id.to_owned()).await.success);
     let hydrated = module
         .state
-        .vector_search(&db_path, "test_search", query_vector, 3, 0.0, true)
+        .vector_search(&db_path, "test_search", QueryVector { values: query_vector, producer: Producer::WireQuery }, 3, 0.0, true)
         .await;
     assert!(
         matches!(hydrated, Err(VectorStoreError::Hydration { id: missing, .. }) if missing.to_string() == id),
@@ -260,23 +264,23 @@ async fn test_vector_cache_invalidation() {
 
     // Each acknowledged mutation must retire the warmed matrix before the next search.
     for operation in ["delete", "batch", "truncate", "clear"] {
-        module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before create");
+        module.state.vector_search(&db_path, "test_cache", QueryVector { values: vec![1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true).await.expect("warm before create");
         let created = module.state.create_record(
             &alias, "test_cache".into(), Some(target.clone()), json!({}),
         ).await.expect("create through mutation owner");
         assert!(created.success, "{created:?}");
         module.state.index_vector(&alias, "test_cache", target.clone(), vec![1.0; 384]).await.expect("alias index");
         let warm = module.state.vector_search(
-            &db_path, "test_cache", vec![1.0; 384], 10, 0.0, true,
+            &db_path, "test_cache", QueryVector { values: vec![1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true,
         ).await.expect("warm corpus");
         assert!(warm.results.iter().any(|hit| hit.id == target));
         let alias_stats = module.state.vector_stats(&alias, "test_cache").await.expect("alias stats");
         assert_eq!(alias_stats.cached_vectors, warm.corpus_size);
         assert!(module.state.invalidate_vector_cache(&alias, "test_cache").await.expect("alias invalidation").cache_invalidated);
         assert_eq!(module.state.vector_stats(&db_path, "test_cache").await.expect("sentinel stats").cached_vectors, 0);
-        module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before reindex");
+        module.state.vector_search(&db_path, "test_cache", QueryVector { values: vec![1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true).await.expect("warm before reindex");
         module.state.index_vector(&alias, "test_cache", target.clone(), vec![-1.0; 384]).await.expect("reindex");
-        let changed = module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.5, true)
+        let changed = module.state.vector_search(&db_path, "test_cache", QueryVector { values: vec![1.0; 384], producer: Producer::WireQuery }, 10, 0.5, true)
             .await.expect("search reindexed corpus");
         assert!(changed.results.iter().all(|hit| hit.id != target));
         match operation {
@@ -293,10 +297,88 @@ async fn test_vector_cache_invalidation() {
             _ => unreachable!("fixture operation"),
         }
         let after = module.state.vector_search(
-            &db_path, "test_cache", vec![1.0; 384], 10, 0.0, true,
+            &db_path, "test_cache", QueryVector { values: vec![1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true,
         ).await.expect("search after acknowledged mutation");
         assert!(after.results.iter().all(|hit| hit.id != target));
         let expected = if matches!(operation, "truncate" | "clear") { 0 } else { warm.corpus_size - 1 };
         assert_eq!(after.corpus_size, expected, "{operation} must refresh the corpus");
     }
+}
+
+/// Writes `values` as `producer`'s certified unit vector on row `id`.
+async fn write_vector(adapter: &dyn StorageAdapter, collection: &str, id: &str, values: [f32; 2], producer: &Producer) {
+    let payload = unit_f32(values.into_iter(), producer).expect("test: certified vector");
+    let written = adapter
+        .update_binary(collection, id, BTreeMap::from([("embedding".to_owned(), payload)]), BinaryWriteCondition::Replace)
+        .await
+        .into_result()
+        .expect("test: native write");
+    assert!(written, "the row exists");
+}
+
+// what this catches: rows from two producers ranked in one matrix (a cross-space comparison), or
+// a query from a space with no stored rows silently scored against another space.
+#[tokio::test]
+async fn each_producer_descriptor_is_its_own_matrix_and_a_foreign_query_is_refused() {
+    let module = DataModule::new(no_substrate_entities);
+    let (_tmp, db_path) = test_db_path("vector_spaces");
+    let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
+    declare_vectors(adapter.as_ref(), "test_spaces").await;
+    let embedder = Producer::Embedder(EmbedderId::new("test-embedder"));
+    let ids: Vec<String> = (0..3).map(|n| record_id(n).to_string()).collect();
+    for id in &ids {
+        create_row(adapter.as_ref(), "test_spaces", id).await;
+    }
+    write_vector(adapter.as_ref(), "test_spaces", &ids[0], [1.0, 0.0], &Producer::IndexCommand).await;
+    write_vector(adapter.as_ref(), "test_spaces", &ids[1], [1.0, 1.0], &Producer::IndexCommand).await;
+    write_vector(adapter.as_ref(), "test_spaces", &ids[2], [1.0, 0.0], &embedder).await;
+    let corpus = module.state.vector_corpus(&db_path, "test_spaces").await.expect("test: corpus");
+    assert_eq!(corpus.descriptors().len(), 2, "one matrix per producer descriptor");
+    assert_eq!(corpus.len(), 3);
+
+    let search = |producer: Producer| module.state.vector_search(&db_path, "test_spaces", QueryVector { values: vec![1.0, 0.0], producer }, 10, -1.0, false);
+    let caller = search(Producer::WireQuery).await.expect("test: caller-space search");
+    assert_eq!(caller.results.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>(), vec![ids[0].as_str(), ids[1].as_str()]);
+    let embedded = search(embedder.clone()).await.expect("test: embedder-space search");
+    assert_eq!(embedded.results.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>(), vec![ids[2].as_str()]);
+    let foreign = search(Producer::Embedder(EmbedderId::new("other-embedder"))).await;
+    assert!(
+        matches!(&foreign, Err(VectorStoreError::Index(VectorIndexError::DescriptorMismatch { available, .. })) if available.len() == 2),
+        "a query from an unstored space is refused: {foreign:?}"
+    );
+}
+
+// what this catches: sealing (seconds of calibration on a large corpus) while the snapshot's read
+// transaction still leases a pooled database connection. With a one-connection pool, a held
+// snapshot starves every other read; `read_groups` must hand back its builders with that
+// connection already returned.
+#[tokio::test]
+async fn the_snapshot_is_released_before_any_matrix_is_sealed() {
+    let directory = tempfile::tempdir().expect("test: directory");
+    let adapter = crate::orm::SeaOrmAdapter::connect(crate::orm::adapter::AdapterConfig {
+        connection_string: directory.path().join("lease.db").to_string_lossy().into_owned(),
+        max_connections: 1,
+        timeout_ms: 500,
+        ..Default::default()
+    })
+    .await
+    .expect("test: one-connection store");
+    declare_vectors(&adapter, "test_lease").await;
+    let id = record_id(0).to_string();
+    create_row(&adapter, "test_lease", &id).await;
+    write_vector(&adapter, "test_lease", &id, [1.0, 0.0], &Producer::IndexCommand).await;
+    let count = || adapter.count(StorageQuery { collection: "test_lease".into(), ..Default::default() });
+
+    // Control: while a snapshot is held, the pool has no connection left to lease.
+    let held = adapter.binary_snapshot("test_lease").await.expect("test: snapshot");
+    assert!(!count().await.success, "a held snapshot holds the only connection");
+    drop(held);
+
+    let snapshot = adapter.binary_snapshot("test_lease").await.expect("test: snapshot");
+    let limit = NonZeroUsize::new(16).expect("test: positive page");
+    let groups = crate::data::vector_corpus::read_groups(snapshot, limit).await.expect("test: pages");
+    // Nothing is sealed yet, and the connection is already back in the pool.
+    assert_eq!(count().await.into_result().expect("the snapshot's connection is released"), 1);
+    let sealed: Vec<_> = groups.into_iter().map(|(_, builder)| builder.seal(RecallTarget::STORE)).collect();
+    assert_eq!(sealed.iter().map(|matrix| matrix.len()).sum::<usize>(), 1);
 }

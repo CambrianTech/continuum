@@ -51,14 +51,56 @@ impl BinarySnapshot {
         request: &super::binary::BinaryPageRequest<'_>,
         output: super::binary::BinaryPageOutput<'_>,
     ) -> Result<Option<BinaryDescriptor>, String> {
+        self.page(request, None, output).await
+    }
+
+    /// [`Self::page_into`] restricted to rows written under exactly `descriptor`, so a
+    /// consumer reads one producer's rows as one page sequence and never meets a mixed page.
+    pub async fn page_matching_into(
+        &self,
+        request: &super::binary::BinaryPageRequest<'_>,
+        descriptor: &BinaryDescriptor,
+        output: super::binary::BinaryPageOutput<'_>,
+    ) -> Result<Option<BinaryDescriptor>, String> {
+        let header = descriptor.encode()?;
+        self.page(request, Some(&header), output).await
+    }
+
+    /// The distinct descriptors `field` holds in this snapshot, at most `limit` of them: one
+    /// per producer layout. A consumer that receives `limit` cannot know it saw them all.
+    pub async fn descriptors(
+        &self,
+        field: &str,
+        limit: std::num::NonZeroUsize,
+    ) -> Result<Vec<BinaryDescriptor>, String> {
         use sea_orm::sqlx::Row;
-        let super::binary::BinaryPageRequest {
-            field,
-            after,
-            limit,
-        } = *request;
-        let super::binary::BinaryPageOutput { bytes, ids } = output;
-        let collection = &self.schema.collection;
+        let header_column = self.header_column(field)?;
+        let mut query = Query::select();
+        query
+            .distinct()
+            .from(Alias::new(naming::to_table_name(&self.schema.collection)))
+            .expr_as(Expr::col(header_column.clone()), Alias::new("descriptor"))
+            .and_where(Expr::col(header_column.clone()).is_not_null())
+            .order_by(header_column, Order::Asc)
+            .limit(u64::try_from(limit.get()).map_err(|_| "descriptor limit exceeds u64")?);
+        let rows = self
+            .transaction
+            .query_all(DbBackend::Sqlite.build(&query))
+            .await
+            .map_err(|e| e.to_string())?;
+        rows.iter()
+            .map(|row| {
+                let row = row
+                    .try_as_sqlite_row()
+                    .ok_or("native descriptors require SQLite provider rows")?;
+                let header: &[u8] = row.try_get("descriptor").map_err(|e| e.to_string())?;
+                BinaryDescriptor::decode(header)
+            })
+            .collect()
+    }
+
+    /// The descriptor column of a declared binary field.
+    fn header_column(&self, field: &str) -> Result<Alias, String> {
         let declared = self
             .schema
             .fields
@@ -68,9 +110,29 @@ impl BinarySnapshot {
         if declared.field_type != FieldType::Binary {
             return Err("native payload access requires a declared binary field".into());
         }
+        Ok(Alias::new(descriptor_column(field)))
+    }
+
+    async fn page(
+        &self,
+        request: &super::binary::BinaryPageRequest<'_>,
+        matching: Option<&[u8]>,
+        output: super::binary::BinaryPageOutput<'_>,
+    ) -> Result<Option<BinaryDescriptor>, String> {
+        use sea_orm::sqlx::Row;
+        let super::binary::BinaryPageRequest {
+            field,
+            after,
+            limit,
+        } = *request;
+        let super::binary::BinaryPageOutput { bytes, ids } = output;
+        let collection = &self.schema.collection;
+        let header_column = self.header_column(field)?;
         let column = super::relational_query::column(&self.schema, field)?;
-        let header_column = Alias::new(descriptor_column(field));
         let mut query = Query::select();
+        if let Some(header) = matching {
+            query.and_where(Expr::col(header_column.clone()).eq(header.to_vec()));
+        }
         query
             .from(Alias::new(naming::to_table_name(collection)))
             .column(Alias::new("id"))

@@ -1,6 +1,6 @@
 use super::*;
 use super::vector_corpus::EMBEDDING_FIELD;
-use super::vector_index::{unit_f32, CpuMatrix, Producer, ResidentMatrix, VectorStoreError};
+use super::vector_index::{unit_f32, Producer, VectorCorpus, VectorStoreError};
 
 // Migration command params now live with their typed ActionCommands in
 // commands/migration/*. The `migration/*` output structs (MigrationProgress,
@@ -443,7 +443,7 @@ impl DataState {
         let vector_dimensions = stats.max_length;
 
         // Check cache status
-        let cached_count = self.vector_cache.get::<CpuMatrix>(&scope, collection).map_or(0, |matrix| matrix.len());
+        let cached_count = self.vector_cache.get::<VectorCorpus>(&scope, collection).map_or(0, |corpus| corpus.len());
 
         let total_ms = start.elapsed().as_millis();
         log_info!(

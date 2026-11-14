@@ -9,12 +9,19 @@
 //!   MEASURED against a recall requirement when the matrix is sealed ([`RecallTarget`]);
 //! - exact dot on the survivors, top-k by a bounded heap.
 //!
+//! Every vector carries an [`EmbeddingDescriptor`] (producer, element type, dimension, scale,
+//! certified unit length). A collection's corpus is one sealed matrix per descriptor, and a
+//! query scores only the matrix [`compatible`] with its own descriptor; one that matches none
+//! is refused (`DescriptorMismatch`), never compared across spaces.
+//!
 //! [`MatrixBuilder`] gathers pages; sealing it measures the prefilter and yields a
 //! [`CpuMatrix`], so an unmeasured matrix cannot be searched. [`ResidentMatrix`] is the compute
 //! seam: the Metal GEMV + fused top-k implements it over the same contiguous buffer.
 
 mod calibrate;
+mod corpus;
 mod cpu;
+mod descriptor;
 mod error;
 mod unit;
 
@@ -24,7 +31,9 @@ mod tests;
 use crate::orm::binary::{BinaryDescriptor, BinaryValue, ByteOrder, ElementType};
 use std::num::NonZeroUsize;
 
+pub(crate) use corpus::{RecordHit, VectorCorpus};
 pub(crate) use cpu::{CpuMatrix, MatrixBuilder};
+pub(crate) use descriptor::{compatible, EmbeddingDescriptor};
 pub(crate) use error::{VectorIndexError, VectorStoreError};
 pub(crate) use unit::{unit_f32, UnitVectorError};
 
@@ -58,13 +67,24 @@ pub(crate) enum Producer {
 }
 
 impl Producer {
+    const WIRE_QUERY: &'static str = "vector/search";
+    const INDEX_COMMAND: &'static str = "vector/index";
+
+    /// The producer field of the stored descriptor; [`Producer::from_identity`] reads it back.
     fn identity(&self) -> String {
         match self {
             Self::Embedder(EmbedderId(id)) => id.clone(),
-            Self::WireQuery => "vector/search".to_owned(),
-            Self::IndexCommand => "vector/index".to_owned(),
+            Self::WireQuery => Self::WIRE_QUERY.to_owned(),
+            Self::IndexCommand => Self::INDEX_COMMAND.to_owned(),
         }
     }
+}
+
+/// A query vector as the `vector/search` wire carries it, with the producer that embedded it.
+/// The query's descriptor is built from both when it is normalized.
+pub(crate) struct QueryVector {
+    pub(crate) values: Vec<f64>,
+    pub(crate) producer: Producer,
 }
 
 /// The fraction of calibration queries whose COMPLETE top-k must survive the prefilter.

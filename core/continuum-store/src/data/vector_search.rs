@@ -1,21 +1,31 @@
 //! Vector ranking and hydration of selected records.
-use super::vector_index::{unit_f32, Hit, Producer, ResidentMatrix, VectorStoreError};
+use super::vector_index::{unit_f32, EmbedderId, Producer, QueryVector, RecordHit, VectorStoreError};
 use super::{require_public_collection, DataState, VectorHit, VectorSearchResults};
 use crate::log_info;
 use std::num::NonZeroUsize;
+
+/// A `vector/search` query and the producer it names: a served embedder, or the caller.
+pub(crate) fn wire_query(values: Vec<f64>, embedder: Option<String>) -> QueryVector {
+    let producer = match embedder {
+        Some(id) => Producer::Embedder(EmbedderId::new(&id)),
+        None => Producer::WireQuery,
+    };
+    QueryVector { values, producer }
+}
 
 impl DataState {
     /// Nearest-neighbour search over a collection's resident unit-vector matrix.
     ///
     /// The query is the one vector normalized here: it arrives from the wire as numbers,
-    /// so this is its producer. Rows were normalized by theirs at write. Each score is one
-    /// dot product (cosine for unit vectors), ranked by the matrix's prefilter and bounded
-    /// top-k, and returned best first above `threshold`.
+    /// so this is where its descriptor is built, naming its producer (the space the caller
+    /// says it embedded in). Rows were normalized by theirs at write. Only the matrix whose
+    /// descriptor is compatible with the query's is scored; each score is one dot product
+    /// (cosine for unit vectors), returned best first above `threshold`.
     pub(crate) async fn vector_search(
         &self,
         handle: &str,
         collection: &str,
-        query_vector: Vec<f64>,
+        query: QueryVector,
         k: usize,
         threshold: f64,
         include_data: bool,
@@ -30,17 +40,16 @@ impl DataState {
         };
         // The wire carries f64 numbers; the matrix is f32. Narrowing is the conversion the
         // wire forces, fused into the query's one normalization and its one byte copy.
-        let query = unit_f32(query_vector.iter().map(|value| *value as f32), &Producer::WireQuery)?;
+        let query = unit_f32(query.values.iter().map(|value| *value as f32), &query.producer)?;
         let ranked = corpus.search(&query, k)?;
         // Best first, so the threshold ends the walk at the first score below it.
         let adapter = if include_data { Some(self.get_adapter(handle).await.map_err(VectorStoreError::Store)?) } else { None };
         let mut results = Vec::with_capacity(ranked.len());
-        for Hit { row, score } in ranked {
+        for RecordHit { id, score } in ranked {
             let score = f64::from(score);
             if score < threshold {
                 break;
             }
-            let id = corpus.id(row).ok_or(VectorStoreError::RowIdentity(row))?;
             let data = match &adapter {
                 Some(adapter) => Some(
                     adapter

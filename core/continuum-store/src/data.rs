@@ -39,6 +39,7 @@ mod vector_corpus;
 mod vector_index;
 
 mod vector_search;
+pub(crate) use vector_search::wire_query;
 
 /// Phase 1 typed-IPC: deserialize raw IPC params into the typed struct
 /// the handler expects, uniformly logging the parse error with

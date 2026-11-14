@@ -1,5 +1,5 @@
 //! The vector seam's failures, typed end to end; text appears only at the command boundary.
-use super::{RecordId, UnitVectorError};
+use super::{EmbeddingDescriptor, UnitVectorError};
 use crate::orm::binary::{ByteOrder, ElementType};
 use crate::sdk_codegen::CommandError;
 
@@ -30,6 +30,17 @@ pub(crate) enum VectorIndexError {
     /// A page's rows times its dimension does not fit this host's address space.
     #[error("a page of {rows} rows of dimension {dimension} exceeds this host's address space")]
     PageOverflow { rows: usize, dimension: usize },
+    /// The query's descriptor is compatible with no stored matrix: scoring it would compare
+    /// vectors across embedding spaces.
+    #[error("query {query} matches no stored embedding space; stored: {}", listed(.available))]
+    DescriptorMismatch { query: EmbeddingDescriptor, available: Vec<EmbeddingDescriptor> },
+    /// A ranked row has no identity in the matrix that ranked it.
+    #[error("ranked row {0} has no identity in its matrix")]
+    RowIdentity(usize),
+}
+
+fn listed(descriptors: &[EmbeddingDescriptor]) -> String {
+    descriptors.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
 }
 
 /// A vector command's failure at the store seam.
@@ -48,15 +59,18 @@ pub(crate) enum VectorStoreError {
     /// The store's page size is zero, so no page could ever be read.
     #[error("the store's page size is zero")]
     PageSize,
-    /// A ranked row has no identity in the matrix that ranked it.
-    #[error("ranked row {0} has no identity in its matrix")]
-    RowIdentity(usize),
     /// The collection's cache cell holds a value of another type.
     #[error("vector cache cell {scope}/{key} holds another type")]
     CacheType { scope: String, key: String },
     /// A ranked record disappeared before its hydration read.
     #[error("vector result {id}: {fault}")]
-    Hydration { id: RecordId, fault: String },
+    Hydration { id: super::RecordId, fault: String },
+    /// The store holds more embedding descriptors in one collection than one page reads.
+    #[error("collection holds at least {limit} embedding descriptors; one read cannot see them all")]
+    DescriptorGroups { limit: usize },
+    /// The CPU seal task ended without its matrix.
+    #[error("vector seal task: {0}")]
+    Seal(#[from] tokio::task::JoinError),
 }
 
 /// A vector the caller supplied is invalid input; a store or matrix fault is the node's.
@@ -65,13 +79,14 @@ impl From<VectorStoreError> for CommandError {
         match error {
             VectorStoreError::Unit(_)
             | VectorStoreError::Refused(_)
-            | VectorStoreError::Index(VectorIndexError::Dimension { .. }) => {
+            | VectorStoreError::Index(VectorIndexError::Dimension { .. } | VectorIndexError::DescriptorMismatch { .. }) => {
                 CommandError::Invalid(error.to_string())
             }
             VectorStoreError::Index(_)
             | VectorStoreError::Store(_)
-            | VectorStoreError::RowIdentity(_)
             | VectorStoreError::PageSize
+            | VectorStoreError::DescriptorGroups { .. }
+            | VectorStoreError::Seal(_)
             | VectorStoreError::CacheType { .. }
             | VectorStoreError::Hydration { .. } => CommandError::Internal(error.to_string()),
         }

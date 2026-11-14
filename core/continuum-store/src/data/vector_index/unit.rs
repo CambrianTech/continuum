@@ -1,6 +1,7 @@
 //! The producer's one normalization: certify `unit = true` at write, never per query.
-use super::{Producer, NATIVE_ORDER};
-use crate::orm::binary::{BinaryDescriptor, BinaryDescriptorError, BinaryValue, ElementType};
+use super::{EmbeddingDescriptor, Producer};
+use crate::orm::binary::{BinaryDescriptorError, BinaryValue};
+use std::num::NonZeroUsize;
 
 /// Why a producer's vector cannot be certified unit-length.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -31,10 +32,7 @@ pub(crate) fn unit_f32<I>(values: I, producer: &Producer) -> Result<BinaryValue,
 where
     I: ExactSizeIterator<Item = f32> + Clone,
 {
-    let dimension = values.len();
-    if dimension == 0 {
-        return Err(UnitVectorError::Empty);
-    }
+    let Some(dimension) = NonZeroUsize::new(values.len()) else { return Err(UnitVectorError::Empty) };
     let squared: f32 = values.clone().map(|value| value * value).sum();
     if !squared.is_finite() {
         return Err(UnitVectorError::NonFinite);
@@ -44,20 +42,14 @@ where
     }
     // The one square root, paid by the producer at write so no query ever pays it.
     let inverse = squared.sqrt().recip();
-    let overflow = UnitVectorError::LengthOverflow { dimension };
-    let byte_len = dimension.checked_mul(std::mem::size_of::<f32>()).ok_or_else(|| overflow.clone())?;
-    let shape = u64::try_from(dimension).map_err(|_| overflow)?;
+    let byte_len = dimension
+        .get()
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or(UnitVectorError::LengthOverflow { dimension: dimension.get() })?;
     let mut bytes = Vec::with_capacity(byte_len);
     for value in values {
         bytes.extend_from_slice(&(value * inverse).to_ne_bytes());
     }
-    let descriptor = BinaryDescriptor {
-        element_type: ElementType::F32,
-        byte_order: NATIVE_ORDER,
-        shape: vec![shape],
-        producer: producer.identity(),
-        unit: true,
-        scale: None,
-    };
+    let descriptor = EmbeddingDescriptor::unit_f32(producer.clone(), dimension).binary();
     Ok(BinaryValue::new(descriptor, bytes)?)
 }

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::data::{DataState, VectorSearchResults};
+use crate::data::{wire_query, DataState, VectorSearchResults};
 
 fn default_k() -> usize {
     10
@@ -33,6 +33,11 @@ pub struct VectorSearchParams {
     /// Include each hit's full record `data`. Defaults to true.
     #[serde(default = "default_include_data")]
     pub include_data: bool,
+    /// The served embedder that produced `queryVector`. Omit it for a vector the caller
+    /// produced itself, which is searched against rows written by `vector/index`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub embedder: Option<String>,
     /// Storage handle. Defaults to "main" (the shared DB).
     // `dbPath` on the wire, NOT `handle`: the envelope owns that name and refuses a
     // string for it (`expected struct HandleRef`) — card ea28d2f6. The Rust field keeps
@@ -56,7 +61,7 @@ crate::action_command! {
         let handle = p.handle.as_deref().unwrap_or("main");
         let result = this
             .state
-            .vector_search(handle, &p.collection, p.query_vector, p.k, p.threshold, p.include_data)
+            .vector_search(handle, &p.collection, wire_query(p.query_vector, p.embedder), p.k, p.threshold, p.include_data)
             .await?;
         Ok(result)
     }
