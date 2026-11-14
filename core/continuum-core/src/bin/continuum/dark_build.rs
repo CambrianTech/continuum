@@ -1,13 +1,10 @@
 //! The deploy build, run DARK: serving is stopped first, the build takes the whole machine,
 //! and a failed build puts the previous core back.
 //!
-//! Joel, 2026-10-24: "No. Take down serving while building." The warm build that compiled
-//! beside a serving core is gone, and its admission machinery with it (a free-memory gate, a
-//! job count derived from constants, nice 19). On a unified-memory node the compiler and the
-//! residents' KV share one pool: 2026-10-23 a crate-local check at -j4 beside serving pushed
-//! the M5 into a Metal out-of-memory, the engine wedged 10 minutes and 32 acts were recorded
-//! as completed when they had failed. No one-time gate can follow KV growth and rustc peaks
-//! mid-build, so the build no longer shares the machine with serving at all.
+//! Joel, 2026-10-24: "No. Take down serving while building." Building beside a serving core
+//! caused an OOM on the M5 (2026-10-23): rustc and the residents' KV share one memory pool,
+//! so dark builds no longer run alongside serving. The warm phase now fetches CI prebuilt
+//! artifacts instead of compiling locally, avoiding any shared-memory contention.
 
 use super::*;
 
@@ -268,16 +265,4 @@ pub(super) async fn build_dark(mut cmd: std::process::Command) -> Result<Prebuil
         ));
     }
     PrebuiltCore::prepare(&receipt.artifact()?).await
-}
-
-/// Build with conservative concurrency limits so rustc doesn't OOM a
-/// unified-memory node that still has a serving core running.  Used for
-/// pre-build while old core serves; falls back to dark build on any miss.
-pub(super) async fn build_warm(mut cmd: std::process::Command) -> Result<PrebuiltCore, String> {
-    // Aggressive concurrency limit — safe for unified memory when another
-    // process (llama-server) is resident at ~16-32 GB.  Each job needs ~4-5
-    // GB peak; with two jobs we stay under ~10 GB compiler + serving core
-    // shared pool on an M5's 24-32 GB unified memory.
-    cmd.env("CARGO_BUILD_JOBS", "2");
-    build_dark(cmd).await
 }
