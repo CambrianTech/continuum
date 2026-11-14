@@ -60,7 +60,7 @@ impl ExamHost for MindExamHost {
         // Her live lane, serving the gene's base.
         let serving = crate::inference::llama_server::await_ready_serving(crate::inference::llama_server::DEFAULT_SERVING_WAIT)
             .await
-            .ok_or_else(|| not_now("no serving lane became ready".into()))?;
+            .map_err(|why| not_now(format!("no serving lane became ready: {why}")))?;
         if serving.active_model.as_deref() != Some(exam.base_model_id.as_str()) {
             return Err(not_now(format!(
                 "the gene's base {} is not the model serving ({:?})",

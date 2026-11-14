@@ -29,12 +29,10 @@ pub fn teach_tasks(tasks: &[EvalTask]) -> Vec<TeachTask> {
 /// Successful acquisition may share resident weights; refusal ends synthesis.
 async fn acquire_teacher_lane(model: &str) -> Result<EvalLane, CommandError> {
     use crate::inference::llama_server::{await_ready_serving, DEFAULT_SERVING_WAIT};
-    if await_ready_serving(DEFAULT_SERVING_WAIT).await.is_none() {
-        return Err(CommandError::Internal(
-            "no served model became ready within the serving-wait budget -- cannot run the teacher. \
-             Bring up serving (ai/inference/serve) before genome/teach."
-                .to_string(),
-        ));
+    if let Err(why) = await_ready_serving(DEFAULT_SERVING_WAIT).await {
+        return Err(CommandError::Internal(format!(
+            "{why} -- cannot run the teacher. Bring up serving (ai/inference/serve) before genome/teach."
+        )));
     }
     spawn_base_eval_lane(model).await
 }

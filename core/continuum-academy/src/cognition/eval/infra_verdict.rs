@@ -41,5 +41,6 @@ pub(super) const LANE_REVERIFY_TIMEOUT: std::time::Duration = std::time::Duratio
 pub(super) async fn reverify_lane() -> Option<String> {
     crate::inference::llama_server::await_ready_serving(LANE_REVERIFY_TIMEOUT)
         .await
+        .ok()
         .and_then(|s| s.active_model)
 }

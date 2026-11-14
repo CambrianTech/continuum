@@ -294,7 +294,7 @@ pub(crate) async fn guard_resident_model(
                 crate::inference::llama_server::DEFAULT_SERVING_WAIT,
             )
             .await;
-            if let Some(s) = settled {
+            if let Ok(s) = settled {
                 snap = s;
             }
             // Carry the daemon's own stated degradation on the probe: an

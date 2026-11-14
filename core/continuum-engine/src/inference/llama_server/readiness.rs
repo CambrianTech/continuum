@@ -1,5 +1,6 @@
 //! Readiness responsibility of the llama-server process owner.
 use super::*;
+use continuum_host::process_exit::ExitObserved;
 /// The bring-up budget in force on this poll. A server answering 503 is UP and loading
 /// (llama-server serves `/health` 503 "Loading model" from the moment it listens), and a
 /// child of ours that is still running is not dead, so that pair earns the cold-load
@@ -86,6 +87,28 @@ impl ReadyLoadProgress {
 }
 
 
+/// The wait between two `/health` polls: `poll`, or the child's `exit` if it comes first. An
+/// observed exit is taken out of `exit`, so it is never awaited twice; with none watched, `poll`
+/// alone ends the wait.
+pub(super) async fn between_polls<F>(exit: &mut Option<F>, poll: impl std::future::Future<Output = ()>) -> Option<ExitObserved>
+where
+    F: std::future::Future<Output = ExitObserved> + Unpin,
+{
+    let Some(watched) = exit.as_mut() else {
+        poll.await;
+        return None;
+    };
+    let observed = tokio::select! {
+        observed = watched => Some(observed),
+        () = poll => None,
+    };
+    if observed.is_some() {
+        *exit = None;
+    }
+    observed
+}
+
+
 /// Poll cadence while waiting for `/health`. 503 → still loading, keep waiting.
 pub(super) const READY_POLL: Duration = Duration::from_millis(500);
 
@@ -117,6 +140,9 @@ impl LlamaServerProcess {
                 })
             })
         };
+        // Our own child's exit is the kernel's event, raced against every poll below, so a child
+        // that dies mid-load is reported the moment it dies (#205), never at the next poll.
+        let mut exit = owned_loading.as_ref().map(|(_, pid)| Box::pin(continuum_host::process_exit::exited(*pid)));
         let mut progress = ReadyLoadProgress::default();
         // Assigned by every arm below before the deadline check reads it.
         let mut last: String;
@@ -193,7 +219,15 @@ impl LlamaServerProcess {
                     ),
                 ));
             }
-            tokio::time::sleep(READY_POLL).await;
+            // The fork pushes no ready or load-progress event (it answers `/health` when asked),
+            // so between polls the only event to wait on is the child's exit.
+            if let Some(ExitObserved::Unobservable(why)) = between_polls(&mut exit, tokio::time::sleep(READY_POLL)).await {
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.load.exit_unobservable",
+                    root = self.root.as_str(),
+                    why = %why,
+                    "the kernel cannot deliver this child's exit; bring-up reads its exit status at each poll instead"
+                );
+            }
         }
     }
 }

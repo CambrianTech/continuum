@@ -281,6 +281,7 @@ impl CognitionEval {
                     crate::inference::llama_server::DEFAULT_SERVING_WAIT,
                 )
                 .await
+                .ok()
                 .and_then(|s| s.active_model);
                 let dedicated = match &active {
                     Some(base) => match spawn_base_eval_lane(base).await {
@@ -588,15 +589,11 @@ impl CognitionEval {
         // luck). Skip the gate when a dedicated lane owns the run.
         if p.base_model_id.is_none() {
             const LANE_WARMUP: std::time::Duration = std::time::Duration::from_secs(90);
-            if crate::inference::llama_server::await_ready_serving(LANE_WARMUP)
-                .await
-                .is_none()
-            {
+            if let Err(why) = crate::inference::llama_server::await_ready_serving(LANE_WARMUP).await {
                 return Err(CommandError::Invalid(format!(
-                    "inference lane not serving-ready after {}s — refusing to grade a cold lane \
+                    "inference lane not serving-ready ({why}) — refusing to grade a cold lane \
                      (would record phantom 0-token failures). The lane warms after a \
-                     core/llama-server relaunch; retry once `/health` returns 200.",
-                    LANE_WARMUP.as_secs()
+                     core/llama-server relaunch; retry once `/health` returns 200."
                 )));
             }
         }

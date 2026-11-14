@@ -110,9 +110,9 @@ use engine_install::{
 mod snapshot;
 pub mod serving_hold;
 pub use snapshot::{
-    await_ready_serving, await_snapshot_resettle, current_serving, has_reconciled,
-    install_serving_state, mark_first_reconcile, serving_state_receiver, MultimodalSupport,
-    ServingSnapshot, SnapshotSettle, DEFAULT_SERVING_WAIT, PROVIDER_ID,
+    await_ready_serving, current_serving, has_reconciled, install_serving_state,
+    mark_first_reconcile, serving_state_receiver, MultimodalSupport, ServingNotReady,
+    ServingSnapshot, DEFAULT_SERVING_WAIT, PROVIDER_ID,
 };
 mod vision;
 pub use vision::vision_lane_ready;
@@ -123,7 +123,7 @@ pub use external::{external_serving_pin, probe_external_serving};
 mod progress;
 pub(crate) use progress::{
     engine_probe, engine_props, restore_probe, slots_probe, unmoved_window, wait_while_engine_progresses, EngineProbe,
-    EngineProgress, WaitBounds, UNMOVED_CEILING,
+    EngineProgress, WaitBounds,
 };
 #[cfg(test)]
 pub(crate) use progress::{engine_probe_within, slots_progress, window_at_rate, window_rate};
