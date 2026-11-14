@@ -244,7 +244,8 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     daemon.set_leased_in_sent_source(Arc::new(Vec::new));
     let rx = daemon.subscribe();
     let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 262_144, true, None).unwrap()];
-    // The residents' requirement: a 56k typical prompt (the 5090's p50), with headroom.
+    // The residents' requirement: a 56k typical prompt (the 5090's p50). No ring here holds a
+    // working session, so no growth is measured and none is added.
     // No residents are live in this harness, so the seat's leased-in samples carry it —
     // the same ring #4256 votes refused prompts into.
     // …in the daemon's OWN working set, never the process-global leased-in ring: that
@@ -269,8 +270,8 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     );
     let good = rx.borrow().clone().expect("a real plan is published");
     assert!(
-        good.served_context_window >= 70_071,
-        "the roomy plan holds the residents' requirement (56k × 1.25): {}",
+        good.served_context_window >= 56_057,
+        "the roomy plan holds the residents' requirement (56k, no growth measured): {}",
         good.served_context_window
     );
     // A squeezed budget: the planner's arithmetic yields a window below one coding
@@ -354,7 +355,7 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     assert!(
         !crate::inference::planning::serving_plan::persona_lane_holds(
             starved.served_context_window,
-            Some(70_071)
+            Some(56_057)
         ),
         "it IS below the requirement — published and said, never dark"
     );
