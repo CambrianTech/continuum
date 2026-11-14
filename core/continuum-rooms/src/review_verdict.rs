@@ -437,16 +437,18 @@ mod tests {
     fn only_the_review_card_of_the_newest_submission_is_a_request() {
         let mut parent = fixture_card(CardState::Review, Some(peer(AUTHOR)), None, "work");
         let first = fixture_submission(&parent);
-        let newer = WorkSubmission { submission_id: airc_work::SubmissionId::from_u128(10), ..first.clone() };
-        parent.submissions = vec![newer.clone(), first.clone()]; // newest first, as airc-work keeps them
-        let card_for = |judged: &WorkSubmission| WorkCard {
-            card_id: airc_work::submission_review_card_id(parent.card_id, judged.submission_id),
+        let newer = WorkSubmission { submission_id: airc_work::SubmissionId::from_u128(10), ..fixture_submission(&parent) };
+        let (first_id, newer_id) = (first.submission_id, newer.submission_id);
+        parent.submissions = vec![newer, first]; // newest first, as airc-work keeps them
+        let card_for = |judged: airc_work::SubmissionId| WorkCard {
+            card_id: airc_work::submission_review_card_id(parent.card_id, judged),
             ..fixture_card(CardState::Open, None, Some(parent.card_id), "review")
         };
-        let (stale, current) = (card_for(&first), card_for(&newer));
-        let cards = [parent.clone(), stale.clone(), current.clone()];
-        assert_eq!(review_request(&current, &cards).map(|s| s.submission_id), Some(newer.submission_id));
-        assert_eq!(review_request(&stale, &cards), None, "superseded by the resubmission");
-        assert_eq!(review_request(&parent, &cards), None, "a code card requests no review");
+        let (stale, current) = (card_for(first_id), card_for(newer_id));
+        let cards = [parent, stale, current];
+        let (parent, stale, current) = (&cards[0], &cards[1], &cards[2]);
+        assert_eq!(review_request(current, &cards).map(|s| s.submission_id), Some(newer_id));
+        assert_eq!(review_request(stale, &cards), None, "superseded by the resubmission");
+        assert_eq!(review_request(parent, &cards), None, "a code card requests no review");
     }
 }

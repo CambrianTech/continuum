@@ -173,6 +173,28 @@ impl HeldWorkStream {
         Item::whole(occurrence, Cause::Root(Origin::External), format!("rejected:{:032x}", occurrence.as_u128()), ContextMessage::user(line.to_owned()))
             .with_pointer(ContextMessage::user("[my work] a claim was rejected: work/list".to_owned()))
     }
+
+    /// Teammates' submissions awaiting a reviewer on every board she stands in: one item, the count
+    /// and the longest waiting, keyed once so a drained queue supersedes it in place. Told, never
+    /// assigned: whether to review is hers.
+    fn review_requests(&self, requests: &[ReviewRequest]) -> Option<Item<ContextMessage>> {
+        let oldest = requests.first()?;
+        let id = shown_form(oldest.review_card.as_uuid());
+        let n = requests.len();
+        let whole = format!(
+            "[review requests] {n} teammate submission(s) await a reviewer on your boards; the longest waiting is review card \
+             {id} \"{}\". A review: work/claim {id}, read work/submission (its patch and head), check its CI \
+             (code/github/pr-checks), then work/review with outcome, verified_head and evidence_text. \
+             work/list group=review_requests lists a board's requests.",
+            oldest.title
+        );
+        let pointer = format!("[review requests] {n} await a reviewer; the longest waiting: review card {id}");
+        let occurrence = element(self.persona, Producer::Work, &[b"review-requests".as_slice(), oldest.review_card.as_uuid().as_bytes(), &(n as u64).to_be_bytes()].concat());
+        Some(
+            Item::whole(occurrence, Cause::Root(Origin::External), "review-requests".to_string(), ContextMessage::user(whole))
+                .with_pointer(ContextMessage::user(pointer)),
+        )
+    }
 }
 
 /// Why her submission's files could not be read, and what she can do about it.
@@ -242,28 +264,6 @@ impl Source<ContextMessage> for HeldWorkStream {
     }
 
     /// Her held card is what she acts through: a price choice never shows it below its whole.
-    /// Teammates' submissions awaiting a reviewer on every board she stands in: one item, the count
-    /// and the longest waiting, keyed once so a drained queue supersedes it in place. Told, never
-    /// assigned: whether to review is hers.
-    fn review_requests(&self, requests: &[ReviewRequest]) -> Option<Item<ContextMessage>> {
-        let oldest = requests.first()?;
-        let id = shown_form(oldest.review_card.as_uuid());
-        let n = requests.len();
-        let whole = format!(
-            "[review requests] {n} teammate submission(s) await a reviewer on your boards; the longest waiting is review card \
-             {id} \"{}\". A review: work/claim {id}, read work/submission (its patch and head), check its CI \
-             (code/github/pr-checks), then work/review with outcome, verified_head and evidence_text. \
-             work/list group=review_requests lists a board's requests.",
-            oldest.title
-        );
-        let pointer = format!("[review requests] {n} await a reviewer; the longest waiting: review card {id}");
-        let occurrence = element(self.persona, Producer::Work, &[b"review-requests".as_slice(), oldest.review_card.as_uuid().as_bytes(), &(n as u64).to_be_bytes()].concat());
-        Some(
-            Item::whole(occurrence, Cause::Root(Origin::External), "review-requests".to_string(), ContextMessage::user(whole))
-                .with_pointer(ContextMessage::user(pointer)),
-        )
-    }
-
     fn consumer(&self) -> continuum_context::ladder::Consumer {
         continuum_context::ladder::Consumer::Actionable
     }

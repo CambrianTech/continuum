@@ -830,9 +830,9 @@
             publisher: airc_core::PeerId::from_uuid(author),
             submitted_at_ms: 1_000_000,
         };
-        parent.submissions = vec![submission.clone()];
         let mut review = card("review: the pipefail fix", CardState::Open, None);
         review.card_id = airc_work::submission_review_card_id(parent.card_id, submission.submission_id);
+        parent.submissions = vec![submission];
         review.reviews = Some(parent.card_id);
         let mut cards = vec![review, parent];
         for i in 0..40 {
@@ -843,7 +843,7 @@
         let reader = Arc::new(StubReader::new(snapshot(cards)));
 
         // A teammate: the request stands whole, after the claimable group, and the headline counts it.
-        let delivery = RoomBoardSource::new(persona(), reader.clone()).deliver(&ctx()).await;
+        let delivery = RoomBoardSource::new(persona(), Arc::clone(&reader)).deliver(&ctx()).await;
         let at = |items: &[RagItem], needle: &str| items.iter().position(|i| i.key.starts_with("card:") && i.content.contains(needle));
         let request = at(&delivery.items, "review: the pipefail fix").expect("the review request is in her view"); // expect: the case under test
         let last_filler = delivery.items.iter().rposition(|i| i.content.contains("filler card")).expect("the claimable group stands"); // expect: 40 claimable cards
