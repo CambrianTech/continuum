@@ -429,6 +429,34 @@
         assert!(level.contains("\"src/module_0/mod.rs\"") && level.contains("\"total\":400"), "{level}");
     }
 
+    // what this catches: an id whose content changes after more acts (IntelMac 0051cdcf, 2026-11-14:
+    // her thoughts quoted 59db1a33 as 14 lines, then 121, then 58). An id is its content's address
+    // and its file is published once: later saves (her reads of it, receipts quoting it whole) are
+    // other ids, a write of different bytes under its name is refused, and the same id read twice
+    // after all of that returns identical bytes.
+    #[test]
+    fn an_id_reads_back_identical_after_more_acts_and_never_takes_other_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let persona = Uuid::new_v4();
+        let pin = LivePin::new();
+        let first = "refused tools/<cut at the output limit>()\nnothing ran\n";
+        let ResultCustody::Whole { handle } = retain_in(&class(dir.path()), persona, first, &pin) else {
+            panic!("a writable class saves the result")
+        };
+        let read = || fs::read(resolve_in(&class(dir.path()), persona, &handle).unwrap()).unwrap();
+        let before = read();
+        for act in 1..=3 {
+            let quoting = format!("act {act}: read_output({{\"outputId\":\"{handle}\"}})\nResult:\n{first}");
+            let ResultCustody::Whole { handle: later } = retain_in(&class(dir.path()), persona, &quoting, &pin) else {
+                panic!("act {act} saves")
+            };
+            assert_ne!(later, handle, "act {act}: another content is another id");
+        }
+        assert!(write_in(&class(dir.path()), persona, &handle, "other bytes\n").is_err(), "an existing id is never replaced");
+        assert_eq!(read(), before, "the same id, read again after more acts");
+        assert_eq!(read(), first.as_bytes());
+    }
+
     // what this catches: a result saved through the class writer that does not reopen by its
     // handle to the bytes she saw, or a handle form that changed under the move to the class (every
     // handle already in a checkpoint must still name its file: the content hash's leading 64 bits).
