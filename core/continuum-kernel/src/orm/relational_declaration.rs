@@ -19,13 +19,15 @@ impl ActiveModelBehavior for ActiveModel {}
 
 mod catalog {
     use sea_orm::entity::prelude::*;
-    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize)]
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
     #[sea_orm(table_name = "sqlite_schema")]
     pub struct Model {
         #[sea_orm(primary_key, auto_increment = false)]
         pub name: String,
         pub tbl_name: String,
         pub r#type: String,
+        #[serde(deserialize_with = "serde::Deserialize::deserialize")]
         pub sql: Option<String>,
     }
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -33,14 +35,13 @@ mod catalog {
     impl ActiveModelBehavior for ActiveModel {}
 }
 
-async fn physical<C: ConnectionTrait>(db: &C, collection: &str) -> Result<Json, String> {
-    let rows = catalog::Entity::find()
+async fn physical<C: ConnectionTrait>(db: &C, collection: &str) -> Result<Vec<catalog::Model>, String> {
+    catalog::Entity::find()
         .filter(catalog::Column::TblName.eq(naming::to_table_name(collection)))
         .order_by_asc(catalog::Column::Name)
         .all(db)
         .await
-        .map_err(|e| e.to_string())?;
-    serde_json::to_value(rows).map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// True means a new table may be created. False means its durable receipt verified.
@@ -58,7 +59,7 @@ pub(super) async fn admit<C: ConnectionTrait>(
             verify(&receipt, schema, &actual)?;
             Ok(false)
         }
-        None if actual.as_array().is_some_and(Vec::is_empty) => Ok(true),
+        None if actual.is_empty() => Ok(true),
         None => Err(format!(
             "{}: existing table has no declared-schema receipt; explicit migration required",
             schema.collection
@@ -74,7 +75,7 @@ pub(super) async fn record<C: ConnectionTrait>(
     ActiveModel {
         collection: Set(schema.collection.clone()),
         declaration: Set(serde_json::to_value(schema).map_err(|e| e.to_string())?),
-        physical: Set(physical),
+        physical: Set(serde_json::to_value(physical).map_err(|e| e.to_string())?),
     }
     .insert(db)
     .await
@@ -121,7 +122,7 @@ fn decode(receipt: &Model) -> Result<CollectionSchema, String> {
     }
     Ok(schema)
 }
-fn verify(receipt: &Model, schema: &CollectionSchema, actual: &Json) -> Result<(), String> {
+fn verify(receipt: &Model, schema: &CollectionSchema, actual: &[catalog::Model]) -> Result<(), String> {
     if !super::entity::schemas_equivalent(&decode(receipt)?, schema) {
         return Err(format!(
             "{}: declared or physical schema changed; explicit migration required",
@@ -130,12 +131,57 @@ fn verify(receipt: &Model, schema: &CollectionSchema, actual: &Json) -> Result<(
     }
     verify_physical(receipt, actual)
 }
-fn verify_physical(receipt: &Model, actual: &Json) -> Result<(), String> {
-    if &receipt.physical != actual {
+fn verify_physical(receipt: &Model, actual: &[catalog::Model]) -> Result<(), String> {
+    let rows = receipt.physical.as_array()
+        .ok_or_else(|| format!("{}: physical schema receipt is not an array", receipt.collection))?;
+    if rows.len() != actual.len() {
         return Err(format!(
             "{}: declared or physical schema changed; explicit migration required",
             receipt.collection
         ));
     }
+    for (row, actual) in rows.iter().zip(actual) {
+        if !row.is_object() {
+            return Err(format!("{}: physical schema receipt row is not an object", receipt.collection));
+        }
+        let declared = catalog::Model::deserialize(row)
+            .map_err(|e| format!("{}: invalid physical schema receipt: {e}", receipt.collection))?;
+        if &declared != actual {
+            return Err(format!(
+                "{}: declared or physical schema changed; explicit migration required",
+                receipt.collection
+            ));
+        }
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn physical_receipt_preserves_null_and_refuses_missing_or_extra_fields()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let actual = [catalog::Model {
+            name: "auto_index".into(), tbl_name: "records".into(),
+            r#type: "index".into(), sql: None,
+        }];
+        let mut receipt = Model {
+            collection: "records".into(), declaration: Json::Null,
+            physical: serde_json::to_value(&actual)?,
+        };
+        verify_physical(&receipt, &actual)?;
+        for invalid in [
+            serde_json::json!([["auto_index", "records", "index", null]]),
+            serde_json::json!([{"name":"auto_index","tbl_name":"records","type":"index"}]),
+            serde_json::json!([{"name":"auto_index","tbl_name":"records","type":"index","sql":null,"extra":1}]),
+            serde_json::json!([{"name":"auto_index","tbl_name":"records","type":"index","sql":""}]),
+        ] {
+            receipt.physical = invalid;
+            assert!(verify_physical(&receipt, &actual).is_err());
+        }
+        Ok(())
+    }
 }
