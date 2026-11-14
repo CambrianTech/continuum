@@ -2,6 +2,43 @@
 
 use super::*;
 
+/// Replay the receipt-free TEXT/integer refusal seen in the persona credit stores.
+/// Both admission paths identify the exact boundary without changing stored evidence.
+#[tokio::test]
+async fn conversion_refusal_identifies_boundary_and_preserves_evidence()
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    use sea_orm::TransactionTrait;
+    use super::schema_error::SchemaError;
+    let original = Parent::collection_schema();
+    let initial = store(":memory:").await?;
+    initial.insert(&initial.db, &record("negative-review", Parent::COLLECTION,
+        json!({"label":"9007199254740993"}))).await?;
+    let mut requested = original.clone();
+    requested.fields.iter_mut().find(|field| field.name == "label")
+        .ok_or("fixture label missing")?.field_type = FieldType::Number;
+
+    let tx = initial.db.begin().await?;
+    let declared = super::relational_evolution::evolve(&tx, &original, &requested).await;
+    assert!(matches!(declared, Err(SchemaError::DeclaredTypeConversion {
+        collection, field, previous: FieldType::String, requested: FieldType::Number,
+    }) if collection == Parent::COLLECTION && field == "label"));
+    tx.rollback().await?;
+
+    let tx = initial.db.begin().await?;
+    let physical = super::relational_evolution::admit_table(&tx, Parent::COLLECTION,
+        super::relational_schema::compile(&requested)?).await;
+    assert!(matches!(physical, Err(SchemaError::PhysicalTypeConversion {
+        table, column, previous, requested,
+    }) if table == Parent::COLLECTION && column == "label"
+        && previous == "TEXT" && !requested.is_empty() && requested != previous));
+    tx.rollback().await?;
+    let rows = initial.query(QueryBuilder::new(Parent::COLLECTION).limit(1).build()).await?;
+    assert_eq!(rows[0].id, "negative-review");
+    assert_eq!(rows[0].data["label"], "9007199254740993");
+    Ok(())
+}
+
 /// Validate the historical rejection timestamps before designing their one-time transfer.
 #[tokio::test]
 #[ignore = "requires ORM_DECLARATION_DB"]

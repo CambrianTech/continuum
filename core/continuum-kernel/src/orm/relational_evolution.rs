@@ -32,7 +32,12 @@ pub(super) async fn evolve(
     for field in &current.fields {
         if let Some(old) = previous.fields.iter().find(|old| old.name == field.name) {
             if !preserves_native_storage(&old.field_type, &field.field_type) {
-                return Err(gap("type conversion requires a declared conversion contract"));
+                return Err(SchemaError::DeclaredTypeConversion {
+                    collection: current.collection.clone(),
+                    field: field.name.clone(),
+                    previous: old.field_type.clone(),
+                    requested: field.field_type.clone(),
+                });
             }
         }
     }
@@ -120,7 +125,12 @@ pub(super) async fn admit_table(
     for column in &expected.columns {
         match actual.columns.iter().find(|old| old.name == column.name) {
             Some(old) if !super::relational_structure::preserves_assignment(&old.r#type, &column.r#type) =>
-                return Err(SchemaError::gap(table, "type conversion requires a declared conversion contract")),
+                return Err(SchemaError::PhysicalTypeConversion {
+                    table: table.into(),
+                    column: column.name.clone(),
+                    previous: old.r#type.clone(),
+                    requested: column.r#type.clone(),
+                }),
             None if column.notnull != 0 && column.dflt_value.is_none() =>
                 return Err(SchemaError::gap(table, "added required column has no declared default")),
             _ => {}

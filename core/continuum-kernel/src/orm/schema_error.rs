@@ -6,6 +6,20 @@ pub enum SchemaError {
     Database(#[from] sea_orm::DbErr),
     #[error(transparent)]
     Codec(#[from] serde_json::Error),
+    #[error("{collection}.{field}: declared type {previous:?} -> {requested:?} requires an explicit conversion")]
+    DeclaredTypeConversion {
+        collection: String,
+        field: String,
+        previous: super::types::FieldType,
+        requested: super::types::FieldType,
+    },
+    #[error("{table}.{column}: physical type {previous} -> {requested} requires an explicit conversion")]
+    PhysicalTypeConversion {
+        table: String,
+        column: String,
+        previous: String,
+        requested: String,
+    },
     #[error("{collection}: declaration gap: {detail}")]
     DeclarationGap { collection: String, detail: String },
     #[error("{collection}: {difference}")]
