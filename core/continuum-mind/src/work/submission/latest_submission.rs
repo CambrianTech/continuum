@@ -142,6 +142,11 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub submodules: Option<Vec<String>>,
+    /// What you ran and saw that proves the change (a capture path, a measurement, a test run and
+    /// its result). Signed with the submission; the reviewer reads it beside the diff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub evidence_text: Option<String>,
 }
 
 /// Where the card she named actually is, when it is not on the room she passed
@@ -268,6 +273,10 @@ pub enum SubmitRefusal {
     /// Her checkout holds changes its commit does not carry: a submission is a commit.
     #[error("{count} change(s) in {} are not committed. A submission is a commit: commit them, then submit again", .checkout.display())]
     Uncommitted { count: usize, checkout: std::path::PathBuf, paths: Vec<String> },
+    /// Her receipt is longer than a signed submission carries: the full receipt goes on the card,
+    /// a short one in the submission.
+    #[error("your evidence_text is {bytes} bytes; a submission carries at most {limit}: record the full receipt on the card, then submit a short one")]
+    EvidenceTooLong { bytes: usize, limit: usize },
 }
 
 impl crate::sdk_codegen::RefusalCause for SubmitRefusal {
@@ -281,6 +290,7 @@ const WORK_STATE: crate::sdk_codegen::VerbRef<super::super::WorkState> = crate::
 const GIT_ADD: crate::sdk_codegen::VerbRef<continuum_hands::commands::code::git::add::CodeGitAdd> = crate::sdk_codegen::VerbRef::in_hands();
 const GIT_COMMIT: crate::sdk_codegen::VerbRef<continuum_hands::commands::code::git::commit::CodeGitCommit> =
     crate::sdk_codegen::VerbRef::in_hands();
+const WORK_SUBMIT: crate::sdk_codegen::VerbRef<super::WorkSubmit> = crate::sdk_codegen::VerbRef::in_hands();
 
 /// The refusal for a submit that cannot publish, with the calls that move her on, as typed
 /// references to the commands (rendered under the names her tool list offers, and loaded into her
@@ -322,6 +332,22 @@ pub(super) fn submit_refused(cause: SubmitRefusal, card_id: Uuid) -> CommandErro
         .and_then(|add| {
             let commit = continuum_hands::commands::code::git::commit::GitCommitParams { message: format!("card {}", short8(card_id)) };
             Ok((add, NextCall::new(GIT_COMMIT, &commit, "commits them, with your own message; then submit again")?))
+        }),
+        SubmitRefusal::EvidenceTooLong { .. } => NextCall::new(
+            WORK_NOTE,
+            &super::super::WorkNoteParams {
+                card_id: card.clone(),
+                known: Vec::new(),
+                hypotheses: Vec::new(),
+                unknown: String::new(),
+                next_test: String::new(),
+                decided_fix: None,
+            },
+            "records the full receipt on the card as known facts",
+        )
+        .and_then(|note| {
+            let again = WorkSubmitParams { card_id: card, ..Default::default() };
+            Ok((note, NextCall::new(WORK_SUBMIT, &again, "submits again with a short evidence_text naming the receipt on the card")?))
         }),
     };
     match calls {
@@ -802,6 +828,22 @@ pub(super) fn retain_patch(store: &airc_blobs::FsStore, patch: &str) -> Result<W
         size_bytes: patch.len() as u64,
         mime: Some("text/x-patch".to_string()),
     })
+}
+
+/// Her receipts for a change, signed into the submission: blank words are no evidence, and words
+/// past what a signed record carries are refused here with the bound, before anything publishes.
+pub(super) fn author_evidence_of(text: Option<&str>, card_id: Uuid) -> Result<airc_work::AuthorEvidence, CommandError> {
+    match text {
+        Some(words) if words.len() > airc_work::EVIDENCE_TEXT_MAX_BYTES => Err(submit_refused(
+            SubmitRefusal::EvidenceTooLong { bytes: words.len(), limit: airc_work::EVIDENCE_TEXT_MAX_BYTES },
+            card_id,
+        )),
+        Some(words) if !words.trim().is_empty() => Ok(airc_work::AuthorEvidence::Attached {
+            evidence: artifact_of_text(words).into_artifact()?,
+            text: Some(words.to_owned()),
+        }),
+        _ => Ok(airc_work::AuthorEvidence::Absent),
+    }
 }
 
 /// The evidence reference of a reviewer's own words: SHA-256 over the text, its length.

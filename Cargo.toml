@@ -270,23 +270,23 @@ members = [
 # classified by a header string or a body. BLOCKED: the core's command receiver also
 # needs the addressed module (AddressedInbox / VerifiedAddressed / reply bound to the
 # request) that lands on top of it; bump again to that rev when it publishes.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
-airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "9b4c0ec094c262b899540c339e3f7b87b9c9c71d" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "9b4c0ec094c262b899540c339e3f7b87b9c9c71d" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "9b4c0ec094c262b899540c339e3f7b87b9c9c71d" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "9b4c0ec094c262b899540c339e3f7b87b9c9c71d" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "9b4c0ec094c262b899540c339e3f7b87b9c9c71d" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "9b4c0ec094c262b899540c339e3f7b87b9c9c71d" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "9b4c0ec094c262b899540c339e3f7b87b9c9c71d" }
 # airc-trust: the peer trust store's tier writes. Test fixtures only: TwoAircLoopback
 # enrols its two peers at `own_account`, the tier the command ingress contract requires.
-airc-trust = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
+airc-trust = { git = "https://github.com/CambrianTech/airc", rev = "9b4c0ec094c262b899540c339e3f7b87b9c9c71d" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "a3a7396bc8360cf51e9240f66fdbdabc2223e2dc" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "9b4c0ec094c262b899540c339e3f7b87b9c9c71d" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
