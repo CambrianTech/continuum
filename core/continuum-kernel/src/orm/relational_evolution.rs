@@ -104,7 +104,7 @@ pub(super) async fn admit_table(
     if actual == expected { return Ok(()); }
     for column in &expected.columns {
         match actual.columns.iter().find(|old| old.name == column.name) {
-            Some(old) if old.r#type != column.r#type =>
+            Some(old) if !super::relational_structure::preserves_assignment(&old.r#type, &column.r#type) =>
                 return Err(SchemaError::gap(table, "type conversion requires a declared conversion contract")),
             None if column.notnull != 0 && column.dflt_value.is_none() =>
                 return Err(SchemaError::gap(table, "added required column has no declared default")),

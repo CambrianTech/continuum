@@ -4,6 +4,24 @@ use sea_orm::{ConnectionTrait, FromQueryResult};
 use sea_orm::sea_query::{Alias, Asterisk, Func, Query};
 use super::schema_error::SchemaError;
 
+/// Assignment behavior, not logical codec identity. INTEGER and NUMERIC differ
+/// for CAST, which the native INSERT SELECT rebuild never uses.
+#[derive(Debug, PartialEq, Eq)]
+enum AssignmentAffinity { Numeric, Text, Blob, Real }
+
+fn assignment_affinity(declaration: &str) -> AssignmentAffinity {
+    let name = declaration.to_ascii_uppercase();
+    if name.contains("INT") { AssignmentAffinity::Numeric }
+    else if ["CHAR", "CLOB", "TEXT"].iter().any(|part| name.contains(part)) { AssignmentAffinity::Text }
+    else if name.is_empty() || name.contains("BLOB") { AssignmentAffinity::Blob }
+    else if ["REAL", "FLOA", "DOUB"].iter().any(|part| name.contains(part)) { AssignmentAffinity::Real }
+    else { AssignmentAffinity::Numeric }
+}
+
+pub(super) fn preserves_assignment(before: &str, after: &str) -> bool {
+    assignment_affinity(before) == assignment_affinity(after)
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, FromQueryResult)]
 pub(super) struct Column {
     pub name: String,

@@ -287,19 +287,24 @@ and their declaration-owned defaults or typed backfill in one transaction, then
 record the receipt. Unsupported destructive or ambiguous changes fail explicitly;
 there is no old-format reader, dual backend or fallback afterwards. Replace callers
 and delete superseded paths together. Never reset durable tables to bypass a mismatch.
-A receipt-free table may be admitted when its entire SQLite physical catalog exactly
-matches the current entity declaration. The owner compiles that declaration in an
-empty disposable catalog, compares typed table/index metadata, and records the receipt
-inside the source admission transaction. It neither transforms nor copies resident
-rows. A mismatch remains an error. This establishes physical schema identity only:
+A receipt-free table is compared with the current entity declaration in a disposable
+catalog. Equivalent tables receive a receipt; supported differences use the same
+transactional native rebuild as derived internal tables. Existing physical types must
+have identical SQLite assignment behavior (including INTEGER/NUMERIC); REAL promotion
+or text/numeric conversion is refused. This does not equate logical codecs. Constraints,
+keys and defaults still come from the new declaration and are enforced during copying.
+Expression-bearing catalogs still require exact proof. This establishes physical schema only:
 SQLite TEXT does not distinguish historical String, Uuid, Date and Json codecs, and
 the proof does not establish historical row validity or native revision provenance.
 
 Sequence heads are durable high-water marks: deleted rows cannot reconstruct issued
 sequences. Disk-root records carry citizen ownership and eviction custody; a filesystem
 scan does not reconstruct that authority. Neither is a disposable derived cache.
-The live November 14 failure on `orm_sequence_heads.domain` remains unresolved by
-physical receipt adoption. A temporary deployment rollback restores a known artifact;
+The November 14 live failure also exposed INTEGER/TEXT versus BIGINT/VARCHAR spelling
+differences. The derived composite-key replay covers native high-water preservation;
+an opt-in snapshot replay copies a quiescent database privately and opens it twice.
+Neither proves persona recovery without the subsequent live run.
+A temporary deployment rollback restores a known artifact;
 it does not authorize retaining an alternate runtime implementation.
 
 ### Runtime orchestration and deterministic completion

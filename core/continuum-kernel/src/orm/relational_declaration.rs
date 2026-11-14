@@ -78,8 +78,8 @@ pub(super) async fn admit(
 /// Let SQLite canonicalize the owner's current DDL in a disposable, empty catalog.
 /// This visits schema metadata only: no resident rows are copied or transformed.
 /// There is no alternate declaration, inferred type, or permissive comparison.
-async fn verify_current_declaration<C: ConnectionTrait>(
-    db: &C,
+async fn verify_current_declaration(
+    db: &sea_orm::DatabaseTransaction,
     schema: &CollectionSchema,
     actual: &[catalog::Model],
 ) -> Result<(), SchemaError> {
@@ -106,7 +106,10 @@ async fn verify_current_declaration<C: ConnectionTrait>(
     };
     expected.close().await.map_err(SchemaError::from)?;
     if !structure_matches {
-        return Err(SchemaError::difference(&schema.collection, SchemaDiff::CurrentPhysical));
+        if catalog_requires_expression_proof(actual) || catalog_requires_expression_proof(&declared) {
+            return Err(SchemaError::difference(&schema.collection, SchemaDiff::CurrentPhysical));
+        }
+        super::relational_evolution::admit_table(db, &table, declaration).await?;
     }
     Ok(())
 }
