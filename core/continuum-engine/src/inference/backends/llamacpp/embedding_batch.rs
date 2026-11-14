@@ -142,22 +142,8 @@ impl EmbeddingBatch {
         } else {
             Vec::new()
         };
-        Self::planned(sequences, &specials, limit)
-    }
-
-    /// Plan tokenized `sequences` within `limit` tokens, `specials` being what the tokenizer adds
-    /// to every text: the widest piece is at most `limit`.
-    fn planned(sequences: Vec<Vec<i32>>, specials: &[i32], limit: usize) -> Result<Self, String> {
-        let plans = plan(&sequences, specials, limit)?;
-        let widest = plans
-            .iter()
-            .zip(&sequences)
-            .map(|(plan, tokens)| match plan {
-                Plan::Direct => tokens.len(),
-                Plan::Windows { frame, windows } => windows.iter().map(|w| frame.len() + w.len()).max().unwrap_or(0), // unwrap_or: plan() never returns an empty window list
-            })
-            .max()
-            .ok_or("empty embedding request")?;
+        let plans = plan(&sequences, &specials, limit)?;
+        let widest = widest(&sequences, &plans).ok_or("empty embedding request")?;
         let widest = u32::try_from(widest).map_err(|_| "embedding sequence length exceeds native representation")?;
         Ok(Self { sequences, plans, widest })
     }
@@ -221,6 +207,18 @@ impl Frame {
     fn len(&self) -> usize {
         self.head.len() + self.tail.len()
     }
+}
+
+/// The widest piece the plans embed, in tokens: what the context is sized to; none for no texts.
+fn widest(sequences: &[Vec<i32>], plans: &[Plan]) -> Option<usize> {
+    plans
+        .iter()
+        .zip(sequences)
+        .map(|(plan, tokens)| match plan {
+            Plan::Direct => tokens.len(),
+            Plan::Windows { frame, windows } => windows.iter().map(|w| frame.len() + w.len()).max().unwrap_or(0), // unwrap_or: plan() never returns an empty window list
+        })
+        .max()
 }
 
 /// Each text's plan. Only a text over `limit` is windowed, and it must carry `specials` as its frame.
@@ -313,6 +311,13 @@ mod tests {
 
     const MIB: u64 = 1024 * 1024;
 
+    /// The batch `tokenize` builds from these tokens at `limit`, without a model.
+    fn planned(sequences: Vec<Vec<i32>>, specials: &[i32], limit: usize) -> EmbeddingBatch {
+        let plans = plan(&sequences, specials, limit).expect("test: plans");
+        let widest = u32::try_from(widest(&sequences, &plans).expect("test: texts")).expect("test: fits u32");
+        EmbeddingBatch { sequences, plans, widest }
+    }
+
     // what this catches (the M5 on 26960c09d, 758 failed embeddings in 3 h, 9% success; Codex on
     // #5910: one context's bytes are in two pools): a lease sized for the longest text, or charged
     // all to one pool. A short text leases its own small context; each pool covers what llama
@@ -340,11 +345,11 @@ mod tests {
     #[test]
     fn an_embed_context_derives_from_the_window_never_the_trained_context() {
         let text: Vec<i32> = std::iter::once(1).chain(2..19_457).collect(); // 19,456 tokens, prefix [1]
-        let before = EmbeddingBatch::planned(vec![text.clone()], &[1], 32_768).expect("test: plans whole");
+        let before = planned(vec![text.clone()], &[1], 32_768);
         assert_eq!(before.context_bytes(Placement::Device).device, 14_205_059_072, "the receipt's request");
         let window = EmbedWindow::for_model(32_768).expect("test: a trained context");
         assert_eq!(window.tokens(), 2_048);
-        let after = EmbeddingBatch::planned(vec![text], &[1], 2_048).expect("test: plans windows");
+        let after = planned(vec![text], &[1], 2_048);
         assert!(after.widest <= window.tokens(), "no piece past the window");
         assert_eq!(after.context_bytes(Placement::Device), window.context_bytes(Placement::Device));
         assert!(after.context_bytes(Placement::Device).device < 1_500 * MIB, "{:?}", after.context_bytes(Placement::Device));
