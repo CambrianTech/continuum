@@ -117,8 +117,8 @@ pub(super) async fn a_bad_or_hanging_decision_never_starves_the_rest() {
         data: json!({"id": "00000000-0000-0000-0000-000000000001", "bindingId": fx.selection.submission_id, "review": "not a review"}),
     });
     let insert = json!({"operations": [malformed], "dbPath": format!("@persona:{}", fx.name)});
-    let inserted = fx.data.commands().execute_value("data/batch", insert).await.expect("insert the malformed row");
-    assert_ne!(inserted["success"], json!(false), "the malformed row is stored: {inserted}");
+    let inserted: crate::orm::data_outputs::BatchOutcomes = fx.data.commands().execute("data/batch", insert).await.expect("insert the malformed row");
+    assert!(matches!(inserted.outcomes[..], [crate::orm::types::BatchOutcome::Created { .. }]), "the malformed row is stored: {:?}", inserted.outcomes);
 
     // Her settle hangs on the region's first pass (a submit that never returns), then the
     // trigger accepts.

@@ -36,10 +36,10 @@ crate::action_command! {
     name: "data/count",
     access: AiSafe,
     params: DataCountParams,
-    output: usize,
+    output: crate::orm::data_outputs::RecordCount,
     run(this, _ctx, p) => {
         let handle = p.handle.as_str();
         let result = this.state.count_records(handle, &p.collection, p.filter).await?;
-        Ok(result)
+        Ok(crate::orm::data_outputs::RecordCount { count: result })
     }
 }

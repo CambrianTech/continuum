@@ -35,10 +35,10 @@ crate::action_command! {
     name: "data/ensure-schema",
     access: Privileged,
     params: DataEnsureSchemaParams,
-    output: String,
+    output: crate::orm::data_outputs::SchemaEnsured,
     run(this, _ctx, p) => {
         let handle = p.handle.as_str();
         let result = this.state.ensure_collection_schema(handle, &p.collection).await?;
-        Ok(result)
+        Ok(crate::orm::data_outputs::SchemaEnsured { collection: result })
     }
 }

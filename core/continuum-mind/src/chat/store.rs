@@ -141,7 +141,7 @@ impl ChatModule {
     /// Run `operations` as one atomic batch.
     pub(super) async fn run_batch(&self, operations: Vec<BatchOperation>) -> Result<Vec<BatchOutcome>, String> {
         let outcomes = self.store("data/batch", json!({ "operations": operations })).await?;
-        serde_json::from_value(outcomes).map_err(|e| format!("chat store: data/batch outcome: {e}")) // command-bus envelope: chat reaches data/batch through execute_json until typed in-process calls (card d2856ec5)
+        serde_json::from_value::<crate::orm::data_outputs::BatchOutcomes>(outcomes).map(|batch| batch.outcomes).map_err(|e| format!("chat store: data/batch outcome: {e}")) // command-bus envelope: chat reaches data/batch through execute_json until typed in-process calls (card d2856ec5)
     }
 }
 

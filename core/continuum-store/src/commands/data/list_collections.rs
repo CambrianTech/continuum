@@ -28,10 +28,10 @@ crate::action_command! {
     name: "data/list-collections",
     access: AiSafe,
     params: DataListCollectionsParams,
-    output: Vec<String>,
+    output: crate::orm::data_outputs::CollectionNames,
     run(this, _ctx, p) => {
         let handle = p.handle.as_str();
         let result = this.state.list_collection_names(handle).await?;
-        Ok(result)
+        Ok(crate::orm::data_outputs::CollectionNames { collections: result })
     }
 }
