@@ -400,9 +400,8 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         .iter()
         .map(|s| s.name.as_str())
         .collect();
-    // Names on the wire ride the DIALECT (tool_dialect): the conventional,
-    // charset-legal aliases tool-trained models actually saw in training.
-    for must in ["list_commands", "help", "edit_file", "bash", "grep"] {
+    // Names on the wire are each command's path, charset-legal (tool_dialect::wire_name).
+    for must in ["commands_list", "commands_help", "code_edit", "code_shell", "code_search"] {
         assert!(
             native.contains(&must),
             "tight window must NOT amputate the native surface — {must} missing: {native:?}"
@@ -432,9 +431,9 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         .with_tools(persona_tools::native_tool_specs());
         f.tool_surface().registry().iter().map(|s| s.name.clone()).collect()
     };
-    // Wire names are the DIALECT aliases (tool_dialect) — the coding arc
-    // rides under the names the model was trained on, never our slashes.
-    for must in ["grep", "read_file", "edit_file", "bash"] {
+    // Wire names are each command's path, charset-legal (tool_dialect::wire_name), never
+    // our slashes and never an alias (card d2b6dbce: one scheme per family).
+    for must in ["code_search", "code_read", "code_edit", "code_shell"] {
         assert!(
             roomy_native.iter().any(|n| n == must),
             "roomy window ⇒ {must} offered natively: {roomy_native:?}"

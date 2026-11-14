@@ -24,11 +24,12 @@ pub enum Kind {
 }
 
 /// Tools that change her workspace or the repository. The capture names a tool by its native
-/// name or its command path.
-const WRITES: [&str; 9] = ["edit_file", "write_file", "code/edit", "code/write", "git_commit", "git_push", "code/git/commit", "code/git/push", "code_github_pr-create"];
-const SHELLS: [&str; 4] = ["bash", "run_code", "code_shell-poll", "code/shell"];
-const BOARD: [&str; 8] = ["claim_task", "work_create", "heartbeat_task", "ledger", "release_task", "update_task", "work_submit", "work/note"];
-const READS: [&str; 12] = ["grep", "list_files", "file_tree", "git_status", "git_diff", "web_fetch", "web_search", "help", "list_commands", "get_task", "list_tasks", "code/search"];
+/// name: a capture before card d2b6dbce may carry a retired alias offer (`claim_task`), after it
+/// the command path made charset-legal (`work_claim`); the command path itself is also accepted.
+const WRITES: &[&str] = &["edit_file", "write_file", "code/edit", "code/write", "code_edit", "code_write", "git_commit", "git_push", "code/git/commit", "code/git/push", "code_git_commit", "code_git_push", "code_github_pr-create"];
+const SHELLS: &[&str] = &["bash", "run_code", "code_shell", "code_run", "code_shell-poll", "code/shell"];
+const BOARD: &[&str] = &["claim_task", "heartbeat_task", "ledger", "release_task", "update_task", "work_claim", "work_create", "work_heartbeat", "work_note", "work_release", "work_state", "work_submit", "work/note"];
+const READS: &[&str] = &["grep", "list_files", "file_tree", "git_status", "git_diff", "web_fetch", "web_search", "help", "list_commands", "get_task", "list_tasks", "code/search", "code_search", "code_list", "code_tree", "code_git_status", "code_git_diff", "work_get", "work_list"];
 
 fn kind_of(name: &str) -> Kind {
     if WRITES.contains(&name) {

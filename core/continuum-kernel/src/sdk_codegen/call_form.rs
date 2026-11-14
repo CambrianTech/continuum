@@ -1,11 +1,11 @@
 //! A call as she makes it: the name her tool list offers and the arguments object she sends.
 //!
 //! Every example or suggested call her text shows (a command's manual, a refusal's next move)
-//! renders through [`CallForm`], so each is the shape that decodes: `list_files({"path":"."})`.
+//! renders through [`CallForm`], so each is the shape that decodes: `code_list({"path":"."})`.
 //! It is never an envelope such as `{"tool_call": {"name": …, "arguments": …}}`: she copied that
 //! wrapper into an argument field, `bash(cmd: {"tool_call": …})`, five times in fifteen minutes
-//! (the M5, 2026-11-07, card 1d9c0a64). The name comes from [`super::offered_name_of`], the same
-//! resolver her offered tools are named by.
+//! (the M5, 2026-11-07, card 1d9c0a64). The name comes from [`super::wire_name`], the same
+//! function her offered tools are named by.
 
 use std::fmt::{self, Write as _};
 
@@ -20,7 +20,7 @@ pub struct CallForm<'a> {
 }
 
 impl<'a> CallForm<'a> {
-    /// `offered` is a name from [`super::offered_name_of`]; `args` an object of the command's
+    /// `offered` is a name from [`super::wire_name`]; `args` an object of the command's
     /// own params.
     pub fn new(offered: &'a str, args: &'a Map<String, Value>) -> Self {
         Self { offered, args }

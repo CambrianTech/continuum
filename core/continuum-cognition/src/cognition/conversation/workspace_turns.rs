@@ -541,9 +541,11 @@ pub fn build_workspace_turns(
         if live_cards.is_empty() && lost_threads.is_empty() {
             b.push_str(&format!(" {WAKE_NO_WORK}."));
         }
-        b.push_str(
-            " Your tools are real and yours to use; `list_commands` shows everything              you can run and `help` explains any of them. The moment is yours —              work, wonder, create, or rest.",
-        );
+        // Each discovery verb under the one name her tool list offers it (card d2b6dbce).
+        let (list, help) = (crate::sdk_codegen::wire_name("commands/list"), crate::sdk_codegen::wire_name("commands/help"));
+        b.push_str(&format!(
+            " Your tools are real and yours to use; `{list}` shows everything              you can run and `{help}` explains any of them. The moment is yours —              work, wonder, create, or rest."
+        ));
         turns.push(crate::cognition::workspace::BurstTurn::perception(b));
     }
 

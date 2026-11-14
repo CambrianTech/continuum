@@ -303,7 +303,7 @@
             "got: {}",
             turns[0].content
         );
-        assert!(turns[0].content.contains("list_commands"));
+        assert!(turns[0].content.contains("`commands_list`"), "the discovery verb as her list offers it");
 
         let delivery = crate::cognition::rag_budget::RagDelivery {
             source_id: "airc".to_string(),

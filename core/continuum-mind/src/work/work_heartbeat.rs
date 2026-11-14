@@ -25,7 +25,6 @@ pub struct WorkHeartbeatResult {
 #[async_trait]
 impl ActionCommand for WorkHeartbeat {
     const NAME: &'static str = "work/heartbeat";
-    const ALIASES: &'static [&'static str] = crate::cognition::work_preconditions::WorkVerb::Heartbeat.aliases();
     // core room workflow — STAYING ON IT. Real work outruns the 30-min lease; without
     // this the card is reclaimed out from under a citizen who is still working it, which
     // we watched happen (card 0c69c0f0 through three holders in one evening). (#339)

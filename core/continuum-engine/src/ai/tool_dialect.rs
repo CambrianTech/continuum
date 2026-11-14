@@ -19,8 +19,12 @@
 //! - [`from_wire_name`] — a wire tool-call name → the canonical command. Trained
 //!   reflex / former name resolves; a canonical or unknown name passes through
 //!   untouched (the adapter only ever WIDENS the surface).
-//! - [`to_wire_spec`] — rename a spec to the model's primary reflex on OFFER
-//!   (`code/read` → `read_file`), the name it acts on without learning a menu.
+//! - [`to_wire_spec`] — name a spec on OFFER by its command path, charset-legal
+//!   (`work/release` → `work_release`, [`wire_name`]). ONE scheme for every command: an
+//!   alias never renames an offer, so a family never reaches her under two schemes and the
+//!   name she infers from a sibling exists (card d2b6dbce: Aiko on the M5, 2026-11-14,
+//!   offered `claim_task`/`release_task` beside `work_create`, found no `work_release`, and
+//!   created the same card again).
 //!
 //! A tool-call name two commands both claim is a build-time panic — the same
 //! fail-loud the registry uses for duplicate command NAMES.
@@ -35,7 +39,8 @@ use crate::sdk_codegen::ext::command_registry_live;
 /// alias → canonical command name. Built ONCE from every command's declared
 /// `ALIASES`. A name claimed by two commands panics at init (fail-loud, like the
 /// registry's duplicate-NAME guard) — an ambiguous alias is a bug, not a
-/// silent last-writer-wins.
+/// silent last-writer-wins. An alias can never take another command's offered name: the
+/// offered name resolves first ([`offered_to_command`]).
 pub fn alias_to_command() -> &'static HashMap<&'static str, &'static str> {
     static IDX: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     IDX.get_or_init(|| {
@@ -55,49 +60,31 @@ pub fn alias_to_command() -> &'static HashMap<&'static str, &'static str> {
     })
 }
 
-/// canonical command name → its PRIMARY offered alias ([`primary_alias`], the FIRST declared):
-/// the trained reflex we rename to on the wire. Commands with no alias are absent.
-fn command_to_primary_alias() -> &'static HashMap<&'static str, &'static str> {
-    static IDX: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    IDX.get_or_init(|| {
-        command_registry_live()
-            .iter()
-            .filter_map(|d| primary_alias(d.aliases).map(|alias| (d.name, alias)))
-            .collect()
-    })
+/// The one wire-name function lives beside the command declaration (`sdk_codegen::verb_ref`),
+/// so a verb her text names (`VerbRef`) renders exactly as her offered tool list does.
+/// Re-exported here, the dialect's surface.
+pub use crate::sdk_codegen::wire_name;
+
+/// The name her tool list offers a STORED verb under: a name recorded under an alias resolves
+/// ([`resolve_wire_name`]) to the command it names, and renders as that command is offered.
+/// A record never re-renders a name she cannot call.
+pub fn offered_name_of_stored(stored: &str) -> String {
+    wire_name(&resolve_wire_name(stored))
 }
 
-/// The offer policy and the one wire-name function live beside the command declaration
-/// (`sdk_codegen::verb_ref`), so a verb her text names (`VerbRef`) renders exactly as her
-/// offered tool list does. Re-exported here, the dialect's surface.
-pub use crate::sdk_codegen::{offer_style_for, OfferStyle};
-use crate::sdk_codegen::{primary_alias, wire_name};
-
-/// Rename a spec for the wire under an explicit offer style. Always yields a
-/// charset-legal name (never a raw slash), so the offered surface is wire-valid
-/// regardless of style. See [`OfferStyle`].
-pub fn to_wire_spec_with(mut spec: NativeToolSpec, style: OfferStyle) -> NativeToolSpec {
-    spec.name = offered_name(&spec.name, style);
+/// Name a spec for the wire: its command path, charset-legal ([`wire_name`]). Never a raw
+/// slash, and never an alias, so every member of a family is offered under one scheme.
+pub fn to_wire_spec(mut spec: NativeToolSpec) -> NativeToolSpec {
+    spec.name = wire_name(&spec.name);
     spec
 }
 
-/// The wire name of the canonical command `name` under `style` ([`wire_name`]).
-fn offered_name(name: &str, style: OfferStyle) -> String {
-    wire_name(name, command_to_primary_alias().get(name).copied(), style)
-}
-
-/// The name her tool list offers a STORED verb under: a name recorded before a rename resolves
-/// through the alias the rename kept ([`resolve_wire_name`]) to the command it names now, and
-/// renders as that command is offered today. A record never re-renders a name she cannot call.
-pub fn offered_name_of_stored(stored: &str) -> String {
-    offered_name(&resolve_wire_name(stored), offer_style_for(None))
-}
-
-/// Rename a spec for the wire under the DEFAULT offer policy ([`offer_style_for`]
-/// with no model context). The per-model path calls [`to_wire_spec_with`] with the
-/// style resolved from the served model.
-pub fn to_wire_spec(spec: NativeToolSpec) -> NativeToolSpec {
-    to_wire_spec_with(spec, offer_style_for(None))
+/// offered name ([`wire_name`]) → canonical command, built once from the live registry. Read
+/// BEFORE the aliases, so the name her list offers for a verb always resolves to that verb,
+/// whatever any command declares as an alias.
+fn offered_to_command() -> &'static HashMap<String, &'static str> {
+    static IDX: OnceLock<HashMap<String, &'static str>> = OnceLock::new();
+    IDX.get_or_init(|| command_registry_live().iter().map(|d| (wire_name(d.name), d.name)).collect())
 }
 
 /// The set of canonical command names — for classifying a wire name as CANONICAL
@@ -175,9 +162,9 @@ pub fn ai_safe_aliases() -> &'static [&'static str] {
 }
 
 /// Classify a wire tool-call name into (canonical command, how it resolved) —
-/// the PURE core, no side effects. Resolves, in order: a declared reflex/former
-/// alias; our canonical name as-is; our charset-legal name (`code_read` →
-/// `code/read`). An unknown name passes through untouched (classified a MISS) —
+/// the PURE core, no side effects. Resolves, in order: our canonical name as-is;
+/// its offered name (`code_read` → `code/read`, [`wire_name`]); a declared
+/// reflex/former alias. An unknown name passes through untouched (classified a MISS) —
 /// the adapter widens the surface, never narrows it. Idempotent:
 /// `classify(canonical) == (canonical, Canonical)`, so it's safe to apply at
 /// every dispatch seam without changing an already-resolved name.
@@ -201,11 +188,15 @@ fn classify(wire: &str) -> (String, Outcome) {
             return (name, outcome);
         }
     }
-    if let Some(&cmd) = alias_to_command().get(wire) {
-        return (cmd.to_string(), Outcome::Alias);
-    }
     if command_names().contains(wire) {
         return (wire.to_string(), Outcome::Canonical);
+    }
+    // The name her list offers (`work_release`), exactly: always the command it names.
+    if let Some(&cmd) = offered_to_command().get(wire) {
+        return (cmd.to_string(), Outcome::Canonical);
+    }
+    if let Some(&cmd) = alias_to_command().get(wire) {
+        return (cmd.to_string(), Outcome::Alias);
     }
     // A namespace the model writes in front of a real command: `tools/code/run`.
     // Measured 2026-10-04 on peer b6dcfc8e: every act all afternoon was dispatched as
@@ -217,9 +208,9 @@ fn classify(wire: &str) -> (String, Outcome) {
             return (rest.to_string(), Outcome::Alias);
         }
     }
-    // Our charset-legal name (`code_read` → `code/read`) — the underscore form of a
-    // real command. Resolving it HERE (not just in the executor's naive replace)
-    // classifies it CANONICAL instead of a false miss.
+    // Every `/` written as `_`, segment underscores included: a looser spelling of a real
+    // command than its offered name. Resolving it HERE (not just in the executor's naive
+    // replace) classifies it CANONICAL instead of a false miss.
     if wire.contains('_') {
         let slashed = wire.replace('_', "/");
         if command_names().contains(slashed.as_str()) {
@@ -334,8 +325,7 @@ pub fn normalize_call(call: &mut crate::ai::types::ToolCall) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A command that was renamed: its current name, its trained reflex first, and the name it
-    /// carried before the move kept as an alias (the rename rule).
+    /// A command with aliases: a trained reflex and a former name, both answered inbound.
     mod renamed {
         #[derive(serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
         pub struct P {}
@@ -357,14 +347,14 @@ mod tests {
         pub const RENAMED: crate::sdk_codegen::VerbRef<Renamed> = crate::sdk_codegen::VerbRef::always();
     }
 
-    // what this catches: a rename leaving her text, her offered list and her records disagreeing.
-    // A reference by type renders as her tool list offers the command (its first alias, never
-    // the slash name); a call by the old name still resolves to it; and a name stored before the
-    // rename renders as the command is offered now.
+    // what this catches: an alias renaming the offer (card d2b6dbce), or her text, her offered
+    // list and her records disagreeing. A reference by type renders as her tool list offers the
+    // command (its path, charset-legal, never its alias); a call by an alias still resolves to
+    // it; and a name stored under an alias renders as the command is offered.
     #[test]
-    fn a_renamed_verb_renders_its_current_offer_and_its_old_name_still_resolves() {
+    fn a_verb_is_offered_by_its_path_and_its_aliases_still_resolve() {
         let offered = renamed::RENAMED.offered();
-        assert_eq!(offered, "fixture_reopen");
+        assert_eq!(offered, "fixture_reopen-now");
         let Ok(spec) = serde_json::from_value::<NativeToolSpec>(serde_json::json!({
             "name": renamed::RENAMED.canonical(),
             "description": "",
@@ -374,6 +364,8 @@ mod tests {
         };
         assert_eq!(to_wire_spec(spec).name, offered, "her text names what her list offers");
         assert_eq!(resolve_wire_name("fixture/reopen-before"), "fixture/reopen-now");
+        assert_eq!(resolve_wire_name("fixture_reopen"), "fixture/reopen-now");
+        assert_eq!(resolve_wire_name(&offered), "fixture/reopen-now", "the offered name resolves back");
         assert_eq!(offered_name_of_stored("fixture/reopen-before"), offered);
         assert_eq!(offered_name_of_stored("fixture/reopen-now"), offered);
     }
