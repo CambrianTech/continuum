@@ -554,25 +554,27 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
     // are returned so the operator sees why.
     if requested_source_build && prebuilt.is_none() {
         let repo = std::env::current_dir().map_err(|e| format!("cannot resolve checkout: {e}"))?;
-        let tip = target_sha.as_deref().unwrap_or("unknown");
-        match ci_core::prepare_ci_core(&repo, tip, continuum_cli_lifecycle::prebuilt_artifact::platform_key(std::env::consts::OS, std::env::consts::ARCH).unwrap_or("unknown"), None, deploy_note).await {
-            Ok(Some(artifact)) => {
-                let artifact = PrebuiltCore::prepare(&artifact).await?;
-                let after = git_head_short_sha();
-                continuum_cli_lifecycle::deploy_provenance::source_build_verdict(
-                    Some(tip), after.as_deref(), &artifact.build_sha,
-                )?;
-                println!("✓ warm CI prebuilt ready: {} (build {})", artifact.path.display(), artifact.build_sha);
-                prebuilt = Some(artifact);
+        if let (Some(tip), Some(platform)) = 
+            (target_sha.as_deref(), continuum_cli_lifecycle::prebuilt_artifact::platform_key(std::env::consts::OS, std::env::consts::ARCH)) 
+        {
+            match ci_core::prepare_ci_core(&repo, tip, &platform, None, deploy_note).await {
+                Ok(Some(artifact)) => {
+                    let artifact = PrebuiltCore::prepare(&artifact).await?;
+                    let after = git_head_short_sha();
+                    continuum_cli_lifecycle::deploy_provenance::source_build_verdict(
+                        Some(tip), after.as_deref(), &artifact.build_sha,
+                    )?;
+                    println!("✓ warm CI prebuilt ready: {} (build {})", artifact.path.display(), artifact.build_sha);
+                    prebuilt = Some(artifact);
+                }
+                Ok(None) => {
+                    eprintln!("no CI artifact for {} yet; building dark after stop", tip);
+                }
+                Err(PublishedCoreError::SourcePending(reason)) => {
+                    eprintln!("⚠ warm CI fetch pending ({reason}); falling back to dark build after stop");
+                }
+                Err(e) => return Err(e), // genuine failure — don't swallow it
             }
-            Ok(None) => {
-                // Artifact not published yet for this SHA — expected on first deploy.
-                // Fall through to dark build after stop; no reason to report.
-            }
-            Err(PublishedCoreError::SourcePending(reason)) => {
-                eprintln!("⚠ warm CI fetch pending ({reason}); falling back to dark build after stop");
-            }
-            Err(e) => return Err(e), // genuine failure — don't swallow it
         }
     }
     let mut dark = DarkWindow::start();
@@ -615,13 +617,11 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         };
         let mut built = None;
         if let Some(script) = &build_script {
-            if prebuilt.is_some() {
-                if let Some(candidate) = &prebuilt {
-                    println!("✓ skipping dark build — warm CI prebuilt produced {}", candidate.path.display());
-                    dark.built(); // no build time in the dark window
-                }
+            if let Some(candidate) = &prebuilt {
+                println!("✓ skipping dark build — warm CI prebuilt produced {}", candidate.path.display());
+                dark.built(); // no build time in the dark window
             } else {
-                let cmd = build_source_command(script)?.ok_or("no source tree")?;
+                let cmd = build_source_command(script)?;
                 println!("▶ building dark: serving is stopped, the build takes the whole machine (build-only pass of {})", script.display());
                 let artifact = build_dark(cmd).await?;
                 // A shared checkout can advance while Cargo is reading it. A binary reporting
@@ -746,15 +746,15 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
 }
 
 /// Build a source build Command from the start script and runtime environment.
-/// Returns None when no source tree exists, Err when the script or bash cannot be located,
-/// otherwise returns a fully configured Command ready to run (CONTINUUM_BUILD_ONLY will be set).
-pub(super) fn build_source_command(script: &Path) -> Result<Option<std::process::Command>, String> {
+/// Err when the script or bash cannot be located, otherwise returns
+/// a fully configured Command ready to run (CONTINUUM_BUILD_ONLY will be set).
+pub(super) fn build_source_command(script: &Path) -> Result<std::process::Command, String> {
     let mut cmd = std::process::Command::new(locate_bash()?);
     cmd.arg(script);
     apply_core_runtime_env(&mut cmd)?;
     if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
         cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
     }
-    Ok(Some(cmd))
+    Ok(cmd)
 }
 
