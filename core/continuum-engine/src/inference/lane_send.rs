@@ -1,6 +1,6 @@
 //! Lane send — POST a generation to the local lane and ride out a mid-relaunch
-//! (connection refused / 503 loading) with a bounded retry, then classify a rejected
-//! status at the seam. Carved out of `openai_adapter::generate_stream` (pure code-motion,
+//! (connection refused / 503 loading) by resending on the serving daemon's next live
+//! publish, then classify a rejected status at the seam. Carved out of `openai_adapter::generate_stream` (pure code-motion,
 //! 2026-09-03, the S3b decompose). Behaviour-identical to the inline block.
 
 use std::time::Instant;
@@ -34,13 +34,90 @@ pub const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
 /// process). A `connect` error is therefore "the lane is mid-relaunch", not "the lane is
 /// gone": the connection never opened, so nothing was streamed to the sink, and
 /// re-sending the SAME lane/model is idempotent — resilience, NOT a fallback
-/// ([[fallbacks-are-illegal-fail-loud]]). Retry the connect with linear backoff
-/// (1s, 2s, … ≈ 21s total) to ride out a relaunch, then fail loud if it never returns.
-/// Scoped to the local resident lane — remote endpoints don't relaunch under us.
+/// ([[fallbacks-are-illegal-fail-loud]]). The resend waits on the event that says the
+/// relaunch landed: the daemon's next LIVE publish after this attempt's POST (a publish
+/// from before it is the lagging claim above, never evidence). It replaced a linear
+/// backoff (1 s, 2 s, … ≈ 21 s; timer audit row H4, 2026-11-14) that held a lane that was
+/// back for the rest of its step, and failed a relaunch slower than 21 s. Bounded by a
+/// cold relaunch's own budget, [`crate::inference::llama_server::DEFAULT_SERVING_WAIT`]
+/// (the bound the pre-flight guard waits a transition with), as the error only. Scoped to
+/// the local resident lane — remote endpoints don't relaunch under us.
 /// Glass-boxed 2026-07-20: one legitimate grow-back relaunch zeroed hard-rs 0/8, every
 /// task `Connection refused (os error 61)` to :58057 mid-eval.
-const LANE_RELAUNCH_CONNECT_RETRIES: u32 = 6;
-const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(1);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelaunchWait {
+    /// The daemon published the lane live again: send the same request again.
+    Resumed,
+    /// Nothing publishes this lane's state (no serving daemon here, or it closed): nothing
+    /// will bring it back, so the failure stands now.
+    NoOwner,
+    /// No live publish inside a cold relaunch's budget.
+    Lapsed,
+}
+
+impl RelaunchWait {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Resumed => "the lane was published live again",
+            Self::NoOwner => "no serving daemon publishes this lane, so nothing relaunches it",
+            Self::Lapsed => "the lane was not published live again within a cold relaunch's budget",
+        }
+    }
+}
+
+/// Where a request hears its relaunching lane is back, marked seen as of now: only a publish
+/// after this call (after the attempt's POST) wakes [`await_relaunch`].
+fn relaunch_edge() -> Option<tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>> {
+    let mut edge = serving_edges()?;
+    drop(edge.borrow_and_update());
+    Some(edge)
+}
+
+#[cfg(not(test))]
+fn serving_edges() -> Option<tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>> {
+    crate::inference::llama_server::serving_state_receiver()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's serving daemon: none unless the test publishes one, so no test reads another's.
+    static TEST_SERVING_EDGES: std::cell::RefCell<Option<tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn serving_edges() -> Option<tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>> {
+    TEST_SERVING_EDGES.with(|edges| edges.borrow().clone())
+}
+
+/// Stand in for the serving daemon's snapshots on this test's thread.
+#[cfg(test)]
+pub(crate) fn publish_serving_for_test(edges: Option<tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>>) {
+    TEST_SERVING_EDGES.with(|slot| *slot.borrow_mut() = edges);
+}
+
+/// Wait for the daemon's next LIVE publish since `edge` was marked seen, never a timer; the
+/// deadline only ends a relaunch that never lands.
+async fn await_relaunch(
+    edge: Option<&mut tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>>,
+    deadline: tokio::time::Instant,
+) -> RelaunchWait {
+    let Some(edge) = edge else { return RelaunchWait::NoOwner };
+    let live = async {
+        loop {
+            if edge.changed().await.is_err() {
+                return RelaunchWait::NoOwner;
+            }
+            if edge.borrow_and_update().is_live() {
+                return RelaunchWait::Resumed;
+            }
+        }
+    };
+    match tokio::time::timeout_at(deadline, live).await {
+        Ok(ended) => ended,
+        Err(_) => RelaunchWait::Lapsed,
+    }
+}
 
 /// How many quiet checkpoints (no slot counter moved AND no slot processing) a header
 /// wait allows before it calls the lane dead. One, not the page switch's eight: a
@@ -129,14 +206,14 @@ pub(crate) async fn send_with_lane_retry(
     // builder below shares that allocation, including across transport retries.
     let mut request_builder = request_builder.body(body);
     // A CONNECT error to a local resident lane means the lane is mid-relaunch, not
-    // gone (see LANE_RELAUNCH_CONNECT_RETRIES) — the connection never opened so
-    // nothing streamed, and re-sending the same lane is idempotent. Ride it out with
-    // bounded linear backoff, then fail loud.
-    // The prepared byte body is cloneable; no stream or serializer is replayed.
-    // Shared budget for BOTH mid-relaunch signatures (connection refused = nothing
-    // listening yet; 503 = listening but still loading). One counter, so the total
-    // time this call can spend waiting on a relaunching lane stays bounded.
-    let mut relaunch_retries: u32 = 0;
+    // gone (see [`RelaunchWait`]) — the connection never opened so nothing streamed,
+    // and re-sending the same lane is idempotent. Resend on the daemon's live publish,
+    // then fail loud. The prepared byte body is cloneable; no stream or serializer is
+    // replayed. ONE deadline for BOTH mid-relaunch signatures (connection refused =
+    // nothing listening yet; 503 = listening but still loading), set at the first, so
+    // the total time this call can spend waiting on a relaunching lane stays bounded.
+    let mut relaunch_waits: u32 = 0;
+    let mut relaunch_deadline: Option<tokio::time::Instant> = None;
     // Prompt counting is pre-stream wire work, governed by the same measured
     // bound as headers. Queue admission and KV paging have already completed;
     // closed-endpoint readiness patience must not debit those waits from a quote
@@ -189,7 +266,7 @@ pub(crate) async fn send_with_lane_retry(
                 model = fill.model,
                 input_tokens = fill.prompt_tokens as u64,
                 elapsed_ms = count_elapsed_ms,
-                attempt = relaunch_retries,
+                attempt = relaunch_waits,
                 "selected engine counted the finalized prompt"
             );
         }
@@ -222,6 +299,8 @@ pub(crate) async fn send_with_lane_retry(
                 })?;
             }
         }
+        // Marked seen just before the POST: a live publish from here on is this relaunch landing.
+        let mut relaunch = if cfg.single_resident_model { relaunch_edge() } else { None };
         let send_start = Instant::now();
         let attempt_builder = request_builder
             .try_clone()
@@ -313,58 +392,70 @@ pub(crate) async fn send_with_lane_retry(
             // the body text for "Loading model"
             // ([[a-string-matcher-for-a-semantic-judgement-means-a-channel-is-missing]]:
             // the HTTP status IS the structured channel). Shares the connect
-            // arm's retry budget, because both are the same wait for the same
+            // arm's deadline, because both are the same wait for the same
             // lane and the total hold must stay bounded.
             Ok(resp)
                 if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
-                    && cfg.single_resident_model
-                    && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
+                    && cfg.single_resident_model =>
             {
-                relaunch_retries += 1;
-                let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
-                continuum_base::probe!(
-                    class = "inference.lane_relaunch_retry",
-                    provider = cfg.provider_id.as_str(),
-                    attempt = relaunch_retries,
-                    backoff_ms = backoff.as_millis() as u64,
-                    reason = "503_loading",
-                    "local lane is up but still loading (503, mid-relaunch) — retrying the \
-                     same lane",
-                );
-                tokio::time::sleep(backoff).await;
-                continue;
+                let deadline = *relaunch_deadline
+                    .get_or_insert_with(|| tokio::time::Instant::now() + crate::inference::llama_server::DEFAULT_SERVING_WAIT);
+                let waited = Instant::now();
+                match await_relaunch(relaunch.as_mut(), deadline).await {
+                    RelaunchWait::Resumed => {
+                        relaunch_waits += 1;
+                        continuum_base::probe!(
+                            class = "inference.lane_relaunch_retry",
+                            provider = cfg.provider_id.as_str(),
+                            attempt = relaunch_waits,
+                            waited_ms = waited.elapsed().as_millis() as u64,
+                            reason = "503_loading",
+                            "local lane answered 503 (loading, mid-relaunch) and the daemon has since \
+                             published it live — resending the same lane",
+                        );
+                        continue;
+                    }
+                    // Nothing will bring it back: the 503 is classified below like any rejection.
+                    RelaunchWait::NoOwner | RelaunchWait::Lapsed => break resp,
+                }
             }
             Ok(resp) => break resp,
-            Err(e)
-                if e.is_connect()
-                    && cfg.single_resident_model
-                    && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
-            {
-                relaunch_retries += 1;
-                let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
-                continuum_base::probe!(
-                    class = "inference.lane_relaunch_retry",
-                    provider = cfg.provider_id.as_str(),
-                    attempt = relaunch_retries,
-                    backoff_ms = backoff.as_millis() as u64,
-                    reason = "connect_refused",
-                    "local lane refused the connection (mid-relaunch) — retrying the same lane",
-                );
-                tokio::time::sleep(backoff).await;
-                continue;
+            Err(e) if e.is_connect() && cfg.single_resident_model => {
+                let deadline = *relaunch_deadline
+                    .get_or_insert_with(|| tokio::time::Instant::now() + crate::inference::llama_server::DEFAULT_SERVING_WAIT);
+                let waited = Instant::now();
+                match await_relaunch(relaunch.as_mut(), deadline).await {
+                    RelaunchWait::Resumed => {
+                        relaunch_waits += 1;
+                        continuum_base::probe!(
+                            class = "inference.lane_relaunch_retry",
+                            provider = cfg.provider_id.as_str(),
+                            attempt = relaunch_waits,
+                            waited_ms = waited.elapsed().as_millis() as u64,
+                            reason = "connect_refused",
+                            "local lane refused the connection (mid-relaunch) and the daemon has since \
+                             published it live — resending the same lane",
+                        );
+                        continue;
+                    }
+                    ended => {
+                        return Err(InferenceError::Unavailable(format!(
+                            "{} POST failed after {}ms, {} mid-relaunch resends ({}): {}",
+                            cfg.name,
+                            send_start.elapsed().as_millis(),
+                            relaunch_waits,
+                            ended.reason(),
+                            crate::ai::inference_error::transport_diagnostic(&e)
+                        )));
+                    }
+                }
             }
             Err(e) => {
                 return Err(InferenceError::Unavailable(format!(
-                    "{} POST failed after {}ms{}: {}",
+                    "{} POST failed after {}ms ({} mid-relaunch resends): {}",
                     cfg.name,
                     send_start.elapsed().as_millis(),
-                    if relaunch_retries > 0 {
-                        format!(
-                            " ({relaunch_retries} mid-relaunch retries exhausted — lane never came back)"
-                        )
-                    } else {
-                        String::new()
-                    },
+                    relaunch_waits,
                     crate::ai::inference_error::transport_diagnostic(&e)
                 )));
             }

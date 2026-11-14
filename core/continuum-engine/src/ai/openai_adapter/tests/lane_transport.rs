@@ -2,6 +2,22 @@
 
 use super::*;
 
+/// The lane's published state, as the serving daemon would publish it.
+fn lane_snapshot(live: bool) -> crate::inference::llama_server::ServingSnapshot {
+    let mut snapshot = crate::inference::llama_server::ServingSnapshot::empty();
+    snapshot.ready = live;
+    snapshot.active_model = Some("fixture".to_string());
+    snapshot
+}
+
+/// A stand-in serving daemon for this test's single-resident lane: what it sends is what a
+/// request waiting out a relaunch hears.
+fn serving_daemon_fixture() -> std::sync::Arc<tokio::sync::watch::Sender<crate::inference::llama_server::ServingSnapshot>> {
+    let (daemon, published) = tokio::sync::watch::channel(lane_snapshot(true));
+    crate::inference::lane_send::publish_serving_for_test(Some(published));
+    std::sync::Arc::new(daemon)
+}
+
 // Exercise the actual quote -> POST -> 503 -> re-quote path. The second quote
 // must restore the original reply ceiling, not inherit the first reduction.
 #[tokio::test]
@@ -14,6 +30,7 @@ async fn measured_reply_transport_retry_uses_each_quote() {
     let quotes = Arc::new(Mutex::new(Vec::<Value>::new()));
     let post_log = posts.clone();
     let quote_log = quotes.clone();
+    let daemon = serving_daemon_fixture();
     let app = Router::new()
         .route("/v1/chat/completions/input_tokens", post(move |Json(body): Json<Value>| {
             let log = quote_log.clone();
@@ -25,10 +42,17 @@ async fn measured_reply_transport_retry_uses_each_quote() {
         }))
         .route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
             let log = post_log.clone();
+            let daemon = daemon.clone();
             async move {
                 let mut log = log.lock().expect("fixture posts");
                 log.push(body);
-                if log.len() == 1 { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK }
+                if log.len() == 1 {
+                    // the relaunch lands while the lane still answers loading
+                    daemon.send_replace(lane_snapshot(true));
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::OK
+                }
             }
         }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture listener");
@@ -242,8 +266,10 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
     let log = Arc::clone(&received);
     let quotes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let quote_log = Arc::clone(&quotes);
+    let daemon = serving_daemon_fixture();
     let app = Router::new().route("/v1/chat/completions", post(move |body: axum::body::Bytes| {
         let log = Arc::clone(&log);
+        let daemon = Arc::clone(&daemon);
         async move {
             let attempt = {
                 let mut log = log.lock().expect("fixture request log");
@@ -251,6 +277,8 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
                 log.len()
             };
             if attempt == 2 {
+                // the relaunch lands while the lane still answers loading
+                daemon.send_replace(lane_snapshot(true));
                 (StatusCode::SERVICE_UNAVAILABLE, "loading")
             } else {
                 (StatusCode::BAD_REQUEST, r#"{"error":{"type":"exceed_context_size_error","message":"no counts may be inferred from this text","n_prompt_tokens":29722,"n_ctx":29440}}"#)
@@ -740,4 +768,84 @@ fn generation_admission_follows_effective_endpoint_not_provider_label() {
     assert_eq!(adapter.generation_admission_for("http://127.0.0.1:42"), GenerationAdmissionOwner::Adapter);
     let adapter = adapter.with_dedicated_lane();
     assert_eq!(adapter.generation_admission_for("http://127.0.0.1:0"), GenerationAdmissionOwner::Adapter);
+}
+
+// what this catches (timer audit row H4, 2026-11-14): a POST refused mid-relaunch (503 loading)
+// was resent on a linear backoff (1 s, 2 s, ... ~21 s in all), so a relaunch that landed at once
+// still held the act for the next step, and one slower than 21 s failed it. The resend now waits
+// on the serving daemon's own publish: a publish that is not live keeps it waiting, the live one
+// resends the same request at once, and with no daemon to relaunch the lane the 503 stands.
+#[tokio::test]
+async fn a_relaunch_refusal_resends_on_the_live_publish_and_never_on_a_timer() {
+    use axum::{http::StatusCode, routing::post, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let (posted_tx, mut posted) = tokio::sync::mpsc::unbounded_channel::<usize>();
+    let count = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&count);
+    let app = Router::new().route("/v1/chat/completions", post(move || {
+        let posted_tx = posted_tx.clone();
+        let count = Arc::clone(&counter);
+        async move {
+            let n = count.fetch_add(1, Ordering::SeqCst) + 1;
+            drop(posted_tx.send(n));
+            if n == 1 { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK }
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture listener");
+    let address = listener.local_addr().expect("fixture address");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let mut adapter = test_adapter();
+    adapter.config.base_url = format!("http://{address}");
+    adapter.config.single_resident_model = true;
+    let url = format!("http://{address}/v1/chat/completions");
+    let fill = crate::inference::lane_send::FillReceipt { model: "fixture", prompt_tokens: 1, prompt_quote: None, admission: None };
+    let mut reservation = None;
+
+    let daemon = serving_daemon_fixture();
+    let drive = async {
+        assert_eq!(posted.recv().await, Some(1), "the first POST meets a loading lane");
+        daemon.send_replace(lane_snapshot(false));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), posted.recv()).await.is_err(),
+            "a publish that is not live keeps the request waiting"
+        );
+        daemon.send_replace(lane_snapshot(true));
+        assert_eq!(posted.recv().await, Some(2), "the live publish resends the same request");
+    };
+    let send = crate::inference::lane_send::send_with_lane_retry(
+        &adapter.config,
+        adapter.client.post(&url).header("Content-Type", "application/json"),
+        b"{}".to_vec(),
+        None,
+        fill,
+        &mut reservation,
+        || {},
+    );
+    let (sent, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async { tokio::join!(send, drive) })
+        .await
+        .expect("test: bounded");
+    assert!(sent.expect("the resend reaches the relaunched lane").status().is_success());
+
+    // No serving daemon publishes this lane: nothing relaunches it, so the 503 stands at once.
+    crate::inference::lane_send::publish_serving_for_test(None);
+    count.store(0, Ordering::SeqCst);
+    let refused = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        crate::inference::lane_send::send_with_lane_retry(
+            &adapter.config,
+            adapter.client.post(&url).header("Content-Type", "application/json"),
+            b"{}".to_vec(),
+            None,
+            fill,
+            &mut reservation,
+            || {},
+        ),
+    )
+    .await
+    .expect("test: bounded");
+    assert!(refused.is_err(), "a 503 with no daemon to relaunch the lane is classified, never waited on");
+    assert_eq!(posted.recv().await, Some(1));
+    assert!(posted.try_recv().is_err(), "it was sent once, never resent");
+    server.abort();
 }

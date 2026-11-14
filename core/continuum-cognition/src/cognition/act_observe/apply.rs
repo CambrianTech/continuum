@@ -376,6 +376,11 @@ pub async fn apply_act(
             .iter()
             .find(|v| v.tool_use_id == call.id);
         let verdict = projected.map(|v| v.verdict).unwrap_or_default(); // JUSTIFIED: no record for this call means the command never opted in (or a test double built the batch) — `Unprojected` IS the right answer there, never a failure
+        // A refusal's next moves are callable on her next act: the commands it names load into
+        // her tool head's tail, as a verb `commands/help` found does, whatever her surface holds.
+        if let Some(next) = projected.map(|v| v.next_commands.as_slice()).filter(|next| !next.is_empty()) {
+            body.working_memory.tool_head().load(next);
+        }
 
         // PUSHED SHELL COMPLETION, receive side (2026-08-24): a `code/shell` whose
         // inline window elapsed hands back a RUNNING handle. Register that handle as a
@@ -674,17 +679,11 @@ pub async fn apply_act(
     // ALONGSIDE the typed acts, so `active_act()`/`recent_acts()` read the tool result
     // by field instead of re-parsing this prose (run-18057-f1). `observation` is the
     // one-time recency rendering; `acts` are the id-correlated typed observations.
-    // The ring keeps this exact text; save THAT, so the pointer it leaves when it collapses
-    // resolves to what she saw, every call of the batch included.
-    // An act that only reopened one saved output is a view of it: its receipt's custody is that
-    // output, so reopening the act reopens the source, never her earlier selection of it.
-    let reopened = crate::cognition::tool_executor::tool_output::reopened_by_every_call(
-        acts.iter().map(|act| (act.call.name.as_str(), &act.output.result.custody)),
-    );
-    let custody = match reopened {
-        Some(source) => crate::ai::types::ResultCustody::Whole { handle: source },
-        None => pin.retain(body.persona_id, observation.trim()),
-    };
+    // What the receipt leaves behind is the one owner's to say (`receipt_output`): no id when
+    // nothing ran, the source when every call that ran reopened one output, else its own text,
+    // where a read names its source instead of holding it again. So an id never names her read of
+    // another id, and a read never nests.
+    let custody = super::receipt_output::ReceiptOutput::of(&acts, &observation).custody(&pin, body.persona_id);
     let disk = super::disk_change::DiskChange::between(
         disk_before,
         super::disk_change::fingerprint_at(acting_root).await,

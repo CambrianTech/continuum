@@ -335,6 +335,15 @@ pub trait LlamaServerControl: Send + Sync {
         Err(EngineRetirementError::Unsupported)
     }
 
+    /// The retired child's exit as an event, for a waiter that needs it rather than a status
+    /// read: it resolves when the reaper observes the exit, after the child's custody is released.
+    fn engine_exit(
+        &self,
+        _receipt: &EngineRetirementReceipt,
+    ) -> Result<crate::inference::slots::EngineExit, EngineRetirementError> {
+        Err(EngineRetirementError::Unsupported)
+    }
+
     /// The REAL per-slot context window the running server serves, read from
     /// `/props` (`default_generation_settings.n_ctx`). This is the AUTHORITATIVE
     /// model metadata: llama.cpp pads the launch per-slot window (`-c / --parallel`)

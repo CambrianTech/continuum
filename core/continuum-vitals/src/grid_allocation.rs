@@ -170,7 +170,11 @@ impl LanePlan {
         Some(Self {
             model_id,
             capability_rank,
-            window: snapshot.served_context_window,
+            // a seat is what one mind may be granted here, never the pool's equal share (`seat_window`)
+            window: continuum_engine::capacity::window_grant::seat_window(
+                snapshot.served_context_window,
+                continuum_engine::capacity::window_grant::current_sequence_cap(),
+            ),
             lanes: snapshot.lanes,
             decode_tps_per_lane,
         })

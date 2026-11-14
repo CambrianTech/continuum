@@ -159,6 +159,27 @@ pub fn current_lease(persona: uuid::Uuid) -> Option<GrantLease> {
     GRANTS.get()?.borrow().as_ref()?.lease_for(persona)
 }
 
+/// The most ONE mind may be granted on this node's engine, as the grant owner reads it off the engine
+/// (one slot on fixed slots, the pool capped at the trained window on a shared one). `None` before the
+/// daemon installs its grants, or while it grants from nothing ([`NoGrants`]).
+pub fn current_sequence_cap() -> Option<u32> {
+    GRANTS.get()?.borrow().as_ref().map(|grants| grants.per_sequence_cap)
+}
+
+/// How wide one seat on this engine is: the most one mind may be granted, never the snapshot's equal
+/// share of the pool. `share` is `ServingSnapshot::served_context_window`, the KV each sequence is
+/// CHARGED (`sequence_share`: lanes x share is the pool); it stands for the seat only until the grant
+/// owner reports the engine's per-sequence limit, and every sequence can hold its share at once, so it
+/// never overstates a seat. The M5, 2026-11-14 (958ea3056): a 661,504-token pool holding 262,144 per
+/// sequence was published as 5 x 132,300, and the grid named Benchy (need 148,818) and Atlas (135,619)
+/// unservable while their grants on that pool were 170,903 and 160,368.
+pub fn seat_window(share: u32, sequence_cap: Option<u32>) -> u32 {
+    match sequence_cap {
+        Some(cap) => cap,
+        None => share,
+    }
+}
+
 /// Why one grants evaluation granted nobody: every way `grant_inputs` has nothing to grant from,
 /// typed (card 5e79e1c1; Codex: "type those truthfully").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -591,6 +612,16 @@ mod tests {
         assert_eq!(grants, BTreeMap::from([(1, 70_000), (2, 20_000), (3, 10_000)]));
         let too_big = DemandFollowing.grant(&[demand(1, 40_000, false, 32_768)], &BTreeMap::new(), pool);
         assert!(too_big.is_empty(), "a need above what one sequence holds now waits, never trimmed: {too_big:?}");
+    }
+
+    // what this catches (the M5, 2026-11-14, 958ea3056: `grid.mind.unservable widest_window=132300`):
+    // a seat read as the pool's equal share. 661,504 tokens over 5 sequences is a KV charge of 132,300
+    // each; the engine holds 262,144 in any one of them, and that is what one mind may be granted.
+    #[test]
+    fn a_seat_is_what_one_sequence_holds_never_the_pools_equal_share() {
+        assert_eq!(seat_window(132_300, Some(262_144)), 262_144, "a shared pool's seat is its per-sequence limit");
+        assert_eq!(seat_window(65_536, Some(65_536)), 65_536, "fixed slots: the seat is the slot");
+        assert_eq!(seat_window(132_300, None), 132_300, "no grant owner yet: the share, which every sequence holds at once");
     }
 
     // what this catches (the M5, 2026-11-03, 2bbfa56c9): a grant below need. The 2,048-token launch

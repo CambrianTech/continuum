@@ -249,6 +249,7 @@
                     (None, Some("string")) => serde_json::json!("x"),
                     (None, Some("integer")) => serde_json::json!(1),
                     (None, Some("boolean")) => serde_json::json!(false),
+                    (None, Some("array")) => serde_json::json!([]), // Batch's `edits`: an empty batch parses
                     other => panic!("an edit field of a type this test does not build: {other:?}"),
                 };
                 op.insert(field.to_string(), value);

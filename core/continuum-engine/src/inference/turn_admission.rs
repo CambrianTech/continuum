@@ -42,6 +42,7 @@ pub use transient::admit_transient;
 #[cfg(test)]
 use transient::admit_transient_through;
 
+pub(crate) use page_receipt::PageAction;
 use page_receipt::{terminal_receipt, Terminal};
 use page_liveness::{bounded_page_receipt, wait_while_engine_progresses, PageLiveness, Receipt};
 #[cfg(test)]
@@ -146,7 +147,7 @@ impl TurnAdmission {
         root: &str,
         slot: u32,
         key: &PageKey,
-        action: &str,
+        action: PageAction,
     ) -> Result<(Self, bool), String> {
         self.paging_in_flight = true;
         match kv_page_action(client, root, slot, key, action).await {
@@ -388,7 +389,10 @@ async fn admit(
         }
         _ => None,
     };
-    // A dream's ambient serving lane, held only while it must borrow a citizen slot.
+    // A dream's ambient lane, held only where it borrows a citizen slot (the admitted pool decides).
+    // Taken BEFORE the permit: a permit taken only to drop it for the lane woke the next waiter (6742aad1).
+    let dream_lane = |pool: Option<&Arc<KvSlotPool>>| class == SlotClass::Dream && (keyed_dream || pool.is_some_and(|pool| pool.scratch_slot().is_none()));
+    let mut needs_lane = dream_lane(pool.as_ref());
     let mut lane: Option<ServingLanePermit> = None;
     'admit: loop {
         if caller_lane.is_none() {
@@ -396,19 +400,24 @@ async fn admit(
                 caller_lane = Some(authority.acquire().await);
             }
         }
-        // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
-        //    semaphore is never closed over the adapter's lifetime. A dream holding its lane
-        //    only TRIES: when the adapter is full it lets the lane go, waits for a permit
-        //    holding nothing, and takes both again (Codex on #5786).
-        let _permit = match lane.as_ref().or(caller_lane.as_ref()).map(|_| concurrency.try_acquire()) {
-            Some(Ok(permit)) => permit,
-            Some(Err(_)) => {
-                lane = None;
-                caller_lane = None;
-                drop(concurrency.acquire().await);
-                continue 'admit;
+        if needs_lane && lane.is_none() {
+            lane = Some(crate::inference::resource_admission::acquire_serving_lane(None, LanePriority::Ambient, None).await);
+        }
+        // 1. PERMIT FIRST — event-driven wait for a free permit. A caller holding a lane only
+        //    TRIES: when the adapter is full it lets the lane go, waits for a permit to RETURN
+        //    holding nothing (never handed one it could only drop), and takes both again (#5786).
+        let _permit = if lane.is_some() || caller_lane.is_some() {
+            match concurrency.try_or_return() {
+                Ok(permit) => permit,
+                Err(returned) => {
+                    lane = None;
+                    caller_lane = None;
+                    returned.await;
+                    continue 'admit;
+                }
             }
-            None => concurrency.acquire().await,
+        } else {
+            concurrency.acquire().await
         };
 
         // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,
@@ -444,20 +453,15 @@ async fn admit(
 
         // A DREAM YIELDS TO RESIDENTS (Fable, M5 0b2854327 01:24-01:50Z: a dream parked on scratch
         // holding a lane while Aiko waited 1,141 s and Benchy 132 s with two slots idle). Decided
-        // each pass from the ADMITTED generation's pool (Codex on #5786: a transition can change
-        // it). Where it borrows a citizen slot (no scratch slot) it holds an ambient lane, so a
-        // waiting turn still wins, and takes it holding nothing; with a scratch slot that slot is
-        // its admission and it holds no lane.
-        // A keyed dream always borrows a citizen slot (her page), scratch or not, so it always
-        // holds the ambient lane: on a node with a scratch slot it would otherwise outrank residents.
-        if class == SlotClass::Dream && (keyed_dream || pool.as_ref().is_some_and(|pool| pool.scratch_slot().is_none())) {
-            if lane.is_none() {
-                drop(admission);
-                lane = Some(crate::inference::resource_admission::acquire_serving_lane(None, LanePriority::Ambient, None).await);
-                continue 'admit;
-            }
-        } else {
+        // each pass from the ADMITTED generation's pool (Codex on #5786). Where it borrows a citizen
+        // slot it holds an ambient lane, so a waiting turn still wins; on scratch it holds none. A
+        // keyed dream always borrows a citizen slot (her page), so it always holds the lane.
+        needs_lane = dream_lane(pool.as_ref());
+        if !needs_lane {
             lane = None;
+        } else if lane.is_none() {
+            drop(admission); // the generation changed under the discovery: lane first, next pass
+            continue 'admit;
         }
 
         if warm_only
@@ -528,12 +532,13 @@ async fn admit(
                 admission._slot_permit = Some(match pool.try_acquire_slot(slot) {
                     Some(permit) => permit,
                     // A keyed dream waits for her busy slot holding nothing: no pin, no lane, no
-                    // gate (Codex on #5898). A turn keeps its pin through the wait (a same-page
-                    // returner must await the prior owner without permitting eviction).
+                    // gate (Codex on #5898), no permit (card 6742aad1). A turn keeps its pin
+                    // through the wait (a same-page returner must await the prior owner without
+                    // permitting eviction).
                     None if keyed_dream => {
                         drop(admission);
                         lane = None;
-                        wait_until_free(pool, slot).await?;
+                        if let Some(release) = pool.busy_until_release(slot)? { release.await; }
                         continue 'admit;
                     }
                     None => pool.acquire_slot(slot).await?,
@@ -606,7 +611,7 @@ async fn admit(
                             // Only a completed save can make this page restorable again.
                             pool.note_page_lost(&prev);
                             let saved;
-                            (admission, saved) = admission.page_action(&client, &paging_root, pg.slot, &prev, "save").await?;
+                            (admission, saved) = admission.page_action(&client, &paging_root, pg.slot, &prev, PageAction::Save).await?;
                             if saved {
                                 pool.note_saved(prev);
                                 admission.saved_evictee = true;
@@ -615,7 +620,7 @@ async fn admit(
                         if pg.restore && interested.load(std::sync::atomic::Ordering::Acquire) {
                             let restored;
                             pool.note_overwritten(pg.slot);
-                            (admission, restored) = admission.page_action(&client, &paging_root, pg.slot, &k, "restore").await?;
+                            (admission, restored) = admission.page_action(&client, &paging_root, pg.slot, &k, PageAction::Restore).await?;
                             admission.page_confirmed = restored;
                             admission.page_in = match (restored, pg.basis) {
                                 (true, crate::inference::slots::SequenceBasis::PageBehindLive) => PageIn::RestoredBehindLive,
@@ -663,7 +668,7 @@ async fn admit(
             let Some(permit) = pool.try_acquire_slot(slot) else {
                 drop(admission);
                 lane = None;
-                wait_until_free(pool, slot).await?;
+                if let Some(release) = pool.busy_until_release(slot)? { release.await; }
                 continue 'admit;
             };
             admission = admission
@@ -683,7 +688,7 @@ async fn admit(
             // and no serving lane (card 920c43bc).
             let Some(permit) = pool.try_acquire_slot(scratch) else {
                 drop(admission);
-                wait_until_free(pool, scratch).await?;
+                if let Some(release) = pool.busy_until_release(scratch)? { release.await; }
                 continue 'admit;
             };
             admission._slot_permit = Some(permit);
@@ -770,9 +775,9 @@ pub(crate) async fn kv_page_action(
     root: &str,
     slot: u32,
     key: &PageKey,
-    action: &str,
+    action: PageAction,
 ) -> PageOutcome {
-    let path = if action == "save" {
+    let path = if action == PageAction::Save {
         match crate::inference::slots::directory().page_admission_path(root) {
             Ok(path) => path,
             Err(reason) => {
@@ -800,13 +805,13 @@ async fn kv_page_action_with_capacity(
     root: &str,
     slot: u32,
     key: &PageKey,
-    action: &str,
+    action: PageAction,
     governed: bool,
     admit_bytes: impl FnOnce(u64) -> Result<(), String>,
 ) -> PageOutcome {
-    let url = format!("{}/slots/{}?action={}", root.trim_end_matches('/'), slot, action);
+    let url = format!("{}/slots/{}", root.trim_end_matches('/'), slot);
     let filename = crate::inference::slots::page_filename(key);
-    let operation = (action == "restore").then(uuid::Uuid::new_v4);
+    let operation = (action == PageAction::Restore).then(uuid::Uuid::new_v4);
     let (p50_ms, p90_ms, measured) = KV_PAGE_SWITCH_MS.p50_p90();
     let bound = kv_page_wedge_bound(p90_ms);
     // Another slot may be mid-batch: its counters move once per batch, so an engine that is
@@ -828,11 +833,11 @@ async fn kv_page_action_with_capacity(
     // `/slots` is itself a task on that queue, so it cannot answer during one long batch:
     // the engine PROCESS's CPU, read beside it, says busy or dead (`page_liveness`).
     let liveness = PageLiveness::for_root(root);
-    let mut payload = if action == "save" { page_body(&filename) } else { json!({ "filename": filename }) };
+    let mut payload = if action == PageAction::Save { page_body(&filename) } else { json!({ "filename": filename }) };
     if let Some(operation) = operation {
         payload["operation_id"] = json!(operation);
     }
-    if action == "save" && governed {
+    if action == PageAction::Save && governed {
         // A separate action is required: older engines must not mistake a quote for a write.
         let projected = wait_while_engine_progresses(
             request_quote(client, root, slot, &filename), bounds,
@@ -859,7 +864,7 @@ async fn kv_page_action_with_capacity(
     }
     // The same progress bound covers the complete receipt, not just headers.
     let receipt = bounded_page_receipt(
-        client.post(&url).json(&payload),
+        client.post(&url).query(&[("action", action)]).json(&payload),
         bounds,
         &liveness,
         || async {
@@ -871,7 +876,7 @@ async fn kv_page_action_with_capacity(
         |busy_checkpoints| {
             continuum_base::probe!(
                 class = "inference.kv_page.busy_not_dead",
-                action = %action,
+                action = ?action,
                 slot = slot as u64,
                 waited_ms = started.elapsed().as_millis() as u64,
                 bound_ms = bound.as_millis() as u64,
@@ -894,7 +899,7 @@ async fn kv_page_action_with_capacity(
         Receipt::Unresolved { cpu_spent, pending } => {
             unresolved = Some(UnresolvedPage {
                 root: root.to_owned(),
-                action: action.to_owned(),
+                action,
                 slot,
                 filename: filename.clone(),
                 cpu_spent,
@@ -912,10 +917,9 @@ async fn kv_page_action_with_capacity(
     // its clock starts after a busy slot's deferral, so `ms - engine_ms` is the wait and
     // engine_ms the load (card a40e1bbf; the 5090 2026-10-11: Kimi's restores took 6-7.5 min
     // and nothing could say how much was waiting for the slot and how much was reading).
-    let engine_ms = body.as_ref().and_then(|b| {
-        b["timings"][if action == "save" { "save_ms" } else { "restore_ms" }].as_f64().map(|ms| ms as u64)
-    });
-    let engine_bytes = body.as_ref().and_then(|b| b[if action == "save" { "n_written" } else { "n_read" }].as_u64());
+    let (timing_field, bytes_field) = action.engine_fields();
+    let engine_ms = body.as_ref().and_then(|b| b["timings"][timing_field].as_f64().map(|ms| ms as u64));
+    let engine_bytes = body.as_ref().and_then(|b| b[bytes_field].as_u64());
     let outcome = match terminal_receipt(action, slot, &filename, status, body.as_ref()) {
         Some(Terminal::Completed) => PageOutcome::Completed,
         Some(Terminal::Rejected) => PageOutcome::Rejected,
@@ -925,7 +929,7 @@ async fn kv_page_action_with_capacity(
         let cpu_spent = unresolved.cpu_spent();
         continuum_base::probe!(
             class = "inference.kv_page.unresolved",
-            action = %action,
+            action = ?action,
             slot = slot as u64,
             waited_ms = started.elapsed().as_millis() as u64,
             unmoved_ms = bounds.unmoved.as_millis() as u64,
@@ -940,7 +944,7 @@ async fn kv_page_action_with_capacity(
         let evidence = crate::inference::engine_stall::capture(root).await;
         continuum_base::probe!(
             class = "inference.kv_page.stall_evidence",
-            action = %action,
+            action = ?action,
             slot = slot as u64,
             status = status as u64,
             silent_ms = %evidence.silent_ms.map_or_else(|| "unknown".to_string(), |ms| ms.to_string()),
@@ -956,7 +960,7 @@ async fn kv_page_action_with_capacity(
     }
     continuum_base::probe!(
         class = "inference.kv_page.action",
-        action = %action,
+        action = ?action,
         slot = slot as u64,
         page = %key,
         ok,
@@ -984,10 +988,5 @@ async fn kv_page_action_with_capacity(
 /// again (its slot without waiting). Waiting on the slot's own semaphore cannot miss the release
 /// the way a notification raised before the permit returns could; the next pass may still lose
 /// the slot to another caller and wait again, which is how a non-turn call yields.
-async fn wait_until_free(pool: &KvSlotPool, slot: u32) -> Result<(), String> {
-    drop(pool.acquire_slot(slot).await?);
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests;

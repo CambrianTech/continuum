@@ -7,6 +7,7 @@ description = "The floor of the core: leaf utilities every other crate may depen
 [dependencies]
 chrono.workspace = true
 serde = { workspace = true }
+sha2.workspace = true # tool_evidence: a check is bound to the exact bytes it read
 dirs = { workspace = true }
 tracing.workspace = true
 uuid.workspace = true

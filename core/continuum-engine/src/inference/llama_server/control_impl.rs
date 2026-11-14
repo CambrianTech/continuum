@@ -425,6 +425,16 @@ impl LlamaServerControl for LlamaServerProcess {
         })
     }
 
+    fn engine_exit(
+        &self,
+        receipt: &EngineRetirementReceipt,
+    ) -> Result<crate::inference::slots::EngineExit, EngineRetirementError> {
+        if !receipt.identity.owner.ptr_eq(&Arc::downgrade(&self.child)) {
+            return Err(EngineRetirementError::NotOwned);
+        }
+        Ok(receipt.identity.generation.exit())
+    }
+
     async fn idle(&self) -> Result<(), LlamaServerError> {
         self.idle_if_current(&|| true).await
     }
@@ -540,7 +550,7 @@ impl LlamaServerControl for LlamaServerProcess {
         let checkpoint = transition
             .checkpoint_residents(&self.client, &self.root)
             .await
-            .map_err(LlamaServerError::Spawn)?;
+            .map_err(|failure| LlamaServerError::Spawn(failure.to_string()))?;
         self.validate_owned_launch(&session.original).await?;
         if !current() {
             return Err(LlamaServerError::Superseded);

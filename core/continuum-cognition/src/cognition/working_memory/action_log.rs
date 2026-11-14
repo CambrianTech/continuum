@@ -41,8 +41,9 @@ pub enum ActOutputRefusal {
     /// output, the one a reopen can reach (`None` when none is saved).
     #[error("act #{act} is not on your record; use a #n your view names")]
     Unknown { act: u64, newest_saved: Option<u64> },
-    /// The act is on record but its save failed: what her view showed of it is all there is.
-    #[error("act #{act} has no saved output: its save failed, so what your view showed of it is all there is")]
+    /// The act is on record with no saved output: its save failed, or nothing ran (a refusal is
+    /// never saved; it reached her in her act's result). What her view showed of it is all there is.
+    #[error("act #{act} has no saved output: what your view showed of it is all there is")]
     Unsaved { act: u64 },
     /// A call naming no output, and none of her acts has a saved one yet.
     #[error("none of your acts has a saved output yet, so there is nothing to reopen")]
@@ -50,7 +51,7 @@ pub enum ActOutputRefusal {
     /// She named an output and an act, and they are not the same output: two readings, so the
     /// call is hers to make again with one. `act_output` is the act's own saved output, if any.
     #[error("outputId {output} and act #{act} name different outputs; name one")]
-    Disagree { act: u64, output: String, act_output: Option<String> },
+    Disagree { act: u64, output: crate::cognition::tool_executor::output_id::OutputId, act_output: Option<String> },
     /// The act left RAM for her archive and its span was compacted past her reopen horizon: its
     /// own line and output are gone, and the span's summary is what remains. The answer, typed.
     #[error("act #{act} was compacted into its span, {span}: its own line and output are no longer kept, and this summary is what remains")]
@@ -159,6 +160,11 @@ pub(crate) struct ActionRecord {
     /// act with no identity or outcome, and for a record from a build before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<u32>,
+    /// What each of its calls did, classed once at the act seam (`ToolVerb`): what reads her edits
+    /// off her log (`working_memory::in_hand`), never her call names parsed again. Empty for a
+    /// record from a build before it was kept, and for a text receipt with no typed acts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verbs: Vec<crate::cognition::act_observe::ToolVerb>,
 }
 
 impl ActionRecord {

@@ -445,6 +445,58 @@
         );
     }
 
+    /// what this catches (card e0b2b5b1, the M5 2026-11-07: `work/list` returned 241,460 chars,
+    /// ~80,884 tokens, as a summary and a handle): the tool returning every card while her view of
+    /// the same board is collapsed navigation. With no filter it returns the board's nav from the
+    /// owner her view uses (`board_nav`): her cards whole, each live group's most recent cards and
+    /// one fold for the rest, history only its fold. And (Cormac on #5843) every fold's call opens
+    /// EXACTLY its group: the cards `group_of` assigned it, no more, no fewer (a `claimable=false`
+    /// call behind "held by others" also returned her cards and every merged and closed card).
+    #[test]
+    pub(super) fn an_unfiltered_list_is_the_boards_nav_and_each_fold_opens_exactly_its_group() {
+        use crate::persona::board_nav::BoardGroup;
+        let card = |i: usize, claimable: bool| WorkListCard {
+            id: format!("{i:08}"),
+            title: format!("card {i}"),
+            state: "claimed".to_string(),
+            owner: None,
+            owner_id: None,
+            claimable,
+            lease: None,
+            priority: "p2".to_string(),
+            age_hours: 1,
+        };
+        // Her board on the M5's scale: 2 of hers, 600 claimable, 40 held by others, 174 merged,
+        // 840 closed.
+        let board = || {
+            let mut cards: Vec<(WorkListCard, CardState, Option<BoardGroup>, u64)> = (0..2).map(|i| (card(i, false), CardState::Claimed, None, i as u64)).collect();
+            cards.extend((2..602).map(|i| (card(i, true), CardState::Open, Some(BoardGroup::Claimable), i as u64)));
+            cards.extend((602..642).map(|i| (card(i, false), CardState::Claimed, Some(BoardGroup::HeldByOthers), i as u64)));
+            cards.extend((642..816).map(|i| (card(i, false), CardState::Merged, Some(BoardGroup::Merged), i as u64)));
+            cards.extend((816..1_656).map(|i| (card(i, false), CardState::Closed, Some(BoardGroup::Closed), i as u64)));
+            cards
+        };
+        let unfiltered = super::work_list::Selector::default();
+        let (cards, folded) = super::work_list::listed(unfiltered.select(board()), unfiltered.filters());
+        let standing = continuum_context::nav::standing;
+        assert_eq!(cards.len(), 2 + standing(600) + standing(40), "her cards and each live group's most recent: {}", cards.len());
+        assert!(cards.iter().any(|c| c.id == "00000601"), "the most recently changed claimable card stands");
+        assert!(cards[cards.len() - 2..].iter().all(|c| c.id == "00000000" || c.id == "00000001"), "her cards last, as her view orders her focus");
+        let folds: Vec<(BoardGroup, usize)> = folded.iter().map(|f| (f.group, f.count)).collect();
+        assert_eq!(folds, [(BoardGroup::Claimable, 600 - standing(600)), (BoardGroup::HeldByOthers, 40 - standing(40)), (BoardGroup::Merged, 174), (BoardGroup::Closed, 840)]);
+        for fold in &folded {
+            assert_eq!(fold.open, format!("work/list group={}", fold.group.name()), "a fold names its own group");
+            let opened = super::work_list::Selector { group: Some(fold.group), ..Default::default() };
+            let (shown, refolded) = super::work_list::listed(opened.select(board()), opened.filters());
+            let mut want: Vec<String> = board().into_iter().filter(|(_, _, group, _)| *group == Some(fold.group)).map(|(c, ..)| c.id).collect();
+            let mut got: Vec<String> = shown.into_iter().map(|c| c.id).collect();
+            want.sort();
+            got.sort();
+            assert_eq!(got, want, "{:?}: exactly its group, whole", fold.group);
+            assert!(refolded.is_empty(), "an opened fold is not folded again");
+        }
+    }
+
     /// what this catches: the self-explaining summary being serialized AFTER `cards`, where
     /// the receipt truncator severs it from every result a citizen actually reads.
     ///
@@ -476,6 +528,7 @@
             awaiting_reviewer: 2,
             unsubmitted_pull_requests: 1,
             note: Some("the board is NOT empty".to_string()),
+            folded: Vec::new(),
             cards,
         })
         .expect("WorkListResult serializes");

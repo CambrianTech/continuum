@@ -33,6 +33,7 @@
 //! | 8 | idle pool, one mind, censored demand: her grant follows a demand her collapses measured | `LaneRequirement` -> `window_grant::Demand::of` -> `DemandFollowing`, her wish ring as the working set keeps it | `dyno/tests.rs` `censored_demand` |
 //! | 9 | boot during memory settle: a boot that remembered no resident launched at a reading taken while the stopped engine's memory came back (-c 2045, the M5 2026-11-13), and the grown plan was never applied | the boot's remembered residents -> `serving_daemon::launch::launch_pool`, `settle::launch_gate`, `floor_sized::floor_sized` | `continuum-serving` `serving_daemon/tests/dyno.rs` `boot_during_memory_settle` |
 //! | 10 | a leased-in mind sized from a prompt size, not her requirement | not drivable yet: [`expected::MissingSeam::LeasedInRequirement`] (the grid seam) | as 9 |
+//! | 11 | a restart re-prefills every mind (the M5 2026-11-13 23:45Z: the ledger restored nothing, every first act a full prefill), and the page store gave paged-out minds' pages to a volume other classes filled (29 in two hours) | the page store's `ColdPages::under` at the recorded pressure; save and restore costs from the engine's measured rates | `dyno/restart.rs` |
 
 pub mod conservation;
 pub mod expected;
@@ -40,6 +41,7 @@ pub mod recorded;
 
 mod batch;
 mod knee;
+mod restart;
 mod service;
 #[cfg(test)]
 mod tests;

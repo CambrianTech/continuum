@@ -81,6 +81,17 @@ impl NextMoves {
         calls.extend(more);
         NextMoves::Calls(Calls(calls))
     }
+
+    /// The commands her next calls name, by canonical name, first first; none for
+    /// [`NextMoves::None`]. What a mind's tool surface admits for her next act, so every move a
+    /// refusal names is one she can call.
+    pub fn commands(&self) -> impl Iterator<Item = &str> {
+        let calls: &[SuggestedCall] = match self {
+            NextMoves::Calls(calls) => calls.all(),
+            NextMoves::None(_) => &[],
+        };
+        calls.iter().map(|call| call.command.as_str())
+    }
 }
 
 /// One or more next calls. An empty list is not a value of this type: it fails to decode, so a

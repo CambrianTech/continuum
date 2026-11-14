@@ -320,11 +320,11 @@ fn an_older_thought_sheds_to_its_handle_and_is_still_seen_whole() {
     memory.save_unsaved_thoughts(persona);
     memory.evict_resident_results_over(0, &|_, _| true);
     let records = memory.thoughts();
-    assert!(records[0].text.is_none() && records[0].handle.is_some(), "the older thought is shed to its handle");
-    assert!(records[1].text.is_some(), "her newest thought stays resident");
+    assert!(matches!(records[0].body, crate::cognition::working_memory::ThoughtBody::Shed { .. }), "the older thought is shed to its handle");
+    assert!(records[1].text().is_some(), "her newest thought stays resident");
     assert_eq!(whole(&memory), resident, "she sees it whole exactly as before the shed");
     let snapshot = memory.snapshot();
-    assert!(snapshot.thoughts[0].text.is_none() && snapshot.thoughts[0].handle.is_some(), "the checkpoint carries its handle, not its body");
+    assert!(matches!(snapshot.thoughts[0].body, crate::cognition::working_memory::ThoughtBody::Shed { .. }), "the checkpoint carries its handle, not its body");
 }
 
 // what this catches: a repeated settlement collapsing into the earlier one because thoughts were
