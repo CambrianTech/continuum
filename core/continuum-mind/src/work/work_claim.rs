@@ -48,7 +48,7 @@ impl ActionCommand for WorkClaim {
                         "claim refused: this box cannot grade the instance"
                     );
                     return Err(CommandError::Invalid(format!(
-                        "card {} names {instance}, which this box cannot grade ({}). It is                          withheld from claims until the environment changes (benchmark/validate                          re-checks it); take another card — work/list with claimable=true.",
+                        "card {} names {instance}, which this box cannot grade ({}). It is                          withheld from claims until the environment changes (benchmark/validate                          re-checks it); take another card from the board, one that is claimable.",
                         short8(card_id.as_uuid()),
                         reason.trim_end_matches('.')
                     )));
@@ -74,7 +74,7 @@ impl ActionCommand for WorkClaim {
                 }
             }
         }
-        let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS);
+        let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS); // unwrap_or: no lease length named, so the default lease, renewed by heartbeat
         let origin = p.origin.into();
         let mut claim_attempt = airc
             .claim_work_card_with_origin(ClaimWorkCard { card_id, ttl_ms }, origin)
@@ -115,7 +115,7 @@ impl ActionCommand for WorkClaim {
                     .caller
                     .as_ref()
                     .map(|c| short8(c.peer_id.as_uuid()))
-                    .unwrap_or_else(|| "-".to_string());
+                    .unwrap_or_else(|| "-".to_string()); // unwrap_or_else: no caller on the context, a placeholder in the probe line only
                 if let Ok(board) = airc
                     .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                     .await

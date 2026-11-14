@@ -16,7 +16,7 @@ use super::{wire_name, CallForm, CommandDescriptor};
 /// boundary, never a fixed count (a cut of six dropped the route on 2026-09-05, below).
 pub fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a str> {
     let q = query.to_lowercase();
-    let q_prefix = q.split('/').next().unwrap_or(&q);
+    let q_prefix = q.split('/').next().unwrap_or(&q); // unwrap_or: split always yields a first piece; the whole query is the same value
     let q_segs: HashSet<&str> = q.split('/').filter(|s| !s.is_empty()).collect();
     // Tokens across EVERY separator a caller might reach for, not just `/`. A mind
     // told its tools live behind `list_commands` forms `list_cards` by analogy — an
@@ -36,7 +36,7 @@ pub fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a str> {
         .iter()
         .filter_map(|name| {
             let n = name.to_lowercase();
-            let n_prefix = n.split('/').next().unwrap_or(&n);
+            let n_prefix = n.split('/').next().unwrap_or(&n); // unwrap_or: split always yields a first piece; the whole name is the same value
             let shares_seg = n.split('/').any(|s| !s.is_empty() && q_segs.contains(s));
             let shares_token = n
                 .split(|c| c == '/' || c == '_' || c == '-')
@@ -116,7 +116,7 @@ fn render_manual(name: &str, description: &str, schema: &Value) -> String {
         .get("required")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
+        .unwrap_or_default(); // unwrap_or_default: a schema with no `required` list requires nothing
 
     let mut example = serde_json::Map::new();
     let mut arg_lines: Vec<String> = Vec::new();
@@ -126,7 +126,7 @@ fn render_manual(name: &str, description: &str, schema: &Value) -> String {
             let doc = spec
                 .get("description")
                 .and_then(Value::as_str)
-                .unwrap_or("");
+                .unwrap_or(""); // unwrap_or: an undocumented param renders no description
             // Resolve the param's real shape — a scalar `type`, OR an enum (`oneOf`/
             // `anyOf`, possibly behind a `$ref`/`allOf`) whose variants we EXPAND into
             // a hint + a concrete example. Without this, a complex param (e.g. an
@@ -187,7 +187,7 @@ fn resolve_ref<'a>(spec: &'a Value, root: &'a Value) -> &'a Value {
         }
     }
     if let Some(r) = spec.get("$ref").and_then(Value::as_str) {
-        let name = r.rsplit('/').next().unwrap_or("");
+        let name = r.rsplit('/').next().unwrap_or(""); // unwrap_or: rsplit always yields a last piece; an empty name matches no definition
         for defs in ["definitions", "$defs"] {
             if let Some(d) = root.get(defs).and_then(|d| d.get(name)) {
                 return d;
@@ -332,7 +332,7 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
                         .get("properties")
                         .and_then(Value::as_object)
                         .map(|o| o.keys().cloned().collect())
-                        .unwrap_or_default();
+                        .unwrap_or_default(); // unwrap_or_default: a variant with no properties names no fields
                     names.push(if fields.is_empty() {
                         vname.clone()
                     } else {
@@ -369,7 +369,7 @@ fn required_object_example(spec: &Value, root: &Value) -> serde_json::Map<String
 fn numeric_example(spec: &Value, integer: bool) -> Value {
     let minimum = spec.get("minimum").and_then(Value::as_f64);
     let exclusive = spec.get("exclusiveMinimum").and_then(Value::as_f64);
-    let mut value = minimum.unwrap_or(0.0);
+    let mut value = minimum.unwrap_or(0.0); // unwrap_or: no declared minimum, so the example starts at zero, a value every unbounded number accepts
     if integer {
         value = value.ceil();
     }

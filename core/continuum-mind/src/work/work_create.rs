@@ -9,7 +9,7 @@ impl WorkCreate {
         // the room is the second thing that can say which repo (below).
         if p.room.trim().is_empty() {
             return Err(CommandError::Invalid(
-                "work/create: room is required: name the activity room whose board gets the card"
+                "room is required: name the activity room whose board gets the card"
                     .into(),
             ));
         }
@@ -23,7 +23,7 @@ impl WorkCreate {
         let repo = match p.repo.as_deref().map(str::trim) {
             Some("") => {
                 return Err(CommandError::Invalid(
-                    "work/create: repo is blank: name it (owner/name) or omit it to use the \
+                    "repo is blank: name it (owner/name) or omit it to use the \
                      card you hold or the room's declared repo"
                         .into(),
                 ))
