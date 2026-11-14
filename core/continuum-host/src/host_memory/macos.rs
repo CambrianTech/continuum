@@ -6,7 +6,7 @@
 
 use std::mem::size_of;
 
-use super::{HostMemoryReading, MachVmCounts};
+use super::{HostMemoryReading, MachVmCounts, OsMemoryPressure};
 
 /// Fields this reader does not use are `_`-named: they hold the kernel's layout.
 #[repr(C)]
@@ -75,7 +75,7 @@ pub(super) fn read() -> Option<HostMemoryReading> {
             swapouts: info.swapouts,
             free_target_pages: u64::from(sysctl_u32(c"vm.vm_page_free_target")?),
             // Unreadable: no verdict, the counters still stand.
-            memorystatus_pressure_level: sysctl_u32(c"kern.memorystatus_vm_pressure_level"),
+            pressure: sysctl_u32(c"kern.memorystatus_vm_pressure_level").and_then(OsMemoryPressure::from_memorystatus_level),
         }
         .reading(),
     )

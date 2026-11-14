@@ -358,6 +358,8 @@ pub struct ServingDaemonModule {
     /// The host's memory as the last two readings saw it (`settle`): a launch below the seated
     /// minds' needs waits while memory is still being returned.
     host_settle: parking_lot::Mutex<settle::HostSettle>,
+    /// The host's last memory reading (`settle`): the room a launch's pool fits (`host_fit`).
+    host_reading: parking_lot::Mutex<Option<continuum_host::host_memory::HostMemoryReading>>,
     /// Each local mind's grant on the engine's pool (`grants.rs`): what her binding follows.
     /// `None` until a ready engine has been granted from.
     grants_tx: watch::Sender<Option<crate::capacity::window_grant::PoolGrants>>,
@@ -560,6 +562,7 @@ impl ServingDaemonModule {
             shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             floor_sized_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             host_settle: parking_lot::Mutex::new(settle::HostSettle::default()),
+            host_reading: parking_lot::Mutex::new(None),
             grants_tx: watch::channel(None).0,
             evaluations_tx: watch::channel(None).0,
             fair_grants: Arc::new(parking_lot::Mutex::new(crate::capacity::window_grant::FairGrantState::default())),
@@ -695,6 +698,7 @@ use own_credit::{OwnCredit, PlanBudget, PlannedBudget};
 mod reconcile;
 mod floor_sized;
 mod settle;
+mod host_fit;
 mod tick;
 
 #[cfg(test)]

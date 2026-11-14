@@ -593,11 +593,15 @@ pub trait MemoryReporter: Send + Sync {
         // Default: no-op. Override to implement pressure response.
     }
 
-    /// The other half of shedding: the OS has read itself out of memory pressure (two OS-normal
-    /// polls in a row, `HostDeficit::take_again_due`), so a reporter that gave memory back may
-    /// take it again. Called every such poll on every reporter that can shed; keep it cheap when
-    /// there is nothing to take back. Default: nothing to take back.
-    fn take_again(&self) {}
+    /// The other half of shedding: the OS reads itself normal with `headroom` bytes it can give
+    /// without re-entering pressure (`HostDeficitReading::headroom`), so a reporter that gave
+    /// memory back may take up to that much again. Returns the bytes it claimed (what it may now
+    /// fill), which the monitor takes off the headroom before offering the rest to the next
+    /// reporter. Called every such poll; keep it cheap when there is nothing to take back.
+    /// Default: nothing taken.
+    fn take_again(&self, _headroom: std::num::NonZeroU64) -> u64 {
+        0
+    }
 }
 
 // =============================================================================
