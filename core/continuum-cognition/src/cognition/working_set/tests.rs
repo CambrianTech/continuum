@@ -650,6 +650,11 @@ fn a_censored_need_raises_her_residency_by_its_value_never_to_a_whole_sequence()
     let reg = WorkingSetRegistry::new();
     let aiko = Uuid::new_v4();
     let would_have_held = 114_592;
+    // A full working session before the nine measured acts: one act of 60,000 among her 48,000s,
+    // so her measured growth (p95 over median) is 60,000 / 48,000.
+    for (t, demand) in [60_000, 48_000, 48_000, 48_000, 48_000, 48_000, 48_000].into_iter().enumerate() {
+        reg.record_in_memory(aiko, demand, 100 + t as u64);
+    }
     for t in 0..9u64 {
         reg.record_in_memory(aiko, 48_000, t);
         // Five of nine acts overflowed; the rest were held at her budgeter's floor.
@@ -663,7 +668,7 @@ fn a_censored_need_raises_her_residency_by_its_value_never_to_a_whole_sequence()
     assert_eq!(requirement.wish.map(|w| w.get()), Some(48_000), "the bound raises no wish");
     let Measure::Held { need, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
     assert!(need.is_bound(), "a bound stays a bound, so admission can clamp it: {need:?}");
-    // granted its value, within her wish with the sent headroom (48,000 x 1.25), never a sequence
+    // granted its value, within her wish grown by her measured growth (48,000 x 60/48), never a sequence
     assert_eq!(need.value().get(), 60_000, "granted its value up to her wish");
     assert_eq!(need.within(262_144).get(), 60_000, "under a roomy ceiling: its value, never a whole sequence");
     assert_eq!(need.within(58_112).get(), 58_112, "past the ceiling: the ceiling, never parked (Sahar)");
