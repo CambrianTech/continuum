@@ -361,9 +361,10 @@ fn the_predicate_that_refuses_a_seat_is_the_one_that_retires_its_record() {
     // asymmetry would have crept back in.
     assert!(!seat_starves(None, Some(70_071)));
     assert!(!seat_starves(None, None));
-    // Nothing measured of her turn: the serve floor is the bar, on both sides.
-    assert!(!seat_starves(Some(crate::inference::planning::MIN_SERVE_CTX), None));
-    assert!(seat_starves(Some(crate::inference::planning::MIN_SERVE_CTX - 1), None));
+    // Nothing measured of her turn: the serve floor is the bar, on both sides (its exact
+    // boundary is the planner's own test, `persona_lane_holds`).
+    assert!(!seat_starves(Some(65_536), None), "a real seat holds a mind with nothing measured");
+    assert!(seat_starves(Some(1), None), "a seat under the serve floor starves her");
 }
 
 #[test]

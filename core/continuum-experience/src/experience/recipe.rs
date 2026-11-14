@@ -289,7 +289,7 @@ impl ExperienceRecipe {
             }
         }
 
-        serde_json::from_value(value)
+        serde_json::from_value(value) // boundary: the recipe file on disk, already parsed to JSON above
     }
 
     /// Project this authored recipe into a live [`Experience`]: compute each

@@ -224,7 +224,7 @@ impl ServiceModule for GridModule {
                     let mut caps = self.state.local_capabilities.write().await;
                     // Replace the placeholder Compute capability with enriched data
                     caps.retain(|c| !matches!(c, NodeCapability::Compute { .. }));
-                    if vram.unwrap_or(0) > 0 || gpu_name.is_some() {
+                    if vram.unwrap_or(0) > 0 || gpu_name.is_some() { // unwrap_or: an unread VRAM size counts as none
                         caps.push(NodeCapability::Compute {
                             gpu: gpu_name.clone(),
                             vram_mb: vram,
@@ -232,8 +232,8 @@ impl ServiceModule for GridModule {
                     }
                     eprintln!(
                         "[grid] Local capabilities: GPU={}, VRAM={}MB",
-                        gpu_name.as_deref().unwrap_or("none"),
-                        vram.unwrap_or(0)
+                        gpu_name.as_deref().unwrap_or("none"), // unwrap_or: label for a node with no GPU name
+                        vram.unwrap_or(0) // unwrap_or: an unread VRAM size is logged as 0
                     );
                 }
             }
@@ -269,7 +269,7 @@ impl ServiceModule for GridModule {
                     let addr = transport
                         .local_address()
                         .map(|a| a.display_address())
-                        .unwrap_or_else(|| "unknown".into());
+                        .unwrap_or_else(|| "unknown".into()); // unwrap_or_else: label for a node whose name is unread
                     eprintln!("[grid] Transport '{}' started: {}", transport.name(), addr);
                 }
                 Err(e) => {
@@ -490,7 +490,7 @@ impl ServiceModule for GridModule {
                                     registry.remove(&node.node_id);
                                     eprintln!(
                                         "[grid] Removed unreachable node {} ({})",
-                                        node.node_name.as_deref().unwrap_or("?"),
+                                        node.node_name.as_deref().unwrap_or("?"), // unwrap_or: label for a peer that named no node
                                         node.node_id
                                     );
                                     if let Some(bus) = &bus {

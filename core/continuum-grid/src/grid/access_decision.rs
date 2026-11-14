@@ -165,14 +165,11 @@ pub fn policy() -> AccessPolicy {
 
 /// Persist `next` and make it current.
 pub fn store(next: AccessPolicy) -> Result<(), String> {
-    let path = policy_path().ok_or("no continuum home: the access policy has no place")?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
     let body = serde_json::to_vec_pretty(&next).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Through the saved-state class that owns `state/` (staged and renamed by the class).
+    continuum_kernel::system_resources::disk_reporters::ClassWriter::of("state")
+        .and_then(|state| state.replace(std::path::Path::new("access-policy.json"), &body))
+        .map_err(|e| format!("the access policy could not be saved under state/: {e}"))?;
     *POLICY.write().unwrap_or_else(|p| p.into_inner()) = Some(next); // unwrap_or_else: a poisoned lock still holds the last value; recover it
     Ok(())
 }
