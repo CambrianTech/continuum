@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::checkout_root_for;
+use super::workspace_root_for;
 use crate::code::git_bridge;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
@@ -46,7 +46,7 @@ crate::action_command! {
     params: GitDiffParams,
     output: GitDiffResult,
     run(this, ctx, p) => {
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let diff = git_bridge::git_diff(&root, p.scope).await.map_err(CommandError::Internal)?;
         Ok(GitDiffResult { diff: diff.text, against: diff.against })
     }

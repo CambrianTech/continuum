@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{conflicted, head, checkout_root_for};
+use super::{conflicted, head, workspace_root_for};
 use crate::code::git_actor::GitActor;
 use crate::code::git_bridge;
 use crate::modules::code::CodeState;
@@ -68,7 +68,7 @@ crate::action_command! {
     output: GitRebaseResult,
     run(this, ctx, p) => {
         let actor = crate::modules::code_commands::engine_err::acting_git_actor(&this.state, ctx)?;
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         rebase(&root, &actor, &p).await
     }
 }

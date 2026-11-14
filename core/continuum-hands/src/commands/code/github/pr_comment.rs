@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{run_gh, checkout_root_for};
+use super::{run_gh, workspace_root_for};
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
 
@@ -41,9 +41,9 @@ crate::action_command! {
         if p.body.trim().is_empty() {
             return Err(CommandError::Invalid("code/github/pr-comment: 'body' is required".into()));
         }
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let number = p.number.to_string();
-        let state = run_gh(root.path().to_path_buf(), vec!["pr".into(), "view".into(), number.clone(), "--json".into(), "state".into(), "--jq".into(), ".state".into()]).await?;
+        let state = run_gh(root.clone(), vec!["pr".into(), "view".into(), number.clone(), "--json".into(), "state".into(), "--jq".into(), ".state".into()]).await?;
         if let Some(refusal) = refusal_for_state(p.number, &state) {
             return Err(CommandError::Invalid(refusal));
         }
@@ -51,7 +51,7 @@ crate::action_command! {
             "pr".to_string(), "comment".to_string(), number,
             "--body".to_string(), super::attributed(p.body, ctx),
         ];
-        let url = run_gh(root.into_path(), args).await?;
+        let url = run_gh(root, args).await?;
         Ok(GithubPrCommentResult { url })
     }
 }

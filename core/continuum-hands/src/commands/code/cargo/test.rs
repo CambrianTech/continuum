@@ -15,7 +15,7 @@ use super::{
     parse_diagnostics, parse_test_summary, run_cargo, CargoDiagnostic, DEFAULT_TIMEOUT_SECS,
     MAX_TIMEOUT_SECS,
 };
-use crate::commands::code::git::checkout_root_for;
+use crate::commands::code::git::workspace_root_for;
 use crate::modules::code::CodeState;
 
 /// How much of the combined cargo output to keep as context. Enough to carry the
@@ -118,7 +118,7 @@ crate::action_command! {
     params: CargoTestParams,
     output: CargoTestResult,
     run(this, ctx, p) => {
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let timeout = Duration::from_secs(
             p.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS),
         );

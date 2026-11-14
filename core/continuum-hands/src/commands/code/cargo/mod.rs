@@ -21,7 +21,7 @@
 //!
 //! Identity is the AUTHENTICATED caller (`ctx.caller.peer_id`); the run happens in
 //! that caller's resolved workspace root (shared with the git hands via
-//! [`checkout_root_for`](crate::commands::code::git::checkout_root_for)), the
+//! [`workspace_root_for`](crate::commands::code::git::workspace_root_for)), the
 //! `DashMap` guard dropped before the blocking-ish I/O.
 
 use std::path::Path;

@@ -21,8 +21,6 @@ pub(super) const MAX_COMPLETED_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 pub struct ExecutionState {
     pub id: String,
     pub command: String,
-    /// The directory the command runs in (its session's working directory when it started).
-    pub cwd: std::path::PathBuf,
     pub status: ShellExecutionStatus,
     pub stdout_lines: Vec<String>,
     pub stderr_lines: Vec<String>,
@@ -104,7 +102,6 @@ impl std::fmt::Debug for ExecutionState {
         f.debug_struct("ExecutionState")
             .field("id", &self.id)
             .field("command", &self.command)
-            .field("cwd", &self.cwd)
             .field("status", &self.status)
             .field("stdout_lines", &self.stdout_lines.len())
             .field("stderr_lines", &self.stderr_lines.len())

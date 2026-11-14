@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::checkout_root_for;
+use super::workspace_root_for;
 use crate::code::git_bridge::run_git;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
@@ -54,7 +54,7 @@ crate::action_command! {
     params: GithubPrCreateParams,
     output: GithubPrCreateResult,
     run(this, ctx, p) => {
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         branch_preflight(
             &root,
             p.base.as_deref().map(str::trim).filter(|s| !s.is_empty()),

@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::checkout_root_for;
+use super::workspace_root_for;
 use crate::code::git_bridge;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
@@ -46,7 +46,7 @@ crate::action_command! {
     params: GitFetchParams,
     output: GitFetchResult,
     run(this, ctx, p) => {
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let remote = p.remote.filter(|r| !r.trim().is_empty()).unwrap_or_else(|| "origin".to_string()); // unwrap_or_else: no remote named is git's own default remote
         let mut args = vec!["fetch", remote.as_str()];
         if let Some(refspec) = p.refspec.as_deref().filter(|r| !r.trim().is_empty()) {

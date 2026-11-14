@@ -205,10 +205,10 @@
         assert!(status.untracked.iter().any(|f| f.starts_with("core")), "git sees the card's checkout: {status:?}");
 
         // Her home hands are another checkout, and a miss there says which.
-        let missed = CodeRead { state: state.clone() }
-            .run(&at_home, CodeReadParams { file_path: relative.into(), start_line: None, end_line: None })
+        let missed = CodeList { state: state.clone() }
+            .run(&at_home, CodeListParams { path: Some("core/deploy_spawn".into()), include_hidden: None })
             .await
-            .expect_err("the card's file is not in her home workspace");
+            .expect_err("the card's directory is not in her home workspace");
         let home_root = checkout_root_for(&state, &at_home).await.expect("test: home checkout");
         assert!(missed.to_string().contains(&home_root.to_string()), "the miss names the root it looked in: {missed}");
     }

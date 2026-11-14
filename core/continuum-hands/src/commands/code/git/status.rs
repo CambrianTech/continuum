@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::checkout_root_for;
+use super::workspace_root_for;
 use crate::code::git_bridge;
 use crate::code::types::GitStatusInfo;
 use crate::modules::code::CodeState;
@@ -32,7 +32,7 @@ crate::action_command! {
     params: GitStatusParams,
     output: GitStatusInfo,
     run(this, ctx, _p) => {
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         Ok(git_bridge::git_status(&root).await)
     }
 }

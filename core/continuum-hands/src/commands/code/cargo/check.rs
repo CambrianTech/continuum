@@ -12,7 +12,7 @@ use ts_rs::TS;
 use super::{
     parse_diagnostics, run_cargo, CargoDiagnostic, DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS,
 };
-use crate::commands::code::git::checkout_root_for;
+use crate::commands::code::git::workspace_root_for;
 use crate::modules::code::CodeState;
 
 /// Inputs to `code/cargo/check`. All optional — the bare call checks the whole
@@ -78,7 +78,7 @@ crate::action_command! {
     params: CargoCheckParams,
     output: CargoCheckResult,
     run(this, ctx, p) => {
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let timeout = Duration::from_secs(
             p.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS),
         );

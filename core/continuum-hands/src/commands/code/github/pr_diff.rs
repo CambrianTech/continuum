@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::pr_head::PrAddress;
-use super::{run_gh_owned, checkout_root_for, GhRunError};
+use super::{run_gh_owned, workspace_root_for, GhRunError};
 use crate::modules::code::CodeState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -114,7 +114,7 @@ crate::action_command! {
     params: GithubPrDiffParams,
     output: GithubPrDiffResult,
     run(this, ctx, p) => {
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let pr = PrAddress { repo: p.repo.as_deref(), number: p.number };
         Ok(diff_of(&root, &pr, p.path.as_deref()).await?)
     }

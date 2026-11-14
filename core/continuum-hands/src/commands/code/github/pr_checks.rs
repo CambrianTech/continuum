@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::pr_head::{read_at_head, GithubAnnotationsRead, GithubCheck, GithubCheckAnnotation, GithubCheckFailure, GithubCheckState, GithubFailedLogRead, PrAddress, RolledCheck};
-use super::{run_gh_owned, checkout_root_for, GhRunError};
+use super::{run_gh_owned, workspace_root_for, GhRunError};
 use crate::modules::code::CodeState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -122,7 +122,7 @@ crate::action_command! {
     params: GithubPrChecksParams,
     output: GithubPrChecksResult,
     run(this, ctx, p) => {
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         Ok(checks_of(&root, &p.address()).await?)
     }
 }

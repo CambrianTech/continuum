@@ -44,7 +44,7 @@ pub(super) fn burst_fingerprint(
             .metadata
             .get("peer_id")
             .and_then(|v| v.as_str())
-            .unwrap_or("peer");
+            .unwrap_or("peer"); // unwrap_or: an item with no peer id is never hers, so it counts as a peer's
         if who == own_peer {
             continue; // don't subscribe to my own chat output
         }

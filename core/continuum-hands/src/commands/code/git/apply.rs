@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::checkout_root_for;
+use super::workspace_root_for;
 use crate::code::git_bridge;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
@@ -70,7 +70,7 @@ crate::action_command! {
                 .into(),
             ));
         }
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let message = git_bridge::git_apply(&root, &p.patch, p.check)
             .await
             .map_err(|e| CommandError::Invalid(format!(

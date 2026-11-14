@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::checkout_root_for;
+use super::workspace_root_for;
 use crate::code::git_bridge;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
@@ -43,7 +43,7 @@ crate::action_command! {
     params: GitAddParams,
     output: GitAddResult,
     run(this, ctx, p) => {
-        let root = checkout_root_for(&this.state, ctx).await?;
+        let root = workspace_root_for(&this.state, ctx).await?;
         let refs: Vec<&str> = p.paths.iter().map(String::as_str).collect();
         let output = git_bridge::git_add(&root, &refs).await.map_err(CommandError::Internal)?;
         Ok(GitAddResult { output })

@@ -356,7 +356,7 @@ impl ActionCommand for CodeWrite {
             class = "code.write.landed",
             path = %p.file_path,
             existed = before.is_some(),
-            before_bytes = before.unwrap_or(0),
+            before_bytes = before.unwrap_or(0), // unwrap_or: no file before the write is 0 bytes, and `existed` says which
             after_bytes = p.content.len() as u64,
             shrank = before.is_some_and(|b| (p.content.len() as u64) < b / 2),
             ok = out.is_ok(),

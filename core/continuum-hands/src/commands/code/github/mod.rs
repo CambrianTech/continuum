@@ -66,7 +66,7 @@ use pr_view::CodeGithubPrView;
 
 /// Reuse the git family's workspace-root resolution — a `gh` command operates on the
 /// SAME per-caller repo checkout `code/git/*` does.
-pub(crate) use super::git::checkout_root_for;
+pub(crate) use super::git::workspace_root_for;
 
 /// How a bounded `gh` invocation failed. Typed so a caller can tell a timeout from a refusal
 /// `gh` itself reported. A timeout names the processes it couldn't confirm gone: a caller
