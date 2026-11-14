@@ -257,11 +257,14 @@ impl std::fmt::Display for PassUnverified {
 /// The head a pass verified, when the commit she named is `submission`'s head (its full id or an
 /// abbreviation of at least [`SHORT_COMMIT`] digits).
 pub fn verified_head<'s>(submission: &'s WorkSubmission, named: Option<&str>) -> Result<&'s GitObjectId, PassUnverified> {
+    // A submission with no recorded head can never pass, so that is said first: asking her to name a
+    // head that does not exist sent the probe of 2026-11-14 (card 9f883920, submission 567303b1)
+    // looking for one.
+    let submitted = submission.head.commit().ok_or(PassUnverified::HeadUnrecorded)?;
     let named = named.map(str::trim).filter(|n| !n.is_empty()).ok_or(PassUnverified::NoHeadNamed)?;
     if named.len() < SHORT_COMMIT || !named.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(PassUnverified::NotACommit(named.to_string()));
     }
-    let submitted = submission.head.commit().ok_or(PassUnverified::HeadUnrecorded)?;
     match submitted.as_str().starts_with(&named.to_ascii_lowercase()) {
         true => Ok(submitted),
         false => Err(PassUnverified::OtherCommit { named: named.to_string(), submitted: submitted.clone() }),
@@ -408,6 +411,7 @@ mod tests {
         assert!(matches!(verified_head(&sub, Some("905cadb")), Err(PassUnverified::OtherCommit { .. })));
         let headless = WorkSubmission { head: airc_work::SubmissionHead::Unrecorded, ..sub };
         assert_eq!(verified_head(&headless, Some(HEAD)), Err(PassUnverified::HeadUnrecorded));
+        assert_eq!(verified_head(&headless, None), Err(PassUnverified::HeadUnrecorded), "never asked for a head that does not exist");
     }
 
     // what this catches: a reviewer refused one missing part per call with no head named (mind
