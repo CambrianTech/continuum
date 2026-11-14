@@ -32,11 +32,9 @@ async fn card_rows<T: Transport>(conn: &Connection<T>, persona_name: &str, card_
 
 /// A failed review is settled only once its rejection marks are durably written.
 /// Bookkeeping retains substrate authority; persona identities cannot update these rows.
-pub(super) async fn reject_on_failed_review(persona_name: &str, card_id: Uuid) -> Result<(), ClientError> {
-    let executor = EXECUTOR.cloned().ok_or_else(|| ClientError::Transport("credit executor is not ready".into()))?;
-    let substrate = substrate_connection(&executor);
-    let rows = card_rows(&substrate, persona_name, card_id).await?;
-    mark_rejected(&substrate, persona_name, card_id, &rows.iter().map(|r| (r.id, r.rejected_at_ms)).collect::<Vec<_>>()).await
+pub(super) async fn reject_on_failed_review<T: Transport>(substrate: &Connection<T>, persona_name: &str, card_id: Uuid) -> Result<(), ClientError> {
+    let rows = card_rows(substrate, persona_name, card_id).await?;
+    mark_rejected(substrate, persona_name, card_id, &rows.iter().map(|r| (r.id, r.rejected_at_ms)).collect::<Vec<_>>()).await
 }
 
 /// A revised pass is a correction only when the durable rejection state proves it.

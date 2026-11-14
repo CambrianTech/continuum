@@ -4,16 +4,13 @@ use super::*;
 /// ([`counted_outcome`](super::counted_outcome)), so a registration replay re-decides it and counts
 /// nothing more. `Accepted` is counted where the acceptance is written ([`settle_passed`]), the
 /// only place that knows this decision settled it.
-pub(super) async fn consume_review_credit<T: Transport>(
-    conn: &Connection<T>,
-    persona_name: &str,
-    persona_id: Uuid,
-    room_id: Uuid,
-    board: &airc_work::WorkBoardProjection,
-    review_id: airc_work::WorkReviewId,
-    self_review: &SelfReview,
+pub(super) async fn consume_review_credit<T: Transport, S: Transport>(
+    connections: &ReviewConnections<'_, T, S>,
+    selection: &ReviewSelection<'_>,
 ) -> Result<ReviewedCredit, CreditBindingError> {
-    let decided = decide_review_credit(conn, persona_name, persona_id, room_id, board, review_id, self_review).await;
+    let ReviewSelection { persona_name, persona_id, review_id, .. } = *selection;
+    let conn = connections.citizen;
+    let decided = decide_review_credit(connections, selection).await;
     if let Ok(credit) = &decided {
         if credit.state != ReviewedCreditState::Accepted {
             super::counted_outcome::count_outcome_once(conn, persona_name, persona_id, review_id.as_uuid(), credit.state).await;
@@ -22,15 +19,12 @@ pub(super) async fn consume_review_credit<T: Transport>(
     decided
 }
 
-async fn decide_review_credit<T: Transport>(
-    conn: &Connection<T>,
-    persona_name: &str,
-    persona_id: Uuid,
-    room_id: Uuid,
-    board: &airc_work::WorkBoardProjection,
-    review_id: airc_work::WorkReviewId,
-    self_review: &SelfReview,
+async fn decide_review_credit<T: Transport, S: Transport>(
+    connections: &ReviewConnections<'_, T, S>,
+    selection: &ReviewSelection<'_>,
 ) -> Result<ReviewedCredit, CreditBindingError> {
+    let ReviewSelection { persona_name, persona_id, room_id, board, review_id, self_review } = *selection;
+    let conn = connections.citizen;
     let review = board
         .submission_review(review_id)
         .ok_or(CreditBindingError::WrongSelection)?;
@@ -107,7 +101,7 @@ async fn decide_review_credit<T: Transport>(
         airc_work::WorkReviewOutcome::Passed => ReviewedCreditState::AwaitingAcceptance,
     };
     if result.state == ReviewedCreditState::FailedReview {
-        correction::reject_on_failed_review(persona_name, submitted.card_id.as_uuid()).await?;
+        correction::reject_on_failed_review(connections.substrate, persona_name, submitted.card_id.as_uuid()).await?;
     }
     if result.state != ReviewedCreditState::AwaitingAcceptance {
         return Ok(result);

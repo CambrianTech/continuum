@@ -526,14 +526,16 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
         }
     };
     let observer = airc.peer_id().as_uuid();
-    let conn = match reviewed::credit_connection(observer) {
-        Ok(conn) => conn,
-        Err(error) => {
-            continuum_base::probe!(class = "training.credit.reconcile_unreadable", persona = %persona_name, error = %error,
-                "no credit connection at registration: reviews already on her boards wait for the next live delivery");
+    let executor = match EXECUTOR.cloned() {
+        Some(executor) => executor,
+        None => {
+            continuum_base::probe!(class = "training.credit.reconcile_unreadable", persona = %persona_name,
+                "no credit executor at registration: reviews remain deferred");
             return;
         }
     };
+    let substrate = substrate_connection(&executor);
+    let conn = Connection::new(InProcessTransport::new(executor, Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(observer)))));
     let mut boards: std::collections::BTreeMap<Uuid, (airc_work::WorkBoardProjection, reviewed::SelfReview)> =
         std::collections::BTreeMap::new();
     let (mut cards, mut reviews) = (0u64, 0u64);
@@ -564,7 +566,7 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
             board.submission_reviews_for_card(card.card_id).map(|r| r.review_id).collect();
         for review_id in ids {
             reviews += 1;
-            let result = reviewed::consume_observed_review(&conn, persona_name, observer, room_id, board, review_id, admission).await;
+            let result = reviewed::consume_observed_review(&reviewed::ReviewConnections { citizen: &conn, substrate: &substrate }, &reviewed::ReviewSelection { persona_name: persona_name, persona_id: observer, room_id: room_id, board: board, review_id: review_id, self_review: admission }).await;
             let Some(why) = tally.note(&result) else { continue };
             continuum_base::probe!(
                 class = "training.credit.review_deferred",
