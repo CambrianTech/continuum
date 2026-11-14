@@ -534,9 +534,9 @@ mod tests {
         let keeps = MockPool::new("kv-pages", 0.86, 0);
         let gives = MockPool::new("cargo", 0.85, 100);
         let untouched = MockPool::new("models", 0.84, 100);
-        broker.register(keeps.clone());
-        broker.register(gives.clone());
-        broker.register(untouched.clone());
+        for pool in [&keeps, &gives, &untouched] {
+            broker.register(Arc::clone(pool));
+        }
         let report = broker.relieve();
         assert_eq!(keeps.evict_count(), 1, "the hottest pool is asked first");
         assert_eq!(gives.evict_count(), 1, "it freed nothing, so the next is asked");
