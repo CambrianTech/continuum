@@ -6,7 +6,7 @@ use crate::sdk_codegen::CommandError;
 
 /// Why a payload cannot enter, or query, the resident matrix.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
-pub(crate) enum VectorIndexError {
+pub enum VectorIndexError {
     /// The producer did not certify L2 normalization; search never normalizes for it.
     #[error("vector from {producer} is not certified unit-length; its producer must normalize at write")]
     NotUnit { producer: Producer },

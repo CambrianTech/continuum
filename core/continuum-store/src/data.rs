@@ -36,7 +36,9 @@ mod mutations;
 
 mod vector_corpus;
 
-mod vector_index;
+/// The embedding contract other crates build on: producers, descriptors, the compatibility
+/// rule, and the typed refusals. Everything else in it stays this crate's.
+pub mod vector_index;
 
 mod vector_search;
 pub(crate) use vector_search::wire_query;

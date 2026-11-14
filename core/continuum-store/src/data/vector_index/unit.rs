@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 
 /// Why a producer's vector cannot be certified unit-length.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum UnitVectorError {
+pub enum UnitVectorError {
     /// No components: there is no direction to normalize.
     #[error("an empty vector has no direction to normalize")]
     Empty,
@@ -28,7 +28,7 @@ pub(crate) enum UnitVectorError {
 /// the payload's bytes: one read pass for the length, one write pass for the bytes, no
 /// f64, no intermediate buffer. `values` is read twice, so it must be cheap to clone
 /// (a slice iterator, or the wire's f64 -> f32 map over a slice).
-pub(crate) fn unit_f32<I>(values: I, producer: &Producer) -> Result<BinaryValue, UnitVectorError>
+pub fn unit_f32<I>(values: I, producer: &Producer) -> Result<BinaryValue, UnitVectorError>
 where
     I: ExactSizeIterator<Item = f32> + Clone,
 {

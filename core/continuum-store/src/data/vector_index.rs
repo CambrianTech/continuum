@@ -33,9 +33,11 @@ use std::num::NonZeroUsize;
 
 pub(crate) use corpus::{RecordHit, VectorCorpus};
 pub(crate) use cpu::{CpuMatrix, MatrixBuilder};
-pub(crate) use descriptor::{compatible, unit_f32_descriptor, EmbeddingDescriptor};
-pub(crate) use error::{VectorIndexError, VectorStoreError};
-pub(crate) use unit::{unit_f32, UnitVectorError};
+pub(crate) use descriptor::unit_f32_descriptor;
+pub use descriptor::{compatible, EmbeddingDescriptor, EmbeddingSpace};
+pub(crate) use error::VectorStoreError;
+pub use error::VectorIndexError;
+pub use unit::{unit_f32, UnitVectorError};
 
 /// A stored record's identity, as the native page reports it.
 pub(crate) type RecordId = uuid::Uuid;
@@ -46,18 +48,22 @@ pub(crate) const NATIVE_ORDER: ByteOrder =
 
 /// The identity an embedder reports for the vectors it produces.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EmbedderId(String);
+pub struct EmbedderId(String);
 
 impl EmbedderId {
-    pub(crate) fn new(id: &str) -> Self {
+    pub fn new(id: &str) -> Self {
         Self(id.to_owned())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
 /// Who certified a vector's normalization. Rendered into the descriptor's producer field in
 /// one place, so no label is typed at a call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Producer {
+pub enum Producer {
     /// The served embedder, writing rows through `vector/backfill`.
     Embedder(EmbedderId),
     /// A query vector arriving on the `vector/search` wire.
@@ -82,9 +88,24 @@ impl Producer {
 
 /// A query vector as the `vector/search` wire carries it, with the producer that embedded it.
 /// The query's descriptor is built from both when it is normalized.
-pub(crate) struct QueryVector<'a> {
+pub struct QueryVector<'a> {
     pub(crate) values: &'a [f64],
     pub(crate) producer: Producer,
+}
+
+impl<'a> QueryVector<'a> {
+    /// A query of `values` that `producer` embedded; normalized when it is searched.
+    pub fn new(values: &'a [f64], producer: Producer) -> Self {
+        Self { values, producer }
+    }
+
+    pub fn values(&self) -> &[f64] {
+        self.values
+    }
+
+    pub fn producer(&self) -> &Producer {
+        &self.producer
+    }
 }
 
 impl std::fmt::Display for Producer {
