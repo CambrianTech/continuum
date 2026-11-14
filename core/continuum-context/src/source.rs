@@ -42,6 +42,11 @@ pub struct Item<T> {
     /// What this occurrence asked for and what its tool declares it does, when it is an act
     /// (CONTINUUM-ENGINE section 5 invariant 4); `None` for an element that is not one (a message, a notice).
     pub(crate) act: Option<Act>,
+    /// Her work in hand holds it open (the read of a file she is editing, the note she wrote on
+    /// what her last change did): a start keeps it whole while its source's grant can hold it
+    /// beside the rest at their floor, charged to that grant like any item, and never folds past it
+    /// (`view::allot`). Mid-epoch it arrives as any item does.
+    pub(crate) in_hand: bool,
 }
 
 /// Where a non-resident whole lives and what it costs, measured when it was stored.
@@ -64,7 +69,7 @@ impl<T: Block> Item<T> {
     /// cannot build an element without saying what it follows from.
     pub fn whole(id: ElementId, cause: Cause, key: impl Into<String>, full: T) -> Self {
         let content = Content::Hashed(ContentHash::of(full.text()));
-        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None }
+        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None, in_hand: false }
     }
 
     /// An occurrence whose `full` is a rendering of a whole held elsewhere (a result shown under
@@ -72,7 +77,7 @@ impl<T: Block> Item<T> {
     /// is held, so two equal outcomes compare equal whatever their labels say. `Absent` when the
     /// whole is not held.
     pub fn rendered(id: ElementId, cause: Cause, key: impl Into<String>, full: T, content: Content) -> Self {
-        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None }
+        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None, in_hand: false }
     }
 
     /// Its pointer level: what it costs once collapsed, and how to reopen it. `None` when it
@@ -98,6 +103,16 @@ impl<T: Block> Item<T> {
     pub fn with_act(mut self, act: Act) -> Self {
         self.act = Some(act);
         self
+    }
+
+    /// Her work in hand holds it open (`Item::in_hand`).
+    pub fn in_hand(mut self) -> Self {
+        self.in_hand = true;
+        self
+    }
+
+    pub fn is_in_hand(&self) -> bool {
+        self.in_hand
     }
 
     pub fn key(&self) -> &str {

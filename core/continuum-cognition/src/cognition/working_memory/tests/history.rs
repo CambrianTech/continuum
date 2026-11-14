@@ -143,3 +143,20 @@ fn an_unbound_memory_keeps_its_log() {
     assert_eq!(wm.release_through(15), 0);
     assert_eq!(wm.resident_acts(), 20);
 }
+
+// what this catches: her view folding around the read of a file she is editing (her work in hand,
+// `working_memory::in_hand`) while the memory owner archives every act up to the fold edge: the read
+// her view keeps whole would leave RAM and her next start would not find it. The release stops
+// before that read, and resumes past it once no edit holds it.
+#[test]
+fn a_fold_past_the_file_she_is_editing_leaves_its_read_resident() {
+    let persona = Uuid::new_v4();
+    let wm = archived_mind(persona);
+    act(&wm, 5);
+    let read = wm.actions_taken() + 1;
+    super::open_views::record_read_and_edit(&wm);
+    act(&wm, 5);
+    assert_eq!(wm.in_hand().reads, std::collections::HashSet::from([read]), "precondition: her edit holds the read");
+    wm.release_through(wm.actions_taken() - 1);
+    assert_eq!(wm.resident_acts() as u64, wm.actions_taken() - (read - 1), "every act from the read on stays resident");
+}

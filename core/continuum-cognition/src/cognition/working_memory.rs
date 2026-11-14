@@ -603,6 +603,7 @@ mod derived;
 mod action_log;
 mod archive;
 mod history;
+mod in_hand;
 pub mod act_times;
 mod collapsed_receipt;
 pub(crate) use collapsed_receipt::CollapsedReceipt;

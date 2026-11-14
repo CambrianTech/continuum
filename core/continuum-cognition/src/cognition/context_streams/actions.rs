@@ -131,9 +131,13 @@ impl Source<ContextMessage> for Actions<'_> {
         // Her acts in one room are one chain: each follows the act before it there; the first is
         // where that activity's chain starts.
         let mut last_in_room: std::collections::HashMap<Option<uuid::Uuid>, u64> = std::collections::HashMap::new();
+        // The reads of the files she is editing: whole through a turnover while the edit is open.
+        let in_hand = self.memory.in_hand();
         for act in acts {
             let cause = last_in_room.insert(act.room, act.seq).map_or(Cause::Root(Origin::ActivityStart), |prev| Cause::Of(self.act(prev)));
-            items.push(self.item(act, cause));
+            let held = in_hand.reads.contains(&act.seq);
+            let item = self.item(act, cause);
+            items.push(if held { item.in_hand() } else { item });
         }
         items
     }

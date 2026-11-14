@@ -3,7 +3,7 @@
 //! start. Her actions are not here: they are the action stream, rendered once
 //! ([`super::actions`]).
 
-use continuum_context::cause::{Cause, Content, Origin};
+use continuum_context::cause::{Cause, Content, ElementId, Origin};
 use continuum_context::source::{Item, Source, StoredWhole};
 
 use super::{element, priority, ContextMessage, Producer};
@@ -20,6 +20,48 @@ pub(crate) struct Thoughts<'a> {
     pub memory: &'a WorkingMemory,
     /// Whose occurrences these are (`super::element`).
     pub persona: uuid::Uuid,
+}
+
+impl Thoughts<'_> {
+    /// One entry of her chain as her view's item, following `previous` (the entry before it), which
+    /// it then becomes.
+    fn item(persona: uuid::Uuid, occurrence: u64, entry: Entry, previous: &mut Option<ElementId>) -> Item<ContextMessage> {
+        // Keyed by its occurrence, never by what it says: a settlement that repeats an
+        // earlier one ("passed" after "failed" after "passed") is its own item, so her latest
+        // state reads right (it collapsed into the first and read as "failed"). A thought,
+        // once recorded, does not change, and neither may its rendering: whole, its summary
+        // (built once when recorded), or its pointer, and how much of her thoughts she reads is
+        // the one allocation's call at an epoch start, never a per-act cut here (Benchy on the
+        // M5, 2026-10-24: a share-of-window cut re-appended every thought on every act).
+        let id = element(persona, Producer::Thought, &occurrence.to_be_bytes());
+        let cause = previous.replace(id).map_or(Cause::Root(Origin::ActivityStart), Cause::Of);
+        let key = format!("thought#{occurrence}");
+        match entry {
+            Entry::Settled(text) => {
+                let summary = continuum_context::levels::summarize(&text, continuum_context::levels::Shape::Output).map(|summary| ContextMessage::user(format!("- {summary}")));
+                Item::whole(id, cause, key, ContextMessage::user(format!("- {text}"))).with_summary(summary)
+            }
+            Entry::Thought(record) => {
+                let summary = record.summary.as_ref().map(|summary| ContextMessage::user(format!("- {summary}")));
+                let pointer = record.handle.as_ref().map(|handle| ContextMessage::user(format!("- (thought #{occurrence}, saved: {})", Reopen::Output(handle))));
+                match (record.text, record.handle, record.stored_chars) {
+                    // Resident: her whole thought.
+                    (Some(text), _, _) => Item::whole(id, cause, key, ContextMessage::user(format!("- {text}"))).with_summary(summary).with_pointer(pointer),
+                    // Shed to its handle: what is resident is its summary (or pointer); the whole
+                    // is priced from its measured length and loaded when the allocation grants it.
+                    (None, Some(handle), Some(chars)) => {
+                        let resident = summary.clone().or_else(|| pointer.clone()).unwrap_or_else(|| ContextMessage::user(String::new())); // unwrap_or_else: a shed thought always has its pointer
+                        Item::whole(id, cause, key, resident)
+                            .with_summary(summary)
+                            .with_pointer(pointer)
+                            .with_stored(Some(StoredWhole { chars: chars + "- ".len(), handle, content: Content::Absent }))
+                    }
+                    // A shed record names its handle and length; anything else renders what it holds.
+                    (None, _, _) => Item::whole(id, cause, key, summary.unwrap_or_else(|| ContextMessage::user(format!("- (thought #{occurrence})")))), // unwrap_or_else: a thought with nothing resident names itself
+                }
+            }
+        }
+    }
 }
 
 impl Source<ContextMessage> for Thoughts<'_> {
@@ -52,44 +94,13 @@ impl Source<ContextMessage> for Thoughts<'_> {
             "My own recent thoughts (working memory, my interior state, not a message from anyone):".to_owned(),
         );
         let mut items = vec![super::standing(self.persona, "thoughts", "banner", banner)];
+        // Her notes on what her edits did: whole through a turnover while the edit is open.
+        let in_hand = self.memory.in_hand();
         // Her thoughts are one interior chain: each follows the one before it.
         let mut previous = None;
         items.extend(entries.into_iter().map(|(occurrence, entry)| {
-            // Keyed by its occurrence, never by what it says: a settlement that repeats an
-            // earlier one ("passed" after "failed" after "passed") is its own item, so her latest
-            // state reads right (it collapsed into the first and read as "failed"). A thought,
-            // once recorded, does not change, and neither may its rendering: whole, its summary
-            // (built once when recorded), or its pointer, and how much of her thoughts she reads is
-            // the one allocation's call at an epoch start, never a per-act cut here (Benchy on the
-            // M5, 2026-10-24: a share-of-window cut re-appended every thought on every act).
-            let id = element(self.persona, Producer::Thought, &occurrence.to_be_bytes());
-            let cause = previous.replace(id).map_or(Cause::Root(Origin::ActivityStart), Cause::Of);
-            let key = format!("thought#{occurrence}");
-            match entry {
-                Entry::Settled(text) => {
-                    let summary = continuum_context::levels::summarize(&text, continuum_context::levels::Shape::Output).map(|summary| ContextMessage::user(format!("- {summary}")));
-                    Item::whole(id, cause, key, ContextMessage::user(format!("- {text}"))).with_summary(summary)
-                }
-                Entry::Thought(record) => {
-                    let summary = record.summary.as_ref().map(|summary| ContextMessage::user(format!("- {summary}")));
-                    let pointer = record.handle.as_ref().map(|handle| ContextMessage::user(format!("- (thought #{occurrence}, saved: {})", Reopen::Output(handle))));
-                    match (record.text, record.handle, record.stored_chars) {
-                        // Resident: her whole thought.
-                        (Some(text), _, _) => Item::whole(id, cause, key, ContextMessage::user(format!("- {text}"))).with_summary(summary).with_pointer(pointer),
-                        // Shed to its handle: what is resident is its summary (or pointer); the whole
-                        // is priced from its measured length and loaded when the allocation grants it.
-                        (None, Some(handle), Some(chars)) => {
-                            let resident = summary.clone().or_else(|| pointer.clone()).unwrap_or_else(|| ContextMessage::user(String::new())); // unwrap_or_else: a shed thought always has its pointer
-                            Item::whole(id, cause, key, resident)
-                                .with_summary(summary)
-                                .with_pointer(pointer)
-                                .with_stored(Some(StoredWhole { chars: chars + "- ".len(), handle, content: Content::Absent }))
-                        }
-                        // A shed record names its handle and length; anything else renders what it holds.
-                        (None, _, _) => Item::whole(id, cause, key, summary.unwrap_or_else(|| ContextMessage::user(format!("- (thought #{occurrence})")))), // unwrap_or_else: a thought with nothing resident names itself
-                    }
-                }
-            }
+            let item = Self::item(self.persona, occurrence, entry, &mut previous);
+            if in_hand.notes.contains(&occurrence) { item.in_hand() } else { item }
         }));
         items
     }

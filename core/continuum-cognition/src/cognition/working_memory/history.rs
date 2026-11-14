@@ -44,10 +44,14 @@ impl WorkingMemory {
         }
     }
 
-    /// `edge`, never at or past the act in flight: it is newer than anything her view folded.
+    /// `edge`, never at or past the act in flight (it is newer than anything her view folded), nor
+    /// at or past her oldest read of a file she is editing: her view folds around that read and
+    /// keeps it whole (`working_memory::in_hand`), so it and every act after it stay resident.
     fn release_edge(&self, edge: u64) -> u64 {
         let in_flight = self.last_action.lock().as_ref().map(|(seq, _)| *seq);
-        in_flight.map_or(edge, |seq| edge.min(seq.saturating_sub(1))) // map_or: nothing in flight leaves the edge as measured
+        let scope = self.scope.lock().clone();
+        let in_hand = self.open_views.lock().editing_reads(scope.as_deref()).into_iter().min();
+        in_flight.into_iter().chain(in_hand).fold(edge, |edge, seq| edge.min(seq.saturating_sub(1)))
     }
 
     /// Move every resident act up to `edge` into her archive's outbox (written by the next
