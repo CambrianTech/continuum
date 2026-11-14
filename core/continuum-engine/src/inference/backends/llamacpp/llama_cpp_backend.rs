@@ -47,6 +47,7 @@ impl LlamaCppBackend {
             config,
             model_id,
             weights_bytes,
+            embed_residency: OnceLock::new(),
             caps,
             scheduler: OnceLock::new(),
             mtmd: Mutex::new(None),
@@ -70,12 +71,22 @@ impl LlamaCppBackend {
 
     /// What this backend's embed lane holds while it embeds: its weights, and the context its
     /// window allows, each in the pool it resides in. None for a model with no trained context.
-    pub(crate) fn embed_need(&self) -> Option<crate::inference::embed_lane_memory::EmbedNeed> {
+    fn embed_need(&self) -> Option<crate::inference::embed_lane_memory::EmbedNeed> {
         let placement = self.placement();
         Some(crate::inference::embed_lane_memory::EmbedNeed {
             weights: super::resident_weights(self.weights_bytes, placement),
             context: super::EmbedWindow::for_model(self.caps.n_ctx_train)?.context_bytes(placement),
         })
+    }
+
+    /// The embed lane's resident claim, made once from its need; none for a model with no trained
+    /// context.
+    pub(crate) fn embed_residency(&self) -> Option<&crate::inference::embed_lane_memory::EmbedResidency> {
+        if let Some(residency) = self.embed_residency.get() {
+            return Some(residency);
+        }
+        let need = self.embed_need()?;
+        Some(self.embed_residency.get_or_init(|| crate::inference::embed_lane_memory::EmbedResidency::claim(need)))
     }
 
     pub fn capabilities(&self) -> &ModelCapabilities {

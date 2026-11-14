@@ -766,7 +766,18 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // the board shows her is one exact call and no list is ever cut by a count. The 108 are the
     // enum and its doc, the reach itself: measured in CI at 5c57eb8c9 (job 132356394952) as
     // 17986 -> 18094 before #5945 landed; the two tools are independent, so the deltas add.
-    const AGENTIC_SURFACE_CEILING: u32 = 18270;
+    // 18270 -> 18705 (PR #6000, 2026-11-14, Joel: residents "are to be as capable as you are";
+    // "Persona can merge and review too"): code/github/pr-checks, code/github/pr-merge and
+    // code/git/merge joined her hands (`OnDemand`, native so the merge gate's refusals can name
+    // them as her next call). Descriptions cut to a line and param docs to a few words (they
+    // measured +670 first, CI job 132356505895); the 435 left are the three verbs' params, the
+    // reach itself (17986 -> 18421 in CI at d4fe3f7d3, job 132361302389; 18162 -> 18597 green in
+    // CI at 7dc2f34d2), independent of #5945 and #5843, so the deltas add.
+    // 18705 -> 18752 (#6001, cards 0174211f, 5a94e88e): work/review gains `verified_head`, the
+    // commit a pass verified (it must be the submission's head): Aiko passed a copy of 905cadb
+    // while the PR head failed CI. +47 measured in CI (18270 -> 18317 on e490eeca8 + canary),
+    // independent of #6000, so the deltas add.
+    const AGENTIC_SURFACE_CEILING: u32 = 18752;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(
