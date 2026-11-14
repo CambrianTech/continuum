@@ -758,7 +758,13 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // an id, so the schema carries the value she means; its pattern was dropped and its docs cut.
     // Both verbs now declare `OnDemand`, so neither schema rides her prompt unless a held card puts
     // it in hand: this registry total grows, her act's surface shrinks. Measured locally at 17986.
-    const AGENTIC_SURFACE_CEILING: u32 = 17986;
+    // 17986 -> 18421 (PR #6000, 2026-11-14, Joel: residents "are to be as capable as you are";
+    // "Persona can merge and review too"): code/github/pr-checks, code/github/pr-merge and
+    // code/git/merge joined her hands (`OnDemand`, native so the merge gate's refusals can name
+    // them as her next call). Descriptions cut to a line and param docs to a few words (it
+    // measured 18656 first, CI job 132356505895); the 435 left are the three verbs' params, the
+    // reach itself. Measured in CI at d4fe3f7d3 (job 132361302389).
+    const AGENTIC_SURFACE_CEILING: u32 = 18421;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(
