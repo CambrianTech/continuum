@@ -18,7 +18,11 @@ pub(super) struct RelationalStore {
     schemas: Arc<parking_lot::RwLock<HashMap<String, Arc<CollectionSchema>>>>,
     schema_gate: Arc<tokio::sync::Mutex<()>>,
     pub writer_gate: Arc<tokio::sync::Mutex<()>>,
-    revisions: Arc<parking_lot::Mutex<HashMap<String, tokio::sync::watch::Sender<u64>>>>,
+    revisions: Arc<
+        parking_lot::Mutex<
+            HashMap<(super::relational_sequence::Domain, String), tokio::sync::watch::Sender<u64>>,
+        >,
+    >,
 }
 
 impl RelationalStore {
@@ -32,7 +36,10 @@ impl RelationalStore {
         let in_memory = config.connection_string == ":memory:";
         if !in_memory {
             let path = std::path::Path::new(&config.connection_string);
-            if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
                 continuum_host::confine::open_root(parent)
                     .map_err(|error| format!("database directory {}: {error}", parent.display()))?;
             }
@@ -73,16 +80,47 @@ impl RelationalStore {
             .map_err(|e| e.to_string())?;
         let native_revisions = sea_orm::Schema::new(DbBackend::Sqlite)
             .create_table_from_entity(super::relational_native_revision::Entity)
-            .if_not_exists().to_owned();
-        db.execute(DbBackend::Sqlite.build(&native_revisions)).await.map_err(|e| e.to_string())?;
+            .if_not_exists()
+            .to_owned();
+        db.execute(DbBackend::Sqlite.build(&native_revisions))
+            .await
+            .map_err(|e| e.to_string())?;
         db.execute(DbBackend::Sqlite.build(&super::relational_native_revision::revision_index()))
-            .await.map_err(|e| e.to_string())?;
+            .await
+            .map_err(|e| e.to_string())?;
         let declarations = sea_orm::Schema::new(DbBackend::Sqlite)
             .create_table_from_entity(super::relational_declaration::Entity)
-            .if_not_exists().to_owned();
-        db.execute(DbBackend::Sqlite.build(&declarations)).await.map_err(|e| e.to_string())?;
+            .if_not_exists()
+            .to_owned();
+        db.execute(DbBackend::Sqlite.build(&declarations))
+            .await
+            .map_err(|e| e.to_string())?;
         let catalog_read = db.begin().await.map_err(|e| e.to_string())?;
         let schemas = super::relational_declaration::restore(&catalog_read).await?;
+        use sea_orm::EntityTrait;
+        let mut revisions = HashMap::new();
+        for head in super::relational_sequence::Entity::find()
+            .all(&catalog_read)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            let domain = match head.domain.as_str() {
+                "append" => super::relational_sequence::Domain::Append,
+                "native" => super::relational_sequence::Domain::Native,
+                _ => return Err("unknown persisted revision domain".into()),
+            };
+            if head.high <= 0 {
+                return Err("nonpositive persisted revision".into());
+            }
+            let high = u64::try_from(head.high).map_err(|_| "negative persisted revision")?;
+            revisions.insert(
+                (
+                    domain,
+                    super::adapter::naming::to_table_name(&head.collection),
+                ),
+                tokio::sync::watch::channel(high).0,
+            );
+        }
         catalog_read.commit().await.map_err(|e| e.to_string())?;
         Ok(Self {
             db,
@@ -90,7 +128,7 @@ impl RelationalStore {
             schemas: Arc::new(parking_lot::RwLock::new(schemas)),
             schema_gate: Arc::new(tokio::sync::Mutex::new(())),
             writer_gate: Arc::new(tokio::sync::Mutex::new(())),
-            revisions: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            revisions: Arc::new(parking_lot::Mutex::new(revisions)),
         })
     }
 
@@ -109,11 +147,15 @@ impl RelationalStore {
         let _write = self.writer_gate.lock().await;
         let transaction = self.db.begin().await.map_err(|e| e.to_string())?;
         if super::relational_declaration::admit(&transaction, &schema).await? {
-            transaction.execute(DbBackend::Sqlite.build(&declared.create))
-                .await.map_err(|e| e.to_string())?;
+            transaction
+                .execute(DbBackend::Sqlite.build(&declared.create))
+                .await
+                .map_err(|e| e.to_string())?;
             for index in declared.indexes {
-                transaction.execute(DbBackend::Sqlite.build(&index))
-                    .await.map_err(|e| e.to_string())?;
+                transaction
+                    .execute(DbBackend::Sqlite.build(&index))
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
             super::relational_declaration::record(&transaction, &schema).await?;
         }
@@ -138,18 +180,27 @@ impl RelationalStore {
         collections
     }
 
-    pub fn revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64> {
+    pub fn revision(
+        &self,
+        domain: super::relational_sequence::Domain,
+        collection: &str,
+    ) -> tokio::sync::watch::Receiver<u64> {
         self.revisions
             .lock()
-            .entry(collection.into())
+            .entry((domain, super::adapter::naming::to_table_name(collection)))
             .or_insert_with(|| tokio::sync::watch::channel(0).0)
             .subscribe()
     }
 
-    pub fn committed(&self, collection: &str, sequence: u64) {
+    pub fn committed(
+        &self,
+        domain: super::relational_sequence::Domain,
+        collection: &str,
+        sequence: u64,
+    ) {
         self.revisions
             .lock()
-            .entry(collection.into())
+            .entry((domain, super::adapter::naming::to_table_name(collection)))
             .or_insert_with(|| tokio::sync::watch::channel(0).0)
             .send_if_modified(|high| {
                 if sequence > *high {
@@ -163,7 +214,11 @@ impl RelationalStore {
 
     pub async fn query(&self, query: StorageQuery) -> Result<Vec<DataRecord>, String> {
         let schema = self.schema(&query.collection)?;
-        let statement = super::relational_query::select(&schema, &query, super::relational_query::Selection::Page)?;
+        let statement = super::relational_query::select(
+            &schema,
+            &query,
+            super::relational_query::Selection::Page,
+        )?;
         let started = std::time::Instant::now();
         let rows = self
             .db
@@ -175,10 +230,7 @@ impl RelationalStore {
         let decode_started = std::time::Instant::now();
         let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &[]);
         let count = rows.len();
-        let result = rows
-            .into_iter()
-            .map(|row| decoder.decode(row))
-            .collect();
+        let result = rows.into_iter().map(|row| decoder.decode(row)).collect();
         continuum_base::probe!(class = "orm.relational.query", collection = %query.collection,
             rows = count, database_ms, materialization_ms = decode_started.elapsed().as_millis() as u64,
             "projected database retrieval and schema decoding measured separately");
@@ -187,7 +239,11 @@ impl RelationalStore {
 
     pub async fn count(&self, query: StorageQuery) -> Result<usize, String> {
         let schema = self.schema(&query.collection)?;
-        let statement = super::relational_query::select(&schema, &query, super::relational_query::Selection::Count)?;
+        let statement = super::relational_query::select(
+            &schema,
+            &query,
+            super::relational_query::Selection::Count,
+        )?;
         let row = self
             .db
             .query_one(DbBackend::Sqlite.build(&statement))
@@ -235,11 +291,18 @@ impl RelationalStore {
         for field in &schema.fields {
             if let Some(payload) = payloads.remove(&field.name) {
                 if field.field_type != super::types::FieldType::Binary {
-                    return Err(format!("{}.{} is not a declared binary field", record.collection, field.name));
+                    return Err(format!(
+                        "{}.{} is not a declared binary field",
+                        record.collection, field.name
+                    ));
                 }
-                if fields.contains_key(&field.name) { return Err("binary field supplied through two representations".into()); }
+                if fields.contains_key(&field.name) {
+                    return Err("binary field supplied through two representations".into());
+                }
                 let (descriptor, bytes) = payload.into_parts();
-                columns.push(Alias::new(super::adapter::naming::to_snake_case(&field.name)));
+                columns.push(Alias::new(super::adapter::naming::to_snake_case(
+                    &field.name,
+                )));
                 values.push(Expr::val(bytes).into());
                 columns.push(Alias::new(super::binary::descriptor_column(&field.name)));
                 values.push(Expr::val(descriptor.encode()?).into());
@@ -265,7 +328,10 @@ impl RelationalStore {
                 }
                 name => match fields.get(name) {
                     Some(value) => value,
-                    None if field.default_value.is_some() => field.default_value.as_ref().ok_or("declared default disappeared")?,
+                    None if field.default_value.is_some() => field
+                        .default_value
+                        .as_ref()
+                        .ok_or("declared default disappeared")?,
                     None if field.nullable => &serde_json::Value::Null,
                     None => return Err(format!("{}.{} is required", record.collection, name)),
                 },
@@ -275,7 +341,9 @@ impl RelationalStore {
             )));
             values.push(Expr::val(super::relational_codec::encode(field, value)?).into());
         }
-        if !payloads.is_empty() { return Err("native write contains undeclared binary fields".into()); }
+        if !payloads.is_empty() {
+            return Err("native write contains undeclared binary fields".into());
+        }
         for name in fields.keys() {
             super::relational_query::column(&schema, name)?;
         }
@@ -310,7 +378,7 @@ mod tests {
             indexes: vec![],
         };
         schema.fields.push(SchemaField {
-                default_value: None,
+            default_value: None,
             name: "body".into(),
             field_type: FieldType::Json,
             indexed: false,

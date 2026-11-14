@@ -119,8 +119,13 @@ RESTRICT failure rolls back every receipt. The owner restores and physically ver
 its persisted schema catalog once at open, so children participate even before their
 caller re-admits a declaration. A new external declaration requires admission or a
 new owner before deletion; an incomplete catalog cannot silently miss descendants.
-These receipts are not yet exposed as a delta watermark: ordered paging, completion
-notifications and their replay semantics must land first.
+The existing committing owner publishes typed domain/collection revision notices only
+after commit. Append and native receivers share that owner but never share a revision
+domain. Native create/update, direct deletes, batch deletes, cascades and clear return
+their notices through the transaction result; rollback and conditional no-op emit none.
+Persisted heads seed receivers on owner restart. These are wakeup hints backed by
+durable heads, not a snapshot or replay proof: ordered delta paging and its completion
+semantics must land before consumers may use a high-water mark as processed work.
 The sequence-head declaration now has a composite domain/collection identity; any
 previous development database needs the offline schema migration before adoption.
 

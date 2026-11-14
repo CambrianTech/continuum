@@ -21,7 +21,11 @@ impl super::relational::RelationalStore {
             .filter_eq("id", id)
             .limit(1)
             .build();
-        let statement = super::relational_query::select(&schema, &query, super::relational_query::Selection::Page)?;
+        let statement = super::relational_query::select(
+            &schema,
+            &query,
+            super::relational_query::Selection::Page,
+        )?;
         connection
             .query_one(DbBackend::Sqlite.build(&statement))
             .await
@@ -50,23 +54,54 @@ impl super::relational::RelationalStore {
                 .iter()
                 .find(|f| f.name == *name)
                 .ok_or_else(|| format!("undeclared update field {collection}.{name}"))?;
-            fields.push((Alias::new(naming::to_snake_case(name)), super::relational_codec::encode(field, value)?));
+            fields.push((
+                Alias::new(naming::to_snake_case(name)),
+                super::relational_codec::encode(field, value)?,
+            ));
         }
-        self.update_fields_on(connection, collection, id, fields, increment).await
+        self.update_fields_on(connection, collection, id, fields, increment)
+            .await
     }
 
     /// Shared metadata/custody mutation for already schema-validated typed bindings.
-    pub(super) async fn update_fields_on<C: ConnectionTrait>(&self, connection: &C, collection: &str, id: &str,
-        fields: Vec<(Alias, sea_orm::sea_query::Value)>, increment: bool) -> Result<bool, String> {
-        self.update_fields_matching_on(connection, collection, id, fields, increment, sea_orm::Condition::all()).await
+    pub(super) async fn update_fields_on<C: ConnectionTrait>(
+        &self,
+        connection: &C,
+        collection: &str,
+        id: &str,
+        fields: Vec<(Alias, sea_orm::sea_query::Value)>,
+        increment: bool,
+    ) -> Result<bool, String> {
+        self.update_fields_matching_on(
+            connection,
+            collection,
+            id,
+            fields,
+            increment,
+            sea_orm::Condition::all(),
+        )
+        .await
     }
 
-    pub(super) async fn update_fields_matching_on<C: ConnectionTrait>(&self, connection: &C, collection: &str, id: &str,
-        fields: Vec<(Alias, sea_orm::sea_query::Value)>, increment: bool, condition: sea_orm::Condition) -> Result<bool, String> {
+    pub(super) async fn update_fields_matching_on<C: ConnectionTrait>(
+        &self,
+        connection: &C,
+        collection: &str,
+        id: &str,
+        fields: Vec<(Alias, sea_orm::sea_query::Value)>,
+        increment: bool,
+        condition: sea_orm::Condition,
+    ) -> Result<bool, String> {
         let mut statement = Query::update();
-        statement.table(Alias::new(naming::to_table_name(collection)))
+        statement
+            .table(Alias::new(naming::to_table_name(collection)))
             .cond_where(condition)
-            .and_where(Expr::col(Alias::new("id")).eq(id)).values(fields.into_iter().map(|(column, value)| (column, Expr::val(value).into())));
+            .and_where(Expr::col(Alias::new("id")).eq(id))
+            .values(
+                fields
+                    .into_iter()
+                    .map(|(column, value)| (column, Expr::val(value).into())),
+            );
         statement.value(Alias::new("updated_at"), chrono::Utc::now().to_rfc3339());
         if increment {
             statement.value(
@@ -86,23 +121,24 @@ impl super::relational::RelationalStore {
         &self,
         connection: &sea_orm::DatabaseTransaction,
         query: StorageQuery,
-    ) -> Result<usize, String> {
+    ) -> Result<super::relational_transaction::Deletion, String> {
         if query.joins.is_some() || query.limit.is_some() || query.offset.is_some() {
             return Err("delete_matching accepts a predicate, not joins or pagination".into());
         }
         let schema = self.schema(&query.collection)?;
-        self.native_deleting_on(connection, &schema, &query).await?;
+        let revisions = self.native_deleting_on(connection, &schema, &query).await?;
         let statement = Query::delete()
             .from_table(Alias::new(naming::to_table_name(&query.collection)))
             .cond_where(super::relational_query::condition(&schema, &query)?)
             .to_owned();
-        connection
+        let count = connection
             .execute(DbBackend::Sqlite.build(&statement))
             .await
             .map_err(|e| e.to_string())?
             .rows_affected()
             .try_into()
-            .map_err(|_| "affected row count exceeds usize".into())
+            .map_err(|_| "affected row count exceeds usize".to_owned())?;
+        Ok(super::relational_transaction::Deletion { count, revisions })
     }
 
     pub async fn ensure_on<C: ConnectionTrait>(

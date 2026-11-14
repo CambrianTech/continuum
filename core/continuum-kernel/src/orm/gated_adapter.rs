@@ -18,7 +18,9 @@ use tokio::sync::Notify;
 
 use super::adapter::{AdapterCapabilities, ClearAllResult, StorageAdapter};
 use super::query::StorageQuery;
-use super::types::{BatchOperation, CollectionSchema, CollectionStats, DataRecord, StorageResult, UUID};
+use super::types::{
+    BatchOperation, CollectionSchema, CollectionStats, DataRecord, StorageResult, UUID,
+};
 
 /// The handles of one paused write: it signals `entered` when it reaches the gate,
 /// waits for `release`, and signals `done` once the wrapped write has finished.
@@ -36,7 +38,10 @@ pub(crate) struct GatedAdapter {
 
 impl GatedAdapter {
     pub(crate) fn new(inner: Arc<dyn StorageAdapter>) -> Self {
-        Self { inner, next: Mutex::new(None) }
+        Self {
+            inner,
+            next: Mutex::new(None),
+        }
     }
 
     /// Hold the next write at a gate. Only that one write is held.
@@ -85,7 +90,8 @@ impl StorageAdapter for GatedAdapter {
         Err("the gated fixture does not own its adapter".to_string())
     }
     async fn create(&self, record: DataRecord) -> StorageResult<DataRecord> {
-        self.write(move |a| Box::pin(async move { a.create(record).await })).await
+        self.write(move |a| Box::pin(async move { a.create(record).await }))
+            .await
     }
     async fn read(&self, collection: &str, id: &UUID) -> StorageResult<DataRecord> {
         self.inner.read(collection, id).await
@@ -93,36 +99,54 @@ impl StorageAdapter for GatedAdapter {
     async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
         self.inner.query(query).await
     }
-    async fn scan(&self, query: StorageQuery)
-        -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, String>
-    { self.inner.scan(query).await }
+    async fn scan(
+        &self,
+        query: StorageQuery,
+    ) -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, String> {
+        self.inner.scan(query).await
+    }
     async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
         self.inner.query_with_join(query).await
     }
     async fn count(&self, query: StorageQuery) -> StorageResult<usize> {
         self.inner.count(query).await
     }
-    async fn update(&self, collection: &str, id: &UUID, data: Value, increment_version: bool) -> StorageResult<DataRecord> {
+    async fn update(
+        &self,
+        collection: &str,
+        id: &UUID,
+        data: Value,
+        increment_version: bool,
+    ) -> StorageResult<DataRecord> {
         let (collection, id) = (collection.to_string(), id.clone());
-        self.write(move |a| Box::pin(async move { a.update(&collection, &id, data, increment_version).await }))
-            .await
+        self.write(move |a| {
+            Box::pin(async move { a.update(&collection, &id, data, increment_version).await })
+        })
+        .await
     }
     async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool> {
         let (collection, id) = (collection.to_string(), id.clone());
-        self.write(move |a| Box::pin(async move { a.delete(&collection, &id).await })).await
+        self.write(move |a| Box::pin(async move { a.delete(&collection, &id).await }))
+            .await
     }
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
-        self.write(move |a| Box::pin(async move { a.batch(operations).await })).await
+        self.write(move |a| Box::pin(async move { a.batch(operations).await }))
+            .await
     }
     fn sequence_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64> {
         self.inner.sequence_revision(collection)
     }
+    fn native_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.native_revision(collection)
+    }
     async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> StorageResult<bool> {
         let field = field.to_string();
-        self.write(move |a| Box::pin(async move { a.upsert_monotonic(record, &field).await })).await
+        self.write(move |a| Box::pin(async move { a.upsert_monotonic(record, &field).await }))
+            .await
     }
     async fn delete_matching(&self, query: StorageQuery) -> StorageResult<usize> {
-        self.write(move |a| Box::pin(async move { a.delete_matching(query).await })).await
+        self.write(move |a| Box::pin(async move { a.delete_matching(query).await }))
+            .await
     }
     async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool> {
         self.inner.ensure_schema(schema).await
@@ -133,18 +157,50 @@ impl StorageAdapter for GatedAdapter {
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
         self.inner.list_collections().await
     }
-    async fn binary_page_into(&self, collection: &str, field: &str, after: Option<uuid::Uuid>, limit: usize, bytes: &mut Vec<u8>, ids: &mut Vec<uuid::Uuid>) -> StorageResult<Option<super::binary::BinaryDescriptor>> {
-        self.inner.binary_page_into(collection, field, after, limit, bytes, ids).await
+    async fn binary_page_into(
+        &self,
+        collection: &str,
+        field: &str,
+        after: Option<uuid::Uuid>,
+        limit: usize,
+        bytes: &mut Vec<u8>,
+        ids: &mut Vec<uuid::Uuid>,
+    ) -> StorageResult<Option<super::binary::BinaryDescriptor>> {
+        self.inner
+            .binary_page_into(collection, field, after, limit, bytes, ids)
+            .await
     }
-    async fn create_binary(&self, record: DataRecord, payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>) -> StorageResult<String> {
-        self.write(move |a| Box::pin(async move { a.create_binary(record, payloads).await })).await
+    async fn create_binary(
+        &self,
+        record: DataRecord,
+        payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
+    ) -> StorageResult<String> {
+        self.write(move |a| Box::pin(async move { a.create_binary(record, payloads).await }))
+            .await
     }
-    async fn update_binary(&self, collection: &str, id: &str, field: &str, value: super::binary::BinaryValue, condition: super::binary::BinaryWriteCondition) -> StorageResult<bool> {
+    async fn update_binary(
+        &self,
+        collection: &str,
+        id: &str,
+        field: &str,
+        value: super::binary::BinaryValue,
+        condition: super::binary::BinaryWriteCondition,
+    ) -> StorageResult<bool> {
         let (collection, id, field) = (collection.to_owned(), id.to_owned(), field.to_owned());
-        self.write(move |a| Box::pin(async move { a.update_binary(&collection, &id, &field, value, condition).await })).await
+        self.write(move |a| {
+            Box::pin(async move {
+                a.update_binary(&collection, &id, &field, value, condition)
+                    .await
+            })
+        })
+        .await
     }
 
-    async fn numeric_array_stats(&self, collection: &str, field: &str) -> StorageResult<super::adapter::NumericArrayStats> {
+    async fn numeric_array_stats(
+        &self,
+        collection: &str,
+        field: &str,
+    ) -> StorageResult<super::adapter::NumericArrayStats> {
         self.inner.numeric_array_stats(collection, field).await
     }
 
@@ -153,10 +209,12 @@ impl StorageAdapter for GatedAdapter {
     }
     async fn truncate(&self, collection: &str) -> StorageResult<bool> {
         let collection = collection.to_string();
-        self.write(move |a| Box::pin(async move { a.truncate(&collection).await })).await
+        self.write(move |a| Box::pin(async move { a.truncate(&collection).await }))
+            .await
     }
     async fn clear_all(&self) -> StorageResult<ClearAllResult> {
-        self.write(move |a| Box::pin(async move { a.clear_all().await })).await
+        self.write(move |a| Box::pin(async move { a.clear_all().await }))
+            .await
     }
     async fn cleanup(&self) -> Result<(), String> {
         self.inner.cleanup().await

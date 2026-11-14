@@ -85,22 +85,27 @@ impl super::relational::RelationalStore {
                 .ok_or("clear_all requires an explicit deletion policy for cyclic foreign keys")?;
             ordered.push(remaining.remove(leaf).collection.clone());
         }
-        self.write(move |store, transaction| {
+        self.write_with_revisions(move |store, transaction| {
             Box::pin(async move {
                 let mut records_deleted = 0usize;
+                let mut revisions = Vec::new();
                 for collection in &ordered {
                     let deleted = store
                         .delete_on(transaction, QueryBuilder::new(collection).build())
                         .await?;
                     records_deleted = records_deleted
-                        .checked_add(deleted)
+                        .checked_add(deleted.count)
                         .ok_or("deleted count exceeds usize")?;
+                    revisions.extend(deleted.revisions);
                 }
                 // Sequence high-water records deliberately survive content deletion.
-                Ok(ClearAllResult {
-                    tables_cleared: ordered,
-                    records_deleted,
-                })
+                Ok((
+                    ClearAllResult {
+                        tables_cleared: ordered,
+                        records_deleted,
+                    },
+                    revisions,
+                ))
             })
         })
         .await

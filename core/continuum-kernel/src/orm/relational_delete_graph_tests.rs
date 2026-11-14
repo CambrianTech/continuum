@@ -146,12 +146,22 @@ async fn reopened_cascade_graph_preserves_restrict_set_null_and_native_tombstone
     // Only the parent caller re-admits its code declaration; restored child
     // declarations must still participate in the physical cascade's receipt.
     store.ensure(root).await?;
+    let child_changes = store.revision(
+        crate::orm::relational_sequence::Domain::Native,
+        "cascade_child",
+    );
+    let survivor_changes = store.revision(
+        crate::orm::relational_sequence::Domain::Native,
+        "cascade_survivor",
+    );
+    assert_eq!(*child_changes.borrow(), 103);
     let delete = || {
         QueryBuilder::new("cascadeRoot")
             .filter_eq("id", id(1))
             .build()
     };
     assert!(store.delete_matching(delete()).await.is_err());
+    assert!(!child_changes.has_changed()?);
     assert!(
         !Revisions::find_by_id(("cascade_child".to_owned(), id(10)))
             .one(&store.db)
@@ -163,6 +173,9 @@ async fn reopened_cascade_graph_preserves_restrict_set_null_and_native_tombstone
         .delete_matching(QueryBuilder::new("cascade_blocker").build())
         .await?;
     assert_eq!(store.delete_matching(delete()).await?, 1);
+    assert_eq!(*child_changes.borrow(), 104);
+    assert!(child_changes.has_changed()?);
+    assert!(!survivor_changes.has_changed()?);
     assert_eq!(
         store
             .count(QueryBuilder::new("cascade_child").build())

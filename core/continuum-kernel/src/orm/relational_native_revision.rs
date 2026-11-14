@@ -34,7 +34,7 @@ impl super::relational::RelationalStore {
         connection: &C,
         collection: &str,
         id: &str,
-    ) -> Result<i64, String> {
+    ) -> Result<super::relational_transaction::Revision, String> {
         super::binary::native_identity(id)?;
         let revision = super::relational_sequence::next_on(
             connection,
@@ -63,7 +63,13 @@ impl super::relational::RelationalStore {
             .execute(connection.get_database_backend().build(&statement))
             .await
             .map_err(|e| e.to_string())?;
-        Ok(revision)
+        Ok(super::relational_transaction::Revision {
+            domain: super::relational_sequence::Domain::Native,
+            collection: collection.into(),
+            high: revision
+                .try_into()
+                .map_err(|_| "negative native revision")?,
+        })
     }
 }
 impl super::relational::RelationalStore {
@@ -73,7 +79,7 @@ impl super::relational::RelationalStore {
         connection: &sea_orm::DatabaseTransaction,
         schema: &super::types::CollectionSchema,
         query: &super::query::StorageQuery,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<super::relational_transaction::Revision>, String> {
         use sea_orm::sea_query::{Alias, Expr};
         use sea_orm::PaginatorTrait;
         let catalog_count = super::relational_declaration::Entity::find()
@@ -87,6 +93,7 @@ impl super::relational::RelationalStore {
             );
         }
         let (graph, native) = self.deletion_graph(schema, query)?;
+        let mut revisions = Vec::new();
         for collection in native {
             let victims = Query::select()
                 .column(Alias::new("id"))
@@ -130,7 +137,14 @@ impl super::relational::RelationalStore {
                 .execute(connection.get_database_backend().build(&statement))
                 .await
                 .map_err(|e| e.to_string())?;
+            revisions.push(super::relational_transaction::Revision {
+                domain: super::relational_sequence::Domain::Native,
+                collection,
+                high: revision
+                    .try_into()
+                    .map_err(|_| "negative native revision")?,
+            });
         }
-        Ok(())
+        Ok(revisions)
     }
 }

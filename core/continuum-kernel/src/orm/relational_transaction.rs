@@ -25,7 +25,7 @@ impl RelationalStore {
         F: for<'a> FnOnce(
                 &'a RelationalStore,
                 &'a DatabaseTransaction,
-            ) -> WriteFuture<'a, (T, Vec<(String, u64)>)>
+            ) -> WriteFuture<'a, (T, Vec<Revision>)>
             + Send
             + 'static,
     {
@@ -35,8 +35,8 @@ impl RelationalStore {
             let transaction = store.db.begin().await.map_err(|e| e.to_string())?;
             let (result, revisions) = operation(&store, &transaction).await?;
             transaction.commit().await.map_err(|e| e.to_string())?;
-            for (collection, sequence) in revisions {
-                store.committed(&collection, sequence);
+            for revision in revisions {
+                store.committed(revision.domain, &revision.collection, revision.high);
             }
             Ok(result)
         })
@@ -90,9 +90,22 @@ impl RelationalStore {
     }
 
     pub async fn delete_matching(&self, query: StorageQuery) -> Result<usize, String> {
-        self.write(move |store, transaction| {
-            Box::pin(async move { store.delete_on(transaction, query).await })
+        self.write_with_revisions(move |store, transaction| {
+            Box::pin(async move {
+                let deleted = store.delete_on(transaction, query).await?;
+                Ok((deleted.count, deleted.revisions))
+            })
         })
         .await
     }
+}
+
+pub(super) struct Revision {
+    pub domain: super::relational_sequence::Domain,
+    pub collection: String,
+    pub high: u64,
+}
+pub(super) struct Deletion {
+    pub count: usize,
+    pub revisions: Vec<Revision>,
 }

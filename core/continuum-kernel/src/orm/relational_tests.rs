@@ -122,7 +122,10 @@ async fn failed_batch_rolls_back_and_sequence_survives_pruning_and_restart(
             .await?,
         0
     );
-    let revision = first.revision(Child::COLLECTION);
+    let revision = first.revision(
+        super::relational_sequence::Domain::Append,
+        Child::COLLECTION,
+    );
     let committed = first.batch(vec![append("a")]).await?;
     assert_eq!(committed[0]["seq"], 1);
     assert_eq!(*revision.borrow(), 1);
@@ -144,7 +147,10 @@ async fn failed_batch_rolls_back_and_sequence_survives_pruning_and_restart(
 async fn cancelled_request_retains_commit_and_revision_custody(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = store(":memory:").await?;
-    let mut revision = store.revision(Child::COLLECTION);
+    let mut revision = store.revision(
+        super::relational_sequence::Domain::Append,
+        Child::COLLECTION,
+    );
     let (written_tx, written_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let worker = store.clone();
@@ -170,7 +176,14 @@ async fn cancelled_request_retains_commit_and_revision_custody(
                         .send(())
                         .map_err(|_| "write observer disappeared")?;
                     release_rx.await.map_err(|_| "commit release disappeared")?;
-                    Ok(((), vec![(Child::COLLECTION.into(), receipt.seq)]))
+                    Ok((
+                        (),
+                        vec![super::relational_transaction::Revision {
+                            domain: super::relational_sequence::Domain::Append,
+                            collection: Child::COLLECTION.into(),
+                            high: receipt.seq,
+                        }],
+                    ))
                 })
             })
             .await
@@ -299,14 +312,28 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
         ["c"]
     );
     query.sort = Some(vec![super::query::SortSpec {
-        field: "id".into(), direction: SortDirection::Desc,
+        field: "id".into(),
+        direction: SortDirection::Desc,
     }]);
     let descending_tail = store.query(query.clone()).await?;
-    assert_eq!(descending_tail.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["a"],
-        "after b in descending order must advance toward a, not repeat c");
-    query.cursor.as_mut().ok_or("cursor disappeared")?.direction = super::query::CursorDirection::Before;
+    assert_eq!(
+        descending_tail
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
+        ["a"],
+        "after b in descending order must advance toward a, not repeat c"
+    );
+    query.cursor.as_mut().ok_or("cursor disappeared")?.direction =
+        super::query::CursorDirection::Before;
     let descending_head = store.query(query.clone()).await?;
-    assert_eq!(descending_head.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["c"]);
+    assert_eq!(
+        descending_head
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
+        ["c"]
+    );
     query.sort = None;
     query.cursor = Some(super::query::Cursor {
         field: "seq".into(),
@@ -321,76 +348,169 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
 }
 
 #[tokio::test]
-async fn declared_defaults_and_length_are_enforced_by_storage() -> Result<(), Box<dyn std::error::Error>> {
+async fn declared_defaults_and_length_are_enforced_by_storage(
+) -> Result<(), Box<dyn std::error::Error>> {
     let store = store(":memory:").await?;
-    let mut schema = CollectionSchema { collection: "declared_defaults".into(), fields: base_entity_fields(), indexes: vec![] };
+    let mut schema = CollectionSchema {
+        collection: "declared_defaults".into(),
+        fields: base_entity_fields(),
+        indexes: vec![],
+    };
     schema.fields.push(SchemaField {
-        name: "label".into(), field_type: FieldType::String, default_value: Some(json!("abc")),
-        nullable: false, indexed: false, unique: false, max_length: Some(3), foreign_key: None,
+        name: "label".into(),
+        field_type: FieldType::String,
+        default_value: Some(json!("abc")),
+        nullable: false,
+        indexed: false,
+        unique: false,
+        max_length: Some(3),
+        foreign_key: None,
     });
     store.ensure(schema).await?;
-    store.insert(&store.db, &record("default", "declared_defaults", json!({}))).await?;
-    let rows = store.query(QueryBuilder::new("declared_defaults").limit(1).build()).await?;
+    store
+        .insert(
+            &store.db,
+            &record("default", "declared_defaults", json!({})),
+        )
+        .await?;
+    let rows = store
+        .query(QueryBuilder::new("declared_defaults").limit(1).build())
+        .await?;
     assert_eq!(rows[0].data["label"], json!("abc"));
-    assert!(store.insert(&store.db, &record("too-long", "declared_defaults", json!({"label":"abcd"}))).await.is_err());
-    assert!(store.insert(&store.db, &record("null", "declared_defaults", json!({"label":null}))).await.is_err());
-    assert_eq!(store.count(QueryBuilder::new("declared_defaults").build()).await?, 1);
+    assert!(store
+        .insert(
+            &store.db,
+            &record("too-long", "declared_defaults", json!({"label":"abcd"}))
+        )
+        .await
+        .is_err());
+    assert!(store
+        .insert(
+            &store.db,
+            &record("null", "declared_defaults", json!({"label":null}))
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        store
+            .count(QueryBuilder::new("declared_defaults").build())
+            .await?,
+        1
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn restart_verifies_physical_declaration_and_refuses_unmanaged_tables() -> Result<(), Box<dyn std::error::Error>> {
-    use sea_orm::{ConnectionTrait, DbBackend};
+async fn restart_verifies_physical_declaration_and_refuses_unmanaged_tables(
+) -> Result<(), Box<dyn std::error::Error>> {
     use sea_orm::sea_query::{Alias, ColumnDef, Table};
+    use sea_orm::{ConnectionTrait, DbBackend};
     let directory = tempfile::tempdir()?;
     let file = directory.path().join("declarations.db");
     let path = file.to_str().ok_or("test path encoding")?;
     let first = store(path).await?;
-    first.insert(&first.db, &record("p", Parent::COLLECTION, json!({"label":"retained"}))).await?;
+    first
+        .insert(
+            &first.db,
+            &record("p", Parent::COLLECTION, json!({"label":"retained"})),
+        )
+        .await?;
     first.db.clone().close().await?;
     let reopened = store(path).await?;
-    assert_eq!(reopened.count(QueryBuilder::new(Parent::COLLECTION).build()).await?, 1);
-    let altered = Table::alter().table(Alias::new(Parent::COLLECTION))
-        .add_column(ColumnDef::new(Alias::new("undeclared_column")).text()).to_owned();
-    reopened.db.execute(DbBackend::Sqlite.build(&altered)).await?;
+    assert_eq!(
+        reopened
+            .count(QueryBuilder::new(Parent::COLLECTION).build())
+            .await?,
+        1
+    );
+    let altered = Table::alter()
+        .table(Alias::new(Parent::COLLECTION))
+        .add_column(ColumnDef::new(Alias::new("undeclared_column")).text())
+        .to_owned();
+    reopened
+        .db
+        .execute(DbBackend::Sqlite.build(&altered))
+        .await?;
     reopened.db.clone().close().await?;
-    let rejected = store(path).await.err().ok_or("physical drift was admitted")?;
+    let rejected = store(path)
+        .await
+        .err()
+        .ok_or("physical drift was admitted")?;
     assert!(rejected.contains("physical schema changed"), "{rejected}");
 
-    let unmanaged = RelationalStore::open(AdapterConfig { connection_string: ":memory:".into(), ..Default::default() }).await?;
+    let unmanaged = RelationalStore::open(AdapterConfig {
+        connection_string: ":memory:".into(),
+        ..Default::default()
+    })
+    .await?;
     let schema = Parent::collection_schema();
     let declared = super::relational_schema::compile(&schema)?;
-    unmanaged.db.execute(DbBackend::Sqlite.build(&declared.create)).await?;
-    let rejected = unmanaged.ensure(schema).await.expect_err("unmanaged existing table must require migration");
-    assert!(rejected.contains("no declared-schema receipt"), "{rejected}");
+    unmanaged
+        .db
+        .execute(DbBackend::Sqlite.build(&declared.create))
+        .await?;
+    let rejected = unmanaged
+        .ensure(schema)
+        .await
+        .expect_err("unmanaged existing table must require migration");
+    assert!(
+        rejected.contains("no declared-schema receipt"),
+        "{rejected}"
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn colliding_index_names_refuse_adoption_and_roll_back_schema() -> Result<(), Box<dyn std::error::Error>> {
+async fn colliding_index_names_refuse_adoption_and_roll_back_schema(
+) -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let file = directory.path().join("index-collision.db");
     let path = file.to_str().ok_or("test path encoding")?;
     let owner = store(path).await?;
     let declaration = |collection: &str, index: &str| CollectionSchema {
-        collection: collection.into(), fields: base_entity_fields(),
-        indexes: vec![SchemaIndex { name: index.into(), fields: vec!["version".into()], unique: true, descending: false }],
+        collection: collection.into(),
+        fields: base_entity_fields(),
+        indexes: vec![SchemaIndex {
+            name: index.into(),
+            fields: vec!["version".into()],
+            unique: true,
+            descending: false,
+        }],
     };
-    owner.ensure(declaration("index_owner", "shared_index_name")).await?;
-    assert!(owner.ensure(declaration("index_victim", "shared_index_name")).await.is_err(),
-        "an index owned by another table must not silently satisfy this declaration");
+    owner
+        .ensure(declaration("index_owner", "shared_index_name"))
+        .await?;
+    assert!(
+        owner
+            .ensure(declaration("index_victim", "shared_index_name"))
+            .await
+            .is_err(),
+        "an index owned by another table must not silently satisfy this declaration"
+    );
     assert!(owner.schema("index_victim").is_err());
     // The failed DDL transaction must leave neither a table nor a receipt behind.
     // A repaired declaration is admitted without an offline migration.
     let repaired = declaration("index_victim", "victim_version_unique");
     owner.ensure(repaired.clone()).await?;
-    owner.create(record("first", "index_victim", json!({}))).await?;
-    assert!(owner.create(record("second", "index_victim", json!({}))).await.is_err(),
-        "the declared unique index must actually constrain writes");
+    owner
+        .create(record("first", "index_victim", json!({})))
+        .await?;
+    assert!(
+        owner
+            .create(record("second", "index_victim", json!({})))
+            .await
+            .is_err(),
+        "the declared unique index must actually constrain writes"
+    );
     owner.db.clone().close().await?;
     let reopened = store(path).await?;
     reopened.ensure(repaired).await?;
-    assert_eq!(reopened.count(QueryBuilder::new("index_victim").build()).await?, 1);
+    assert_eq!(
+        reopened
+            .count(QueryBuilder::new("index_victim").build())
+            .await?,
+        1
+    );
     Ok(())
 }
 
@@ -398,23 +518,64 @@ async fn colliding_index_names_refuse_adoption_and_roll_back_schema() -> Result<
 // stored JSON representation differed from the scalar comparison. Wrong-type queries
 // must not become a false absence (including count, delete and empty collections).
 #[tokio::test]
-async fn predicates_use_declared_scalar_codecs_before_execution() -> Result<(), Box<dyn std::error::Error>> {
+async fn predicates_use_declared_scalar_codecs_before_execution(
+) -> Result<(), Box<dyn std::error::Error>> {
     let store = store(":memory:").await?;
     store.insert(&store.db, &record("a", Child::COLLECTION,
         json!({"parentId":null,"token":"pending","seq":7,"body":"pending","joinedLabel":null}))).await?;
-    assert_eq!(store.count(QueryBuilder::new(Child::COLLECTION).filter_eq("token", "pending").build()).await?, 1);
+    assert_eq!(
+        store
+            .count(
+                QueryBuilder::new(Child::COLLECTION)
+                    .filter_eq("token", "pending")
+                    .build()
+            )
+            .await?,
+        1
+    );
     for query in [
-        QueryBuilder::new(Child::COLLECTION).filter_eq("body", "pending").build(),
-        QueryBuilder::new(Child::COLLECTION).filter_eq("seq", "7").build(),
-        QueryBuilder::new(Child::COLLECTION).filter("seq", QueryOperator::In(vec![json!(7), json!("8")])).build(),
-        QueryBuilder::new(Child::COLLECTION).filter("body", QueryOperator::Contains("pending".into())).build(),
+        QueryBuilder::new(Child::COLLECTION)
+            .filter_eq("body", "pending")
+            .build(),
+        QueryBuilder::new(Child::COLLECTION)
+            .filter_eq("seq", "7")
+            .build(),
+        QueryBuilder::new(Child::COLLECTION)
+            .filter("seq", QueryOperator::In(vec![json!(7), json!("8")]))
+            .build(),
+        QueryBuilder::new(Child::COLLECTION)
+            .filter("body", QueryOperator::Contains("pending".into()))
+            .build(),
     ] {
         assert!(store.count(query.clone()).await.is_err());
         assert!(store.delete_matching(query).await.is_err());
     }
-    assert_eq!(store.count(QueryBuilder::new(Child::COLLECTION).build()).await?, 1);
-    assert_eq!(store.count(QueryBuilder::new(Child::COLLECTION).filter_eq("parentId", serde_json::Value::Null).build()).await?, 1);
-    store.delete_matching(QueryBuilder::new(Child::COLLECTION).build()).await?;
-    assert!(store.count(QueryBuilder::new(Child::COLLECTION).filter_eq("seq", "7").build()).await.is_err());
+    assert_eq!(
+        store
+            .count(QueryBuilder::new(Child::COLLECTION).build())
+            .await?,
+        1
+    );
+    assert_eq!(
+        store
+            .count(
+                QueryBuilder::new(Child::COLLECTION)
+                    .filter_eq("parentId", serde_json::Value::Null)
+                    .build()
+            )
+            .await?,
+        1
+    );
+    store
+        .delete_matching(QueryBuilder::new(Child::COLLECTION).build())
+        .await?;
+    assert!(store
+        .count(
+            QueryBuilder::new(Child::COLLECTION)
+                .filter_eq("seq", "7")
+                .build()
+        )
+        .await
+        .is_err());
     Ok(())
 }
