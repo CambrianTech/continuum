@@ -2187,6 +2187,7 @@ pass after):**
 | A reopen too large for the view loops | Eitan, IntelMac, 2026-11-11 to 11-13 (#5966) | context | consecutive reopens of one output advance through its pages |
 | A per-element store codec and per-pair norms | 2026-11-13 review of #5954, `similarity::cosine` | data path | bytes moved and CPU time per search fall to the copy and the GPU dispatch |
 | A Windows core's private commit runs away | BigMama 2026-11-13, 10.8 to 32.7 GB in 8 min | serving | resident memory flat over a recorded day |
+| A restart re-prefills every mind | M5 2026-11-13 23:45Z deploy: ledger restored 0, every first act `cold_turn cause="no_page"`; 29 paged-out minds' pages taken by the page store at volume 0.85 (store 3% of its budget), 22:40Z-00:50Z | serving | dyno fixture `2026-11-13-restart.json`: four recorded residents restore in ~5.6 s (0 tokens re-prefilled) against ~401 s and 253,321 tokens cold; saves and restores issued at once, so on an engine that overlaps page tasks the stop costs its largest save (~4.9 s, not the ~13.5 s sum) and each mind waits only on her own restore (largest ~2.0 s); the pinned fork runs one page task at a time (server-queue.cpp:138-153); a paged-out mind keeps her page under the recorded pressure |
 
 Every row of the plan (section 8) names the scenario that proves it, alongside its gate and
 validator. A fault found live and not yet a scenario is the next scenario to record.

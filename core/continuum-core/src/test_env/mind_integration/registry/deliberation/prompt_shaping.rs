@@ -761,13 +761,19 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // 17986 -> 18162 (#5945, 2026-11-11): code/edit's EditMode gains `batch` (several edits
     // checked once, on their combined result: a fix valid only whole). Two refused repairs in one
     // hour on the M5 were each valid only together (Aiko, not_speech.rs). Measured in CI.
-    // 18162 -> 18597 (PR #6000, 2026-11-14, Joel: residents "are to be as capable as you are";
+    // 18162 -> 18270 (#5843, card e0b2b5b1): work/list trades `limit` for `group`, the typed
+    // `BoardGroup` (claimable, held_by_others, merged, closed) a folded node opens, so every fold
+    // the board shows her is one exact call and no list is ever cut by a count. The 108 are the
+    // enum and its doc, the reach itself: measured in CI at 5c57eb8c9 (job 132356394952) as
+    // 17986 -> 18094 before #5945 landed; the two tools are independent, so the deltas add.
+    // 18270 -> 18705 (PR #6000, 2026-11-14, Joel: residents "are to be as capable as you are";
     // "Persona can merge and review too"): code/github/pr-checks, code/github/pr-merge and
     // code/git/merge joined her hands (`OnDemand`, native so the merge gate's refusals can name
     // them as her next call). Descriptions cut to a line and param docs to a few words (they
     // measured +670 first, CI job 132356505895); the 435 left are the three verbs' params, the
-    // reach itself (measured 18421 over 17986 in CI at d4fe3f7d3, job 132361302389).
-    const AGENTIC_SURFACE_CEILING: u32 = 18597;
+    // reach itself (17986 -> 18421 in CI at d4fe3f7d3, job 132361302389; 18162 -> 18597 green in
+    // CI at 7dc2f34d2), independent of #5945 and #5843, so the deltas add.
+    const AGENTIC_SURFACE_CEILING: u32 = 18705;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(
