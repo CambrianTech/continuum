@@ -573,8 +573,7 @@ impl RoomBoardSource {
             // a cross-room reader verb and is a separate slice; this stops the
             // lie today without new reads.
             let headline = format!(
-                "[board] this room only: you hold {held} card(s) here; {avail} claimable here, {review_requests} of them \
-                 review requests (a teammate's submission awaiting a reviewer: work/list group=review_requests).",
+                "[board] this room only: you hold {held} card(s) here; {avail} claimable here, {review_requests} awaiting a review.",
                 held = mine.len(),
                 avail = open.len(),
             );
