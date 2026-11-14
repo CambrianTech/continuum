@@ -22,6 +22,12 @@ pub(super) fn preserves_assignment(before: &str, after: &str) -> bool {
     assignment_affinity(before) == assignment_affinity(after)
 }
 
+pub(super) fn integer_text_assignment(before: &str, after: &str) -> bool {
+    let target = after.to_ascii_uppercase();
+    assignment_affinity(before) == AssignmentAffinity::Text
+        && (target == "NUMERIC" || target.contains("INT"))
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, FromQueryResult)]
 pub(super) struct Column {
     pub name: String,

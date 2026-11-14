@@ -2,7 +2,72 @@
 
 use super::*;
 
-/// Replay the receipt-free TEXT/integer refusal seen in the persona credit stores.
+#[tokio::test]
+async fn canonical_integer_text_evolves_exactly_with_and_without_receipt()
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    use sea_orm::EntityTrait;
+    for recorded in [true, false] {
+        let directory = tempfile::tempdir()?;
+        let file = directory.path().join("integer-conversion.db");
+        let path = file.to_str().ok_or("test path encoding")?;
+        let initial = store(path).await?;
+        let mut text = Parent::collection_schema();
+        text.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.nullable = true;
+        initial.ensure(text.clone()).await?;
+        let values = [Some(i64::MIN), Some(-1), Some(0), Some(9007199254740993), Some(i64::MAX), None];
+        for (index, value) in values.iter().enumerate() {
+            initial.insert(&initial.db, &record(&index.to_string(), Parent::COLLECTION,
+                json!({"label": value.map(|number| number.to_string())}))).await?;
+        }
+        if !recorded {
+            super::relational_declaration::Entity::delete_by_id(Parent::COLLECTION).exec(&initial.db).await?;
+        }
+        initial.db.clone().close().await?;
+        let reopened = RelationalStore::open(AdapterConfig {
+            connection_string: path.into(), max_connections: 1, ..Default::default()
+        }).await?;
+        let mut numeric = text;
+        numeric.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.field_type = FieldType::Number;
+        reopened.ensure(numeric.clone()).await?;
+        reopened.db.clone().close().await?;
+        let final_store = RelationalStore::open(AdapterConfig {
+            connection_string: path.into(), max_connections: 1, ..Default::default()
+        }).await?;
+        final_store.ensure(numeric).await?;
+        let rows = final_store.query(QueryBuilder::new(Parent::COLLECTION).limit(6).build()).await?;
+        assert_eq!(rows.len(), values.len());
+        for row in rows {
+            let index = row.id.parse::<usize>()?;
+            assert_eq!(row.data["label"], json!(values[index]));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn noncanonical_integer_text_refuses_without_partial_conversion()
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    for invalid in ["", "01", "-0", "+1", " 1", "1 ", "1.5", "1e3", "bad", "9223372036854775808", "-9223372036854775809"] {
+        let initial = store(":memory:").await?;
+        initial.insert(&initial.db, &record("valid", Parent::COLLECTION,
+            json!({"label":"9007199254740993"}))).await?;
+        initial.insert(&initial.db, &record("invalid", Parent::COLLECTION,
+            json!({"label":invalid}))).await?;
+        let mut numeric = Parent::collection_schema();
+        numeric.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.field_type = FieldType::Number;
+        assert!(initial.ensure(numeric).await.is_err(), "accepted {invalid:?}");
+        let rows = initial.query(QueryBuilder::new(Parent::COLLECTION).limit(2).build()).await?;
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            assert_eq!(row.data["label"], if row.id == "valid" { "9007199254740993" } else { invalid });
+        }
+    }
+    Ok(())
+}
+
+/// Unsupported conversions identify their declaration or physical boundary.
 /// Both admission paths identify the exact boundary without changing stored evidence.
 #[tokio::test]
 async fn conversion_refusal_identifies_boundary_and_preserves_evidence()
@@ -16,12 +81,12 @@ async fn conversion_refusal_identifies_boundary_and_preserves_evidence()
         json!({"label":"9007199254740993"}))).await?;
     let mut requested = original.clone();
     requested.fields.iter_mut().find(|field| field.name == "label")
-        .ok_or("fixture label missing")?.field_type = FieldType::Number;
+        .ok_or("fixture label missing")?.field_type = FieldType::Boolean;
 
     let tx = initial.db.begin().await?;
     let declared = super::relational_evolution::evolve(&tx, &original, &requested).await;
     assert!(matches!(declared, Err(SchemaError::DeclaredTypeConversion {
-        collection, field, previous: FieldType::String, requested: FieldType::Number,
+        collection, field, previous: FieldType::String, requested: FieldType::Boolean,
     }) if collection == Parent::COLLECTION && field == "label"));
     tx.rollback().await?;
 
@@ -47,6 +112,7 @@ async fn validate_review_rejection_timestamps_read_only() -> Result<(), Box<dyn 
     let path = std::env::var("ORM_DECLARATION_DB")?;
     let db = sea_orm::Database::connect(format!("sqlite://{}?mode=ro", path.replace('\\', "/"))).await?;
     let tx = db.begin().await?;
+    super::relational_conversion::prove_integer_text(&tx, "staged_credit", "rejected_at_ms").await?;
     let mut cursor: Option<String> = None;
     let (mut valid, mut invalid) = (0_u64, 0_u64);
     loop {

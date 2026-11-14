@@ -32,6 +32,11 @@ pub(super) async fn evolve(
     for field in &current.fields {
         if let Some(old) = previous.fields.iter().find(|old| old.name == field.name) {
             if !preserves_native_storage(&old.field_type, &field.field_type) {
+                if matches!((&old.field_type, &field.field_type), (FieldType::String, FieldType::Number)) {
+                    super::relational_conversion::prove_integer_text(db,
+                        &naming::to_table_name(&current.collection), &naming::to_snake_case(&field.name)).await?;
+                    continue;
+                }
                 return Err(SchemaError::DeclaredTypeConversion {
                     collection: current.collection.clone(),
                     field: field.name.clone(),
@@ -124,6 +129,9 @@ pub(super) async fn admit_table(
     if actual == expected { return Ok(()); }
     for column in &expected.columns {
         match actual.columns.iter().find(|old| old.name == column.name) {
+            Some(old) if super::relational_structure::integer_text_assignment(&old.r#type, &column.r#type) => {
+                super::relational_conversion::prove_integer_text(db, table, &column.name).await?;
+            }
             Some(old) if !super::relational_structure::preserves_assignment(&old.r#type, &column.r#type) =>
                 return Err(SchemaError::PhysicalTypeConversion {
                     table: table.into(),

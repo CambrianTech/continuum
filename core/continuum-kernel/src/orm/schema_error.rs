@@ -2,6 +2,8 @@
 //! Callers classify these variants; diagnostic text is never a control protocol.
 #[derive(Debug, thiserror::Error)]
 pub enum SchemaError {
+    #[error("{table}.{column}: numeric conversion requires canonical signed integer text or NULL; data unchanged")]
+    NonCanonicalIntegerText { table: String, column: String },
     #[error(transparent)]
     Database(#[from] sea_orm::DbErr),
     #[error(transparent)]
