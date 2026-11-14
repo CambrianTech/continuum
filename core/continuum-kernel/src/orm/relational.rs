@@ -331,38 +331,28 @@ impl RelationalStore {
                 values.push(Expr::val(descriptor.encode()?).into());
                 continue;
             }
-            let metadata;
+            use super::relational_codec::{encode, encode_integer, encode_text};
             let value = match field.name.as_str() {
-                "id" => {
-                    metadata = serde_json::Value::String(record.id.clone());
-                    &metadata
+                "id" => encode_text(field, &record.id)?,
+                "createdAt" => encode_text(field, &record.metadata.created_at)?,
+                "updatedAt" => encode_text(field, &record.metadata.updated_at)?,
+                "version" => encode_integer(field, i64::from(record.metadata.version))?,
+                name => {
+                    let value = match fields.get(name) {
+                        Some(value) => value,
+                        None => match &field.default_value {
+                            Some(value) => value,
+                            None if field.nullable => &serde_json::Value::Null,
+                            None => return Err(format!("{}.{} is required", record.collection, name)),
+                        },
+                    };
+                    encode(field, value)?
                 }
-                "createdAt" => {
-                    metadata = serde_json::Value::String(record.metadata.created_at.clone());
-                    &metadata
-                }
-                "updatedAt" => {
-                    metadata = serde_json::Value::String(record.metadata.updated_at.clone());
-                    &metadata
-                }
-                "version" => {
-                    metadata = serde_json::json!(record.metadata.version);
-                    &metadata
-                }
-                name => match fields.get(name) {
-                    Some(value) => value,
-                    None if field.default_value.is_some() => field
-                        .default_value
-                        .as_ref()
-                        .ok_or("declared default disappeared")?,
-                    None if field.nullable => &serde_json::Value::Null,
-                    None => return Err(format!("{}.{} is required", record.collection, name)),
-                },
             };
             columns.push(Alias::new(super::adapter::naming::to_snake_case(
                 &field.name,
             )));
-            values.push(Expr::val(super::relational_codec::encode(field, value)?).into());
+            values.push(Expr::val(value).into());
         }
         if !payloads.is_empty() {
             return Err("native write contains undeclared binary fields".into());

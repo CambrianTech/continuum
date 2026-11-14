@@ -8,6 +8,29 @@ use sea_orm::sqlx::{Row, TypeInfo, ValueRef};
 use sea_orm::{sea_query::Value as SqlValue, QueryResult};
 use serde_json::{Map, Number, Value};
 
+/// Bind producer-owned text directly. The SQL driver owns the one required copy;
+/// callers need not allocate an intermediate JSON string to reach this codec.
+pub(super) fn encode_text(field: &SchemaField, value: &str) -> Result<SqlValue, String> {
+    match field.field_type {
+        FieldType::String | FieldType::Date | FieldType::Uuid => Ok(value.into()),
+        FieldType::Json => serde_json::to_string(value)
+            .map(Into::into)
+            .map_err(|e| e.to_string()),
+        _ => Err(format!("{} does not accept text", field.name)),
+    }
+}
+
+/// Metadata versions already have an exact integer representation.
+pub(super) fn encode_integer(field: &SchemaField, value: i64) -> Result<SqlValue, String> {
+    match field.field_type {
+        FieldType::Number => Ok(value.into()),
+        FieldType::Json => serde_json::to_string(&value)
+            .map(Into::into)
+            .map_err(|e| e.to_string()),
+        _ => Err(format!("{} does not accept an integer", field.name)),
+    }
+}
+
 pub(super) fn encode(field: &SchemaField, value: &Value) -> Result<SqlValue, String> {
     if value.is_null() {
         return if field.nullable {
@@ -17,10 +40,10 @@ pub(super) fn encode(field: &SchemaField, value: &Value) -> Result<SqlValue, Str
         };
     }
     match field.field_type {
-        FieldType::String | FieldType::Date | FieldType::Uuid => value
-            .as_str()
-            .map(|s| s.to_owned().into())
-            .ok_or_else(|| format!("{} requires a string", field.name)),
+        FieldType::String | FieldType::Date | FieldType::Uuid => encode_text(
+            field,
+            value.as_str().ok_or_else(|| format!("{} requires a string", field.name))?,
+        ),
         FieldType::Boolean => value
             .as_bool()
             .map(Into::into)
