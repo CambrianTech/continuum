@@ -79,7 +79,7 @@ pub use storage_error::StorageError;
 pub use vector::{
     BackfillVectorsProgress, BackfillVectorsRequest, EmbeddingModel, GenerateEmbeddingRequest,
     GenerateEmbeddingResponse, IndexVectorRequest, VectorEmbedding, VectorIndexStats,
-    VectorSearchAdapter, VectorSearchOptions, VectorSearchResponse, VectorSearchResult,
+    VectorSearchOptions, VectorSearchResponse, VectorSearchResult,
 };
 pub mod client_read;
 

@@ -9,12 +9,11 @@
 //! - Embedding generation via fastembed
 //! - Vector indexing and backfilling
 
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use super::types::{StorageResult, UUID};
+use super::types::UUID;
 
 /// Vector embedding - array of f32 representing semantic meaning
 pub type VectorEmbedding = Vec<f32>;
@@ -345,36 +344,3 @@ pub struct VectorSearchCapabilities {
     pub embedding_providers: Vec<EmbeddingProvider>,
 }
 
-/// Vector Search Adapter Trait
-///
-/// Adapters that support vector search implement this trait.
-/// Uses fastembed for embedding generation.
-#[async_trait]
-pub trait VectorSearchAdapter: Send + Sync {
-    /// Perform vector similarity search
-    async fn vector_search(
-        &self,
-        options: VectorSearchOptions,
-    ) -> StorageResult<VectorSearchResponse>;
-
-    /// Generate embedding for text using fastembed
-    async fn generate_embedding(
-        &self,
-        request: GenerateEmbeddingRequest,
-    ) -> StorageResult<GenerateEmbeddingResponse>;
-
-    /// Index vector for a record
-    async fn index_vector(&self, request: IndexVectorRequest) -> StorageResult<bool>;
-
-    /// Backfill embeddings for existing records
-    async fn backfill_vectors(
-        &self,
-        request: BackfillVectorsRequest,
-    ) -> StorageResult<BackfillVectorsProgress>;
-
-    /// Get vector index statistics
-    async fn get_vector_index_stats(&self, collection: &str) -> StorageResult<VectorIndexStats>;
-
-    /// Get vector search capabilities
-    fn get_vector_search_capabilities(&self) -> VectorSearchCapabilities;
-}
