@@ -7,13 +7,14 @@
 use super::*;
 use crate::capacity::window_grant::{Demand, Excluded, GrantEvaluation, NoGrants, PoolGrants, Waiting};
 
-/// What one evaluation grants from: the demands, the pool and one sequence's cap, and each
-/// requirement that entered no demand.
-struct GrantInputs {
+/// What one evaluation grants from: the demands, the pool and one sequence's cap, each
+/// requirement that entered no demand, and the least the grants hold (`live_pool::need_floor`).
+pub(super) struct GrantInputs {
     demands: Vec<Demand<uuid::Uuid>>,
     pool: u32,
     cap: u32,
     excluded: std::collections::BTreeMap<uuid::Uuid, Excluded>,
+    pub(super) floor: u32,
 }
 
 impl ServingDaemonModule {
@@ -37,7 +38,7 @@ impl ServingDaemonModule {
             (next, changed)
         };
         let (((next, changed), tickets), nobody, excluded, waiting) = match self.grant_inputs() {
-            Ok(GrantInputs { demands, pool, cap, excluded }) => {
+            Ok(GrantInputs { demands, pool, cap, excluded, .. }) => {
                 // One fair-state lock across the publish and the read of its queue, so the queue
                 // positions are the ones this publish left.
                 let mut fair = self.fair_grants.lock();
@@ -96,10 +97,10 @@ impl ServingDaemonModule {
     }
 
     /// Refused, typed, until the engine serves and has reported its pool: there is nothing to grant from.
-    fn grant_inputs(&self) -> Result<GrantInputs, NoGrants> {
+    pub(super) fn grant_inputs(&self) -> Result<GrantInputs, NoGrants> {
         let live = self.serving_tx.borrow().clone();
         // The pool the engine itself reports (`context_geometry.allocated_tokens`), never a
-        // published share multiplied back by a count (Cormac on #5733).
+        // published share multiplied back by a count (Cormac on #5733); the room moves it below.
         let pool_tokens = self.served_pool.load(Ordering::Relaxed);
         if !live.ready {
             return Err(NoGrants::NotReady);
@@ -136,7 +137,11 @@ impl ServingDaemonModule {
                 }
             }
         }
-        Ok(GrantInputs { demands, pool: pool_tokens, cap: per_sequence_cap, excluded })
+        // The pool the grants share is the engine's as the host's room has moved it (`live_pool`):
+        // never below what the minds need, never above what the engine holds.
+        let floor = super::live_pool::need_floor(&demands, self.grants_tx.borrow().as_ref());
+        let pool = self.live_pool.lock().pool(pool_tokens, floor);
+        Ok(GrantInputs { demands, pool, cap: per_sequence_cap, excluded, floor })
     }
 }
 
