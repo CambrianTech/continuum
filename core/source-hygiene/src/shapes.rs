@@ -3,7 +3,7 @@
 //!
 //! Joel, 2026-11-14: "We're gonna have to fix all of this eventually. I can't even keep track of
 //! the thousands of these you've made." The agents wrote these shapes, so the tracking is
-//! mechanical, never a person's memory. Five rules, each a token predicate over the shared lexer
+//! mechanical, never a person's memory. Six rules, each a token predicate over the shared lexer
 //! ([`crate::lexer::tokens`]: strings, comments and char literals are never code), each held twice:
 //!
 //! | Rule | The shape |
@@ -13,6 +13,7 @@
 //! | [`stringly_errors::StringlyErrors`] | a failure typed as `String` or `()` in library code |
 //! | [`state_as_flags::StateAsFlags`] | one state spread across `bool` fields, or `Option` fields matched together as a tuple |
 //! | [`string_identities::StringIdentities`] | a JSON field read by name outside wire code, a map keyed by `String` in a struct |
+//! | [`contract_shape::ContractShape`] | 5+ parameters, 3+ swappable primitives in a row, a clone passed as an argument, a `pub fn` taking an owned `String`/`Vec` |
 //!
 //! # Where they count
 //!
@@ -29,6 +30,7 @@
 //! recorded beside it, so the receipt names where the debt lives and a sweep can start floor-up.
 //! A touched file keeps its old sites ([`HeldOnly::SweptByCrate`]) and may add none.
 
+pub mod contract_shape;
 pub mod items;
 pub mod state_as_flags;
 pub mod string_identities;
