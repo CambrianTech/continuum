@@ -13,7 +13,7 @@ source: string,
  */
 target: string, 
 /**
- * Records per batch. Defaults to 500.
+ * Records per page, positive (a zero page is refused at the wire); defaults to the migration owner's.
  */
 batchSize: number, 
 /**

@@ -31,10 +31,10 @@ crate::action_command! {
     name: "data/truncate",
     access: Privileged,
     params: DataTruncateParams,
-    output: usize,
+    output: crate::orm::data_outputs::Truncated,
     run(this, _ctx, p) => {
         let handle = p.handle.as_str();
         let result = this.state.truncate_collection(handle, &p.collection).await?;
-        Ok(result)
+        Ok(crate::orm::data_outputs::Truncated { removed: result })
     }
 }

@@ -33,6 +33,7 @@ mod relational_evolution;
 mod relational_conversion;
 pub mod schema_error;
 pub mod seam;
+pub mod data_outputs;
 pub mod names;
 pub mod storage_error;
 mod relational_query;

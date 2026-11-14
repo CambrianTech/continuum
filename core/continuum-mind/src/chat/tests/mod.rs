@@ -120,8 +120,10 @@
 
     /// A committed line's typed `data/batch` outcomes: its message row, then its arrival.
     pub(super) fn batch_reply(row: crate::orm::types::BatchOutcome, arrival: crate::orm::types::Appended) -> Value {
-        serde_json::to_value([row, crate::orm::types::BatchOutcome::Appended { appended: arrival }])
-            .expect("test: batch outcomes serialize")
+        serde_json::to_value(crate::orm::data_outputs::BatchOutcomes {
+            outcomes: vec![row, crate::orm::types::BatchOutcome::Appended { appended: arrival }],
+        })
+        .expect("test: batch outcomes serialize")
     }
 
     fn imported_line(text: &str) -> crate::chat::line_store::PostedLine {
@@ -183,11 +185,11 @@
             .as_str()
             .unwrap_or("")
             .starts_with("2026-"));
-        assert_eq!(arrival["collection"], "chat_arrivals");
-        assert_eq!(arrival["data"]["messageId"], line.message_id.to_string());
-        assert_eq!(arrival["data"]["kind"], "message");
+        assert_eq!(arrival["row"]["collection"], "chat_arrivals");
+        assert_eq!(arrival["row"]["data"]["messageId"], line.message_id.to_string());
+        assert_eq!(arrival["row"]["data"]["kind"], "message");
         assert_eq!(
-            arrival["data"]["directTo"],
+            arrival["row"]["data"]["directTo"],
             json!(line.direct_to.map(|p| p.as_uuid())),
             "the addressee rides the header"
         );
@@ -219,7 +221,8 @@
     #[tokio::test]
     pub(super) async fn a_batch_reply_without_its_arrival_is_an_error() {
         let data = StubDataModule::new(|_command, _params| {
-            Ok(serde_json::to_value([crate::orm::types::BatchOutcome::Ensured]).expect("test: outcomes serialize"))
+            Ok(serde_json::to_value(crate::orm::data_outputs::BatchOutcomes { outcomes: vec![crate::orm::types::BatchOutcome::Ensured] })
+                .expect("test: outcomes serialize"))
         });
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("unconfirmed");

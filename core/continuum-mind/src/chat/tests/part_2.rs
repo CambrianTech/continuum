@@ -109,7 +109,7 @@ use super::*;
             .expect_err("success=false from data must propagate as Err");
 
         assert!(
-            err.contains("the store refused data/batch"),
+            err.contains("data/batch failed") && err.contains("unique constraint violated"),
             "error must name the failure mode: {err}"
         );
         assert!(
