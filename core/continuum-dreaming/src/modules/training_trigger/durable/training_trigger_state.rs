@@ -1,12 +1,65 @@
 use super::*;
 
+/// What a stop does with one of the trigger's owned operations (card 2febbbe8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Work {
+    /// A journal write (a submit's acceptance, a retire): short, and a producer's receipt rides
+    /// on it, so the drain waits for it to land.
+    Journal,
+    /// A pass's engine work (seat, step, settle, candidate sweep, a lost answer's fence). Its
+    /// examples stay pending in the journal until a confirmed generation moves the cursor, so the
+    /// drain hands it back and the next start learns them again: a step can run for as long as
+    /// the engine needs, and a stop is never held behind it (the M5 2026-11-14 13:25Z: two
+    /// seatings in flight held the trigger's join past the runtime's bound).
+    Learning,
+}
+
+/// The trigger's owned operations, by [`Work`]. Finite admitted operations outlive a cancelled
+/// caller; dropping a caller never aborts a writer or releases its lease.
+#[derive(Default)]
+pub(crate) struct Owned {
+    journal: tokio::task::JoinSet<()>,
+    learning: tokio::task::JoinSet<()>,
+}
+
+impl Owned {
+    pub(in crate::modules::training_trigger) fn spawn(&mut self, work: Work, operation: impl std::future::Future<Output = ()> + Send + 'static) {
+        match work {
+            Work::Journal => self.journal.spawn(operation),
+            Work::Learning => self.learning.spawn(operation),
+        };
+    }
+
+    /// Collect the operations that already ended, saying so for any that failed: durable recovery
+    /// retains its work.
+    fn reap(&mut self) {
+        for set in [&mut self.journal, &mut self.learning] {
+            while let Some(joined) = set.try_join_next() {
+                if let Err(error) = joined {
+                    tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
+                }
+            }
+        }
+    }
+}
+
+/// What the stop found when it closed admission ([`TrainingTriggerState::stop_admitting`]).
+pub(crate) struct Stopped {
+    /// Learning operations still running, handed back: their examples stay pending in the
+    /// journal for the next start.
+    pub(crate) learning: usize,
+    /// Journal writes that ended without an answer (a panicked task): their receipt is unknown.
+    pub(crate) failed_writes: Vec<tokio::task::JoinError>,
+}
+
 impl TrainingTriggerState {
-    /// Admit before spawning: contending callers retain their own wait/payload,
-    /// not a second queue of background tasks. Once admitted, the finite owner
-    /// operation holds the lease through every storage/provider await. SQLite's
-    /// blocking writer cannot outlive that lease when the caller disconnects.
+    /// Admit before spawning: contending callers retain their own wait/payload, not a second
+    /// queue of background tasks. Once admitted, the finite owner operation holds the lease
+    /// through every storage/provider await. SQLite's blocking writer cannot outlive that lease
+    /// when the caller disconnects. `work` says what a stop does with it ([`Work`]).
     pub(crate) async fn run_owned<T, F, Fut>(
         self: &Arc<Self>,
+        work: Work,
         key: BucketKey,
         operation: F,
     ) -> Result<T, String>
@@ -16,13 +69,14 @@ impl TrainingTriggerState {
         Fut: std::future::Future<Output = T> + Send + 'static,
     {
         let lease = self.submit_gates.acquire(&key).await;
-        self.run_leased(lease, key, operation).await
+        self.run_leased(work, lease, key, operation).await
     }
 
     /// [`Self::run_owned`] for a caller that already holds the bucket's lease (taken by
     /// `try_acquire` while it held serving resources it would not wait holding).
     pub(crate) async fn run_leased<T, F, Fut>(
         self: &Arc<Self>,
+        work: Work,
         lease: crate::runtime::Lease<BucketKey>,
         key: BucketKey,
         operation: F,
@@ -34,14 +88,10 @@ impl TrainingTriggerState {
     {
         let mut operations = self.operations.lock().await;
         self.require_ready()?;
-        while let Some(joined) = operations.try_join_next() {
-            if let Err(error) = joined {
-                tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
-            }
-        }
+        operations.reap();
         let (send, receive) = tokio::sync::oneshot::channel();
         let state = self.clone();
-        operations.spawn(async move {
+        operations.spawn(work, async move {
             let _lease = lease;
             let result = operation(state, key).await;
             let _ = send.send(result); // a disconnected caller does not cancel ownership
@@ -50,36 +100,53 @@ impl TrainingTriggerState {
         receive.await.map_err(|_| "training owner operation ended without a result; inspect durable status before retry".into())
     }
 
-    /// Admit no new owned operation, and count the ones still running.
-    pub(crate) async fn stop_admitting(&self) -> usize {
-        self.stopping.store(true, Ordering::Release);
-        self.ready.store(false, Ordering::Release);
-        let mut operations = self.operations.lock().await;
-        while let Some(joined) = operations.try_join_next() {
-            if let Err(error) = joined {
-                tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
-            }
-        }
-        operations.len()
+    /// Whether a stop has begun: an admitted pass reads it at its own boundaries and seats no one.
+    pub(in crate::modules::training_trigger) fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Acquire)
     }
 
-    pub(crate) async fn drain_operations(&self) -> Result<(), String> {
+    /// Admit no new owned operation, wait for every journal write to land, and count the
+    /// learning still running ([`Work::Learning`]), which is handed back. Each write's completion
+    /// is the event waited on, never a budget. Idempotent: a second call (the join after the
+    /// drain) finds no write left and counts the same learning.
+    pub(crate) async fn stop_admitting(&self) -> Stopped {
         self.stopping.store(true, Ordering::Release);
         self.ready.store(false, Ordering::Release);
-        // Keep the set in the owner if the runtime's shutdown deadline expires.
-        // Dropping the shutdown wait does not abort still-running operations.
-        let mut operations = self.operations.lock().await;
-        let mut failure = None;
-        while let Some(joined) = operations.join_next().await {
+        // Admission checks `require_ready` under this lock, so no write joins the set once it is
+        // taken; the wait below holds no lock.
+        let mut journal = {
+            let mut operations = self.operations.lock().await;
+            operations.reap();
+            std::mem::take(&mut operations.journal)
+        };
+        let mut failed_writes = Vec::new();
+        while let Some(joined) = journal.join_next().await {
             if let Err(error) = joined {
-                failure = Some(error.to_string());
+                failed_writes.push(error);
             }
         }
-        // nothing learns now: leave no learner seated
-        let quiesced = self.in_place.quiesce(self, super::super::in_place::Busy::Wait).await;
+        let mut operations = self.operations.lock().await;
+        operations.reap();
+        let learning = operations.learning.len();
+        drop(operations);
+        continuum_base::probe!(class = "training.trigger.stopped", learning = learning as u64, failed_writes = failed_writes.len() as u64,
+            "every journal write ended; the learning still running is handed back, its examples pending in the journal for the next start");
+        Stopped { learning, failed_writes }
+    }
+
+    /// The join: every journal write ended ([`Self::stop_admitting`]), then every idle engine's
+    /// learners published and stopped and its workspace released. An engine a handed-back step
+    /// still holds is left to that step: her progress since her newest generation is learned
+    /// again from the journal, and the engine's grant on what she held expires with her.
+    pub(crate) async fn drain_operations(&self) -> Result<(), String> {
+        let stopped = self.stop_admitting().await;
+        let quiesced = self.in_place.quiesce(self).await;
         continuum_base::probe!(class = "training.in_place.quiesced", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
-            unconfirmed = quiesced.unconfirmed, "the trigger stopped: every learner checkpointed and stopped, every workspace released");
-        failure.map_or(Ok(()), Err)
+            unconfirmed = quiesced.unconfirmed, busy = quiesced.busy, "the trigger stopped: every idle learner checkpointed and stopped, every idle workspace released");
+        match stopped.failed_writes.first() {
+            Some(failed) => Err(format!("{} journal writes ended without an answer at stop: {failed}", stopped.failed_writes.len())),
+            None => Ok(()),
+        }
     }
 
     /// Every bucket holding examples not yet learned, read from the journal's pending rows.

@@ -232,41 +232,33 @@ impl ServiceModule for CognitionModule {
     ///    `quiesce_all`, whose contract is the opposite: a quiesced citizen stops
     ///    wandering and deliberately STAYS reachable, so she would keep starting turns
     ///    while we tried to save her.
-    /// 2. Wait for the turns already admitted to finish, bounded.
+    /// 2. Wait for the turns already admitted to finish.
     ///
     /// The count comes from the permits the loops hold: a turn that has taken a message and
     /// is still composing context holds one before any serving lane, so the drain waits for
     /// exactly the turns whose loss would leave no trace.
     ///
-    /// Returns the number still running when the budget expired — a citizen who is still
-    /// thinking is a fact the receipt reports, not one it waits forever for.
-    async fn drain(&self) -> Result<u32, String> {
+    /// The wait ends on the turns' own completion, never on a budget (card 2febbbe8): the
+    /// settle before the stop already gave them their measured remaining time, and a turn
+    /// still running ends after the act in hand (`turn_ingress::is_closing`, read at every act
+    /// boundary). A turn that never ends is named by the runtime's last resort.
+    async fn drain(&self) -> Result<crate::runtime::Quiet, String> {
         const POLL: std::time::Duration = std::time::Duration::from_millis(50);
-        // Inside the runtime's 2s phase bound, so the deadline that fires is this one,
-        // with a count, rather than the outer timeout, which produces no number.
-        const BUDGET: std::time::Duration = std::time::Duration::from_millis(1_800);
-
         let first_to_close = crate::cognition::turn_ingress::close();
-        let deadline = std::time::Instant::now() + BUDGET;
         // Only the turns a stop owes a wait (`turn_ingress::awaited`): a confirmed turn is handed
         // back to the next start and a self-tick holds nothing durable, so neither makes the
         // saved state a mid-turn snapshot (card b5219023).
         let mut poll = tokio::time::interval(POLL);
-        while std::time::Instant::now() < deadline {
-            if crate::cognition::turn_ingress::awaited() == 0 {
-                return Ok(0);
-            }
+        while crate::cognition::turn_ingress::awaited() > 0 {
             poll.tick().await;
         }
-        let left = crate::cognition::turn_ingress::awaited();
         continuum_base::probe!(
-            class = "cognition.drain.incomplete",
-            awaited = left,
+            class = "cognition.drain.quiet",
             in_flight = crate::cognition::turn_ingress::in_flight(),
             first_to_close = first_to_close,
-            "citizens were still inside turns when the drain budget expired — whatever is saved next is a snapshot taken mid-turn, and the receipt says so"
+            "every turn a stop owes a wait finished; what is saved next is between turns"
         );
-        Ok(left.min(u32::MAX as u64) as u32)
+        Ok(crate::runtime::Quiet::Finished)
     }
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {

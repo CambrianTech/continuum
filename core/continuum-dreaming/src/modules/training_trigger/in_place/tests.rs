@@ -279,30 +279,32 @@ fn eviction_deletes_only_this_buckets_superseded_generations() {
 ///
 ///   CONTINUUM_LEARN_ENGINE=<pid>:<port> CONTINUUM_LEARN_BASE=<served model id> CONTINUUM_LEARN_SLOTS=<-np> \
 ///     cargo test -p continuum-dreaming --lib --features live-engine-tests live_engine
-// what this catches (Codex, BigMama 8bed install 2026-11-11): the trigger answering the runtime's
-// drain with 0 while a learning operation still runs, so the shutdown receipt said Drained and the
-// join then timed out. A running operation is counted, and nothing new is admitted after it.
+// what this catches (Codex, BigMama 8bed install 2026-11-11; card 2febbbe8): the trigger answering
+// the runtime's drain as if nothing ran while a learning operation still runs, or waiting it out.
+// A running learning operation is counted as handed back, and nothing new is admitted after it.
 #[tokio::test]
-async fn a_drain_counts_the_learning_still_running() {
+async fn a_drain_hands_back_the_learning_still_running() {
     let state = Arc::new(TrainingTriggerState::new(authority()));
     state.spawn_owned(std::future::pending()).await;
-    assert_eq!(state.stop_admitting().await, 1, "the running operation is in flight, not drained");
+    let stopped = state.stop_admitting().await;
+    assert_eq!(stopped.learning, 1, "the running operation is handed back, not drained");
+    assert!(stopped.failed_writes.is_empty());
     assert!(state.require_ready().is_err(), "a stopping trigger admits nothing new");
 }
 
 // what this catches: the save phase waiting on an engine a learning step holds, so it timed out
-// instead of publishing the idle learners. A busy engine is counted and left to its step (the
-// join quiesces it); the save returns at once.
+// instead of publishing the idle learners. A busy engine is counted and left to its step; once the
+// step lets go, the next quiesce takes it.
 #[tokio::test]
 async fn a_save_leaves_a_busy_engine_to_its_step() {
     let state = Arc::new(TrainingTriggerState::new(authority()));
     let stepping = state.in_place.engine(engine(9)).try_acquire(Some(Uuid::new_v4()), engine_lock::Phase::Step).expect("test: the step holds the engine");
-    let saved = tokio::time::timeout(std::time::Duration::from_secs(5), state.in_place.quiesce(&state, Busy::Skip))
+    let saved = tokio::time::timeout(std::time::Duration::from_secs(5), state.in_place.quiesce(&state))
         .await
         .expect("test: the save does not wait on a step");
     assert_eq!(saved.busy, 1, "the engine the step holds is counted");
     drop(stepping);
-    let joined = state.in_place.quiesce(&state, Busy::Wait).await;
+    let joined = state.in_place.quiesce(&state).await;
     assert_eq!((joined.busy, joined.stopped), (0, 0), "the join quiesces it once the step lets go");
 }
 
@@ -314,7 +316,7 @@ async fn the_runtime_hooks_drain_and_save_through_the_trigger() {
     use crate::runtime::ServiceModule;
     let trigger = crate::modules::training_trigger::TrainingTriggerModule::new(authority());
     trigger.state.spawn_owned(std::future::pending()).await;
-    assert_eq!(trigger.drain().await, Ok(1), "the runtime's drain counts the learning still running");
+    assert_eq!(trigger.drain().await, Ok(crate::runtime::Quiet::HandedBack { resumable: 1 }), "the runtime's drain hands back the learning still running");
     let idle = engine(9);
     drop(trigger.state.in_place.engine(idle)); // an engine the trigger learned on, idle now
     trigger.save_state().await.expect("test: nothing was left unpublished");
@@ -540,7 +542,7 @@ mod live_engine {
         let (trigger, executor) = build_runtime_under(adapter, authority).await;
         submit(&executor, persona, &base, "What is the capital of Oregon?", "Salem.").await;
         let (pause, pass) = seated_pass(&trigger, &key, &base, engine).await;
-        trigger.state.stop_admitting().await; // a shutdown begins while she is seated
+        let _stopped = trigger.state.stop_admitting().await; // a shutdown begins while she is seated
         pause.resume.notify_one();
         let pass = tokio::time::timeout(std::time::Duration::from_secs(120), pass).await.expect("test: the pass ends").expect("test: the pass task");
         assert!(pass.is_err(), "a stopping trigger admits no step: {pass:?}");

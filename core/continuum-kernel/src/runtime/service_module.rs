@@ -243,6 +243,16 @@ impl CommandResult {
 /// - Delivers events matching event_subscriptions
 /// - Calls tick() at the module's priority-determined cadence
 /// - Provides ModuleContext for inter-module communication
+/// How a module's [`ServiceModule::drain`] became quiet: the only answers a drain can give.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quiet {
+    /// Everything in flight finished.
+    Finished,
+    /// `resumable` items were still running; each is held in the module's durable state as
+    /// work the next start resumes, so a stop now loses none of it.
+    HandedBack { resumable: u32 },
+}
+
 #[async_trait]
 pub trait ServiceModule: Send + Sync + Any {
     /// Module configuration — declares what this module handles.
@@ -319,14 +329,16 @@ pub trait ServiceModule: Send + Sync + Any {
         None
     }
 
-    /// STOP TAKING NEW WORK and let what is already in flight finish, within the
-    /// caller's bound. Broadcast by [`Runtime::shutdown`] BEFORE `save_state`.
+    /// STOP TAKING NEW WORK and resolve once the module is QUIET. Broadcast by
+    /// [`Runtime::shutdown`] BEFORE `save_state`, which waits on this future's completion
+    /// (never a stopwatch: a slower node simply answers later, card 2febbbe8).
     ///
-    /// Returns the number of items still in flight when the method returns — `0` means
-    /// drained, non-zero means the bound expired with work outstanding and whatever
-    /// `save_state` writes next is a snapshot taken mid-turn. Reporting the count rather
-    /// than a bool is what lets the receipt say how much was lost instead of only that
-    /// something was.
+    /// Quiet has exactly two forms ([`Quiet`]): every item in flight finished, or the module
+    /// handed what is still running to its durable state as resumable work the next start
+    /// picks up. There is no "still running" answer, so a module that answers cannot make
+    /// the save that follows a snapshot taken mid-turn: "state not durable" is not a value a
+    /// completing drain can return. A module whose drain never completes is named by the
+    /// runtime's last resort (`ModuleStopOutcome::NeverAnswered`), not by this method.
     ///
     /// This exists because suspending a module's own tick is NOT a drain. The persona
     /// registry's `quiesce_all` stops each mind's autonomic self-tick, which is what a
@@ -334,17 +346,17 @@ pub trait ServiceModule: Send + Sync + Any {
     /// so a save that follows a quiesce can still be taken underneath a turn that is
     /// halfway through writing.
     ///
-    /// Default is `Ok(0)`, honest for a module with no producer of its own. A module
-    /// that accepts work from outside itself implements this or its shutdown saves a
-    /// torn state BY CONTRACT.
-    async fn drain(&self) -> Result<u32, String> {
-        Ok(0)
+    /// Default is `Quiet::Finished`, honest for a module with no producer of its own. A
+    /// module that accepts work from outside itself implements this or its shutdown saves
+    /// a torn state BY CONTRACT.
+    async fn drain(&self) -> Result<Quiet, String> {
+        Ok(Quiet::Finished)
     }
 
     /// SAVE this node's volatile state to its durable home — the explicit half
     /// of the CBAR contract (Joel 2026-09-02: "I can call all nodes and tell
     /// them to save or load state"). Broadcast by [`Runtime::shutdown`] before
-    /// `shutdown()`, in parallel, under the same 2s bound. Default no-op is
+    /// `shutdown()`, in parallel, awaited to completion. Default no-op is
     /// honest for modules whose discipline is save-on-write; a module holding
     /// anything volatile at stop time implements this or loses it BY CONTRACT
     /// (never by surprise).

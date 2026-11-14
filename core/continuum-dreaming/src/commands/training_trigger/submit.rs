@@ -25,7 +25,7 @@ use crate::genome::fine_tuning::types::{
     LoRAHyperparams, ScheduleParams, TrainingExample, TrainingSource,
 };
 use crate::modules::training_trigger::{
-    BucketKey, PendingBatch, TrainingTriggerState,
+    BucketKey, PendingBatch, TrainingTriggerState, Work,
     DEFAULT_VALIDATION_SPLIT,
 };
 use crate::sdk_codegen::CommandError;
@@ -139,7 +139,7 @@ pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitPar
         eval_set: p.eval_set,
     };
     let submission_id = p.submission_id;
-    state.run_owned(key, move |state, key| async move {
+    state.run_owned(Work::Journal, key, move |state, key| async move {
         let acceptance = match state.accept(&key, submission_id, batch).await {
             Ok(receipt) => receipt,
             Err((kind, error)) => return SubmitOutcome::refused(kind, error),

@@ -1,13 +1,23 @@
 use super::*;
 
-/// THE per-phase bound of the lifecycle: every module's `load_state` at boot, and each of
-/// drain → save → join at shutdown, gets this long — in parallel, so the wall time of a
-/// phase is the slowest single concern, never the sum. One name, because the save phase
-/// is also the budget the persona seam derives its own work from
-/// (`cognition::handoff::STAGED_READ_BOUND`): a second literal there would drift.
+/// The bound on every module's `load_state` at boot (in parallel, so the wall time is the
+/// slowest single concern, never the sum), and the budget the persona seam derives its staged
+/// read from (`cognition::handoff::STAGED_READ_BOUND`). The stop no longer uses it: each of
+/// drain → save → join is awaited to completion, and only [`MODULE_NEVER_ANSWERED`] names a
+/// module that never answers (card 2febbbe8).
 // derived-or-floor: a floor, set when the phases were made parallel (2026-09-02); the
 // shutdown receipt names any module that overruns it, which is the measurement that moves it.
 pub const SHUTDOWN_PHASE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The stop's LAST RESORT: a module that has not finished drain → save → join by then never
+/// answered, and its receipt row says `NeverAnswered { phase }` naming where it stopped. Every
+/// phase before it is awaited on its own completion, so a slow module that answers is never cut
+/// here. Sized inside the observers' budgets (the signal path waits 8 s, `system/shutdown` 15 s
+/// past its settle) so the receipt naming the silent module always reaches them; it is the 6 s
+/// the three 2 s phases already allowed in total, now spent on whichever phase needs it.
+// derived-or-floor: the observers' budgets above it (signal 8 s, verb 15 s past settle) less the receipt's travel; the receipt names any module that reaches it, which is the measurement that moves it
+// event-exempt: a wedged module (a task that never returns) emits no completion event; this is the error path that names it, after every completion event that did arrive
+pub const MODULE_NEVER_ANSWERED: std::time::Duration = std::time::Duration::from_secs(6);
 
 pub struct Runtime {
     /// Registry uses interior mutability (DashMap + RwLock).
@@ -397,19 +407,18 @@ impl Runtime {
         &self.compute
     }
 
-    /// Shutdown all modules — PARALLEL, BOUNDED, RECEIPTED (the CBAR shape,
+    /// Shutdown all modules — PARALLEL, AWAITED, RECEIPTED (the CBAR shape,
     /// Joel 2026-09-02: "they all follow the same pattern, they gracefully
     /// and quickly save and join threads"). Every module gets the SAME
-    /// contract: 2 seconds to save-and-return; a laggard is receipted as
-    /// timed-out and abandoned (its state discipline is save-on-write, so a
-    /// timeout loses nothing durable). Total wall time = the slowest module
-    /// capped at 2s — never the SUM the old sequential loop paid.
+    /// contract: each phase runs to its own completion; only a module that
+    /// never answers is cut, by [`MODULE_NEVER_ANSWERED`], and named. Total
+    /// wall time = the slowest module — never the SUM the old sequential loop paid.
     ///
     /// Until 2026-09-02 nothing on the production stop path called this at
     /// all: the SIGTERM handler killed sentinels, slept a flat 2s, and
     /// `_exit`ed — so no module ever saved on a real stop. The handler now
     /// runs this first ([`install_signal_shutdown`]).
-    /// Stop every module: DRAIN, then save, then join — each phase bounded, all modules
+    /// Stop every module: DRAIN, then save, then join — each phase awaited, all modules
     /// in parallel — and return a receipt saying what actually reached disk.
     ///
     /// The drain phase is new and it is the point. Suspending a module's tick is not a
@@ -417,6 +426,6 @@ impl Runtime {
     /// active turns running), so without it `save_state` could be taken underneath a turn
     /// halfway through writing, and the result was indistinguishable from a clean save.
     pub async fn shutdown(&self) -> ShutdownReceipt {
-        self.shutdown_within(SHUTDOWN_PHASE).await
+        self.shutdown_within(MODULE_NEVER_ANSWERED).await
     }
 }

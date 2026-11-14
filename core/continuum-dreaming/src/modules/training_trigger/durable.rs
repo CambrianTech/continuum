@@ -29,6 +29,7 @@ mod learn_checkpoint;
 mod reclaim;
 pub(crate) use learn_checkpoint::{Generation, LearnCheckpoint, Position};
 mod training_trigger_state;
+pub(crate) use training_trigger_state::{Owned, Work};
 mod training_trigger_state_2;
 mod training_trigger_state_3;
 pub(crate) use training_trigger_state_3::*;

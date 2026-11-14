@@ -127,7 +127,7 @@ pub use module_readiness::{
     DegradedReason, InitDeadline, ModuleReadiness, ModuleReadinessRow, ModuleState, ModuleUnavailable,
 };
 pub use service_module::{
-    CommandResult, CommandSchema, ModuleConfig, ModulePriority, ParamSchema, ServiceModule,
+    CommandResult, CommandSchema, ModuleConfig, ModulePriority, ParamSchema, Quiet, ServiceModule,
 };
 pub use share_controller::ShareController;
 pub use shared_compute::SharedCompute;

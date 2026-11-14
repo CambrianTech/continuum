@@ -73,7 +73,7 @@ impl TrainingTriggerState {
             };
             let reason = reason.clone();
             let part = self
-                .run_owned(key, move |state, key| async move {
+                .run_owned(super::Work::Journal, key, move |state, key| async move {
                     state.retire_in_bucket(&key, card, ids, reason, retired_by).await
                 })
                 .await
