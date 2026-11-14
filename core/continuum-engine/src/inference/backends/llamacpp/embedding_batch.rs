@@ -158,6 +158,7 @@ impl EmbeddingBatch {
     pub(crate) fn embed(self, model: &Model) -> Result<Vec<Vec<f32>>, String> {
         let mut ctx = model.new_context(llama::ContextParams {
             embeddings: true,
+            embeddings_only: true,
             pooling_type: llama::PoolingType::Last,
             n_ctx: self.widest,
             n_batch: self.widest,

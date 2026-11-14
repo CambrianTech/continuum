@@ -42,6 +42,7 @@
             let schema = CollectionSchema {
                 collection: "test_handle_cursor".to_string(),
                 fields: vec![crate::orm::types::SchemaField {
+                default_value: None,
                     name: "name".to_string(),
                     field_type: crate::orm::types::FieldType::String,
                     indexed: false,

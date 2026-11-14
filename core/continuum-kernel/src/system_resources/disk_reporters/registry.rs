@@ -417,7 +417,9 @@ impl Registry {
             .await
             .map_err(|error| error.to_string())?;
         let mut saved = std::collections::HashMap::new();
-        for (_, record) in store.find_all().await.map_err(|error| error.to_string())? { // bounded: one record per tracked cargo root, retired when it empties
+        use futures::TryStreamExt;
+        let mut replay = store.scan().await.map_err(|error| error.to_string())?;
+        while let Some((_, record)) = replay.try_next().await.map_err(|error| error.to_string())? {
             if !CARGO_TARGET_CLASSES.contains(&record.class.as_str()) {
                 return Err(format!("unknown tracked Cargo class {}", record.class));
             }
@@ -430,6 +432,7 @@ impl Registry {
             self.register_resolved(path.clone(), record.citizen)?;
             saved.insert(path, record);
         }
+        drop(replay);
         let mut records = DurableRoots { store, saved };
         for (dir, volume) in observations {
             if !records.saved.contains_key(dir.path()) {

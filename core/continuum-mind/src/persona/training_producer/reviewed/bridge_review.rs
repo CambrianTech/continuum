@@ -26,16 +26,10 @@ pub(crate) async fn bridge_review(event: &airc_core::TranscriptEvent, observer: 
         // exact validation. Card-wide settlement stays for bounded benchmark evidence.
         let VerifiedReview { review, room, board } = verified;
         let admission = self_review(runtime.airc(), &room).await;
-        let conn = credit_connection(observer)?;
-        consume_observed_review(
-            &conn,
-            runtime.agent_name(),
-            observer,
-            room.channel.as_uuid(),
-            &board,
-            review.review_id,
-            &admission,
-        )
+        let executor = EXECUTOR.cloned().ok_or_else(|| crate::sdk_codegen::CommandError::Internal("credit executor is not ready".into()))?;
+        let substrate = substrate_connection(&executor);
+        let conn = Connection::new(InProcessTransport::new(executor, Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(observer)))));
+        consume_observed_review(&ReviewConnections { citizen: &conn, substrate: &substrate }, &ReviewSelection { persona_name: runtime.agent_name(), persona_id: observer, room_id: room.channel.as_uuid(), board: &board, review_id: review.review_id, self_review: &admission })
         .await
         .map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))
     }
@@ -166,39 +160,21 @@ pub fn credit_connection(
 /// Remote fan-out has ONE transfer owner: the submitted artifact's publisher.
 /// Every observer may fold its accepted room projection, but unrelated residents
 /// never open another persona's SQLite store or dispatch its training transfer.
-pub(crate) async fn consume_observed_review<T: Transport>(
-    conn: &Connection<T>,
-    persona_name: &str,
-    observer: Uuid,
-    room_id: Uuid,
-    board: &airc_work::WorkBoardProjection,
-    review_id: airc_work::WorkReviewId,
-    self_review: &SelfReview,
+pub(crate) async fn consume_observed_review<T: Transport, S: Transport>(
+    connections: &ReviewConnections<'_, T, S>,
+    selection: &ReviewSelection<'_>,
 ) -> Result<Option<ReviewedCredit>, CreditBindingError> {
     let dream = crate::cognition::dream_consolidation::global();
-    consume_observed_review_with_boundary(
-        conn,
-        persona_name,
-        observer,
-        room_id,
-        board,
-        review_id,
-        self_review,
-        dream.as_deref(),
-    )
+    consume_observed_review_with_boundary(connections, selection, dream.as_deref())
     .await
 }
 
-pub async fn consume_observed_review_with_boundary<T: Transport>(
-    conn: &Connection<T>,
-    persona_name: &str,
-    observer: Uuid,
-    room_id: Uuid,
-    board: &airc_work::WorkBoardProjection,
-    review_id: airc_work::WorkReviewId,
-    self_review: &SelfReview,
+pub async fn consume_observed_review_with_boundary<T: Transport, S: Transport>(
+    connections: &ReviewConnections<'_, T, S>,
+    selection: &ReviewSelection<'_>,
     dream: Option<&crate::cognition::dream_consolidation::DreamConsolidationRegion>,
 ) -> Result<Option<ReviewedCredit>, CreditBindingError> {
+    let ReviewSelection { persona_id: observer, board, review_id, .. } = *selection;
     let review = board
         .submission_review(review_id)
         .ok_or(CreditBindingError::WrongSelection)?;
@@ -213,16 +189,7 @@ pub async fn consume_observed_review_with_boundary<T: Transport>(
     if submitted.publisher.as_uuid() != observer {
         return Ok(None);
     }
-    consume_review_with_boundary(
-        conn,
-        persona_name,
-        observer,
-        room_id,
-        board,
-        review_id,
-        self_review,
-        dream,
-    )
+    consume_review_with_boundary(connections, selection, dream)
     .await
     .map(Some)
 }
@@ -260,21 +227,14 @@ pub async fn consume_as_publisher(
     // The publisher must actually inhabit this activity; never substitute focus.
     let room = crate::persona::room_resolve::resolve_room(runtime.airc(), Some(&room_id.to_string())).await?;
     let admission = self_review(runtime.airc(), &room).await;
+    let substrate = substrate_connection(&executor);
     let conn = Connection::new(InProcessTransport::new(
         executor,
         Some(CallerIdentity::local_persona(
             crate::identity::PeerId::from_uuid(runtime.persona_id()),
         )),
     ));
-    consume_review(
-        &conn,
-        runtime.agent_name(),
-        runtime.persona_id(),
-        room_id,
-        board,
-        review_id,
-        &admission,
-    )
+    consume_review(&ReviewConnections { citizen: &conn, substrate: &substrate }, &ReviewSelection { persona_name: runtime.agent_name(), persona_id: runtime.persona_id(), room_id: room_id, board: board, review_id: review_id, self_review: &admission })
     .await
     .map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))
 }
@@ -450,6 +410,19 @@ pub struct StagedCreditEvidence {
     pub predates_submission: bool,
 }
 
+/// Projection of selection/provenance only: never materialize historical prompts
+/// or lived calls to enumerate the evidence attached to a submission.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StagedEvidenceRow {
+    id: Uuid,
+    card_id: Uuid,
+    claim_id: Option<Uuid>,
+    owner: Option<Uuid>,
+    staged_at_ms: u64,
+    receipts: Vec<crate::ai::provenance::GenerationReceipt>,
+}
+
 /// The existing credit owner projects its own rows. Consumers never receive the
 /// prompt/completion, and an incomplete store response is an error, not "no work".
 pub async fn staged_evidence<T: Transport>(
@@ -458,18 +431,11 @@ pub async fn staged_evidence<T: Transport>(
     submitted: &airc_work::WorkSubmission,
 ) -> Result<Vec<StagedCreditEvidence>, ClientError> {
     ensure_storage(conn, persona_name).await?;
-    let value = conn
-        .commands()
-        .execute_value(
-            "data/list",
-            json!({
-                "collection": StagedCredit::COLLECTION,
-                "dbPath": format!("@persona:{persona_name}"),
-                "filter": {"cardId": submitted.card_id.as_uuid().to_string()},
-            }),
-        )
-        .await?;
-    let rows = staged_credit_from_list(value)?;
+    let rows: Vec<StagedEvidenceRow> = crate::orm::client_read::matching(
+        conn, &format!("@persona:{persona_name}"), StagedCredit::COLLECTION,
+        serde_json::Map::from_iter([("cardId".into(), json!(submitted.card_id.as_uuid().to_string()))]),
+        Some(["cardId", "claimId", "owner", "stagedAtMs", "receipts"].into_iter().map(str::to_owned).collect()),
+    ).await?;
     let mut evidence = Vec::with_capacity(rows.len());
     for row in rows {
         if row.card_id != submitted.card_id.as_uuid() {
@@ -562,41 +528,24 @@ pub async fn ensure_storage<T: Transport>(
 /// Consume only an accepted AIRC projection, never an arbitrary decoded review.
 /// The projection verified signed author and the historical review-card claim.
 /// A pass remains reviewer judgement; this does not fetch or grade the artifact.
-pub async fn consume_review<T: Transport>(
-    conn: &Connection<T>,
-    persona_name: &str,
-    persona_id: Uuid,
-    room_id: Uuid,
-    board: &airc_work::WorkBoardProjection,
-    review_id: airc_work::WorkReviewId,
-    self_review: &SelfReview,
+pub async fn consume_review<T: Transport, S: Transport>(
+    connections: &ReviewConnections<'_, T, S>,
+    selection: &ReviewSelection<'_>,
 ) -> Result<ReviewedCredit, CreditBindingError> {
     let dream = crate::cognition::dream_consolidation::global();
-    consume_review_with_boundary(
-        conn,
-        persona_name,
-        persona_id,
-        room_id,
-        board,
-        review_id,
-        self_review,
-        dream.as_deref(),
-    )
+    consume_review_with_boundary(connections, selection, dream.as_deref())
     .await
 }
 
-pub async fn consume_review_with_boundary<T: Transport>(
-    conn: &Connection<T>,
-    persona_name: &str,
-    persona_id: Uuid,
-    room_id: Uuid,
-    board: &airc_work::WorkBoardProjection,
-    review_id: airc_work::WorkReviewId,
-    self_review: &SelfReview,
+pub async fn consume_review_with_boundary<T: Transport, S: Transport>(
+    connections: &ReviewConnections<'_, T, S>,
+    selection: &ReviewSelection<'_>,
     dream: Option<&crate::cognition::dream_consolidation::DreamConsolidationRegion>,
 ) -> Result<ReviewedCredit, CreditBindingError> {
+    let ReviewSelection { persona_name, persona_id, board, review_id, .. } = *selection;
+    let conn = connections.citizen;
     let credit =
-        consume_review_credit(conn, persona_name, persona_id, room_id, board, review_id, self_review).await?;
+        consume_review_credit(connections, selection).await?;
     if credit.state == ReviewedCreditState::Accepted
         && credit.decision_review_id == Some(review_id.as_uuid())
     {

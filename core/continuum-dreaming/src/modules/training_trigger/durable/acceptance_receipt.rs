@@ -18,6 +18,12 @@ pub(in crate::modules::training_trigger) struct Submission {
     pub(super) base_model: String,
     #[entity(json)]
     pub(super) batch: PendingBatch,
+    /// Signature inputs without lived payload. Counts use pending_count instead.
+    #[entity(json)]
+    pub(super) arrival_summary: Option<super::arrival_summary::ArrivalSummary>,
+    /// Count-only inspection never reads prompt, completion or lived payload.
+    #[entity(json)]
+    pub(super) pending_count: Option<super::pending_counts::PendingCount>,
     pub(super) is_pending: bool,
     pub(super) dispatch_id: Option<Uuid>,
     /// Withdrawn before any dispatch by `genome/training-trigger/retire`: the

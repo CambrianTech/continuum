@@ -129,6 +129,20 @@ installed revision, running revision and behavior observed by real consumers. A
 transport acknowledgement is not proof that a mind received and used a result. A
 trained artifact is not proof of retained learning. State the remaining proof honestly.
 
+## Simulation belongs in the design and the iteration
+
+Joel, 2026-11-13: each subsystem design must include realistic load and fault
+simulation, drawn from observed system failures and architectural risks. Name the
+existing replay/test harness, workload shape, fault schedule, correctness invariants,
+performance and quality gates, and evidence needed to compare baseline and candidate.
+Mark simulated or extrapolated results distinctly from live measurements.
+
+Every iteration reproduces the relevant failure or baseline, changes its shared owner,
+then reruns the same workload before independent review and live validation. Include
+queueing, concurrent neighbors, cancellation, resource pressure and restart where the
+path encounters them. Retain new real failures as regression scenarios. A happy-path
+unit test or throughput number alone does not prove end-to-end improvement. Reuse the
+existing runtime contracts and harnesses; do not create a second scheduler for tests.
 ## Review questions
 
 - Does one owner now implement this mechanism, with fewer independent states and paths?

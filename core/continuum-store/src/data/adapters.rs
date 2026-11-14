@@ -12,7 +12,9 @@ impl DataState {
         &self,
         handle: &str,
     ) -> Result<Arc<dyn StorageAdapter>, String> {
-        self.adapter_with_identity(handle).await.map(|(_, adapter)| adapter)
+        self.adapter_with_identity(handle)
+            .await
+            .map(|(_, adapter)| adapter)
     }
 
     /// Resolve once before I/O: the returned identity owns both pool and corpus.
@@ -21,7 +23,9 @@ impl DataState {
         handle: &str,
     ) -> Result<(String, Arc<dyn StorageAdapter>), String> {
         let connection_string = self.resolve_handle(handle)?;
-        let adapter = self.adapter_for_backend(handle, connection_string.clone()).await?;
+        let adapter = self
+            .adapter_for_backend(handle, connection_string.clone())
+            .await?;
         Ok((connection_string, adapter))
     }
 
@@ -30,7 +34,6 @@ impl DataState {
         handle: &str,
         connection_string: String,
     ) -> Result<Arc<dyn StorageAdapter>, String> {
-
         reject_unsupported_backend(&connection_string)?;
 
         // Check cache (keyed by resolved connection string, not by handle —
@@ -63,13 +66,12 @@ impl DataState {
             log_info!(
                 "data",
                 "get_adapter",
-                "Creating SqliteAdapter for handle='{}' → {}",
+                "Creating SeaOrmAdapter for handle='{}' → {}",
                 handle,
                 connection_string
             );
-            let mut sqlite = SqliteAdapter::new();
-            sqlite.initialize(config).await?;
-            ensure_declared_indexes(&sqlite, handle).await?;
+            let sqlite = SeaOrmAdapter::connect(config).await?;
+            ensure_declared_schemas(&sqlite, crate::orm::OrmEntityRegistry::global()).await?;
             Arc::new(sqlite)
         };
 
@@ -78,59 +80,30 @@ impl DataState {
     }
 }
 
-/// Apply every TS-declared entity's indexes over the tables this store already has.
-/// Those collections are written row by row (`data/create` creates the table from the
-/// row), and since the core went headless nothing calls `data/ensure-schema` for them,
-/// so their declared indexes never reached the database: `chat_messages` scanned
-/// 103,319 rows per room page (27-29 ms; with the declared index, under 1 ms, measured
-/// on a copy of the M5's main.db 2026-10-26). Rust-authored entities are ensured by
-/// their own stores. Once per store open; `IF NOT EXISTS` makes a repeat a lookup.
-///
-/// An index is performance, never correctness: one the database refuses is a loud
-/// probe naming the entity, the index and the error, counted in the store's report,
-/// and the store opens without it (Cormac's review of #5466).
-async fn ensure_declared_indexes(sqlite: &SqliteAdapter, handle: &str) -> Result<(), String> {
-    let schemas = crate::entity_schemas::get_entity_schemas()
+/// Decorator declarations are the schema authority, including constraints and indexes.
+/// A failed declaration refuses admission; the store never serves a partial schema.
+pub(super) async fn ensure_declared_schemas(
+    adapter: &SeaOrmAdapter,
+    registry: &crate::orm::OrmEntityRegistry,
+) -> Result<(), String> {
+    for schema in crate::entity_schemas::get_entity_schemas()
         .map_err(|e| e.to_string())?
         .values()
-        .map(crate::entity_schemas::to_collection_schema)
-        .collect();
-    let pass = sqlite.ensure_declared_indexes(schemas).await;
-    for failure in &pass.failed {
-        continuum_base::probe!(
-            class = "orm.declared_index.failed",
-            handle = handle,
-            entity = failure.collection.as_str(),
-            index = failure.index.as_str(),
-            error = failure.error.as_str(),
-            "a declared index could not be built; the store serves without it"
-        );
-        crate::log_warn!(
-            "data",
-            "declared_index",
-            "index {} on {} (handle '{}') failed, store open without it: {}",
-            failure.index,
-            failure.collection,
-            handle,
-            failure.error
-        );
+    {
+        adapter
+            .ensure_schema(resolve_collection_schema(registry, &schema.collection)?)
+            .await
+            .into_result()?;
     }
-    continuum_base::probe!(
-        class = "orm.declared_indexes.report",
-        handle = handle,
-        declared = pass.declared as u64,
-        applied = pass.ensured as u64,
-        awaiting_columns = pass.awaiting_columns as u64,
-        failed = pass.failed.len() as u64,
-        "declared entity indexes at store open"
-    );
     Ok(())
 }
 
 /// SQLite through the kernel ORM is the only store. A `postgres://` string
 /// (e.g. a stale `DATABASE_URL`) fails loudly here, never falls back to a local file.
 pub(super) fn reject_unsupported_backend(connection_string: &str) -> Result<(), String> {
-    if connection_string.starts_with("postgres://") || connection_string.starts_with("postgresql://") {
+    if connection_string.starts_with("postgres://")
+        || connection_string.starts_with("postgresql://")
+    {
         return Err(format!(
             "Postgres is no longer supported: '{connection_string}'. Continuum stores data in SQLite only; unset DATABASE_URL or point it at a SQLite file path."
         ));
@@ -145,4 +118,26 @@ impl crate::runtime::StorageProvider for DataState {
     async fn adapter(&self, handle: &str) -> Result<Arc<dyn StorageAdapter>, String> {
         self.get_adapter(handle).await
     }
+}
+
+/// One declaration resolver for initial admission and later ensure requests.
+pub(super) fn resolve_collection_schema(
+    registry: &crate::orm::OrmEntityRegistry,
+    collection: &str,
+) -> Result<crate::orm::types::CollectionSchema, String> {
+    Ok(if let Some(rust_schema) = registry.resolve(collection) {
+        rust_schema
+    } else if let Some(entity) =
+        crate::entity_schemas::resolve(collection).map_err(|e| e.to_string())?
+    {
+        crate::entity_schemas::to_collection_schema(entity)?
+    } else {
+        return Err(format!(
+            "Unknown collection '{collection}' — not in the Rust ORM registry and not in \
+                 entity_schemas.json. If this is a newly added TS-decorated entity, \
+                 rebuild TS: `npm run build:ts`. If it's a Rust-native substrate entity, \
+                 confirm OrmEntityRegistry::global().register::<YourEntity>() is called \
+                 at boot."
+        ));
+    })
 }

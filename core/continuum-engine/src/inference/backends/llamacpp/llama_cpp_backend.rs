@@ -286,6 +286,7 @@ impl LlamaCppBackend {
                 type_k: self.config.type_k,
                 type_v: self.config.type_v,
                 embeddings: false,
+                embeddings_only: false,
                 pooling_type: llama::PoolingType::None,
                 // MoE expert-selection observer — None for now; the K3 serving path
                 // sets a LiveExpertObserver here to feed the residency PGO tally.
@@ -429,8 +430,6 @@ impl LlamaCppBackend {
             .checked_mul(self.config.n_seq_max)
             .ok_or("context allocation exceeds native representation")?;
         let (bound, scheduler) = self.scheduler.get_or_init(|| {
-            (
-                allocation,
                 Scheduler::spawn(
                     self.model.clone(),
                     SchedulerConfig {
@@ -444,9 +443,8 @@ impl LlamaCppBackend {
                         type_k: self.config.type_k,
                         type_v: self.config.type_v,
                     },
-                ),
-            )
-        });
+                ).map(|scheduler| (allocation, scheduler))
+        }).as_ref().map_err(Clone::clone)?;
         if *bound != allocation {
             return Err(
                 "scheduler allocation changed; release the existing backend before resizing".into(),

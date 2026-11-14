@@ -1,7 +1,7 @@
 {
   "$schemaVersion": 1,
   "$generatedAt": "2026-06-11T17:50:50.044Z",
-  "$sha256": "44cbbfb1662c4514d7ea77c5432d5f7d6e99e2ea091726f2baa52b73b24ed2a2",
+  "$sha256": "0a9fee769abaea26d3fb95bc4fc3a390443ebd040760e9d7e3e905886535a8ee",
   "entities": {
     "users": {
       "collection": "users",
@@ -36,15 +36,6 @@
           "fieldType": "number",
           "options": {
             "nullable": false
-          }
-        },
-        {
-          "fieldName": "personaId",
-          "fieldType": "foreign_key",
-          "options": {
-            "index": true,
-            "nullable": true,
-            "references": "personas.id"
           }
         },
         {
@@ -145,7 +136,8 @@
           "options": {
             "index": true,
             "nullable": true,
-            "references": "genomes.id"
+            "references": "genomes.id",
+            "onDelete": "set_null"
           }
         },
         {
@@ -306,157 +298,6 @@
       "compositeIndexes": [],
       "archive": null
     },
-    "chat_messages": {
-      "collection": "chat_messages",
-      "entityClass": "ChatMessageEntity",
-      "fields": [
-        {
-          "fieldName": "id",
-          "fieldType": "primary",
-          "options": {
-            "unique": true,
-            "nullable": false
-          }
-        },
-        {
-          "fieldName": "createdAt",
-          "fieldType": "date",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "updatedAt",
-          "fieldType": "date",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "version",
-          "fieldType": "number",
-          "options": {
-            "nullable": false
-          }
-        },
-        {
-          "fieldName": "roomId",
-          "fieldType": "text",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "senderId",
-          "fieldType": "text",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "senderName",
-          "fieldType": "text",
-          "options": {
-            "nullable": false,
-            "description": true
-          }
-        },
-        {
-          "fieldName": "senderType",
-          "fieldType": "enum",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "content",
-          "fieldType": "json",
-          "options": {
-            "nullable": false
-          }
-        },
-        {
-          "fieldName": "status",
-          "fieldType": "enum",
-          "options": {
-            "nullable": false
-          }
-        },
-        {
-          "fieldName": "priority",
-          "fieldType": "enum",
-          "options": {
-            "nullable": false
-          }
-        },
-        {
-          "fieldName": "timestamp",
-          "fieldType": "date",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "editedAt",
-          "fieldType": "date",
-          "options": {
-            "nullable": true
-          }
-        },
-        {
-          "fieldName": "reactions",
-          "fieldType": "json",
-          "options": {
-            "nullable": false
-          }
-        },
-        {
-          "fieldName": "thread",
-          "fieldType": "json",
-          "options": {
-            "nullable": true
-          }
-        },
-        {
-          "fieldName": "replyToId",
-          "fieldType": "text",
-          "options": {
-            "nullable": true
-          }
-        },
-        {
-          "fieldName": "metadata",
-          "fieldType": "json",
-          "options": {
-            "nullable": true
-          }
-        }
-      ],
-      "compositeIndexes": [
-        {
-          "name": "idx_chat_messages_room_timestamp",
-          "fields": [
-            "roomId",
-            "timestamp"
-          ],
-          "direction": "DESC"
-        }
-      ],
-      "archive": {
-        "sourceHandle": "primary",
-        "destHandle": "archive",
-        "maxRows": 10000,
-        "rowsPerArchive": 1000,
-        "maxArchiveFileRows": 100000,
-        "orderByField": "timestamp"
-      }
-    },
     "TrainingSession": {
       "collection": "TrainingSession",
       "entityClass": "TrainingSessionEntity",
@@ -498,7 +339,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "Room.id"
+            "references": "rooms.id"
           }
         },
         {
@@ -507,7 +348,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "User.id"
+            "references": "users.id"
           }
         },
         {
@@ -516,7 +357,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "User.id"
+            "references": "users.id"
           }
         },
         {
@@ -816,7 +657,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "User.id"
+            "references": "users.id"
           }
         },
         {
@@ -1020,7 +861,8 @@
           "options": {
             "nullable": false,
             "maxLength": 256,
-            "index": true
+            "index": true,
+            "unique": true
           }
         },
         {
@@ -1391,7 +1233,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "forge_recipes"
+            "references": "forge_recipes.id"
           }
         },
         {
@@ -1783,7 +1625,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "json",
+          "fieldType": "binary",
           "options": {
             "nullable": false
           }
@@ -2897,7 +2739,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "json",
+          "fieldType": "binary",
           "options": {
             "nullable": true
           }
@@ -2998,7 +2840,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "users"
+            "references": "users.id"
           }
         },
         {
@@ -3109,7 +2951,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "users"
+            "references": "users.id"
           }
         },
         {
@@ -3139,7 +2981,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "fine_tuning_datasets"
+            "references": "fine_tuning_datasets.id"
           }
         },
         {
@@ -3148,7 +2990,7 @@
           "options": {
             "index": true,
             "nullable": true,
-            "references": "fine_tuning_datasets"
+            "references": "fine_tuning_datasets.id"
           }
         },
         {
@@ -3287,7 +3129,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "users"
+            "references": "users.id"
           }
         },
         {
@@ -3324,7 +3166,7 @@
           "options": {
             "index": true,
             "nullable": false,
-            "references": "fine_tuning_jobs"
+            "references": "fine_tuning_jobs.id"
           }
         },
         {
@@ -5196,7 +5038,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "json",
+          "fieldType": "binary",
           "options": {
             "nullable": true
           }
@@ -5351,7 +5193,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "json",
+          "fieldType": "binary",
           "options": {
             "nullable": true
           }
@@ -6275,7 +6117,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "blob",
+          "fieldType": "binary",
           "options": {
             "nullable": true
           }
@@ -6509,7 +6351,7 @@
         },
         {
           "fieldName": "embedding",
-          "fieldType": "json",
+          "fieldType": "binary",
           "options": {
             "nullable": true
           }
@@ -6963,7 +6805,8 @@
           "options": {
             "index": true,
             "nullable": true,
-            "references": "academy_curricula.id"
+            "references": "academy_curricula.id",
+            "onDelete": "set_null"
           }
         },
         {

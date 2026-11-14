@@ -35,16 +35,13 @@
         assert!(trigger.state.require_ready().is_err());
         trigger.tick().await.unwrap();
         trigger.state.require_ready().unwrap();
-        assert!(trigger
+        assert_eq!(trigger
             .state
             .durable
             .require()
             .unwrap()
             .submissions
-            .find_all()
-            .await
-            .unwrap()
-            .is_empty());
+            .count().await.unwrap(), 0);
         trigger.shutdown().await.unwrap();
         // A late initialization publication cannot override authoritative stop.
         trigger.state.ready.store(true, Ordering::Release);

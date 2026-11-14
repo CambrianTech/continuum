@@ -250,7 +250,7 @@ function Mod-LlamaServer {
     if ($cache -notmatch '(?m)^CMAKE_LINKER:FILEPATH=([^\r\n]+)') { throw 'Configured engine linker is unknown.' }
     $dumpbin = Join-Path (Split-Path $Matches[1] -Parent) 'dumpbin.exe'
     if (-not (Test-Path -LiteralPath $dumpbin -PathType Leaf)) { throw 'Configured engine dependency inspector is missing.' }
-    Copy-CoreRuntimeClosure -Directory $installDir -Executables @($installBin) -Inspector $dumpbin -RuntimeDirectories $runtimeDirectories -OutputNames (Join-Path $installDir 'runtime-imports.txt')
+    Copy-CoreRuntimeClosure -Directory $installDir -Executables @($installBin) -Inspector $dumpbin -RuntimeDirectories $runtimeDirectories -MsvcDirectories @(Get-CoreRuntimeDirectories -MsvcOnly) -OutputNames (Join-Path $installDir 'runtime-imports.txt')
     Set-Content -Path $stampFile -Value $stampWant -Encoding ASCII
     Save-CoreEngineReceipt -Directory $installDir -SourceRevision $sourceRevision -Backend $backend
     Module-Done 'llama-server'

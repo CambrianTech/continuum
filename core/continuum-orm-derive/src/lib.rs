@@ -76,6 +76,7 @@
 //! - `#[entity(unique)]` — unique constraint
 //! - `#[entity(nullable)]` — explicit nullable (auto for `Option<T>`)
 //! - `#[entity(json)]` — force JSON column (override inferred type)
+//! - `#[entity(text)]` — string-backed enum/newtype column; the write owner rejects non-string values
 //! - `#[entity(skip)]` — exclude from the schema (in-memory only)
 //! - `#[entity(foreign_key("engrams.id"))]` — declare a foreign-key
 //!   reference. Cascade rules default to `Restrict` on delete and
@@ -224,6 +225,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
             InferredFieldType::Number => quote!(#core::orm::FieldType::Number),
             InferredFieldType::Boolean => quote!(#core::orm::FieldType::Boolean),
             InferredFieldType::Date => quote!(#core::orm::FieldType::Date),
+            InferredFieldType::Binary => quote!(#core::orm::FieldType::Binary),
             InferredFieldType::Json => quote!(#core::orm::FieldType::Json),
             InferredFieldType::Uuid => quote!(#core::orm::FieldType::Uuid),
         };
@@ -248,6 +250,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 
         field_pushes.push(quote! {
             fields.push(#core::orm::SchemaField {
+                default_value: None,
                 name: #name_str.to_string(),
                 field_type: #field_type_tokens,
                 indexed: #indexed,
@@ -270,6 +273,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         let unique = idx.unique;
         index_pushes.push(quote! {
             indexes.push(#core::orm::SchemaIndex {
+                descending: false,
                 name: #name.to_string(),
                 fields: ::std::vec![#(#fields_lit),*],
                 unique: #unique,
@@ -308,6 +312,7 @@ enum InferredFieldType {
     #[allow(dead_code)]
     Date,
     Json,
+    Binary,
     Uuid,
 }
 
@@ -530,6 +535,8 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
     let mut unique = false;
     let mut nullable_override: Option<bool> = None;
     let mut force_json = false;
+    let mut force_text = false;
+    let mut binary = false;
     let mut skip = false;
     let mut primary_key = false;
     let mut serde_rename: Option<String> = None;
@@ -546,6 +553,10 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
                     nullable_override = Some(true);
                 } else if meta.path.is_ident("json") {
                     force_json = true;
+                } else if meta.path.is_ident("text") {
+                    force_text = true;
+                } else if meta.path.is_ident("binary") {
+                    binary = true;
                 } else if meta.path.is_ident("skip") {
                     skip = true;
                 } else if meta.path.is_ident("primary_key") {
@@ -567,7 +578,7 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
                         .unwrap_or_else(|| "<unknown>".to_string());
                     return Err(meta.error(format!(
                         "unknown field-level entity attribute `{}`. \
-                         Known keys: indexed, unique, nullable, json, skip, \
+                         Known keys: indexed, unique, nullable, json, text, binary, skip, \
                          primary_key, foreign_key.",
                         key
                     )));
@@ -589,7 +600,18 @@ fn parse_field(field: &Field) -> syn::Result<FieldInfo> {
     }
 
     // Infer FieldType from the (unwrapped) Rust type, unless overridden.
-    let field_type = if force_json {
+    if usize::from(force_json) + usize::from(force_text) + usize::from(binary) > 1 {
+        return Err(syn::Error::new_spanned(field, "json, text and binary are mutually exclusive codecs"));
+    }
+    if binary && !is_byte_buffer(inner_ty) {
+        return Err(syn::Error::new_spanned(&field.ty,
+            "entity(binary) requires Vec<u8> or Option<Vec<u8>>; supply native producer bytes through the binary storage interface"));
+    }
+    let field_type = if binary {
+        InferredFieldType::Binary
+    } else if force_text {
+        InferredFieldType::String
+    } else if force_json {
         InferredFieldType::Json
     } else {
         infer_field_type(inner_ty)
@@ -728,6 +750,16 @@ fn parse_foreign_key(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Forei
 /// Tuple types, fixed-size arrays, `Result<T, E>`, and other non-
 /// path types fall through to `Json` (not silently — the doctrine
 /// is "schema = struct"; if you persist a tuple it becomes JSON).
+fn is_byte_buffer(ty: &Type) -> bool {
+    let Type::Path(path) = ty else { return false };
+    let Some(segment) = path.path.segments.last() else { return false };
+    if segment.ident != "Vec" { return false; }
+    let PathArguments::AngleBracketed(arguments) = &segment.arguments else { return false };
+    if arguments.args.len() != 1 { return false; }
+    matches!(arguments.args.first(), Some(GenericArgument::Type(Type::Path(element)))
+        if element.qself.is_none() && element.path.is_ident("u8"))
+}
+
 fn infer_field_type(ty: &Type) -> InferredFieldType {
     // First strip transparent wrappers (Box, Arc, Rc, Cow) so the
     // wrapper-name doesn't drive inference. The reviewer's example:
@@ -883,6 +915,28 @@ fn to_camel_case(snake: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_declarations_refuse_numeric_arrays_and_text_at_schema_boundary() -> syn::Result<()> {
+        for declaration in [
+            "struct Row { #[entity(binary)] payload: Vec<u8> }",
+            "struct Row { #[entity(binary)] payload: Option<std::vec::Vec<u8>> }",
+        ] {
+            let row: syn::ItemStruct = syn::parse_str(declaration)?;
+            for field in &row.fields { parse_field(field)?; }
+        }
+        for declaration in [
+            "struct Row { #[entity(binary)] payload: Vec<f32> }",
+            "struct Row { #[entity(binary)] payload: Option<Vec<f64>> }",
+            "struct Row { #[entity(binary)] payload: String }",
+            "struct Row { #[entity(binary)] payload: serde_json::Value }",
+            "struct Row { #[entity(binary, json)] payload: Vec<u8> }",
+        ] {
+            let row: syn::ItemStruct = syn::parse_str(declaration)?;
+            for field in &row.fields { assert!(parse_field(field).is_err(), "accepted {declaration}"); }
+        }
+        Ok(())
+    }
 
     /// What this catches: the `to_camel_case` edge cases Reviewer 1
     /// flagged in #9. These don't appear in production entity field

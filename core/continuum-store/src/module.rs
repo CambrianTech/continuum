@@ -81,11 +81,8 @@ impl ServiceModule for DataModule {
             ctx.compute.clone(),
             ctx.runtime.clone(),
         ));
-        *self
-            .state
-            .context
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = Some(ctx_arc);
+        self.state.context.set(ctx_arc)
+            .map_err(|_| "data module context is already initialized".to_string())?;
         log_info!("data", "init", "DataModule initialized with event bus");
         Ok(())
     }

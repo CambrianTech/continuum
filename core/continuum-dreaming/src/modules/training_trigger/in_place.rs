@@ -109,6 +109,8 @@ struct Seated {
     /// row read before its projection (a crash between a commit and its projection) is never
     /// learned again (Codex on 76f829e2b).
     checkpointed: HashMap<Uuid, u32>,
+    /// Exactly the current whole example, loaded before serving guards are acquired.
+    prepared_example: Option<(Uuid, u32, crate::genome::fine_tuning::types::TrainingExample)>,
     /// Her name, for the provenance her candidates carry.
     persona_name: String,
     /// What this seating has cost so far, reported when she pages out.
@@ -198,7 +200,21 @@ impl InPlace {
             if learned >= total {
                 continue;
             }
-            let framed = learn_messages(&row.examples[learned as usize]);
+            let already_prepared = seated.prepared_example.as_ref().is_some_and(|(id, index, _)| *id == row.id && *index == learned);
+            if !already_prepared {
+                seated.prepared_example = None;
+                let examples = state.durable.require()?.submission_examples(row.id).await?;
+                if examples.len() != row.examples.len() {
+                    return Err(format!("submission {} payload disagrees with its discovery summary", row.id));
+                }
+                let example = examples.into_iter().nth(learned as usize)
+                    .ok_or_else(|| format!("submission {} has no example {learned}", row.id))?;
+                seated.prepared_example = Some((row.id, learned, example));
+            }
+            let Some((_, _, example)) = seated.prepared_example.as_ref() else {
+                return Err("prepared learning example was not retained".into());
+            };
+            let framed = learn_messages(example);
             return match seated.mind.cover(&self.authority, workspace, &framed.messages, framed.tools.as_ref()).await {
                 Ok(()) => Ok(Prepared::Ready),
                 Err(LearnFailure::Uncovered(crate::genome::learner::seat::SeatRefusal::AwaitingMemory(wait))) => Ok(Prepared::MemoryShort(wait)),
@@ -323,7 +339,13 @@ async fn step_on(
         if learned >= total {
             continue;
         }
-        let framed = learn_messages(&row.examples[learned as usize]);
+        let Some((id, index, example)) = seated.prepared_example.as_ref() else {
+            return Ok(Stepped::Next(Next::Again));
+        };
+        if *id != row.id || *index != learned {
+            return Ok(Stepped::Next(Next::Again));
+        }
+        let framed = learn_messages(example);
         let rate = seated.policy.learning_rate;
         // revalidate its memory under these owners (the engine's shared workspace may have moved),
         // one attempt: short, everything is let go and the pass ends holding nothing
@@ -368,6 +390,7 @@ async fn step_on(
             Ok((Verdict::Learned, false, _)) => {
                 seated.cost.learned += 1;
                 seated.progress.insert(row.id, learned + 1);
+                seated.prepared_example = None;
                 pass.learned += 1;
                 Ok(Stepped::Next(Next::Again))
             }
@@ -545,6 +568,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
             held.minds.insert(
                 key.clone(),
                 Seated {
+                    prepared_example: None,
                     id, // the shadow's own: her file in the train dir is named for this seat
                     policy,
                     signature,

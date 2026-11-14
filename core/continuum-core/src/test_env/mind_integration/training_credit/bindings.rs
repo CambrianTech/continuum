@@ -74,7 +74,7 @@ use super::*;
                 json!({
                     "collection": StagedCreditGeneration::COLLECTION,
                     "dbPath": format!("@persona:{name}"),
-                    "filter": {"submittedRequestId": "correction"}
+                    "filter": {"submittedRequestId": "correction"}, "limit": 2
                 }),
             )
             .await
@@ -431,7 +431,7 @@ use super::*;
                 "data/list",
                 json!({
                     "collection":StagedCreditGeneration::COLLECTION,
-                    "dbPath":format!("@persona:{name}")
+                    "dbPath":format!("@persona:{name}"), "limit": 9
                 }),
             )
             .await

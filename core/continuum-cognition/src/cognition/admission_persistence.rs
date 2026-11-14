@@ -424,12 +424,12 @@ impl OrmLoader {
     pub async fn load_with_row_ids(
         &self,
     ) -> Result<(Vec<Engram>, Vec<(Uuid, RecallMetadata)>, Vec<(Uuid, Uuid)>), OrmStoreError> {
-        let engrams_with_ids = self.engram_store.find_all().await?;
-        let metadata_with_ids = self.metadata_store.find_all().await?;
-        let engrams: Vec<Engram> = engrams_with_ids.into_iter().map(|(_, e)| e).collect();
-        let mut metadata: Vec<(Uuid, RecallMetadata)> = Vec::with_capacity(metadata_with_ids.len());
-        let mut row_id_pairs: Vec<(Uuid, Uuid)> = Vec::with_capacity(metadata_with_ids.len());
-        for (row_id, row) in metadata_with_ids {
+        use futures::TryStreamExt;
+        let engrams = self.engram_store.scan().await?.map_ok(|(_, engram)| engram).try_collect().await?;
+        let mut rows = self.metadata_store.scan().await?;
+        let mut metadata = Vec::new();
+        let mut row_id_pairs = Vec::new();
+        while let Some((row_id, row)) = rows.try_next().await? {
             row_id_pairs.push((row.engram_id, row_id));
             metadata.push(row.into());
         }
@@ -535,7 +535,7 @@ mod tests {
     #[tokio::test]
     async fn engrams_survive_process_restart_via_orm_persistence() {
         use crate::orm::adapter::StorageAdapter;
-        use crate::orm::sqlite::SqliteAdapter;
+        use crate::orm::SeaOrmAdapter;
         use crate::orm::OrmStore;
         use crate::cognition::admission_state::AdmissionState;
         use crate::cognition::recall_metadata::RecallMetadataRegistry;
@@ -544,7 +544,7 @@ mod tests {
         // Set up SQLite + OrmStores + the production sink + loader.
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("persona-home.sqlite");
-        let adapter = SqliteAdapter::open(&path).await.expect("adapter open");
+        let adapter = SeaOrmAdapter::open(&path).await.expect("adapter open");
         let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
         let engrams = Arc::new(OrmStore::<Engram>::new(Arc::clone(&adapter)).await.unwrap());
         let metadata = Arc::new(
@@ -658,7 +658,7 @@ mod tests {
     #[tokio::test]
     async fn engram_context_survives_home_reopen_portability_proof() {
         use crate::orm::adapter::StorageAdapter;
-        use crate::orm::sqlite::SqliteAdapter;
+        use crate::orm::SeaOrmAdapter;
         use crate::orm::OrmStore;
 
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -667,7 +667,7 @@ mod tests {
 
         // ── Lifetime 1: persona alive on "node A" — admit a room-keyed engram ──
         let engram_id = {
-            let adapter = SqliteAdapter::open(&path).await.expect("adapter open");
+            let adapter = SeaOrmAdapter::open(&path).await.expect("adapter open");
             let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
             let store = OrmStore::<Engram>::new(adapter).await.unwrap();
 
@@ -680,7 +680,7 @@ mod tests {
         };
 
         // ── Lifetime 2: spawn from the SAME home on "node B" ──
-        let adapter2 = SqliteAdapter::open(&path).await.expect("adapter open 2");
+        let adapter2 = SeaOrmAdapter::open(&path).await.expect("adapter open 2");
         let adapter2: Arc<dyn StorageAdapter> = Arc::new(adapter2);
         let store2 = OrmStore::<Engram>::new(adapter2).await.unwrap();
 
@@ -707,12 +707,12 @@ mod tests {
     #[tokio::test]
     async fn orm_persistence_sink_writes_then_loader_reads_back() {
         use crate::orm::adapter::StorageAdapter;
-        use crate::orm::sqlite::SqliteAdapter;
+        use crate::orm::SeaOrmAdapter;
         use crate::orm::OrmStore;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("admission.sqlite");
-        let adapter = SqliteAdapter::open(&path).await.expect("adapter open");
+        let adapter = SeaOrmAdapter::open(&path).await.expect("adapter open");
         let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
         let engrams = Arc::new(OrmStore::<Engram>::new(Arc::clone(&adapter)).await.unwrap());
         let metadata = Arc::new(

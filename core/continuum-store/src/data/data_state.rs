@@ -107,7 +107,7 @@ impl DataState {
             collection: params.collection.clone(),
             filter: params.filter,
             sort: params.sort,
-            limit: params.limit,
+            limit: Some(params.limit),
             offset: params.offset,
             select: params.select,
             ..Default::default()
@@ -153,7 +153,11 @@ impl DataState {
             .await
             .map_err(|_| "query semaphore closed")?;
 
-        let handle = params.handle.as_deref().unwrap_or("main");
+        // The public request schema defines an omitted handle as the shared store.
+        let handle = match params.handle.as_deref() {
+            Some(handle) => handle,
+            None => "main",
+        };
 
         // Plain-JSON filter → typed FieldFilter map. FieldFilter is untagged, so
         // `{"roomId": "general"}` becomes an equality match and
@@ -180,7 +184,7 @@ impl DataState {
                 .collect::<Vec<_>>()
         });
 
-        require_query_fields(&filter, &sort, &None)?;
+        require_query_fields(&filter, &sort, &params.select)?;
         let adapter = self.get_adapter(handle).await?;
 
         // Accurate total: SQL COUNT over the same filter, independent of paging.
@@ -191,38 +195,28 @@ impl DataState {
                 ..Default::default()
             })
             .await;
-        if !count_res.success {
-            return Err(format!(
-                "data/list: count failed for '{}' — {}",
-                params.collection,
-                count_res.error.unwrap_or_else(|| "unknown error".into())
-            ));
-        }
-        let total = count_res.data.unwrap_or(0) as u32;
+        let total = count_res.into_result()
+            .map_err(|e| format!("data/list: count failed for '{}' - {e}", params.collection))?;
+        let total = u32::try_from(total)
+            .map_err(|_| "data/list: count exceeds response representation".to_string())?;
 
         let res = adapter
             .query(StorageQuery {
                 collection: params.collection.clone(),
                 filter,
                 sort,
-                limit: params.limit.map(|n| n as usize),
+                select: params.select,
+                limit: Some(params.limit.get() as usize),
                 offset: params.offset.map(|n| n as usize),
                 ..Default::default()
             })
             .await;
-        if !res.success {
-            return Err(format!(
-                "data/list: query failed for '{}' — {}",
-                params.collection,
-                res.error.unwrap_or_else(|| "unknown error".into())
-            ));
-        }
-
-        let records = res.data.unwrap_or_default();
+        let records = res.into_result()
+            .map_err(|e| format!("data/list: query failed for '{}' - {e}", params.collection))?;
         let mut items = Vec::with_capacity(records.len());
         for r in records {
             items.push(
-                serde_json::to_value(r)
+                serde_json::to_value(r) // data/list wire response: collections have dynamic record schemas.
                     .map_err(|e| format!("data/list: serialize record — {e}"))?,
             );
         }
@@ -253,7 +247,7 @@ impl DataState {
             collection: params.collection,
             filter: params.filter,
             sort: params.sort,
-            limit: params.limit,
+            limit: Some(params.limit),
             offset: params.offset,
             joins: params.joins,
             select: params.select,
@@ -331,27 +325,9 @@ impl DataState {
         collection: &str,
     ) -> Result<StorageResult<bool>, String> {
         require_public_collection(collection)?;
-        // Resolution order per [[orm-everything-not-hand-edited-files]]:
-        //   1. Rust-native registry (substrate entities authored Rust-first:
-        //      hw_tiers, role_templates, identity pools, universes).
-        //   2. entity_schemas.json (TS-decorator authored: chat, users,
-        //      cognition, timeline — the existing pipeline).
-        //   3. Error — collection unknown to either path.
-        let collection_schema = if let Some(rust_schema) =
-            crate::orm::OrmEntityRegistry::global().resolve(collection)
-        {
-            rust_schema
-        } else if let Some(entity) = crate::entity_schemas::resolve(collection).map_err(|e| e.to_string())? {
-            crate::entity_schemas::to_collection_schema(entity)
-        } else {
-            return Err(format!(
-                "Unknown collection '{collection}' — not in the Rust ORM registry and not in \
-                 entity_schemas.json. If this is a newly added TS-decorated entity, \
-                 rebuild TS: `npm run build:ts`. If it's a Rust-native substrate entity, \
-                 confirm OrmEntityRegistry::global().register::<YourEntity>() is called \
-                 at boot."
-            ));
-        };
+        let collection_schema = super::adapters::resolve_collection_schema(
+            crate::orm::OrmEntityRegistry::global(), collection,
+        )?;
         let adapter = self.get_adapter(handle).await?;
         Ok(adapter.ensure_schema(collection_schema).await)
     }
@@ -398,14 +374,15 @@ impl DataState {
     // =========================================================================
 
     /// Parse embedding from record data (supports BLOB and JSON array)
-    pub(super) fn parse_embedding(value: &Value) -> Vec<f64> {
+    pub(super) fn parse_embedding(value: &Value) -> Result<Vec<f64>, String> {
         match value {
-            Value::Array(arr) => arr.iter().filter_map(|v| v.as_f64()).collect(),
+            Value::Array(arr) => arr.iter().map(|v| v.as_f64()
+                .ok_or_else(|| "Embedding contains a non-numeric component".to_string())).collect(),
             Value::String(s) => {
-                // Try parsing as JSON array
-                serde_json::from_str(s).unwrap_or_default()
+                // Serialized vectors are decoded only after the embedding field is selected.
+                serde_json::from_str(s).map_err(|e| format!("Invalid stored embedding: {e}"))
             }
-            _ => Vec::new(),
+            _ => Err("Embedding must be a numeric array or its JSON encoding".into()),
         }
     }
 
@@ -507,39 +484,14 @@ impl DataState {
 
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
-        // Get total record count
-        let total_query = StorageQuery {
-            collection: collection.to_string(),
-            ..Default::default()
-        };
-        let total_result = adapter.count(total_query).await;
-        let total_records = total_result.data.unwrap_or(0);
-
-        // Query to count records WITH embeddings
-        // We need to query and check which have embedding field
-        let query = StorageQuery {
-            collection: collection.to_string(),
-            limit: Some(10000), // Reasonable limit
-            ..Default::default()
-        };
-        let result = adapter.query(query).await;
-
-        let mut records_with_vectors = 0;
-        let mut vector_dimensions = 0;
-
-        if let Some(records) = result.data {
-            for record in &records {
-                if let Some(embedding) = record.data.get("embedding") {
-                    let vec = Self::parse_embedding(embedding);
-                    if !vec.is_empty() {
-                        records_with_vectors += 1;
-                        if vector_dimensions == 0 {
-                            vector_dimensions = vec.len();
-                        }
-                    }
-                }
-            }
+        let stats = adapter.numeric_array_stats(collection, "embedding").await.into_result()
+            .map_err(|e| format!("vector stats for {collection}: {e}"))?;
+        if stats.min_length != stats.max_length {
+            return Err(format!("{collection} contains inconsistent embedding dimensions: {} to {}", stats.min_length, stats.max_length));
         }
+        let total_records = stats.total_records;
+        let records_with_vectors = stats.non_empty_records;
+        let vector_dimensions = stats.max_length;
 
         // Check cache status
         let cached_count = self.vector_cache.get::<Vec<CachedVector>>(&scope, collection)

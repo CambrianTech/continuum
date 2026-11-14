@@ -102,6 +102,10 @@ impl UnresolvedPage {
         self.retain(custody, |_, custody| drop(custody));
     }
 
+    pub(super) fn hold_turn(self, custody: super::TurnAdmission) {
+        self.retain(custody, finish_turn);
+    }
+
     pub(crate) fn resume<C: Send + 'static>(self, custody: C) -> tokio::sync::oneshot::Receiver<PageResolution<C>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.retain(custody, move |released, custody| {
@@ -170,4 +174,13 @@ impl UnresolvedPage {
             complete(released, custody);
         });
     }
+}
+
+fn finish_turn(released: Released, mut custody: super::TurnAdmission) {
+    if matches!(released, Released::Verified(_)) {
+        custody.preparation_io_completed();
+    }
+    // Quarantine/condemnation is not a stop receipt. A dispatched
+    // preparation drops unresolved and stays charged to its incarnation.
+    drop(custody);
 }

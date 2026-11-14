@@ -30,6 +30,12 @@ use serde_json::json;
 use crate::inference::resource_admission::{LanePriority, ServingLanePermit};
 use crate::inference::slots::{DecodeBound, DecodePermit, KvSlotPool, MindTurn, PageKey, SlotClass, SlotPermit, SlotPin};
 
+mod preparation;
+pub(crate) use preparation::{AdmissionFailure, Preparation};
+pub(crate) use request::admit_prepared_turn;
+mod request;
+pub use request::{admit_turn, AdmissionPatience, HER_ACT_FIRST};
+
 mod page_liveness;
 mod page_quote;
 mod page_receipt;
@@ -105,6 +111,7 @@ pub struct TurnAdmission {
     /// Cancellation during paging or generation must not save foreign KV later.
     uncommitted: Option<(Arc<KvSlotPool>, PageKey, u32)>,
     dispatch: Dispatch,
+    preparation: Option<crate::capacity::window_grant::GrantReservation>,
     _endpoint: crate::inference::slots::EndpointAdmission,
     scratch: Option<u32>,
     /// A dream's ambient serving lane, taken only where it borrows a citizen slot (no scratch
@@ -150,12 +157,15 @@ impl TurnAdmission {
         action: PageAction,
     ) -> Result<(Self, bool), String> {
         self.paging_in_flight = true;
+        if let Some(grant) = &mut self.preparation { grant.mark_dispatched(); }
         match kv_page_action(client, root, slot, key, action).await {
             PageOutcome::Completed => {
+                self.preparation_io_completed();
                 self.paging_in_flight = false;
                 Ok((self, true))
             }
             PageOutcome::Rejected => {
+                self.preparation_io_completed();
                 self.paging_in_flight = false;
                 Ok((self, false))
             }
@@ -163,7 +173,7 @@ impl TurnAdmission {
                 self.paging_in_flight = false;
                 // The mind is not the slot: her next act may proceed on another slot or cold.
                 drop(self._mind.take());
-                unresolved.hold(self);
+                unresolved.hold_turn(self);
                 Err("KV page switch unresolved: the engine kept working without a receipt; its slot is held \
                     until the engine answers, the page is held not resident, the engine is not replaced on this alone".into())
             }
@@ -227,84 +237,6 @@ impl Drop for TurnAdmission {
     }
 }
 
-/// Independent admission budgets: readiness waits consume `readiness`; every wait
-/// consumes the request's absolute deadline when it has one.
-pub struct AdmissionPatience {
-    readiness: std::time::Duration,
-    deadline: Option<tokio::time::Instant>,
-}
-
-impl AdmissionPatience {
-    /// A generation occupancy estimate is not an admission expiry. Healthy queue
-    /// and paging work stays owned until admitted or the requester cancels.
-    pub fn for_turn() -> Self {
-        Self {
-            readiness: crate::inference::slots::EndpointSlots::TURN_READINESS_PATIENCE,
-            deadline: None,
-        }
-    }
-
-    /// An explicit caller expiry, already expressed on the monotonic clock.
-    /// Do not derive this from predicted generation occupancy.
-    pub fn until(deadline: tokio::time::Instant) -> Self {
-        Self { deadline: Some(deadline), ..Self::for_turn() }
-    }
-}
-
-impl From<std::time::Duration> for AdmissionPatience {
-    fn from(readiness: std::time::Duration) -> Self {
-        Self { readiness, deadline: None }
-    }
-}
-
-/// Admit a turn: wait for the mind's running act (a keyed turn only; see
-/// `slots::mind_gate`), acquire the concurrency permit (always), then — for a turn with a
-/// [`PageKey`] and a live slot pool — lease + pin its slot and page its KV (save the
-/// evictee, restore this mind's page). Returns the guard the
-/// caller must hold across the generation.
-///
-/// `key`/`pool` are `None` for non-Turn traffic (or a cloud provider with no slots):
-/// the caller still gets the permit and places the request on scratch (or unpinned)
-/// itself. On a single-slot server the pool saves and detaches the resident before
-/// transient traffic borrows that slot; `slot()` then returns its index.
-///
-/// A keyed dream's refusal when her act is running or queued: her act comes first, and the
-/// dream (her learning step) is tried again later, having held nothing.
-pub const HER_ACT_FIRST: &str = "her act comes first: her own background work yields to it";
-
-/// `patience` is how long the turn holds through a CLOSED endpoint (an engine still
-/// loading, a transition in flight) before it is refused — the caller's bound, since
-/// only the caller knows what its request can afford: the persona adapter passes
-/// `AdmissionPatience::for_turn()`. Readiness time is cumulative across retries;
-/// healthy slot and adapter waits end only on cancellation or an explicit caller
-/// expiry supplied with `AdmissionPatience::until`.
-/// A test that asserts immediate readiness refusal passes zero. See `EndpointSlots::admit_when_ready`
-/// for the boot window that cost Kimi 16 turns.
-pub async fn admit_turn(
-    concurrency: impl Into<DecodeBound>,
-    class: SlotClass,
-    key: Option<PageKey>,
-    pool: Option<Arc<KvSlotPool>>,
-    client: &reqwest::Client,
-    root: &str,
-    approx_tokens: u64,
-    patience: impl Into<AdmissionPatience>,
-) -> Result<TurnAdmission, String> {
-    let patience = patience.into();
-    let concurrency = concurrency.into();
-    let admission = admit(&concurrency, class, key, pool, client, root, approx_tokens, false, patience.readiness);
-    match patience.deadline {
-        Some(deadline) => {
-            if deadline <= tokio::time::Instant::now() {
-                return Err("turn deadline elapsed before admission".into());
-            }
-            tokio::time::timeout_at(deadline, admission).await
-                .map_err(|_| "turn deadline elapsed during admission".to_owned())?
-        }
-        None => admission.await,
-    }
-}
-
 /// Best-effort warm-ahead uses the same paging and provisional-attribution owner
 /// as a turn. No generation follows, so only proven physical warmth is committed.
 pub(crate) async fn warm_ahead(
@@ -329,7 +261,7 @@ pub(crate) async fn warm_ahead(
     // Best-effort: a closed endpoint is an instant no, never a held permit.
     // No generation follows: its drop keeps only the warmth paging confirmed (`Dispatch::Unsent`).
     let concurrency = concurrency.into();
-    let admission = admit(&concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
+    let admission = admit(&concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO, None).await.map_err(AdmissionFailure::into_text)?;
     if let Some(slot) = admission.slot {
         continuum_base::probe!(
             class = "inference.kv_warm_ahead",
@@ -355,7 +287,8 @@ async fn admit(
     approx_tokens: u64,
     warm_only: bool,
     patience: std::time::Duration,
-) -> Result<TurnAdmission, String> {
+    preparation: Option<Preparation>,
+) -> Result<TurnAdmission, AdmissionFailure> {
     let started = tokio::time::Instant::now();
     let mut readiness_left = patience;
     let mut waited = false;
@@ -445,6 +378,7 @@ async fn admit(
             _permit: Some(_permit),
             uncommitted: None,
             dispatch: Dispatch::Unsent,
+            preparation: None,
             scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),
             _endpoint: endpoint,
             _mind: None,
@@ -553,6 +487,7 @@ async fn admit(
                 // nothing pages a resident out (card 47151d36, `slots::page_io`).
                 let page_io = crate::inference::slots::admit_page_io(crate::inference::slots::page_io::gate())
                     .map_err(|closed| closed.to_string())?;
+                admission.reserve_preparation(preparation)?;
                 let pg = pool.plan_paging(slot, k);
                 admission.page_confirmed = pg.already_resident;
                 if pg.already_resident {

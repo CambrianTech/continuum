@@ -41,6 +41,20 @@ async fn a_stale_lease_posts_nothing() {
         (Some((8, 1_762_400_000)), "the endpoint admission is bound to engine B"),
         (None, "no engine the admission can name"),
     ] {
+        let root = format!("http://{address}/{}", uuid::Uuid::new_v4());
+        let pool = crate::inference::slots::directory().ensure_pool(&root, 3);
+        if let Some((pid, started)) = bound_to {
+            crate::inference::slots::stamp_engine_incarnation(&root, pid, started);
+        }
+        let persona = uuid::Uuid::new_v4();
+        let key = crate::inference::slots::PageKey::mind(persona).expect("test: page identity"); // JUSTIFIED: fixture
+        pool.note_saved(key);
+        let refused = crate::inference::turn_admission::admit_prepared_turn(
+            &Arc::new(tokio::sync::Semaphore::new(1)), crate::inference::slots::SlotClass::Turn,
+            Some(key), Some(pool), &adapter.client, &root, 4, std::time::Duration::ZERO,
+            Some(crate::inference::turn_admission::Preparation { persona, lease }),
+        ).await.map_err(InferenceError::from);
+        assert!(matches!(refused, Err(InferenceError::GrantChanged { .. })), "{why}: typed refusal before restore HTTP");
         let mut reservation = None;
         let mut dispatched = 0;
         let sent = crate::inference::lane_send::send_with_lane_retry(
@@ -72,6 +86,8 @@ async fn a_stale_lease_posts_nothing() {
 #[tokio::test]
 async fn a_stamped_admission_on_her_current_lease_dispatches() {
     use axum::{routing::post, Router};
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
     let posts = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&posts);
     let app = Router::new().route("/v1/chat/completions", post(move || {
@@ -79,6 +95,19 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
         async move {
             counted.fetch_add(1, Ordering::SeqCst);
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+        }
+    }));
+    let app = app.route("/slots/{slot}", post({
+        let entered = entered.clone();
+        let release = release.clone();
+        move |axum::extract::Path(slot): axum::extract::Path<u32>, axum::Json(body): axum::Json<serde_json::Value>| {
+            let entered = entered.clone();
+            let release = release.clone();
+            async move {
+                entered.notify_one();
+                release.notified().await;
+                axum::Json(serde_json::json!({"id_slot": slot, "filename": body["filename"], "n_restored": 42}))
+            }
         }
     }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("isolated HTTP fixture"); // JUSTIFIED: test fixture
@@ -92,9 +121,6 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
     let client = reqwest::Client::new();
     let persona = uuid::Uuid::new_v4();
     let key = crate::inference::slots::PageKey::mind(persona).expect("test: a non-nil id"); // JUSTIFIED: test fixture
-    let admitted = crate::inference::turn_admission::admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool), &client, &root, 100, std::time::Duration::ZERO)
-        .await
-        .expect("test: admitted"); // JUSTIFIED: test fixture
     // Her grant published on that same engine.
     let engine = crate::inference::engine_residency::EngineIncarnation { pid: 4_242, started_s: 1_800_000_000, port: address.port() };
     let mut grants = crate::capacity::window_grant::PoolGrants {
@@ -105,12 +131,62 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
         revisions: Default::default(),
     };
     crate::capacity::window_grant::stamp_revisions(None, &mut grants);
-    let (_publisher, receiver) = tokio::sync::watch::channel(Some(grants));
+    let (publisher, receiver) = tokio::sync::watch::channel(Some(grants));
     assert!(crate::capacity::window_grant::install_grants(receiver), "test: the only grants watch in this binary");
     let lease = crate::capacity::window_grant::current_lease(persona).expect("her published lease"); // JUSTIFIED: the invariant under test
+    pool.note_saved(key);
+    let preparing = crate::inference::turn_admission::admit_prepared_turn(
+        &sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), &client, &root,
+        100, std::time::Duration::ZERO,
+        Some(crate::inference::turn_admission::Preparation { persona, lease }),
+    );
+    let mut preparing = Box::pin(preparing);
+    tokio::select! {
+        _ = entered.notified() => {}
+        result = &mut preparing => panic!("test: completed before release: {}", result.is_ok()), // JUSTIFIED: fixture gate
+    }
+    // More publication ticks than the idle-yield rule permits, while restore is blocked.
+    let waiter = uuid::Uuid::new_v4();
+    let demands = [persona, waiter].map(|mind| crate::capacity::window_grant::Demand {
+        mind, need: crate::inference::planning::window_allocator::test_tokens(148_838),
+        target: crate::inference::planning::window_allocator::test_tokens(148_838),
+        wish: crate::inference::planning::window_allocator::test_tokens(148_838),
+        in_flight: false, settled: true, ceiling: 200_000,
+    });
+    let mut fair = crate::capacity::window_grant::FairGrantState::default();
+    for _ in 0..4 {
+        let current = publisher.borrow().clone();
+        let (_, handoffs) = crate::capacity::window_grant::publish_fair_grants(
+            &mut fair, &demands, 200_000, 200_000, Some(engine), || current,
+            |next| { publisher.send_replace(Some(next)); },
+        );
+        assert!(handoffs.is_empty(), "preparing is not idle or completed");
+        assert_eq!(crate::capacity::window_grant::current_lease(persona), Some(lease));
+    }
+    drop(preparing);
+    crate::capacity::window_grant::honoring_reservations(Some(engine), |claims| {
+        assert_eq!(claims.get(&persona), Some(&148_838), "cancelled requester cannot release dispatched restore custody");
+    });
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let held = crate::capacity::window_grant::honoring_reservations(Some(engine), |claims| claims.contains_key(&persona));
+            if !held { break; }
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("test: terminal restore releases abandoned preparation"); // JUSTIFIED: bounded fixture
+    assert!(pool.confirms(&key), "cancelled waiter retains the completed restore");
+    let mut admitted = crate::inference::turn_admission::admit_prepared_turn(
+        &sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool), &client, &root,
+        100, std::time::Duration::ZERO,
+        Some(crate::inference::turn_admission::Preparation { persona, lease }),
+    ).await.map_err(crate::ai::inference_error::InferenceError::from).expect("test: prepared turn"); // JUSTIFIED: fixture
+    crate::capacity::window_grant::honoring_reservations(Some(engine), |claims| {
+        assert_eq!(claims.get(&persona), Some(&148_838), "preparation charges the full grant before POST");
+    });
     let admission = crate::ai::types::RequestAdmission { window: 148_838, lease: Some(lease), priced: crate::ai::types::PromptAdmission::Estimated };
     let adapter = test_adapter();
-    let mut reservation = None;
+    let mut reservation = admitted.take_preparation();
     let mut dispatched = 0;
     let sent = crate::inference::lane_send::send_with_lane_retry(
         &adapter.config,

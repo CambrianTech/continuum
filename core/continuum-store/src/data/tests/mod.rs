@@ -7,6 +7,50 @@
 use crate::orm::types::CollectionSchema;
     mod vector;
 
+    #[tokio::test]
+    async fn queries_require_an_explicit_bound_before_opening_storage()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let module = DataModule::new(no_substrate_entities);
+        let (_rejected_tmp, rejected_path) = test_db_path("rejected-query-bound");
+        for command in ["data/query", "data/queryWithJoin"] {
+            for params in [
+                json!({"dbPath":rejected_path,"collection":"public"}),
+                json!({"dbPath":rejected_path,"collection":"public","limit":null}),
+                json!({"dbPath":rejected_path,"collection":"public","limit":-1}),
+            ] {
+                assert!(module.state.dispatch(command, params).await.is_err());
+                assert!(!std::path::Path::new(&rejected_path).exists(), "invalid bounds must fail before storage opens");
+            }
+        }
+        let (_tmp, path) = test_db_path("bounded-query");
+        let adapter = module.state.get_adapter(&path).await?;
+        declare_fixture(adapter.as_ref(), "bounded_records", &[("value", crate::orm::FieldType::Number)]).await;
+        for value in 1..=3 {
+            adapter.create(DataRecord {
+                id: value.to_string(), collection: "bounded_records".into(),
+                data: json!({"value":value}), metadata: RecordMetadata::default(),
+            }).await.into_result()?;
+        }
+        for command in ["data/query", "data/queryWithJoin"] {
+            for limit in [0, 1, 2] {
+                let result = module.state.dispatch(command, json!({
+                    "dbPath":path,"collection":"bounded_records","limit":limit,
+                    "filter":{"value":{"$gte":2}},
+                    "sort":[{"field":"value","direction":"asc"}],"select":["value"]
+                })).await?;
+                let rows: crate::orm::types::StorageResult<Vec<DataRecord>> =
+                    serde_json::from_value(result.to_json_value()?)?;
+                let rows = rows.into_result()?;
+                assert_eq!(rows.len(), limit);
+                for (index, row) in rows.iter().enumerate() {
+                    assert_eq!(row.data["value"], json!(index + 2));
+                }
+            }
+        }
+        Ok(())
+    }
+
     // what this catches: a stale postgres:// DATABASE_URL must fail loudly, never fall back to SQLite.
     #[test]
     pub(super) fn postgres_connection_strings_are_rejected() {
@@ -34,9 +78,9 @@ use crate::orm::types::CollectionSchema;
         // adapter owner must open independently and reuse its resolved backend.
         // The held home guard supplies isolation through both adapter awaits.
         let state = DataState::new();
-        assert_eq!(state.resolve_handle("@node").unwrap(),
-            node.path().join(".continuum/database/node.db").to_str().unwrap());
-        assert!(state.context.read().unwrap().is_none());
+        assert_eq!(std::path::PathBuf::from(state.resolve_handle("@node").unwrap()),
+            node.path().join(".continuum/database/node.db"));
+        assert!(state.context.get().is_none());
         let first = state.get_adapter("@node").await.unwrap();
         let second = state.get_adapter("@node").await.unwrap();
         assert!(Arc::ptr_eq(&first, &second));
@@ -58,9 +102,21 @@ use crate::orm::types::CollectionSchema;
         let refused = runtime.initialize().await.expect_err("a registrar conflict must refuse init"); // expect: the invariant under test
         assert!(refused.contains("data") && refused.contains("staged_credit registered twice"), "{refused}");
         assert!(
-            module.state.context.read().unwrap_or_else(|e| e.into_inner()).is_none(),
+            module.state.context.get().is_none(),
             "a refused data module must not publish its context"
         );
+    }
+
+    #[tokio::test]
+    async fn initialized_context_cannot_be_replaced() {
+        let module = Arc::new(DataModule::new(no_substrate_entities));
+        let runtime = crate::runtime::runtime::Runtime::new();
+        runtime.register(module.clone());
+        runtime.initialize().await.expect("test: initial context publication");
+        let original = module.state.context.get().expect("test: published context").clone();
+        let error = module.initialize(&original).await.expect_err("test: duplicate initialization");
+        assert!(error.contains("already initialized"));
+        assert!(Arc::ptr_eq(module.state.context.get().expect("test: context retained"), &original));
     }
 
     // What this catches: generic data/vector commands cannot bypass the owning
@@ -81,18 +137,18 @@ use crate::orm::types::CollectionSchema;
                 let error = command.invoke(json!({
                     "collection": collection, "dbPath": "invalid-handle",
                     "id": "record", "data": {}, "embedding": [1.0],
-                    "queryVector": [1.0], "textField": "need"
+                    "queryVector": [1.0], "textField": "need", "limit": 1
                 }), None).await.expect_err(name).message;
                 assert!(error.contains("protected collection"), "{name}: {error}");
             }
             for name in ["data/query", "data/query-open", "data/queryWithJoin"] {
                 let error = module.state.dispatch(name, json!({
-                    "collection": collection, "dbPath": "invalid-handle"
+                    "collection": collection, "dbPath": "invalid-handle", "limit": 1
                 })).await.expect_err(name);
                 assert!(error.contains("protected collection"), "{name}: {error}");
             }
             let error = module.state.handle_query_with_join(serde_json::from_value(json!({
-                "collection": "public", "dbPath": "invalid-handle",
+                "collection": "public", "dbPath": "invalid-handle", "limit": 1,
                 "joins": [{"collection": collection, "alias": "decision",
                     "localField": "id", "foreignField": "id", "type": "left"}]
             })).unwrap()).await.expect_err("private join");
@@ -118,6 +174,8 @@ use crate::orm::types::CollectionSchema;
         let (_tmp, path) = test_db_path("protected-recall");
         let private = continuum_genome::genome::recall_impl::RecallDecision::COLLECTION;
         let adapter = module.state.get_adapter(&path).await.unwrap();
+        declare_fixture(adapter.as_ref(), private, &[("need", crate::orm::FieldType::String)]).await;
+        declare_fixture(adapter.as_ref(), "public", &[("value", crate::orm::FieldType::Number)]).await;
         let stored = adapter.create(DataRecord {
             id: "private-record".into(), collection: private.into(),
             data: json!({"need": "private need"}), metadata: RecordMetadata::default(),
@@ -135,11 +193,12 @@ use crate::orm::types::CollectionSchema;
         ] {
             let mut params = attack;
             params["dbPath"] = json!(path);
+            params["limit"] = json!(1);
             let error = module.state.dispatch("data/query", params).await.expect_err("SQL expression must not execute");
             assert!(error.contains("invalid storage identifier"), "{error}");
         }
         let ordinary = module.state.dispatch("data/query", json!({
-            "dbPath": path, "collection": "public", "select": ["value"],
+            "dbPath": path, "collection": "public", "select": ["value"], "limit": 1,
             "filter": {"value": 1}, "sort": [{"field": "value", "direction": "asc"}]
         })).await.unwrap();
         assert!(ordinary.to_json_value().unwrap()["success"].as_bool().unwrap());
@@ -149,6 +208,16 @@ use crate::orm::types::CollectionSchema;
         assert!(module.state.clear_all_collections(&path).await.unwrap().success);
         assert!(!adapter.read(private, &"private-record".into()).await.success);
 
+    }
+
+    async fn declare_fixture(adapter: &dyn StorageAdapter, collection: &str, fields: &[(&str, crate::orm::FieldType)]) {
+        let mut declared = crate::orm::base_entity_fields();
+        declared.extend(fields.iter().map(|(name, kind)| crate::orm::SchemaField {
+            name: (*name).into(), field_type: kind.clone(), default_value: None,
+            nullable: false, indexed: false, unique: false, max_length: None, foreign_key: None,
+        }));
+        adapter.ensure_schema(CollectionSchema { collection: collection.into(), fields: declared, indexes: vec![] })
+            .await.into_result().expect("test: declared fixture schema");
     }
 
     /// Helper: per-test isolated SQLite file routed through resolve_handle's
@@ -334,34 +403,14 @@ use crate::orm::types::CollectionSchema;
                 "personas/e2f0e022-04ac-4f66-a26c-7146551745b4/longterm.db",
             ),
         ];
-        for (home_override, native_home, expected_home) in [
-            (
-                Some("/tmp/explicit-home"),
-                "C:/Users/native",
-                "/tmp/explicit-home",
-            ),
-            (None, "C:/Users/native", "C:/Users/native"),
-            (None, "/Users/native", "/Users/native"),
-        ] {
+        for home in ["/tmp/explicit-continuum", "C:/Users/native/.continuum", "/Users/native/.continuum"] {
             for (handle, suffix) in handles {
-                let resolved = DataState::resolve_handle_with(
-                    handle,
-                    |key| match key {
-                        "HOME" => home_override.map(str::to_owned),
-                        // Empty DATABASE_URL must still select local SQLite.
-                        "DATABASE_URL" => Some(String::new()),
-                        _ => panic!("unexpected environment lookup: {key}"),
-                    },
-                    || {
-                        assert!(home_override.is_none(), "explicit HOME takes precedence");
-                        Some(PathBuf::from(native_home))
-                    },
-                )
-                .expect("local handle resolves");
-                assert_eq!(resolved, format!("{expected_home}/.continuum/{suffix}"));
+                let resolved = DataState::resolve_handle_with(handle,
+                    |key| { assert_eq!(key, "DATABASE_URL"); Some(String::new()) },
+                    || Ok(PathBuf::from(home))).expect("local handle resolves");
+                assert_eq!(resolved, format!("{home}/{suffix}"));
             }
         }
-
         let url = "/var/shared/continuum.db";
         assert_eq!(
             DataState::resolve_handle_with(
@@ -376,10 +425,10 @@ use crate::orm::types::CollectionSchema;
             url,
         );
         for (handle, _) in handles {
-            let error = DataState::resolve_handle_with(handle, |_| None, || None).unwrap_err();
+            let error = DataState::resolve_handle_with(handle, |_| None, || Err("home unavailable".into())).unwrap_err();
             assert_eq!(
                 error,
-                format!("resolve_handle('{handle}'): home directory unavailable")
+                "home unavailable"
             );
         }
 
@@ -407,6 +456,17 @@ use crate::orm::types::CollectionSchema;
         }
     }
 
+    #[tokio::test]
+    async fn local_database_handles_use_the_shared_home_owner() {
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+        let root = crate::paths::continuum_home().unwrap();
+        let state = DataState::new();
+        for (handle, suffix) in [("main", "database/main.db"), ("@metrics", "metrics/metrics.sqlite"),
+            ("@persona:Asha", "personas/Asha/data/longterm.db"), ("@node", "database/node.db")] {
+            assert_eq!(PathBuf::from(state.resolve_handle(handle).unwrap()), root.join(suffix));
+        }
+    }
     #[test]
     pub(super) fn data_create_params_drop_the_db_path_leak_but_alias_legacy_callers() {
         // what this catches: the persona-facing `data/create` contract dropped the
@@ -443,9 +503,10 @@ use crate::orm::types::CollectionSchema;
         let (_tmp, db_path) = test_db_path("create_and_read");
 
         // Create table first
-        let schema = CollectionSchema {
+        let mut schema = CollectionSchema {
             collection: "test_users".to_string(),
             fields: vec![crate::orm::types::SchemaField {
+                default_value: None,
                 name: "name".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -461,7 +522,8 @@ use crate::orm::types::CollectionSchema;
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
+        schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
         // Create with dbPath
         let create_result = create_via_state(
@@ -509,9 +571,10 @@ use crate::orm::types::CollectionSchema;
         let (_tmp, db_path) = test_db_path("paginated");
 
         // Create schema
-        let schema = CollectionSchema {
+        let mut schema = CollectionSchema {
             collection: "test_paginated".to_string(),
             fields: vec![crate::orm::types::SchemaField {
+                default_value: None,
                 name: "name".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -525,7 +588,8 @@ use crate::orm::types::CollectionSchema;
 
         // Tests bypass the IPC surface (registered-entity-only post-Step 3).
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
+        schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
         // Create 25 records
         for i in 0..25 {
@@ -630,9 +694,10 @@ use crate::orm::types::CollectionSchema;
         let module = DataModule::new(no_substrate_entities);
         let (_tmp, db_path) = test_db_path("count_exact");
 
-        let schema = CollectionSchema {
+        let mut schema = CollectionSchema {
             collection: "test_count_exact".to_string(),
             fields: vec![crate::orm::types::SchemaField {
+                default_value: None,
                 name: "name".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -645,7 +710,8 @@ use crate::orm::types::CollectionSchema;
         };
         // Tests bypass the IPC surface (registered-entity-only post-Step 3).
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
+        schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
         for i in 0..7 {
             let _ = create_via_state(
@@ -686,3 +752,6 @@ use crate::orm::types::CollectionSchema;
 
 mod part_2;
 mod part_3;
+
+mod projection;
+mod declarations;

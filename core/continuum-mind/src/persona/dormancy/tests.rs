@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::persona::roster_hold::RosterHold;
 
@@ -15,7 +17,7 @@ fn hold(names: &[&str]) -> RosterHold {
 }
 
 async fn ledger_at(path: &std::path::Path) -> DormancyLedger {
-    let adapter = crate::orm::SqliteAdapter::open(path).await.expect("adapter"); // test: a failure here is the assertion failing loudly
+    let adapter = crate::orm::SeaOrmAdapter::open(path).await.expect("adapter"); // test: a failure here is the assertion failing loudly
     DormancyLedger::open(Arc::new(adapter)).await.expect("ledger") // test: a failure here is the assertion failing loudly
 }
 

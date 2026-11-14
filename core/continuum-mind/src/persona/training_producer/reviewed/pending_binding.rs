@@ -230,29 +230,10 @@ async fn pending_on_card<T: Transport>(
     persona_name: &str,
     card_id: Uuid,
 ) -> Result<Vec<PendingCreditBinding>, ClientError> {
-    let value = conn
-        .commands()
-        .execute_value(
-            "data/list",
-            json!({
-                "collection": PendingCreditBinding::COLLECTION,
-                "dbPath": format!("@persona:{persona_name}"),
-                "filter": {"cardId": card_id.to_string()},
-            }),
-        )
-        .await?;
-    let result: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // Decode the data/list command envelope once at the storage boundary.
-    if result.items.len() != result.total as usize {
-        return Err(ClientError::Transport("incomplete pending credit lookup".into()));
-    }
-    result
-        .items
-        .into_iter()
-        .map(|value| {
-            let record: crate::orm::types::DataRecord = serde_json::from_value(value)?; // Decode the ORM envelope before its typed entity payload.
-            Ok(record.decode()?) // The entity payload crosses the Value-native storage boundary here.
-        })
-        .collect()
+    crate::orm::client_read::matching(
+        conn, &format!("@persona:{persona_name}"), PendingCreditBinding::COLLECTION,
+        serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]), None,
+    ).await
 }
 
 #[cfg(test)]

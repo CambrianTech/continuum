@@ -3,15 +3,59 @@
 use super::*;
 
 #[tokio::test]
+async fn vector_corpus_pages_past_rows_without_embeddings() {
+    let module = DataModule::new(no_substrate_entities);
+    let (_tmp, db_path) = test_db_path("vector_pages");
+    let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
+    declare_fixture(adapter.as_ref(), "test_vector_pages", &[("embedding", crate::orm::FieldType::Json), ("content", crate::orm::FieldType::String)]).await;
+    let page_size = crate::data::max_concurrent_queries::default_page_size();
+    for index in 0..page_size + 3 {
+        let embedding = if index < page_size { json!([]) } else { json!([index as f64, 1.0]) };
+        adapter.create(DataRecord {
+            id: format!("row-{index:06}"), collection: "test_vector_pages".into(),
+            data: json!({"embedding": embedding, "content": "payload".repeat(1000)}),
+            metadata: crate::orm::types::RecordMetadata::default(),
+        }).await.into_result().expect("test: row");
+    }
+    let vectors = module.state.vector_corpus(&db_path, "test_vector_pages").await.expect("test: corpus");
+    assert_eq!(vectors.len(), 3, "an empty-vector page must not end corpus traversal");
+    for (offset, vector) in vectors.iter().enumerate() {
+        assert_eq!(vector.id, format!("row-{:06}", page_size + offset));
+        assert_eq!(vector.embedding, vec![(page_size + offset) as f64, 1.0]);
+    }
+}
+
+#[tokio::test]
+async fn backfill_rejects_zero_batch_before_opening_an_embedder() {
+    let module = DataModule::new(no_substrate_entities);
+    let result = module.state.backfill_vectors(
+        "main", "test_vectors", "content", 0, None, None,
+    ).await;
+    assert!(matches!(result, Err(ref error) if error == "vector/backfill: batch_size must be positive"));
+}
+
+#[test]
+fn malformed_embedding_is_not_silently_shortened_or_emptied() -> Result<(), String> {
+    for valid in [json!([1.0, 2.0]), json!("[1.0,2.0]")] {
+        assert_eq!(DataState::parse_embedding(&valid)?, vec![1.0, 2.0]);
+    }
+    for invalid in [json!([1.0, "bad", 2.0]), json!("broken"), json!("[1,null]"), Value::Null] {
+        assert!(DataState::parse_embedding(&invalid).is_err());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_vector_index_and_stats() {
     let module = DataModule::new(no_substrate_entities);
     let (_tmp, db_path) = test_db_path("vector_index");
 
     // Create schema with embedding field
-    let schema = CollectionSchema {
+    let mut schema = CollectionSchema {
         collection: "test_vectors".to_string(),
         fields: vec![
             crate::orm::types::SchemaField {
+                default_value: None,
                 name: "content".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -21,6 +65,7 @@ async fn test_vector_index_and_stats() {
                 foreign_key: None,
             },
             crate::orm::types::SchemaField {
+                default_value: None,
                 name: "embedding".to_string(),
                 field_type: crate::orm::types::FieldType::Json,
                 indexed: false,
@@ -37,7 +82,8 @@ async fn test_vector_index_and_stats() {
     // entity collection per Phase 2 Step 3) — call the adapter directly
     // with a synthetic test CollectionSchema.
     let adapter = module.state.get_adapter(&db_path).await.unwrap();
-    let _ = adapter.ensure_schema(schema).await;
+    schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
     // Create a record
     let create_result = create_via_state(
@@ -60,6 +106,15 @@ async fn test_vector_index_and_stats() {
     } else {
         panic!("Create failed");
     };
+
+    // A nullable embedding means this document has not been indexed yet.
+    let before = module.state.vector_stats(&db_path, "test_vectors").await;
+    assert!(before.is_ok(), "{before:?}");
+    if let Ok(stats) = before {
+        assert_eq!(stats.records_with_vectors, 0);
+    }
+    let corpus = module.state.vector_corpus(&db_path, "test_vectors").await;
+    assert!(matches!(corpus, Ok(ref vectors) if vectors.is_empty()));
 
     // Index a vector for this record
     let test_embedding: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
@@ -105,10 +160,11 @@ async fn test_vector_search_basic() {
     let (_tmp, db_path) = test_db_path("vector_search");
 
     // Create schema
-    let schema = CollectionSchema {
+    let mut schema = CollectionSchema {
         collection: "test_search".to_string(),
         fields: vec![
             crate::orm::types::SchemaField {
+                default_value: None,
                 name: "content".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -118,6 +174,7 @@ async fn test_vector_search_basic() {
                 foreign_key: None,
             },
             crate::orm::types::SchemaField {
+                default_value: None,
                 name: "embedding".to_string(),
                 field_type: crate::orm::types::FieldType::Json,
                 indexed: false,
@@ -134,7 +191,8 @@ async fn test_vector_search_basic() {
     // entity collection per Phase 2 Step 3) — call the adapter directly
     // with a synthetic test CollectionSchema.
     let adapter = module.state.get_adapter(&db_path).await.unwrap();
-    let _ = adapter.ensure_schema(schema).await;
+    schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
     // Create records with embeddings
     let embeddings: Vec<Vec<f64>> = vec![
@@ -234,9 +292,10 @@ async fn test_vector_cache_invalidation() {
     assert_ne!(db_path, alias);
 
     // Create schema
-    let schema = CollectionSchema {
+    let mut schema = CollectionSchema {
         collection: "test_cache".to_string(),
         fields: vec![crate::orm::types::SchemaField {
+                default_value: None,
             name: "embedding".to_string(),
             field_type: crate::orm::types::FieldType::Json,
             indexed: false,
@@ -252,7 +311,8 @@ async fn test_vector_cache_invalidation() {
     // entity collection per Phase 2 Step 3) — call the adapter directly
     // with a synthetic test CollectionSchema.
     let adapter = module.state.get_adapter(&db_path).await.unwrap();
-    let _ = adapter.ensure_schema(schema).await;
+    schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
 
     // Create a record with embedding
     let _ = create_via_state(

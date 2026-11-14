@@ -59,3 +59,45 @@ async fn dropping_the_continuation_keeps_custody_until_the_receipt() {
         while !dropped.load(Ordering::SeqCst) { tokio::task::yield_now().await; }
     }).await.expect("receipt releases abandoned continuation");
 }
+
+// Uses the production reservation owner without the process-global grants watch.
+#[tokio::test]
+async fn preparation_custody_requires_a_terminal_page_receipt() {
+    use crate::capacity::window_grant::{dyno_seam::OwnerUnderTest, GrantLease, GrantOwner, GrantRevision};
+    use crate::inference::engine_residency::EngineIncarnation;
+    for outcome in ["completed", "rejected", "malformed", "condemned"] {
+        let (operation, reply) = pending();
+        let owner = OwnerUnderTest::new();
+        let mind = uuid::Uuid::new_v4();
+        let engine = Some(EngineIncarnation { pid: 42, started_s: 100, port: 8085 });
+        let lease = GrantLease { tokens: 60, engine, revision: GrantRevision::test(1), owner: GrantOwner::this_process() };
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let mut admission = super::super::admit_turn(
+            &sem, crate::inference::slots::SlotClass::Background, None, None,
+            &reqwest::Client::new(), &operation.root, 0, Duration::ZERO,
+        ).await.expect("test: admission"); // JUSTIFIED: fixture
+        owner.reserve(&mut admission.preparation, mind, lease, 0, Some(lease)).expect("test: claim"); // JUSTIFIED: fixture
+        admission.preparation.as_mut().expect("test: claim").mark_dispatched(); // JUSTIFIED: fixture
+        if outcome == "condemned" {
+            finish_turn(Released::Condemned, admission);
+        } else {
+            operation.hold_turn(admission);
+            let response = match outcome {
+                "completed" => (200, Some(serde_json::json!({"id_slot":0,"n_erased":60}))),
+                "rejected" => (400, Some(serde_json::json!({"error":{"code":400,"type":"invalid_request_error","message":"rejected"}}))),
+                _ => (200, Some(serde_json::json!({"id_slot":99,"n_erased":60}))),
+            };
+            reply.send(Ok(response)).expect("test: reply"); // JUSTIFIED: fixture
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while sem.available_permits() == 0 { tokio::task::yield_now().await; }
+            }).await.expect("test: receipt processed"); // JUSTIFIED: bounded fixture
+        }
+        let observed = owner.observe(engine);
+        if matches!(outcome, "completed" | "rejected") {
+            assert!(observed.charged.is_empty(), "{outcome}: abandoned preparation ends without generation");
+        } else {
+            assert_eq!(observed.charged.get(&mind), Some(&60), "{outcome}: endpoint closure is not physical completion");
+            assert_eq!(observed.unresolved.get(&mind), Some(&1));
+        }
+    }
+}

@@ -97,7 +97,7 @@ impl ChatModule {
                 CHAT_MESSAGES_COLLECTION,
                 json!({ "id": { "$eq": anchor_id.to_string() } }),
                 None,
-                Some(1),
+                1,
             )
             .await
             .map_err(|e| format!("chat/poll: anchor lookup failed: {e}"))?;

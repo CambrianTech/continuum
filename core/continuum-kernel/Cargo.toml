@@ -36,7 +36,7 @@ tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 ts-rs.workspace = true
 sha2.workspace = true
-rusqlite = { version = "0.32", features = ["bundled"] }
+sea-orm = { workspace = true, features = ["sqlx-sqlite", "runtime-tokio-rustls", "with-json", "macros"] }
 tokio-stream.workspace = true
 futures-util.workspace = true
 airc-core.workspace = true
@@ -71,6 +71,7 @@ metal = { workspace = true }
 objc = { workspace = true }
 
 [dev-dependencies]
+continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 source-hygiene = { path = "../source-hygiene" }
