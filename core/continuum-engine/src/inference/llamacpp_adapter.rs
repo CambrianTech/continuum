@@ -752,9 +752,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // the governor's back and, under pressure, decoded to an all-zero vector that silently broke
         // recall; a fixed 1,792 MiB bound refused 91% of short texts on the M5 (26960c09d, 758 of 834
         // in 3 h).
-        let need = backend.embed_need().ok_or(super::backends::llamacpp::NO_TRAINED_CONTEXT)?;
+        let residency = backend.embed_residency().ok_or(super::backends::llamacpp::NO_TRAINED_CONTEXT)?;
         let batch = embedding.tokenize(&texts)?;
-        let lease = super::embed_lane_memory::lease(&need, batch.context_bytes(backend.placement()), texts.len())
+        let lease = residency
+            .lease(batch.context_bytes(backend.placement()), texts.len())
             .await
             .map_err(|e| e.to_string())?;
         let embeddings = embedding.run(batch, lease).await?;
