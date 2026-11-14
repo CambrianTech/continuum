@@ -102,6 +102,16 @@ must be canonical lowercase hyphenated UUIDs so database ordering matches the cu
 Revision-watermarked newest-first traversal, deletion replay and the GPU consumer remain
 unfinished; this bulk-copy slice must not be presented as the complete engine seam.
 
+Native create/update now record an internal per-row revision in the same committing
+transaction as the bytes and descriptor. The existing sequence-head owner allocates
+revisions in a typed native domain, separate from append sequence custody; a single
+UPSERT RETURNING advances a head and refuses overflow. Failed transactions roll back
+both head and row receipt, and an unchanged conditional write consumes no revision.
+These receipts are not yet exposed as a delta watermark: deletion/cascade recording,
+ordered paging, completion notifications and their replay semantics must land first.
+The sequence-head declaration now has a composite domain/collection identity; any
+previous development database needs the offline schema migration before adoption.
+
 The producer chooses its representation and performs normalization or precision
 selection once in its compute path. Storage binds and returns those native bytes.
 It does not iterate through elements to encode, decode, normalize, check finiteness,

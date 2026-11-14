@@ -9,8 +9,9 @@ impl super::relational::RelationalStore {
         // Compile typed bindings before dispatch, then move them into the same committing owner.
         super::binary::native_identity(&record.id)?;
         let statement = self.insert_statement_with_binary(&record, payloads)?;
-        self.write(move |_store, transaction| Box::pin(async move {
+        self.write(move |store, transaction| Box::pin(async move {
             transaction.execute(DbBackend::Sqlite.build(&statement)).await.map_err(|e| e.to_string())?;
+            store.native_changed_on(transaction, &record.collection, &record.id).await?;
             Ok(record.id)
         })).await
     }
@@ -93,6 +94,7 @@ impl super::relational::RelationalStore {
             if !changed && condition == super::binary::BinaryWriteCondition::Replace {
                 return Err(format!("binary row {collection}:{id} does not exist"));
             }
+            if changed { store.native_changed_on(transaction, &collection, &id).await?; }
             Ok(changed)
         })).await
     }

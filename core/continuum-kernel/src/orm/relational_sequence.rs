@@ -4,6 +4,8 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "orm_sequence_heads")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
+    pub domain: String,
+    #[sea_orm(primary_key, auto_increment = false)]
     pub collection: String,
     pub high: i64,
 }
@@ -18,7 +20,7 @@ impl super::relational::RelationalStore {
         mut record: super::types::DataRecord,
         spec: &super::types::SequenceSpec,
     ) -> Result<super::types::Sequenced, String> {
-        use sea_orm::sea_query::{Alias, Expr, OnConflict, Query};
+        use sea_orm::sea_query::{Alias, Expr, Query};
         let schema = self.schema(&record.collection)?;
         let unique_field = schema
             .fields
@@ -67,7 +69,7 @@ impl super::relational::RelationalStore {
                 fresh: false,
             });
         }
-        let seed = match Entity::find_by_id(table_name.clone())
+        let seed = match Entity::find_by_id(("append".to_owned(), table_name.clone()))
             .one(connection)
             .await
             .map_err(|e| e.to_string())?
@@ -90,27 +92,7 @@ impl super::relational::RelationalStore {
                 }
             }
         };
-        let head = Query::insert()
-            .into_table(Entity)
-            .columns([Column::Collection, Column::High])
-            .values([table_name.clone().into(), seed.into()])
-            .map_err(|e| e.to_string())?
-            .on_conflict(
-                OnConflict::column(Column::Collection)
-                    .value(Column::High, Expr::col(Column::High).add(1))
-                    .to_owned(),
-            )
-            .to_owned();
-        connection
-            .execute(connection.get_database_backend().build(&head))
-            .await
-            .map_err(|e| e.to_string())?;
-        let high = Entity::find_by_id(table_name)
-            .one(connection)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("sequence head missing after write")?
-            .high;
+        let high = next_on(connection, Domain::Append, &table_name, seed).await?;
         record
             .data
             .as_object_mut()
@@ -123,3 +105,24 @@ impl super::relational::RelationalStore {
         })
     }
 }
+
+/// Shared durable counter mechanism. Call only inside the existing write transaction.
+/// Distinct custody domains supply distinct keys; append sequences retain their keys.
+pub(super) async fn next_on<C: ConnectionTrait>(connection: &C, domain: Domain, key: &str, seed: i64) -> Result<i64, String> {
+    use sea_orm::sea_query::{Expr, OnConflict, Query};
+    let domain = match domain { Domain::Append => "append", Domain::Native => "native" };
+    if seed <= 0 { return Err("sequence seed must be positive".into()); }
+    let statement = Query::insert().into_table(Entity)
+        .columns([Column::Domain, Column::Collection, Column::High])
+        .values([domain.into(), key.into(), seed.into()]).map_err(|e| e.to_string())?
+        .on_conflict(OnConflict::columns([Column::Domain, Column::Collection])
+            .value(Column::High, Expr::col(Column::High).add(1))
+            .action_and_where(Expr::col(Column::High).gte(1).and(Expr::col(Column::High).lt(i64::MAX)))
+            .to_owned())
+        .returning_col(Column::High).to_owned();
+    let row = connection.query_one(connection.get_database_backend().build(&statement))
+        .await.map_err(|e| e.to_string())?.ok_or("sequence exhausted or invalid persisted head")?;
+    row.try_get("", "high").map_err(|e| e.to_string())
+}
+#[derive(Clone, Copy)]
+pub(super) enum Domain { Append, Native }

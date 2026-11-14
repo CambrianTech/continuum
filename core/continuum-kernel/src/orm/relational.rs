@@ -71,6 +71,12 @@ impl RelationalStore {
         db.execute(DbBackend::Sqlite.build(&heads))
             .await
             .map_err(|e| e.to_string())?;
+        let native_revisions = sea_orm::Schema::new(DbBackend::Sqlite)
+            .create_table_from_entity(super::relational_native_revision::Entity)
+            .if_not_exists().to_owned();
+        db.execute(DbBackend::Sqlite.build(&native_revisions)).await.map_err(|e| e.to_string())?;
+        db.execute(DbBackend::Sqlite.build(&super::relational_native_revision::revision_index()))
+            .await.map_err(|e| e.to_string())?;
         let declarations = sea_orm::Schema::new(DbBackend::Sqlite)
             .create_table_from_entity(super::relational_declaration::Entity)
             .if_not_exists().to_owned();

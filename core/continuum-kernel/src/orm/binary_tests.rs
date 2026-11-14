@@ -333,3 +333,60 @@ async fn native_identity_refuses_aliases_and_corrupt_late_rows_without_appending
     assert_eq!(ids, [uuid::Uuid::from_u128(99)]);
     Ok(())
 }
+#[tokio::test]
+async fn native_revision_custody_is_transactional_monotonic_and_durable() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::EntityTrait;
+    use super::relational_native_revision::Entity as Revisions;
+    use super::relational_sequence::{Domain, Entity as Heads};
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("revision-custody.sqlite");
+    let path = path.to_str().ok_or("non-UTF8 fixture path")?;
+    let store = open(path).await?;
+    let id = uuid::Uuid::from_u128(1).to_string();
+    let payload = || BinaryValue::new(descriptor(ElementType::I8, vec![2]), vec![1, 2]);
+    // The same collection has separate append and native custody domains.
+    store.write(|_, transaction| Box::pin(async move {
+        super::relational_sequence::next_on(transaction, Domain::Append, NativeRow::COLLECTION, 100).await
+    })).await?;
+    store.create_binary(DataRecord { id: id.clone(), collection: NativeRow::COLLECTION.into(),
+        data: json!({}), metadata: RecordMetadata::default() },
+        std::collections::BTreeMap::from([("payload".into(), payload()?)])) .await?;
+    let key = (NativeRow::COLLECTION.to_owned(), id.clone());
+    let revision = Revisions::find_by_id(key.clone()).one(&store.db).await?.ok_or("missing revision")?;
+    assert_eq!(revision.revision, 1);
+    assert!(!revision.deleted);
+    assert!(!store.update_binary(NativeRow::COLLECTION.into(), id.clone(), "payload".into(), payload()?, BinaryWriteCondition::IfAbsent).await?);
+    assert_eq!(Revisions::find_by_id(key.clone()).one(&store.db).await?.ok_or("missing unchanged revision")?.revision, 1);
+    assert!(store.update_binary(NativeRow::COLLECTION.into(), id.clone(), "payload".into(), payload()?, BinaryWriteCondition::Replace).await?);
+    assert_eq!(Revisions::find_by_id(key.clone()).one(&store.db).await?.ok_or("missing updated revision")?.revision, 2);
+    let failed_id = id.clone();
+    let failed: Result<(), String> = store.write(move |store, transaction| Box::pin(async move {
+        store.native_changed_on(transaction, NativeRow::COLLECTION, &failed_id).await?;
+        Err("injected failure after revision write".into())
+    })).await;
+    assert!(failed.is_err());
+    drop(store);
+    let store = open(path).await?;
+    assert_eq!(Revisions::find_by_id(key).one(&store.db).await?.ok_or("missing restarted revision")?.revision, 2);
+    assert_eq!(Heads::find_by_id(("native".to_owned(), NativeRow::COLLECTION.to_owned())).one(&store.db).await?.ok_or("missing native head")?.high, 2);
+    assert_eq!(Heads::find_by_id(("append".to_owned(), NativeRow::COLLECTION.to_owned())).one(&store.db).await?.ok_or("missing append head")?.high, 100);
+    assert!(store.update_binary(NativeRow::COLLECTION.into(), id.clone(), "payload".into(), payload()?, BinaryWriteCondition::Replace).await?);
+    assert_eq!(Revisions::find_by_id((NativeRow::COLLECTION.to_owned(), id)).one(&store.db).await?.ok_or("missing next revision")?.revision, 3);
+    Ok(())
+}
+#[tokio::test]
+async fn revision_counter_exhaustion_refuses_without_float_promotion() -> Result<(), String> {
+    use super::relational_sequence::{next_on, Domain};
+    let store = open(":memory:").await?;
+    assert_eq!(store.write(|_, transaction| Box::pin(async move {
+        next_on(transaction, Domain::Native, "exhaustion", i64::MAX).await
+    })).await?, i64::MAX);
+    assert!(store.write(|_, transaction| Box::pin(async move {
+        next_on(transaction, Domain::Native, "exhaustion", 1).await
+    })).await.is_err());
+    use sea_orm::EntityTrait;
+    let persisted = super::relational_sequence::Entity::find_by_id(("native".to_owned(), "exhaustion".to_owned()))
+        .one(&store.db).await.map_err(|e| e.to_string())?.ok_or("missing maximum head")?;
+    assert_eq!(persisted.high, i64::MAX);
+    Ok(())
+}
