@@ -159,24 +159,48 @@ pub fn current_lease(persona: uuid::Uuid) -> Option<GrantLease> {
     GRANTS.get()?.borrow().as_ref()?.lease_for(persona)
 }
 
-/// The most ONE mind may be granted on this node's engine, as the grant owner reads it off the engine
-/// (one slot on fixed slots, the pool capped at the trained window on a shared one). `None` before the
-/// daemon installs its grants, or while it grants from nothing ([`NoGrants`]).
-pub fn current_sequence_cap() -> Option<u32> {
-    GRANTS.get()?.borrow().as_ref().map(|grants| grants.per_sequence_cap)
+/// How wide one seat on this node's engine is: the most ONE mind may be granted, as the grant owner
+/// reads it off the engine (one slot on fixed slots, the pool capped at the trained window on a shared
+/// one). Never the snapshot's equal share of the pool (`sequence_share`, a KV charge): an unreported
+/// seat is [`SeatWindow::Unreported`], an absence, never a number standing in for one.
+///
+/// The M5, 2026-11-14: a 661,504-token pool holding 262,144 per sequence was published as 5 x 132,300,
+/// and the grid named Benchy (148,818) and Atlas (135,619) unservable while their grants were 170,903
+/// and 160,368 (958ea3056). Then the share stood in until the first grants evaluation, and at boot the
+/// grid named three minds unservable against 110,387 = 551,936 / 5 (7f875ccfd, 07:52:26-27Z; the grant
+/// owner reported 262,144 at 07:52:28Z).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatWindow {
+    /// The grant owner has not read the engine's per-sequence limit: no grants are installed, or the
+    /// last evaluation granted from nothing ([`NoGrants`]).
+    Unreported,
+    /// The most one sequence on this engine holds.
+    Reported(Tokens),
 }
 
-/// How wide one seat on this engine is: the most one mind may be granted, never the snapshot's equal
-/// share of the pool. `share` is `ServingSnapshot::served_context_window`, the KV each sequence is
-/// CHARGED (`sequence_share`: lanes x share is the pool); it stands for the seat only until the grant
-/// owner reports the engine's per-sequence limit, and every sequence can hold its share at once, so it
-/// never overstates a seat. The M5, 2026-11-14 (958ea3056): a 661,504-token pool holding 262,144 per
-/// sequence was published as 5 x 132,300, and the grid named Benchy (need 148,818) and Atlas (135,619)
-/// unservable while their grants on that pool were 170,903 and 160,368.
-pub fn seat_window(share: u32, sequence_cap: Option<u32>) -> u32 {
-    match sequence_cap {
-        Some(cap) => cap,
-        None => share,
+impl SeatWindow {
+    /// The seat a published grants value reports, if any.
+    pub fn of(grants: Option<&PoolGrants>) -> Self {
+        match grants.and_then(|g| Tokens::new(g.per_sequence_cap)) {
+            Some(cap) => Self::Reported(cap),
+            None => Self::Unreported,
+        }
+    }
+
+    /// The width as a wire number where 0 already means unknown (a capacity beacon, the health line).
+    pub fn wire_tokens(self) -> u32 {
+        match self {
+            Self::Reported(cap) => cap.get(),
+            Self::Unreported => 0,
+        }
+    }
+}
+
+/// This node's seat, as the grant owner last reported it. A `watch` borrow, no I/O.
+pub fn current_seat() -> SeatWindow {
+    match GRANTS.get() {
+        Some(rx) => SeatWindow::of(rx.borrow().as_ref()),
+        None => SeatWindow::Unreported,
     }
 }
 
@@ -587,14 +611,18 @@ mod tests {
         assert!(too_big.is_empty(), "a need above what one sequence holds now waits, never trimmed: {too_big:?}");
     }
 
-    // what this catches (the M5, 2026-11-14, 958ea3056: `grid.mind.unservable widest_window=132300`):
-    // a seat read as the pool's equal share. 661,504 tokens over 5 sequences is a KV charge of 132,300
-    // each; the engine holds 262,144 in any one of them, and that is what one mind may be granted.
+    // what this catches (the M5, 2026-11-14: `grid.mind.unservable widest_window=132300` on 958ea3056,
+    // then `widest_window=110387` at boot on 7f875ccfd): a seat read as the pool's equal share, first
+    // always, then as a stand-in until the grant owner reported. The seat is the grant owner's
+    // per-sequence limit, and before it reports there is no seat, never the share.
     #[test]
-    fn a_seat_is_what_one_sequence_holds_never_the_pools_equal_share() {
-        assert_eq!(seat_window(132_300, Some(262_144)), 262_144, "a shared pool's seat is its per-sequence limit");
-        assert_eq!(seat_window(65_536, Some(65_536)), 65_536, "fixed slots: the seat is the slot");
-        assert_eq!(seat_window(132_300, None), 132_300, "no grant owner yet: the share, which every sequence holds at once");
+    fn a_seat_is_what_one_sequence_holds_and_unreported_until_the_grant_owner_reads_it() {
+        let grants = |cap| PoolGrants { pool_tokens: 551_936, per_sequence_cap: cap, ..PoolGrants::default() };
+        assert_eq!(SeatWindow::of(Some(&grants(262_144))), SeatWindow::Reported(t(262_144)), "the engine's per-sequence limit");
+        assert_eq!(SeatWindow::of(Some(&grants(262_144))).wire_tokens(), 262_144);
+        assert_eq!(SeatWindow::of(None), SeatWindow::Unreported, "no grants evaluation yet: no seat, never 110,387");
+        assert_eq!(SeatWindow::of(Some(&grants(0))), SeatWindow::Unreported, "a zero limit is no report");
+        assert_eq!(SeatWindow::Unreported.wire_tokens(), 0, "the wire's own unknown");
     }
 
     // what this catches (the M5, 2026-11-03, 2bbfa56c9): a grant below need. The 2,048-token launch

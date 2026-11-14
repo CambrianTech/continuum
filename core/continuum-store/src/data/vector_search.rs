@@ -1,122 +1,69 @@
 //! Vector ranking and hydration of selected records.
+use super::vector_index::{unit_f32, EmbedderId, Producer, QueryVector, RecordHit, VectorStoreError};
 use super::{require_public_collection, DataState, VectorHit, VectorSearchResults};
 use crate::log_info;
-use rayon::prelude::*;
+use std::num::NonZeroUsize;
+
+/// A `vector/search` query and the producer it names: a served embedder, or the caller.
+pub(crate) fn wire_query<'a>(values: &'a [f64], embedder: Option<&str>) -> QueryVector<'a> {
+    let producer = match embedder {
+        Some(id) => Producer::Embedder(EmbedderId::new(id)),
+        None => Producer::WireQuery,
+    };
+    QueryVector { values, producer }
+}
 
 impl DataState {
-    /// Vector similarity search with in-memory caching
+    /// Nearest-neighbour search over a collection's resident unit-vector matrix.
     ///
-    /// OPTIMIZATION: Vectors are cached in memory per (dbPath, collection).
-    /// First search loads from the adapter; subsequent searches reuse the corpus.
-    ///
-    /// Flow:
-    /// 1. Clone the collection cell under a short map guard.
-    /// 2. Coalesce cold loads; errors are retryable and invalidation detaches old loads.
-    /// 3. Parallel rayon search against cached vectors
-    ///
-    /// Cosine-similarity nearest-neighbour search over a collection's embeddings.
-    /// Loads (and caches) the collection's vectors, scores them against the query
-    /// vector in parallel, and returns the top-`k` hits above `threshold`.
+    /// The query is the one vector normalized here: it arrives from the wire as numbers,
+    /// so this is where its descriptor is built, naming its producer (the space the caller
+    /// says it embedded in). Rows were normalized by theirs at write. Only the matrix whose
+    /// descriptor is compatible with the query's is scored; each score is one dot product
+    /// (cosine for unit vectors), returned best first above `threshold`.
     pub(crate) async fn vector_search(
         &self,
         handle: &str,
         collection: &str,
-        query_vector: Vec<f64>,
+        query: QueryVector<'_>,
         k: usize,
         threshold: f64,
         include_data: bool,
-    ) -> Result<VectorSearchResults, String> {
-        require_public_collection(collection)?;
-        use std::time::Instant;
-        let search_start = Instant::now();
+    ) -> Result<VectorSearchResults, VectorStoreError> {
+        require_public_collection(collection).map_err(|fault| VectorStoreError::Refused(fault.into()))?;
+        let search_start = std::time::Instant::now();
 
         let corpus = self.vector_corpus(handle, collection).await?;
-
-        if corpus.is_empty() || k == 0 {
-            return Ok(VectorSearchResults {
-                results: Vec::new(),
-                count: 0,
-                corpus_size: corpus.len(),
-            });
-        }
-
         let corpus_size = corpus.len();
-
-        // Step 2: Parallel cosine similarity with rayon
-        let query_vec = &query_vector;
-
-        let mut scored: Vec<(usize, f64)> = corpus
-            .par_iter()
-            .enumerate()
-            .filter_map(|(index, cv)| {
-                let score = Self::cosine_similarity(query_vec, &cv.embedding);
-                if score >= threshold {
-                    Some((index, score))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Preserve stable corpus order for equal scores, including signed zero.
-        // NaNs never enter this list: they fail the threshold comparison above.
-        let rank = |a: &(usize, f64), b: &(usize, f64)| {
-            if a.1 == b.1 {
-                a.0.cmp(&b.0)
-            } else {
-                b.1.total_cmp(&a.1)
-            }
+        let Some(k) = NonZeroUsize::new(k).filter(|_| corpus_size > 0) else {
+            return Ok(VectorSearchResults { results: Vec::new(), count: 0, corpus_size });
         };
-        if k < scored.len() {
-            scored.select_nth_unstable_by(k, rank);
-            scored.truncate(k);
+        // The wire carries f64 numbers; the matrix is f32. Narrowing is the conversion the
+        // wire forces, fused into the query's one normalization and its one byte copy.
+        let query = unit_f32(query.values.iter().map(|value| *value as f32), &query.producer)?;
+        let ranked = corpus.search(&query, k)?;
+        // Best first, so the threshold ends the walk at the first score below it.
+        let adapter = if include_data { Some(self.get_adapter(handle).await.map_err(|fault| VectorStoreError::Store(fault.into()))?) } else { None };
+        let mut results = Vec::with_capacity(ranked.len());
+        for RecordHit { id, score } in ranked {
+            let score = f64::from(score);
+            if score < threshold {
+                break;
+            }
+            let data = match &adapter {
+                Some(adapter) => Some(
+                    adapter
+                        .read(collection, &id.to_string())
+                        .await
+                        .into_result()
+                        .map_err(|fault| VectorStoreError::Hydration { id, fault: fault.into() })?
+                        .data,
+                ),
+                None => None,
+            };
+            results.push(VectorHit { id: id.to_string(), score, distance: 1.0 - score, data });
         }
-        scored.sort_unstable_by(rank);
-        // Only selected hits acquire owned IDs; rejected candidates borrow the corpus.
-        let top_k: Vec<(String, f64)> = scored
-            .into_iter()
-            .map(|(index, score)| (corpus[index].id.clone(), score))
-            .collect();
-        let count = top_k.len();
-
-        // Build results
-        let results: Vec<VectorHit> = if include_data {
-            // Fetch full records for top-k (need another query)
-            let adapter = self.get_adapter(handle).await?;
-            let mut full_results = Vec::new();
-
-            for (id, score) in &top_k {
-                let result = adapter.read(collection, id).await;
-                if !result.success {
-                    return Err(match result.error {
-                        Some(error) => format!("vector result {collection}/{id}: {error}"),
-                        None => format!(
-                            "vector result {collection}/{id} read failed without an error receipt"
-                        ),
-                    });
-                }
-                let record = result.data.ok_or_else(|| {
-                    format!("vector result {collection}/{id} read succeeded without data")
-                })?;
-                full_results.push(VectorHit {
-                    id: id.clone(),
-                    score: *score,
-                    distance: 1.0 - score,
-                    data: Some(record.data),
-                });
-            }
-            full_results
-        } else {
-            top_k
-                .into_iter()
-                .map(|(id, score)| VectorHit {
-                    id,
-                    score,
-                    distance: 1.0 - score,
-                    data: None,
-                })
-                .collect()
-        };
+        let count = results.len();
 
         log_info!(
             "data",
@@ -127,10 +74,6 @@ impl DataState {
             search_start.elapsed()
         );
 
-        Ok(VectorSearchResults {
-            results,
-            count,
-            corpus_size,
-        })
+        Ok(VectorSearchResults { results, count, corpus_size })
     }
 }

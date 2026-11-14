@@ -181,7 +181,7 @@ impl BinarySnapshot {
                 (false, Some(_), Some(bytes), Some(header)) => {
                     let descriptor =
                         BinaryDescriptor::decode(header).map_err(NativeDeltaError::Metadata)?;
-                    if descriptor.byte_len().map_err(NativeDeltaError::Metadata)? != bytes.len() {
+                    if descriptor.byte_len().map_err(|error| NativeDeltaError::Metadata(error.to_string()))? != bytes.len() {
                         return Err(NativeDeltaError::Custody);
                     }
                     let start = end;

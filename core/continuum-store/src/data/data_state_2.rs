@@ -51,17 +51,19 @@ impl DataState {
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
         use crate::orm::query::QueryOperator;
-        use crate::orm::binary::{BinaryDescriptor, BinaryValue, ByteOrder, ElementType};
+        use super::vector_corpus::EMBEDDING_FIELD;
+        use super::vector_index::{unit_f32, EmbedderId, Producer};
+        let producer = Producer::Embedder(EmbedderId::new(embedder.id()));
         // Intersect with the caller's predicate; never overwrite it or fetch a
         // binary body merely to discover that this record already has one.
         let with_embedding = |condition| {
-            let mut fields = filter.clone().unwrap_or_default();
-            let condition = match fields.remove("embedding") {
+            let mut fields = filter.clone().unwrap_or_default(); // no caller predicate is the empty conjunction
+            let condition = match fields.remove(EMBEDDING_FIELD) {
                 Some(FieldFilter::Value(value)) => QueryOperator::And(vec![QueryOperator::Eq(value), condition]),
                 Some(FieldFilter::Operator(existing)) => QueryOperator::And(vec![existing, condition]),
                 None => condition,
             };
-            fields.insert("embedding".into(), FieldFilter::Operator(condition));
+            fields.insert(EMBEDDING_FIELD.to_owned(), FieldFilter::Operator(condition));
             Some(fields)
         };
         let missing_filter = with_embedding(QueryOperator::IsNull);
@@ -142,20 +144,32 @@ impl DataState {
 
                 let record = &chunk[*idx];
 
-                // One bulk copy preserves the producer's f32 bits. Storage
-                // never promotes precision or serializes vector elements.
-                let payload = BinaryValue::new(BinaryDescriptor {
-                    element_type: ElementType::F32,
-                    byte_order: if cfg!(target_endian = "little") { ByteOrder::Little } else { ByteOrder::Big },
-                    shape: vec![u64::try_from(embedding.len()).map_err(|_| "embedding dimension exceeds u64")?],
-                    producer: embedder.id().to_owned(),
-                    // The provider interface does not certify normalization.
-                    unit: false,
-                    scale: None,
-                }, bytemuck::cast_slice(&embedding).to_vec())?;
+                // The producer's one normalization, fused into the one copy that moves its
+                // f32 output into the payload: `unit = true` is certified here, so search
+                // scores this row with one dot product and never normalizes it again.
+                let payload = match unit_f32(embedding.iter().copied(), &producer) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        log_error!(
+                            "data",
+                            "vector/backfill",
+                            "embedder output for record {} in {} cannot be stored: {}",
+                            record.id,
+                            collection,
+                            error
+                        );
+                        failed += 1;
+                        continue;
+                    }
+                };
 
                 let update_result = adapter
-                    .update_binary(collection, &record.id, std::collections::BTreeMap::from([("embedding".into(), payload)]), crate::orm::binary::BinaryWriteCondition::IfAbsent)
+                    .update_binary(
+                        collection,
+                        &record.id,
+                        std::collections::BTreeMap::from([(EMBEDDING_FIELD.to_owned(), payload)]),
+                        crate::orm::binary::BinaryWriteCondition::IfAbsent,
+                    )
                     .await;
 
                 match update_result.into_result() {

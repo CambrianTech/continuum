@@ -1,58 +1,87 @@
-//! Immutable vector snapshots; cache cell detachment owns invalidation.
-use super::{DataState, StorageQuery};
-use crate::orm::query::{Cursor, CursorDirection, SortDirection, SortSpec};
+//! The resident vector corpus per collection; cache cell detachment owns invalidation.
+use super::vector_index::{EmbeddingDescriptor, MatrixBuilder, RecallTarget, VectorCorpus, VectorStoreError};
+use super::DataState;
+use crate::orm::binary::{BinaryPageOutput, BinaryPageRequest};
+use crate::orm::BinarySnapshot;
+use crate::runtime::shared_compute::ComputeError;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-pub(super) struct CachedVector {
-    pub(super) id: String,
-    pub(super) embedding: Vec<f64>,
-}
+/// The binary field every vector collection declares for its embeddings: the one name the
+/// writers, the filters, the stats and the matrix all use.
+pub(super) const EMBEDDING_FIELD: &str = "embedding";
 
 impl DataState {
+    /// Builds the collection's corpus: one matrix per embedding descriptor. The pages are read
+    /// from one pinned snapshot into the builders' own buffers, the snapshot is released, and
+    /// only then are the matrices sealed (calibrated) off the async runtime.
     pub(super) async fn vector_corpus(
         &self,
         handle: &str,
         collection: &str,
-    ) -> Result<Arc<Vec<CachedVector>>, String> {
-        let scope = self.resolve_handle(handle)?;
+    ) -> Result<Arc<VectorCorpus>, VectorStoreError> {
+        let scope = self.resolve_handle(handle).map_err(|fault| VectorStoreError::Store(fault.into()))?;
         self.vector_cache
             .get_or_try_compute(&scope, collection, async {
-                let adapter = self.adapter_for_backend(handle, scope.clone()).await?;
-                // Reuse the store's page size for transient decoding, not a cap on
-                // the searchable corpus. Every page is visited before publication.
-                let page_size = super::default_page_size();
-                let mut cursor = None;
-                let mut vectors = Vec::new();
-                loop {
-                    let records = adapter.query(StorageQuery {
-                        collection: collection.to_owned(),
-                        select: Some(vec!["embedding".into()]),
-                        sort: Some(vec![SortSpec { field: "id".into(), direction: SortDirection::Asc }]),
-                        cursor,
-                        limit: Some(page_size),
-                        ..Default::default()
-                    }).await.into_result()?;
-                    let page_len = records.len();
-                    let last_id = records.last().map(|record| record.id.clone());
-                    for record in records {
-                        if let Some(embedding) = record.data.get("embedding").filter(|value| !value.is_null()) {
-                            let embedding = Self::parse_embedding(embedding)
-                                .map_err(|e| format!("vector corpus record {}: {e}", record.id))?;
-                            if !embedding.is_empty() {
-                                vectors.push(CachedVector { id: record.id, embedding });
-                            }
-                        }
-                    }
-                    if page_len < page_size { break; }
-                    cursor = Some(Cursor {
-                        field: "id".into(),
-                        value: last_id.ok_or("full vector page has no final identity")?.into(),
-                        direction: CursorDirection::After,
-                    });
-                }
-                Ok::<_, String>(vectors)
+                let adapter = self.adapter_for_backend(handle, scope.clone()).await.map_err(|fault| VectorStoreError::Store(fault.into()))?;
+                let snapshot = adapter.binary_snapshot(collection).await.map_err(|fault| VectorStoreError::Store(fault.into()))?;
+                // The store's page size bounds one transfer, not the searchable corpus.
+                let limit = NonZeroUsize::new(super::default_page_size()).ok_or(VectorStoreError::PageSize)?;
+                let groups = read_groups(snapshot, limit).await?;
+                let corpus = tokio::task::spawn_blocking(move || {
+                    groups
+                        .into_iter()
+                        .map(|(descriptor, builder)| (descriptor, builder.seal(RecallTarget::STORE)))
+                        .collect::<VectorCorpus>()
+                })
+                .await?;
+                Ok::<_, VectorStoreError>(corpus)
             })
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| match error {
+                ComputeError::Initialize(error) => error,
+                ComputeError::TypeMismatch { .. } => VectorStoreError::CacheType,
+            })
     }
+}
+
+/// Copies every page of every embedding descriptor out of `snapshot` into one builder per
+/// descriptor, then releases the snapshot (and the database connection its read transaction
+/// leases) before returning: no seal or calibration runs while a connection is held. The
+/// raw producer bytes are appended in one copy per page, never decoded into numbers.
+pub(super) async fn read_groups(
+    snapshot: BinarySnapshot,
+    limit: NonZeroUsize,
+) -> Result<Vec<(EmbeddingDescriptor, MatrixBuilder)>, VectorStoreError> {
+    let stored = snapshot.descriptors(EMBEDDING_FIELD, limit).await.map_err(|fault| VectorStoreError::Store(fault.into()))?;
+    if stored.len() == limit.get() {
+        return Err(VectorStoreError::DescriptorGroups { limit: limit.get() });
+    }
+    let mut groups = Vec::with_capacity(stored.len());
+    let mut bytes = Vec::new();
+    let mut ids = Vec::new();
+    for binary in stored {
+        let descriptor = EmbeddingDescriptor::from_binary(&binary)?;
+        let mut builder = MatrixBuilder::default();
+        let mut after = None;
+        loop {
+            bytes.clear();
+            ids.clear();
+            let request = BinaryPageRequest { field: EMBEDDING_FIELD, after, limit };
+            let page = snapshot
+                .page_matching_into(&request, &binary, BinaryPageOutput { bytes: &mut bytes, ids: &mut ids })
+                .await
+                .map_err(|fault| VectorStoreError::Store(fault.into()))?;
+            let Some(page) = page else { break };
+            builder.append_page(&page, &bytes, &ids)?;
+            match ids.last() {
+                Some(last) if ids.len() == limit.get() => after = Some(*last),
+                _ => break,
+            }
+        }
+        groups.push((descriptor, builder));
+    }
+    // The read transaction ends here, before any caller seals what it read.
+    drop(snapshot);
+    Ok(groups)
 }

@@ -21,10 +21,10 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 bytemuck.workspace = true
+thiserror.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
-rayon.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
 schemars = { workspace = true }

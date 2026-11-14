@@ -514,13 +514,7 @@ impl EndpointTransition {
             .discover_page_admission(client, root)
             .await
             .map_err(CheckpointFailure::Admission)?;
-        let mut residents: Vec<_> = pool
-            .holders
-            .lock()
-            .iter()
-            .map(|(&slot, &key)| (slot, key))
-            .collect();
-        residents.sort_unstable_by_key(|(slot, _)| *slot);
+        let residents = pool.stop_residents();
         // Every resident's save is issued at once and joined on its own receipt: the saves are
         // independent, so the core adds no serial wait of its own and the stop costs what the
         // engine's schedule of them costs. The fork pinned today (cd2e16d87) runs page tasks one at

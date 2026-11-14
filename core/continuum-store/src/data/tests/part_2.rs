@@ -24,7 +24,7 @@ use super::*;
                 crate::orm::types::SchemaField {
                 default_value: None,
                     name: "embedding".to_string(),
-                    field_type: crate::orm::types::FieldType::Json,
+                    field_type: crate::orm::types::FieldType::Binary,
                     indexed: false,
                     unique: false,
                     nullable: true,
@@ -91,45 +91,6 @@ use super::*;
             assert_eq!(stats["recordsWithVectors"].as_u64().unwrap(), 5);
             assert!(stats["vectorDimensions"].as_u64().unwrap() > 0);
         }
-    }
-
-    #[test]
-    pub(super) fn test_cosine_similarity() {
-        // Test identical vectors
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![1.0, 0.0, 0.0];
-        let sim = DataState::cosine_similarity(&a, &b);
-        assert!(
-            (sim - 1.0).abs() < 0.001,
-            "Identical vectors should have similarity 1.0"
-        );
-
-        // Test orthogonal vectors
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![0.0, 1.0, 0.0];
-        let sim = DataState::cosine_similarity(&a, &b);
-        assert!(
-            sim.abs() < 0.001,
-            "Orthogonal vectors should have similarity 0.0"
-        );
-
-        // Test opposite vectors
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![-1.0, 0.0, 0.0];
-        let sim = DataState::cosine_similarity(&a, &b);
-        assert!(
-            (sim + 1.0).abs() < 0.001,
-            "Opposite vectors should have similarity -1.0"
-        );
-
-        // Test with 384-dimension vectors (typical embedding size)
-        let a: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
-        let b: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
-        let sim = DataState::cosine_similarity(&a, &b);
-        assert!(
-            (sim - 1.0).abs() < 0.001,
-            "Identical 384-dim vectors should have similarity 1.0"
-        );
     }
 
     // ====================================================================
