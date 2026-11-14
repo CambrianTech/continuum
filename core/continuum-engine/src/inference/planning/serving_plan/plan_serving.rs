@@ -159,6 +159,7 @@ fn plan_serving_into(
             grid_overflow_lanes: demand_lanes,
             resident_models: 1,
             fits_on_gpu: false,
+            window_target: demand.window_target(),
             lanes_bound: LanesBound::NoFit,
             rationale: format!(
                 "no candidate fits the {:.1}GB GPU budget; smallest is {} ({:.1}GB) — \
@@ -256,9 +257,9 @@ fn plan_serving_into(
                 (chosen, Some(a))
             }
             Err(why) => {
-                // This model cannot hold ONE lane at the smallest requirement: it is not a
-                // serving option here — the same honest degrade as "does not fit", never
-                // a starved lane. The rationale carries the numbers.
+                // The allocator said this model cannot hold ONE lane at its requirement:
+                // it is not a serving option here — the same honest degrade as "does
+                // not fit", never a starved lane. The rationale carries the numbers.
                 return Some(ServingPlan {
                     base_model: model.clone(),
                     served_context_window: 0,
@@ -266,6 +267,7 @@ fn plan_serving_into(
                     grid_overflow_lanes: demand.lanes,
                     resident_models: 1,
                     fits_on_gpu: false,
+                    window_target: demand.window_target(),
                     lanes_bound: LanesBound::NoFit,
                     rationale: format!(
                         "no candidate holds one lane at the roster's smallest requirement within the budget: {why:?} — shed the model, never the window"
@@ -407,6 +409,7 @@ fn plan_serving_into(
         resident_models: resident,
         fits_on_gpu: true,
         lanes_bound,
+        window_target: demand.window_target(),
         rationale: format!(
             "most-capable model fitting {:.1}GB GPU budget: {} ({:.1}GB weights, rank {}), \
              {} lane(s) @ {} ctx, {} model(s) warm",
@@ -608,9 +611,13 @@ fn plan_serving_at_rest_into(
     // than the roster needs leaves minds cold that were warm — not an upgrade,
     // whatever it scores. (BigMama, card a374c014: this compares FOOTPRINTS, so a
     // stale weights_bytes on a long-running core lies to it — fix the input there.)
-    let inc_lanes = plan_serving_into(&at_rest, std::slice::from_ref(inc), &demand, &mut None)
-        .map(|p| p.lanes as u32)
-        .unwrap_or(0); // unwrap_or: an incumbent that cannot plan at all has no lanes to protect
+    let inc_plan = plan_serving_into(&at_rest, std::slice::from_ref(inc), &demand, &mut None);
+    let inc_lanes = inc_plan.as_ref().map(|p| p.lanes as u32).unwrap_or(0);
+    // Reconcile: accept a new plan only if its closeness (per-mille of target served)
+    // is >= the standing one. A node whose closeness stops climbing keeps what it has
+    // and surfaces that fact in the rationale rather than swapping to a worse-served model.
+    let inc_closeness = inc_plan.as_ref().map(|p| p.closeness()).unwrap_or(0);
+    let fresh_closeness = fresh.as_ref().map(|p| p.closeness()).unwrap_or(0);
     let upgrade_worth_it = fresh.as_ref().is_some_and(|fresh_plan| {
         let f = &fresh_plan.base_model;
         let fresh_lanes = fresh_plan.lanes as u32;
@@ -618,6 +625,7 @@ fn plan_serving_at_rest_into(
         f.capability_rank > inc.capability_rank
             && f.weights_bytes.saturating_add(f.kv_at(MIN_SERVE_CTX)) <= headroom_budget
             && !starves_the_roster
+            && fresh_closeness >= inc_closeness
     });
     if upgrade_worth_it {
         *training_growth = fresh_growth;

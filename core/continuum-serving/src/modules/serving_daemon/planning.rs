@@ -768,6 +768,7 @@ mod training_lease_tests {
             fits_on_gpu: true,
             rationale: String::new(),
             lanes_bound: LanesBound::Demand,
+            window_target: 0,
         };
         let key = |growth: &TrainingGrowth| plan_decisions(&plan, 1, None, 2, Some(growth));
         assert_eq!(key(&TrainingGrowth::NoDemand), key(&TrainingGrowth::NoDemand), "unchanged: the probe stays silent");

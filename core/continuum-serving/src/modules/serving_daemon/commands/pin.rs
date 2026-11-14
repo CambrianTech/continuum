@@ -218,13 +218,13 @@ mod tests {
                 fixed_per_lane_bytes: 0,
             },
             served_context_window: 8192,
-            lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
             lanes: 1,
             grid_overflow_lanes: 0,
             resident_models: 1,
             fits_on_gpu: fits,
-            rationale: "test".into(),
-        }
+            rationale: String::from("test"),
+            lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
+            window_target: 0,        }
     }
 
     /// A fit-checker that returns a fixed verdict regardless of the model.

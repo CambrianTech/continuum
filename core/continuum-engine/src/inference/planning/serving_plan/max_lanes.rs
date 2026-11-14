@@ -602,6 +602,26 @@ pub struct ServingPlan {
     /// 5090 (2026-10-12, build 6160: `demand_lanes=2`, `fits_on_gpu=true`) could not say
     /// whether the GPU, the per-lane floor or a cold boot's memory chose one lane.
     pub lanes_bound: LanesBound,
+    /// The demand's window target that this plan was sized against (card 53a8d49b).
+    /// Stored alongside `served_context_window` so closeness is computed from
+    /// two ground-truth facts — never a copy that can drift.
+    pub window_target: u32,
+}
+
+impl ServingPlan {
+    /// Fraction of the requirement actually satisfied, as integer per-mille (card 53a8d49b).
+    /// Computed from `served_context_window` / `window_target`, clamped [0, 1000].
+    /// A value of 0 means no window at all; values < 1000 mean the node is below
+    /// target but still serving — the ratchet walks this upward monotonically.
+    pub fn closeness(&self) -> u16 {
+        if self.window_target == 0 {
+            return 1000;
+        }
+        let ratio = (self.served_context_window as u32).saturating_mul(1000)
+            .checked_div(self.window_target)
+            .unwrap_or(1000);
+        ratio.min(1000) as u16
+    }
 }
 
 /// What decided a plan's lane count. Each variant is a term the planner evaluated, so a
