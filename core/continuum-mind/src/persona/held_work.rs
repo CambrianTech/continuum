@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::cognition::work_preconditions::Held;
-use crate::cognition::workspace::{AwaitingResubmission, ChangedFile, ChangesUnread, EndedClaim, FileChange, HeldWork, SubmissionChanges, SubmissionVerdict};
+use crate::cognition::workspace::{AwaitingResubmission, ChangedFile, ChangesUnread, EndedClaim, FileChange, HeldWork, ReviewRequest, SubmissionChanges, SubmissionVerdict};
 
 /// Reads THIS persona's currently-claimed work cards from airc. A supertrait of
 /// `AircCitizen` (like `AircRosterReader`): the persona's runtime implements it
@@ -91,6 +91,7 @@ pub(crate) async fn read_through(reader: &(dyn AircWorkReader + '_), persona: Uu
     };
     if let Some(held) = held.as_mut() {
         held.awaiting = awaiting(&boards, holder);
+        held.review_requests = review_requests(&boards, holder, continuum_base::time::EpochMs::now().millis());
         held.submissions = submissions(persona, &held.holds, &boards).await;
     }
     held
@@ -229,6 +230,25 @@ fn verdict(boards: &[std::sync::Arc<airc_work::BoardSnapshot>], card: WorkCardId
         .map(|review| SubmissionVerdict { reviewer: review.reviewer, outcome: review.outcome, evidence: review.evidence_text.clone() })
 }
 
+/// PURE: the review requests on every board she stands in (`board_nav::group_of`, the one rule her
+/// board view and `work/list` read): a teammate's newest submission whose review card is hers to
+/// take, never her own work's. The longest waiting first; one card once, whichever board shows it.
+fn review_requests(boards: &[std::sync::Arc<airc_work::BoardSnapshot>], me: airc_core::PeerId, now_ms: u64) -> Vec<ReviewRequest> {
+    let minds = crate::persona::work_board::review::minds();
+    let mut requests: Vec<ReviewRequest> = Vec::new();
+    for board in boards {
+        let reader = crate::persona::board_nav::Reader { cards: &board.cards, me: me.as_uuid(), minds: &minds, now_ms };
+        let open = board.cards.iter().filter(|card| crate::persona::board_nav::group_of(card, &reader) == Some(crate::persona::board_nav::BoardGroup::ReviewRequests));
+        for card in open {
+            if !requests.iter().any(|known| known.review_card == card.card_id) {
+                requests.push(ReviewRequest { review_card: card.card_id, title: card.title.clone(), opened_at_ms: card.created_at_ms });
+            }
+        }
+    }
+    requests.sort_by_key(|request| (request.opened_at_ms, request.review_card));
+    requests
+}
+
 /// PURE: her open send-backs on `boards` (card 7f8c248e). A card counts when her NEWEST verdict on
 /// it failed and it is not terminal. It waits while its latest submission is the one she judged;
 /// once the author resubmits, it carries the review card the board opened for that exact
@@ -318,7 +338,7 @@ fn observe(
         })
         .collect();
     *baseline = Some(now);
-    Some(HeldWork { holds, selected, ended, rejections, awaiting: Vec::new(), submissions: Vec::new() }) // her send-backs and submissions are read from the boards by `read`
+    Some(HeldWork { holds, selected, ended, rejections, awaiting: Vec::new(), submissions: Vec::new(), review_requests: Vec::new() }) // her send-backs, submissions and review requests are read from the boards by `read`
 }
 
 #[cfg(test)]

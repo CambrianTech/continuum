@@ -16,7 +16,7 @@ use continuum_context::source::{Item, Source};
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::card_facts::state_str;
 use crate::cognition::work_preconditions::{CardRole, Held, NextMove};
-use crate::cognition::workspace::{AwaitingResubmission, ChangedFile, ChangesUnread, EndedClaim, FileChange, HeldWork, SubmissionChanges};
+use crate::cognition::workspace::{AwaitingResubmission, ChangedFile, ChangesUnread, EndedClaim, FileChange, HeldWork, ReviewRequest, SubmissionChanges};
 
 /// The occurrence of a held card's rendering: its card, the state entry it belongs to, and the
 /// rendered projection itself (`whole`).
@@ -242,6 +242,28 @@ impl Source<ContextMessage> for HeldWorkStream {
     }
 
     /// Her held card is what she acts through: a price choice never shows it below its whole.
+    /// Teammates' submissions awaiting a reviewer on every board she stands in: one item, the count
+    /// and the longest waiting, keyed once so a drained queue supersedes it in place. Told, never
+    /// assigned: whether to review is hers.
+    fn review_requests(&self, requests: &[ReviewRequest]) -> Option<Item<ContextMessage>> {
+        let oldest = requests.first()?;
+        let id = shown_form(oldest.review_card.as_uuid());
+        let n = requests.len();
+        let whole = format!(
+            "[review requests] {n} teammate submission(s) await a reviewer on your boards; the longest waiting is review card \
+             {id} \"{}\". A review: work/claim {id}, read work/submission (its patch and head), check its CI \
+             (code/github/pr-checks), then work/review with outcome, verified_head and evidence_text. \
+             work/list group=review_requests lists a board's requests.",
+            oldest.title
+        );
+        let pointer = format!("[review requests] {n} await a reviewer; the longest waiting: review card {id}");
+        let occurrence = element(self.persona, Producer::Work, &[b"review-requests".as_slice(), oldest.review_card.as_uuid().as_bytes(), &(n as u64).to_be_bytes()].concat());
+        Some(
+            Item::whole(occurrence, Cause::Root(Origin::External), "review-requests".to_string(), ContextMessage::user(whole))
+                .with_pointer(ContextMessage::user(pointer)),
+        )
+    }
+
     fn consumer(&self) -> continuum_context::ladder::Consumer {
         continuum_context::ladder::Consumer::Actionable
     }
@@ -255,6 +277,7 @@ impl Source<ContextMessage> for HeldWorkStream {
             items.extend(work.submissions.iter().filter(|changes| changes.card == held.card.card_id).map(|changes| self.submission(changes)));
         }
         items.extend(work.awaiting.iter().map(|item| self.awaiting(item)));
+        items.extend(self.review_requests(&work.review_requests));
         items
     }
 
@@ -421,5 +444,22 @@ mod tests {
         let items = HeldWorkStream { persona: uuid::Uuid::from_u128(7), work: std::sync::Arc::new(work) }.items();
         let text = items[1].full().text();
         assert!(text.contains("could not be read: her card's checkout is not on this node"), "{text}");
+    }
+    // what this catches: a teammate's submission awaiting a reviewer on a board none of her turns
+    // are in (the M5, 2026-11-14: 26 of 28 readable requests on the cambriantech board while her
+    // board view read only the turn's room). One item says how many and names the longest waiting,
+    // with the calls a review takes; nothing to review is no item at all.
+    #[test]
+    fn review_requests_on_her_boards_are_one_item_naming_the_longest_waiting() {
+        let request = |id: u128, title: &str, at: u64| ReviewRequest { review_card: WorkCardId::from_u128(id), title: title.into(), opened_at_ms: at };
+        let work = HeldWork { review_requests: vec![request(0xa, "review: pipefail", 1), request(0xb, "review: head with no body", 2)], ..Default::default() };
+        let items = HeldWorkStream { persona: uuid::Uuid::from_u128(7), work: std::sync::Arc::new(work) }.items();
+        assert_eq!(items.len(), 1, "one item, however many requests");
+        let text = items[0].full().text();
+        let oldest = shown_form(WorkCardId::from_u128(0xa).as_uuid());
+        assert!(text.contains("2 teammate submission(s)") && text.contains(&format!("work/claim {oldest}")) && text.contains("review: pipefail"), "{text}");
+        assert!(text.contains("verified_head") && text.contains("evidence_text"), "a review's parts are named before she calls: {text}");
+        let none = HeldWorkStream { persona: uuid::Uuid::from_u128(7), work: std::sync::Arc::new(HeldWork::default()) }.items();
+        assert!(none.is_empty());
     }
 }
