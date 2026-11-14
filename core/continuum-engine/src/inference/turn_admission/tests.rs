@@ -897,9 +897,16 @@
                     let saving = checkpointing.checkpoint_residents(&client, &root);
                     tokio::pin!(saving);
                     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                        tokio::select! {
-                            _ = &mut saving => panic!("checkpoint completed before fixture release"),
-                            _ = entered.notified() => {}
+                        // Both saves are issued at once: the cut lands once slot 1's save is held
+                        // AND slot 0's answered save is confirmed, so the cut proves what it cuts.
+                        let mut held = std::pin::pin!(entered.notified());
+                        let mut slot_1_held = false;
+                        while !(slot_1_held && residents.confirms(&key)) {
+                            tokio::select! {
+                                _ = &mut saving => panic!("checkpoint completed before fixture release"),
+                                _ = &mut held, if !slot_1_held => slot_1_held = true,
+                                _ = tokio::task::yield_now(), if slot_1_held => {}
+                            }
                         }
                     }).await.expect("second save reached fixture");
                     assert!(
