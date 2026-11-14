@@ -68,7 +68,7 @@ async fn zero_vector_is_refused_at_index() {
     create_row(adapter.as_ref(), "test_zero", "zero").await;
     let refused = module.state.index_vector(&db_path, "test_zero", "zero".into(), vec![0.0; 384]).await;
     assert!(matches!(refused, Err(ref error) if error.contains("zero vector")), "{refused:?}");
-    assert!(module.state.vector_corpus(&db_path, "test_zero").await.expect("test: corpus").is_empty());
+    assert!(module.state.vector_corpus(&db_path, "test_zero").await.expect("test: corpus").len() == 0);
 }
 
 #[tokio::test]
@@ -95,7 +95,7 @@ async fn test_vector_index_and_stats() {
     // A nullable embedding means this document has not been indexed yet.
     let before = module.state.vector_stats(&db_path, "test_vectors").await.expect("test: stats");
     assert_eq!(before.records_with_vectors, 0);
-    assert!(module.state.vector_corpus(&db_path, "test_vectors").await.expect("test: corpus").is_empty());
+    assert!(module.state.vector_corpus(&db_path, "test_vectors").await.expect("test: corpus").len() == 0);
 
     let test_embedding: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
     let index_result = index_via_state(

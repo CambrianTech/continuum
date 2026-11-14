@@ -99,10 +99,6 @@ pub(crate) trait ResidentMatrix: Send + Sync {
 
     fn len(&self) -> usize;
 
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     fn id(&self, row: usize) -> Option<&str>;
 }
 
