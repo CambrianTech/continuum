@@ -27,8 +27,9 @@ async fn the_stop_checkpoint_condemns_held_acts_before_it_takes_the_writer() {
         }));
     }
     let cap = std::time::Duration::from_secs(5);
+    let client = reqwest::Client::new();
     let checkpoint = super::super::page_io::checkpoint_endpoint(
-        &reqwest::Client::new(),
+        &client,
         "test://stopping",
         &endpoint,
         cap,
