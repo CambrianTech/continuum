@@ -33,7 +33,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use super::citizen_slots::{pages_in, PAGE_DIR, PAGE_SIDECARS};
-use super::{page_filename, KvSlotPool, PageKey};
+use super::{page_filename, KvSlotPool, PageKey, Probed};
 use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
 use crate::runtime::admission_gate::AdmissionGate;
 use crate::system_resources::disk_eviction::{
@@ -172,7 +172,10 @@ impl StoreView {
             if state.generation().is_some_and(|generation| !generation.has_exited() && state.owned_by(generation.id).is_none()) {
                 view.unproven = true;
             }
-            let Some(pool) = state.current_pool() else { continue };
+            let pool = match state.pool() {
+                Probed::Known(pool) => pool,
+                Probed::NotAsked | Probed::Absent(_) => continue,
+            };
             let dir = pool
                 .ledger
                 .get()

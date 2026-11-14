@@ -341,6 +341,27 @@
         assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 18 * gib - (4 * gib + gib / 2));
     }
 
+    // what this catches (the M5, 2026-11-14 03:35Z, canary 958ea3056): a boot sizing that takes the
+    // embed lane's floor. At a gap the predecessor engine's bytes are still physically used and
+    // serving's own are not attributed, so the replace-myself budget reads 0 (a pool sized from it
+    // is the 2,048-token dark node); the room beside the others is computed from their claims and
+    // never includes the embed floor, whether the embedder holds a lease, only its floor, or more.
+    #[test]
+    fn the_embed_floor_survives_a_boot_sizing() {
+        let capacity = 55_662_788_608; // serving.vram_ceiling_prior.seeded on the M5
+        let embed_floor = 186_908_672; // embed.vram.refused requested
+        let mut ledger = ResourceLeaseLedger::new();
+        ledger.set_capacity(ResourceKind::Vram, capacity);
+        ledger.set_physical_used(ResourceKind::Vram, capacity);
+        ledger.reserve("embed", ResourceKind::Vram, embed_floor);
+        assert_eq!(ledger.budget_for_replacing("serving", ResourceKind::Vram), 0, "the gap reading: nothing to size from");
+        assert_eq!(ledger.room_beside_others("serving", ResourceKind::Vram), capacity - embed_floor, "computed: the floor stays out");
+        ledger.set_measured("embed", vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: 2 * embed_floor, detail: "context".into() }]);
+        assert_eq!(ledger.room_beside_others("serving", ResourceKind::Vram), capacity - 2 * embed_floor, "residency past the floor counts once");
+        ledger.set_measured("serving", vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: capacity, detail: "engine".into() }]);
+        assert_eq!(ledger.room_beside_others("serving", ResourceKind::Vram), capacity - 2 * embed_floor, "its own bytes never count against it");
+    }
+
     #[test]
     fn reservation_floor_blocks_grant_and_reclaim_below_it() {
         let mut ledger = ResourceLeaseLedger::new();

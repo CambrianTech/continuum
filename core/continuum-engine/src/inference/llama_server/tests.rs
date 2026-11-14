@@ -162,6 +162,10 @@ impl LlamaServerControl for FakeControl {
             Err(m) => Err(LlamaServerError::Unreachable(m.to_string())),
         }
     }
+    async fn set_prompt_cache_limit(&self, _limit_mib: std::num::NonZeroU64) -> Result<PromptCacheLimit, LlamaServerError> {
+        // The reconcile never resizes the cache: the fake is an engine without the route.
+        Err(LlamaServerError::PromptCacheRefused(PromptCacheRefusal::RouteMissing))
+    }
     async fn active_adapters(&self, _target: &ServingTarget) -> Result<Vec<String>, LlamaServerError> {
         if self.adapters_unreadable {
             return Err(LlamaServerError::Unreachable("adapter set unreadable".into()));

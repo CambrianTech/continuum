@@ -337,6 +337,12 @@ impl ServingDaemonModule {
             .collect();
         desired_adapter_paths.sort();
 
+        // The one pool-size change that retires an engine: a ready engine whose pool holds fewer
+        // seated minds' needs than a launch at the live budget would (`floor_sized`, card 8569b03d).
+        if let Some(floor) = self.floor_sized_engine(&desired, served_ctx, lanes) {
+            return Some(self.retire_floor_sized_engine(operation, planned.intent_revision, floor));
+        }
+
         {
             let live = self.serving_tx.borrow();
             // Already serving the right model AND the right genome set: nothing relaunches.

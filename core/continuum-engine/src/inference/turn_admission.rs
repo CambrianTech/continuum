@@ -388,7 +388,10 @@ async fn admit(
         }
         _ => None,
     };
-    // A dream's ambient serving lane, held only while it must borrow a citizen slot.
+    // A dream's ambient lane, held only where it borrows a citizen slot (the admitted pool decides).
+    // Taken BEFORE the permit: a permit taken only to drop it for the lane woke the next waiter (6742aad1).
+    let dream_lane = |pool: Option<&Arc<KvSlotPool>>| class == SlotClass::Dream && (keyed_dream || pool.is_some_and(|pool| pool.scratch_slot().is_none()));
+    let mut needs_lane = dream_lane(pool.as_ref());
     let mut lane: Option<ServingLanePermit> = None;
     'admit: loop {
         if caller_lane.is_none() {
@@ -396,19 +399,24 @@ async fn admit(
                 caller_lane = Some(authority.acquire().await);
             }
         }
-        // 1. PERMIT FIRST — event-driven wait for a free lane. Cannot fail: the
-        //    semaphore is never closed over the adapter's lifetime. A dream holding its lane
-        //    only TRIES: when the adapter is full it lets the lane go, waits for a permit
-        //    holding nothing, and takes both again (Codex on #5786).
-        let _permit = match lane.as_ref().or(caller_lane.as_ref()).map(|_| concurrency.try_acquire()) {
-            Some(Ok(permit)) => permit,
-            Some(Err(_)) => {
-                lane = None;
-                caller_lane = None;
-                drop(concurrency.acquire().await);
-                continue 'admit;
+        if needs_lane && lane.is_none() {
+            lane = Some(crate::inference::resource_admission::acquire_serving_lane(None, LanePriority::Ambient, None).await);
+        }
+        // 1. PERMIT FIRST — event-driven wait for a free permit. A caller holding a lane only
+        //    TRIES: when the adapter is full it lets the lane go, waits for a permit to RETURN
+        //    holding nothing (never handed one it could only drop), and takes both again (#5786).
+        let _permit = if lane.is_some() || caller_lane.is_some() {
+            match concurrency.try_or_return() {
+                Ok(permit) => permit,
+                Err(returned) => {
+                    lane = None;
+                    caller_lane = None;
+                    returned.await;
+                    continue 'admit;
+                }
             }
-            None => concurrency.acquire().await,
+        } else {
+            concurrency.acquire().await
         };
 
         // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,
@@ -444,20 +452,15 @@ async fn admit(
 
         // A DREAM YIELDS TO RESIDENTS (Fable, M5 0b2854327 01:24-01:50Z: a dream parked on scratch
         // holding a lane while Aiko waited 1,141 s and Benchy 132 s with two slots idle). Decided
-        // each pass from the ADMITTED generation's pool (Codex on #5786: a transition can change
-        // it). Where it borrows a citizen slot (no scratch slot) it holds an ambient lane, so a
-        // waiting turn still wins, and takes it holding nothing; with a scratch slot that slot is
-        // its admission and it holds no lane.
-        // A keyed dream always borrows a citizen slot (her page), scratch or not, so it always
-        // holds the ambient lane: on a node with a scratch slot it would otherwise outrank residents.
-        if class == SlotClass::Dream && (keyed_dream || pool.as_ref().is_some_and(|pool| pool.scratch_slot().is_none())) {
-            if lane.is_none() {
-                drop(admission);
-                lane = Some(crate::inference::resource_admission::acquire_serving_lane(None, LanePriority::Ambient, None).await);
-                continue 'admit;
-            }
-        } else {
+        // each pass from the ADMITTED generation's pool (Codex on #5786). Where it borrows a citizen
+        // slot it holds an ambient lane, so a waiting turn still wins; on scratch it holds none. A
+        // keyed dream always borrows a citizen slot (her page), so it always holds the lane.
+        needs_lane = dream_lane(pool.as_ref());
+        if !needs_lane {
             lane = None;
+        } else if lane.is_none() {
+            drop(admission); // the generation changed under the discovery: lane first, next pass
+            continue 'admit;
         }
 
         if warm_only
@@ -528,12 +531,13 @@ async fn admit(
                 admission._slot_permit = Some(match pool.try_acquire_slot(slot) {
                     Some(permit) => permit,
                     // A keyed dream waits for her busy slot holding nothing: no pin, no lane, no
-                    // gate (Codex on #5898). A turn keeps its pin through the wait (a same-page
-                    // returner must await the prior owner without permitting eviction).
+                    // gate (Codex on #5898), no permit (card 6742aad1). A turn keeps its pin
+                    // through the wait (a same-page returner must await the prior owner without
+                    // permitting eviction).
                     None if keyed_dream => {
                         drop(admission);
                         lane = None;
-                        wait_until_free(pool, slot).await?;
+                        if let Some(release) = pool.busy_until_release(slot)? { release.await; }
                         continue 'admit;
                     }
                     None => pool.acquire_slot(slot).await?,
@@ -663,7 +667,7 @@ async fn admit(
             let Some(permit) = pool.try_acquire_slot(slot) else {
                 drop(admission);
                 lane = None;
-                wait_until_free(pool, slot).await?;
+                if let Some(release) = pool.busy_until_release(slot)? { release.await; }
                 continue 'admit;
             };
             admission = admission
@@ -683,7 +687,7 @@ async fn admit(
             // and no serving lane (card 920c43bc).
             let Some(permit) = pool.try_acquire_slot(scratch) else {
                 drop(admission);
-                wait_until_free(pool, scratch).await?;
+                if let Some(release) = pool.busy_until_release(scratch)? { release.await; }
                 continue 'admit;
             };
             admission._slot_permit = Some(permit);
@@ -984,10 +988,5 @@ async fn kv_page_action_with_capacity(
 /// again (its slot without waiting). Waiting on the slot's own semaphore cannot miss the release
 /// the way a notification raised before the permit returns could; the next pass may still lose
 /// the slot to another caller and wait again, which is how a non-turn call yields.
-async fn wait_until_free(pool: &KvSlotPool, slot: u32) -> Result<(), String> {
-    drop(pool.acquire_slot(slot).await?);
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests;

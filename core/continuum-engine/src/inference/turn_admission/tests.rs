@@ -871,10 +871,9 @@
             checkpointing
                 .ready(&root, &generation, contract.clone())
                 .expect("verified replacement");
-            let residents = crate::inference::slots::directory()
-                .get(&root)
-                .flatten()
-                .expect("verified pool");
+            let continuum_base::probed::Probed::Known(residents) = crate::inference::slots::directory().get(&root) else {
+                panic!("verified pool");
+            };
             residents.plan_paging(0, key);
             residents.plan_paging(1, other);
             residents.note_saved(key);

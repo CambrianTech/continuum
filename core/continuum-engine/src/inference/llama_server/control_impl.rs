@@ -16,6 +16,10 @@ impl LlamaServerControl for LlamaServerProcess {
         LlamaServerProcess::launched_prompt_cache_mib(self)
     }
 
+    async fn set_prompt_cache_limit(&self, limit_mib: std::num::NonZeroU64) -> Result<super::PromptCacheLimit, LlamaServerError> {
+        super::prompt_cache_limit::post_prompt_cache_limit(&self.client, &self.root, limit_mib).await
+    }
+
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
         if !crate::inference::slots::directory()
             .endpoint(&self.root)

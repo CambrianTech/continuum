@@ -15,7 +15,7 @@
 //! the engine cannot be replaced underneath it. A training POST is not a generation: her page
 //! attribution survives only the engine's confirmation that the served tail was restored.
 
-use super::{directory, PageKey, SlotClass};
+use super::{directory, PageKey, Probed, SlotClass};
 use crate::inference::engine_residency::EngineIncarnation;
 use crate::inference::llama_server::LearnOutcome;
 use crate::inference::turn_admission::{admit_turn, TurnAdmission, HER_ACT_FIRST};
@@ -75,9 +75,9 @@ pub async fn learn_slot(engine: EngineIncarnation, persona: uuid::Uuid) -> Resul
     let key = PageKey::mind(persona).ok_or_else(|| LearnSlotRefusal::Unadmitted("no resident identity".into()))?;
     let root = engine.root_url();
     let pool = match directory().get(&root) {
-        Some(Some(pool)) => pool,
-        Some(None) => return Err(LearnSlotRefusal::Unadmitted("the endpoint keeps no slots".into())),
-        None => return Err(LearnSlotRefusal::Unadmitted("the endpoint has no installed pool".into())),
+        Probed::Known(pool) => pool,
+        Probed::Absent(_) => return Err(LearnSlotRefusal::Unadmitted("the endpoint keeps no slots".into())),
+        Probed::NotAsked => return Err(LearnSlotRefusal::Unadmitted("the endpoint has no installed pool".into())),
     };
     let bound = directory().endpoint(&root).concurrency().bound();
     let client = crate::inference::engine_client();

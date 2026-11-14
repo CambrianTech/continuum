@@ -2,7 +2,7 @@
 //! actions, her thoughts and each standing grounding block. Every act her view appends only
 //! the items that changed, so the engine reuses the whole previous prompt; turnover, the
 //! only rewrite, collapses older items to their pointers once, at an epoch start
-//! (docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md, "sources are streams").
+//! (docs/architecture/CONTINUUM-ENGINE.md, "sources are streams").
 //!
 //! One adapter per source, each small: a new source is a new file here, never a branch in
 //! the prompt assembly.

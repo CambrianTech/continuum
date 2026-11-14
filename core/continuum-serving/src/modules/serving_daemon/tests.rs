@@ -111,6 +111,15 @@ impl LlamaServerControl for FakeServer {
             None => Err(LlamaServerError::Unreachable("test: nothing up".into())),
         }
     }
+    async fn set_prompt_cache_limit(
+        &self,
+        _limit_mib: std::num::NonZeroU64,
+    ) -> Result<crate::inference::llama_server::PromptCacheLimit, LlamaServerError> {
+        // No daemon test here resizes the cache: the fake is an engine without the route.
+        Err(LlamaServerError::PromptCacheRefused(
+            crate::inference::llama_server::PromptCacheRefusal::RouteMissing,
+        ))
+    }
     async fn active_adapters(&self, _target: &ServingTarget) -> Result<Vec<String>, LlamaServerError> {
         Ok(Vec::new())
     }

@@ -1,10 +1,12 @@
 //! A rebuildable in-RAM cache that RAM sizes, never a number (Joel, 2026-10-29; Cormac on the
 //! pattern): entries are kept in recency order and, when the memory pressure monitor sheds, the
-//! least recently used are dropped until the cache gives back its share of the host's overrun past
-//! its priority's gate. Everything in it can be rebuilt (airc, a recompute), so its floor is zero.
+//! least recently used are dropped until the cache gives back its share of the host's memory
+//! deficit at its priority (`PressureSnapshot::deficit_at`: the RAM overrun past its gate, or what
+//! the OS has compressed and swapped since it was last clean). Everything in it can be rebuilt
+//! (airc, a recompute), so its floor is zero.
 //!
 //! One owner for the pattern: every in-process cache of rebuildable values registers one of these
-//! with the monitor instead of carrying its own entry cap. The overrun at a priority is shared
+//! with the monitor instead of carrying its own entry cap. The deficit at a priority is shared
 //! across every reporter at that priority in proportion to what each holds (the monitor publishes
 //! what each priority holds in its snapshot), so one pressure event frees it once (Cormac on #5697).
 
@@ -19,36 +21,6 @@ use super::{
     MemoryBudgetSpec, MemoryPriority, MemoryReporter, ModuleMemoryReport, PressureLevel,
     PressureSnapshot,
 };
-
-impl PressureSnapshot {
-    /// Bytes the host is over `priority`'s gate (used RAM past `gate x total`): what every consumer
-    /// at that priority gives back between them when they shed. Zero at or under the gate.
-    pub fn over_gate(&self, priority: MemoryPriority) -> u64 {
-        let used = self.total_bytes.saturating_sub(self.available_bytes);
-        let gate = (self.total_bytes as f64 * priority.pressure_gate()) as u64;
-        used.saturating_sub(gate)
-    }
-
-    /// Bytes every reporter at `priority` held at this snapshot's poll.
-    pub fn held_at(&self, priority: MemoryPriority) -> u64 {
-        self.held_by_priority
-            .iter()
-            .filter(|held| held.priority == priority)
-            .map(|held| held.bytes)
-            .sum()
-    }
-
-    /// The part of `priority`'s overrun a consumer holding `held` bytes gives back: its share in
-    /// proportion to what it holds among every reporter at that priority (the monitor's own count of
-    /// its reporters, published in the snapshot), so one pressure event frees the overrun once.
-    pub fn share_of_overrun(&self, priority: MemoryPriority, held: u64) -> u64 {
-        let total = self.held_at(priority).max(held);
-        if total == 0 {
-            return 0;
-        }
-        (u128::from(self.over_gate(priority)) * u128::from(held) / u128::from(total)) as u64
-    }
-}
 
 /// How many bytes of RAM a cached value holds (what shedding it gives back).
 pub trait ByteSized {
@@ -231,14 +203,14 @@ impl<K: Clone + Eq + Hash + Send + Sync, V: ByteSized + Send + Sync> MemoryRepor
         true
     }
 
-    /// Give back this cache's share of the overrun past its priority's gate, least recently used first.
+    /// Give back this cache's share of its priority's deficit, least recently used first.
     fn shed_load(&self, _level: PressureLevel) {
         let held = self.bytes();
         let Some(share) = self
             .pressure
             .lock()
             .as_ref()
-            .map(|pressure| pressure.borrow().share_of_overrun(self.priority, held))
+            .map(|pressure| pressure.borrow().share_of_deficit(self.priority, held))
         else {
             return;
         };
@@ -249,7 +221,7 @@ impl<K: Clone + Eq + Hash + Send + Sync, V: ByteSized + Send + Sync> MemoryRepor
                 cache = self.name,
                 share = share,
                 freed = freed,
-                "a rebuildable cache gave back its share of RAM past its priority's gate"
+                "a rebuildable cache gave back its share of the host's memory deficit at its priority"
             );
         }
     }
@@ -258,7 +230,6 @@ impl<K: Clone + Eq + Hash + Send + Sync, V: ByteSized + Send + Sync> MemoryRepor
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system_resources::memory_pressure::HeldAtPriority;
 
     struct Bytes(u64);
     impl ByteSized for Bytes {
@@ -313,42 +284,5 @@ mod tests {
         assert_eq!(lru.shed(u64::MAX), 10, "only the unheld entry frees");
         assert!(lru.get(&1).is_some(), "the held one stays cached");
         drop(held);
-    }
-
-    // what this catches: every consumer at a priority shedding the WHOLE overrun, so N caches free N
-    // times what the host needed and rebuildable entries thrash: the shares of one overrun across a
-    // priority's reporters (as the monitor counted them) add up to the overrun, in proportion to what
-    // each holds.
-    #[test]
-    fn one_overrun_is_shared_across_a_priority_not_repeated() {
-        let priority = MemoryPriority::Background;
-        let snapshot = PressureSnapshot {
-            total_bytes: 1000,
-            available_bytes: 300,
-            held_by_priority: vec![HeldAtPriority {
-                priority,
-                bytes: 400,
-            }],
-            ..PressureSnapshot::default()
-        };
-        assert_eq!(
-            snapshot.over_gate(priority),
-            100,
-            "used 700 of 1000 is 100 past Background's 0.60 gate"
-        );
-        let (share_a, share_b) = (
-            snapshot.share_of_overrun(priority, 300),
-            snapshot.share_of_overrun(priority, 100),
-        );
-        assert_eq!(
-            (share_a, share_b),
-            (75, 25),
-            "in proportion to what each holds"
-        );
-        assert_eq!(
-            share_a + share_b,
-            100,
-            "the shares add up to the overrun once"
-        );
     }
 }

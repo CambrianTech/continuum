@@ -1,4 +1,4 @@
-//! serving-replay: slice S0 of `docs/architecture/SERVING-ENGINE.md` (plan line 3b).
+//! serving-replay: slice S0 of `docs/architecture/CONTINUUM-ENGINE.md` (plan line 3b).
 //!
 //! Replays act sequences against an engine behind [`target::ServingTarget`] and reports
 //! per-act reuse, fresh prefill tokens, page-ins by kind, relaunches and wall time — in

@@ -97,3 +97,48 @@ fn a_refusal_crosses_a_seam_with_its_chain_and_next_call() {
     let Ok(text) = serde_json::to_value(&wire) else { panic!("a refusal serializes") }; // boundary: the grid wire a refusal crosses, round-tripped
     assert!(matches!(serde_json::from_value::<continuum_airc_protocol::CommandRefusal>(text), Ok(back) if back == wire));
 }
+
+/// A command whose handler refuses with a next call: never registered, dispatched directly.
+struct RefusingSpec;
+impl crate::sdk_codegen::CommandSpec for RefusingSpec {
+    const NAME: &'static str = "fixture/refusal-refusing";
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Bare;
+    type Params = reopen::P;
+    type Result = reopen::R;
+}
+
+struct Refusing;
+
+#[async_trait::async_trait]
+impl crate::sdk_codegen::CommandHandler for Refusing {
+    type Spec = RefusingSpec;
+    async fn execute(
+        &self,
+        _ctx: &crate::sdk_codegen::Ctx,
+        p: reopen::P,
+    ) -> Result<crate::sdk_codegen::Outcome<reopen::R>, crate::sdk_codegen::CommandError> {
+        let next = NextCall::new(reopen::REOPEN, &reopen::P { act: 3 }, "your latest act")
+            .map_err(|unwritable| crate::sdk_codegen::CommandError::Internal(unwritable.to_string()))?;
+        Err(Refusal::new(UnknownAct { act: p.act, because: std::io::Error::other("the record ends at #3") }, NextMoves::call(next)).into())
+    }
+}
+
+// what this catches: a refusal's next moves flattened into its sentence where it leaves dispatch,
+// so the mind she acts through could only read the commands back out of prose (Aiko on the M5,
+// 2026-11-13: 8 refused `work/submit` calls naming verbs her tool list offers under other names).
+// The failure keeps the sentence she reads and the refusal typed, each next call by its command.
+#[tokio::test]
+async fn a_refusal_leaves_dispatch_with_its_next_moves_typed() {
+    let failure = match crate::sdk_codegen::dispatch_with_caller(&Refusing, serde_json::json!({ "act": 9 }), None).await {
+        Err(failure) => failure,
+        Ok(_) => panic!("the handler refuses"),
+    };
+    let sentence = &failure.message;
+    assert!(sentence.contains("reopen_fixture({\"act\":3})"), "the sentence renders the call as offered: {sentence}");
+    let Some(refusal) = failure.refusal else { panic!("a refusal with next moves crosses typed: {}", failure.message) };
+    assert_eq!(refusal.category, Category::NotFound);
+    assert_eq!(refusal.next.commands().collect::<Vec<_>>(), ["fixture/refusal-reopen"]);
+    let plain = crate::sdk_codegen::dispatch_with_caller(&Refusing, serde_json::json!({ "act": "nine" }), None).await;
+    assert!(matches!(plain, Err(crate::sdk_codegen::CommandFailure { refusal: None, .. })), "a refusal without next moves carries none");
+}

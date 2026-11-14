@@ -42,6 +42,13 @@
 //! [`pin`]: ServingConsumer::pin_model
 //! [`TierDownPolicy`]: super::serving_tier_down::TierDownPolicy
 //!
+//! # Not here: the engine's host prompt cache
+//!
+//! The prompt cache is host RAM, and host RAM has ONE reclaim path: the memory monitor's deficit,
+//! which asks the cache first (`super::serving_prompt_cache`, card 0f631c46). The authority's
+//! reclaim reaches this consumer only when serving's own pool row is over its ceiling, which it
+//! never was while the M5 starved (2026-11-13), so the cache is not a lever of this consumer.
+//!
 //! # No new task, no parallel allocator
 //!
 //! This is a thin adapter over handles the daemon already publishes
@@ -427,7 +434,7 @@ impl ResourceConsumer for ServingConsumer {
                 .as_ref()
                 .map(|(id, _, _, _)| id.clone())
                 .or_else(|| self.serving.borrow().loading_model.clone())
-                .unwrap_or_default();
+                .unwrap_or_default(); // unwrap_or_default: no model named yet, and the physical read is of the live lane whatever it serves
             return match (self.measured_of)(&model) {
                 Some(bytes) if bytes > 0 => vec![ConsumerFootprint {
                     kind: self.pool_kind,
@@ -480,7 +487,7 @@ impl ResourceConsumer for ServingConsumer {
             // is under-attributed by its grant until the record learns it (named gap).
             inherited_footprint(&rec, |m, w, l| (self.footprint_of)(m, w, l, 0))
         });
-        let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0);
+        let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0); // unwrap_or: no plan, no loading lane, no inherited record = nothing planned resident
 
         // THE HIGH-WATER REQUIRES A PROOF CHANNEL. `ready_verified_at_ms` is stamped the
         // moment readiness is CONFIRMED for the lane now serving, and a verification we
@@ -494,14 +501,13 @@ impl ResourceConsumer for ServingConsumer {
         // unfalsifiable claim on a third of the box is not.
         let Some(verified) = self.serving.borrow().ready_verified_at_ms else {
             return planned
-                .map(|(bytes, detail)| {
-                    vec![ConsumerFootprint {
-                        kind: self.pool_kind,
-                        bytes,
-                        detail,
-                    }]
+                .into_iter()
+                .map(|(bytes, detail)| ConsumerFootprint {
+                    kind: self.pool_kind,
+                    bytes,
+                    detail,
                 })
-                .unwrap_or_default();
+                .collect();
         };
 
         // DECAY ON EVIDENCE, NEVER ON A TIMER.
