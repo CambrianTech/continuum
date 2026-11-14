@@ -43,7 +43,7 @@ pub use transient::admit_transient;
 use transient::admit_transient_through;
 
 pub(crate) use page_receipt::PageAction;
-use page_receipt::{terminal_receipt, Terminal};
+use page_receipt::{terminal_receipt, EngineWork, Terminal};
 use page_liveness::{bounded_page_receipt, wait_while_engine_progresses, PageLiveness, Receipt};
 #[cfg(test)]
 use page_quote::read_quote;
@@ -917,9 +917,7 @@ async fn kv_page_action_with_capacity(
     // its clock starts after a busy slot's deferral, so `ms - engine_ms` is the wait and
     // engine_ms the load (card a40e1bbf; the 5090 2026-10-11: Kimi's restores took 6-7.5 min
     // and nothing could say how much was waiting for the slot and how much was reading).
-    let (timing_field, bytes_field) = action.engine_fields();
-    let engine_ms = body.as_ref().and_then(|b| b["timings"][timing_field].as_f64().map(|ms| ms as u64));
-    let engine_bytes = body.as_ref().and_then(|b| b[bytes_field].as_u64());
+    let work = EngineWork::of(action, body.as_ref());
     let outcome = match terminal_receipt(action, slot, &filename, status, body.as_ref()) {
         Some(Terminal::Completed) => PageOutcome::Completed,
         Some(Terminal::Rejected) => PageOutcome::Rejected,
@@ -968,11 +966,16 @@ async fn kv_page_action_with_capacity(
         status = status as u64,
         ms,
         // absent when the engine gave no timing (an older engine, or no terminal body)
-        engine_ms = %engine_ms.map_or_else(|| "none".to_string(), |v| v.to_string()),
-        wait_ms = %engine_ms.map_or_else(|| "none".to_string(), |v| ms.saturating_sub(v).to_string()),
+        engine_ms = %EngineWork::shown(work.ms),
+        wait_ms = %EngineWork::shown(work.ms.map(|v| ms.saturating_sub(v))),
+        // the engine's loop (what other slots' decode waits for) and its IO worker (fork #118)
+        copy_ms = %EngineWork::shown(work.copy_ms),
+        io_ms = %EngineWork::shown(work.io_ms),
+        admit_ms = %EngineWork::shown(work.admit_ms),
+        io_bytes_in_flight = %EngineWork::shown(work.in_flight_bytes),
         // the engine counts only the .bin; the sidecars (checkpoints, adapter vector) are read and
         // written in the same timed switch, so they are named apart (BigMama on #4957)
-        slot_bytes = %engine_bytes.map_or_else(|| "none".to_string(), |v| v.to_string()),
+        slot_bytes = %EngineWork::shown(work.bytes),
         sidecar_bytes = %crate::inference::slots::page_sidecar_bytes(&filename).map_or_else(|| "none".to_string(), |v| v.to_string()),
         bound_ms = bound.as_millis() as u64,
         node_p50_ms = p50_ms,

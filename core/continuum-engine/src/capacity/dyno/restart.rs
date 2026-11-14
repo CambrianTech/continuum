@@ -10,6 +10,8 @@ use crate::inference::slots::{ColdPages, Ratio, StorePressure};
 
 use super::recorded::Receipted;
 
+mod stall;
+
 /// The restart's data file, compiled in so a run needs no file system.
 const RESTART_JSON: &str = include_str!("../../../fixtures/dyno/2026-11-13-restart.json");
 
@@ -33,6 +35,8 @@ pub(crate) struct RestartDay {
     pub(crate) store_pressure: Receipted<RecordedPressure>,
     /// How many page saves or restores the engine runs at once (the pinned fork: one).
     pub(crate) engine_page_lanes: Receipted<usize>,
+    /// What copying a page's bytes in host memory costs (dyno 11b, [`stall`]).
+    pub(crate) host_copy_bytes_per_ms: Receipted<u64>,
 }
 
 /// When each job completes, issued all at once in order onto `lanes` engine lanes, each
