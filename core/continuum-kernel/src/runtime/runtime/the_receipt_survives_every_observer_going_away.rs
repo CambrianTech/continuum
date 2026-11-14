@@ -147,9 +147,8 @@ pub(super) mod conditional_modules_tests {
     ///
     /// Every other receipt test constructs `ModuleStopOutcome` values as literals and
     /// asserts on them, which describes the enum rather than the code that fills it — so
-    /// deleting the timeout handling in `shutdown` would have left them all green. These
-    /// drive a real `Runtime` with modules that genuinely exceed the phase bound. Found by
-    /// IntelMac.
+    /// deleting the last-resort handling in `shutdown` would have left them all green. These
+    /// drive a real `Runtime` with modules that answer slowly, or never. Found by IntelMac.
     mod outcomes_the_runtime_actually_produces {
         use super::super::*;
         use crate::runtime::runtime::piece_2_pr3_dispatch_tests::RecordingModule;
@@ -163,13 +162,13 @@ pub(super) mod conditional_modules_tests {
         use async_trait::async_trait;
         use std::any::Any;
 
-        /// A module whose SAVE never finishes inside the bound.
-        struct SlowSaver;
+        /// A module whose DRAIN answers after the old 2 s phase bound: slow, never silent.
+        struct SlowDrainer;
         #[async_trait]
-        impl ServiceModule for SlowSaver {
+        impl ServiceModule for SlowDrainer {
             fn config(&self) -> ModuleConfig {
                 ModuleConfig {
-                    name: "slow-saver",
+                    name: "slow-drainer",
                     priority: ModulePriority::Normal,
                     command_prefixes: &[],
                     event_subscriptions: &[],
@@ -186,144 +185,94 @@ pub(super) mod conditional_modules_tests {
                 _command: &str,
                 _params: serde_json::Value,
             ) -> Result<CommandResult, String> {
-                // Required: `ServiceModule::handle_command` has no default. These stubs
-                // exist to exceed a phase bound, not to serve commands.
+                // Required: `ServiceModule::handle_command` has no default.
+                Err("not handled".to_string())
+            }
+            async fn drain(&self) -> Result<crate::runtime::Quiet, String> {
+                // Virtual time (`start_paused`): its in-flight work finishes past the old bound.
+                tokio::time::sleep(SHUTDOWN_PHASE + SHUTDOWN_PHASE / 2).await;
+                Ok(crate::runtime::Quiet::Finished)
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+
+        /// A module whose SAVE never returns: the one case the last resort exists for.
+        struct SilentSaver;
+        #[async_trait]
+        impl ServiceModule for SilentSaver {
+            fn config(&self) -> ModuleConfig {
+                ModuleConfig {
+                    name: "silent-saver",
+                    priority: ModulePriority::Normal,
+                    command_prefixes: &[],
+                    event_subscriptions: &[],
+                    needs_dedicated_thread: false,
+                    max_concurrency: 0,
+                    tick_interval: None,
+                }
+            }
+            async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+                Ok(())
+            }
+            async fn handle_command(
+                &self,
+                _command: &str,
+                _params: serde_json::Value,
+            ) -> Result<CommandResult, String> {
                 Err("not handled".to_string())
             }
             async fn save_state(&self) -> Result<(), String> {
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                Ok(())
+                std::future::pending().await
             }
             fn as_any(&self) -> &dyn Any {
                 self
             }
         }
 
-        /// A module that saves promptly and then never lets go.
-        struct SlowJoiner;
-        #[async_trait]
-        impl ServiceModule for SlowJoiner {
-            fn config(&self) -> ModuleConfig {
-                ModuleConfig {
-                    name: "slow-joiner",
-                    priority: ModulePriority::Normal,
-                    command_prefixes: &[],
-                    event_subscriptions: &[],
-                    needs_dedicated_thread: false,
-                    max_concurrency: 0,
-                    tick_interval: None,
-                }
-            }
-            async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
-                Ok(())
-            }
-            async fn handle_command(
-                &self,
-                _command: &str,
-                _params: serde_json::Value,
-            ) -> Result<CommandResult, String> {
-                // Required: `ServiceModule::handle_command` has no default. These stubs
-                // exist to exceed a phase bound, not to serve commands.
-                Err("not handled".to_string())
-            }
-            async fn shutdown(&self) -> Result<(), String> {
-                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-                Ok(())
-            }
-            fn as_any(&self) -> &dyn Any {
-                self
-            }
-        }
-
-        // what this catches: the save timeout arm being deleted or inverted. A module that
-        // cannot save inside the bound must produce `SaveTimedOut` and make the stop
-        // non-durable — this is the outcome the CLI's exit code keys on, and until now no
-        // test had ever caused one.
-        // `start_paused` — time is VIRTUAL here, and that is not a speed optimisation.
-        //
-        // With a real clock, a 400ms sleep against a 50ms timeout can still return
-        // `Clean`: pinned Tokio's `Timeout::poll` polls the INNER future FIRST, so if the
-        // scheduler stalls long enough that the sleep has already completed by the time
-        // the timeout is polled, the inner future wins. Under CI contention that is not
-        // hypothetical.
-        //
-        // The flake is a FALSE NEGATIVE, not a false positive: these tests ASSERT
-        // `SaveTimedOut`, so a stall that yields `Clean` makes the assertion FAIL and the
-        // test go red. Spurious failure on a loaded machine — annoying, worth removing,
-        // and it never certifies anything wrongly.
-        //
-        // Saying so precisely because the first version of this comment claimed the
-        // opposite ("fails open", certifying durability on a machine that cannot tell).
-        // That was wrong: it conflated the production path RETURNING Clean with the TEST
-        // PASSING, and the assertion sits between them. Mechanism from Astra and Popper;
-        // the retraction of the stronger claim from IntelMac, who traced it rather than
-        // just accepting the correction.
-        //
-        // Paused, the clock advances only when every task is idle and only to the nearest
-        // deadline, so the 50ms timeout fires before the 400ms sleep can complete, on any
-        // machine, every time.
+        // what this catches (card 2febbbe8; the M5 2026-11-14 13:25Z and BigMama ~13:15Z): a
+        // phase bound cutting a module that was working. A drain that finishes after the old
+        // 2 s bound is awaited, and its module saves, joins and reports its state durable.
+        // `start_paused`: the drain's length is virtual time, so no machine's speed decides it.
         #[tokio::test(start_paused = true)]
-        async fn a_module_that_cannot_save_in_time_produces_save_timed_out() {
+        async fn a_drain_that_finishes_after_the_old_bound_keeps_its_state() {
             let runtime = Runtime::new();
-            runtime.register(Arc::new(SlowSaver));
-            let receipt = runtime
-                .shutdown_within(std::time::Duration::from_millis(50))
-                .await;
+            runtime.register(Arc::new(SlowDrainer));
+            let receipt = runtime.shutdown().await;
             let row = receipt
                 .modules
                 .iter()
-                .find(|m| m.module == "slow-saver")
+                .find(|m| m.module == "slow-drainer")
                 .expect("the slow module must appear in the receipt");
-            assert_eq!(row.outcome, ModuleStopOutcome::SaveTimedOut);
-            assert!(
-                !row.state_is_durable(),
-                "a save that timed out leaves the state UNKNOWN, not merely old"
-            );
-            assert!(!receipt.state_is_durable());
-            assert!(receipt.summary().contains("slow-saver"));
+            assert_eq!(row.drain, DrainOutcome::Drained, "its drain was awaited, not cut");
+            assert_eq!(row.outcome, ModuleStopOutcome::Clean);
+            assert!(receipt.state_is_durable(), "{}", receipt.summary());
         }
 
-        // what this catches: the join timeout arm. The module SAVED, so an implementation
-        // that stopped bounding the join would report `Clean` — and with `shutdown`
-        // contractually being "release resources, FLUSH BUFFERS", that would claim
-        // durability over a flush that may not have happened.
-        // `start_paused` — time is VIRTUAL here, and that is not a speed optimisation.
-        //
-        // With a real clock, a 400ms sleep against a 50ms timeout can still return
-        // `Clean`: pinned Tokio's `Timeout::poll` polls the INNER future FIRST, so if the
-        // scheduler stalls long enough that the sleep has already completed by the time
-        // the timeout is polled, the inner future wins. Under CI contention that is not
-        // hypothetical.
-        //
-        // The flake is a FALSE NEGATIVE, not a false positive: these tests ASSERT
-        // `SaveTimedOut`, so a stall that yields `Clean` makes the assertion FAIL and the
-        // test go red. Spurious failure on a loaded machine — annoying, worth removing,
-        // and it never certifies anything wrongly.
-        //
-        // Saying so precisely because the first version of this comment claimed the
-        // opposite ("fails open", certifying durability on a machine that cannot tell).
-        // That was wrong: it conflated the production path RETURNING Clean with the TEST
-        // PASSING, and the assertion sits between them. Mechanism from Astra and Popper;
-        // the retraction of the stronger claim from IntelMac, who traced it rather than
-        // just accepting the correction.
-        //
-        // Paused, the clock advances only when every task is idle and only to the nearest
-        // deadline, so the 50ms timeout fires before the 400ms sleep can complete, on any
-        // machine, every time.
+        // what this catches: the last resort deleted (a wedged module would hold every observer
+        // until its own budget, with nothing named) or misreported. A save that never returns
+        // is `NeverAnswered { phase: Save }`, keeps its drain's truth, makes the stop
+        // non-durable and is named, while the other modules' rows still arrive.
         #[tokio::test(start_paused = true)]
-        async fn a_module_that_cannot_join_in_time_produces_join_timed_out() {
+        async fn a_module_that_never_answers_is_named_with_its_phase() {
             let runtime = Runtime::new();
-            runtime.register(Arc::new(SlowJoiner));
-            let receipt = runtime
-                .shutdown_within(std::time::Duration::from_millis(50))
-                .await;
+            runtime.register(Arc::new(SilentSaver));
+            let (prompt, _r) = RecordingModule::new("prompt", Vec::new());
+            runtime.register(prompt);
+            let receipt = runtime.shutdown().await;
             let row = receipt
                 .modules
                 .iter()
-                .find(|m| m.module == "slow-joiner")
-                .expect("the slow module must appear in the receipt");
-            assert_eq!(row.outcome, ModuleStopOutcome::JoinTimedOut);
+                .find(|m| m.module == "silent-saver")
+                .expect("the silent module must appear in the receipt");
+            assert_eq!(row.outcome, ModuleStopOutcome::NeverAnswered { phase: StopPhase::Save });
+            assert_eq!(row.drain, DrainOutcome::Drained, "its drain answered before its save went silent");
             assert!(!row.state_is_durable());
+            assert!(!receipt.state_is_durable());
+            assert!(receipt.summary().contains("silent-saver"), "{}", receipt.summary());
+            let prompt = receipt.modules.iter().find(|m| m.module == "prompt").expect("present");
+            assert!(prompt.state_is_durable(), "one silent module never costs another its row");
         }
 
         // what this catches: the ordinary path degrading. A module that drains, saves and
@@ -336,9 +285,7 @@ pub(super) mod conditional_modules_tests {
             let runtime = Runtime::new();
             let (module, _r) = RecordingModule::new("prompt", Vec::new());
             runtime.register(module);
-            let receipt = runtime
-                .shutdown_within(std::time::Duration::from_millis(50))
-                .await;
+            let receipt = runtime.shutdown().await;
             let row = receipt
                 .modules
                 .iter()
@@ -379,36 +326,37 @@ pub(super) mod conditional_modules_tests {
         #[test]
         fn only_a_fully_completed_stop_can_support_a_durability_claim() {
             assert!(ModuleStopOutcome::Clean.completed());
-            assert!(!ModuleStopOutcome::SaveTimedOut.completed());
+            assert!(!ModuleStopOutcome::NeverAnswered { phase: StopPhase::Save }.completed());
             assert!(!ModuleStopOutcome::SaveFailed {
                 error: "disk full".into()
             }
             .completed());
             // The two that used to pass, and must not.
-            assert!(!ModuleStopOutcome::JoinTimedOut.completed());
+            assert!(!ModuleStopOutcome::NeverAnswered { phase: StopPhase::Join }.completed());
             assert!(!ModuleStopOutcome::JoinFailed {
                 error: "task refused to join".into()
             }
             .completed());
         }
 
-        // what this catches: THE clobber. When drain and save/join shared one enum, an
-        // incomplete drain followed by a join timeout produced `JoinTimedOut`, the drain
-        // result was discarded, and the module reported its state durable — a save taken
-        // mid-turn, described as clean. Found in review by Astra, not by me.
+        // what this catches (card 2febbbe8): work a drain handed to durable state read as lost,
+        // or a silent join read as durable. Work held as resumable loses nothing, so its stop is
+        // durable; a join that never answered is not, whatever its drain said.
         #[test]
-        fn an_incomplete_drain_survives_a_failing_join_and_stays_non_durable() {
-            let torn = ModuleStop {
-                module: "cognition".into(),
-                drain: DrainOutcome::Incomplete { in_flight: 3 },
-                outcome: ModuleStopOutcome::JoinTimedOut,
+        fn a_handed_back_drain_is_durable_and_a_silent_join_is_not() {
+            let handed = ModuleStop {
+                module: "training-trigger".into(),
+                drain: DrainOutcome::HandedBack { resumable: 2 },
+                outcome: ModuleStopOutcome::Clean,
                 ms: 1,
             };
-            // The join outcome alone would once have said "saved, just untidy".
-            assert!(!torn.outcome.completed());
-            // The whole module is NOT durable, because the save was taken over a turn.
-            assert!(!torn.state_is_durable());
-            assert_eq!(torn.drain, DrainOutcome::Incomplete { in_flight: 3 });
+            assert!(handed.state_is_durable(), "resumable work is not lost");
+            let silent = ModuleStop {
+                outcome: ModuleStopOutcome::NeverAnswered { phase: StopPhase::Join },
+                ..handed
+            };
+            assert!(!silent.state_is_durable());
+            assert_eq!(silent.drain, DrainOutcome::HandedBack { resumable: 2 });
         }
 
         // what this catches: a drain that FAILED being reported as a measured zero.
@@ -416,10 +364,10 @@ pub(super) mod conditional_modules_tests {
         #[test]
         fn a_failed_drain_is_unknown_not_a_measured_zero() {
             let unknown = DrainOutcome::Unknown {
-                reason: "drain exceeded 2s".into(),
+                reason: "drain errored".into(),
             };
             assert!(!unknown.is_quiet());
-            assert_ne!(unknown, DrainOutcome::Incomplete { in_flight: 0 });
+            assert_ne!(unknown, DrainOutcome::HandedBack { resumable: 0 });
             assert_ne!(unknown, DrainOutcome::Drained);
         }
 
@@ -431,7 +379,7 @@ pub(super) mod conditional_modules_tests {
             let receipt = ShutdownReceipt {
                 modules: vec![
                     stop("logger", ModuleStopOutcome::Clean),
-                    stop("cognition", ModuleStopOutcome::SaveTimedOut),
+                    stop("cognition", ModuleStopOutcome::NeverAnswered { phase: StopPhase::Save }),
                 ],
                 total_ms: 42,
             };

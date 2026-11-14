@@ -5,8 +5,9 @@ use super::*;
 /// `continuum stop` — stop the running core (the detached session started by `continuum start`).
 /// How long the core gets to drain, save and join before the CLI stops waiting.
 ///
-/// `Runtime::shutdown` runs three 2s-bounded phases per module in parallel, so a healthy
-/// stop is ~6s worst case; the extra room is for the response to travel back. A stop that
+/// `Runtime::shutdown` awaits each module's drain, save and join in parallel and names any
+/// module still silent at its last resort (`MODULE_NEVER_ANSWERED`, 6 s), so its receipt
+/// arrives well inside this; the extra room is for the response to travel back. A stop that
 /// exceeds this is not assumed dead — it is assumed UNKNOWN, and the caller says so.
 ///
 /// Plus the turn settle's cap (card 32fa22ba): before any module saves, the core lets the

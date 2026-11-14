@@ -101,8 +101,9 @@ impl ServiceModule for ServingDaemonModule {
         Ok(())
     }
 
-    async fn drain(&self) -> Result<u32, String> {
-        self.interrupt_teacher_batch()
+    /// A teacher batch in flight is interrupted (an `Err` naming it); none in flight is quiet.
+    async fn drain(&self) -> Result<crate::runtime::Quiet, String> {
+        self.interrupt_teacher_batch().map(|_none| crate::runtime::Quiet::Finished)
     }
 
     async fn shutdown(&self) -> Result<(), String> {

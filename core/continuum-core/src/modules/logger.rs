@@ -20,7 +20,7 @@
 //!
 //! Migration from: workers/logger (222 lines main.rs + 4 modules)
 
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, Quiet, ServiceModule};
 use crate::sdk_codegen::DynCommand;
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
@@ -849,7 +849,7 @@ impl ServiceModule for LoggerModule {
         crate::commands::log::command_objects(self.state.clone())
     }
 
-    /// Wait for the log queue to empty, bounded.
+    /// Wait for the log queue to empty: every line handed to the writer is written.
     ///
     /// The first real implementation of the drain contract, and it is here because the
     /// loss is concrete: `queue_log` hands entries to a writer THREAD, and `shutdown`
@@ -859,30 +859,22 @@ impl ServiceModule for LoggerModule {
     ///
     /// Polls rather than signals: the writer is a plain `std::thread` on a blocking
     /// `recv_timeout`, so there is no async completion to await, and its own flush
-    /// interval is 250ms. Returning the residual count rather than an error is what lets
-    /// the receipt say how many lines were lost instead of only that some were.
-    async fn drain(&self) -> Result<u32, String> {
+    /// interval is 250ms. The wait ends on the queue's own emptiness, never on a budget
+    /// (card 2febbbe8): a slow disk answers later, and a writer that never empties it is
+    /// named by the runtime's last resort, `NeverAnswered { phase: Drain }`.
+    async fn drain(&self) -> Result<Quiet, String> {
         // CLOSE ADMISSION FIRST. Waiting for the depth to reach zero while producers are
         // still free to enqueue measures a moment, not a drain — the count can be zero
         // and one `clog_*` later be one again, with the writer already joined.
         close_log_admission();
         const POLL: std::time::Duration = std::time::Duration::from_millis(25);
-        // Bounded strictly inside the runtime's 2s phase bound, so the deadline that
-        // fires is this one — with a count — rather than the outer timeout, which
-        // produces no number at all.
-        const BUDGET: std::time::Duration = std::time::Duration::from_millis(1_500);
-        let deadline = std::time::Instant::now() + BUDGET;
-        while std::time::Instant::now() < deadline {
-            if queued_log_entries() == 0 && self.state.pending_writes.load(Ordering::Relaxed) == 0 {
-                return Ok(0);
-            }
+        // Both halves count: entries still in the channel, plus writes the writer has
+        // made but not flushed. A drain that read only the channel would call a module
+        // drained while its file buffers still held lines.
+        while queued_log_entries() > 0 || self.state.pending_writes.load(Ordering::Relaxed) > 0 {
             tokio::time::sleep(POLL).await;
         }
-        // Both halves count: entries still in the channel, plus writes the writer has
-        // made but not flushed. A drain that reported only the channel would call a
-        // module drained while its file buffers still held lines.
-        let left = queued_log_entries() + self.state.pending_writes.load(Ordering::Relaxed);
-        Ok(left.min(u32::MAX as u64) as u32)
+        Ok(Quiet::Finished)
     }
 
     async fn shutdown(&self) -> Result<(), String> {

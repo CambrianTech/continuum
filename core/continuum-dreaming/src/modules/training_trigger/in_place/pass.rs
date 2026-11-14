@@ -117,7 +117,7 @@ impl TrainingTriggerState {
             // 2. seat and cover her next example, holding no serving resource
             let prepare_rows = Arc::clone(&rows);
             let prepared = match self
-                .run_owned(key.clone(), move |state, key| async move { state.in_place.prepare(&state, &key, &prepare_rows, engine).await })
+                .run_owned(Work::Learning, key.clone(), move |state, key| async move { state.in_place.prepare(&state, &key, &prepare_rows, engine).await })
                 .await
             {
                 Ok(Ok(prepared)) => prepared,
@@ -175,7 +175,7 @@ impl TrainingTriggerState {
             };
             let step_rows = Arc::clone(&rows);
             let (next, stepped, renewed_now) = match self
-                .run_leased(lease, key.clone(), move |state, key| async move {
+                .run_leased(Work::Learning, lease, key.clone(), move |state, key| async move {
                     let (mut stepped, mut renewed) = (BucketPass::default(), renewed);
                     let next = state.in_place.step(&state, held, &key, &step_rows, engine, slot, &mut renewed, &mut stepped).await;
                     (next, stepped, renewed)
@@ -210,7 +210,7 @@ impl TrainingTriggerState {
                 }
             }
         }
-        pass.checkpointed = self.run_owned(key, move |state, key| async move { state.in_place.settle(&state, &key, engine).await }).await??;
+        pass.checkpointed = self.run_owned(Work::Learning, key, move |state, key| async move { state.in_place.settle(&state, &key, engine).await }).await??;
         match failure {
             Some(why) => Err(why),
             None => Ok(pass),
@@ -227,7 +227,7 @@ impl TrainingTriggerState {
             let key = BucketKey { persona_id: generation.persona_id, trait_kind: generation.trait_kind.clone(), base_model: generation.base_model.clone() };
             let persona = key.persona_id;
             let swept = self
-                .run_owned(key, move |state, key| async move {
+                .run_owned(Work::Learning, key, move |state, key| async move {
                     let store = state.durable.require()?;
                     if let Some(current) = store.checkpoint_of(&key).await? {
                         snapshot::maybe(&store, &current).await;
@@ -244,9 +244,9 @@ impl TrainingTriggerState {
         Ok(())
     }
 
-    /// Run `operation` as one of the trigger's owned operations, outliving the caller; shutdown
-    /// drains it like every other.
-    pub(super) async fn spawn_owned(&self, operation: impl std::future::Future<Output = ()> + Send + 'static) {
-        self.operations.lock().await.spawn(operation);
+    /// Run `operation` as one of the trigger's owned learning operations, outliving the caller;
+    /// a stop hands it back like every other ([`Work::Learning`]).
+    pub(in crate::modules::training_trigger) async fn spawn_owned(&self, operation: impl std::future::Future<Output = ()> + Send + 'static) {
+        self.operations.lock().await.spawn(Work::Learning, operation);
     }
 }
