@@ -11,8 +11,8 @@ use super::*;
 #[test]
 fn an_opportunity_never_steps_down_and_never_offers_a_seat_fall_home_would_reject() {
     use crate::cognition::grid_allocation::{BetterBy, LanePlan, Requirement};
-    const REQ: Requirement = Requirement { window: 0, target_window: None, min_capability: 0, decode_floor_tps: None };
-    let plan = |cap: u8, window: u32| LanePlan { model_id: "m".into(), capability_rank: cap, window, lanes: 2, decode_tps_per_lane: None };
+    const REQ: Requirement = Requirement { window: 0, target_window: None, min_capability: continuum_kernel::capability::Capability::Proxy { score: 0 }, decode_floor_tps: None };
+    let plan = |cap: u8, window: u32| LanePlan { model_id: "m".into(), capability_rank: continuum_kernel::capability::Capability::Proxy { score: cap }, window, lanes: 2, decode_tps_per_lane: None };
     fn base<'a>(current: Option<&'a LanePlan>, target: &'a LanePlan) -> OpportunityInputs<'a> {
         OpportunityInputs {
             current, current_holds_her: current.is_some(), target, requirement: &REQ, target_is_current: false,
@@ -21,22 +21,22 @@ fn an_opportunity_never_steps_down_and_never_offers_a_seat_fall_home_would_rejec
     }
     let (small, big) = (plan(2, 32_768), plan(30, 45_470));
     // Kimi: home is a 27B, her home plan is momentarily absent, a 1.5B seat is offered.
-    assert_eq!(decide_opportunity(&OpportunityInputs { home_capability: Some(30), ..base(None, &small) }), None);
+    assert_eq!(decide_opportunity(&OpportunityInputs { home_capability: Some(continuum_kernel::capability::Capability::Proxy { score: 30 }), ..base(None, &small) }), None);
     // Unknown home and no current plan: an absence is not permission.
     assert_eq!(decide_opportunity(&base(None, &small)), None);
     // A weak home stepping UP is still the point of the rule.
-    assert_eq!(decide_opportunity(&OpportunityInputs { home_capability: Some(2), ..base(None, &big) }), Some(BetterBy::Requirement));
+    assert_eq!(decide_opportunity(&OpportunityInputs { home_capability: Some(continuum_kernel::capability::Capability::Proxy { score: 2 }), ..base(None, &big) }), Some(BetterBy::Requirement));
     // Delia, measured: the 5090 seat's window 67,840 against her sent floor 70,608. The
     // placer called it better by requirement; fall-home then rejected it, 22 times.
     let seat_5090 = plan(30, 67_840);
     assert_eq!(
-        decide_opportunity(&OpportunityInputs { home_capability: Some(2), turn_requirement: Some(70_608), ..base(None, &seat_5090) }),
+        decide_opportunity(&OpportunityInputs { home_capability: Some(continuum_kernel::capability::Capability::Proxy { score: 2 }), turn_requirement: Some(70_608), ..base(None, &seat_5090) }),
         None
     );
     assert!(seat_starves(Some(seat_5090.window), Some(70_608)), "the same predicate fall-home reads");
     // A mind that seat does hold still moves up to it.
     assert_eq!(
-        decide_opportunity(&OpportunityInputs { home_capability: Some(2), turn_requirement: Some(56_557), ..base(None, &seat_5090) }),
+        decide_opportunity(&OpportunityInputs { home_capability: Some(continuum_kernel::capability::Capability::Proxy { score: 2 }), turn_requirement: Some(56_557), ..base(None, &seat_5090) }),
         Some(BetterBy::Requirement)
     );
 }
@@ -50,21 +50,21 @@ fn an_opportunity_never_steps_down_and_never_offers_a_seat_fall_home_would_rejec
 fn a_strictly_better_seat_moves_her_between_turns_and_never_inside_her_cooldown() {
     use crate::cognition::grid_allocation::{BetterBy, LanePlan};
     use crate::cognition::turn_ledger::TurnShape;
-    let plan = |cap: u8, window: u32, lanes: u32| LanePlan { model_id: "m".into(), capability_rank: cap, window, lanes, decode_tps_per_lane: None };
+    let plan = |cap: u8, window: u32, lanes: u32| LanePlan { model_id: "m".into(), capability_rank: continuum_kernel::capability::Capability::Proxy { score: cap }, window, lanes, decode_tps_per_lane: None };
     let (home, wide, strong) = (plan(9, 67_072, 2), plan(9, 131_072, 2), plan(12, 32_768, 1));
     fn i<'a>(current: Option<&'a LanePlan>, target: &'a LanePlan) -> OpportunityInputs<'a> {
         const REQUIREMENT: crate::cognition::grid_allocation::Requirement = crate::cognition::grid_allocation::Requirement {
-            window: 0, target_window: None, min_capability: 0, decode_floor_tps: None,
+            window: 0, target_window: None, min_capability: continuum_kernel::capability::Capability::Proxy { score: 0 }, decode_floor_tps: None,
         };
         OpportunityInputs {
             requirement: &REQUIREMENT,
             current, current_holds_her: current.is_some(), target, target_is_current: false, turn_in_flight: false, since_last_move_ms: 1_000, cooldown_ms: 1_000,
-            home_capability: Some(0), turn_requirement: None,
+            home_capability: Some(continuum_kernel::capability::Capability::Proxy { score: 0 }), turn_requirement: None,
         }
     }
     assert_eq!(decide_opportunity(&i(Some(&home), &wide)), Some(BetterBy::Window));
     let target_requirement = crate::cognition::grid_allocation::Requirement {
-        window: 16_384, target_window: Some(100_000), min_capability: 0, decode_floor_tps: None,
+        window: 16_384, target_window: Some(100_000), min_capability: continuum_kernel::capability::Capability::Proxy { score: 0 }, decode_floor_tps: None,
     };
     let narrow_many = plan(9, 32_768, 3);
     let mut toward_fit = i(Some(&narrow_many), &home);
@@ -105,8 +105,8 @@ fn a_strictly_better_seat_moves_her_between_turns_and_never_inside_her_cooldown(
 #[test]
 fn a_new_wider_node_moves_the_mind_it_holds_and_not_the_ones_it_does_not() {
     use crate::cognition::grid_allocation::{allocate, BetterBy, GridAllocation, GridInputs, LanePlan, Mind, NodeOffer, OfferTerms, Requirement, Role};
-    let role = |name: &str, window: u32| Role { name: name.into(), requirement: Requirement { window, target_window: None, min_capability: 0, decode_floor_tps: None } };
-    let plan = |window: u32, lanes: u32| LanePlan { model_id: "27b".into(), capability_rank: 9, window, lanes, decode_tps_per_lane: None };
+    let role = |name: &str, window: u32| Role { name: name.into(), requirement: Requirement { window, target_window: None, min_capability: continuum_kernel::capability::Capability::Proxy { score: 0 }, decode_floor_tps: None } };
+    let plan = |window: u32, lanes: u32| LanePlan { model_id: "27b".into(), capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 }, window, lanes, decode_tps_per_lane: None };
     let (home, joined) = (Uuid::from_u128(0x40), Uuid::from_u128(0x5090));
     let (coder, helper, sentinel) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
     let mind = |id, role| Mind { id, role, home: Some(home), owner: Uuid::nil() };

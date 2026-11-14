@@ -18,7 +18,7 @@
             weights_bytes: 19 * GB,
             kv_per_token: 33_000,
             context_window: 262_144,
-            capability_rank: 9,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
         };
         let host = HostBudget { usable_bytes: 30 * GB, perf_cores: 8 };
@@ -122,7 +122,7 @@
             weights_bytes: weights_gb * GB,
             kv_per_token,
             context_window: ctx,
-            capability_rank: rank,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: rank },
             fixed_per_lane_bytes: 0,
         }
     }

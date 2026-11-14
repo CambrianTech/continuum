@@ -398,8 +398,9 @@ impl ServiceModule for GridModule {
                 })
                 .collect();
             let serving = crate::inference::llama_server::current_serving();
-            let rank_of = |id: &str| -> Option<u8> {
-                crate::model_registry::global().model(id).and_then(|m| m.serving.measured_capability)
+            // A peer counts only with a MEASURED score: an unmeasured peer is never a better seat.
+            let rank_of = |id: &str| -> Option<continuum_kernel::capability::Capability> {
+                crate::model_registry::global().model(id).and_then(|m| m.serving.measured_capability).map(|score| continuum_kernel::capability::Capability::Measured { score })
             };
             let local = crate::persona::placement_switch::LocalShape {
                 lane_wait_p50_ms: {
@@ -414,7 +415,7 @@ impl ServiceModule for GridModule {
                     .active_model
                     .as_deref()
                     .and_then(rank_of)
-                    .unwrap_or(crate::inference::planning::serving_plan::footprint::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
+                    .unwrap_or(continuum_kernel::capability::Capability::ANY), // JUSTIFIED unwrap_or: an unmeasured local model is a proxy, below every measured peer
             };
             for line in placement::follow_the_fleet(now, peers, local, &rank_of).await {
                 say_in_org_room(&line).await;

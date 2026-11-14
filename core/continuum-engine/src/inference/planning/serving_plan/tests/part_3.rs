@@ -85,7 +85,7 @@ use super::*;
             weights_bytes: 17 * GB,
             kv_per_token: 65_536,
             context_window: 262_144,
-            capability_rank: 9,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
         };
         let at_rest = HostBudget {
@@ -119,7 +119,7 @@ use super::*;
             weights_bytes: 17 * GB,
             kv_per_token: 262_144,
             context_window: 262_144,
-            capability_rank: 9,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
         };
         let physical = HostBudget {
@@ -176,7 +176,7 @@ use super::*;
             weights_bytes: 16 * GB,
             kv_per_token: 32_768,
             context_window: 262_144,
-            capability_rank: 42,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: 42 },
             fixed_per_lane_bytes: 922_859_520,
         };
         let models = std::slice::from_ref(&model);

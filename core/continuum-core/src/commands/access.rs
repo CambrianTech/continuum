@@ -22,7 +22,7 @@ pub struct AccessGetResult {
     pub policy: AccessPolicy,
     /// The capability rank of the model this node serves now (a local citizen's level).
     #[ts(optional)]
-    pub local_cognitive_rank: Option<u8>,
+    pub local_cognitive_rank: Option<continuum_kernel::capability::Capability>,
     /// The level a local citizen gets right now under this policy.
     pub local_citizen_level: TrustLevel,
 }
@@ -59,7 +59,7 @@ impl From<AccessLevelChange> for Option<TrustLevel> {
 pub struct AccessSetParams {
     /// The capability rank at or above which a citizen gets the full working surface.
     #[ts(optional)]
-    pub full_access_min_rank: Option<u8>,
+    pub full_access_min_rank: Option<continuum_kernel::capability::Capability>,
     /// The citizen (peer id) a decision is about.
     #[ts(optional, type = "string")]
     pub peer: Option<Uuid>,

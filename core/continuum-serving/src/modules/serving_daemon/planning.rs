@@ -360,7 +360,7 @@ impl ServingDaemonModule {
                                 target: "continuum_core::modules::serving_daemon", class = "serving.plan.demotion_refused",
                                 floor = floor.as_str(),
                                 wanted = wanted.as_str(),
-                                incumbent = incumbent.as_deref().unwrap_or("<none>"),
+                                incumbent = incumbent.as_deref().unwrap_or("<none>"), // unwrap_or: probe label for no incumbent
                                 usable_gb = (budget.usable_bytes / 1_000_000_000),
                                 physical_usable_gb =
                                     (self.physical_budget().usable_bytes / 1_000_000_000),
@@ -464,7 +464,7 @@ impl ServingDaemonModule {
                             continuum_base::probe!(
                                 target: "continuum_core::modules::serving_daemon", class = "serving.plan",
                                 decision = "downshift-held",
-                                incumbent = incumbent.as_deref().unwrap_or("<none>"),
+                                incumbent = incumbent.as_deref().unwrap_or("<none>"), // unwrap_or: probe label for no incumbent
                                 wanted = plan.base_model.model_id.as_str(),
                                 streak,
                                 needs_streak = DOWNSHIFT_SUSTAINED_TICKS,
@@ -512,7 +512,7 @@ impl ServingDaemonModule {
                     let mut last = self
                         .last_plan_probe
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a poisoned lock still holds the last value; recover it
                     let window_moved = |prev: u32| -> bool {
                         plan.served_context_window.abs_diff(prev) > prev / 8
                     };
@@ -632,7 +632,7 @@ impl ServingDaemonModule {
                          spike unknown, publishing 0, which DISABLES the prefill deadband",
                     );
                 }
-                let spike = spike_of_served.unwrap_or(0);
+                let spike = spike_of_served.unwrap_or(0); // unwrap_or: an absent spike publishes 0, and the probe above names that it is absent
                 crate::inference::prefill_spike::publish(spike);
                 // send_replace keeps the latest even with no live receivers yet.
                 self.publish_plan_snapshot(intent_revision, Some(plan));
@@ -646,7 +646,7 @@ impl ServingDaemonModule {
                     let mut last = self
                         .last_plan_probe
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()); // unwrap_or_else: a poisoned lock still holds the last value; recover it
                     if last.as_ref().map(|(d, _)| d.as_str()) == Some("<no-servable-model>") {
                         false
                     } else {
@@ -736,7 +736,7 @@ mod training_lease_tests {
         ];
         let model = ModelFootprint {
             model_id: "fixture".into(), weights_bytes: 19 * (1 << 30), kv_per_token: 33_000,
-            context_window: 262_144, capability_rank: 1, fixed_per_lane_bytes: 0,
+            context_window: 262_144, capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 }, fixed_per_lane_bytes: 0,
         };
         let budget = HostBudget { usable_bytes: 64 * (1 << 30), perf_cores: 1 };
         account_training_leases(&mut demand, &leases);
@@ -757,7 +757,7 @@ mod training_lease_tests {
         use crate::inference::planning::serving_plan::LanesBound;
         let model = ModelFootprint {
             model_id: "fixture".into(), weights_bytes: 1 << 30, kv_per_token: 33_000,
-            context_window: 32_768, capability_rank: 1, fixed_per_lane_bytes: 0,
+            context_window: 32_768, capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 }, fixed_per_lane_bytes: 0,
         };
         let plan = ServingPlan {
             base_model: model,

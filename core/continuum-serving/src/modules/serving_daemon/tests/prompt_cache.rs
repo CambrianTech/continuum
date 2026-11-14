@@ -89,7 +89,7 @@ fn the_cache_holds_the_active_rosters_states_not_every_seed_on_disk() {
         weights_bytes: 19 * 1024 * 1024 * 1024,
         kv_per_token: 32_888,
         context_window: 262_144,
-        capability_rank: 1,
+        capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 },
         fixed_per_lane_bytes: 0,
     };
     let physical = 64u64 << 30;
@@ -229,7 +229,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
         weights_bytes: 1024 * 1024 * 1024,
         kv_per_token: 65536,
         context_window: 65536,
-        capability_rank: 1,
+        capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 },
         fixed_per_lane_bytes: 0,
     };
     let missing = prompt_cache_decision(None, &[60000], 1, 65536, 1, 32 << 30, 0, 0);
@@ -424,7 +424,7 @@ fn a_discrete_gpu_does_not_charge_vram_residency_against_host_ram() {
         weights_bytes: 17 << 30,
         kv_per_token: 262_144, // ~256 KiB/token: a 144k window is ~36 GiB of KV
         context_window: 262_144,
-        capability_rank: 1,
+        capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 },
         fixed_per_lane_bytes: 0,
     };
     let physical = 63u64 << 30;
@@ -542,7 +542,7 @@ fn a_full_cache_never_steps_the_serving_mode_down_by_itself() {
         weights_bytes: 16 << 30,
         kv_per_token: 32_768,
         context_window: 67_340,
-        capability_rank: 1,
+        capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 },
         fixed_per_lane_bytes: 0,
     };
     let physical = 64u64 << 30;
@@ -589,7 +589,7 @@ fn the_cache_never_promises_past_what_is_available_now() {
         weights_bytes: 17 << 30,
         kv_per_token: 262_144,
         context_window: 262_144,
-        capability_rank: 1,
+        capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 },
         fixed_per_lane_bytes: 0,
     };
     let physical = 63u64 << 30;

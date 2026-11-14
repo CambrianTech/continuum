@@ -316,10 +316,10 @@ pub struct ModelFootprint {
     /// served window can never exceed. The model's stated capability, carried so
     /// the planner caps to it without re-fetching the model.
     pub context_window: u32,
-    /// Higher = more capable. The planner prefers the most capable model that
-    /// still fits at least one lane — "give them the most powerful persona we
-    /// can," never tiering down for its own sake.
-    pub capability_rank: u8,
+    /// Higher = more capable; any measured score outranks any weights proxy. The
+    /// planner prefers the most capable model that still fits at least one lane —
+    /// "give them the most powerful persona we can," never tiering down for its own sake.
+    pub capability_rank: continuum_kernel::capability::Capability,
     /// Fixed residency per lane LEARNED from the live process beyond the header's KV rate
     /// and the compute floor: the draft model's KV, the vision projector, engine buffers.
     /// Measured 2026-09-19 on the M5: (55,925 − 32,768) B/token × 67,340 ≈ 1.56 GB per

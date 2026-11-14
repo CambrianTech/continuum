@@ -245,7 +245,7 @@ pub struct Allocation {
     /// Why outstanding training did or did not leave room for window growth.
     pub training_growth: TrainingGrowth,
     pub model_id: String,
-    pub capability_rank: u8,
+    pub capability_rank: continuum_kernel::capability::Capability,
     /// The served per-slot window: the largest requirement among `served`.
     pub window: u32,
     pub lanes: u32,
@@ -471,7 +471,7 @@ mod tests {
             weights_bytes: 19 * GB,
             kv_per_token: 33_000,
             context_window: 262_144,
-            capability_rank: 9,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
         }
     }
@@ -482,7 +482,7 @@ mod tests {
             weights_bytes: 5 * GB,
             kv_per_token: 8_000,
             context_window: 131_072,
-            capability_rank: 4,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: 4 },
             fixed_per_lane_bytes: 0,
         }
     }

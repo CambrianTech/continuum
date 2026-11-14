@@ -93,7 +93,7 @@ pub fn resolve_from_footprint(
     // single-element slice never is — so `unwrap_or(false)` is the not-empty floor.
     let fits = plan_serving(&host, std::slice::from_ref(fp), &ServingDemand::new(1, None))
         .map(|p| p.fits_on_gpu)
-        .unwrap_or(false);
+        .unwrap_or(false); // unwrap_or: no plan only for an empty slice, never this one; read as not fitting
 
     if fits {
         PlacementResolution::LocalRecommended {
@@ -176,7 +176,7 @@ pub fn select_grid_peer(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> 
                 std::slice::from_ref(footprint),
                 &ServingDemand::new(1, None))
             .map(|plan| plan.fits_on_gpu)
-            .unwrap_or(false)
+            .unwrap_or(false) // unwrap_or: no plan only for an empty slice, never this one; read as not fitting
         })
         .max_by_key(|p| p.capacity.gpu_free_bytes_live)
         .map(|p| p.peer)
@@ -222,7 +222,7 @@ mod tests {
             weights_bytes: weights_gb * GB,
             kv_per_token: 1024, // ~2 MiB KV at the 2048 MIN_SERVE_CTX — weights dominate
             context_window: 32_768,
-            capability_rank: 5,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: 5 },
             fixed_per_lane_bytes: 0,
         }
     }

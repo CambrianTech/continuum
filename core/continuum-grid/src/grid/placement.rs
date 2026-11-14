@@ -17,7 +17,7 @@ pub async fn follow_the_fleet(
     now_ms: u64,
     peers: Vec<PeerOffer>,
     local: LocalShape,
-    rank_of: &(dyn Fn(&str) -> Option<u8> + Sync),
+    rank_of: &(dyn Fn(&str) -> Option<continuum_kernel::capability::Capability> + Sync),
 ) -> Vec<String> {
     let heard: std::collections::HashMap<Uuid, u64> =
         peers.iter().map(|p| (p.peer, p.beacon_age_ms)).collect();

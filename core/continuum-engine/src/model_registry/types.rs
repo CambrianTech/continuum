@@ -416,9 +416,8 @@ pub struct ModelServingPrefs {
     /// bigger ≈ smarter within a family — which can never prefer a 19 GB
     /// Qwen3.8-27B (AA 42) over a 22 GB Ornith, and is exactly the scaling
     /// misread Joel called out (2026-09-05: "You guys aren't understanding how
-    /// scaling works"). A measured score outranks any weight proxy; an
-    /// unmeasured model keeps the proxy, capped below every measured frontier
-    /// score (see `inference::planning::serving_plan::footprint::UNMEASURED_RANK_CAP`).
+    /// scaling works"). A measured score outranks any weight proxy by type
+    /// (`continuum_kernel::capability::Capability`); an unmeasured model keeps the proxy.
     pub measured_capability: Option<u8>,
 }
 
@@ -692,6 +691,6 @@ pub struct Provider {
 impl Provider {
     /// Display name for logs + errors. Falls back to id when TOML omits `name`.
     pub fn display_name(&self) -> &str {
-        self.name.as_deref().unwrap_or(&self.id)
+        self.name.as_deref().unwrap_or(&self.id) // unwrap_or: a provider with no display name is shown by its id
     }
 }

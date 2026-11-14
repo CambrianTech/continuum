@@ -214,7 +214,7 @@ mod tests {
                 weights_bytes: 0,
                 kv_per_token: 0,
                 context_window: 8192,
-                capability_rank: 0,
+                capability_rank: continuum_kernel::capability::Capability::Proxy { score: 0 },
                 fixed_per_lane_bytes: 0,
             },
             served_context_window: 8192,

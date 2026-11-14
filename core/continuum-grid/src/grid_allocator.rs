@@ -347,7 +347,7 @@ impl Inner {
         // alone and falling to the CAP for everything unmeasured ranked a 1.5B CPU coder
         // and the 27B EQUAL (both 40) — capability was invisible to the grid, and a
         // transient at home made the 1.5B "strictly better" (card ccb316a7, Kimi 16:4xZ).
-        let rank_of = |id: &str| -> Option<u8> {
+        let rank_of = |id: &str| -> Option<continuum_kernel::capability::Capability> {
             crate::model_registry::global()
                 .model(id)
                 .and_then(crate::inference::planning::serving_plan::footprint::footprint_for)
@@ -377,7 +377,7 @@ impl Inner {
         let local_plan = LanePlan::serving(
             &serving,
             rank_of(serving.active_model.as_deref().unwrap_or("")) // unwrap_or: no model = no row anyway; `serving` returns None below
-                .unwrap_or(crate::inference::planning::serving_plan::footprint::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, exactly as a peer's would
+                .unwrap_or(continuum_kernel::capability::Capability::ANY), // unwrap_or: a model this registry does not hold has no measurement and no weights to proxy: the least capability, exactly as a peer's would
             // The SAME rate this node beacons to its peers (own curve, fresh or stale), so
             // local and foreign rows are measured by one definition (card 86fef3c3).
             serving.active_model.as_deref().and_then(|model| {
@@ -395,9 +395,9 @@ impl Inner {
                 plan: match (&o.served_model, o.served_context_window > 0 && o.lanes > 0) {
                     (Some(model), true) => Some(LanePlan {
                         model_id: model.clone(),
-                        // The registry's measured rank, else the planner's own unmeasured
-                        // proxy cap — the same number this node's plan would carry.
-                        capability_rank: rank_of(model).unwrap_or(crate::inference::planning::serving_plan::footprint::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, the planner's number
+                        // The registry's rank (measured, else the weights proxy); a model the
+                        // registry does not hold is a proxy with no score: below every known one.
+                        capability_rank: rank_of(model).unwrap_or(continuum_kernel::capability::Capability::ANY), // unwrap_or: a model this registry does not hold has no measurement and no weights to proxy: the least capability
                         window: o.served_context_window,
                         lanes: o.lanes,
                         // The peer's measured speed, off its beacon (card 86fef3c3); None from a
@@ -688,7 +688,7 @@ mod tests {
     use super::*;
 
     fn plan(model: &str, cap: u8, window: u32, lanes: u32) -> LanePlan {
-        LanePlan { model_id: model.into(), capability_rank: cap, window, lanes, decode_tps_per_lane: None }
+        LanePlan { model_id: model.into(), capability_rank: continuum_kernel::capability::Capability::Proxy { score: cap }, window, lanes, decode_tps_per_lane: None }
     }
     fn facts(this_node: Uuid, local: Option<LanePlan>, peers: Vec<PeerFacts>, minds: Vec<Uuid>) -> GridFacts {
         GridFacts {
@@ -728,7 +728,7 @@ mod tests {
             CitizenRecipe { role: RoleId::Helper, requirement: None },
             CitizenRecipe {
                 role: RoleId::Coder,
-                requirement: Some(CitizenRequirement { window_tokens: 40_448, min_capability: 12, decode_floor_tps: None }),
+                requirement: Some(CitizenRequirement { window_tokens: 40_448, min_capability: continuum_kernel::capability::Capability::Proxy { score: 12 }, decode_floor_tps: None }),
             },
         ];
         f.mind_roles = vec![(kimi, RoleId::Coder)];
@@ -750,7 +750,7 @@ mod tests {
         alone.mind_roles = vec![(kimi, RoleId::Coder)];
         let inputs = build_inputs(&alone, &mut OfferBook::default());
         let coder_alone = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
-        assert_eq!(coder_alone.min_capability, 3, "standalone: the floor is the best seat there is");
+        assert_eq!(coder_alone.min_capability, continuum_kernel::capability::Capability::Proxy { score: 3 }, "standalone: the floor is the best seat there is");
         assert_eq!(coder_alone.window, 32_768, "and so is the window ask");
         assert!(plan("1.5b", 3, 32_768, 2).holds(coder_alone), "she starts at CPU");
         let mut joined = facts(intel, Some(plan("1.5b", 3, 32_768, 2)), vec![peer(me, Some(plan("27b", 18, 70_000, 2)), 0, 99_000)], vec![kimi]);
@@ -758,7 +758,7 @@ mod tests {
         joined.mind_roles = vec![(kimi, RoleId::Coder)];
         let inputs = build_inputs(&joined, &mut OfferBook::default());
         let coder_joined = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
-        assert_eq!(coder_joined.min_capability, 12, "the 27B joined: the floor rises to the declared tier");
+        assert_eq!(coder_joined.min_capability, continuum_kernel::capability::Capability::Proxy { score: 12 }, "the 27B joined: the floor rises to the declared tier");
         assert_eq!(coder_joined.window, 40_448, "and the window ask is the declared one again");
         assert!(!plan("1.5b", 3, 32_768, 2).holds(coder_joined), "and the 1.5B holds no coder any more — she moves up");
 
@@ -773,7 +773,7 @@ mod tests {
         blink.mind_roles = vec![(kimi, RoleId::Coder)];
         let inputs = build_inputs(&blink, &mut book);
         let coder_blink = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
-        assert_eq!(coder_blink.min_capability, 12, "a live 27B between plans still bounds the floor");
+        assert_eq!(coder_blink.min_capability, continuum_kernel::capability::Capability::Proxy { score: 12 }, "a live 27B between plans still bounds the floor");
         assert!(!inputs.nodes.iter().any(|n| n.node == me && !n.plans.is_empty()), "but offers no seat while relaunching");
         let mut gone = facts(intel, Some(plan("1.5b", 3, 32_768, 2)), vec![], vec![kimi]);
         gone.now_ms = 101_000 + SILENT_AFTER_MS + 1;
@@ -781,16 +781,16 @@ mod tests {
         gone.mind_roles = vec![(kimi, RoleId::Coder)];
         let inputs = build_inputs(&gone, &mut book);
         let coder_gone = &inputs.roles.iter().find(|r| r.name == "coder").unwrap().requirement;
-        assert_eq!(coder_gone.min_capability, 3, "silent past the window = unplugged: the standalone floor");
+        assert_eq!(coder_gone.min_capability, continuum_kernel::capability::Capability::Proxy { score: 3 }, "silent past the window = unplugged: the standalone floor");
         assert_eq!(coder_gone.window, 32_768);
 
         // Pairs, not a max per axis: a 27B at 35k beside a 7B at 65k must leave ONE seat
         // holding the coder — the 27B, at its own 35k — never an ask of (27B, 65k).
         let mixed = ask_within(
-            &crate::cognition::grid_allocation::Requirement { window: 40_448, target_window: None, min_capability: 12, decode_floor_tps: None },
-            &[(18, 35_000), (6, 65_536)],
+            &crate::cognition::grid_allocation::Requirement { window: 40_448, target_window: None, min_capability: continuum_kernel::capability::Capability::Proxy { score: 12 }, decode_floor_tps: None },
+            &[(continuum_kernel::capability::Capability::Proxy { score: 18 }, 35_000), (continuum_kernel::capability::Capability::Proxy { score: 6 }, 65_536)],
         );
-        assert_eq!((mixed.min_capability, mixed.window), (12, 35_000));
+        assert_eq!((mixed.min_capability, mixed.window), (continuum_kernel::capability::Capability::Proxy { score: 12 }, 35_000));
         assert!(plan("27b", 18, 35_000, 1).holds(&mixed) && !plan("7b", 6, 65_536, 2).holds(&mixed));
     }
 

@@ -20,9 +20,6 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 
-/// No home capability known yet: every u8 rank is a real value, so the sentinel lives
-/// outside the u8 range.
-const HOME_CAPABILITY_UNKNOWN: u16 = u16::MAX;
 
 /// The adapter a remote-bound persona runs on: her remote lane, her home adapter (built
 /// on first fall-home), and the seat she is on.
@@ -52,10 +49,10 @@ pub struct PlacementSwitch {
     /// session (Cormac on #4307).
     retire_said: std::sync::atomic::AtomicBool,
     /// The capability of the plan she is served on at HOME, remembered from the last tick
-    /// this node published one ([`HOME_CAPABILITY_UNKNOWN`] until then). An opportunity is
-    /// never a step down from it (card 60d90c95); read even while this node's plan is
-    /// momentarily absent, which is exactly when a mind was moved off a 27B onto a 1.5B.
-    home_capability: std::sync::atomic::AtomicU16,
+    /// this node published one (`None` until then). An opportunity is never a step down
+    /// from it (card 60d90c95); read even while this node's plan is momentarily absent,
+    /// which is exactly when a mind was moved off a 27B onto a 1.5B.
+    home_capability: parking_lot::Mutex<Option<continuum_kernel::capability::Capability>>,
     /// Fixed strings the adapter trait hands out by reference.
     provider_label: String,
     name_label: String,
@@ -123,7 +120,7 @@ impl PlacementSwitch {
             seat: AtomicU8::new(Seat::Home as u8),
             moved_at_ms: AtomicU64::new(0),
             retire_said: std::sync::atomic::AtomicBool::new(false),
-            home_capability: std::sync::atomic::AtomicU16::new(HOME_CAPABILITY_UNKNOWN),
+            home_capability: parking_lot::Mutex::new(None),
         }
     }
 
@@ -138,12 +135,12 @@ impl PlacementSwitch {
     }
 
     /// Remember the capability of the plan this node serves her on (see `home_capability`).
-    pub fn note_home_capability(&self, rank: u8) {
-        self.home_capability.store(u16::from(rank), Ordering::Relaxed);
+    pub fn note_home_capability(&self, capability: continuum_kernel::capability::Capability) {
+        *self.home_capability.lock() = Some(capability);
     }
     /// Her home capability, `None` until this node has published a plan in this life.
-    pub fn home_capability(&self) -> Option<u8> {
-        u8::try_from(self.home_capability.load(Ordering::Relaxed)).ok()
+    pub fn home_capability(&self) -> Option<continuum_kernel::capability::Capability> {
+        *self.home_capability.lock()
     }
 
     pub fn seat(&self) -> Seat {

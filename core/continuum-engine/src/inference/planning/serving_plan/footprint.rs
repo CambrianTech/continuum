@@ -211,11 +211,6 @@ fn kv_cache_quant_divisor() -> u64 {
 /// Pure footprint estimate from the fields that drive it — split out from the
 /// fs/registry IO so the (coarse, tunable) heuristics are unit-testable.
 /// `None` when there are no weights to serve.
-/// An UNMEASURED model's weight-proxy rank never reaches a measured frontier
-/// score: the proxy says "bigger ≈ smarter within a family", nothing across
-/// families, so it must lose to any model someone actually measured.
-// context-budget-exempt: a rank ceiling on a 0–255 capability scale, not a window or token budget
-pub const UNMEASURED_RANK_CAP: u8 = 40;
 
 pub fn footprint_from_parts(
     id: &str,
@@ -240,15 +235,14 @@ pub fn footprint_from_parts(
     // (~110 KB for 14B, ~250 KB for 32B) tracks real Q4 GQA KV; still coarse, still floored.
     let kv_per_token = (weights_bytes / 80_000).max(20_000);
 
-    // Coarse capability rank: GB of weights (bigger ≈ more capable within a
-    // family), +bonus for tool/code capability. Saturates into u8.
-    let gb = (weights_bytes / 1_000_000_000).min(250) as u16;
+    // Coarse capability proxy: GB of weights (bigger ≈ more capable within a
+    // family), +bonus for tool/code capability, saturating at the score's width.
     let tool_bonus = if tool_capable { 2 } else { 0 };
-    // Measured beats proxy: a catalog score (one scale) IS the rank; the weight
-    // proxy is only for models nobody measured, and it caps below any measured
-    // frontier so the planner's "most capable that fits" means capable, not big.
-    let proxy_rank = gb.saturating_add(tool_bonus).min(u16::from(UNMEASURED_RANK_CAP)) as u8;
-    let capability_rank = measured_capability.unwrap_or(proxy_rank); // unwrap_or: measured beats proxy, the proxy ranks only a model nobody measured
+    let proxy = u8::try_from(weights_bytes / 1_000_000_000).map_or(u8::MAX, |gb| gb.saturating_add(tool_bonus));
+    // Measured beats proxy BY TYPE: any measured score outranks any proxy, so the
+    // planner's "most capable that fits" means capable, not big, with no ceiling on the
+    // proxy to tune.
+    let capability_rank = continuum_kernel::capability::Capability::of(measured_capability, proxy);
 
     Some(ModelFootprint {
         model_id: id.to_string(),
@@ -282,7 +276,7 @@ mod tests {
         let header_rate = 32_768u64;
         let (lanes, window) = (1u32, 56_832u32);
         let mut fp = ModelFootprint {
-            model_id: "m5-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: header_rate, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+            model_id: "m5-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: header_rate, context_window: 262_144, capability_rank: continuum_kernel::capability::Capability::Proxy { score: 42 }, fixed_per_lane_bytes: 0,
         };
         let true_fixed = 3_950_000_000u64; // what the engine really holds per lane beyond KV and the base buffer
         let anon = (fp.base_compute_buffer_per_lane() + true_fixed + header_rate * u64::from(window)) * u64::from(lanes);
@@ -331,7 +325,7 @@ mod tests {
         unified.lanes = 0;
         assert_eq!(fixed_per_lane_from(100, &unified), None);
         let base = ModelFootprint {
-            model_id: "m5-27b".into(), weights_bytes: 16_500_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+            model_id: "m5-27b".into(), weights_bytes: 16_500_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: continuum_kernel::capability::Capability::Proxy { score: 42 }, fixed_per_lane_bytes: 0,
         };
         let carried = ModelFootprint { fixed_per_lane_bytes: fixed, ..base.clone() };
         let raised = ModelFootprint { kv_per_token: 44_740, ..base.clone() };
@@ -385,11 +379,7 @@ mod tests {
             fp.context_window, 8192,
             "carries the model's trained ceiling, no clamp"
         );
-        assert!(
-            fp.capability_rank >= 5,
-            "3GB + tool bonus, got {}",
-            fp.capability_rank
-        );
+        assert_eq!(fp.capability_rank, continuum_kernel::capability::Capability::Proxy { score: 5 }, "3GB + tool bonus");
 
         // A leaner non-tool model ranks below the bigger tool-capable one.
         let small = footprint_from_parts("small", 1 * GB, 4096, false, None).unwrap();
@@ -403,7 +393,7 @@ mod tests {
 
     // what this catches: the planner's "most capable that fits" meaning BIG again.
     // A measured score is the rank; an unmeasured model keeps the weight proxy,
-    // capped below any measured frontier — so a 19 GB model someone measured at
+    // below any measured score by type — so a 19 GB model someone measured at
     // 42 outranks a 22 GB model nobody measured, and a 200 GB unmeasured model
     // still cannot outrank it. (Joel 2026-09-05: "You guys aren't understanding
     // how scaling works.")
@@ -412,16 +402,16 @@ mod tests {
         let measured = footprint_from_parts("qwen3.8-27b", 19 * GB, 8192, true, Some(42)).unwrap();
         let bigger_unmeasured = footprint_from_parts("ornith-35b", 22 * GB, 8192, true, None).unwrap();
         let huge_unmeasured = footprint_from_parts("huge", 200 * GB, 8192, true, None).unwrap();
-        assert_eq!(measured.capability_rank, 42, "a measured score is the rank");
+        use continuum_kernel::capability::Capability;
+        assert_eq!(measured.capability_rank, Capability::Measured { score: 42 }, "a measured score is the rank");
         assert!(
             measured.capability_rank > bigger_unmeasured.capability_rank,
-            "measured 42 beats the 22 GB proxy ({})",
+            "measured 42 beats the 22 GB proxy ({:?})",
             bigger_unmeasured.capability_rank
         );
-        assert_eq!(
-            huge_unmeasured.capability_rank, UNMEASURED_RANK_CAP,
-            "an unmeasured model caps at the proxy ceiling"
-        );
+        assert_eq!(huge_unmeasured.capability_rank, Capability::Proxy { score: 202 }, "an unmeasured model keeps its proxy, uncapped");
+        let low_measured = footprint_from_parts("measured-low", GB, 8192, false, Some(1)).unwrap();
+        assert!(low_measured.capability_rank > huge_unmeasured.capability_rank, "even a low measured score outranks the largest proxy");
         assert!(measured.capability_rank > huge_unmeasured.capability_rank);
     }
 }

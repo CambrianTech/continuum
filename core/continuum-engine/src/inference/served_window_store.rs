@@ -236,7 +236,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let path = path_under(home.path());
         let model = ModelFootprint { model_id: "qwen-27b".into(), weights_bytes: 19 << 30,
-            kv_per_token: 33_000, context_window: 262_144, capability_rank: 9, fixed_per_lane_bytes: 0 };
+            kv_per_token: 33_000, context_window: 262_144, capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 }, fixed_per_lane_bytes: 0 };
         let host = HostBudget { usable_bytes: 30 << 30, perf_cores: 8 };
         let initial = plan_serving_at_rest(&host, std::slice::from_ref(&model), None,
             &ServingDemand::new(2, Some(70_000)).with_requirements(vec![

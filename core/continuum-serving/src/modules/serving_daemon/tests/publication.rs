@@ -78,7 +78,7 @@ fn a_boot_before_any_lane_reports_its_model_reads_the_remembered_models_knee() {
         weights_bytes: 19 << 30,
         kv_per_token: 33_000,
         context_window: 262_144,
-        capability_rank: 9,
+        capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
         fixed_per_lane_bytes: 0,
     };
     let host = HostBudget {

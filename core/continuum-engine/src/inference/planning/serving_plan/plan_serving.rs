@@ -404,7 +404,7 @@ fn plan_serving_into(
         fits_on_gpu: true,
         lanes_bound,
         rationale: format!(
-            "most-capable model fitting {:.1}GB GPU budget: {} ({:.1}GB weights, rank {}), \
+            "most-capable model fitting {:.1}GB GPU budget: {} ({:.1}GB weights, rank {:?}), \
              {} lane(s) @ {} ctx, {} model(s) warm",
             bytes_gb(host.usable_bytes),
             model.model_id,
@@ -627,7 +627,7 @@ fn plan_serving_at_rest_into(
     // instead of duplicating it here.
     let mut promoted: Vec<ModelFootprint> = candidates.to_vec();
     if let Some(m) = promoted.iter_mut().find(|m| m.model_id == inc_id) {
-        m.capability_rank = u8::MAX;
+        m.capability_rank = continuum_kernel::capability::Capability::TOP;
     }
     plan_serving_into(&at_rest, &promoted, &demand, training_growth)
 }
