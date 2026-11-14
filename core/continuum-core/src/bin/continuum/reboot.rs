@@ -621,7 +621,7 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
                     dark.built(); // no build time in the dark window
                 }
             } else {
-                let mut cmd = build_source_command(script)?.ok_or("no source tree")?;
+                let cmd = build_source_command(script)?.ok_or("no source tree")?;
                 println!("▶ building dark: serving is stopped, the build takes the whole machine (build-only pass of {})", script.display());
                 let artifact = build_dark(cmd).await?;
                 // A shared checkout can advance while Cargo is reading it. A binary reporting
