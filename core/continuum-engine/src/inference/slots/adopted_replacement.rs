@@ -5,7 +5,7 @@
 //! M5: "adopted checkpoint requires a known pool") is handed back. This is that refusal's
 //! precondition as one read, so the serving owner asks again exactly when it can succeed.
 
-use super::SlotDirectory;
+use super::{Probed, SlotDirectory};
 
 impl SlotDirectory {
     /// The adopted engine at `root` could be checkpointed before a replacement: its pool is
@@ -16,8 +16,11 @@ impl SlotDirectory {
         let state = endpoint.state.lock();
         state.generation().is_none()
             && !state.paging_uncertain
-            && state
-                .current_pool()
-                .is_some_and(|pool| pool.ledger.get().is_some())
+            && match state.pool() {
+                Probed::Known(pool) => pool.ledger.get().is_some(),
+                // Not asked: whether its ledger verifies is unknown until discovery reads it, so a
+                // never-probed engine is not ready yet (its first request or pre-flight probes it).
+                Probed::NotAsked | Probed::Absent(_) => false,
+            }
     }
 }

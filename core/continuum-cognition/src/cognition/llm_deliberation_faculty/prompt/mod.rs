@@ -16,7 +16,7 @@ pub(super) use self::epoch::start_grants;
 pub(super) mod fit;
 pub(super) use self::fit::*;
 mod segments;
-mod newest_result;
+pub(super) mod newest_result; // pub(super): the faculty owns her Reading (newest_result::Reading)
 mod tools_epoch;
 mod framing;
 pub(super) mod grounding;

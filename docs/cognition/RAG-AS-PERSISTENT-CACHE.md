@@ -6,7 +6,7 @@
 > [DREAM-CONSOLIDATION](./DREAM-CONSOLIDATION.md) (one servicer, unbuilt), and the
 > ChannelDigest machinery (`cognition/channel_digest.rs` + `channel_digest_region.rs`,
 > a servicer that is BUILT AND RUNNING). Precedence on the Rust mechanics:
-> [CBAR-SUBSTRATE-ARCHITECTURE](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md),
+> [CONTINUUM-ENGINE](../architecture/CONTINUUM-ENGINE.md),
 > [CONCURRENCY-STYLE-GUIDE](../architecture/CONCURRENCY-STYLE-GUIDE.md), and
 > **[BRAIN-REGIONS-SUBSTRATE](../architecture/BRAIN-REGIONS-SUBSTRATE.md)** — the last
 > defines the exact primitives this pattern is built from. This doc defines *what the

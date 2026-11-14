@@ -33,8 +33,12 @@ const NON_READS: &[&str] = &["count", "delete_matching"];
 /// continuum ORM calls that return the rows of a query.
 const CONTINUUM_READERS: &[&str] = &["query", "query_with_join", "find_matching"];
 
-/// continuum's typed store verbs that take no limit (`continuum-kernel` `orm/store.rs`).
-const WHOLE_COLLECTION_VERBS: &[&str] = &["find_all", "find_eq"];
+/// continuum's typed store verbs that take no limit (`continuum-kernel` `orm/store.rs`). `scan` is
+/// the streaming whole-collection read: streamed or collected, it still walks and decodes every
+/// row the store's index could have skipped (2026-11-13, #5954: `find_all` renamed to `scan()` left
+/// this rule blind, and a vector-statistics path decoded 10,000 embeddings to count them). The
+/// matcher requires `.verb(..).await`, so `Iterator::scan(init, f)` never matches.
+const WHOLE_COLLECTION_VERBS: &[&str] = &["find_all", "find_eq", "scan"];
 
 /// Identifiers that end an expression walking backwards: a chain never starts before one.
 const KEYWORDS: &[&str] = &[

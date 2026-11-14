@@ -53,6 +53,7 @@ crate::action_command! {
     native: true,
     aliases: &["git_apply"],
     disclosure: Withheld, // it takes a PEER's diff: offered among her hands, four citizens called it with an empty patch inside twenty minutes (2026-09-04)
+    withheld: "`code/git/apply` applies a peer's unified diff; it is not the command for authoring your own edits." => "Your edits land with `code/edit` and `code/write`; commit them with `code/git/commit`.",
     params: GitApplyParams,
     output: GitApplyResult,
     run(this, ctx, p) => {

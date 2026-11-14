@@ -16,7 +16,7 @@ claim is proven by a validator that runs in seconds on far smaller sizes, on eve
 - Prefix reuse 35% (an append-only agent gets ~90%+); 13-30k fresh tokens per act (~1-3k
   expected); GPU queue 0-20 min; acts 5-20 min (~10-40 s expected).
 - The core burns ~65% CPU around inference, mostly waste (card 452b7885).
-- Design for the two big faults: `docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md`.
+- Design for the two big faults: `docs/architecture/CONTINUUM-ENGINE.md`.
 
 ## The memory hierarchy, used on purpose
 

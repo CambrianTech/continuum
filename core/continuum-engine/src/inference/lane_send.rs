@@ -1,6 +1,6 @@
 //! Lane send — POST a generation to the local lane and ride out a mid-relaunch
-//! (connection refused / 503 loading) with a bounded retry, then classify a rejected
-//! status at the seam. Carved out of `openai_adapter::generate_stream` (pure code-motion,
+//! (connection refused / 503 loading) by resending on the serving daemon's next live
+//! publish, then classify a rejected status at the seam. Carved out of `openai_adapter::generate_stream` (pure code-motion,
 //! 2026-09-03, the S3b decompose). Behaviour-identical to the inline block.
 
 use std::time::Instant;
@@ -34,13 +34,90 @@ pub const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
 /// process). A `connect` error is therefore "the lane is mid-relaunch", not "the lane is
 /// gone": the connection never opened, so nothing was streamed to the sink, and
 /// re-sending the SAME lane/model is idempotent — resilience, NOT a fallback
-/// ([[fallbacks-are-illegal-fail-loud]]). Retry the connect with linear backoff
-/// (1s, 2s, … ≈ 21s total) to ride out a relaunch, then fail loud if it never returns.
-/// Scoped to the local resident lane — remote endpoints don't relaunch under us.
+/// ([[fallbacks-are-illegal-fail-loud]]). The resend waits on the event that says the
+/// relaunch landed: the daemon's next LIVE publish after this attempt's POST (a publish
+/// from before it is the lagging claim above, never evidence). It replaced a linear
+/// backoff (1 s, 2 s, … ≈ 21 s; timer audit row H4, 2026-11-14) that held a lane that was
+/// back for the rest of its step, and failed a relaunch slower than 21 s. Bounded by a
+/// cold relaunch's own budget, [`crate::inference::llama_server::DEFAULT_SERVING_WAIT`]
+/// (the bound the pre-flight guard waits a transition with), as the error only. Scoped to
+/// the local resident lane — remote endpoints don't relaunch under us.
 /// Glass-boxed 2026-07-20: one legitimate grow-back relaunch zeroed hard-rs 0/8, every
 /// task `Connection refused (os error 61)` to :58057 mid-eval.
-const LANE_RELAUNCH_CONNECT_RETRIES: u32 = 6;
-const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(1);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelaunchWait {
+    /// The daemon published the lane live again: send the same request again.
+    Resumed,
+    /// Nothing publishes this lane's state (no serving daemon here, or it closed): nothing
+    /// will bring it back, so the failure stands now.
+    NoOwner,
+    /// No live publish inside a cold relaunch's budget.
+    Lapsed,
+}
+
+impl RelaunchWait {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Resumed => "the lane was published live again",
+            Self::NoOwner => "no serving daemon publishes this lane, so nothing relaunches it",
+            Self::Lapsed => "the lane was not published live again within a cold relaunch's budget",
+        }
+    }
+}
+
+/// Where a request hears its relaunching lane is back, marked seen as of now: only a publish
+/// after this call (after the attempt's POST) wakes [`await_relaunch`].
+fn relaunch_edge() -> Option<tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>> {
+    let mut edge = serving_edges()?;
+    drop(edge.borrow_and_update());
+    Some(edge)
+}
+
+#[cfg(not(test))]
+fn serving_edges() -> Option<tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>> {
+    crate::inference::llama_server::serving_state_receiver()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's serving daemon: none unless the test publishes one, so no test reads another's.
+    static TEST_SERVING_EDGES: std::cell::RefCell<Option<tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn serving_edges() -> Option<tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>> {
+    TEST_SERVING_EDGES.with(|edges| edges.borrow().clone())
+}
+
+/// Stand in for the serving daemon's snapshots on this test's thread.
+#[cfg(test)]
+pub(crate) fn publish_serving_for_test(edges: Option<tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>>) {
+    TEST_SERVING_EDGES.with(|slot| *slot.borrow_mut() = edges);
+}
+
+/// Wait for the daemon's next LIVE publish since `edge` was marked seen, never a timer; the
+/// deadline only ends a relaunch that never lands.
+async fn await_relaunch(
+    edge: Option<&mut tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>>,
+    deadline: tokio::time::Instant,
+) -> RelaunchWait {
+    let Some(edge) = edge else { return RelaunchWait::NoOwner };
+    let live = async {
+        loop {
+            if edge.changed().await.is_err() {
+                return RelaunchWait::NoOwner;
+            }
+            if edge.borrow_and_update().is_live() {
+                return RelaunchWait::Resumed;
+            }
+        }
+    };
+    match tokio::time::timeout_at(deadline, live).await {
+        Ok(ended) => ended,
+        Err(_) => RelaunchWait::Lapsed,
+    }
+}
 
 /// How many quiet checkpoints (no slot counter moved AND no slot processing) a header
 /// wait allows before it calls the lane dead. One, not the page switch's eight: a
@@ -99,7 +176,8 @@ pub(crate) struct PromptQuote<'a> {
 
 /// Send `body` through `request_builder` (headers already set). `Ok(response)` is a 2xx response ready to stream; every failure is the
 /// typed turn-facing failure, already probed. `body` owns one prepared encoding;
-/// transport retries share its allocation rather than serializing again.
+/// transport retries share its allocation except when an admitted engine quote
+/// reprices the explicit reply allowance; the prompt remains unchanged.
 /// `turn_bound` is the request's own bound (`TextGenerationRequest::turn_bound`); the
 /// header wait is `max(PRE_STREAM_HEADER_TIMEOUT_SECS, turn_bound)`. `fill` is what the
 /// turn sent, so a tripped header wait can be recorded as the prefill measurement it is
@@ -126,16 +204,16 @@ pub(crate) async fn send_with_lane_retry(
     );
     // reqwest moves this Vec into its shared byte body. Cloning the prepared
     // builder below shares that allocation, including across transport retries.
-    let request_builder = request_builder.body(body);
+    let mut request_builder = request_builder.body(body);
     // A CONNECT error to a local resident lane means the lane is mid-relaunch, not
-    // gone (see LANE_RELAUNCH_CONNECT_RETRIES) — the connection never opened so
-    // nothing streamed, and re-sending the same lane is idempotent. Ride it out with
-    // bounded linear backoff, then fail loud.
-    // The prepared byte body is cloneable; no stream or serializer is replayed.
-    // Shared budget for BOTH mid-relaunch signatures (connection refused = nothing
-    // listening yet; 503 = listening but still loading). One counter, so the total
-    // time this call can spend waiting on a relaunching lane stays bounded.
-    let mut relaunch_retries: u32 = 0;
+    // gone (see [`RelaunchWait`]) — the connection never opened so nothing streamed,
+    // and re-sending the same lane is idempotent. Resend on the daemon's live publish,
+    // then fail loud. The prepared byte body is cloneable; no stream or serializer is
+    // replayed. ONE deadline for BOTH mid-relaunch signatures (connection refused =
+    // nothing listening yet; 503 = listening but still loading), set at the first, so
+    // the total time this call can spend waiting on a relaunching lane stays bounded.
+    let mut relaunch_waits: u32 = 0;
+    let mut relaunch_deadline: Option<tokio::time::Instant> = None;
     // Prompt counting is pre-stream wire work, governed by the same measured
     // bound as headers. Queue admission and KV paging have already completed;
     // closed-endpoint readiness patience must not debit those waits from a quote
@@ -144,6 +222,7 @@ pub(crate) async fn send_with_lane_retry(
     // rearm a fresh quote allowance for each replacement engine.
     let quote_started = Instant::now();
     let response = loop {
+        let mut attempt_reply = fill.prompt_quote.map_or(0, |quote| quote.reply);
         if let Some(quote) = fill.prompt_quote {
             // A transport retry may reach a replacement engine. Re-count the
             // same prepared body on EVERY attempt; never reuse its predecessor's
@@ -158,12 +237,28 @@ pub(crate) async fn send_with_lane_retry(
                 header_bound.saturating_sub(quote_started.elapsed()),
             ).await?;
             let count_elapsed_ms = count_started.elapsed().as_millis() as u64;
-            super::serving_guard::guard_resident_model(
-                cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller,
-            ).await?;
-            if let Some(DispatchAdmission { admission, .. }) = fill.admission {
-                super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }
-                    .check(admission.window, &cfg.name, quote.caller)?;
+            // ONE bound per request (CONTINUUM-ENGINE.md, serving engine: admission (4.8)). An admitted request is bounded
+            // by its grant: admission sized it against the engine's own geometry and holds
+            // that much of the pool for this act, which may be more than an equal share. The
+            // lane's published share is the bound only for a caller with no grant. Checking an
+            // admitted request against the share too refused every act whose grant passed it:
+            // the M5, 2026-11-11 16:13Z, a 22,949-token prompt refused at a 136,517 grant
+            // against the 104,857 share, then landing on the retry sized to the share.
+            match fill.admission {
+                Some(DispatchAdmission { admission, .. }) => {
+                    // The quote awaited the engine, which may have been replaced meanwhile:
+                    // residency again (Codex on #5947), then the size against her grant.
+                    super::serving_guard::guard_resident_model(
+                        cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Estimated(0), quote.caller,
+                    ).await?;
+                    (request_builder, attempt_reply) = measured_reply(
+                        request_builder, fill.prompt_tokens, admission.window, quote.reply,
+                    )?;
+                    super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: attempt_reply }
+                        .check(admission.window, &cfg.name, quote.caller)?;
+                }
+                None => super::serving_guard::guard_resident_model(cfg, quote.dedicated_lane, fill.model,
+                    super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller).await?,
             }
             continuum_base::probe!(
                 class = "inference.prompt.prompt_quote",
@@ -171,7 +266,7 @@ pub(crate) async fn send_with_lane_retry(
                 model = fill.model,
                 input_tokens = fill.prompt_tokens as u64,
                 elapsed_ms = count_elapsed_ms,
-                attempt = relaunch_retries,
+                attempt = relaunch_waits,
                 "selected engine counted the finalized prompt"
             );
         }
@@ -189,7 +284,7 @@ pub(crate) async fn send_with_lane_retry(
                     return Err(InferenceError::GrantChanged { rendered: leased.tokens, current: None });
                 }
                 let needed = (fill.prompt_tokens as u64)
-                    .saturating_add(u64::from(fill.prompt_quote.map_or(0, |q| q.reply))) // map_or: no quote, no explicit reply allowance
+                    .saturating_add(u64::from(attempt_reply))
                     .min(u64::from(u32::MAX)) as u32;
                 crate::capacity::window_grant::reserve_attempt(reservation, persona, leased, needed).map_err(|refused| match refused {
                     crate::capacity::window_grant::ReserveRefused::Changed { leased, current } => {
@@ -204,6 +299,8 @@ pub(crate) async fn send_with_lane_retry(
                 })?;
             }
         }
+        // Marked seen just before the POST: a live publish from here on is this relaunch landing.
+        let mut relaunch = if cfg.single_resident_model { relaunch_edge() } else { None };
         let send_start = Instant::now();
         let attempt_builder = request_builder
             .try_clone()
@@ -295,58 +392,70 @@ pub(crate) async fn send_with_lane_retry(
             // the body text for "Loading model"
             // ([[a-string-matcher-for-a-semantic-judgement-means-a-channel-is-missing]]:
             // the HTTP status IS the structured channel). Shares the connect
-            // arm's retry budget, because both are the same wait for the same
+            // arm's deadline, because both are the same wait for the same
             // lane and the total hold must stay bounded.
             Ok(resp)
                 if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
-                    && cfg.single_resident_model
-                    && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
+                    && cfg.single_resident_model =>
             {
-                relaunch_retries += 1;
-                let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
-                continuum_base::probe!(
-                    class = "inference.lane_relaunch_retry",
-                    provider = cfg.provider_id.as_str(),
-                    attempt = relaunch_retries,
-                    backoff_ms = backoff.as_millis() as u64,
-                    reason = "503_loading",
-                    "local lane is up but still loading (503, mid-relaunch) — retrying the \
-                     same lane",
-                );
-                tokio::time::sleep(backoff).await;
-                continue;
+                let deadline = *relaunch_deadline
+                    .get_or_insert_with(|| tokio::time::Instant::now() + crate::inference::llama_server::DEFAULT_SERVING_WAIT);
+                let waited = Instant::now();
+                match await_relaunch(relaunch.as_mut(), deadline).await {
+                    RelaunchWait::Resumed => {
+                        relaunch_waits += 1;
+                        continuum_base::probe!(
+                            class = "inference.lane_relaunch_retry",
+                            provider = cfg.provider_id.as_str(),
+                            attempt = relaunch_waits,
+                            waited_ms = waited.elapsed().as_millis() as u64,
+                            reason = "503_loading",
+                            "local lane answered 503 (loading, mid-relaunch) and the daemon has since \
+                             published it live — resending the same lane",
+                        );
+                        continue;
+                    }
+                    // Nothing will bring it back: the 503 is classified below like any rejection.
+                    RelaunchWait::NoOwner | RelaunchWait::Lapsed => break resp,
+                }
             }
             Ok(resp) => break resp,
-            Err(e)
-                if e.is_connect()
-                    && cfg.single_resident_model
-                    && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
-            {
-                relaunch_retries += 1;
-                let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
-                continuum_base::probe!(
-                    class = "inference.lane_relaunch_retry",
-                    provider = cfg.provider_id.as_str(),
-                    attempt = relaunch_retries,
-                    backoff_ms = backoff.as_millis() as u64,
-                    reason = "connect_refused",
-                    "local lane refused the connection (mid-relaunch) — retrying the same lane",
-                );
-                tokio::time::sleep(backoff).await;
-                continue;
+            Err(e) if e.is_connect() && cfg.single_resident_model => {
+                let deadline = *relaunch_deadline
+                    .get_or_insert_with(|| tokio::time::Instant::now() + crate::inference::llama_server::DEFAULT_SERVING_WAIT);
+                let waited = Instant::now();
+                match await_relaunch(relaunch.as_mut(), deadline).await {
+                    RelaunchWait::Resumed => {
+                        relaunch_waits += 1;
+                        continuum_base::probe!(
+                            class = "inference.lane_relaunch_retry",
+                            provider = cfg.provider_id.as_str(),
+                            attempt = relaunch_waits,
+                            waited_ms = waited.elapsed().as_millis() as u64,
+                            reason = "connect_refused",
+                            "local lane refused the connection (mid-relaunch) and the daemon has since \
+                             published it live — resending the same lane",
+                        );
+                        continue;
+                    }
+                    ended => {
+                        return Err(InferenceError::Unavailable(format!(
+                            "{} POST failed after {}ms, {} mid-relaunch resends ({}): {}",
+                            cfg.name,
+                            send_start.elapsed().as_millis(),
+                            relaunch_waits,
+                            ended.reason(),
+                            crate::ai::inference_error::transport_diagnostic(&e)
+                        )));
+                    }
+                }
             }
             Err(e) => {
                 return Err(InferenceError::Unavailable(format!(
-                    "{} POST failed after {}ms{}: {}",
+                    "{} POST failed after {}ms ({} mid-relaunch resends): {}",
                     cfg.name,
                     send_start.elapsed().as_millis(),
-                    if relaunch_retries > 0 {
-                        format!(
-                            " ({relaunch_retries} mid-relaunch retries exhausted — lane never came back)"
-                        )
-                    } else {
-                        String::new()
-                    },
+                    relaunch_waits,
                     crate::ai::inference_error::transport_diagnostic(&e)
                 )));
             }
@@ -383,4 +492,67 @@ pub(crate) async fn send_with_lane_retry(
     }
 
     Ok(response)
+}
+
+/// The engine measured the prompt on this attempt. Reprice the explicit reply against
+/// its remaining grant, retaining the caller's original limit across transport retries.
+/// Both the wire body and the reservation use this same allowance. Never turn an empty
+/// remainder into a zero/unlimited output sentinel.
+fn measured_reply(
+    builder: reqwest::RequestBuilder,
+    prompt: usize,
+    grant: u32,
+    requested: u32,
+) -> Result<(reqwest::RequestBuilder, u32), InferenceError> {
+    let prompt = u32::try_from(prompt)
+        .map_err(|_| InferenceError::Protocol("measured prompt exceeds the capacity receipt's token range".into()))?;
+    if requested == 0 {
+        return Ok((builder, requested));
+    }
+    // PromptCount::check and the engine reject totals >= the window; one below is the exact edge.
+    let remaining = grant.checked_sub(prompt).and_then(|n| n.checked_sub(1))
+        .filter(|n| *n > 0)
+        .ok_or(InferenceError::ContextExceeded { requested: prompt, available: grant })?;
+    let reply = requested.min(remaining);
+    let request = builder.try_clone()
+        .ok_or_else(|| InferenceError::Protocol("reply pricing requires a replayable request".into()))?
+        .build().map_err(|error| InferenceError::Protocol(format!("reply pricing request: {error}")))?;
+    let bytes = request.body().and_then(reqwest::Body::as_bytes)
+        .ok_or_else(|| InferenceError::Protocol("reply pricing requires a prepared byte body".into()))?;
+    let mut value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| InferenceError::Protocol(format!("reply pricing JSON: {error}")))?;
+    let output = value.as_object_mut().and_then(|object| object.get_mut("max_tokens"))
+        .ok_or_else(|| InferenceError::Protocol("explicit reply allowance has no max_tokens field".into()))?;
+    *output = serde_json::Value::from(reply);
+    let bytes = serde_json::to_vec(&value) // boundary: OpenAI-compatible HTTP POST body sent to the engine
+        .map_err(|error| InferenceError::Protocol(format!("reply pricing encoding: {error}")))?;
+    Ok((builder.body(bytes), reply))
+}
+
+#[cfg(test)]
+mod measured_reply_tests {
+    use super::*;
+
+    #[test]
+    fn measured_prompt_reprices_wire_reply_and_retry_keeps_original_limit() {
+        let original = serde_json::json!({"messages": [{"role": "user", "content": "same prompt"}], "max_tokens": 120000});
+        let builder = reqwest::Client::new().post("http://localhost/chat/completions").json(&original);
+        let (builder, reply) = measured_reply(builder, 66780, 181826, 120000).expect("prompt fits");
+        assert_eq!(reply, 115045);
+        let wire = builder.try_clone().expect("replayable").build().expect("request");
+        let body: serde_json::Value = serde_json::from_slice(wire.body().expect("body").as_bytes().expect("bytes")).expect("JSON");
+        assert_eq!(body["max_tokens"], reply);
+        assert_eq!(body["messages"], original["messages"]);
+        let (_, retry_reply) = measured_reply(builder, 60000, 181826, 120000).expect("retry quote fits");
+        assert_eq!(retry_reply, 120000, "a smaller retry quote may restore the original allowance");
+    }
+
+    #[test]
+    fn measured_reply_preserves_small_limits_and_refuses_no_output_room() {
+        let request = || reqwest::Client::new().post("http://localhost/chat/completions")
+            .json(&serde_json::json!({"max_tokens": 12}));
+        assert_eq!(measured_reply(request(), 50, 100, 12).expect("small explicit limit").1, 12);
+        assert!(matches!(measured_reply(request(), 99, 100, 12), Err(InferenceError::ContextExceeded { .. })));
+        assert!(matches!(measured_reply(request(), 100, 100, 12), Err(InferenceError::ContextExceeded { .. })));
+    }
 }

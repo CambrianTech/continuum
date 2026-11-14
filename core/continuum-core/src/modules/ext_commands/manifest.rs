@@ -338,6 +338,7 @@ impl ProcessCommand {
             // A native authored command is one of her core hands: its manifest declares no
             // disclosure, and the author chose `native` to put it in her prompt.
             disclosure: continuum_base::tool_disclosure::Disclosure::Core,
+            withheld: None,
             params: json.clone(),
             params_schema: self.manifest.params.clone(),
             result: json.clone(),
@@ -360,8 +361,8 @@ impl DynCommand for ProcessCommand {
         &self,
         params: Value,
         _caller: Option<crate::routing::CallerIdentity>,
-    ) -> Result<CommandResult, String> {
-        self.run_process(params).await.map(CommandResult::Json)
+    ) -> Result<CommandResult, crate::sdk_codegen::CommandFailure> {
+        self.run_process(params).await.map(CommandResult::Json).map_err(crate::sdk_codegen::CommandFailure::from)
     }
 }
 

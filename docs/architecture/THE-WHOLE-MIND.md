@@ -16,11 +16,10 @@ the companion docs below, and Joel's words of the day.
 > tracking, line refinements, watershed, oflow, flood fill even. So it appeared that a 0.5-3 second
 > process was 30fps. We can do this with inference too." (Joel, 2026-11-01)
 
-Companions, each the owner of its chapter: [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SUBSTRATE-ARCHITECTURE.md)
-(the runtime), [CONCURRENT-MIND-AND-GOVERNOR](CONCURRENT-MIND-AND-GOVERNOR.md) and
-[PERSONA-COGNITION-PIPELINE](PERSONA-COGNITION-PIPELINE.md) (the cycle),
-[MIND-CONTEXT-AND-ENGINE-CONFIG](MIND-CONTEXT-AND-ENGINE-CONFIG.md) (her view),
-[SERVING-ENGINE](SERVING-ENGINE.md) (the engine), [CAPACITY-FABRIC-AND-GOVERNOR](CAPACITY-FABRIC-AND-GOVERNOR.md)
+Companions, each the owner of its chapter: [CONTINUUM-ENGINE](CONTINUUM-ENGINE.md)
+(the runtime, section 3; her view, section 5; the engine, section 4),
+[CONCURRENT-MIND-AND-GOVERNOR](CONCURRENT-MIND-AND-GOVERNOR.md) and
+[PERSONA-COGNITION-PIPELINE](PERSONA-COGNITION-PIPELINE.md) (the cycle), [CAPACITY-FABRIC-AND-GOVERNOR](CAPACITY-FABRIC-AND-GOVERNOR.md)
 (capacity), [ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)
 (learning), [SLEEP-AND-WAKE-AT-EVERY-SCALE](SLEEP-AND-WAKE-AT-EVERY-SCALE.md) (when she dreams),
 [GRID-MARKET-CLEARING](GRID-MARKET-CLEARING.md) (the economy).
@@ -176,7 +175,7 @@ outputs), `continuum-context` `Source` (view items), `directed_pending` (the fir
 the training and fitness sentinels (the task model), `LaneAdmission` and its siblings (the first
 traffic lights), the `probe!` and capture sinks (observability). The contract extends
 `BrainRegion` where it lives (`continuum-kernel/src/runtime/`), with a derive and a generator so a
-new stage is scaffolded the same way every time (CBAR-SUBSTRATE's "for free" triplet).
+new stage is scaffolded the same way every time (CONTINUUM-ENGINE's "for free" triplet).
 
 ## 2. The data flow of one mind
 

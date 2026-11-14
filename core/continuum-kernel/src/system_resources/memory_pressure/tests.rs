@@ -175,18 +175,26 @@
 
     // what this catches: card f26d6568 — inert swap held the M5 at High for hours (55% of
     // a 3 GB swapfile left by a deploy build, 22 GB free+inactive, zero paging). Occupancy
-    // with no traffic is Normal; live paging is High at any occupancy; a nearly full file
-    // is Critical whatever the rate; and with no rate, occupancy still decides (9/08).
+    // with no traffic is Normal, even a nearly full file; live paging is High at any
+    // occupancy; paging that would fill the free swap within a half-life is Critical; and
+    // with no rate, occupancy still decides (9/08).
     #[test]
     fn swap_pressure_is_paging_not_pages_left_behind() {
         use crate::system_resources::swap_activity::SWAP_HIGH_BYTES_PER_SEC;
-        assert_eq!(PressureLevel::from_swap_activity(0.55, Some(0.0)), PressureLevel::Normal);
+        const GB: u64 = 1_000_000_000;
+        assert_eq!(PressureLevel::from_swap_activity(1_650_000_000, 3 * GB, Some(0.0)), PressureLevel::Normal);
+        assert_eq!(PressureLevel::from_swap_activity(97 * GB / 10, 10 * GB, Some(0.0)), PressureLevel::Normal, "full but idle");
         assert_eq!(
-            PressureLevel::from_swap_activity(0.05, Some(SWAP_HIGH_BYTES_PER_SEC)),
+            PressureLevel::from_swap_activity(GB / 2, 10 * GB, Some(SWAP_HIGH_BYTES_PER_SEC)),
             PressureLevel::High
         );
-        assert_eq!(PressureLevel::from_swap_activity(0.97, Some(0.0)), PressureLevel::Critical);
-        assert_eq!(PressureLevel::from_swap_activity(0.55, None), PressureLevel::High);
+        assert_eq!(
+            PressureLevel::from_swap_activity(97 * GB / 10, 10 * GB, Some(SWAP_HIGH_BYTES_PER_SEC)),
+            PressureLevel::Critical,
+            "300 MB free, paging ~1 GB per half-life: nowhere left to page"
+        );
+        assert_eq!(PressureLevel::from_swap_activity(1_650_000_000, 3 * GB, None), PressureLevel::High);
+        assert_eq!(PressureLevel::from_swap_activity(0, 0, None), PressureLevel::Normal, "no swap file");
     }
 
     // what this catches: swap dropping out of the level again (2026-09-08: swap 40/41 GB,

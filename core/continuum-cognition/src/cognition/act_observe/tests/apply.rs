@@ -252,6 +252,7 @@ impl ToolExecutor for FoldedRunningExecutor {
                         crate::sdk_codegen::ToolVerdict::Running,
                     ),
                     dispatch_handle: Some(self.handle),
+                    next_commands: Vec::new(),
                 })
                 .collect(),
         })
@@ -341,6 +342,80 @@ async fn a_folded_running_alias_still_registers_its_dispatch_handle() {
         .is_err(),
         "the fixture's body must genuinely not parse, or this test proves nothing"
     );
+}
+
+/// A hand that refuses every call with typed next moves naming `next`, as the live executor
+/// carries them from a command's refusal.
+struct RefusingExecutor {
+    next: Vec<String>,
+}
+
+#[async_trait]
+impl ToolExecutor for RefusingExecutor {
+    async fn execute_native_batch(
+        &self,
+        batch: &crate::ai::types::CallBatch,
+        _context: &ToolExecutionContext,
+    ) -> Result<NativeBatchOutcome, ToolError> {
+        let calls: Vec<crate::ai::types::ToolCall> = batch.committed().map(|c| c.call().clone()).collect();
+        Ok(NativeBatchOutcome {
+            results: calls
+                .iter()
+                .map(|c| crate::ai::types::ToolResult {
+                    tool_use_id: c.id.clone(),
+                    content: "[invalid] nothing to submit".into(),
+                    is_error: Some(true),
+                    custody: crate::ai::types::ResultCustody::Unsaved,
+                })
+                .collect(),
+            media: Vec::new(),
+            stored_ids: Vec::new(),
+            verdicts: calls
+                .iter()
+                .map(|c| CallVerdict {
+                    image: None,
+                    additional_images: None,
+                    tool_use_id: c.id.clone(),
+                    verdict: crate::sdk_codegen::ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
+                    dispatch_handle: None,
+                    next_commands: self.next.clone(),
+                })
+                .collect(),
+        })
+    }
+
+    async fn parse_response(&self, _response_text: &str, _model_family: Option<&str>) -> Result<ParsedToolBatch, ToolError> {
+        unreachable!("native only")
+    }
+
+    async fn store_outcome(&self, _outcome: &ToolOutcome, _context: &ToolExecutionContext) -> Result<Uuid, ToolError> {
+        Ok(Uuid::nil())
+    }
+}
+
+// what this catches (Aiko on the M5, 2026-11-13 22:40-23:26Z, review card 149f1391): a refusal
+// whose next moves she cannot call, so she repeats the refused call. The commands a refusal names
+// as her next moves load into her tool head at the act seam, callable on her next act.
+#[tokio::test]
+async fn a_refusals_next_moves_load_into_her_tool_head() {
+    let exec = Arc::new(RefusingExecutor { next: vec!["work/note".to_owned(), "work/state".to_owned()] });
+    let the_body = body(exec, admission());
+    let wm = the_body.working_memory.clone();
+    let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter)).with_acting(the_body);
+    let call = ToolCall { id: "submit-1".into(), name: "work_submit".into(), input: serde_json::json!({ "card_id": "149f1391" }) };
+    let outcome = apply_act(
+        &cycle,
+        std::slice::from_ref(&call),
+        crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished),
+        "submitting",
+        Uuid::new_v4(),
+        &ActChain::new(),
+        None,
+        None,
+    )
+    .await;
+    assert!(matches!(outcome, ActOutcome::Acted { .. }), "{outcome:?}");
+    assert_eq!(wm.tool_head().loaded(), ["work/note", "work/state"], "every move the refusal names is loaded");
 }
 
 // what this catches: with no hands (no ActingBody on the cycle), the driver

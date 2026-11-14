@@ -1,6 +1,6 @@
 # Genome, Foundry, Sentinel-AI: The Artifact-Sharing Economy On Consumer Hardware
 
-> **Substrate contract:** [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — the runtime contract every Rust concern inherits. This document specifies the *artifact economy* that flows on top of that contract.
+> **Substrate contract:** [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) — the runtime contract every Rust concern inherits. This document specifies the *artifact economy* that flows on top of that contract.
 > **Lane-shaped roadmap:** [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) — implementation lands per Lane H (Substrate Governor + Tiered Genome Cache) once the design here is reviewed.
 > **Status:** design proposal. No code in this document; every API shape shown is a proposed Rust trait targeted at `core/continuum-core/src/genome/`, `foundry/`, and `sentinel/`.
 
@@ -288,7 +288,7 @@ This is the substrate's main observability signal for "this persona's working se
 
 Personas are processes. Each has:
 
-- An independent inbox (per the CBAR-SUBSTRATE "Persona-cognition invariants")
+- An independent inbox (per the CONTINUUM-ENGINE "Persona-cognition invariants")
 - An independent KV cache
 - An independent `WorkingSet`
 - An independent composition state
@@ -424,6 +424,114 @@ Sentinel does, in order:
 3. **Refinement passes.** During sleep, sentinel retrains. Hot LoRA layers get tightened from traces that used them well. MoE expert routing tables get refined based on which experts fired when outcomes were good. New engrams get generated from clusters of trace patterns.
 4. **Publication.** Refined artifacts land in the *refined* tier of the genome pool with full provenance: which traces, which outcomes, which previous artifact version this supersedes.
 5. **Adoption.** Demand-aligned recall (next section) starts picking the refined artifact for relevant queries because it scores higher on outcome-conditioned similarity. Old compositions invalidate naturally as their personas next page-fault.
+
+### Interaction learning across modalities — extension goal
+
+**Goal (Joel, 2026-09-28), not an end-to-end capability claim:** genome learning
+should cover navigation of unfamiliar websites and mobile apps, analytics
+dashboards, avatar actions, stepped games, and physical robot interactions through
+the same experience pathway. Coders extending a modality should express its data
+through traits and adapters into existing engram causality and tool/act state
+flows. Do not introduce a browser-only learning graph, robot-only curriculum, or
+another cognition scheduler. The graph is a view of linked existing records, not
+a requirement for a second graph database.
+
+**The longer-term goal is world-model learning on this same architecture.** A
+mind should learn to estimate the environment's state from partial observations,
+predict how actions may change it, compare predictions with observed outcomes,
+and improve its subsequent decisions. Initially that mind may be LLM-based;
+later, predictive, latent-state or other world-model implementations should use
+the same identity, activity, observation, action, memory and genome contracts.
+Keep model-specific representations and training objectives behind adapters:
+neither conversational text nor token prediction is the universal experience
+format. Conversely, do not require every model to expose the same latent state.
+
+Where a model supports prediction, associate its prediction, uncertainty and
+model/artifact version with the observations and actions it concerns. Preserve
+what was available at decision time so later outcomes cannot leak into prediction
+evaluation. Imagined or simulated transitions must remain distinguishable from
+observed transitions; they may support planning and training without becoming
+false execution receipts. An interaction graph supplies evidence for learning a
+world model; recording that graph alone does not establish that learning occurred.
+Evaluate predictive accuracy and uncertainty alongside task outcomes and transfer
+to unfamiliar environments. Prediction error is a candidate learning signal,
+not automatic evidence of a useful lesson or a reason to create another gene.
+
+An interaction links the observed state, intended action, attempted execution,
+resulting observation and evaluated outcome. Preserve actor, activity/project,
+execution host, timestamps, action/receipt identifiers and model/gene provenance.
+Branches, concurrent actions, interrupted attempts and delayed effects must remain
+representable; a linear click transcript is only one projection. An observation
+following an action is not automatically proof that the action caused it: retain
+the distinction between temporal association, reported cause and verified effect.
+
+Screenshots are first-class candidate learning data, alongside DOM/accessibility
+state, game state and sensor readings. Store media through existing artifact
+storage with stable references and provenance, rather than embedding image bytes
+in every event or treating a host-local path as a portable reference. Mouse, gaze
+or continuous sensor samples can enrich an episode; adapters should preserve
+timing and declared sampling/aggregation without requiring every sample to become
+a turn, engram or training example. Capture must respect the existing identity,
+scope, retention and sharing rules, including personal data visible on a page.
+
+Trait boundaries should separate observation capture, typed action execution and
+outcome evaluation. Reuse or extend existing contracts before defining a new
+trait. A browser adapter may expose navigation and form interaction, while a game
+adapter exposes moves and a robot adapter exposes actuator commands. Each reports
+its actual capabilities, state/version and unavailable operations explicitly;
+the common layer must not invent successful observations or substitute another
+actor, activity or device. Keep session state in the existing scoped activity
+machinery, with runtime handles owned by the execution host. Human UX, persona PX
+and agent clients should consume the same state and receipts.
+
+The reusable learning seam already has concrete entry points:
+`cognition/experience.rs` defines `ExperienceRecord` and `SalienceDetector`,
+`cognition/act_observe.rs` owns action/outcome flow, and the existing memory,
+academy and genome machinery consumes experience. Browser capture and vision
+commands are adapter entry points to inspect, not proof that images survive all
+the way into training. Trace their actual data path before extending it. A
+text-only training projection must not silently claim to retain visual evidence;
+an unsupported modality should remain an explicit capability gap.
+
+Reuse and refinement should normally precede creating new genes: recall relevant
+existing skills, evaluate them on the new activity, and use measured gaps to
+select lessons. Novelty alone does not establish usefulness or justify a new gene.
+Preserve source episodes, teacher/reviewer attribution and artifact lineage when
+an adapter projects an experience into curriculum.
+
+Reference-solution exposure changes an episode's evaluation status, not its
+ownership or usefulness as a lesson. Record known exposure, unknown exposure and
+verified isolation separately with the existing episode/evaluation provenance.
+An exposed example may become explicitly supervised curriculum, but cannot also
+count as an independent held-out success for that artifact. Preserve the original
+execution receipt and attach the correction; do not erase history or relabel a
+past pass without retaining why its evaluation changed. Reports of exposure and
+the verified tool/event that caused it are distinct evidence.
+
+Benchmark adapters own reference material and hidden graders outside the acting
+citizen's accessible workspace. Merely hiding a path from a tool description,
+fetching it after submission, or deleting it afterward does not establish
+isolation from concurrent citizens running under the same OS identity. Record
+the actual isolation boundary and audit exposure before claiming held-out gain.
+Keep normal project tools available; adapt the benchmark's staging and grading
+boundary instead of restricting general activity to fit an evaluation harness.
+
+Acceptance proceeds through the existing activity workflow:
+
+1. Capture one real interaction, including before/after observations and the
+   action receipt, and verify its activity and actor associations survive storage
+   and replay. Replay of an external effect must not re-execute it implicitly.
+2. Verify the selected episode reaches curriculum with its media references and
+   outcome intact. Distinguish capture, perception, selection and training; none
+   proves the next stage automatically.
+3. Evaluate UI appearance, accessibility, navigation correctness and task success
+   separately where relevant. A visually attractive page can still be unusable;
+   a successful click sequence can still rest on a mistaken interpretation.
+4. Link curriculum to a trained artifact, held-out gain, safe adoption and gain on
+   new work, following [ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md).
+   Test unfamiliar pages, layouts or environments, not only replay of a memorized
+   trajectory. Extend to contrasting adapters to expose accidental browser or
+   text assumptions; do not claim cross-modality transfer before measuring it.
 
 ### Local-First, Then Federated
 
@@ -836,7 +944,7 @@ pub trait SubstrateGovernor: Send + Sync {
     /// is in §"Hardware Detection" below.
     fn on_hardware_detected(&self, hw: HardwareClass);
 
-    /// Called by PressureBroker (CBAR-SUBSTRATE) when a typed pressure
+    /// Called by PressureBroker (CONTINUUM-ENGINE) when a typed pressure
     /// signal crosses a threshold. Governor decides whether to step the
     /// cascade, hold, or reverse. See §"Adjustment Cascade" for thresholds.
     fn on_pressure_signal(&self, signal: PressureSignal);
@@ -1064,7 +1172,7 @@ async fn governor_loop(state: Arc<GovernorState>, mut rx: mpsc::Receiver<Pressur
 }
 ```
 
-The loop is the only place that mutates `GovernorState`. Everything else reads `current_policy()` (wait-free Arc clone) and reacts to `subscribe()` notifications. No subsystem ever writes to the governor directly — pressure signals flow in through `PressureBroker` (CBAR-SUBSTRATE), policy flows out through Arc subscriptions.
+The loop is the only place that mutates `GovernorState`. Everything else reads `current_policy()` (wait-free Arc clone) and reacts to `subscribe()` notifications. No subsystem ever writes to the governor directly — pressure signals flow in through `PressureBroker` (CONTINUUM-ENGINE), policy flows out through Arc subscriptions.
 
 ### Federation Policy Reconciliation
 
@@ -1130,9 +1238,9 @@ Transitions are emitted as typed events on the trace bus. Each transition carrie
 
 For the engineer landing types: every artifact transition must be observable. A LoRA layer that is "in the pool" but never adopted should appear in a `Created, never adopted` query. A layer that adoption rate is falling for should be visible in attribution. A retired layer's provenance chain should be walkable. The substrate makes these queries first-class so engineers can debug evolution, not guess at it.
 
-## Part 13: Connection To CBAR-SUBSTRATE (Lane H)
+## Part 13: Connection To CONTINUUM-ENGINE (Lane H)
 
-This document specifies the artifact economy. CBAR-SUBSTRATE specifies the runtime contract every cell inherits. They connect at three points:
+This document specifies the artifact economy. CONTINUUM-ENGINE specifies the runtime contract every cell inherits. They connect at three points:
 
 1. **Every cell's `ModuleContext` exposes `DemandAlignedRecall`.** A cell asks for help; the genome pool answers. No cell loads adapters by name.
 2. **`PressureBroker` informs the `SubstrateGovernor`.** Pressure signals from the broker drive the governor's adjustment cascade. The broker keeps owning admission; the governor owns *sizing*.
@@ -1163,7 +1271,7 @@ Substrate is "done" when the following are provable on canary, with PR-attached 
 **Hardware portability:**
 
 - The same Rust binary boots on MacBook Air (16 GB UMA) and on RTX 5090 (32+64 GB) and the governor writes different policies for each. VDD records show different tier sizes / concurrency caps / speculation aggressiveness.
-- A persona round-trip turn produces working output on both anchor configurations within the latency budgets named in CBAR-SUBSTRATE's performance covenant.
+- A persona round-trip turn produces working output on both anchor configurations within the latency budgets named in CONTINUUM-ENGINE's performance covenant.
 
 **Demand-aligned recall:**
 
@@ -1216,7 +1324,7 @@ Real questions the engineer will hit. Tentative answers for each.
 
 ## See Also
 
-- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — runtime substrate contract. Owns concurrency, scheduling, memory pressure, device pressure, telemetry, artifact handles, lifecycle.
+- [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) — runtime substrate contract. Owns concurrency, scheduling, memory pressure, device pressure, telemetry, artifact handles, lifecycle.
 - [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) — lane-shaped roadmap. Lane H (this document's implementation) lives here.
 - [CONTINUUM-ARCHITECTURE.md](../CONTINUUM-ARCHITECTURE.md) — engine shape; this doc is the genome / foundry / sentinel detail beneath the engine surface.
 - [CONTINUUM-VISION.md](../CONTINUUM-VISION.md) — product vision. The personas this substrate evolves are the personas described there.

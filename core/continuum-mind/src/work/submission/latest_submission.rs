@@ -43,7 +43,7 @@ impl WorkArtifactReference {
         if looks_like_git_sha(&self.hash) {
             return Err(CommandError::Invalid(format!(
                 "artifact hash '{}' looks like a git commit sha, not the patch's SHA-256. Omit artifact: \
-                 work/submit computes it from your card checkout.",
+                 the submit computes it from your card checkout.",
                 self.hash.trim()
             )));
         }
@@ -52,7 +52,7 @@ impl WorkArtifactReference {
         >::new(self.hash))
         .map_err(|e| {
             CommandError::Invalid(format!(
-                "artifact hash: {e}. Omit artifact and work/submit computes it from your checkout."
+                "artifact hash: {e}. Omit artifact and the submit computes it from your checkout."
             ))
         })?;
         Ok(airc_work::SubmissionArtifact {
@@ -222,7 +222,7 @@ pub(super) async fn room_of_card(
                 None if !horizon.unreadable.is_empty() => Err(horizon.not_found("card", raw_card)),
                 None => Err(CommandError::Invalid(format!(
                     "{verb}: the card you named is on no board of a room you are in, so it cannot say its room: \
-                     join the card's room (room/join) or name it with room=..."
+                     name its room with room=..., or join that room first"
                 ))),
             }
         }
@@ -254,13 +254,81 @@ pub(super) fn followed_room(recorded: &[crate::persona::held_claims::HeldClaim],
     recorded.iter().find(|h| h.card_id == id).map(|h| h.room.clone())
 }
 
-/// How a card concludes when its result is not a patch (an investigation, a question answered):
-/// the one way forward both "no patch" refusals name, so `work/submit` ("nothing to submit") and
-/// `work/submission` ("no submissions yet") never send her to each other. Aris on the M5,
-/// 2026-10-31 11:13-13:22Z: 14 refusals alternating between the two on investigation card
-/// 3a8a243a, whose worktree rightly had no changes.
-pub(super) const CONCLUDE_WITHOUT_A_PATCH: &str =
-    "if this card's result is what you found rather than a change, record it with work/note (known: what you established) and close the card with work/state closed";
+/// Why `work/submit` refused to publish: the typed cause her refusal carries.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SubmitRefusal {
+    /// Her checkout holds no change past the base, so there is no patch to publish.
+    #[error(
+        "nothing to submit: {} has no changes since {base} (substrate paths excluded). A submit publishes a patch: \
+         make the change there first, or, when this card's result is what you found rather than a change, record it \
+         on the card and close the card",
+        .checkout.display()
+    )]
+    NoChanges { checkout: std::path::PathBuf, base: String },
+    /// Her checkout holds changes its commit does not carry: a submission is a commit.
+    #[error("{count} change(s) in {} are not committed. A submission is a commit: commit them, then submit again", .checkout.display())]
+    Uncommitted { count: usize, checkout: std::path::PathBuf, paths: Vec<String> },
+}
+
+impl crate::sdk_codegen::RefusalCause for SubmitRefusal {
+    fn category(&self) -> crate::sdk_codegen::Category {
+        crate::sdk_codegen::Category::Invalid
+    }
+}
+
+const WORK_NOTE: crate::sdk_codegen::VerbRef<super::super::WorkNote> = crate::sdk_codegen::VerbRef::in_hands();
+const WORK_STATE: crate::sdk_codegen::VerbRef<super::super::WorkState> = crate::sdk_codegen::VerbRef::in_hands();
+const GIT_ADD: crate::sdk_codegen::VerbRef<continuum_hands::commands::code::git::add::CodeGitAdd> = crate::sdk_codegen::VerbRef::in_hands();
+const GIT_COMMIT: crate::sdk_codegen::VerbRef<continuum_hands::commands::code::git::commit::CodeGitCommit> =
+    crate::sdk_codegen::VerbRef::in_hands();
+
+/// The refusal for a submit that cannot publish, with the calls that move her on, as typed
+/// references to the commands (rendered under the names her tool list offers, and loaded into her
+/// next act's tools by the mind she acts through), never verbs written into its sentence:
+/// - no changes: how a card concludes when its result is not a patch (an investigation, a question
+///   answered): its finding recorded on the card (`work/note`), then the card closed (`work/state`).
+///   It never sends her to `work/submission`, whose own "no submissions yet" refusal never sends her
+///   back here (Aris on the M5, 2026-10-31 11:13-13:22Z: 14 refusals alternating between the two on
+///   investigation card 3a8a243a). Aiko on the M5, 2026-11-13 22:40-23:26Z, review card 149f1391:
+///   8 refused submits while the sentence named `work/note` and `work/state`, which her tool list
+///   offers as `ledger` and `update_task`;
+/// - uncommitted changes: stage them (`code/git/add`), then commit them (`code/git/commit`); the
+///   substrate never commits for her.
+pub(super) fn submit_refused(cause: SubmitRefusal, card_id: Uuid) -> CommandError {
+    use crate::sdk_codegen::{NextCall, NextMoves, Refusal};
+    let card = card_id.to_string();
+    let calls = match &cause {
+        SubmitRefusal::NoChanges { .. } => NextCall::new(
+            WORK_NOTE,
+            &super::super::WorkNoteParams {
+                card_id: card.clone(),
+                known: Vec::new(),
+                hypotheses: Vec::new(),
+                unknown: String::new(),
+                next_test: String::new(),
+                decided_fix: None,
+            },
+            "records on the card what you established, as known facts, when its result is a finding",
+        )
+        .and_then(|note| {
+            let close = super::super::WorkStateParams { card_id: card, state: "closed".to_owned() };
+            Ok((note, NextCall::new(WORK_STATE, &close, "closes the card once its finding is recorded")?))
+        }),
+        SubmitRefusal::Uncommitted { paths, .. } => NextCall::new(
+            GIT_ADD,
+            &continuum_hands::commands::code::git::add::GitAddParams { paths: paths.clone() },
+            "stages the changes the commit does not carry",
+        )
+        .and_then(|add| {
+            let commit = continuum_hands::commands::code::git::commit::GitCommitParams { message: format!("card {}", short8(card_id)) };
+            Ok((add, NextCall::new(GIT_COMMIT, &commit, "commits them, with your own message; then submit again")?))
+        }),
+    };
+    match calls {
+        Ok((first, then)) => Refusal::new(cause, NextMoves::Calls { first, more: vec![then] }).into(),
+        Err(unwritable) => CommandError::Internal(unwritable.to_string()),
+    }
+}
 
 /// PURE: `e` with the where-it-is hint appended, keeping its error class.
 pub(super) fn with_hint(e: CommandError, hint: Option<String>) -> CommandError {
@@ -622,7 +690,7 @@ fn commit_patch(checkout: &std::path::Path, base: &str, head: &str) -> Result<St
     let unpublished: Vec<String> = names(&[])?.into_iter().filter(|path| !published.contains(path)).collect();
     if !unpublished.is_empty() {
         return Err(CommandError::Invalid(format!(
-            "your commit {head} carries {} path(s) a submission never publishes ({}): substrate or build byproducts. Remove them from the commit, then work/submit",
+            "your commit {head} carries {} path(s) a submission never publishes ({}): substrate or build byproducts. Remove them from the commit, then submit again",
             unpublished.len(),
             unpublished.join(", ")
         )));
@@ -684,15 +752,10 @@ pub(super) async fn derive_submission(
     // The commit the patch ends at, and the patch is exactly base..head: the gate merges that commit,
     // so a patch that dropped any of it would land the rest unreviewed (Fable on #5824; airc's CLI
     // submit enforces the same).
-    let head = committed_head(checkout)?;
+    let head = committed_head(checkout, card_id)?;
     let patch = commit_patch(checkout, base.as_str(), &head)?;
     if patch.trim().is_empty() {
-        return Err(CommandError::Invalid(format!(
-            "nothing to submit: {} has no changes since {} (substrate paths excluded). A submit publishes a \
-             patch: make the change there first, or, {CONCLUDE_WITHOUT_A_PATCH}",
-            checkout.display(),
-            base_sha
-        )));
+        return Err(submit_refused(SubmitRefusal::NoChanges { checkout: checkout.to_path_buf(), base: base_sha }, card_id));
     }
     // Retain the exact candidate before publishing its identity: the checkout can
     // change after this call, so a later git diff is not the submitted artifact.
@@ -709,19 +772,22 @@ pub(super) async fn derive_submission(
 /// Her checkout's committed HEAD, the commit a submission records so a verdict covers exactly it
 /// (the merge gate refuses a submission without one: airc #1660). While she holds changes the
 /// commit does not carry (tracked or untracked, outside the substrate paths the patch excludes), it
-/// is refused, naming the commit verb: a submission is a commit, never her working tree, and the
-/// substrate never commits for her.
-fn committed_head(checkout: &std::path::Path) -> Result<String, CommandError> {
+/// is refused with the stage and commit calls as her next moves: a submission is a commit, never her
+/// working tree, and the substrate never commits for her.
+fn committed_head(checkout: &std::path::Path, card_id: Uuid) -> Result<String, CommandError> {
     let git = |args: &[&str]| git_in(checkout, args).map_err(CommandError::Internal);
     let mut status = vec!["status", "--porcelain", "--untracked-files=normal", "--", "."];
     status.extend_from_slice(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES);
     let pending = git(&status)?;
     if !pending.trim().is_empty() {
-        return Err(CommandError::Invalid(format!(
-            "{} change(s) in {} are not committed. A submission is a commit: commit them (code/git/commit), then work/submit publishes that commit",
-            pending.lines().count(),
-            checkout.display()
-        )));
+        // `git status --porcelain`: two status columns and a space, then the path (`old -> new` for a rename).
+        let paths: Vec<String> = pending
+            .lines()
+            .filter_map(|line| line.get(3..))
+            .map(|path| path.rsplit_once(" -> ").map_or(path, |(_, new)| new).to_owned()) // map_or: a path that was not renamed is itself
+            .collect();
+        let cause = SubmitRefusal::Uncommitted { count: pending.lines().count(), checkout: checkout.to_path_buf(), paths };
+        return Err(submit_refused(cause, card_id));
     }
     Ok(git(&["rev-parse", "HEAD"])?.trim().to_string())
 }

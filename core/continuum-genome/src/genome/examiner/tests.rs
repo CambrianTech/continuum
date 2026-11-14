@@ -117,6 +117,34 @@ async fn a_receipt_round_trips_through_the_orm() {
 /// A host that sits every exam with fixed arms (test-only: the examiner's seam, never a mind).
 struct FixedHost(ExamSitting);
 
+// A prior boot could not examine the gene; a later boot can. Replacing the
+// refusal must preserve the genuine sitting and still require retention later.
+#[tokio::test]
+async fn a_later_sitting_replaces_a_refusal_and_still_owes_retention() {
+    let (adapter, _tmp) = crate::orm::store::fresh_adapter().await;
+    let receipts = crate::orm::OrmStore::<GeneExamReceipt>::new(adapter).await.expect("test: store");
+    let dir = tempfile::tempdir().expect("test: dir");
+    let path = dir.path().join("trials.json");
+    let trials = GeneTrials::at(&path);
+    let t = trials.open_from(Uuid::from_u128(8), "code", Path::new("/genes/retry.gguf"),
+        "qwen-27b", Some(Path::new("/job/retry")), 10).expect("test: trial");
+    let old = GeneExamReceipt::unexaminable(&t, "exam set unavailable".into(), Uuid::from_u128(1), 20);
+    receipts.save(receipt_id(t.id), &old).await.expect("test: prior boot receipt");
+    let gain = sitting((a(5, 6), a(1, 6)), (a(6, 6), a(6, 6)), unmeasured());
+    let boot = Uuid::from_u128(2);
+    let examiner = Examiner::new(GeneTrials::at(&path), receipts.clone(), Arc::new(FixedHost(gain)), boot);
+    let report = examiner.pass().await.expect("test: later sitting");
+    assert_eq!(report.decided, vec![(t.id, TrialState::Promoted)]);
+    assert!(report.not_now.is_empty());
+    let receipt = receipts.find_by_id(t.id).await.expect("test: read").expect("test: receipt");
+    assert_eq!(receipt.examined_boot, boot);
+    assert!(matches!(receipt.outcome, ExamOutcome::Admitted { .. }));
+    assert!(matches!(receipt.restart, RestartEvidence::Due { examined_boot } if examined_boot == boot));
+    assert_eq!(examiner.pass().await.expect("test: repeated pass"), Default::default());
+    assert_eq!(due(&trials.load().expect("test: trials"), &[receipt], Uuid::from_u128(3)),
+        vec![ExamDue { trial: t.id, kind: ExamKind::Retention }]);
+}
+
 #[async_trait::async_trait]
 impl ExamHost for FixedHost {
     async fn sit(&self, exam: &GeneExam) -> Result<ExamSitting, ExamRefusal> {
@@ -153,6 +181,11 @@ async fn a_pass_sits_receipts_decides_and_retention_retires_a_lost_gene() {
     let lost = sitting((a(1, 6), a(1, 6)), (a(6, 6), a(6, 6)), unmeasured());
     let next = Examiner::new(GeneTrials::at(&path), receipts.clone(), Arc::new(FixedHost(lost)), Uuid::from_u128(2));
     let second = next.pass().await.expect("test: pass");
+    assert_eq!(second.unexaminable, vec![reused.id], "a restart replaces the prior refusal receipt");
+    assert!(second.not_now.is_empty(), "a prior receipt must not cause a duplicate-key refusal: {second:?}");
+    assert_eq!(next.pass().await.expect("test: repeated pass"), Default::default(), "the new boot is durably receipted");
+    let refusal = receipts.find_by_id(receipt_id(reused.id)).await.expect("test: read refusal").expect("test: refusal exists");
+    assert_eq!(refusal.examined_boot, Uuid::from_u128(2));
     assert_eq!(second.decided, vec![(trained.id, TrialState::Retired)], "{second:?} {:?}", store.load());
     let rows = store.load().expect("test: load");
     assert_eq!(rows.iter().find(|t| t.id == trained.id).map(|t| t.state), Some(TrialState::Retired));

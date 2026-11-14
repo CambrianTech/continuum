@@ -150,6 +150,8 @@ const DEFAULT_TEMPERATURE: f32 = 0.7;
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
     persona_id: Uuid,
+    /// Where her last page of a reopened output ended, so the next reopen continues (card 34d79b2e).
+    reading: prompt::newest_result::Reading,
     persona_name: String,
     /// The persona's identity / deliberation system prompt (from RAG identity).
     system_prompt: String,
@@ -268,6 +270,7 @@ impl LlmDeliberationFaculty {
             context_view: parking_lot::Mutex::new(None),
             tools_epoch: parking_lot::Mutex::new(None),
             held_blocks: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            reading: Default::default(),
             forked: false,
         }
     }

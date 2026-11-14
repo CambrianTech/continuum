@@ -379,7 +379,9 @@ pub fn persona_tool_error(attempted: &str, raw: String) -> String {
     // Omission from the default menu is not an authorization failure. These verbs
     // remain discoverable; preserve the actual refusal (or transport failure) so
     // a legitimate reviewer can recover, alongside purpose/own-work guidance.
-    if let Some(withheld) = crate::ai::tool_dialect::withheld_from_hands(&normalized) {
+    // The command declares why it is withheld and what to use instead, beside its disclosure.
+    let declared = command_registry().into_iter().find(|d| d.name == normalized || d.aliases.iter().any(|a| a.replace('_', "/") == normalized));
+    if let Some(withheld) = declared.and_then(|d| d.withheld) {
         return format!("{raw}\n{}\n{}", withheld.why, withheld.instead); // the status line already says it was refused
     }
 
@@ -640,6 +642,7 @@ impl ToolExecutor for CommandToolExecutor {
                         command: call.name.clone(),
                         outcome: None,
                         reason: format!("reported, not run: {}", call.input),
+                        refusal: None,
                     })),
                     blanks if !blanks.is_empty() => {
                         continuum_base::probe!(
@@ -652,10 +655,11 @@ impl ToolExecutor for CommandToolExecutor {
                         Err(Refused::Client(ClientError::Refused {
                             command: command.to_string(),
                             outcome: None,
+                            refusal: None,
                             reason: format!(
                                 "you sent the manual's blank as a value for {}: the example block is a \
                                  SHAPE, and `<replace-with-…>` / a run of zeros marks a field YOU fill \
-                                 from your own work (a real path, a real id from work/list, the sha256 of \
+                                 from your own work (a real path, a real id from the board, the sha256 of \
                                  your patch). Nothing was run. Put the real value there — or omit the \
                                  field where the verb says it derives it — and call again.",
                                 blanks
@@ -740,6 +744,7 @@ impl ToolExecutor for CommandToolExecutor {
                         tool_use_id: tool_use_id.clone(),
                         verdict,
                         dispatch_handle,
+                        next_commands: Vec::new(),
                     });
 
                     // boundary: tool-result transcript now contains a durable image reference.
@@ -787,6 +792,12 @@ impl ToolExecutor for CommandToolExecutor {
                     // Index back to the call that failed (the OK path never pays
                     // this — names are only needed to build recovery guidance).
                     let attempted = call.name.as_str();
+                    // The commands her refusal names as her next moves, typed: her hands admit them
+                    // into her next act's tools (`ToolHead::load`), so a next move is callable.
+                    let next_commands: Vec<String> = match &refused {
+                        Refused::Client(ClientError::Refused { refusal: Some(refusal), .. }) => refusal.next.commands().map(str::to_owned).collect(),
+                        _ => Vec::new(),
+                    };
                     let (raw, guidance) = match refused {
                         // A reported sentinel held with its cut generation keeps its own words.
                         Refused::Held(_) if is_reported_sentinel(attempted) => {
@@ -833,11 +844,16 @@ impl ToolExecutor for CommandToolExecutor {
                         tool_use_id: tool_use_id.clone(),
                         verdict: ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
                         dispatch_handle: None,
+                        next_commands,
                     });
-                    // The same custody as a success: saved whole, handed back whole.
-                    // No cause on line 1 yet: a refusal's kind arrives typed with the command's
-                    // refusal enum (HER-TOOLS, the verb macro), never scanned out of its message.
-                    let rendered = super::answer::render(
+                    // Nothing ran, so there is no output to save: the refusal reaches her in this
+                    // act's result only (`ResultCustody::Refused`), never under an id she could
+                    // reopen. Saved, a cut act's refusal became an output she read, and her read of
+                    // it another (IntelMac 0051cdcf, 2026-11-14: `tools/<cut at the output limit>`
+                    // three reads deep). No cause on line 1 yet: a refusal's kind arrives typed with
+                    // the command's refusal enum (HER-TOOLS, the verb macro), never scanned out of
+                    // its message.
+                    let content = super::answer::render(
                         super::answer::Status::Refused,
                         attempted,
                         &call.input,
@@ -845,12 +861,11 @@ impl ToolExecutor for CommandToolExecutor {
                         &guidance,
                         None,
                     );
-                    let (content, custody) = pin.whole_or_handle(rendered, ctx.persona_id).into_parts();
                     NativeToolResult {
                         tool_use_id,
                         content,
                         is_error: Some(true),
-                        custody,
+                        custody: crate::ai::types::ResultCustody::Refused,
                     }
                 }
             })

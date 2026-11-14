@@ -1,4 +1,4 @@
-//! Work flows through queues, never locks (SERVING-ENGINE §1c; Joel, 2026-10-28: "Its got to
+//! Work flows through queues, never locks (CONTINUUM-ENGINE.md 4.1c; Joel, 2026-10-28: "Its got to
 //! flow or have MANY queues"; "Semaphore really only exists for queue inserts and signals").
 //!
 //! - Every unit of work has a quality-of-service class ([`Qos`]): interactive, work, utility,

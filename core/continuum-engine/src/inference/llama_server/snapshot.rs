@@ -215,7 +215,8 @@ impl ServingSnapshot {
 /// is the ENDPOINT truth (#106): the catalog row *declares* Vision, the mmproj
 /// file *exists*, but only the process itself can confirm the projector loaded
 /// and the multimodal tokenize path answers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default)] // a modality the reply does not name is one the server does not accept
 pub struct MultimodalSupport {
     /// `/props` `modalities.vision` — the server accepts image content parts.
     pub vision: bool,
@@ -381,7 +382,7 @@ pub fn current_serving() -> ServingSnapshot {
     SERVING_STATE
         .get()
         .map(|rx| rx.borrow().clone())
-        .unwrap_or_else(ServingSnapshot::empty)
+        .unwrap_or_else(ServingSnapshot::empty) // unwrap_or_else: before the daemon installs its state nothing is served, which empty states exactly
 }
 
 

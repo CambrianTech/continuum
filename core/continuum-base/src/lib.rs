@@ -11,6 +11,7 @@ pub mod home;
 pub mod id_resolve;
 pub mod non_empty_text;
 pub mod probe;
+pub mod probed;
 pub mod repo_id;
 pub mod reserved_rooms;
 pub mod secrets;

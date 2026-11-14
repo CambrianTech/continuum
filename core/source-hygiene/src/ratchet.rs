@@ -78,6 +78,12 @@ pub enum HeldOnly {
     /// The rule counts every instance of a shape that is sometimes right, and no sanctioned form
     /// exists yet to write the right ones in: a touched file would have nothing to move to.
     NoSanctionedForm,
+    /// The sites are a backlog of thousands, swept crate by crate from the floor up (plan phase
+    /// 5). A touched file may keep its old sites, so a split or an unrelated fix is never held
+    /// hostage to a whole file's debt; it may not add one, which the held total already says:
+    /// only a touched file's sites can move, so the total rises exactly when the touched files
+    /// gain sites.
+    SweptByCrate,
 }
 
 /// Hold the ratchet `name` at its violations' count, and record where they live: one
@@ -111,7 +117,7 @@ pub fn zero(name: &str, violations: &[Violation], advice: impl Fn() -> String) {
         record(&path, name, violations.len());
     }
     let sites: Vec<String> = violations.iter().map(|v| format!("  {}:{}  {}", v.file, v.line, v.source)).collect();
-    assert!(sites.is_empty(), "{name} must be zero and has {} site(s). {}\n{}", sites.len(), advice(), sites.join("\n"));
+    assert!(sites.is_empty(), "{name} must be zero and has {} site(s):\n{}\nHow to fix it: {}", sites.len(), sites.join("\n"), advice());
 }
 
 /// [`zero`] for a rule that counts without sites (a program's spawns, orphaned files).
@@ -149,12 +155,17 @@ fn touched_clean(name: &str, violations: &[Violation], advice: impl Fn() -> Stri
     };
     let touched: BTreeSet<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
     let dirty = dirty_sites(violations, &touched);
+    // The offenders lead, under their own heading: the advice can carry a whole-tree sample,
+    // and printed first it read as the change's own sites (an agent spent an hour on #5945
+    // chasing files the change never touched, 2026-11-11).
     assert!(
         dirty.is_empty(),
-        "{name}: {} site(s) remain in files this change touches; a touched file leaves with none. {}\n{}",
+        "{name}: {} site(s) remain in files this change touches; a touched file leaves with none.\n\
+         In files this change touches:\n{}\n\
+         How to fix it (any sample below is from the whole tree and may include these):\n{}",
         dirty.len(),
-        advice(),
-        dirty.join("\n")
+        dirty.join("\n"),
+        advice()
     );
 }
 
