@@ -194,7 +194,7 @@ where
     ) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
         if query.collection != T::COLLECTION {
             return Err(failed::<T>("snapshot query")(StorageError::SnapshotCollection {
-                expected: T::COLLECTION.to_owned(), found: query.collection.clone(),
+                expected: T::COLLECTION.into(), found: (&query.collection).into(),
             }));
         }
         let records = snapshot.query(query).await.map_err(failed::<T>("snapshot query"))?;

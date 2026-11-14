@@ -13,7 +13,7 @@ use super::types::UUID;
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     #[error("snapshot is for {expected}, query targets {found}")]
-    SnapshotCollection { expected: String, found: String },
+    SnapshotCollection { expected: super::names::CollectionName, found: super::names::CollectionName },
     /// The database refused or failed the statement.
     #[error(transparent)]
     Database(#[from] sea_orm::DbErr),

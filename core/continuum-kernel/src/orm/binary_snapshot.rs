@@ -46,8 +46,8 @@ impl BinarySnapshot {
     ) -> Result<Vec<super::types::DataRecord>, StorageError> {
         if query.collection != self.schema.collection {
             return Err(StorageError::SnapshotCollection {
-                expected: self.schema.collection.clone(),
-                found: query.collection.clone(),
+                expected: (&self.schema.collection).into(),
+                found: (&query.collection).into(),
             });
         }
         let statement = super::relational_query::select(
