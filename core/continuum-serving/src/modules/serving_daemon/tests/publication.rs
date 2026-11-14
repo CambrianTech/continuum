@@ -513,7 +513,7 @@ fn serving_footprint_fn_resolves_live_catalog_weights() {
             verified: None,
         },
     );
-    let resolve = serving_footprint_fn(catalog.clone());
+    let resolve = serving_footprint_fn(&catalog);
 
     // NotDownloaded (no on-disk weights) → nothing resident yet. Window/lanes
     // are the live serving shape; with no weights they resolve to 0 anyway.
