@@ -327,27 +327,9 @@ impl DataState {
         collection: &str,
     ) -> Result<StorageResult<bool>, String> {
         require_public_collection(collection)?;
-        // Resolution order per [[orm-everything-not-hand-edited-files]]:
-        //   1. Rust-native registry (substrate entities authored Rust-first:
-        //      hw_tiers, role_templates, identity pools, universes).
-        //   2. entity_schemas.json (TS-decorator authored: chat, users,
-        //      cognition, timeline — the existing pipeline).
-        //   3. Error — collection unknown to either path.
-        let collection_schema = if let Some(rust_schema) =
-            crate::orm::OrmEntityRegistry::global().resolve(collection)
-        {
-            rust_schema
-        } else if let Some(entity) = crate::entity_schemas::resolve(collection).map_err(|e| e.to_string())? {
-            crate::entity_schemas::to_collection_schema(entity)?
-        } else {
-            return Err(format!(
-                "Unknown collection '{collection}' — not in the Rust ORM registry and not in \
-                 entity_schemas.json. If this is a newly added TS-decorated entity, \
-                 rebuild TS: `npm run build:ts`. If it's a Rust-native substrate entity, \
-                 confirm OrmEntityRegistry::global().register::<YourEntity>() is called \
-                 at boot."
-            ));
-        };
+        let collection_schema = super::adapters::resolve_collection_schema(
+            crate::orm::OrmEntityRegistry::global(), collection,
+        )?;
         let adapter = self.get_adapter(handle).await?;
         Ok(adapter.ensure_schema(collection_schema).await)
     }

@@ -97,29 +97,52 @@ impl RelationalStore {
             .map_err(|e| e.to_string())?;
         let catalog_read = db.begin().await.map_err(|e| e.to_string())?;
         let schemas = super::relational_declaration::restore(&catalog_read).await?;
-        use sea_orm::EntityTrait;
+        use super::relational_sequence::{Column, Entity};
+        use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
         let mut revisions = HashMap::new();
-        for head in super::relational_sequence::Entity::find()
-            .all(&catalog_read)
-            .await
-            .map_err(|e| e.to_string())?
-        {
-            let domain = match head.domain.as_str() {
-                "append" => super::relational_sequence::Domain::Append,
-                "native" => super::relational_sequence::Domain::Native,
-                _ => return Err("unknown persisted revision domain".into()),
-            };
-            if head.high <= 0 {
-                return Err("nonpositive persisted revision".into());
+        // Transfer pages bound temporary materialization, never the number of heads.
+        let mut after: Option<(String, String)> = None;
+        loop {
+            let mut query = Entity::find()
+                .order_by_asc(Column::Domain)
+                .order_by_asc(Column::Collection)
+                .limit(64);
+            if let Some((domain, collection)) = &after {
+                query = query.filter(
+                    Condition::any()
+                        .add(Column::Domain.gt(domain.as_str()))
+                        .add(
+                            Condition::all()
+                                .add(Column::Domain.eq(domain.as_str()))
+                                .add(Column::Collection.gt(collection.as_str())),
+                        ),
+                );
             }
-            let high = u64::try_from(head.high).map_err(|_| "negative persisted revision")?;
-            revisions.insert(
-                (
-                    domain,
-                    super::adapter::naming::to_table_name(&head.collection),
-                ),
-                tokio::sync::watch::channel(high).0,
-            );
+            let heads = query.all(&catalog_read).await.map_err(|e| e.to_string())?;
+            if heads.is_empty() {
+                break;
+            }
+            after = heads
+                .last()
+                .map(|head| (head.domain.clone(), head.collection.clone()));
+            for head in heads {
+                let domain = match head.domain.as_str() {
+                    "append" => super::relational_sequence::Domain::Append,
+                    "native" => super::relational_sequence::Domain::Native,
+                    _ => return Err("unknown persisted revision domain".into()),
+                };
+                if head.high <= 0 {
+                    return Err("nonpositive persisted revision".into());
+                }
+                let high = u64::try_from(head.high).map_err(|_| "negative persisted revision")?;
+                revisions.insert(
+                    (
+                        domain,
+                        super::adapter::naming::to_table_name(&head.collection),
+                    ),
+                    tokio::sync::watch::channel(high).0,
+                );
+            }
         }
         catalog_read.commit().await.map_err(|e| e.to_string())?;
         Ok(Self {
