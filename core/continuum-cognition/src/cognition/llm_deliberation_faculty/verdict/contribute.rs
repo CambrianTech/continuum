@@ -356,6 +356,7 @@ impl LlmDeliberationFaculty {
             // A rebuilt request with no max_tokens keeps the last one sent (the read of the
             // previous value is also what keeps the initializer honest).
             sent_allowance = request.max_tokens.or(sent_allowance);
+            self.prefix_warm_settled(ws.room_id).await; // her prefix, warmed while her last tool ran
             let result = self
                 .generate_for_workspace(ws, &binding, fit_window, request, terms, allocation, receipts)
                 .await?;
@@ -844,6 +845,7 @@ impl LlmDeliberationFaculty {
                     return Some(v);
                 }
                 if !calls.is_empty() {
+                    self.prefill_during_tool(&binding.adapter, ws.room_id, request_template.as_ref(), &view.messages);
                     return Some(self.act_verdict(calls, &resp, ws.activity_room_id));
                 }
             }
