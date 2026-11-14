@@ -70,6 +70,9 @@ pub enum StorageError {
     /// A query whose shape this store cannot run.
     #[error("the query cannot run: {0}")]
     Unqueryable(QueryFault),
+    /// An append's sequence spec does not fit its collection's declaration.
+    #[error("{collection}: the append cannot run: {fault}")]
+    Append { collection: String, fault: AppendFault },
     /// No row with this id.
     #[error("{collection} has no row {id}")]
     NotFound { collection: String, id: UUID },
@@ -167,4 +170,19 @@ pub enum QueryFault {
     ContainsNotText,
     #[error("this store does not run regex queries")]
     Regex,
+}
+
+/// Why an append's sequence spec does not fit its collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum AppendFault {
+    #[error("its unique field is not declared")]
+    UniqueUndeclared,
+    #[error("its identity needs a declared non-null unique constraint")]
+    NotUnique,
+    #[error("its sequence field is not declared")]
+    SequenceUndeclared,
+    #[error("its sequence needs a declared non-null number field")]
+    SequenceNotNumber,
+    #[error("the record omits its unique field")]
+    UniqueOmitted,
 }
