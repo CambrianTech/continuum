@@ -38,6 +38,11 @@ pub struct Spawned {
 /// paths relative to the deploy target.
 pub type ProbeFn = fn(&Path) -> Option<String>;
 
+/// A maintenance-check function for Windows: returns `Ok(())` when deployment may proceed or `Err`
+/// when unfinished recovery evidence blocks the task. Passed as a callback so this crate does not
+/// depend on any Continuum subsystem that tracks supervisor state.
+pub type PermitCheck = fn(&Path) -> Result<(), String>;
+
 #[cfg_attr(unix, path = "unix.rs")]
 #[cfg_attr(windows, path = "windows.rs")]
 mod os;
