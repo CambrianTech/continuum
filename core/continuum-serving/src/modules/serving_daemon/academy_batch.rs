@@ -348,9 +348,7 @@ impl ServingDaemonModule {
             let mut board = self.resource_daemon.subscribe();
             capacity::await_capacity(
                 || PrivateTeacherLane::prepare(&base, &self.resource_daemon),
-                &mut board,
-                memory,
-                &mut cancellation,
+                capacity::CapacitySignals { board: &mut board, memory, cancellation: &mut cancellation },
                 || self.intent.snapshot().revision == capture.intent_revision,
             )
             .await?

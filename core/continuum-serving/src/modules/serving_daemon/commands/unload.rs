@@ -58,10 +58,11 @@ enum LaneRelease {
 
 /// Wait for the daemon to publish the model's release, or for the outcome that means it never will.
 async fn lane_release(
-    mut serving: watch::Receiver<ServingSnapshot>,
+    serving: &watch::Receiver<ServingSnapshot>,
     mut intent: watch::Receiver<ServingIntentSnapshot>,
     model: &str,
 ) -> LaneRelease {
+    let mut serving = serving.clone();
     tokio::select! {
         freed = serving.wait_for(|s| s.active_model.as_deref() != Some(model)) => {
             if freed.is_ok() { LaneRelease::Freed } else { LaneRelease::DaemonGone }
@@ -140,7 +141,7 @@ crate::action_command! {
         // 4. If it held the lane, wait for the daemon's reconcile to actually free it
         //    before we claim success.
         if was_serving {
-            match lane_release(this.serving.clone(), this.intent.subscribe(), &p.model_id).await {
+            match lane_release(&this.serving, this.intent.subscribe(), &p.model_id).await {
                 LaneRelease::Freed => {}
                 LaneRelease::Superseded => {
                     return Err(CommandError::Internal(format!(
@@ -219,7 +220,7 @@ mod tests {
     async fn the_daemons_release_publication_completes_the_wait() {
         let (serving_tx, serving_rx) = watch::channel(serving(Some("m")));
         let (_intent_tx, intent_rx) = watch::channel(suppressing(&["m"]));
-        let mut wait = Box::pin(lane_release(serving_rx, intent_rx, "m"));
+        let mut wait = Box::pin(lane_release(&serving_rx, intent_rx, "m"));
         assert!((&mut wait).now_or_never().is_none(), "still served: no outcome yet");
         serving_tx.send_replace(serving(Some("next")));
         assert_eq!(wait.await, LaneRelease::Freed);
@@ -231,14 +232,14 @@ mod tests {
     async fn a_reload_and_a_gone_daemon_are_typed_outcomes() {
         let (_serving_tx, serving_rx) = watch::channel(serving(Some("m")));
         let (intent_tx, intent_rx) = watch::channel(suppressing(&["m"]));
-        let mut wait = Box::pin(lane_release(serving_rx.clone(), intent_rx, "m"));
+        let mut wait = Box::pin(lane_release(&serving_rx, intent_rx, "m"));
         assert!((&mut wait).now_or_never().is_none());
         intent_tx.send_replace(suppressing(&[]));
         assert_eq!(wait.await, LaneRelease::Superseded);
 
         let (serving_tx, serving_rx) = watch::channel(serving(Some("m")));
         let (_intent_tx, intent_rx) = watch::channel(suppressing(&["m"]));
-        let mut wait = Box::pin(lane_release(serving_rx, intent_rx, "m"));
+        let mut wait = Box::pin(lane_release(&serving_rx, intent_rx, "m"));
         assert!((&mut wait).now_or_never().is_none());
         drop(serving_tx);
         assert_eq!(wait.await, LaneRelease::DaemonGone);

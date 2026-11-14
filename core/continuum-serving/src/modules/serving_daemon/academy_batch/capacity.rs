@@ -42,21 +42,29 @@ impl<T> Capacity<T> {
     }
 }
 
+/// The publications a capacity wait re-checks on, and the caller's cancel.
+pub(super) struct CapacitySignals<'a, B, M> {
+    /// The resource authority's board.
+    pub board: &'a mut watch::Receiver<B>,
+    /// The pressure monitor's publications, subscribed after the incumbent's exit; `None` when no
+    /// monitor runs, so nothing vetoes on memory and the board alone is the truth.
+    pub memory: Option<watch::Receiver<M>>,
+    /// The batch's cancellation.
+    pub cancellation: &'a mut watch::Receiver<bool>,
+}
+
 /// Admit the lane as soon as `prepare` grants it, re-checking on every board publication and
-/// every memory reading, until one of [`Capacity`]'s terminal outcomes. `memory` is the pressure
-/// monitor's publications, subscribed after the incumbent's exit; `None` when no monitor runs,
-/// so nothing vetoes on memory and the board alone is the truth.
+/// every memory reading, until one of [`Capacity`]'s terminal outcomes.
 pub(super) async fn await_capacity<T, B, M, F, Fut>(
     mut prepare: F,
-    board: &mut watch::Receiver<B>,
-    mut memory: Option<watch::Receiver<M>>,
-    cancellation: &mut watch::Receiver<bool>,
+    signals: CapacitySignals<'_, B, M>,
     current: impl Fn() -> bool,
 ) -> Result<Capacity<T>, CommandError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<Option<T>, CommandError>>,
 {
+    let CapacitySignals { board, mut memory, cancellation } = signals;
     let mut memory_read_after_exit = memory.is_none();
     loop {
         if *cancellation.borrow() {
@@ -107,7 +115,8 @@ mod tests {
 
     /// A `prepare` that refuses until `fits` is set, counting its calls.
     fn lane(fits: &Arc<AtomicBool>, calls: &Arc<AtomicUsize>) -> impl FnMut() -> std::future::Ready<Result<Option<u8>, CommandError>> {
-        let (fits, calls) = (fits.clone(), calls.clone());
+        let fits = Arc::clone(fits);
+        let calls = Arc::clone(calls);
         move || {
             calls.fetch_add(1, Ordering::SeqCst);
             std::future::ready(Ok(fits.load(Ordering::SeqCst).then_some(7)))
@@ -122,7 +131,7 @@ mod tests {
         let (board_tx, mut board) = watch::channel(());
         let (memory_tx, memory) = watch::channel(());
         let (_cancel_tx, mut cancel) = watch::channel(false);
-        let mut wait = Box::pin(await_capacity(lane(&fits, &calls), &mut board, Some(memory), &mut cancel, || true));
+        let mut wait = Box::pin(await_capacity(lane(&fits, &calls), CapacitySignals { board: &mut board, memory: Some(memory), cancellation: &mut cancel }, || true));
         assert!((&mut wait).now_or_never().is_none(), "refused before any publication: still waiting");
         fits.store(true, Ordering::SeqCst);
         board_tx.send_replace(());
@@ -139,7 +148,7 @@ mod tests {
         let (_board_tx, mut board) = watch::channel(());
         let (memory_tx, memory) = watch::channel(());
         let (_cancel_tx, mut cancel) = watch::channel(false);
-        let mut wait = Box::pin(await_capacity(lane(&fits, &calls), &mut board, Some(memory), &mut cancel, || true));
+        let mut wait = Box::pin(await_capacity(lane(&fits, &calls), CapacitySignals { board: &mut board, memory: Some(memory), cancellation: &mut cancel }, || true));
         assert!((&mut wait).now_or_never().is_none());
         memory_tx.send_replace(());
         assert!(matches!(wait.await, Ok(Capacity::Refused)));
@@ -153,14 +162,14 @@ mod tests {
         let (board_tx, mut board) = watch::channel(());
         let (_memory_tx, memory) = watch::channel(());
         let (_cancel_tx, mut cancel) = watch::channel(false);
-        let mut wait = Box::pin(await_capacity(lane(&fits, &calls), &mut board, Some(memory.clone()), &mut cancel, || true));
+        let mut wait = Box::pin(await_capacity(lane(&fits, &calls), CapacitySignals { board: &mut board, memory: Some(memory.clone()), cancellation: &mut cancel }, || true));
         assert!((&mut wait).now_or_never().is_none());
         drop(board_tx);
         assert!(matches!(wait.await, Ok(Capacity::AuthorityGone)));
 
         let (_board_tx, mut board) = watch::channel(());
         let (cancel_tx, mut cancel) = watch::channel(false);
-        let mut wait = Box::pin(await_capacity(lane(&fits, &calls), &mut board, Some(memory), &mut cancel, || true));
+        let mut wait = Box::pin(await_capacity(lane(&fits, &calls), CapacitySignals { board: &mut board, memory: Some(memory), cancellation: &mut cancel }, || true));
         assert!((&mut wait).now_or_never().is_none());
         cancel_tx.send_replace(true);
         assert!(matches!(wait.await, Ok(Capacity::Cancelled)));
@@ -173,9 +182,9 @@ mod tests {
         let (fits, calls) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
         let (_board_tx, mut board) = watch::channel(());
         let (_cancel_tx, mut cancel) = watch::channel(false);
-        let outcome = await_capacity(lane(&fits, &calls), &mut board, None::<watch::Receiver<()>>, &mut cancel, || true).now_or_never();
+        let outcome = await_capacity(lane(&fits, &calls), CapacitySignals { board: &mut board, memory: None::<watch::Receiver<()>>, cancellation: &mut cancel }, || true).now_or_never();
         assert!(matches!(outcome, Some(Ok(Capacity::Refused))));
-        let outcome = await_capacity(lane(&fits, &calls), &mut board, None::<watch::Receiver<()>>, &mut cancel, || false).now_or_never();
+        let outcome = await_capacity(lane(&fits, &calls), CapacitySignals { board: &mut board, memory: None::<watch::Receiver<()>>, cancellation: &mut cancel }, || false).now_or_never();
         assert!(matches!(outcome, Some(Ok(Capacity::Superseded))));
     }
 }

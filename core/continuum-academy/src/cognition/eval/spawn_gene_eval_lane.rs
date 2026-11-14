@@ -383,11 +383,12 @@ impl PrivateTeacherLane {
         .await
     }
 
-    /// Tear the borrower down and return once its child exited and released its custody.
-    pub async fn finished(&mut self) -> Result<(), CommandError> {
+    pub async fn finish(
+        &mut self,
+    ) -> Result<crate::inference::llama_server::EngineRetirementStatus, CommandError> {
         self.adapter.take();
         self.lane
-            .finished()
+            .finish()
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))
     }
@@ -559,7 +560,7 @@ pub(super) async fn build_external_eval_lane_inner(
     // fallback when the provider doesn't report one.
     let served_ctx = external_served_context_window(&base_url, &base.id)
         .await
-        .unwrap_or(base.context_window); // unwrap_or: a provider that reports no window is budgeted by the catalog row, as the comment above says
+        .unwrap_or(base.context_window);
     Ok(EvalLaneInner {
         measured_gene: None,
         _lane: None,
