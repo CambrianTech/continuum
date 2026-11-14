@@ -26,14 +26,14 @@ async fn canonical_integer_text_evolves_exactly_with_and_without_receipt()
             super::relational_declaration::Entity::delete_by_id(Parent::COLLECTION).exec(&initial.db).await?;
         }
         initial.db.clone().close().await?;
-        let reopened = RelationalStore::open(AdapterConfig {
+        let reopened = RelationalStore::open(&AdapterConfig {
             connection_string: path.into(), max_connections: 1, ..Default::default()
         }).await?;
         let mut numeric = text;
         numeric.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.field_type = FieldType::Number;
         reopened.ensure(&numeric).await?;
         reopened.db.clone().close().await?;
-        let final_store = RelationalStore::open(AdapterConfig {
+        let final_store = RelationalStore::open(&AdapterConfig {
             connection_string: path.into(), max_connections: 1, ..Default::default()
         }).await?;
         final_store.ensure(&numeric).await?;
@@ -222,7 +222,7 @@ async fn native_text_declaration_retires_json_codec_without_rewriting_values() -
     active.update(&initial.db).await?;
     initial.db.clone().close().await?;
     for _ in 0..2 {
-        let reopened = RelationalStore::open(AdapterConfig { connection_string: path.into(), ..Default::default() }).await?;
+        let reopened = RelationalStore::open(&AdapterConfig { connection_string: path.into(), ..Default::default() }).await?;
         reopened.ensure(&Parent::collection_schema()).await?;
         let rows = reopened.query(&QueryBuilder::new(Parent::COLLECTION).limit(3).build()).await?;
         assert_eq!(rows.len(), 3);
@@ -257,7 +257,7 @@ async fn rebuild_preserves_cascading_children_and_rolls_back_constraint_failure(
     assert_eq!(children.len(), 1, "DROP during rebuild must not cascade");
     assert_eq!(children[0].data["seq"], json!(9007199254740993u64));
     initial.db.clone().close().await?;
-    let reopened = RelationalStore::open(AdapterConfig {
+    let reopened = RelationalStore::open(&AdapterConfig {
         connection_string: path.into(), max_connections: 1, ..Default::default()
     }).await?;
     reopened.ensure(&current).await?;
@@ -309,7 +309,7 @@ async fn declaration_addition_evolves_rows_and_receipt_atomically() -> Result<()
     });
     assert!(initial.ensure(&collision).await.is_err());
     initial.db.clone().close().await?;
-    let reopened = RelationalStore::open(AdapterConfig {
+    let reopened = RelationalStore::open(&AdapterConfig {
         connection_string: path.into(), max_connections: 1, ..Default::default()
     }).await?;
     reopened.ensure(&current).await?;
@@ -325,7 +325,7 @@ async fn receipt_free_equivalent_column_order_preserves_rows() -> Result<(), Box
     let directory = tempfile::tempdir()?;
     let file = directory.path().join("column-order.db");
     let path = file.to_str().ok_or("test path encoding")?;
-    let initial = RelationalStore::open(AdapterConfig {
+    let initial = RelationalStore::open(&AdapterConfig {
         connection_string: path.into(), max_connections: 1, ..Default::default()
     }).await?;
     let mut reordered = Parent::collection_schema();
@@ -374,7 +374,7 @@ async fn receipt_free_current_schema_is_proved_without_rewriting_rows()
         .add_column(ColumnDef::new(Alias::new("extra")).text()).to_owned();
     admitted.db.execute(DbBackend::Sqlite.build(&drift)).await?;
     admitted.db.clone().close().await?;
-    let evolved = RelationalStore::open(AdapterConfig {
+    let evolved = RelationalStore::open(&AdapterConfig {
         connection_string: path.into(), max_connections: 1, ..Default::default()
     }).await?;
     evolved.ensure(&Child::collection_schema()).await?;
@@ -430,7 +430,7 @@ async fn restart_catalog_crosses_pages_and_rejects_late_physical_drift(
         max_connections: 1,
         ..Default::default()
     };
-    let initial = RelationalStore::open(config()).await?;
+    let initial = RelationalStore::open(&config()).await?;
     // More than two transfer pages; empty tables still require declaration verification.
     for index in 0..131 {
         let mut schema = Parent::collection_schema();
@@ -439,7 +439,7 @@ async fn restart_catalog_crosses_pages_and_rejects_late_physical_drift(
     }
     initial.db.clone().close().await?;
     let started = std::time::Instant::now();
-    let restored = RelationalStore::open(config()).await?;
+    let restored = RelationalStore::open(&config()).await?;
     println!(
         "CATALOG_REPLAY declarations=131 connections=1 elapsed_us={}",
         started.elapsed().as_micros()
@@ -458,7 +458,7 @@ async fn restart_catalog_crosses_pages_and_rejects_late_physical_drift(
         .execute(DbBackend::Sqlite.build(&altered))
         .await?;
     restored.db.clone().close().await?;
-    let failure = RelationalStore::open(config())
+    let failure = RelationalStore::open(&config())
         .await
         .err()
         .ok_or("late drift was admitted")?;
@@ -597,7 +597,7 @@ async fn revision_restart_crosses_domain_pages_and_rejects_late_corruption(
         max_connections: 1,
         ..Default::default()
     };
-    let initial = RelationalStore::open(config()).await?;
+    let initial = RelationalStore::open(&config()).await?;
     for domain in ["append", "native"] {
         for index in 0..131i64 {
             ActiveModel {
@@ -611,7 +611,7 @@ async fn revision_restart_crosses_domain_pages_and_rejects_late_corruption(
     }
     initial.db.clone().close().await?;
     let started = std::time::Instant::now();
-    let restored = RelationalStore::open(config()).await?;
+    let restored = RelationalStore::open(&config()).await?;
     println!(
         "REVISION_REPLAY heads=262 elapsed_us={}",
         started.elapsed().as_micros()
@@ -634,7 +634,7 @@ async fn revision_restart_crosses_domain_pages_and_rejects_late_corruption(
     .update(&restored.db)
     .await?;
     restored.db.clone().close().await?;
-    let error = RelationalStore::open(config())
+    let error = RelationalStore::open(&config())
         .await
         .err()
         .ok_or("corrupt late revision was admitted")?;

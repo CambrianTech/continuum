@@ -47,7 +47,7 @@ fn record(id: &str, collection: &str, data: serde_json::Value) -> DataRecord {
     }
 }
 async fn store(path: &str) -> Result<RelationalStore, Box<dyn std::error::Error>> {
-    let store = RelationalStore::open(AdapterConfig {
+    let store = RelationalStore::open(&AdapterConfig {
         connection_string: path.into(),
         max_connections: 1,
         ..Default::default()
@@ -449,7 +449,7 @@ async fn restart_verifies_physical_declaration_and_refuses_unmanaged_tables(
         "{rejected}"
     );
 
-    let unmanaged = RelationalStore::open(AdapterConfig {
+    let unmanaged = RelationalStore::open(&AdapterConfig {
         connection_string: ":memory:".into(),
         ..Default::default()
     })

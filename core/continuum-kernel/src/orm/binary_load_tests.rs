@@ -97,7 +97,7 @@ async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes:
 async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("replay.db");
-    let store = RelationalStore::open(AdapterConfig {
+    let store = RelationalStore::open(&AdapterConfig {
         connection_string: path.to_str().ok_or("non-UTF8 fixture path")?.into(), ..Default::default()
     }).await?;
     store.ensure(&Native::collection_schema()).await?;

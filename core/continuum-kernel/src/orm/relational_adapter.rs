@@ -29,7 +29,7 @@ impl SeaOrmAdapter {
 
     pub async fn connect(config: AdapterConfig) -> Result<Self, StorageError> {
         Ok(Self {
-            store: RelationalStore::open(config).await?,
+            store: RelationalStore::open(&config).await?,
         })
     }
 }

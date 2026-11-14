@@ -260,7 +260,7 @@ fn packed_bits_and_quantization_headers_are_exact_and_fail_closed() -> Result<()
 }
 
 async fn open(path: &str) -> Result<RelationalStore, Box<dyn std::error::Error>> {
-    let store = RelationalStore::open(AdapterConfig {
+    let store = RelationalStore::open(&AdapterConfig {
         connection_string: path.into(),
         ..Default::default()
     })

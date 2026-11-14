@@ -29,7 +29,7 @@ pub(super) struct RelationalStore {
 }
 
 impl RelationalStore {
-    pub async fn open(config: AdapterConfig) -> Result<Self, StorageError> {
+    pub async fn open(config: &AdapterConfig) -> Result<Self, StorageError> {
         if config.max_connections == 0 {
             return Err(StorageError::Config(ConfigFault::NoCapacity));
         }
@@ -367,7 +367,7 @@ mod tests {
     #[tokio::test]
     async fn projected_reads_and_counts_never_decode_omitted_payloads(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let store = RelationalStore::open(AdapterConfig {
+        let store = RelationalStore::open(&AdapterConfig {
             connection_string: ":memory:".into(),
             max_connections: 1,
             ..Default::default()

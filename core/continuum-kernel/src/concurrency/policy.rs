@@ -255,18 +255,22 @@ mod tests {
     async fn single_flight_runs_one_producer_for_many_waiters() {
         let policy = Arc::new(TokioConcurrencyPolicy::<String, usize, String>::new());
         let producers = Arc::new(AtomicUsize::new(0));
+        // The producer holds the flight open until every waiter has joined it: released by an
+        // event, not by a sleep long enough on this machine.
+        let release = Arc::new(tokio::sync::Notify::new());
 
         let mut tasks = Vec::new();
         for _ in 0..16 {
             let policy = Arc::clone(&policy);
             let producers = Arc::clone(&producers);
+            let release = Arc::clone(&release);
             tasks.push(tokio::spawn(async move {
                 policy
                     .single_flight(
                         "same-key".to_string(),
                         async move {
                             producers.fetch_add(1, Ordering::AcqRel);
-                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                            release.notified().await;
                             Ok(42usize)
                         }
                         .boxed(),
@@ -274,6 +278,10 @@ mod tests {
                     .await
             }));
         }
+        // Current-thread runtime: one yield polls every spawned task in order, so the first
+        // starts the flight and the other fifteen join it before the producer is released.
+        tokio::task::yield_now().await;
+        release.notify_one();
 
         for task in tasks {
             assert_eq!(task.await.unwrap().unwrap(), 42);

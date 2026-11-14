@@ -94,7 +94,7 @@ async fn reopened_cascade_graph_preserves_restrict_set_null_and_native_tombstone
         connection_string: path.to_str().ok_or("non-UTF8 fixture")?.into(),
         ..Default::default()
     };
-    let store = RelationalStore::open(config.clone()).await?;
+    let store = RelationalStore::open(&config).await?;
     let root = schema("cascadeRoot", false, None);
     for declared in [
         root.clone(),
@@ -143,7 +143,7 @@ async fn reopened_cascade_graph_preserves_restrict_set_null_and_native_tombstone
         })
         .await?;
     drop(store);
-    let store = RelationalStore::open(config.clone()).await?;
+    let store = RelationalStore::open(&config).await?;
     // Only the parent caller re-admits its code declaration; restored child
     // declarations must still participate in the physical cascade's receipt.
     store.ensure(&root).await?;
@@ -213,7 +213,7 @@ async fn reopened_cascade_graph_preserves_restrict_set_null_and_native_tombstone
         .await?;
     assert_eq!(rows[0].data["parent"], serde_json::Value::Null);
     drop(store);
-    let store = RelationalStore::open(config).await?;
+    let store = RelationalStore::open(&config).await?;
     assert!(
         Revisions::find_by_id(("cascade_grandchild".to_owned(), id(200)))
             .one(&store.db)
@@ -228,7 +228,7 @@ async fn reopened_cascade_graph_preserves_restrict_set_null_and_native_tombstone
 async fn cyclic_cascade_deduplicates_identities_and_uses_one_revision(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::orm::relational_native_revision::Entity as Revisions;
-    let store = RelationalStore::open(AdapterConfig {
+    let store = RelationalStore::open(&AdapterConfig {
         connection_string: ":memory:".into(),
         ..Default::default()
     })
@@ -294,7 +294,7 @@ async fn clear_orders_physical_alias_dependencies_and_counts_every_row(
                 .into(),
             ..Default::default()
         };
-        let store = RelationalStore::open(config.clone()).await?;
+        let store = RelationalStore::open(&config).await?;
         store.ensure(&schema("aParent", false, None)).await?;
         store
             .ensure(&schema("zChild", true, Some(("a_parent", "id", rule))))
@@ -309,7 +309,7 @@ async fn clear_orders_physical_alias_dependencies_and_counts_every_row(
             .await?;
         native(&store, "zChild", 2, Some(id(1))).await?;
         drop(store);
-        let store = RelationalStore::open(config.clone()).await?;
+        let store = RelationalStore::open(&config).await?;
         let cleared = store.clear().await?;
         assert_eq!(
             cleared.records_deleted, 2,
@@ -317,7 +317,7 @@ async fn clear_orders_physical_alias_dependencies_and_counts_every_row(
         );
         assert_eq!(cleared.tables_cleared, vec!["zChild", "aParent"]);
         drop(store);
-        let store = RelationalStore::open(config).await?;
+        let store = RelationalStore::open(&config).await?;
         assert_eq!(store.count(&QueryBuilder::new("aParent").build()).await?, 0);
         assert_eq!(store.count(&QueryBuilder::new("zChild").build()).await?, 0);
         let receipt = crate::orm::relational_native_revision::Entity::find_by_id((
