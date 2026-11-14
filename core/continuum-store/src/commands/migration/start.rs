@@ -8,9 +8,6 @@ use crate::orm::migration::MigrationProgress;
 fn default_batch_size() -> usize {
     500
 }
-fn default_throttle_ms() -> u64 {
-    10
-}
 
 /// Params for `migration/start`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -27,9 +24,6 @@ pub struct MigrationStartParams {
     /// Records per batch. Defaults to 500.
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
-    /// Milliseconds to pause between batches (backpressure). Defaults to 10.
-    #[serde(default = "default_throttle_ms")]
-    pub throttle_ms: u64,
     /// Optional explicit collection list. Omit to migrate every collection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -49,7 +43,7 @@ crate::action_command! {
     run(this, _ctx, p) => {
         let result = this
             .state
-            .migration_start(p.source, p.target, p.batch_size, p.throttle_ms, p.collections)
+            .migration_start(&p.source, &p.target, crate::orm::migration::MigrationConfig { batch_size: p.batch_size, collections: p.collections })
             .await?;
         Ok(result)
     }

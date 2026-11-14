@@ -8,7 +8,7 @@
 //! - Per-collection progress tracking with atomic counters
 //! - Pause/resume support
 //! - Non-destructive (source data is never deleted)
-//! - Configurable batch size and throttle
+//! - Bounded pages; progress follows committed writes
 
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -30,9 +30,6 @@ pub struct MigrationConfig {
     /// Records per batch (default: 500)
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
-    /// Milliseconds to pause between batches (default: 10)
-    #[serde(default = "default_throttle_ms")]
-    pub throttle_ms: u64,
     /// Optional list of collections to migrate (None = all)
     pub collections: Option<Vec<String>>,
 }
@@ -40,15 +37,11 @@ pub struct MigrationConfig {
 fn default_batch_size() -> usize {
     500
 }
-fn default_throttle_ms() -> u64 {
-    10
-}
 
 impl Default for MigrationConfig {
     fn default() -> Self {
         Self {
             batch_size: 500,
-            throttle_ms: 10,
             collections: None,
         }
     }
@@ -452,10 +445,6 @@ impl MigrationEngine {
                 after = Some(next);
             }
 
-            // Throttle between batches
-            if self.config.throttle_ms > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(self.config.throttle_ms)).await;
-            }
 
             // If we got fewer than batch_size, we're done
             if batch_count < batch_size.get() {
@@ -508,7 +497,7 @@ mod tests {
             }).await.into_result()?;
         }
         let mut engine = MigrationEngine::new(source, target, MigrationConfig {
-            batch_size: 1, throttle_ms: 0, collections: Some(vec!["items".into()]),
+            batch_size: 1, collections: Some(vec!["items".into()]),
         });
         assert!(!engine.verify().await?.verified, "no run has no migration receipts");
         assert!(engine.run().await.is_err(), "a destination refusal stops migration");
@@ -577,7 +566,6 @@ mod tests {
             target.clone(),
             MigrationConfig {
                 batch_size: 10,
-                throttle_ms: 0,
                 collections: None,
             },
         );
@@ -643,7 +631,6 @@ mod tests {
             target.clone(),
             MigrationConfig {
                 batch_size: 3,
-                throttle_ms: 0,
                 collections: None,
             },
         );
@@ -727,7 +714,6 @@ mod tests {
             target.clone(),
             MigrationConfig {
                 batch_size: 100,
-                throttle_ms: 0,
                 collections: None,
             },
         );

@@ -41,7 +41,7 @@ async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_resta
         }
     }
     let mut engine = MigrationEngine::new(source.clone(), target.clone(), MigrationConfig {
-        batch_size: 2, throttle_ms: 0, collections: Some(vec!["native_rows".into()]),
+        batch_size: 2, collections: Some(vec!["native_rows".into()]),
     });
     assert_eq!(engine.run().await?.migrated, 131);
     drop(engine);
@@ -74,7 +74,7 @@ async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_resta
     // Equal row counts cannot hide a changed native producer or payload.
     let checked = Arc::new(SeaOrmAdapter::connect(open("checked.db")).await?);
     let mut verification = MigrationEngine::new(source.clone(), checked.clone(), MigrationConfig {
-        batch_size: 2, throttle_ms: 0, collections: Some(vec!["native_rows".into()]),
+        batch_size: 2, collections: Some(vec!["native_rows".into()]),
     });
     verification.run().await?;
     assert!(verification.verify().await?.verified);
@@ -106,7 +106,7 @@ async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_resta
     database.close().await.map_err(|e| e.to_string())?;
     let rejected = Arc::new(SeaOrmAdapter::connect(open("rejected.db")).await?);
     let mut failed = MigrationEngine::new(source, rejected.clone(), MigrationConfig {
-        batch_size: 2, throttle_ms: 0, collections: Some(vec!["native_rows".into()]),
+        batch_size: 2, collections: Some(vec!["native_rows".into()]),
     });
     assert!(failed.run().await.is_err());
     assert_eq!(rejected.count(StorageQuery {
