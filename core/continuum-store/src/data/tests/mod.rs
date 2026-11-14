@@ -239,18 +239,11 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn index_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
-        let p: crate::commands::vector::index::VectorIndexParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
+    ) -> Result<CommandResult, Box<dyn std::error::Error>> {
+        let p: crate::commands::vector::index::VectorIndexParams = serde_json::from_value(params)?;
         let handle = p.handle.as_deref().unwrap_or("main");
-        let record = module
-            .state
-            .index_vector(handle, &p.collection, p.id, p.embedding)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(CommandResult::Json(
-            serde_json::to_value(crate::orm::types::StorageResult::ok(record)).map_err(|e| e.to_string())?,
-        ))
+        let record = module.state.index_vector(handle, &p.collection, p.id, p.embedding).await?;
+        Ok(CommandResult::Json(serde_json::to_value(crate::orm::types::StorageResult::ok(record))?))
     }
 
     /// Test seam for the typed `vector/stats` command. Returns [`VectorStats`] as
@@ -273,25 +266,12 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn search_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
-        let p: crate::commands::vector::search::VectorSearchParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
+    ) -> Result<CommandResult, Box<dyn std::error::Error>> {
+        let p: crate::commands::vector::search::VectorSearchParams = serde_json::from_value(params)?;
         let handle = p.handle.as_deref().unwrap_or("main");
-        let result = module
-            .state
-            .vector_search(
-                handle,
-                &p.collection,
-                crate::data::wire_query(&p.query_vector, p.embedder.as_deref()),
-                p.k,
-                p.threshold,
-                p.include_data,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
-        ))
+        let query = crate::data::wire_query(&p.query_vector, p.embedder.as_deref());
+        let result = module.state.vector_search(handle, &p.collection, query, p.k, p.threshold, p.include_data).await?;
+        Ok(CommandResult::Json(serde_json::to_value(result)?))
     }
 
     /// Test seam for the typed `vector/invalidate-cache` command. Returns

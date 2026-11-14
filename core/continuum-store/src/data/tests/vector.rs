@@ -154,10 +154,10 @@ async fn test_vector_search_basic() {
         (0..384).map(|i| (i as f64) * 0.001).collect(),
         (0..384).map(|i| (i as f64) * 0.003).collect(),
     ];
-    for (idx, emb) in embeddings.iter().enumerate() {
+    for (idx, emb) in embeddings.into_iter().enumerate() {
         let id = record_id(idx as u128).to_string();
         create_row(adapter.as_ref(), "test_search", &id).await;
-        module.state.index_vector(&db_path, "test_search", id, emb.clone()).await.expect("test: index");
+        module.state.index_vector(&db_path, "test_search", id, emb).await.expect("test: index");
     }
 
     let query_vector: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
@@ -230,7 +230,7 @@ async fn test_vector_cache_invalidation() {
     let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
     declare_vectors(adapter.as_ref(), "test_cache").await;
     let resident = record_id(0).to_string();
-    let target = record_id(1).to_string();
+    let target = || record_id(1).to_string();
     create_row(adapter.as_ref(), "test_cache", &resident).await;
     module.state.index_vector(&db_path, "test_cache", resident, vec![1.0; 384]).await.expect("test: index");
 
@@ -266,32 +266,32 @@ async fn test_vector_cache_invalidation() {
     for operation in ["delete", "batch", "truncate", "clear"] {
         module.state.vector_search(&db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true).await.expect("warm before create");
         let created = module.state.create_record(
-            &alias, "test_cache".into(), Some(target.clone()), json!({}),
+            &alias, "test_cache".into(), Some(target()), json!({}),
         ).await.expect("create through mutation owner");
         assert!(created.success, "{created:?}");
-        module.state.index_vector(&alias, "test_cache", target.clone(), vec![1.0; 384]).await.expect("alias index");
+        module.state.index_vector(&alias, "test_cache", target(), vec![1.0; 384]).await.expect("alias index");
         let warm = module.state.vector_search(
             &db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true,
         ).await.expect("warm corpus");
-        assert!(warm.results.iter().any(|hit| hit.id == target));
+        assert!(warm.results.iter().any(|hit| hit.id == target()));
         let alias_stats = module.state.vector_stats(&alias, "test_cache").await.expect("alias stats");
         assert_eq!(alias_stats.cached_vectors, warm.corpus_size);
         assert!(module.state.invalidate_vector_cache(&alias, "test_cache").await.expect("alias invalidation").cache_invalidated);
         assert_eq!(module.state.vector_stats(&db_path, "test_cache").await.expect("sentinel stats").cached_vectors, 0);
         module.state.vector_search(&db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true).await.expect("warm before reindex");
-        module.state.index_vector(&alias, "test_cache", target.clone(), vec![-1.0; 384]).await.expect("reindex");
+        module.state.index_vector(&alias, "test_cache", target(), vec![-1.0; 384]).await.expect("reindex");
         let changed = module.state.vector_search(&db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.5, true)
             .await.expect("search reindexed corpus");
-        assert!(changed.results.iter().all(|hit| hit.id != target));
+        assert!(changed.results.iter().all(|hit| hit.id != target()));
         match operation {
             "batch" => {
                 let result = module.state.batch_operations(&alias, vec![crate::orm::types::BatchOperation {
                     operation_type: crate::orm::types::BatchOperationType::Delete,
-                    collection: "test_cache".into(), id: Some(target.clone()), data: None,
+                    collection: "test_cache".into(), id: Some(target()), data: None,
                 }]).await.expect("batch delete");
                 assert!(result.success, "{result:?}");
             }
-            "delete" => assert!(module.state.delete_record(&alias, "test_cache".into(), target.clone()).await.expect("delete").success),
+            "delete" => assert!(module.state.delete_record(&alias, "test_cache".into(), target()).await.expect("delete").success),
             "truncate" => assert!(module.state.truncate_collection(&alias, "test_cache").await.expect("truncate").success),
             "clear" => assert!(module.state.clear_all_collections(&alias).await.expect("clear").success),
             _ => unreachable!("fixture operation"),
@@ -299,7 +299,7 @@ async fn test_vector_cache_invalidation() {
         let after = module.state.vector_search(
             &db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true,
         ).await.expect("search after acknowledged mutation");
-        assert!(after.results.iter().all(|hit| hit.id != target));
+        assert!(after.results.iter().all(|hit| hit.id != target()));
         let expected = if matches!(operation, "truncate" | "clear") { 0 } else { warm.corpus_size - 1 };
         assert_eq!(after.corpus_size, expected, "{operation} must refresh the corpus");
     }
@@ -339,7 +339,7 @@ async fn each_producer_descriptor_is_its_own_matrix_and_a_foreign_query_is_refus
     let search = |producer: Producer| module.state.vector_search(&db_path, "test_spaces", QueryVector { values: &[1.0, 0.0], producer }, 10, -1.0, false);
     let caller = search(Producer::WireQuery).await.expect("test: caller-space search");
     assert_eq!(caller.results.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>(), vec![ids[0].as_str(), ids[1].as_str()]);
-    let embedded = search(embedder.clone()).await.expect("test: embedder-space search");
+    let embedded = search(Producer::Embedder(EmbedderId::new("test-embedder"))).await.expect("test: embedder-space search");
     assert_eq!(embedded.results.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>(), vec![ids[2].as_str()]);
     let foreign = search(Producer::Embedder(EmbedderId::new("other-embedder"))).await;
     assert!(
