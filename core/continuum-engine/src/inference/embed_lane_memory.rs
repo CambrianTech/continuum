@@ -303,11 +303,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_refused_embed_lease_is_granted_by_the_release_that_makes_room() {
         let source = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 100));
-        let daemon = ResourceDaemon::start(vec![Arc::clone(&source) as Arc<dyn CapacitySource>], vec![], DaemonConfig::default());
-        // The authority's first tick publishes before anything is leased, so the waiting lease's next
-        // publication is the release, not that tick (whose answer, still short, would be a refusal).
+        // A day between the authority's ticks, and its first tick published before anything is leased:
+        // the waiting lease's next publication is then the release, never a tick (whose answer, still
+        // short, is a refusal by design).
+        let config = DaemonConfig { tick_interval: std::time::Duration::from_secs(24 * 3600), ..DaemonConfig::default() };
+        let daemon = ResourceDaemon::start(vec![Arc::clone(&source) as Arc<dyn CapacitySource>], vec![], config);
         let mut board = daemon.subscribe();
-        board.changed().await.expect("test: the authority's first tick publishes");
+        board.changed().await.expect("test: the authority's tick publishes");
         let serving = LeaseRequest {
             consumer_id: "serving".to_string(),
             kind: ResourceKind::Vram,
