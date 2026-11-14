@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::data::DataState;
-use crate::orm::types::{CollectionStats, StorageResult};
+use crate::orm::types::CollectionStats;
 
 /// Params for `data/collection-stats`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -31,7 +31,7 @@ crate::action_command! {
     name: "data/collection-stats",
     access: AiSafe,
     params: DataCollectionStatsParams,
-    output: StorageResult<CollectionStats>,
+    output: CollectionStats,
     run(this, _ctx, p) => {
         let handle = p.handle.as_deref().unwrap_or("main");
         let result = this.state.collection_statistics(handle, &p.collection).await?;

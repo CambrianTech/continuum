@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use crate::data::DataState;
-use crate::orm::types::{StorageResult, UUID};
+use crate::orm::seam::Deleted;
+use crate::orm::types::UUID;
 
 /// Params for `data/delete`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -37,7 +38,7 @@ crate::action_command! {
     name: "data/delete",
     access: Privileged,
     params: DataDeleteParams,
-    output: StorageResult<bool>,
+    output: Deleted,
     run(this, _ctx, p) => {
         let handle = p.handle.as_deref().unwrap_or("main");
         let result = this.state.delete_record(handle, p.collection, p.id).await?;

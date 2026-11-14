@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::data::DataState;
-use crate::orm::types::{BatchOperation, StorageResult};
+use crate::orm::types::{BatchOperation, BatchOutcome};
 
 /// Params for `data/batch`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -31,7 +31,7 @@ crate::action_command! {
     name: "data/batch",
     access: Privileged,
     params: DataBatchParams,
-    output: StorageResult<Vec<serde_json::Value>>,
+    output: Vec<BatchOutcome>,
     run(this, _ctx, p) => {
         let handle = p.handle.as_deref().unwrap_or("main");
         let result = this.state.batch_operations(handle, p.operations).await?;

@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use crate::data::DataState;
-use crate::orm::types::StorageResult;
 
 /// Params for `data/truncate`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -32,7 +31,7 @@ crate::action_command! {
     name: "data/truncate",
     access: Privileged,
     params: DataTruncateParams,
-    output: StorageResult<bool>,
+    output: usize,
     run(this, _ctx, p) => {
         let handle = p.handle.as_deref().unwrap_or("main");
         let result = this.state.truncate_collection(handle, &p.collection).await?;

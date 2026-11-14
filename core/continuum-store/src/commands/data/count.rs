@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use crate::data::DataState;
-use crate::orm::types::StorageResult;
 
 /// Params for `data/count`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -37,7 +36,7 @@ crate::action_command! {
     name: "data/count",
     access: AiSafe,
     params: DataCountParams,
-    output: StorageResult<usize>,
+    output: usize,
     run(this, _ctx, p) => {
         let handle = p.handle.as_deref().unwrap_or("main");
         let result = this.state.count_records(handle, p.collection, p.filter).await?;

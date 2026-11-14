@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use crate::data::DataState;
 use crate::orm::adapter::ClearAllResult;
-use crate::orm::types::StorageResult;
 
 /// Params for `data/clear-all`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -32,7 +31,7 @@ crate::action_command! {
     name: "data/clear-all",
     access: Privileged,
     params: DataClearAllParams,
-    output: StorageResult<ClearAllResult>,
+    output: ClearAllResult,
     run(this, _ctx, p) => {
         let handle = p.handle.as_deref().unwrap_or("main");
         let result = this.state.clear_all_collections(handle).await?;

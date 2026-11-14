@@ -241,3 +241,31 @@ pub enum DeclarationFault {
     #[error("{field}: SET NULL needs a nullable field")]
     SetNullNotNullable { field: String },
 }
+
+/// How a storage failure reaches a command's caller: the one map, so no command re-classifies one.
+/// A row that is not there is NotFound; a request the store refuses as shaped is the caller's
+/// (Invalid); every other failure is the store's (Internal).
+impl From<StorageError> for crate::sdk_codegen::CommandError {
+    fn from(error: StorageError) -> Self {
+        use crate::sdk_codegen::CommandError;
+        match &error {
+            StorageError::NotFound { .. } => CommandError::NotFound(error.to_string()),
+            StorageError::Unadmitted { .. }
+            | StorageError::Undeclared { .. }
+            | StorageError::Required { .. }
+            | StorageError::NotBinary { .. }
+            | StorageError::TwoRepresentations { .. }
+            | StorageError::TypeMismatch { .. }
+            | StorageError::NotNullable { .. }
+            | StorageError::BinaryThroughJson { .. }
+            | StorageError::Malformed { .. }
+            | StorageError::StorageOwned { .. }
+            | StorageError::NoPayloads
+            | StorageError::NotCanonicalId { .. }
+            | StorageError::Unqueryable(_)
+            | StorageError::Declaration { .. }
+            | StorageError::Append { .. } => CommandError::Invalid(error.to_string()),
+            _ => CommandError::Internal(error.to_string()),
+        }
+    }
+}

@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use crate::data::DataState;
-use crate::orm::types::StorageResult;
 
 /// Params for `data/list-collections`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -29,7 +28,7 @@ crate::action_command! {
     name: "data/list-collections",
     access: AiSafe,
     params: DataListCollectionsParams,
-    output: StorageResult<Vec<String>>,
+    output: Vec<String>,
     run(this, _ctx, p) => {
         let handle = p.handle.as_deref().unwrap_or("main");
         let result = this.state.list_collection_names(handle).await?;

@@ -20,11 +20,11 @@ impl DataState {
         handle: &str,
         collection: &str,
     ) -> Result<Arc<VectorCorpus>, VectorStoreError> {
-        let scope = self.resolve_handle(handle).map_err(|fault| VectorStoreError::Store(fault.into()))?;
+        let scope = self.resolve_handle(handle).map_err(|fault| VectorStoreError::Open(fault.into()))?;
         self.vector_cache
             .get_or_try_compute(&scope, collection, async {
-                let adapter = self.adapter_for_backend(handle, scope.clone()).await.map_err(|fault| VectorStoreError::Store(fault.into()))?;
-                let snapshot = adapter.binary_snapshot(collection).await.map_err(|fault| VectorStoreError::Store(fault.into()))?;
+                let adapter = self.adapter_for_backend(handle, scope.clone()).await.map_err(|fault| VectorStoreError::Open(fault.into()))?;
+                let snapshot = adapter.binary_snapshot(collection).await?;
                 // The store's page size bounds one transfer, not the searchable corpus.
                 let limit = NonZeroUsize::new(super::default_page_size()).ok_or(VectorStoreError::PageSize)?;
                 let groups = read_groups(snapshot, limit).await?;
@@ -53,7 +53,7 @@ pub(super) async fn read_groups(
     snapshot: BinarySnapshot,
     limit: NonZeroUsize,
 ) -> Result<Vec<(EmbeddingDescriptor, MatrixBuilder)>, VectorStoreError> {
-    let stored = snapshot.descriptors(EMBEDDING_FIELD, limit).await.map_err(|fault| VectorStoreError::Store(fault.into()))?;
+    let stored = snapshot.descriptors(EMBEDDING_FIELD, limit).await?;
     if stored.len() == limit.get() {
         return Err(VectorStoreError::DescriptorGroups { limit: limit.get() });
     }
@@ -71,7 +71,7 @@ pub(super) async fn read_groups(
             let page = snapshot
                 .page_matching_into(&request, &binary, BinaryPageOutput { bytes: &mut bytes, ids: &mut ids })
                 .await
-                .map_err(|fault| VectorStoreError::Store(fault.into()))?;
+                ?;
             let Some(page) = page else { break };
             builder.append_page(&page, &bytes, &ids)?;
             match ids.last() {

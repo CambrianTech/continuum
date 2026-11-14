@@ -36,7 +36,9 @@ pub struct FieldRef<'a> {
 }
 
 /// Whether an update moves the row's version.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/Versioning.ts")]
+#[serde(rename_all = "camelCase")]
 pub enum Versioning {
     Increment,
     Keep,
@@ -51,14 +53,18 @@ pub struct Update<'a> {
 }
 
 /// What a delete of one row found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/Deleted.ts")]
+#[serde(rename_all = "camelCase")]
 pub enum Deleted {
     Removed,
     Absent,
 }
 
 /// What a monotonic upsert did: wrote the record, or kept a row whose field was already greater.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/Written.ts")]
+#[serde(rename_all = "camelCase")]
 pub enum Written {
     Written,
     Kept,
@@ -74,7 +80,9 @@ pub struct BinaryWrite<'a> {
 }
 
 /// What a binary write did under its condition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/BinaryWritten.ts")]
+#[serde(rename_all = "camelCase")]
 pub enum BinaryWritten {
     Written,
     Unchanged,

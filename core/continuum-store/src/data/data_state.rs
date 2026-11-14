@@ -1,6 +1,8 @@
 use super::*;
 use super::vector_corpus::EMBEDDING_FIELD;
 use super::vector_index::{unit_f32, Producer, VectorCorpus, VectorStoreError};
+use crate::orm::seam::RowRef;
+use crate::sdk_codegen::CommandError;
 
 // Migration command params now live with their typed ActionCommands in
 // commands/migration/*. The `migration/*` output structs (MigrationProgress,
@@ -82,13 +84,13 @@ impl DataState {
         handle: &str,
         collection: &str,
         id: &UUID,
-    ) -> Result<StorageResult<DataRecord>, String> {
-        require_public_collection(collection)?;
+    ) -> Result<DataRecord, CommandError> {
+        require_public_collection(collection).map_err(CommandError::Invalid)?;
         let start = std::time::Instant::now();
         let adapter = self.get_adapter(handle).await?;
-        let result = adapter.read(collection, id).await;
+        let read = adapter.read(RowRef { collection, id }).await;
         self.log_slow_query("read", collection, start.elapsed().as_millis());
-        Ok(result)
+        Ok(read?)
     }
 
     pub(super) async fn handle_query(&self, params: QueryParams) -> Result<CommandResult, String> {
@@ -127,7 +129,7 @@ impl DataState {
         }
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.query(query).await;
+        let result = legacy_receipt(adapter.query(&query).await);
         let total_ms = start.elapsed().as_millis();
 
         // Log slow queries to module log file
@@ -190,30 +192,23 @@ impl DataState {
         let adapter = self.get_adapter(handle).await?;
 
         // Accurate total: SQL COUNT over the same filter, independent of paging.
-        let count_res = adapter
-            .count(StorageQuery {
-                collection: params.collection.clone(),
-                filter: filter.clone(),
-                ..Default::default()
-            })
-            .await;
-        let total = count_res.into_result()
-            .map_err(|e| format!("data/list: count failed for '{}' - {e}", params.collection))?;
+        // The total and the page do not depend on each other: both are asked at once.
+        let counted = StorageQuery { collection: params.collection.clone(), filter: filter.clone(), ..Default::default() };
+        let page = StorageQuery {
+            collection: params.collection.clone(),
+            filter,
+            sort,
+            select: params.select,
+            limit: Some(params.limit.get() as usize),
+            offset: params.offset.map(|n| n as usize),
+            ..Default::default()
+        };
+        let (total, records) = tokio::join!(adapter.count(&counted), adapter.query(&page));
+        let total = total.map_err(|e| format!("data/list: count failed for '{}' - {e}", params.collection))?;
         let total = u32::try_from(total)
             .map_err(|_| "data/list: count exceeds response representation".to_string())?;
 
-        let res = adapter
-            .query(StorageQuery {
-                collection: params.collection.clone(),
-                filter,
-                sort,
-                select: params.select,
-                limit: Some(params.limit.get() as usize),
-                offset: params.offset.map(|n| n as usize),
-                ..Default::default()
-            })
-            .await;
-        let records = res.into_result()
+        let records = records
             .map_err(|e| format!("data/list: query failed for '{}' - {e}", params.collection))?;
         let mut items = Vec::with_capacity(records.len());
         for r in records {
@@ -257,21 +252,19 @@ impl DataState {
         };
 
         let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.query_with_join(query).await;
-
-        CommandResult::json(&result)
+        CommandResult::json(&legacy_receipt(adapter.query_with_join(&query).await))
     }
 
     /// Count records in a collection (optionally filtered). Drives the typed
-    /// `data/count` command. Returns the adapter's `StorageResult<usize>` — an
+    /// `data/count` command: an accurate SQL COUNT, paging-independent.
     /// accurate SQL COUNT, paging-independent.
     pub(crate) async fn count_records(
         &self,
         handle: &str,
         collection: String,
         filter: Option<serde_json::Map<String, Value>>,
-    ) -> Result<StorageResult<usize>, String> {
-        require_public_collection(&collection)?;
+    ) -> Result<usize, CommandError> {
+        require_public_collection(&collection).map_err(CommandError::Invalid)?;
         for name in filter.iter().flat_map(|fields| fields.keys()) {
             require_field_name(name)?;
         }
@@ -293,7 +286,7 @@ impl DataState {
         let adapter_ms = adapter_start.elapsed().as_millis();
 
         let count_start = Instant::now();
-        let result = adapter.count(query).await;
+        let counted = adapter.count(&query).await;
         let count_ms = count_start.elapsed().as_millis();
 
         let total_ms = start.elapsed().as_millis();
@@ -306,7 +299,7 @@ impl DataState {
                 total_ms,
                 adapter_ms,
                 count_ms,
-                result.success
+                counted.is_ok()
             );
         }
 
@@ -325,26 +318,25 @@ impl DataState {
         &self,
         handle: &str,
         collection: &str,
-    ) -> Result<StorageResult<bool>, String> {
-        require_public_collection(collection)?;
+    ) -> Result<String, CommandError> {
+        require_public_collection(collection).map_err(CommandError::Invalid)?;
         let collection_schema = super::adapters::resolve_collection_schema(
             crate::orm::OrmEntityRegistry::global(), collection,
         )?;
         let adapter = self.get_adapter(handle).await?;
-        Ok(adapter.ensure_schema(collection_schema).await)
+        adapter.ensure_schema(&collection_schema).await?;
+        Ok(collection_schema.collection)
     }
 
     /// List the collection names present in a store. Drives `data/list-collections`.
     pub(crate) async fn list_collection_names(
         &self,
         handle: &str,
-    ) -> Result<StorageResult<Vec<String>>, String> {
+    ) -> Result<Vec<String>, CommandError> {
         let adapter = self.get_adapter(handle).await?;
-        let mut result = adapter.list_collections().await;
-        if let Some(collections) = result.data.as_mut() {
-            collections.retain(|name| require_public_collection(name).is_ok());
-        }
-        Ok(result)
+        let mut collections = adapter.list_collections().await?;
+        collections.retain(|name| require_public_collection(name).is_ok());
+        Ok(collections)
     }
 
     /// Statistics for one collection (record count, size, last-modified, schema,
@@ -353,10 +345,10 @@ impl DataState {
         &self,
         handle: &str,
         collection: &str,
-    ) -> Result<StorageResult<crate::orm::types::CollectionStats>, String> {
-        require_public_collection(collection)?;
+    ) -> Result<crate::orm::types::CollectionStats, CommandError> {
+        require_public_collection(collection).map_err(CommandError::Invalid)?;
         let adapter = self.get_adapter(handle).await?;
-        Ok(adapter.collection_stats(collection).await)
+        Ok(adapter.collection_stats(collection).await?)
     }
 
     /// Adapter identity + full capability surface for a store. Drives the typed
@@ -385,22 +377,20 @@ impl DataState {
         require_public_collection(collection).map_err(|fault| VectorStoreError::Refused(fault.into()))?;
         let start = std::time::Instant::now();
 
-        let (scope, adapter) = self.adapter_with_identity(handle).await.map_err(|fault| VectorStoreError::Store(fault.into()))?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await.map_err(|fault| VectorStoreError::Open(fault.into()))?;
         let payload = unit_f32(embedding.iter().map(|value| *value as f32), &Producer::IndexCommand)?;
         let written = adapter
-            .update_binary(
-                collection,
-                &id,
-                std::collections::BTreeMap::from([(EMBEDDING_FIELD.to_owned(), payload)]),
-                crate::orm::binary::BinaryWriteCondition::Replace,
-            )
-            .await
-            .into_result();
+            .update_binary(crate::orm::seam::BinaryWrite {
+                row: RowRef { collection, id: &id },
+                payloads: std::collections::BTreeMap::from([(EMBEDDING_FIELD.to_owned(), payload)]),
+                condition: crate::orm::binary::BinaryWriteCondition::Replace,
+            })
+            .await;
         // The cached matrix may hold this row's previous vector, whatever the write did.
         self.vector_cache.invalidate(&scope, collection);
-        written.map_err(|fault| VectorStoreError::Store(fault.into()))?;
+        written?;
         log_info!("data", "vector/index", "Indexed vector for {} in {}ms", id, start.elapsed().as_millis());
-        adapter.read(collection, &id).await.into_result().map_err(|fault| VectorStoreError::Store(fault.into()))
+        Ok(adapter.read(RowRef { collection, id: &id }).await?)
     }
 
     /// Get vector index statistics for a collection.
@@ -415,7 +405,9 @@ impl DataState {
 
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
-        let stats = adapter.numeric_array_stats(collection, EMBEDDING_FIELD).await.into_result()
+        let stats = adapter
+            .numeric_array_stats(crate::orm::seam::FieldRef { collection, field: EMBEDDING_FIELD })
+            .await
             .map_err(|e| format!("vector stats for {collection}: {e}"))?;
         if stats.min_length != stats.max_length {
             return Err(format!("{collection} contains inconsistent embedding dimensions: {} to {}", stats.min_length, stats.max_length));
@@ -472,5 +464,15 @@ impl DataState {
             collection: collection.to_string(),
             cache_invalidated: removed,
         })
+    }
+}
+
+/// The receipt shape the legacy JSON `data/query` routes still answer with, built from the typed
+/// result in this one place. It goes when their in-process JSON-bus callers move to typed calls
+/// (card 6837890b: chat/store.rs, self_task_generator.rs, channel.rs, chat_projection.rs).
+fn legacy_receipt<T>(result: Result<T, crate::orm::StorageError>) -> StorageResult<T> {
+    match result {
+        Ok(value) => StorageResult::ok(value),
+        Err(error) => StorageResult::err(error.to_string()),
     }
 }

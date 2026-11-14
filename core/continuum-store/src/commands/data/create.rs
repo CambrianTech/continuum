@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::data::DataState;
-use crate::orm::types::{DataRecord, StorageResult, UUID};
+use crate::orm::types::{DataRecord, UUID};
 
 /// Params for `data/create`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -40,7 +40,7 @@ crate::action_command! {
     name: "data/create",
     access: Privileged,
     params: DataCreateParams,
-    output: StorageResult<DataRecord>,
+    output: DataRecord,
     run(this, _ctx, p) => {
         let handle = p.handle.as_deref().unwrap_or("main");
         let result = this
