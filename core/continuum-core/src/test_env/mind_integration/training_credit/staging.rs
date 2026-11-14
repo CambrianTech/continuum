@@ -301,9 +301,12 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         "{:?}",
         reviewed.credit_error
     );
+    // Her own pass, in a room declaring `self: true` (card 0174211f), is admitted to settlement
+    // rather than parked as IndependentReviewRequired; this fixture's staged row is not eligible
+    // evidence, so settlement stops there and nothing trains (measured in CI on e2a947b35).
     assert_eq!(
         reviewed.credit.unwrap().state,
-        reviewed::ReviewedCreditState::IndependentReviewRequired
+        reviewed::ReviewedCreditState::IneligibleEvidence
     );
     let later_revision = Uuid::new_v4();
     let another_claim = CapturedCredit {
