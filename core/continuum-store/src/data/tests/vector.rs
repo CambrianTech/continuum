@@ -307,12 +307,11 @@ async fn test_vector_cache_invalidation() {
 }
 
 /// Writes `values` as `producer`'s certified unit vector on row `id`.
-async fn write_vector(adapter: &dyn StorageAdapter, collection: &str, id: &str, values: [f32; 2], producer: &Producer) {
+async fn write_vector(adapter: &dyn StorageAdapter, row: crate::orm::seam::RowRef<'_>, values: [f32; 2], producer: &Producer) {
     let payload = unit_f32(values.into_iter(), producer).expect("test: certified vector");
-    let id = id.to_owned();
     let written = adapter
         .update_binary(crate::orm::seam::BinaryWrite {
-            row: crate::orm::seam::RowRef { collection, id: &id },
+            row,
             payloads: BTreeMap::from([("embedding".to_owned(), payload)]),
             condition: BinaryWriteCondition::Replace,
         })
@@ -334,9 +333,9 @@ async fn each_producer_descriptor_is_its_own_matrix_and_a_foreign_query_is_refus
     for id in &ids {
         create_row(adapter.as_ref(), "test_spaces", id).await;
     }
-    write_vector(adapter.as_ref(), "test_spaces", &ids[0], [1.0, 0.0], &Producer::IndexCommand).await;
-    write_vector(adapter.as_ref(), "test_spaces", &ids[1], [1.0, 1.0], &Producer::IndexCommand).await;
-    write_vector(adapter.as_ref(), "test_spaces", &ids[2], [1.0, 0.0], &embedder).await;
+    write_vector(adapter.as_ref(), crate::orm::seam::RowRef { collection: "test_spaces", id: &ids[0] }, [1.0, 0.0], &Producer::IndexCommand).await;
+    write_vector(adapter.as_ref(), crate::orm::seam::RowRef { collection: "test_spaces", id: &ids[1] }, [1.0, 1.0], &Producer::IndexCommand).await;
+    write_vector(adapter.as_ref(), crate::orm::seam::RowRef { collection: "test_spaces", id: &ids[2] }, [1.0, 0.0], &embedder).await;
     let corpus = module.state.vector_corpus(&db_path, "test_spaces").await.expect("test: corpus");
     assert_eq!(corpus.descriptors().len(), 2, "one matrix per producer descriptor");
     assert_eq!(corpus.len(), 3);
@@ -371,7 +370,7 @@ async fn the_snapshot_is_released_before_any_matrix_is_sealed() {
     declare_vectors(&adapter, "test_lease").await;
     let id = record_id(0).to_string();
     create_row(&adapter, "test_lease", &id).await;
-    write_vector(&adapter, "test_lease", &id, [1.0, 0.0], &Producer::IndexCommand).await;
+    write_vector(&adapter, crate::orm::seam::RowRef { collection: "test_lease", id: &id }, [1.0, 0.0], &Producer::IndexCommand).await;
     let whole = StorageQuery { collection: "test_lease".into(), ..Default::default() };
     let count = || adapter.count(&whole);
 
@@ -402,7 +401,7 @@ async fn descriptor_transfer_pages_never_cap_the_corpus() {
             for row in 0..3 {
                 let id = record_id((group * 3 + row) as u128).to_string();
                 create_row(adapter.as_ref(), "test_groups", &id).await;
-                write_vector(adapter.as_ref(), "test_groups", &id, [1.0, 0.0], &producer).await;
+                write_vector(adapter.as_ref(), crate::orm::seam::RowRef { collection: "test_groups", id: &id }, [1.0, 0.0], &producer).await;
             }
         }
         let snapshot = adapter.binary_snapshot("test_groups").await.expect("test: snapshot");

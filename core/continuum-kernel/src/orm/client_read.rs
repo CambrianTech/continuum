@@ -68,8 +68,8 @@ mod tests {
     }
     #[derive(serde::Deserialize)]
     struct Row { value: usize }
-    fn page(start: usize, count: usize, total: usize) -> Value {
-        let items: Vec<_> = (start..start + count).map(|n| json!({
+    fn page(rows: std::ops::Range<usize>, total: usize) -> Value {
+        let items: Vec<_> = rows.map(|n| json!({
             "id": format!("{n:06}"), "collection": "fixture", "data": {"value": n},
             "metadata": {"createdAt":"now", "updatedAt":"now", "version":1}
         })).collect();
@@ -82,12 +82,12 @@ mod tests {
         mock.respond_to("data/list", move |params| {
             assert_eq!(params["limit"], size);
             assert_eq!(params["select"], json!(["value"]));
-            Ok(page(0, size, size + 1))
+            Ok(page(0..size, size + 1))
         });
         mock.respond_to("data/list", move |params| {
             assert_eq!(params["filter"]["id"]["$gt"], format!("{:06}", size - 1));
             // Every previously delivered row disappeared; OFFSET would skip this row.
-            Ok(page(size, 1, 1))
+            Ok(page(size..size + 1, 1))
         });
         let rows: Vec<Row> = matching(&Connection::new(mock), fixture(&Map::new(), Some(&["value"]))).await?;
         assert_eq!(rows.len(), size + 1);
@@ -98,8 +98,8 @@ mod tests {
     async fn repeated_page_is_refused_instead_of_looping_or_returning_partial_success() {
         let size = crate::orm::query::default_page_size();
         let mock = MockTransport::new();
-        mock.respond_with("data/list", page(0, size, size * 2));
-        mock.respond_with("data/list", page(0, size, size * 2));
+        mock.respond_with("data/list", page(0..size, size * 2));
+        mock.respond_with("data/list", page(0..size, size * 2));
         let result = matching::<_, Row>(&Connection::new(mock), fixture(&Map::new(), None)).await;
         assert!(matches!(result, Err(ClientError::Transport(message)) if message.contains("did not advance")));
     }

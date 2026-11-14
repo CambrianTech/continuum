@@ -181,7 +181,7 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
             .borrow(),
         2
     );
-    let page = read_page(&reopened, RequiredNativeRow::COLLECTION, "payload", None, 1).await?;
+    let page = read_page(&reopened, crate::orm::seam::FieldRef { collection: RequiredNativeRow::COLLECTION, field: "payload" }, None, 1).await?;
     assert_eq!(
         page[0]
             .value
@@ -310,7 +310,7 @@ async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<()
     assert!(!native_changes.has_changed()?);
     assert_eq!(before[0].metadata.version, after[0].metadata.version);
     assert_eq!(before[0].metadata.updated_at, after[0].metadata.updated_at);
-    let page = read_page(&store, NativeRow::COLLECTION, "payload", None, 1).await?;
+    let page = read_page(&store, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, None, 1).await?;
     assert_eq!(page[0].value.as_ref(), Some(&winner));
     assert!(
         !store
@@ -351,7 +351,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
                 )]), condition: BinaryWriteCondition::Replace })
             .await?;
     }
-    assert!(read_page(&store, NativeRow::COLLECTION, "payload", None, 0)
+    assert!(read_page(&store, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, None, 0)
         .await
         .is_err());
     let stats = store
@@ -393,7 +393,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
     let reopened = open(path).await?;
     let mut cursor = None;
     for (n, (kind, bytes)) in variants.iter().enumerate() {
-        let page = read_page(&reopened, NativeRow::COLLECTION, "payload", cursor, 1).await?;
+        let page = read_page(&reopened, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, cursor, 1).await?;
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].id, uuid::Uuid::from_u128(n as u128).to_string());
         let value = page[0].value.as_ref().ok_or("missing native payload")?;
@@ -401,7 +401,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
         assert_eq!(value.descriptor(), &descriptor(*kind, vec![2]));
         cursor = Some(page[0].id.clone());
     }
-    let null_page = read_page(&reopened, NativeRow::COLLECTION, "payload", cursor, 1).await?;
+    let null_page = read_page(&reopened, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, cursor, 1).await?;
     assert!(null_page.is_empty());
     Ok(())
 }
@@ -414,11 +414,11 @@ struct TestRecord {
 }
 async fn read_page(
     store: &RelationalStore,
-    collection: &str,
-    field: &str,
+    column: crate::orm::seam::FieldRef<'_>,
     after: Option<String>,
     limit: usize,
 ) -> Result<Vec<TestRecord>, Box<dyn std::error::Error>> {
+    let crate::orm::seam::FieldRef { collection, field } = column;
     let mut bytes = Vec::new();
     let mut ids = Vec::new();
     let snapshot = store.binary_snapshot(collection).await?;
