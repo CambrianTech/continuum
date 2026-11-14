@@ -22,6 +22,10 @@ impl DeploySelection {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DeployHealth {
     NoRequest,
+    /// No request stands because the tracker is blocked short of one: its own typed verdict.
+    NotRequested {
+        standing: crate::deploy_tracker::TrackerStanding,
+    },
     Running,
     Blocked {
         refusal: DeployRefusal,
@@ -41,7 +45,7 @@ pub fn read(root: &std::path::Path, running: &str) -> DeployHealth {
     let state = root.join("state");
     let request_text = match std::fs::read_to_string(state.join("deploy-request.json")) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return DeployHealth::NoRequest,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return not_requested(&state, running),
         Err(e) => {
             return DeployHealth::Unknown {
                 reason: format!("cannot read deploy request: {e}"),
@@ -110,10 +114,25 @@ pub fn read(root: &std::path::Path, running: &str) -> DeployHealth {
     DeployHealth::Pending { request }
 }
 
+/// With no request on record: the tracker's standing block on THIS build, else nothing owed.
+/// A record from another build (written before a restart) is not this build's verdict.
+fn not_requested(state: &std::path::Path, running: &str) -> DeployHealth {
+    std::fs::read_to_string(state.join(crate::deploy_tracker::TRACKER_STANDING_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<crate::deploy_tracker::TrackerStanding>(&text).ok())
+        .filter(|standing| crate::deploy_tracker::same_commit(&standing.running, running))
+        .map_or(DeployHealth::NoRequest, |standing| DeployHealth::NotRequested { standing })
+}
+
 impl DeployHealth {
     pub fn line(&self, now_ms: u64) -> String {
         match self {
             Self::NoRequest | Self::Running => String::new(),
+            Self::NotRequested { standing } => format!(
+                " · deploy not requested: {:?} for {}s",
+                standing.verdict,
+                now_ms.saturating_sub(standing.since_ms) / 1_000
+            ),
             Self::Blocked { refusal } => format!(
                 " · deploy blocked: {:?} for {}s: {}",
                 refusal.kind,
@@ -236,6 +255,25 @@ mod tests {
             read(root.path(), "core-build"),
             DeployHealth::Pending { .. }
         ));
+        Ok(())
+    }
+
+    // what this catches (the M5, 2026-11-14): with no request on record the line read "nothing
+    // owed" while the tracker had been blocked for hours short of one. The tracker's standing
+    // verdict on this build is the line; one recorded on another build is not.
+    #[test]
+    fn a_tracker_block_short_of_a_request_reaches_the_line() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::deploy_tracker::{DeployVerdict, TrackerStanding, TRACKER_STANDING_FILE};
+        let root = tempfile::tempdir()?;
+        let state = root.path().join("state");
+        std::fs::create_dir(&state)?;
+        assert!(matches!(read(root.path(), "a9b055a83"), DeployHealth::NoRequest));
+        let standing = TrackerStanding { verdict: DeployVerdict::RefuseDirty, running: "a9b055a83".into(), since_ms: 1_000 };
+        std::fs::write(state.join(TRACKER_STANDING_FILE), serde_json::to_vec(&standing)?)?;
+        let health = read(root.path(), "a9b055a83614d90f029818e32333160a064583bc");
+        assert!(matches!(&health, DeployHealth::NotRequested { standing: s } if s.verdict == DeployVerdict::RefuseDirty));
+        assert_eq!(health.line(61_000), " · deploy not requested: RefuseDirty for 60s");
+        assert!(matches!(read(root.path(), "da28f9ff2"), DeployHealth::NoRequest), "another build's record is not this build's verdict");
         Ok(())
     }
 
