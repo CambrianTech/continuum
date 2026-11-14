@@ -147,6 +147,7 @@ pub(crate) enum ActuateDecision {
 
 /// The reason one tick skips actuation (the decision to skip comes from outside
 /// [`decide_actuation`]: either an external claim or one of the pure reasons above).
+#[derive(Debug)]
 pub(crate) enum ActuateSkipReason {
     /// Another deploy-consume build holds the claim on this node — serialise against it.
     ConcurrentClaim,
