@@ -11,8 +11,6 @@ impl ActionCommand for WorkSubmit {
     type Output = WorkSubmitResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkSubmitParams) -> Result<WorkSubmitResult, CommandError> {
-        // Her receipts are judged before anything is derived or published: a bad one refuses whole.
-        let author_evidence = super::latest_submission::author_evidence_of(p.evidence_text.as_deref())?;
         let runtime = persona_runtime(&self.registry, ctx, "work/submit")?;
         let airc = runtime.airc();
         let room = room_of_card(airc, p.room.as_deref(), &p.card_id, "work/submit").await?;
@@ -37,6 +35,9 @@ impl ActionCommand for WorkSubmit {
             }
         };
         let card_id = WorkCardId::from_uuid(card_uuid);
+        // Her receipts are judged before anything is derived or published: a bad one refuses whole,
+        // naming her card and her next moves.
+        let author_evidence = super::latest_submission::author_evidence_of(p.evidence_text.as_deref(), card_uuid)?;
         let Some(card) = board.card(card_id) else {
             let absent = CommandError::NotFound(format!(
                 "card {} is absent from the board of room {}: you asked for '{}'",

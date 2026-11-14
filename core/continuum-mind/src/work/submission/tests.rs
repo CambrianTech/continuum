@@ -918,14 +918,16 @@ fn next_commands(error: &crate::sdk_codegen::CommandError) -> Vec<&'static str> 
 #[test]
 fn an_authors_receipts_become_signed_evidence_or_refuse_before_publishing() {
     use super::latest_submission::author_evidence_of;
-    assert!(author_evidence_of(None).expect("no words is no evidence").is_absent());
-    assert!(author_evidence_of(Some("  \n")).expect("blank words are no evidence").is_absent());
+    let card = uuid::Uuid::from_u128(7);
+    assert!(author_evidence_of(None, card).expect("no words is no evidence").is_absent());
+    assert!(author_evidence_of(Some("  \n"), card).expect("blank words are no evidence").is_absent());
     let receipt = "interface/capture at 1024x480: 17 tiles and the controls on screen";
-    let attached = author_evidence_of(Some(receipt)).expect("a receipt attaches");
+    let attached = author_evidence_of(Some(receipt), card).expect("a receipt attaches");
     assert_eq!(attached.text(), Some(receipt));
     let airc_work::AuthorEvidence::Attached { evidence, .. } = &attached else { panic!("attached evidence, not {attached:?}") };
     assert_eq!(evidence.size_bytes, receipt.len() as u64);
     assert_eq!(evidence.hash, airc_blobs::ContentHash::from_bytes(receipt.as_bytes()));
     let long = "x".repeat(airc_work::EVIDENCE_TEXT_MAX_BYTES + 1);
-    assert!(author_evidence_of(Some(&long)).is_err(), "words past the bound refuse before publishing");
+    let refused = author_evidence_of(Some(&long), card).expect_err("words past the bound refuse before publishing");
+    assert_eq!(next_commands(&refused), ["work/note", "work/submit"], "the full receipt goes on the card, a short one in the submission");
 }
