@@ -210,16 +210,17 @@ pub(super) fn register_pressure_broker(
         const PROBE_POOL_SOFT_CAP_BYTES: u64 = 500 * 1024 * 1024;
         if let Ok(home) = crate::paths::continuum_home() {
             let probe_dir = home.join("jtag/logs/probes");
-            broker.register(Arc::new(crate::paging::FilesystemTierPool::new(
-                "probe-jsonl",
-                probe_dir,
-                PROBE_POOL_SOFT_CAP_BYTES,
-            )) as Arc<dyn crate::paging::pool::ResourcePool>);
-            log_info!(
-                "ipc",
-                "server",
-                "FilesystemTierPool 'probe-jsonl' registered with PressureBroker (soft cap 500 MB)"
-            );
+            match crate::paging::FilesystemTierPool::new("probe-jsonl", probe_dir, PROBE_POOL_SOFT_CAP_BYTES) {
+                Ok(pool) => {
+                    broker.register(Arc::new(pool) as Arc<dyn crate::paging::pool::ResourcePool>);
+                    log_info!(
+                        "ipc",
+                        "server",
+                        "FilesystemTierPool 'probe-jsonl' registered with PressureBroker (soft cap 500 MB)"
+                    );
+                }
+                Err(e) => log_error!("ipc", "server", "probe-jsonl FilesystemTierPool not registered: {e}"),
+            }
         } else {
             log_error!(
                 "ipc",
@@ -243,30 +244,28 @@ pub(super) fn register_pressure_broker(
         // Path comes from `spill::spill_root()` — single source, no re-typed string.
         const SPILL_POOL_SOFT_CAP_BYTES: u64 = 1024 * 1024 * 1024;
         match crate::cognition::tool_executor::spill::spill_root() {
-            Ok(spill_dir) => {
-                broker.register(Arc::new(
-                    crate::paging::FilesystemTierPool::new(
-                        "tool-output-spill",
-                        spill_dir,
-                        SPILL_POOL_SOFT_CAP_BYTES,
-                    )
+            Ok(spill_dir) => match crate::paging::FilesystemTierPool::new(
+                "tool-output-spill",
+                spill_dir,
+                SPILL_POOL_SOFT_CAP_BYTES,
+            ) {
+                Ok(pool) => {
                     // A handle a live mind still points at is never evicted (card 9197cd01).
-                    .removing_with(Arc::new(
-                        crate::cognition::tool_executor::spill::evict_unless_live,
-                    )),
-                )
-                    as Arc<dyn crate::paging::pool::ResourcePool>);
-                log_info!(
-                    "ipc",
-                    "server",
-                    "FilesystemTierPool 'tool-output-spill' registered with PressureBroker (soft cap 1 GB)"
-                );
-            }
+                    let pool = pool.removing_with(Arc::new(crate::cognition::tool_executor::spill::evict_unless_live));
+                    broker.register(Arc::new(pool) as Arc<dyn crate::paging::pool::ResourcePool>);
+                    log_info!(
+                        "ipc",
+                        "server",
+                        "FilesystemTierPool 'tool-output-spill' registered with PressureBroker (soft cap 1 GB)"
+                    );
+                }
+                Err(e) => log_error!("ipc", "server", "tool-output-spill FilesystemTierPool not registered: {e}"),
+            },
             Err(e) => {
                 log_error!(
                     "ipc",
                     "server",
-                    "no HOME — tool-output-spill FilesystemTierPool not registered: {e}"
+                    "tool-output-spill FilesystemTierPool not registered: {e}"
                 );
             }
         }
