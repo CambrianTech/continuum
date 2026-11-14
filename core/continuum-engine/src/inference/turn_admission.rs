@@ -971,6 +971,8 @@ async fn kv_page_action_with_capacity(
         // the engine's loop (what other slots' decode waits for) and its IO worker (fork #118)
         copy_ms = %EngineWork::shown(work.copy_ms),
         io_ms = %EngineWork::shown(work.io_ms),
+        admit_ms = %EngineWork::shown(work.admit_ms),
+        io_bytes_in_flight = %EngineWork::shown(work.in_flight_bytes),
         // the engine counts only the .bin; the sidecars (checkpoints, adapter vector) are read and
         // written in the same timed switch, so they are named apart (BigMama on #4957)
         slot_bytes = %EngineWork::shown(work.bytes),

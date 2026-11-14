@@ -37,13 +37,16 @@ impl PageAction {
 /// older engine, or no terminal body). `ms` is its clock (it starts after a busy slot's deferral,
 /// so the caller's elapsed minus `ms` is the wait); since fork #118 it splits into `copy_ms`, its
 /// task loop's share (the state copied out or in: the only part other slots' decode waits for),
-/// and `io_ms`, its IO worker's (the page files written or read, beside the decode).
+/// and `io_ms`, its IO worker's (the page files written or read, beside the decode); `admit_ms` is
+/// its wait for the engine's page IO byte budget and `in_flight_bytes` what every switch held then.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub(crate) struct EngineWork {
     pub(crate) ms: Option<u64>,
     pub(crate) bytes: Option<u64>,
     pub(crate) copy_ms: Option<f64>,
     pub(crate) io_ms: Option<f64>,
+    pub(crate) admit_ms: Option<f64>,
+    pub(crate) in_flight_bytes: Option<u64>,
 }
 
 impl EngineWork {
@@ -56,6 +59,8 @@ impl EngineWork {
             bytes: body[bytes].as_u64(),
             copy_ms: timings["copy_ms"].as_f64(),
             io_ms: timings["io_ms"].as_f64(),
+            admit_ms: timings["admit_ms"].as_f64(),
+            in_flight_bytes: body["page_io"]["io_bytes_in_flight"].as_u64(),
         }
     }
 
@@ -125,12 +130,14 @@ mod tests {
     #[test]
     fn engine_work_reads_the_loop_and_io_shares_and_none_from_an_older_engine() {
         let streamed = json!({"id_slot": 1, "filename": "p", "n_restored": 84, "n_read": 4096,
-            "timings": {"restore_ms": 1026.4, "copy_ms": 35.2, "io_ms": 991.2}});
+            "timings": {"restore_ms": 1026.4, "copy_ms": 35.2, "io_ms": 991.2, "admit_ms": 0.5},
+            "page_io": {"io_bytes": 9000, "io_bytes_in_flight": 9000, "io_budget_bytes": 0}});
         let work = EngineWork::of(PageAction::Restore, Some(&streamed));
-        assert_eq!(work, EngineWork { ms: Some(1026), bytes: Some(4096), copy_ms: Some(35.2), io_ms: Some(991.2) });
+        assert_eq!(work, EngineWork { ms: Some(1026), bytes: Some(4096), copy_ms: Some(35.2), io_ms: Some(991.2),
+            admit_ms: Some(0.5), in_flight_bytes: Some(9000) });
         let older = json!({"id_slot": 1, "filename": "p", "n_saved": 84, "n_written": 4096, "timings": {"save_ms": 2253.0}});
         let work = EngineWork::of(PageAction::Save, Some(&older));
-        assert_eq!((work.ms, work.copy_ms, work.io_ms), (Some(2253), None, None));
+        assert_eq!((work.ms, work.copy_ms, work.io_ms, work.in_flight_bytes), (Some(2253), None, None, None));
         assert_eq!(EngineWork::shown(work.copy_ms), "none");
         assert_eq!(EngineWork::of(PageAction::Save, None), EngineWork::default());
     }
