@@ -130,10 +130,13 @@ its persisted schema catalog once at open using primary-key receipt pages (64 pe
 transfer, with no collection-count cap), so children participate even before their
 caller re-admits a declaration. A new external declaration requires admission or a
 new owner before deletion; an incomplete catalog cannot silently miss descendants.
-Receipt validation currently retains exact declaration/physical equality. Removing its
-JSON comparison requires strict declaration decoding first: permissive serde defaults
-and ignored unknown fields must not silently admit unsupported metadata. This remains
-an explicit CPU/schema improvement gap; paging alone does not remove serialization.
+Declaration types reject unknown fields at every level. Collection index lists, field
+nullability/index/unique flags, index direction and foreign-key actions are required;
+optional insertion defaults, length limits and references retain valid absence.
+Restoration decodes each receipt once and verifies physical metadata without rebuilding
+a JSON declaration. Re-admission compares typed schemas using the same shared equality
+as registration. Physical metadata comparison remains exact. Incomplete old declarations
+are refused; migration must supply an explicit complete declaration, never a fallback.
 The existing committing owner publishes typed domain/collection revision notices only
 after commit. Append and native receivers share that owner but never share a revision
 domain. Native create/update, direct deletes, batch deletes, cascades and clear return

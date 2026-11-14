@@ -104,28 +104,37 @@ pub(super) async fn restore<C: ConnectionTrait>(
             break;
         }
         for receipt in receipts {
-            let schema: CollectionSchema =
-                CollectionSchema::deserialize(&receipt.declaration).map_err(|e| e.to_string())?;
-            if receipt.collection != schema.collection {
-                return Err("schema receipt identity mismatch".into());
-            }
+            let schema = decode(&receipt)?;
             super::relational_schema::compile(&schema)?;
-            verify(&receipt, &schema, &physical(db, &schema.collection).await?)?;
+            verify_physical(&receipt, &physical(db, &schema.collection).await?)?;
             after = Some(receipt.collection);
             schemas.insert(schema.collection.clone(), std::sync::Arc::new(schema));
         }
     }
     Ok(schemas)
 }
+fn decode(receipt: &Model) -> Result<CollectionSchema, String> {
+    let schema: CollectionSchema =
+        CollectionSchema::deserialize(&receipt.declaration).map_err(|e| e.to_string())?;
+    if receipt.collection != schema.collection {
+        return Err("schema receipt identity mismatch".into());
+    }
+    Ok(schema)
+}
 fn verify(receipt: &Model, schema: &CollectionSchema, actual: &Json) -> Result<(), String> {
-    let expected = serde_json::to_value(schema).map_err(|e| e.to_string())?;
-    if receipt.collection != schema.collection
-        || receipt.declaration != expected
-        || &receipt.physical != actual
-    {
+    if !super::entity::schemas_equivalent(&decode(receipt)?, schema) {
         return Err(format!(
             "{}: declared or physical schema changed; explicit migration required",
             schema.collection
+        ));
+    }
+    verify_physical(receipt, actual)
+}
+fn verify_physical(receipt: &Model, actual: &Json) -> Result<(), String> {
+    if &receipt.physical != actual {
+        return Err(format!(
+            "{}: declared or physical schema changed; explicit migration required",
+            receipt.collection
         ));
     }
     Ok(())

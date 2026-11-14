@@ -2,6 +2,38 @@
 
 use super::*;
 
+#[test]
+fn declaration_equivalence_rejects_duplicate_names_on_either_side() {
+    use crate::orm::entity::schemas_equivalent;
+    let mut valid = Parent::collection_schema();
+    valid.indexes = vec![
+        SchemaIndex {
+            name: "a".into(),
+            fields: vec!["id".into()],
+            unique: true,
+            descending: false,
+        },
+        SchemaIndex {
+            name: "b".into(),
+            fields: vec!["label".into()],
+            unique: false,
+            descending: false,
+        },
+    ];
+    let mut reordered = valid.clone();
+    reordered.fields.reverse();
+    reordered.indexes.reverse();
+    assert!(schemas_equivalent(&valid, &reordered));
+    let mut bad_index = valid.clone();
+    bad_index.indexes[1] = bad_index.indexes[0].clone();
+    assert!(!schemas_equivalent(&valid, &bad_index));
+    assert!(!schemas_equivalent(&bad_index, &valid));
+    let mut bad_field = valid.clone();
+    bad_field.fields[1] = bad_field.fields[0].clone();
+    assert!(!schemas_equivalent(&valid, &bad_field));
+    assert!(!schemas_equivalent(&bad_field, &valid));
+}
+
 #[tokio::test]
 async fn restart_catalog_crosses_pages_and_rejects_late_physical_drift(
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -76,8 +108,93 @@ async fn restart_refuses_unknown_nested_receipt_metadata() -> Result<(), Box<dyn
         .err()
         .ok_or("unknown metadata was silently discarded")?;
     assert!(
-        failure.contains("declared or physical schema changed"),
+        failure.contains("unknown field `unsupportedCollation`"),
         "{failure}"
+    );
+    Ok(())
+}
+
+#[test]
+fn declaration_decoding_requires_semantic_fields_and_refuses_unknown_metadata(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut schema = Child::collection_schema();
+    schema.indexes.push(SchemaIndex {
+        name: "explicit_direction".into(),
+        fields: vec!["seq".into()],
+        unique: false,
+        descending: false,
+    });
+    let canonical = serde_json::to_value(&schema)?;
+    assert_eq!(
+        serde_json::from_value::<CollectionSchema>(canonical.clone())?,
+        schema
+    );
+    let fk_index = schema
+        .fields
+        .iter()
+        .position(|field| field.foreign_key.is_some())
+        .ok_or("fixture foreign key absent")?;
+    let field_path = format!("/fields/{fk_index}");
+    let fk_path = format!("{field_path}/foreignKey");
+    let index_path = format!("/indexes/{}", schema.indexes.len() - 1);
+    for (path, required) in [
+        ("", vec!["collection", "fields", "indexes"]),
+        (
+            field_path.as_str(),
+            vec!["name", "fieldType", "indexed", "unique", "nullable"],
+        ),
+        (
+            fk_path.as_str(),
+            vec!["collection", "field", "onDelete", "onUpdate"],
+        ),
+        (
+            index_path.as_str(),
+            vec!["name", "fields", "unique", "descending"],
+        ),
+    ] {
+        for field in required {
+            let mut malformed = canonical.clone();
+            malformed
+                .pointer_mut(path)
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or("fixture object absent")?
+                .remove(field);
+            assert!(
+                serde_json::from_value::<CollectionSchema>(malformed).is_err(),
+                "accepted absent {path}/{field}"
+            );
+        }
+        let mut malformed = canonical.clone();
+        malformed
+            .pointer_mut(path)
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("fixture object absent")?
+            .insert("unsupported".into(), json!(true));
+        assert!(
+            serde_json::from_value::<CollectionSchema>(malformed).is_err(),
+            "accepted unknown metadata at {path}"
+        );
+    }
+    // Optional insertion defaults, length limits and references express valid absence.
+    let mut optional_absent = canonical;
+    for field in optional_absent["fields"]
+        .as_array_mut()
+        .ok_or("fixture fields absent")?
+    {
+        let object = field.as_object_mut().ok_or("fixture field object absent")?;
+        for key in ["defaultValue", "maxLength"] {
+            object.remove(key);
+        }
+        if object
+            .get("foreignKey")
+            .is_some_and(serde_json::Value::is_null)
+        {
+            object.remove("foreignKey");
+        }
+    }
+    assert_eq!(
+        serde_json::from_value::<CollectionSchema>(optional_absent)?,
+        schema
     );
     Ok(())
 }
