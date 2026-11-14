@@ -11,16 +11,23 @@
 //! The second is crate-wide: the struct and the match may sit in different files, so the rule
 //! learns every crate's `Option`-field sets first ([`Shape::learn`]).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use super::items::{fields, items, read_name, top_level, type_is};
 use super::{CrateDir, Shape, Site, Unit};
 use crate::lexer::tokens::{matching_close, Token};
 
-/// The `Option` field names of each struct with two or more of them, filed by crate.
+/// The `Option` field names of each struct with two or more of them, with the crate it lives in.
 #[derive(Default)]
 pub struct StateAsFlags {
-    optional_fields: BTreeMap<CrateDir, Vec<BTreeSet<FieldName>>>,
+    optional_fields: Vec<OptionalFields>,
+}
+
+/// One struct's `Option` fields, filed under its crate: a tuple match is judged only against the
+/// structs of its own crate.
+struct OptionalFields {
+    krate: CrateDir,
+    fields: BTreeSet<FieldName>,
 }
 
 /// A struct field's name, as the tuple-match check compares it.
@@ -48,13 +55,13 @@ impl Shape for StateAsFlags {
 
     fn learn(&mut self, unit: &Unit) {
         for item in items(&unit.code, "struct") {
-            let optional: BTreeSet<FieldName> = fields(&unit.code, item.body)
+            let optional: BTreeSet<FieldName> = fields(&unit.code, &item.body)
                 .into_iter()
                 .filter(|f| unit.code.get(f.ty.start).is_some_and(|t| t.is_ident("Option")))
                 .filter_map(|f| f.name.map(|n| FieldName(n.to_owned())))
                 .collect();
             if optional.len() >= 2 {
-                self.optional_fields.entry(unit.text.krate.clone()).or_default().push(optional);
+                self.optional_fields.push(OptionalFields { krate: unit.text.krate.clone(), fields: optional });
             }
         }
     }
@@ -63,12 +70,12 @@ impl Shape for StateAsFlags {
         let code = &unit.code;
         let mut out: Vec<Site> = items(code, "struct")
             .into_iter()
-            .filter(|item| fields(code, item.body.clone()).iter().filter(|f| type_is(code, f.ty.clone(), FLAGS)).count() >= 2)
+            .filter(|item| fields(code, &item.body).iter().filter(|f| type_is(code, &f.ty, FLAGS)).count() >= 2)
             .map(|item| Site { line: item.line, what: FLAG_STRUCT })
             .collect();
-        let structs = self.optional_fields.get(&unit.text.krate).map_or(&[][..], Vec::as_slice); // map_or: a crate with no such struct has none to match
+        let structs: Vec<&BTreeSet<FieldName>> = self.optional_fields.iter().filter(|o| o.krate == unit.text.krate).map(|o| &o.fields).collect();
         for at in 0..code.len() {
-            if code[at].is_ident("match") && code.get(at + 1).is_some_and(|t| t.is('(')) && matches_options_together(code, at + 1, structs) {
+            if code[at].is_ident("match") && code.get(at + 1).is_some_and(|t| t.is('(')) && matches_options_together(code, at + 1, &structs) {
                 out.push(Site { line: code[at].line, what: OPTION_TUPLE });
             }
         }
@@ -79,7 +86,7 @@ impl Shape for StateAsFlags {
 
 /// Whether the tuple opened at `open` (a match scrutinee) reads two or more `Option` fields of one
 /// of `structs`.
-fn matches_options_together(code: &[Token], open: usize, structs: &[BTreeSet<FieldName>]) -> bool {
+fn matches_options_together(code: &[Token], open: usize, structs: &[&BTreeSet<FieldName>]) -> bool {
     let close = matching_close(code, open);
     // A tuple scrutinee is followed by the arms' block; `match (x) {` with one element is a group.
     let elements = top_level(code, open + 1..close);

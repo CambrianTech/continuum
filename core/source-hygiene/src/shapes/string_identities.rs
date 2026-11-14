@@ -46,8 +46,8 @@ impl Shape for StringIdentities {
         }
         if unit.text.target == Target::Library {
             for item in items(code, "struct") {
-                for field in fields(code, item.body) {
-                    if string_keyed_map(code, field.ty.clone()) {
+                for field in fields(code, &item.body) {
+                    if string_keyed_map(code, &field.ty) {
                         out.push(Site { line: field.line, what: STRING_KEYED });
                     }
                 }
@@ -79,11 +79,11 @@ fn json_field_by_name(code: &[Token], at: usize) -> bool {
 }
 
 /// Whether the type `ty` holds a `HashMap` or `BTreeMap` keyed by `String`, at any depth.
-fn string_keyed_map(code: &[Token], mut ty: std::ops::Range<usize>) -> bool {
-    ty.any(|at| {
+fn string_keyed_map(code: &[Token], ty: &std::ops::Range<usize>) -> bool {
+    (ty.start..ty.end).any(|at| {
         (code[at].is_ident("HashMap") || code[at].is_ident("BTreeMap"))
             && code.get(at + 1).is_some_and(|t| t.is('<'))
-            && generic_args(code, at + 1).first().is_some_and(|key| type_is(code, key.clone(), &["String"]))
+            && generic_args(code, at + 1).first().is_some_and(|key| type_is(code, key, &["String"]))
     })
 }
 

@@ -74,13 +74,13 @@ fn signature_sites(code: &[Token], at: usize) -> Vec<Site> {
         return Vec::new();
     }
     let close = matching_close(code, open);
-    let params: Vec<_> = top_level(code, open + 1..close).into_iter().filter(|p| !is_self(code, p.clone())).map(|p| param_type(code, p)).collect();
+    let params: Vec<_> = top_level(code, open + 1..close).into_iter().filter(|p| !is_self(code, p)).map(|p| param_type(code, &p)).collect();
     let mut out = Vec::new();
     let site = |what| Site { line: name.line, what };
     if params.len() >= MANY {
         out.push(site(MANY_PARAMS));
     }
-    let primitive = |ty: &Option<std::ops::Range<usize>>| ty.as_ref().and_then(|r| code.get(r.clone())).filter(|t| t.len() == 1 && PRIMITIVES.contains(&t[0].text)).map(|t| t[0].text);
+    let primitive = |ty: &Option<std::ops::Range<usize>>| ty.as_ref().and_then(|r| code.get(r.start..r.end)).filter(|t| t.len() == 1 && PRIMITIVES.contains(&t[0].text)).map(|t| t[0].text);
     let longest_run = params.windows(SWAPPABLE_RUN).any(|w| {
         let first = primitive(&w[0]);
         first.is_some() && w.iter().all(|p| primitive(p) == first)
@@ -100,12 +100,12 @@ fn signature_sites(code: &[Token], at: usize) -> Vec<Site> {
 }
 
 /// Whether a parameter is the receiver: `self`, `&self`, `&mut self`, `mut self`, `self: Arc<Self>`.
-fn is_self(code: &[Token], param: std::ops::Range<usize>) -> bool {
-    code.get(param).unwrap_or_default().iter().take(4).any(|t| t.is_ident("self")) // unwrap_or_default: a reversed range reads as empty
+fn is_self(code: &[Token], param: &std::ops::Range<usize>) -> bool {
+    code.get(param.start..param.end).unwrap_or_default().iter().take(4).any(|t| t.is_ident("self")) // unwrap_or_default: a reversed range reads as empty
 }
 
 /// A parameter's type: the tokens after its pattern's top-level `:` (never a path's `::`).
-fn param_type(code: &[Token], param: std::ops::Range<usize>) -> Option<std::ops::Range<usize>> {
+fn param_type(code: &[Token], param: &std::ops::Range<usize>) -> Option<std::ops::Range<usize>> {
     let mut at = param.start;
     while at < param.end {
         let t = &code[at];

@@ -60,11 +60,11 @@ pub fn items<'a>(code: &[Token<'a>], keyword: &str) -> Vec<Item<'a>> {
 }
 
 /// The fields of a struct body or a variant's body.
-pub fn fields<'a>(code: &[Token<'a>], body: Range<usize>) -> Vec<Field<'a>> {
-    top_level(code, body)
+pub fn fields<'a>(code: &[Token<'a>], body: &Range<usize>) -> Vec<Field<'a>> {
+    top_level(code, body.start..body.end)
         .into_iter()
         .filter_map(|segment| {
-            let start = past_attributes_and_visibility(code, segment.clone());
+            let start = past_attributes_and_visibility(code, &segment);
             let first = code.get(start).filter(|_| start < segment.end)?;
             let named = first.kind == Kind::Ident
                 && code.get(start + 1).is_some_and(|t| t.is(':'))
@@ -79,14 +79,14 @@ pub fn fields<'a>(code: &[Token<'a>], body: Range<usize>) -> Vec<Field<'a>> {
 }
 
 /// The variants of an enum body.
-pub fn variants<'a>(code: &[Token<'a>], body: Range<usize>) -> Vec<Variant<'a>> {
-    top_level(code, body)
+pub fn variants<'a>(code: &[Token<'a>], body: &Range<usize>) -> Vec<Variant<'a>> {
+    top_level(code, body.start..body.end)
         .into_iter()
         .filter_map(|segment| {
-            let start = past_attributes_and_visibility(code, segment.clone());
+            let start = past_attributes_and_visibility(code, &segment);
             let name = code.get(start).filter(|t| start < segment.end && t.kind == Kind::Ident)?;
             let fields = match code.get(start + 1) {
-                Some(t) if start + 1 < segment.end && (t.is('(') || t.is('{')) => fields(code, start + 2..matching_close(code, start + 1)),
+                Some(t) if start + 1 < segment.end && (t.is('(') || t.is('{')) => fields(code, &(start + 2..matching_close(code, start + 1))),
                 _ => Vec::new(),
             };
             Some(Variant { name: name.text, line: name.line, fields })
@@ -159,15 +159,15 @@ fn is_arrow(code: &[Token], at: usize) -> bool {
 
 /// Whether the type `ty` is exactly a path ending in one of `names` (`String`,
 /// `std::string::String`, `bool`).
-pub fn type_is(code: &[Token], ty: Range<usize>, names: &[&str]) -> bool {
-    let Some(tokens) = code.get(ty) else { return false };
+pub fn type_is(code: &[Token], ty: &Range<usize>, names: &[&str]) -> bool {
+    let Some(tokens) = code.get(ty.start..ty.end) else { return false };
     let Some(last) = tokens.last() else { return false };
     last.kind == Kind::Ident && names.contains(&last.text) && tokens.iter().all(|t| t.kind == Kind::Ident || t.is(':'))
 }
 
 /// The first index of `range` past its outer attributes (`#[...]`) and its visibility
 /// (`pub`, `pub(crate)`, `pub(in path)`).
-fn past_attributes_and_visibility(code: &[Token], range: Range<usize>) -> usize {
+fn past_attributes_and_visibility(code: &[Token], range: &Range<usize>) -> usize {
     let mut at = range.start;
     while at < range.end {
         if code[at].is('#') && code.get(at + 1).is_some_and(|t| t.is('[')) {
@@ -227,11 +227,11 @@ mod tests {
         let src = "struct S<T> where T: Copy { #[serde(default)] pub(crate) a: HashMap<String, u8>, b: bool, f: fn(u8) -> bool }";
         let code = tokenize(src).code;
         let item = &items(&code, "struct")[0];
-        let found: Vec<_> = fields(&code, item.body.clone()).into_iter().map(|f| f.name).collect();
+        let found: Vec<_> = fields(&code, &item.body).into_iter().map(|f| f.name).collect();
         assert_eq!(found, [Some("a"), Some("b"), Some("f")]);
         let code = tokenize("enum E { A(String), B { why: String }, C = 3 }").code;
         let item = &items(&code, "enum")[0];
-        let v = variants(&code, item.body.clone());
+        let v = variants(&code, &item.body);
         assert_eq!(v.iter().map(|v| (v.name, v.fields.len())).collect::<Vec<_>>(), [("A", 1), ("B", 1), ("C", 0)]);
     }
 

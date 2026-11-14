@@ -43,8 +43,8 @@ impl Shape for StringlyErrors {
             }
         }
         for item in items(code, "enum").into_iter().filter(|e| e.name.ends_with("Error") || e.name.ends_with("Failure")) {
-            for variant in variants(code, item.body) {
-                if variant.fields.iter().any(|f| type_is(code, f.ty.clone(), &["String"])) {
+            for variant in variants(code, &item.body) {
+                if variant.fields.iter().any(|f| type_is(code, &f.ty, &["String"])) {
                     out.push(Site { line: variant.line, what: STRING_VARIANT });
                 }
             }
@@ -61,7 +61,7 @@ fn result_type(code: &[Token], at: usize) -> Option<&'static str> {
     }
     let args = generic_args(code, at + 1);
     let error = args.get(1).filter(|_| args.len() == 2)?;
-    if type_is(code, error.clone(), &["String"]) {
+    if type_is(code, error, &["String"]) {
         return Some(STRING_ERROR);
     }
     let unit = error.len() == 2 && code[error.start].is('(') && code[error.start + 1].is(')');
