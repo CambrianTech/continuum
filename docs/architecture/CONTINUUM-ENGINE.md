@@ -1419,6 +1419,58 @@ On BigMama and the M5 over an hour: capacity refusals 0; every mind with a turn 
 no grant below a mind's irreducible part; no view collapsed while another mind's idle state held
 the memory she needed; the admission code is smaller than before it.
 
+### 4.9 One allocator: the frame budget every claim draws from (2026-11-14)
+
+Joel, 2026-11-14: "contracting. All the shit we wrote yesterday into a consolidated graphics pipeline
+approach"; "fast switching acting persona. Concurrent and not hard coded. Expanding dynamic memory."
+
+**Measured.** On canary 5730def98, 110 public types in `continuum-engine`, `continuum-serving` and
+`continuum-kernel::{paging, system_resources}` decide who holds memory (`Grant*`, `*Lease`, `*Seat*`,
+`Floor*`, `*Admission*`, `*Budget*`, `*Pool*`, `Pressure*`). 17 PRs on 2026-11-13/14 touched 88 production
+files for the one question. Each new consumer grew its own owner, rule and wait; 4.1a, 4.7 and 4.8 already
+said there is one.
+
+**The shape, as a GPU driver does it.** One allocator per node owns the memory tiers as heaps:
+device (VRAM or unified), host RAM, fast disk. Each heap's capacity is a live reading (the engine's report,
+the OS pressure verdict), never a constant, so a heap expands and contracts while serving. Everything that
+holds bytes is a typed **claim** on a heap:
+
+| Claim | Lifetime | Grows by | Released by |
+|---|---|---|---|
+| `Mind(sequence)` | persistent while she is warm | her KV as her context appends | her cooling: paged down a tier, never dropped |
+| `Embedder` | persistent while loaded | its window | unload |
+| `PromptCache` | evictable, lowest | measured headroom | any claim that needs the bytes |
+| `Learner(step)` | transient, one ubatch | nothing | the step's end |
+| `Transient(act)` | the act's arena | nothing | the act's end |
+
+A claim never waits on a timer: `claim().await` resolves on the release or capacity change that admits it
+(rule 10). Priority is the mind's measured activity temperature (goal 9), with aging; nobody is refused, the
+coldest claim is paged down a tier instead (4.8). Fast switching is the tier move: a mind going cold has her
+pages streamed to host or disk on the page-IO worker (fork #118), within an in-flight byte budget the
+allocator sets, while the others decode. The allocator publishes ONE snapshot (a `watch`), the only thing a
+consumer reads.
+
+**Absorption, one family per PR, each deleting its types** (the order follows hot-path harm):
+
+| Family on canary | Becomes |
+|---|---|
+| `TurnAdmission`, `PromptAdmission`, `RequestAdmission`, `LaneAdmission`, `EndpointAdmission`, `GenerationAdmissionOwner`, `ResourceAdmission*`, `AdmissionHold/Patience/DenyReason` | `claim().await` |
+| `Grant*` (Lease, Share, Terms, Reservation, Revision, Handoff, Owner, Refusal, Evaluation), `FairGrantState`, `ClaimGrant`, `RegisteredGrant`, `WholePoolGrant`, `PoolGrants`, `SeatWindow`, `KvSlotLease`, `KvSlotPool`, `HoldLease`, `StickyLease`, `PersonaContextBudget` | `Claim::Mind` |
+| `MemoryBudget*`, `HostBudget*`, `DeviceCapacity`, `PoolCapacity`, `PoolContract`, `PoolLaunch`, `LivePool` | the heaps and their live capacity |
+| `FloorTerm`, `FloorVerdict` | `Claim::Embedder` |
+| `EcacheBudget`, `HostCacheLeaseInputs` | `Claim::PromptCache` |
+| `TrainingReserve`, `GeneSeat` | `Claim::Learner` |
+| `KvPageStorePool`, `NvmeServingTierPool` | the disk heap a cold mind pages to |
+| `MemoryPressureMonitor`, `PressureBroker`, `PressureTier`, `PressureLevel`, `PressureAlert`, `ReclaimOutcome` | the heaps' capacity input and the one eviction order |
+
+Disk caches (`FilesystemTierPool`, `RotationLogPool`, `CargoTargetPool`, `CitizenWorkspacePool`) are not
+engine memory: each is owned by the event that ends what it holds (card 12ad2a0a), not by this allocator.
+
+**Done when.** One owner of engine memory (`rg` finds the allocator and the claims, no other admission,
+grant or budget type); the concern's file count falls; on the M5 at four residents the median act and
+prefix reuse hold or improve, a page switch leaves the others' decode within 10% of its unloaded rate
+(dyno 11b), and no constant sizes any heap or claim.
+
 ## 5. A mind's context and the engine it runs on
 
 **Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
