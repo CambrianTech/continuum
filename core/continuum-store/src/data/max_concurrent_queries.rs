@@ -236,6 +236,12 @@ impl DataState {
             Self::resolve_handle_with(handle, |key| std::env::var(key).ok(), dirs::home_dir))
     }
 
+    /// Where `id`'s durable memory lives: the per-citizen store `data/*` opens for a UUID handle.
+    /// A directory holding one is memory, whoever wrote it (`memory/*` maps any UUID here).
+    pub fn citizen_store_path(id: uuid::Uuid) -> Result<PathBuf, String> {
+        Self::resolve_handle_with(&id.to_string(), |key| std::env::var(key).ok(), dirs::home_dir).map(PathBuf::from)
+    }
+
     pub(super) fn resolve_node_or_backend(
         handle: &str,
         node_home: impl FnOnce() -> Result<PathBuf, String>,
