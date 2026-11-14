@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use crate::data::DataState;
-use crate::orm::types::StorageResult;
 
 /// Params for `data/ensure-schema`.
 ///
@@ -36,7 +35,7 @@ crate::action_command! {
     name: "data/ensure-schema",
     access: Privileged,
     params: DataEnsureSchemaParams,
-    output: StorageResult<bool>,
+    output: String,
     run(this, _ctx, p) => {
         let handle = p.handle.as_deref().unwrap_or("main");
         let result = this.state.ensure_collection_schema(handle, &p.collection).await?;

@@ -1,7 +1,6 @@
 //! Native payload access through the existing schema and transaction owner.
 use super::storage_error::StorageError;
 use super::{
-    adapter::naming,
     binary::{descriptor_column, BinaryValue},
     types::FieldType,
 };

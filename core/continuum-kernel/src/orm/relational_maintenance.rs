@@ -114,9 +114,7 @@ impl super::relational::RelationalStore {
 
     pub async fn optimize(&self) -> Result<(), StorageError> {
         if self.in_memory {
-            return Err(
-                "connection retirement is not supported for volatile in-memory storage".into(),
-            );
+            return Err(StorageError::Unsupported { adapter: "sqlite in-memory", operation: "optimize" });
         }
         let _guard = self.writer_gate.lock().await;
         // SQLx owns SQLite's optimize-on-close protocol. Retire one pooled connection
@@ -126,7 +124,7 @@ impl super::relational::RelationalStore {
             .acquire()
             .await?
             .close()
-            .await
-            .map_err(|e| e.to_string())
+            .await?;
+        Ok(())
     }
 }

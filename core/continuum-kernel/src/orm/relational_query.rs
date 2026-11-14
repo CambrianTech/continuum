@@ -198,10 +198,10 @@ pub(super) fn select(
         statement.order_by((table.clone(), column(schema, "id")?), Order::Asc);
     }
     if let Some(limit) = query.limit {
-        statement.limit(limit.try_into().map_err(|_| "limit exceeds u64")?);
+        statement.limit(limit.try_into().map_err(|_| StorageError::Overflow { what: "a query limit" })?);
     }
     if let Some(offset) = query.offset {
-        statement.offset(offset.try_into().map_err(|_| "offset exceeds u64")?);
+        statement.offset(offset.try_into().map_err(|_| StorageError::Overflow { what: "a query offset" })?);
     }
     Ok(statement)
 }

@@ -1,5 +1,6 @@
 //! Native row revisions share the existing transaction and sequence-head owners.
 //! This internal custody record is not yet a public delta/replay contract.
+use super::storage_error::StorageError;
 use sea_orm::entity::prelude::*;
 use sea_orm::sea_query::{Index, IndexCreateStatement, OnConflict, Query};
 
@@ -34,7 +35,7 @@ impl super::relational::RelationalStore {
         connection: &C,
         collection: &str,
         id: &str,
-    ) -> Result<super::relational_transaction::Revision, String> {
+    ) -> Result<super::relational_transaction::Revision, StorageError> {
         super::binary::native_identity(id)?;
         let revision = super::relational_sequence::next_on(
             connection,
@@ -51,8 +52,7 @@ impl super::relational::RelationalStore {
                 Column::Revision,
                 Column::Deleted,
             ])
-            .values([collection.into(), id.into(), revision.into(), false.into()])
-            .map_err(|e| e.to_string())?
+            .values([collection.into(), id.into(), revision.into(), false.into()])?
             .on_conflict(
                 OnConflict::columns([Column::Collection, Column::Id])
                     .update_columns([Column::Revision, Column::Deleted])
@@ -61,14 +61,13 @@ impl super::relational::RelationalStore {
             .to_owned();
         connection
             .execute(connection.get_database_backend().build(&statement))
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
         Ok(super::relational_transaction::Revision {
             domain: super::relational_sequence::Domain::Native,
             collection: collection.into(),
             high: revision
                 .try_into()
-                .map_err(|_| "negative native revision")?,
+                .map_err(|_| StorageError::Corrupt { what: "a native revision is negative" })?,
         })
     }
 }
@@ -79,18 +78,14 @@ impl super::relational::RelationalStore {
         connection: &sea_orm::DatabaseTransaction,
         schema: &super::types::CollectionSchema,
         query: &super::query::StorageQuery,
-    ) -> Result<Vec<super::relational_transaction::Revision>, String> {
+    ) -> Result<Vec<super::relational_transaction::Revision>, StorageError> {
         use sea_orm::sea_query::{Alias, Expr};
         use sea_orm::PaginatorTrait;
         let catalog_count = super::relational_declaration::Entity::find()
             .count(connection)
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
         if catalog_count != self.collections().len() as u64 {
-            return Err(
-                "schema catalog changed outside this owner; admit all declarations before deleting"
-                    .into(),
-            );
+            return Err(StorageError::Corrupt { what: "the schema catalog changed outside its owner; admit every declaration before deleting" });
         }
         let (graph, native) = self.deletion_graph(schema, query)?;
         let mut revisions = Vec::new();
@@ -114,8 +109,7 @@ impl super::relational::RelationalStore {
                 .to_owned();
             if connection
                 .query_one(connection.get_database_backend().build(&probe))
-                .await
-                .map_err(|e| e.to_string())?
+                .await?
                 .is_none()
             {
                 continue;
@@ -135,14 +129,13 @@ impl super::relational::RelationalStore {
                 .to_owned();
             connection
                 .execute(connection.get_database_backend().build(&statement))
-                .await
-                .map_err(|e| e.to_string())?;
+                .await?;
             revisions.push(super::relational_transaction::Revision {
                 domain: super::relational_sequence::Domain::Native,
                 collection,
                 high: revision
                     .try_into()
-                    .map_err(|_| "negative native revision")?,
+                    .map_err(|_| StorageError::Corrupt { what: "a native revision is negative" })?,
             });
         }
         Ok(revisions)

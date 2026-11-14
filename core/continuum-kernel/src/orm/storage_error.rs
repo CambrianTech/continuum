@@ -152,8 +152,6 @@ pub enum ConfigFault {
     CapacityRange,
     #[error("the database path is not UTF-8")]
     PathText,
-    #[error("a migration needs a positive batch size")]
-    BatchSize,
 }
 
 /// What is wrong with a stored value under its declared type.
@@ -196,6 +194,8 @@ pub enum QueryFault {
     DeletePredicate,
     #[error("a join alias is invalid or collides")]
     JoinAlias,
+    #[error("a join names no declared entity relationship")]
+    JoinUndeclared,
     #[error("a generated join projection collides with a declared column")]
     JoinCollision,
     #[error("vector statistics need rank-one payloads")]

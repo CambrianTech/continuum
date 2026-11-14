@@ -303,7 +303,7 @@ impl DataState {
             );
         }
 
-        Ok(result)
+        Ok(counted?)
     }
 
     /// Phase 2 Step 3: ensure_schema pivot through resolve().

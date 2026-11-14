@@ -28,21 +28,24 @@ use super::types::{DataRecord, RecordMetadata};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationConfig {
-    /// Records per batch (default: 500)
+    /// Records per page: positive by type, so a zero page cannot be configured (default 500).
     #[serde(default = "default_batch_size")]
-    pub batch_size: usize,
+    pub batch_size: std::num::NonZeroUsize,
     /// Optional list of collections to migrate (None = all)
     pub collections: Option<Vec<String>>,
 }
 
-fn default_batch_size() -> usize {
-    500
+/// The default migration page.
+pub const DEFAULT_BATCH_SIZE: std::num::NonZeroUsize = std::num::NonZeroUsize::MIN.saturating_add(499);
+
+fn default_batch_size() -> std::num::NonZeroUsize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl Default for MigrationConfig {
     fn default() -> Self {
         Self {
-            batch_size: 500,
+            batch_size: DEFAULT_BATCH_SIZE,
             collections: None,
         }
     }
@@ -166,6 +169,8 @@ pub struct MigrationVerification {
 /// Progress uses atomics/RwLock; pause/resume is retained watch state.
 #[derive(Clone)]
 pub struct MigrationHandle {
+    /// The migration's page, which verification reads in too.
+    page: std::num::NonZeroUsize,
     states: Arc<parking_lot::RwLock<HashMap<String, Arc<CollectionMigrationState>>>>,
     paused: tokio::sync::watch::Sender<bool>,
     running: Arc<AtomicBool>,
@@ -240,7 +245,7 @@ impl MigrationHandle {
                 let source = self.source.binary_snapshot(collection).await?;
                 let target = self.target.binary_snapshot(collection).await?;
                 // A transfer-page bound, not a limit on verified rows.
-                source.migration_matches(&target, self.batch_size()?).await?
+                source.migration_matches(&target, self.page).await?
             } else { false };
             if !matches {
                 all_match = false;
@@ -297,6 +302,7 @@ impl MigrationEngine {
     /// Get a lightweight handle for status/pause/verify (safe to use while engine runs)
     pub fn handle(&self) -> MigrationHandle {
         MigrationHandle {
+            page: self.config.batch_size,
             states: self.states.clone(),
             paused: self.paused.clone(),
             running: self.running.clone(),
@@ -384,7 +390,7 @@ impl MigrationEngine {
             return Ok(());
         }
 
-        let batch_size = self.batch_size()?;
+        let batch_size = self.config.batch_size;
         let snapshot = self.source.binary_snapshot(collection).await?;
         let mut after: Option<String> = None;
 
@@ -438,11 +444,6 @@ impl MigrationEngine {
 
         *state.status.write() = MigrationStatus::Completed;
         Ok(())
-    }
-
-    /// The migration's page: its configured batch size, which must be positive.
-    fn batch_size(&self) -> Result<std::num::NonZeroUsize, StorageError> {
-        std::num::NonZeroUsize::new(self.config.batch_size).ok_or(StorageError::Config(super::storage_error::ConfigFault::BatchSize))
     }
 
     /// Convenience: pause

@@ -97,7 +97,7 @@ impl BinarySnapshot {
                     .try_as_sqlite_row()
                     .ok_or(StorageError::Corrupt { what: "a result is not a SQLite row" })?;
                 let header: &[u8] = row.try_get("descriptor")?;
-                BinaryDescriptor::decode(header)
+                Ok(BinaryDescriptor::decode(header)?)
             })
             .collect()
     }
@@ -192,8 +192,8 @@ impl BinarySnapshot {
                 .ok_or(StorageError::Overflow { what: "a native page" })?;
             borrowed.push((super::binary::native_identity(id)?, payload));
         }
-        bytes.try_reserve(total)?;
-        ids.try_reserve(borrowed.len())?;
+        bytes.try_reserve(total).map_err(|_| StorageError::Overflow { what: "a native page buffer" })?;
+        ids.try_reserve(borrowed.len()).map_err(|_| StorageError::Overflow { what: "a native page id buffer" })?;
         // No await or fallible decoding after the caller buffers start changing.
         for (id, payload) in borrowed {
             bytes.extend_from_slice(payload);

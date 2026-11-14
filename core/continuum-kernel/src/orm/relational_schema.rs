@@ -34,7 +34,7 @@ fn action(rule: CascadeRule) -> ForeignKeyAction {
 
 pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, StorageError> {
     if schema.collection.is_empty() {
-        StorageError::Declaration { collection: schema.collection.clone(), fault: DeclarationFault::NoCollection });
+        return Err(StorageError::Declaration { collection: schema.collection.clone(), fault: DeclarationFault::NoCollection });
     }
     let table = naming::to_table_name(&schema.collection);
     let mut columns = BTreeSet::new();

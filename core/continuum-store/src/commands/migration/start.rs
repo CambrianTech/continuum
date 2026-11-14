@@ -5,8 +5,8 @@ use std::sync::Arc;
 use crate::data::DataState;
 use crate::orm::migration::MigrationProgress;
 
-fn default_batch_size() -> usize {
-    500
+fn default_batch_size() -> std::num::NonZeroUsize {
+    crate::orm::migration::DEFAULT_BATCH_SIZE
 }
 
 /// Params for `migration/start`.
@@ -21,9 +21,11 @@ pub struct MigrationStartParams {
     pub source: String,
     /// Target connection string to write to.
     pub target: String,
-    /// Records per batch. Defaults to 500.
+    /// Records per page, positive (a zero page is refused at the wire); defaults to the migration owner's.
     #[serde(default = "default_batch_size")]
-    pub batch_size: usize,
+    #[ts(type = "number")]
+    #[schemars(with = "u64")]
+    pub batch_size: std::num::NonZeroUsize,
     /// Optional explicit collection list. Omit to migrate every collection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

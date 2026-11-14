@@ -54,9 +54,9 @@ pub(super) async fn evolve(
         }
     }
     let before = super::relational_schema::compile(previous)
-        .map_err(|error| SchemaError::gap(&current.collection, error))?;
+        .map_err(|error| SchemaError::gap(&current.collection, error.to_string()))?;
     let after = super::relational_schema::compile(current)
-        .map_err(|error| SchemaError::gap(&current.collection, error))?;
+        .map_err(|error| SchemaError::gap(&current.collection, error.to_string()))?;
     let table = naming::to_table_name(&current.collection);
     if rebuild {
         let names: Vec<_> = before.create.get_columns().iter().map(|column| column.get_column_name()).collect();

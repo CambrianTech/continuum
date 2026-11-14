@@ -4,7 +4,7 @@ use super::{query::StorageQuery, relational::RelationalStore, types::DataRecord}
 use sea_orm::{DatabaseTransaction, TransactionTrait};
 use std::{future::Future, pin::Pin};
 
-type WriteFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+type WriteFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, StorageError>> + Send + 'a>>;
 
 impl RelationalStore {
     pub async fn write<T, F>(&self, operation: F) -> Result<T, StorageError>

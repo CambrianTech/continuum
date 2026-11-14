@@ -1,6 +1,5 @@
 //! Mutation statements use the same declared columns and codecs as reads.
 use super::storage_error::{QueryFault, Shape, StorageError};
-use super::storage_error::StorageError;
 use super::{
     adapter::naming,
     query::{QueryBuilder, StorageQuery},

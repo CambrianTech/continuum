@@ -67,10 +67,10 @@ impl DataState {
             Some(fields)
         };
         let missing_filter = with_embedding(QueryOperator::IsNull);
-        let mut skipped = adapter.count(StorageQuery {
+        let mut skipped = adapter.count(&StorageQuery {
             collection: collection.into(), filter: with_embedding(QueryOperator::IsNotNull),
             ..Default::default()
-        }).await.into_result()?;
+        }).await.map_err(|e| e.to_string())?;
 
         let mut cursor = None;
         let mut total = skipped;
@@ -97,7 +97,7 @@ impl DataState {
                 cursor: cursor.take(),
                 ..Default::default()
             };
-            let chunk = adapter.query(query).await.into_result()?;
+            let chunk = adapter.query(&query).await.map_err(|e| e.to_string())?;
             let Some(last) = chunk.last() else { break };
             cursor = Some(crate::orm::query::Cursor {
                 field: "id".into(),
@@ -164,21 +164,20 @@ impl DataState {
                 };
 
                 let update_result = adapter
-                    .update_binary(
-                        collection,
-                        &record.id,
-                        std::collections::BTreeMap::from([(EMBEDDING_FIELD.to_owned(), payload)]),
-                        crate::orm::binary::BinaryWriteCondition::IfAbsent,
-                    )
+                    .update_binary(crate::orm::seam::BinaryWrite {
+                        row: crate::orm::seam::RowRef { collection, id: &record.id },
+                        payloads: std::collections::BTreeMap::from([(EMBEDDING_FIELD.to_owned(), payload)]),
+                        condition: crate::orm::binary::BinaryWriteCondition::IfAbsent,
+                    })
                     .await;
 
-                match update_result.into_result() {
-                    Ok(true) => {
+                match update_result {
+                    Ok(crate::orm::seam::BinaryWritten::Written) => {
                         processed += 1;
                         // Keep completed writes visible even if a later page fails.
                         self.vector_cache.invalidate(&scope, collection);
                     }
-                    Ok(false) => skipped += 1,
+                    Ok(crate::orm::seam::BinaryWritten::Unchanged) => skipped += 1,
                     Err(_) => failed += 1,
                 }
             }
@@ -252,7 +251,7 @@ impl DataState {
                 filter: params.filter.clone(),
                 ..Default::default()
             };
-            adapter.count(count_query).await.into_result()? as u64
+            adapter.count(&count_query).await.map_err(|e| e.to_string())? as u64
         } else {
             0
         };
@@ -435,7 +434,7 @@ impl DataState {
             ..Default::default()
         };
 
-        let mut records = adapter.query(query).await.into_result()?;
+        let mut records = adapter.query(&query).await.map_err(|e| e.to_string())?;
         let new_has_more = records.len() > page_size;
         if new_has_more {
             records.truncate(page_size);
@@ -609,7 +608,7 @@ impl DataState {
     pub(crate) async fn migration_verify(&self) -> Result<MigrationVerification, String> {
         let guard = self.active_migration.lock().await;
         match guard.as_ref() {
-            Some(handle) => handle.verify().await,
+            Some(handle) => handle.verify().await.map_err(|e| e.to_string()),
             None => Err("No active migration".into()),
         }
     }

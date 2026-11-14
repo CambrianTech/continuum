@@ -1,6 +1,5 @@
 //! Joins use declared relationships and project related columns in the database.
-use super::storage_error::{QueryFault, Shape, StorageError};
-use super::storage_error::StorageError;
+use super::storage_error::{QueryFault, StorageError};
 use super::{
     adapter::naming,
     query::StorageQuery,
@@ -50,10 +49,7 @@ impl super::relational::RelationalStore {
                 if !declared(&schema, &join.local_field, &related, &join.foreign_field)
                     && !declared(&related, &join.foreign_field, &schema, &join.local_field)
                 {
-                    return Err(format!(
-                        "{} -> {} is not a declared entity relationship",
-                        schema.collection, related.collection
-                    ));
+                    return Err(StorageError::Unqueryable(QueryFault::JoinUndeclared));
                 }
                 let alias = Alias::new(format!("relation_{number}"));
                 statement.join_as(

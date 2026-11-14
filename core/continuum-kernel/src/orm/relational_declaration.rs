@@ -83,7 +83,7 @@ async fn verify_current_declaration(
     schema: &CollectionSchema,
     actual: &[catalog::Model],
 ) -> Result<(), SchemaError> {
-    let declaration = super::relational_schema::compile(schema).map_err(|error| SchemaError::gap(&schema.collection, error))?;
+    let declaration = super::relational_schema::compile(schema).map_err(|error| SchemaError::gap(&schema.collection, error.to_string()))?;
     let expected = sea_orm::Database::connect("sqlite::memory:")
         .await.map_err(SchemaError::from)?;
     expected.execute(sea_orm::DbBackend::Sqlite.build(&declaration.create))
@@ -158,7 +158,7 @@ pub(super) async fn restore<C: ConnectionTrait>(
         }
         for receipt in receipts {
             let schema = decode(&receipt)?;
-            super::relational_schema::compile(&schema).map_err(|error| SchemaError::gap(&schema.collection, error))?;
+            super::relational_schema::compile(&schema).map_err(|error| SchemaError::gap(&schema.collection, error.to_string()))?;
             verify_physical(&receipt, &physical(db, &schema.collection).await?)?;
             after = Some(receipt.collection);
             schemas.insert(schema.collection.clone(), std::sync::Arc::new(schema));

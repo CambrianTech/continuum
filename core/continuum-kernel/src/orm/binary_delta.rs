@@ -56,9 +56,9 @@ pub enum NativeDeltaError {
     #[error("native delta row has inconsistent payload custody")]
     Custody,
     #[error("native delta provider: {0}")]
-    Provider(String),
+    Provider(super::storage_error::StorageError),
     #[error("native delta descriptor or identity: {0}")]
-    Metadata(String),
+    Metadata(super::storage_error::StorageError),
     #[error("native delta output exceeds available address space")]
     Capacity,
 }
@@ -147,29 +147,29 @@ impl BinarySnapshot {
             .transaction
             .query_all(DbBackend::Sqlite.build(&query))
             .await
-            .map_err(|error| NativeDeltaError::Provider(error.to_string()))?;
+            .map_err(|error| NativeDeltaError::Provider(error.into()))?;
         let mut staged = Vec::with_capacity(rows.len());
         let mut end = output.bytes.len();
         for row in &rows {
             let row = row.try_as_sqlite_row().ok_or(NativeDeltaError::Custody)?;
             let id: &str = row
                 .try_get("id")
-                .map_err(|error| NativeDeltaError::Provider(error.to_string()))?;
+                .map_err(|error| NativeDeltaError::Provider(error.into()))?;
             let revision: i64 = row
                 .try_get("revision")
-                .map_err(|error| NativeDeltaError::Provider(error.to_string()))?;
+                .map_err(|error| NativeDeltaError::Provider(error.into()))?;
             let deleted: bool = row
                 .try_get("deleted")
-                .map_err(|error| NativeDeltaError::Provider(error.to_string()))?;
+                .map_err(|error| NativeDeltaError::Provider(error.into()))?;
             let live: Option<&str> = row
                 .try_get("live_id")
-                .map_err(|error| NativeDeltaError::Provider(error.to_string()))?;
+                .map_err(|error| NativeDeltaError::Provider(error.into()))?;
             let payload: Option<&[u8]> = row
                 .try_get("payload")
-                .map_err(|error| NativeDeltaError::Provider(error.to_string()))?;
+                .map_err(|error| NativeDeltaError::Provider(error.into()))?;
             let header: Option<&[u8]> = row
                 .try_get("descriptor")
-                .map_err(|error| NativeDeltaError::Provider(error.to_string()))?;
+                .map_err(|error| NativeDeltaError::Provider(error.into()))?;
             let cursor = NativeDeltaCursor {
                 revision: u64::try_from(revision).map_err(|_| NativeDeltaError::Interval)?,
                 id: native_identity(id).map_err(NativeDeltaError::Metadata)?,
@@ -180,8 +180,8 @@ impl BinarySnapshot {
                 }
                 (false, Some(_), Some(bytes), Some(header)) => {
                     let descriptor =
-                        BinaryDescriptor::decode(header).map_err(NativeDeltaError::Metadata)?;
-                    if descriptor.byte_len().map_err(|error| NativeDeltaError::Metadata(error.to_string()))? != bytes.len() {
+                        BinaryDescriptor::decode(header).map_err(|error| NativeDeltaError::Metadata(error.into()))?;
+                    if descriptor.byte_len().map_err(|error| NativeDeltaError::Metadata(error.into()))? != bytes.len() {
                         return Err(NativeDeltaError::Custody);
                     }
                     let start = end;
