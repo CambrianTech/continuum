@@ -75,7 +75,7 @@ impl KvSlotPool {
         // A ledger that restores nothing has already named why (`LedgerUnread`, probed by `load`).
         let loaded = match load.then(|| ledger.load()) {
             Some(Ok(loaded)) => loaded,
-            Some(Err(_unread)) | None => LoadedLedger::default(),
+            Some(Err(_)) | None => LoadedLedger::default(),
         };
         let count = loaded.keys.len();
         if self.ledger.set(ledger).is_err() {
