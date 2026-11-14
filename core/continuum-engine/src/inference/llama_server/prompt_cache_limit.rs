@@ -46,23 +46,32 @@ enum WireRefusal {
     Other(String),
 }
 
-/// The route's task result. The receipt fields are present only when `refusal` is `none`.
+/// The route's task result: a refusal word, and the receipt that comes with `none`.
 #[derive(Debug, Deserialize)]
 struct LimitReply {
     refusal: WireRefusal,
-    held_bytes: Option<u64>,
-    freed_bytes: Option<u64>,
+    #[serde(flatten)]
+    receipt: Option<LimitReceipt>,
+}
+
+/// What the cache holds and freed: both present together, only beside `refusal: none`.
+#[derive(Debug, Deserialize)]
+struct LimitReceipt {
+    held_bytes: u64,
+    freed_bytes: u64,
 }
 
 impl LimitReply {
     fn into_result(self) -> Result<PromptCacheLimit, LlamaServerError> {
-        match (self.refusal, self.held_bytes, self.freed_bytes) {
-            (WireRefusal::None, Some(held_bytes), Some(freed_bytes)) => Ok(PromptCacheLimit { held_bytes, freed_bytes }),
-            (WireRefusal::None, _, _) => Err(LlamaServerError::Unreachable(
-                "/prompt-cache/limit answered refusal none without held_bytes and freed_bytes".into(),
-            )),
-            (WireRefusal::PromptCacheDisabled, _, _) => Err(LlamaServerError::PromptCacheRefused(PromptCacheRefusal::Disabled)),
-            (WireRefusal::Other(word), _, _) => Err(LlamaServerError::PromptCacheRefused(PromptCacheRefusal::Refused(word))),
+        match self.refusal {
+            WireRefusal::None => self
+                .receipt
+                .map(|LimitReceipt { held_bytes, freed_bytes }| PromptCacheLimit { held_bytes, freed_bytes })
+                .ok_or_else(|| LlamaServerError::Unreachable(
+                    "/prompt-cache/limit answered refusal none without held_bytes and freed_bytes".into(),
+                )),
+            WireRefusal::PromptCacheDisabled => Err(LlamaServerError::PromptCacheRefused(PromptCacheRefusal::Disabled)),
+            WireRefusal::Other(word) => Err(LlamaServerError::PromptCacheRefused(PromptCacheRefusal::Refused(word))),
         }
     }
 }

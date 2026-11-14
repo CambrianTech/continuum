@@ -148,10 +148,7 @@ pub(super) async fn stored_credit_rows(
     conn: &Connection<InProcessTransport>,
     name: &str,
 ) -> Vec<StagedCredit> {
-    crate::orm::client_read::matching(
-        conn, &format!("@persona:{name}"), StagedCredit::COLLECTION,
-        serde_json::Map::new(), None,
-    ).await.expect("stored credit rows")
+    crate::orm::client_read::matching(conn, crate::orm::client_read::ListSelection { handle: &format!("@persona:{name}"), collection: StagedCredit::COLLECTION, filter: &serde_json::Map::new(), select: None }).await.expect("stored credit rows")
 }
 
 pub(super) fn settlement_acts(count: usize) -> Vec<(String, Vec<crate::ai::types::ToolCall>)> {

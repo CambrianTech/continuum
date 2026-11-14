@@ -230,10 +230,7 @@ async fn pending_on_card<T: Transport>(
     persona_name: &str,
     card_id: Uuid,
 ) -> Result<Vec<PendingCreditBinding>, ClientError> {
-    crate::orm::client_read::matching(
-        conn, &format!("@persona:{persona_name}"), PendingCreditBinding::COLLECTION,
-        serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]), None,
-    ).await
+    crate::orm::client_read::matching(conn, crate::orm::client_read::ListSelection { handle: &format!("@persona:{persona_name}"), collection: PendingCreditBinding::COLLECTION, filter: &serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]), select: None }).await
 }
 
 #[cfg(test)]

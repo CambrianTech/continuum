@@ -291,7 +291,7 @@ async fn test_vector_cache_invalidation() {
                 )]).await.expect("batch delete");
                 assert!(matches!(result[..], [crate::orm::types::BatchOutcome::Removed]), "{result:?}");
             }
-            "delete" => assert_eq!(module.state.delete_record(&alias, "test_cache".into(), target()).await.expect("delete"), crate::orm::seam::Deleted::Removed),
+            "delete" => assert_eq!(module.state.delete_record(&alias, "test_cache", target()).await.expect("delete"), crate::orm::seam::Deleted::Removed),
             "truncate" => assert_eq!(module.state.truncate_collection(&alias, "test_cache").await.expect("truncate"), 1),
             "clear" => { module.state.clear_all_collections(&alias).await.expect("clear"); }
             _ => unreachable!("fixture operation"),

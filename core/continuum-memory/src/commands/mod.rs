@@ -187,13 +187,7 @@ pub(crate) async fn hydrate_corpus_if_missing(
     let connection = continuum_client::Connection::new(
         crate::runtime::InProcessTransport::new(executor, None),
     );
-    let rows: Vec<serde_json::Value> = crate::orm::client_read::matching(
-        &connection,
-        &persona_db_handle(persona_id),
-        MEMORIES_COLLECTION,
-        serde_json::Map::from_iter([("persona_id".into(), serde_json::json!(persona_id))]),
-        None,
-    )
+    let rows: Vec<serde_json::Value> = crate::orm::client_read::matching(&connection, crate::orm::client_read::ListSelection { handle: &persona_db_handle(persona_id), collection: MEMORIES_COLLECTION, filter: &serde_json::Map::from_iter([("persona_id".into(), serde_json::json!(persona_id))]), select: None })
         .await
         .map_err(|e| {
             CommandError::Internal(format!(

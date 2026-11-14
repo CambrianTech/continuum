@@ -51,13 +51,13 @@ impl DataState {
 
     /// Delete a record by id (the one source behind `data/delete`). Publishes `<collection>:deleted`
     /// when a row was removed.
-    pub(crate) async fn delete_record(&self, handle: &str, collection: String, id: UUID) -> Result<Deleted, CommandError> {
-        require_public_collection(&collection).map_err(CommandError::Invalid)?;
+    pub(crate) async fn delete_record(&self, handle: &str, collection: &str, id: UUID) -> Result<Deleted, CommandError> {
+        require_public_collection(collection).map_err(CommandError::Invalid)?;
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
-        let deleted = adapter.delete(RowRef { collection: &collection, id: &id }).await?;
+        let deleted = adapter.delete(RowRef { collection, id: &id }).await?;
         if deleted == Deleted::Removed {
-            self.vector_cache.invalidate(&scope, &collection);
-            self.publish_event(&collection, "deleted", json!({ "id": id, "collection": collection }));
+            self.vector_cache.invalidate(&scope, collection);
+            self.publish_event(collection, "deleted", json!({ "id": id, "collection": collection }));
         }
         Ok(deleted)
     }

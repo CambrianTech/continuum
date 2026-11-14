@@ -41,7 +41,7 @@ crate::action_command! {
     output: Deleted,
     run(this, _ctx, p) => {
         let handle = p.handle.as_str();
-        let result = this.state.delete_record(handle, p.collection, p.id).await?;
+        let result = this.state.delete_record(handle, &p.collection, p.id).await?;
         Ok(result)
     }
 }

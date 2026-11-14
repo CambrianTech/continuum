@@ -17,10 +17,20 @@ struct SelectedPage<E> {
     items: Vec<SelectedRecord<E>>,
 }
 
+/// Which rows of which store `matching` reads: borrowed, since every page reuses them.
+pub struct ListSelection<'a> {
+    pub handle: &'a str,
+    pub collection: &'a str,
+    pub filter: &'a Map<String, Value>,
+    /// The fields to materialize; `None` reads whole rows.
+    pub select: Option<&'a [&'a str]>,
+}
+
 pub async fn matching<T: Transport, E: DeserializeOwned>(
-    conn: &Connection<T>, handle: &str, collection: &str,
-    filter: Map<String, Value>, select: Option<Vec<String>>,
+    conn: &Connection<T>,
+    selection: ListSelection<'_>,
 ) -> Result<Vec<E>, ClientError> {
+    let ListSelection { handle, collection, filter, select } = selection;
     if filter.contains_key("id") {
         return Err(ClientError::Transport("keyset traversal reserves the id predicate; use a bounded identity lookup".into()));
     }
@@ -51,6 +61,11 @@ pub async fn matching<T: Transport, E: DeserializeOwned>(
 mod tests {
     use super::*;
     use continuum_client::mock::MockTransport;
+
+    /// The fixture store's selection of `filter` and `select`.
+    fn fixture<'a>(filter: &'a Map<String, Value>, select: Option<&'a [&'a str]>) -> ListSelection<'a> {
+        ListSelection { handle: "fixture", collection: "fixture", filter, select }
+    }
     #[derive(serde::Deserialize)]
     struct Row { value: usize }
     fn page(start: usize, count: usize, total: usize) -> Value {
@@ -74,7 +89,7 @@ mod tests {
             // Every previously delivered row disappeared; OFFSET would skip this row.
             Ok(page(size, 1, 1))
         });
-        let rows: Vec<Row> = matching(&Connection::new(mock), "fixture", "fixture", Map::new(), Some(vec!["value".into()])).await?;
+        let rows: Vec<Row> = matching(&Connection::new(mock), fixture(&Map::new(), Some(&["value"]))).await?;
         assert_eq!(rows.len(), size + 1);
         assert_eq!(rows.last().map(|row| row.value), Some(size));
         Ok(())
@@ -85,7 +100,7 @@ mod tests {
         let mock = MockTransport::new();
         mock.respond_with("data/list", page(0, size, size * 2));
         mock.respond_with("data/list", page(0, size, size * 2));
-        let result = matching::<_, Row>(&Connection::new(mock), "fixture", "fixture", Map::new(), None).await;
+        let result = matching::<_, Row>(&Connection::new(mock), fixture(&Map::new(), None)).await;
         assert!(matches!(result, Err(ClientError::Transport(message)) if message.contains("did not advance")));
     }
     #[tokio::test]
@@ -96,15 +111,13 @@ mod tests {
         mock.respond_with("data/list", json!({"items":[{
             "id":"a", "data":{"sequence":u64::MAX,"note":null}
         }]}));
-        let rows: Vec<Projection> = matching(&Connection::new(mock), "fixture", "fixture",
-            Map::new(), Some(vec!["sequence".into(), "note".into()])).await?;
+        let rows: Vec<Projection> = matching(&Connection::new(mock), fixture(&Map::new(), Some(&["sequence", "note"]))).await?;
         assert_eq!(rows, vec![Projection { sequence: u64::MAX, note: None }]);
         let mock = MockTransport::new();
         mock.respond_with("data/list", json!({"items":[{
             "id":"a", "data":{"sequence":null,"note":null}
         }]}));
-        assert!(matching::<_, Projection>(&Connection::new(mock), "fixture", "fixture",
-            Map::new(), Some(vec!["sequence".into(), "note".into()])).await.is_err());
+        assert!(matching::<_, Projection>(&Connection::new(mock), fixture(&Map::new(), Some(&["sequence", "note"]))).await.is_err());
         Ok(())
     }
 }

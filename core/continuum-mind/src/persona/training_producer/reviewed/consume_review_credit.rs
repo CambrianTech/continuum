@@ -635,10 +635,7 @@ pub(super) async fn generation_row<T: Transport>(
 ) -> Result<StagedCredit, CreditBindingError> {
     // Read the compact child index through the shared cursor owner. Parent
     // evidence is loaded only for matching links and still revalidated below.
-    let links: Vec<StagedCreditGeneration> = crate::orm::client_read::matching(
-        conn, &format!("@persona:{persona_name}"), StagedCreditGeneration::COLLECTION,
-        serde_json::Map::from_iter([("submittedRequestId".into(), json!(generation))]), None,
-    ).await?;
+    let links: Vec<StagedCreditGeneration> = crate::orm::client_read::matching(conn, crate::orm::client_read::ListSelection { handle: &format!("@persona:{persona_name}"), collection: StagedCreditGeneration::COLLECTION, filter: &serde_json::Map::from_iter([("submittedRequestId".into(), json!(generation))]), select: None }).await?;
     let mut selected = None;
     for link in links {
         if link.submitted_request_id != generation {

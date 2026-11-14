@@ -23,11 +23,7 @@ struct RejectionRow {
 /// Read rejection state through the caller's storage authority. An unavailable read is
 /// an unsettled review, never evidence of a plain pass.
 async fn card_rows<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid) -> Result<Vec<RejectionRow>, ClientError> {
-    crate::orm::client_read::matching(
-        conn, &format!("@persona:{persona_name}"), StagedCredit::COLLECTION,
-        serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]),
-        Some(vec!["rejectedAtMs".into()]),
-    ).await
+    crate::orm::client_read::matching(conn, crate::orm::client_read::ListSelection { handle: &format!("@persona:{persona_name}"), collection: StagedCredit::COLLECTION, filter: &serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]), select: Some(&["rejectedAtMs"]) }).await
 }
 
 /// A failed review is settled only once its rejection marks are durably written.
