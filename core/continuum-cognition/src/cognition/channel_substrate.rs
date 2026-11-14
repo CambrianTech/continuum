@@ -20,6 +20,8 @@
 
 use std::sync::{Arc, OnceLock};
 
+use uuid::Uuid;
+
 use crate::cognition::channel_digest::ChannelDigestBuilder;
 use crate::cognition::channel_digest_region::DigestBuffer;
 use crate::cognition::channel_element::ChannelElementCache;
@@ -57,4 +59,23 @@ pub fn global_channel_digest_builder() -> Arc<ChannelDigestBuilder> {
 pub fn global_channel_digest_buffer() -> Arc<DigestBuffer> {
     static G: OnceLock<Arc<DigestBuffer>> = OnceLock::new();
     G.get_or_init(|| Arc::new(DigestBuffer::new())).clone()
+}
+
+/// Each room's revision: bumped when anything in the room changes (an event crossed the core's
+/// one feed, `airc::inbound_attach`, or a reader advanced its cursor there). A digest built at a
+/// revision is current until the revision moves, so the digest region rebuilds a room only when
+/// it changed, never every tick: before this, every tick paged and decoded the newest 100 events
+/// for every resident (the core's second-largest CPU use in a `sample` on the M5, 2026-11-14).
+pub fn room_touched(room: Uuid) {
+    *room_revisions().entry(room).or_insert(0) += 1;
+}
+
+/// The room's current revision (0 before anything touched it).
+pub fn room_revision(room: Uuid) -> u64 {
+    room_revisions().get(&room).map_or(0, |revision| *revision)
+}
+
+fn room_revisions() -> &'static dashmap::DashMap<Uuid, u64> {
+    static G: OnceLock<dashmap::DashMap<Uuid, u64>> = OnceLock::new();
+    G.get_or_init(dashmap::DashMap::new)
 }

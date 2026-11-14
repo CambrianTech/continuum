@@ -148,6 +148,9 @@ impl AircTranscriptReader for airc_lib::Airc {
             &read_cursor_consumer_id(persona, room),
             event,
         )
-        .await
+        .await?;
+        // Her unread split moved: the room's digest is rebuilt on the next tick.
+        crate::cognition::channel_substrate::room_touched(room);
+        Ok(())
     }
 }

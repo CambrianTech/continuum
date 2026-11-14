@@ -63,6 +63,8 @@ pub struct ChannelDigestRegion {
     digests: Arc<DigestBuffer>,
     grounding: usize,
     fetch_limit: usize,
+    /// The room revision each (persona, room) digest was built at: unchanged means current.
+    built_at: dashmap::DashMap<(Uuid, Uuid), u64>,
 }
 
 impl ChannelDigestRegion {
@@ -88,6 +90,7 @@ impl ChannelDigestRegion {
             digests,
             grounding: DEFAULT_GROUNDING,
             fetch_limit: DEFAULT_FETCH_LIMIT,
+            built_at: dashmap::DashMap::new(),
         }
     }
 
@@ -120,6 +123,13 @@ impl ChannelDigestRegion {
         let Some((reader, room)) = self.personas.reader_and_room(persona_id) else {
             return TickOutcome::idle();
         };
+        // Read BEFORE the build: a change landing during the build moves it again, so the next
+        // tick rebuilds rather than keeping a digest that missed it.
+        let revision = crate::cognition::channel_substrate::room_revision(room);
+        let key = (persona_id, room);
+        if self.built_at.get(&key).is_some_and(|built| *built == revision) && self.digests.peek(&key).is_some() {
+            return TickOutcome { cadence_hint: Some(CadenceHint::Slower), ..TickOutcome::idle() };
+        }
         match self
             .builder
             .build(
@@ -133,7 +143,8 @@ impl ChannelDigestRegion {
         {
             Ok(digest) => {
                 let has_unread = digest.has_unread();
-                self.digests.publish((persona_id, room), Arc::new(digest));
+                self.digests.publish(key, Arc::new(digest));
+                self.built_at.insert(key, revision);
                 TickOutcome {
                     published: 1,
                     consumed_since_last: 0,
@@ -390,5 +401,20 @@ mod tests {
             1,
             "one entry per (persona, channel), refreshed"
         );
+    }
+
+    // what this catches: the region re-paging and decoding a room every tick when nothing in it
+    // changed (the core's second-largest CPU use on the M5, 2026-11-14). An unchanged room is not
+    // rebuilt; a touched room is, once.
+    #[tokio::test]
+    async fn an_unchanged_room_is_not_rebuilt() {
+        let persona = Uuid::new_v4();
+        let room = RoomId::new();
+        let region = region_for(persona, room, vec![event_in(room, "a", 1)]);
+        assert_eq!(region.tick(&RegionContext::for_persona(0, persona)).await.published, 1);
+        assert_eq!(region.tick(&RegionContext::for_persona(1, persona)).await.published, 0, "unchanged: no rebuild");
+        crate::cognition::channel_substrate::room_touched(room.as_uuid());
+        assert_eq!(region.tick(&RegionContext::for_persona(2, persona)).await.published, 1, "touched: rebuilt");
+        assert_eq!(region.tick(&RegionContext::for_persona(3, persona)).await.published, 0);
     }
 }
