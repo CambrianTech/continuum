@@ -156,8 +156,8 @@
         let b = plan_serving(&host, &c, &typical).expect("plan");
         assert!(b.lanes >= 5, "the roster gets its lanes at the typical prompt: {}", b.lanes);
         assert!(
-            b.served_context_window >= 50_000,
-            "each lane holds a typical turn with headroom (40k × 1.25): {}",
+            b.served_context_window >= 40_000,
+            "each lane holds a typical turn (40k; no growth is measured without requirements): {}",
             b.served_context_window
         );
         // Without the median the planner packs the most lanes at the bootstrap floor —

@@ -278,9 +278,9 @@ mod tests {
         for requirements in [vec![], vec![LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000)),
             LaneRequirement::declared(uuid::Uuid::new_v4(), test_tokens(70_000))]] {
             // Legacy callers express their current per-lane requirement through
-            // the measured prompt median (56k plus existing headroom = 70k).
+            // the measured prompt median (70k; no growth is measured without requirements).
             // Without it they may legitimately choose two narrower lanes.
-            let demand = ServingDemand::new(2, Some(70_000)).with_sent_median(Some(56_000))
+            let demand = ServingDemand::new(2, Some(70_000)).with_sent_median(Some(70_000))
                 .with_sticky_window(Some(restarted.per_slot_window))
                 .with_requirements(requirements);
             let cold = plan_serving_at_rest(&host, std::slice::from_ref(&model), None, &demand).unwrap();
