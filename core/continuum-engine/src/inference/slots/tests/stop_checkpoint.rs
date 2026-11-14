@@ -9,7 +9,7 @@ use super::served_endpoint;
 // stop's checkpoint taking the endpoint's writer while admitted acts still held it, with nothing
 // to end them: their turns were already handed back, so the save waited on their decodes and the
 // core never reached its exit. Condemned first, the held acts let go and the checkpoint runs; with
-// the writer taken before the condemnation this runs into its cap.
+// the writer taken before the condemnation this never returns.
 #[tokio::test]
 async fn the_stop_checkpoint_condemns_held_acts_before_it_takes_the_writer() {
     let dir = SlotDirectory {
@@ -26,26 +26,21 @@ async fn the_stop_checkpoint_condemns_held_acts_before_it_takes_the_writer() {
             drop(admission);
         }));
     }
-    let cap = std::time::Duration::from_secs(5);
     let client = reqwest::Client::new();
-    let checkpoint = super::super::page_io::checkpoint_endpoint(
-        &client,
-        "test://stopping",
-        &endpoint,
-        cap,
-        || {
-            condemnations.condemn();
-        },
-    );
-    let outcome = tokio::time::timeout(cap * 2, checkpoint)
-        .await
-        .expect("the checkpoint returns");
+    let outcome = super::super::page_io::checkpoint_endpoint(&client, "test://stopping", &endpoint, || {
+        condemnations.condemn();
+    })
+    .await;
     // The fixture endpoint is not the process directory's, so the save itself refuses; what is
-    // pinned is that the checkpoint got past the writer instead of waiting out its cap.
-    let refused = outcome
-        .expect("test: an owned engine is checkpointed")
-        .expect_err("test: the fixture endpoint refuses the save");
-    assert!(!refused.contains("ran out"), "the writer was reached before the cap: {refused}");
+    // pinned is that the checkpoint got past the writer: it returned at all, on the held acts'
+    // release, with the save's own typed refusal.
+    assert!(
+        matches!(
+            outcome,
+            super::super::page_io::StopCheckpoint::Failed(CheckpointFailure::Engine(OwnedCheckpointRefusal::EndpointMismatch))
+        ),
+        "the writer was reached and the save refused by name: {outcome:?}"
+    );
     for act in acts {
         act.await.expect("test: act task");
     }

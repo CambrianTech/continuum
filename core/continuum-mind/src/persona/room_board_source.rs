@@ -117,6 +117,7 @@ pub trait RoomBoardReader: Send + Sync {
 /// A board read slower than this is always marked (the pair of durations is the
 /// distribution a stalled tick is measured against); faster reads mark once per room
 /// per minute, enough to notice a hang without flooding the ledger.
+// derived-or-floor: a diagnostics threshold for marking a read in the ledger, never a wait; it decides only how often a fast read is logged
 const SLOW_BOARD_READ_MS: u64 = 100;
 
 fn board_read_mark_due(room: uuid::Uuid) -> bool {
@@ -502,7 +503,7 @@ impl RoomBoardSource {
             .cards
             .iter()
             .filter(|c| {
-                c.owner.map(|o| o.as_uuid() == self.persona_id).unwrap_or(false)
+                c.owner.is_some_and(|o| o.as_uuid() == self.persona_id)
                     // Only a LIVE lease is "held" (see `claim_is_live`): a lapsed
                     // claim rendered as held contradicts the #156 lost-claim fact
                     // and is the stale-lease loop attractor (2026-08-03).
@@ -677,23 +678,9 @@ impl RoomBoardSource {
         // easily without having to independently manage this at each consumer"). Before, each
         // claim anywhere appended the whole board again (Benchy, the M5, 2026-11-07: 7 snapshots of
         // ~30k chars, 47% of her prompt), and 840 closed cards were 31,185 chars of it (2026-10-31).
-        use continuum_context::nav::{Expand, Fold, Group};
-        let list = || Expand::verb("work/list");
+        // The shape is `board_nav`'s, shared with `work/list`, so her tool and her view agree.
         let hers = |card: &airc_work::WorkCard| card.owner.map(|o| o.as_uuid()) == Some(self.persona_id);
-        let group = |card: &airc_work::WorkCard| -> Option<Group> {
-            if matches!(card.state, airc_work::CardState::Merged | airc_work::CardState::Closed) {
-                let label = crate::cognition::card_facts::state_str(&card.state);
-                return Some(Group { label, expand: list().with("state", label), fold: Fold::All });
-            }
-            if hers(card) {
-                return None;
-            }
-            Some(if crate::cognition::card_holder::claimable_now(card, now_ms) {
-                Group { label: "claimable", expand: list().with("claimable", "true"), fold: Fold::Recent }
-            } else {
-                Group { label: "held by others", expand: list(), fold: Fold::Recent }
-            })
-        };
+        let group = |card: &airc_work::WorkCard| super::board_nav::group_of(card, self.persona_id, now_ms).map(super::board_nav::BoardGroup::nav);
         let card_entry = |card: &airc_work::WorkCard| {
             let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
             let holder = crate::cognition::card_holder::holder(card, self.persona_id, now_ms, &names);

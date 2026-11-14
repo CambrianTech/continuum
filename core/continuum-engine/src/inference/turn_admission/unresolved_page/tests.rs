@@ -13,7 +13,7 @@ fn pending() -> (UnresolvedPage, tokio::sync::oneshot::Sender<PageReply>) {
     let (tx, rx) = tokio::sync::oneshot::channel();
     (UnresolvedPage {
         root: format!("http://late-receipt-{}:8085", uuid::Uuid::new_v4()),
-        action: "erase".into(), slot: 0, filename: "page.bin".into(),
+        action: super::super::page_receipt::PageAction::Erase, slot: 0, filename: "page.bin".into(),
         cpu_spent: Duration::from_millis(1), checkpoint: Duration::from_secs(60),
         pending: Box::pin(async move { rx.await.expect("fixture reply sender") }),
         liveness: PageLiveness::new(Box::new(|| None), Condemnation::Never),

@@ -67,12 +67,15 @@ mod saved_ledger;
 pub(crate) use saved_ledger::SavedLedger;
 use saved_ledger::{LedgerSnapshot, LoadedLedger};
 #[cfg(test)]
-use saved_ledger::{SavedLedgerFile, LEDGER_FORMAT, SAVED_LEDGER_FILE};
+use saved_ledger::{LedgerUnread, SavedLedgerFile, LEDGER_FORMAT, SAVED_LEDGER_FILE};
 mod engine_generation;
 mod adopted_replacement;
 mod discover;
 pub use discover::{PoolDiscoveryMiss, PropsAbsent};
 pub(crate) use discover::served_ctx_by_root;
+mod checkpoint_failure;
+pub use checkpoint_failure::{CheckpointFailure, OwnedCheckpointRefusal, SaveFailure};
+use checkpoint_failure::CheckpointSave;
 mod adopted_checkpoint_refusal;
 pub use adopted_checkpoint_refusal::AdoptedCheckpointRefusal;
 mod relaunch_discard;
@@ -88,6 +91,8 @@ pub(crate) use page_io::admit as admit_page_io;
 pub use page_io::PageIoSettle;
 mod page_store_pool;
 pub use page_store_pool::KvPageStorePool;
+#[cfg(test)]
+pub(crate) use page_store_pool::{ColdPages, Ratio, StorePressure};
 
 #[cfg(test)]
 mod tests;
