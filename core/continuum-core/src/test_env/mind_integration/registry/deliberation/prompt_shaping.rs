@@ -765,12 +765,13 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // the board shows her is one exact call and no list is ever cut by a count. The 108 are the
     // enum and its doc, the reach itself: measured in CI at 5c57eb8c9 (job 132356394952) as
     // 17986 -> 18094 before #5945 landed; the two tools are independent, so the deltas add.
-    // 18270 -> 18298 (card d2b6dbce, 2026-11-14, the M5: Aiko offered `claim_task` beside
+    // 18270 -> 18299 (card d2b6dbce, 2026-11-14, the M5: Aiko offered `claim_task` beside
     // `work_create`, found no `work_release`, and re-created one card): every tool is now offered
     // by its command path (`code_read`, `code_git_status`, `tool_output`), never a per-verb alias,
     // so a family is one scheme. Path names are a few characters longer than the aliases they
-    // replace: +28 tokens, measured in CI at 8b69d5aea as 17986 -> 18014; the deltas add.
-    const AGENTIC_SURFACE_CEILING: u32 = 18298;
+    // replace: +28 tokens alone at 8b69d5aea (17986 -> 18014); together with #5843 and #5945
+    // the total measured 18299 in CI at 27de29f37 (one token over the sum: tokenization merges).
+    const AGENTIC_SURFACE_CEILING: u32 = 18299;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(
