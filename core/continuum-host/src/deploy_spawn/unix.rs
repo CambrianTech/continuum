@@ -1,36 +1,27 @@
-//! Unix deploy consumer spawn — new process group, log redirect.
+//! Unix implementation of deploy consumer spawning.
+//!
+//! Launches a detached process in its own group with stdout/stderr redirected to a log file.
+//! No probe or permit callbacks are needed on this platform — they are stubbed by the caller.
 
-use std::io::{Seek, SeekFrom};
+use std::io::Seek;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
+use std::process::{Command, Stdio};
 
-use super::{ProbeFn, SpawnPlan, Spawned};
+use super::{SpawnPlan, Spawned, ProbeFn, PermitCheck};
 
-/// Open the child's log file for append: create parent dirs if needed, open with write+create,
-/// seek to end so subsequent writes append. On Unix this is a simple `OpenOptions` call; what
-/// differs by OS is only how the process itself is launched (`spawn`).
-fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut file = std::fs::OpenOptions::new().create(true).write(true).open(path)?;
-    file.seek(SeekFrom::End(0))?;
-    Ok(file)
-}
-
-/// Unix implementation of the deploy spawn. A new process group ensures the child survives when
-/// the core's group is terminated (a reboot kills the core's group, and the consumer must not be in it).
-pub(super) fn spawn(plan: &SpawnPlan, _probe: ProbeFn) -> Result<Spawned, String> {
+pub fn spawn(plan: &SpawnPlan, _probe: ProbeFn, _permit_check: PermitCheck) -> Result<Spawned, String> {
     let log = open_log(&plan.log).map_err(|e| format!("cannot open {}: {e}", plan.log.display()))?;
     let err = log.try_clone().map_err(|e| format!("cannot clone the log handle: {e}"))?;
 
-    use std::os::unix::process::CommandExt;
-
-    let child = std::process::Command::new(&plan.cli)
+    // A NEW PROCESS GROUP: the reboot the consumer runs stops the core by signalling
+    // the core's group (the start script's setsid), and the consumer must not be in it.
+    let child = Command::new(&plan.cli)
         .args(&plan.args)
         .current_dir(&plan.cwd)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::from(log))
-        .stderr(std::process::Stdio::from(err))
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(err))
         .process_group(0)
         .spawn()
         .map_err(|e| format!("cannot spawn {} {}: {e}", plan.cli.display(), plan.args.join(" ")))?;
@@ -40,4 +31,16 @@ pub(super) fn spawn(plan: &SpawnPlan, _probe: ProbeFn) -> Result<Spawned, String
         mode: format!("{} (new process group)", plan.args.join(" ")),
         child: Some(child),
     })
+}
+
+/// Open a log file for append (create if missing, seek to end). Used by the spawner to feed
+/// stdout/stderr of a detached consumer so the core's own logs are not polluted.
+fn open_log(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::io::Seek;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut file = std::fs::OpenOptions::new().create(true).write(true).open(path)?;
+    file.seek(std::io::SeekFrom::End(0))?;
+    Ok(file)
 }
