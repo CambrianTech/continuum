@@ -601,23 +601,23 @@ gain sites. Crates are not judged one at a time, because a crate cut moves sites
 between crates with the total unchanged. Every CI run prints every crate of
 every ratchet, folded in its log ("every crate of every ratchet").
 
-Baseline totals (canary `7a29474a9`, CI run 43541300117, production / tests):
+Baseline totals (canary `958ea3056`, CI run 43547453878, production / tests):
 
 | Ratchet | What it counts | Baseline |
 |---|---|---|
-| `waits_that_decide_flow` | `sleep`/`sleep_until`, `interval`, `tick_interval: Some`, `Duration` constants, a `timeout`/`timeout_at`/`recv_timeout` whose `Err` side carries on. The only exemption is `// event-exempt: <the remote that may never answer>` | 408 / 290 |
+| `waits_that_decide_flow` | `sleep`/`sleep_until`, `interval`, `tick_interval: Some`, `Duration` constants, a `timeout`/`timeout_at`/`recv_timeout` whose `Err` side carries on. The only exemption is `// event-exempt: <the remote that may never answer>` | 398 / 291 |
 | `unknown_as_value` | `map_or(0` / `map_or(0.0`, `unwrap_or(0)` / `unwrap_or_default()` on a measurement-named read, `.max(1)` guarding a division, `usize`/`u32`/`u64::MAX` as a returned sentinel | 218 / 34 |
-| `stringly_errors` (library code) | `Result<_, String>`, `Result<_, ()>`, `map_err` to `format!`/`to_string`/`to_owned`, `..Error`/`..Failure` variants holding a bare `String` | 2,926 / 238 |
-| `state_as_flags` | a struct with 2+ `bool`/`AtomicBool` fields; `match (a, b, ..)` over 2+ `Option` fields of one struct declared in the same crate | 146 / 9 |
+| `stringly_errors` (library code) | `Result<_, String>`, `Result<_, ()>`, `map_err` to `format!`/`to_string`/`to_owned`, `..Error`/`..Failure` variants holding a bare `String` | 2,923 / 238 |
+| `state_as_flags` | a struct with 2+ `bool`/`AtomicBool` fields; `match (a, b, ..)` over 2+ `Option` fields of one struct declared in the same crate | 145 / 9 |
 | `string_identities` | a `.get("..")` on JSON outside wire code; a `HashMap`/`BTreeMap<String, _>` struct field in library code | 839 / 184 |
-| `contract_shape` | a library fn with 5+ parameters or 3+ consecutive parameters of one primitive type; `.clone()` passed straight as a call argument; a `pub fn` taking an owned `String`/`Vec` | 2,186 / 1,246 |
+| `contract_shape` | a library fn with 5+ parameters or 3+ consecutive parameters of one primitive type; `.clone()` passed straight as a call argument; a `pub fn` taking an owned `String`/`Vec` | 2,192 / 1,250 |
 
 The rules are lexical, so they approximate. A clone or an owned buffer the
 callee keeps is counted too. A timeout bound to a variable counts, because its
 `Err` side is out of sight. A fallback on a read whose name says nothing is
 missed. The full per-crate table is
 `docs/planning/SHAPE-RATCHET-BASELINE-2026-11-14.md`. The ten crates where a
-sweep pays most, by total sites: continuum-core 1,481, continuum-engine 1,454,
+sweep pays most, by total sites: continuum-core 1,481, continuum-engine 1,444,
 continuum-mind 984, continuum-kernel 835, continuum-cognition 726,
 continuum-live 482, continuum-academy 337, continuum-dreaming 309,
 continuum-cli-lifecycle 262, continuum-grid 211. The floor, where phase 5 starts:
