@@ -207,7 +207,7 @@ mod tests {
     // leave minds dark, and a bounded pool below one prompt per sequence.
     #[test]
     fn the_pool_is_the_demand_until_the_host_bounds_it() {
-        let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).expect("test: a footprint");
+        let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).expect("test: a footprint");
         let host = |r| Rooms { host: Some(r), device: None };
         assert_eq!(pool_fit(100_000, Some(&fp), Rooms { host: None, device: None }, 0, 5, 262_144).pool(5), 100_000, "no reading: the demand stands");
         assert!(matches!(pool_fit(100_000, Some(&fp), host(room(60 * GB, 0, 0)), 0, 5, 262_144), PoolFit::Fits { .. }));
@@ -221,7 +221,7 @@ mod tests {
     // working set. The smaller room bounds it, and says which.
     #[test]
     fn the_device_room_bounds_a_pool_the_host_would_hold() {
-        let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).expect("test: a footprint");
+        let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).expect("test: a footprint");
         let rooms = Rooms { host: Some(room(60 * GB, 0, 0)), device: Some(25 * GB) };
         let fit = pool_fit(1_000_000, Some(&fp), rooms, 0, 5, 262_144);
         assert!(matches!(fit, PoolFit::Bounded { by: Bound::Device { room }, .. } if room == 25 * GB), "{fit:?}");

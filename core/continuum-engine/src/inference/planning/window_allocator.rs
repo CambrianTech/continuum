@@ -577,7 +577,9 @@ mod tests {
         assert_eq!((a.lanes, a.window), (1, 64_256));
         assert_eq!(a.served, vec![reqs[0].persona]);
         assert_eq!(a.unserved, vec![reqs[1].persona]);
-        assert_eq!(a.device_bytes, 23_677_817_846);
+        // The bytes come from the footprint's one peak formula at the chosen geometry, never a pinned literal
+        // (a measured compute rate moves the exact count; the planner must still charge exactly this).
+        assert_eq!(a.device_bytes, fp.peak_resident_bytes(a.window, a.lanes));
         assert!(a.device_bytes <= host.usable_bytes);
     }
 

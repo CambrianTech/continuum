@@ -165,7 +165,10 @@
         // two for windows the roster can actually use. (Unchanged by the target following
         // the typical prompt, card 29e4ab34: the floor, not the target, is what packs.)
         assert!(a.served_context_window < b.served_context_window, "{} vs {}", a.served_context_window, b.served_context_window);
-        assert!(b.lanes + 2 >= a.lanes, "the floor costs at most two lanes: {} vs {}", b.lanes, a.lanes);
+        // The lanes the bootstrap floor adds are each too small for a typical turn: the floor buys
+        // usable windows, not a lane count. (A fixed "at most two lanes" held only while a hand-set
+        // MAX_LANES capped both plans; with the cap gone the floor-free plan packs unusable lanes.)
+        assert!(a.served_context_window < 40_000, "the floor-free plan's lanes hold less than a typical turn: {}", a.served_context_window);
     }
 
     #[test]
