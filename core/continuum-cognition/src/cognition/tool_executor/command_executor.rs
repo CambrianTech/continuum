@@ -846,10 +846,14 @@ impl ToolExecutor for CommandToolExecutor {
                         dispatch_handle: None,
                         next_commands,
                     });
-                    // The same custody as a success: saved whole, handed back whole.
-                    // No cause on line 1 yet: a refusal's kind arrives typed with the command's
-                    // refusal enum (HER-TOOLS, the verb macro), never scanned out of its message.
-                    let rendered = super::answer::render(
+                    // Nothing ran, so there is no output to save: the refusal reaches her in this
+                    // act's result only (`ResultCustody::Refused`), never under an id she could
+                    // reopen. Saved, a cut act's refusal became an output she read, and her read of
+                    // it another (IntelMac 0051cdcf, 2026-11-14: `tools/<cut at the output limit>`
+                    // three reads deep). No cause on line 1 yet: a refusal's kind arrives typed with
+                    // the command's refusal enum (HER-TOOLS, the verb macro), never scanned out of
+                    // its message.
+                    let content = super::answer::render(
                         super::answer::Status::Refused,
                         attempted,
                         &call.input,
@@ -857,12 +861,11 @@ impl ToolExecutor for CommandToolExecutor {
                         &guidance,
                         None,
                     );
-                    let (content, custody) = pin.whole_or_handle(rendered, ctx.persona_id).into_parts();
                     NativeToolResult {
                         tool_use_id,
                         content,
                         is_error: Some(true),
-                        custody,
+                        custody: crate::ai::types::ResultCustody::Refused,
                     }
                 }
             })
