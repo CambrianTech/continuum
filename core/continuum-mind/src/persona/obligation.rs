@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::cognition::conversation::IncomingMessage;
 use crate::orm::OrmEntity;
-use crate::persona::training_producer::{storage_ok, substrate_connection};
+use crate::persona::training_producer::substrate_connection;
 use crate::runtime::CommandExecutor;
 use continuum_client::{ClientError, Connection, Transport};
 
@@ -102,18 +102,18 @@ fn handle(persona_name: &str) -> String {
 }
 
 pub async fn ensure_storage<T: Transport>(conn: &Connection<T>, persona_name: &str) -> Result<(), ClientError> {
-    let result = conn
+    conn
         .commands()
         .execute_value(
             "data/ensure-schema",
             json!({ "collection": PersonaObligation::COLLECTION, "dbPath": handle(persona_name) }),
         )
         .await?;
-    storage_ok(&result, "data/ensure-schema", PersonaObligation::COLLECTION)
+    Ok(())
 }
 
 pub async fn record<T: Transport>(conn: &Connection<T>, persona_name: &str, row: &PersonaObligation) -> Result<(), ClientError> {
-    let result = conn
+    conn
         .commands()
         .execute_value(
             "data/create",
@@ -125,18 +125,18 @@ pub async fn record<T: Transport>(conn: &Connection<T>, persona_name: &str, row:
             }),
         )
         .await?;
-    storage_ok(&result, "data/create", PersonaObligation::COLLECTION)
+    Ok(())
 }
 
 pub async fn close<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uuid) -> Result<(), ClientError> {
-    let result = conn
+    conn
         .commands()
         .execute_value(
             "data/delete",
             json!({ "collection": PersonaObligation::COLLECTION, "id": id, "dbPath": handle(persona_name) }),
         )
         .await?;
-    storage_ok(&result, "data/delete", PersonaObligation::COLLECTION)
+    Ok(())
 }
 
 /// Reconcile every open obligation through bounded identity pages, then restore
@@ -218,7 +218,7 @@ pub async fn admit_reconciled<T: Transport>(conn: &Connection<T>, persona_name: 
 /// Record an effect on a turn's row before it happens: the first sets `effectAtMs`, and each
 /// appends to `effects`. Replaces the whole list with `all`, the mark's in-memory record.
 pub async fn mark_effect<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uuid, first_at_ms: u64, all: &[RecordedEffect]) -> Result<(), ClientError> {
-    let result = conn
+    conn
         .commands()
         .execute_value(
             "data/update",
@@ -230,11 +230,11 @@ pub async fn mark_effect<T: Transport>(conn: &Connection<T>, persona_name: &str,
             }),
         )
         .await?;
-    storage_ok(&result, "data/update", PersonaObligation::COLLECTION)
+    Ok(())
 }
 
 pub async fn mark_interrupted<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uuid, now_ms: u64) -> Result<(), ClientError> {
-    let result = conn
+    conn
         .commands()
         .execute_value(
             "data/update",
@@ -246,7 +246,7 @@ pub async fn mark_interrupted<T: Transport>(conn: &Connection<T>, persona_name: 
             }),
         )
         .await?;
-    storage_ok(&result, "data/update", PersonaObligation::COLLECTION)
+    Ok(())
 }
 
 /// What a start found: the rows a stop or crash interrupted, and how many of them this start

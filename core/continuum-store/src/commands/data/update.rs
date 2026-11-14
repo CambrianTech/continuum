@@ -21,7 +21,9 @@ pub struct DataUpdateParams {
     /// The new record body (collection-specific shape).
     #[ts(type = "unknown")]
     pub data: serde_json::Value,
-    /// Whether the write moves the record's version (optimistic-concurrency aware stores).
+    /// Whether the write moves the record's version (optimistic-concurrency aware stores); kept
+    /// unless the caller says otherwise.
+    #[serde(default)]
     pub versioning: Versioning,
     /// Storage handle. Defaults to "main" (the shared DB). Power callers may pass
     /// a specific store. Accepts the legacy `dbPath` field name as an alias.

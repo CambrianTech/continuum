@@ -511,7 +511,7 @@ pub async fn ensure_storage<T: Transport>(
         boundaries::ProcessedReviewBoundary::COLLECTION,
         CountedCreditOutcome::COLLECTION,
     ] {
-        let result = conn
+        conn
             .commands()
             .execute_value(
                 "data/ensure-schema",
@@ -520,7 +520,6 @@ pub async fn ensure_storage<T: Transport>(
                 }),
             )
             .await?;
-        storage_ok(&result, "data/ensure-schema", collection)?;
     }
     Ok(())
 }

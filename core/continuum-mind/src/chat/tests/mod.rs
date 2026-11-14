@@ -164,7 +164,7 @@
             panic!("a line is exactly its row and its arrival: {}", calls[0]);
         };
         assert_eq!(
-            row["operationType"], "ensure",
+            row["op"], "ensure",
             "an import never fails on a line already stored"
         );
         assert_eq!(row["collection"], CHAT_MESSAGES_COLLECTION);

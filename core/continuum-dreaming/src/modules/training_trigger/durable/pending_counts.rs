@@ -42,10 +42,10 @@ impl DurableStore {
             Some(key) => key.query(Submission::COLLECTION),
             None => QueryBuilder::new(Submission::COLLECTION),
         };
-        let records = self.adapter.query(query.filter_eq("isPending", true)
+        let records = self.adapter.query(&query.filter_eq("isPending", true)
             .filter("sequence", QueryOperator::Gt(after.into())).sort_asc("sequence").limit(limit)
             .select(["sequence", "personaId", "traitKind", "baseModel", "learned", "pendingCount"].into_iter().map(String::from).collect())
-            .build()).await.into_result()?;
+            .build()).await.map_err(|e| e.to_string())?;
         let mut counts = Vec::with_capacity(records.len());
         for record in records {
             let header: Header = record.decode().map_err(|e| e.to_string())?;
@@ -56,11 +56,12 @@ impl DurableStore {
                         .ok_or_else(|| format!("submission {} disappeared during count migration", header.id))?;
                     let count = PendingCount::of(&row.batch);
                     drop(row);
-                    self.adapter.batch(vec![crate::orm::types::BatchOperation {
-                        operation_type: crate::orm::types::BatchOperationType::Update,
-                        collection: Submission::COLLECTION.into(), id: Some(header.id.to_string()),
-                        data: Some(serde_json::json!({"pendingCount": count})),
-                    }]).await.into_result()?;
+                    let id = header.id.to_string();
+                    self.adapter.update(crate::orm::seam::Update {
+                        row: crate::orm::seam::RowRef { collection: Submission::COLLECTION, id: &id },
+                        data: serde_json::json!({"pendingCount": count}),
+                        versioning: crate::orm::seam::Versioning::Keep,
+                    }).await.map_err(|e| e.to_string())?;
                     count
                 }
             };
@@ -79,7 +80,6 @@ impl DurableStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orm::types::{BatchOperation, BatchOperationType};
 
     #[test]
     fn null_progress_requires_explicit_migration() {
@@ -109,10 +109,12 @@ mod tests {
         assert_eq!(page[0].unlearned, 2);
         let saved = store.submissions.find_by_id(id).await.expect("read").expect("row");
         assert_eq!(serde_json::to_value(saved.batch).expect("batch"), before);
-        store.adapter.batch(vec![BatchOperation {
-            operation_type: BatchOperationType::Update, collection: Submission::COLLECTION.into(),
-            id: Some(id.to_string()), data: Some(serde_json::json!({"batch": "bad body", "arrivalSummary": "bad text summary"})),
-        }]).await.into_result().expect("damage only payload");
+        let row_id = id.to_string();
+        store.adapter.update(crate::orm::seam::Update {
+            row: crate::orm::seam::RowRef { collection: Submission::COLLECTION, id: &row_id },
+            data: serde_json::json!({"batch": "bad body", "arrivalSummary": "bad text summary"}),
+            versioning: crate::orm::seam::Versioning::Keep,
+        }).await.expect("damage only payload");
         assert_eq!(store.pending_counts(None, 0, 1).await.expect("count without body")[0].unlearned, 2);
         assert_eq!(store.unlearned_in(&page[0].key).await.expect("bucket count without body"), 2);
         assert!(store.pending_counts(None, 1, 1).await.expect("cursor").is_empty());

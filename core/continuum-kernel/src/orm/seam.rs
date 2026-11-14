@@ -35,12 +35,14 @@ pub struct FieldRef<'a> {
     pub field: &'a str,
 }
 
-/// Whether an update moves the row's version.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+/// Whether an update moves the row's version. A write that does not say keeps it (the wire's
+/// declared default, `data/update` without `versioning`).
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/orm/Versioning.ts")]
 #[serde(rename_all = "camelCase")]
 pub enum Versioning {
     Increment,
+    #[default]
     Keep,
 }
 

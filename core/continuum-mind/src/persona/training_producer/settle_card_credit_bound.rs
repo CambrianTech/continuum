@@ -457,16 +457,14 @@ pub(crate) fn pass_admits(rows: &[StagedCredit]) -> PassAdmits {
 pub(super) async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[(Uuid, Option<u64>)]) -> Result<(), ClientError> {
     let now = EpochMs::now().millis();
     let operations: Vec<_> = rows.iter().filter(|(_, rejected)| rejected.is_none()).map(|(id, _)| json!({
-        "operationType": "update", "collection": StagedCredit::COLLECTION,
+        "op": "update", "collection": StagedCredit::COLLECTION,
         "id": id, "data": { "rejectedAtMs": now }
     })).collect();
     if operations.is_empty() { return Ok(()); }
-    let result = conn.commands().execute_value("data/batch", json!({
+    conn.commands().execute_value("data/batch", json!({
         "operations": operations, "dbPath": format!("@persona:{persona_name}")
-    })).await?;
-    storage_ok(&result, "data/batch", StagedCredit::COLLECTION).map_err(|error| {
-        ClientError::Transport(format!("card {card_id} rejection transaction failed: {error}"))
-    })
+    })).await.map_err(|error| ClientError::Transport(format!("card {card_id} rejection transaction failed: {error}")))?;
+    Ok(())
 }
 
 /// Once the destination holds a row's lived calls as examples, the row keeps its
@@ -493,8 +491,7 @@ pub async fn clear_lived<S: Transport>(substrate: &Connection<S>, persona_name: 
                 "dbPath": format!("@persona:{persona_name}"),
             }),
         )
-        .await
-        .and_then(|result| storage_ok(&result, "data/update", StagedCredit::COLLECTION));
+        .await;
     if let Err(error) = cleared {
         continuum_base::probe!(
             class = "training.credit.lived_retained",

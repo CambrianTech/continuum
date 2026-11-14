@@ -398,7 +398,7 @@ use super::*;
         malformed.id = Uuid::nil();
         data.commands().execute_value("data/batch", json!({
             "dbPath": format!("@persona:{name}"),
-            "operations": [{"operationType": "create", "collection": reviewed::CreditReviewAcceptance::COLLECTION,
+            "operations": [{"op": "create", "collection": reviewed::CreditReviewAcceptance::COLLECTION,
                 "id": malformed.id.to_string(), "data": malformed}],
         })).await.unwrap();
         let skipped = reopened_store.page(None, 1).await.unwrap();

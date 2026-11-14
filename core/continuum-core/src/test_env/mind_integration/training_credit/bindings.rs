@@ -87,9 +87,8 @@ use super::*;
         let handle = format!("@persona:{name}");
         let removed = data.commands().execute_value("data/batch", json!({
             "dbPath": handle,
-            "operations": [{"operationType": "delete", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string()}]
+            "operations": [{"op": "delete", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string()}]
         })).await.unwrap();
-        storage_ok(&removed, "data/batch", StagedCreditGeneration::COLLECTION).unwrap();
         assert!(matches!(
             reviewed::bind_submission_generation(
                 &data,
@@ -104,9 +103,8 @@ use super::*;
         ));
         let restored = data.commands().execute_value("data/batch", json!({
             "dbPath": handle,
-            "operations": [{"operationType": "create", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string(), "data": child}]
+            "operations": [{"op": "create", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string(), "data": child}]
         })).await.unwrap();
-        storage_ok(&restored, "data/batch", StagedCreditGeneration::COLLECTION).unwrap();
         let bound = reviewed::bind_submission_generation(
             &data,
             name,

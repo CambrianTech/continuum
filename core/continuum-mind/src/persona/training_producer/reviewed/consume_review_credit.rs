@@ -376,23 +376,21 @@ pub async fn read_one<T: Transport, E: OrmEntity + DeserializeOwned>(
 }
 
 pub(in crate::persona::training_producer) fn create<E: OrmEntity + Serialize>(id: String, entity: &E) -> Result<BatchOperation, ClientError> {
-    Ok(BatchOperation {
-        operation_type: BatchOperationType::Create,
+    Ok(BatchOperation::Create(RowWrite {
         collection: E::COLLECTION.into(),
-        id: Some(id),
-        data: Some(serde_json::to_value(entity)?), // Encode one entity into the ORM batch's required Value payload.
-    })
+        id,
+        data: serde_json::to_value(entity)?, // Encode one entity into the ORM batch's required Value payload.
+    }))
 }
 
 pub(super) fn create_intent(row: &StagedCredit, work_submission_id: Option<Uuid>) -> BatchOperation {
-    BatchOperation {
-        operation_type: BatchOperationType::Create,
+    BatchOperation::Create(RowWrite {
         collection: CreditTransferIntent::COLLECTION.into(),
-        id: Some(row.id.to_string()),
+        id: row.id.to_string(),
         // Encode the borrowed snapshot once at the storage boundary; retaining
         // a second Rust clone of its complete prompt/act chain is unnecessary.
-        data: Some(json!({"id": row.id, "workSubmissionId": work_submission_id, "snapshot": row})),
-    }
+        data: json!({"id": row.id, "workSubmissionId": work_submission_id, "snapshot": row}),
+    })
 }
 
 pub(super) fn same_intent(
@@ -421,8 +419,7 @@ pub(in crate::persona::training_producer) async fn write_batch<T: Transport>(
     persona_name: &str,
     operations: Vec<BatchOperation>,
 ) -> Result<(), ClientError> {
-    let value = conn
-        .commands()
+    conn.commands()
         .execute_value(
             "data/batch",
             json!({
@@ -430,7 +427,7 @@ pub(in crate::persona::training_producer) async fn write_batch<T: Transport>(
             }),
         )
         .await?;
-    storage_ok(&value, "data/batch", WorkCreditBinding::COLLECTION)
+    Ok(())
 }
 
 pub async fn transfer_accepted<T: Transport>(
