@@ -219,11 +219,7 @@ mod tests {
             },
             served_context_window: 8192,
             lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
-            lanes: 1,
-            grid_overflow_lanes: 0,
-            resident_models: 1,
-            fits_on_gpu: fits,
-            rationale: "test".into(),
+            window_target: 0,
         }
     }
 
