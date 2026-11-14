@@ -17,11 +17,11 @@ use crate::modules::code::CodeState;
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/code/GithubPrDiffParams.ts")]
 pub struct GithubPrDiffParams {
-    /// `owner/name`. Omit for the repository your workspace pushes to.
+    /// `owner/name`; omit for your workspace's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub repo: Option<String>,
-    /// The pull request number.
+    /// PR number.
     #[ts(type = "number")]
     pub number: u64,
     /// Only the files at this path: a file, or a directory and everything under it.

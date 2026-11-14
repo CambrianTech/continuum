@@ -18,11 +18,11 @@ use crate::modules::code::CodeState;
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/code/GithubPrChecksParams.ts")]
 pub struct GithubPrChecksParams {
-    /// `owner/name`. Omit for the repository your workspace pushes to.
+    /// `owner/name`; omit for your workspace's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub repo: Option<String>,
-    /// The pull request number.
+    /// PR number.
     #[ts(type = "number")]
     pub number: u64,
 }
@@ -112,9 +112,7 @@ pub async fn checks_of(root: &Path, pr: &PrAddress<'_>) -> Result<GithubPrChecks
 }
 
 crate::action_command! {
-    /// Read a pull request's CI at its head: each check's state, failed first, and for each failed
-    /// workflow job its annotations and the log of its failing steps. Read it before you merge a
-    /// PR, and when a merge is refused on its checks.
+    /// A PR's CI at its head: checks failed first, each failed job's annotations and log.
     pub struct CodeGithubPrChecks { state: Arc<CodeState> }
     name: "code/github/pr-checks",
     access: AiSafe,

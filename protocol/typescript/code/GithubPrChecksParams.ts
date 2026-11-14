@@ -2,10 +2,10 @@
 
 export type GithubPrChecksParams = { 
 /**
- * `owner/name`. Omit for the repository your workspace pushes to.
+ * `owner/name`; omit for your workspace's.
  */
 repo?: string, 
 /**
- * The pull request number.
+ * PR number.
  */
 number: number, };

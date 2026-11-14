@@ -44,15 +44,14 @@ impl GithubMergeMethod {
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/code/GithubPrMergeParams.ts")]
 pub struct GithubPrMergeParams {
-    /// `owner/name`. Omit for the repository your workspace pushes to.
+    /// `owner/name`; omit for your workspace's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub repo: Option<String>,
-    /// The pull request number.
+    /// PR number.
     #[ts(type = "number")]
     pub number: u64,
-    /// How its commits land: `squash` (the default) as one commit, `merge` under a merge commit,
-    /// `rebase` replayed onto the base.
+    /// Default squash.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub method: Option<GithubMergeMethod>,
@@ -105,10 +104,8 @@ async fn land(root: &Path, request: &GithubPrMergeParams, pr: &PrAtHead, method:
 }
 
 crate::action_command! {
-    /// Merge a pull request (`gh pr merge`, squash by default). It merges only when the PR is open
-    /// and ready, every check at its head passed, GitHub can merge it, and, when a board card links
-    /// it, the card's latest submission ends at that head and passed someone else's review. A
-    /// refusal says which and what to do next.
+    /// Merge a PR: only when open, every check at its head green, mergeable, and a linked card's
+    /// head passed another's review.
     pub struct CodeGithubPrMerge { state: Arc<CodeState> }
     name: "code/github/pr-merge",
     access: AiSafe,

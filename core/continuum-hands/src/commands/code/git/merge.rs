@@ -23,15 +23,15 @@ use crate::sdk_codegen::{CommandError, ProjectsOutcome, ToolVerdict};
 #[serde(tag = "action", rename_all = "snake_case")]
 #[ts(export, export_to = "../../../protocol/typescript/code/GitMergeParams.ts")]
 pub enum GitMergeParams {
-    /// Merge `from` (a branch or ref, e.g. `origin/canary`) into your current branch.
+    /// Merge `from` (e.g. `origin/canary`) into your branch.
     Start {
         #[schemars(with = "String")]
         #[ts(type = "string")]
         from: NonEmptyText,
     },
-    /// After resolving the named files and `code/git/add`-ing them: make the merge commit.
+    /// After resolving and adding the files.
     Continue,
-    /// Put the branch back where it was before the merge started.
+    /// Undo the merge.
     Abort,
 }
 
@@ -57,9 +57,7 @@ impl ProjectsOutcome for CodeGitMerge {
 }
 
 crate::action_command! {
-    /// Merge another branch into yours (`git merge`): `start` with `from` such as `origin/canary`
-    /// (a remote branch is fetched first); when it stops, the conflicting files are listed: fix
-    /// each, `code/git/add` it, then `continue` (or `abort`). Your history is kept, never rewritten.
+    /// Merge a branch into yours (a remote one fetched first); on conflict fix, add, `continue`.
     pub struct CodeGitMerge { state: Arc<CodeState> }
     name: "code/git/merge",
     access: AiSafe,

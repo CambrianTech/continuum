@@ -3,15 +3,14 @@ import type { GithubMergeMethod } from "./GithubMergeMethod";
 
 export type GithubPrMergeParams = { 
 /**
- * `owner/name`. Omit for the repository your workspace pushes to.
+ * `owner/name`; omit for your workspace's.
  */
 repo?: string, 
 /**
- * The pull request number.
+ * PR number.
  */
 number: number, 
 /**
- * How its commits land: `squash` (the default) as one commit, `merge` under a merge commit,
- * `rebase` replayed onto the base.
+ * Default squash.
  */
 method?: GithubMergeMethod, };
