@@ -62,7 +62,7 @@ pub(super) async fn admit<C: ConnectionTrait>(
         }
         None if actual.is_empty() => Ok(true),
         None => {
-            verify_current_declaration(schema, &actual).await?;
+            verify_current_declaration(db, schema, &actual).await?;
             record(db, schema).await?;
             Ok(false)
         }
@@ -72,7 +72,8 @@ pub(super) async fn admit<C: ConnectionTrait>(
 /// Let SQLite canonicalize the owner's current DDL in a disposable, empty catalog.
 /// This visits schema metadata only: no resident rows are copied or transformed.
 /// There is no alternate declaration, inferred type, or permissive comparison.
-async fn verify_current_declaration(
+async fn verify_current_declaration<C: ConnectionTrait>(
+    db: &C,
     schema: &CollectionSchema,
     actual: &[catalog::Model],
 ) -> Result<(), SchemaError> {
@@ -86,11 +87,31 @@ async fn verify_current_declaration(
             .await.map_err(SchemaError::from)?;
     }
     let declared = physical(&expected, &schema.collection).await?;
+    let table = naming::to_table_name(&schema.collection);
+    let structure_matches = if actual == declared {
+        true
+    } else if catalog_requires_expression_proof(actual) || catalog_requires_expression_proof(&declared) {
+        // PRAGMA projections omit CHECK bodies, partial predicates and trigger programs.
+        // Never certify these from a column-only comparison.
+        false
+    } else {
+        super::relational_structure::read(db, &table).await?
+            == super::relational_structure::read(&expected, &table).await?
+    };
     expected.close().await.map_err(SchemaError::from)?;
-    if actual != declared {
+    if !structure_matches {
         return Err(SchemaError::difference(&schema.collection, SchemaDiff::CurrentPhysical));
     }
     Ok(())
+}
+
+fn catalog_requires_expression_proof(rows: &[catalog::Model]) -> bool {
+    rows.iter().any(|row| !matches!(row.r#type.as_str(), "table" | "index") || row.sql.as_ref().is_some_and(|sql| {
+        let upper = sql.to_ascii_uppercase();
+        ["CHECK", "WHERE", "GENERATED", "COLLATE", "WITHOUT", "STRICT", "AUTOINCREMENT",
+            "CONFLICT", "DEFERRABLE", "INITIALLY", "VIRTUAL"]
+            .iter().any(|keyword| upper.contains(keyword))
+    }))
 }
 
 pub(super) async fn record<C: ConnectionTrait>(

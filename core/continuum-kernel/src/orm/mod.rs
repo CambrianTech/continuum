@@ -28,6 +28,7 @@ pub mod query;
 pub mod record_decode;
 mod relational_schema;
 mod relational_declaration;
+mod relational_structure;
 pub mod schema_error;
 mod relational_query;
 mod relational_codec;

@@ -3,6 +3,28 @@
 use super::*;
 
 #[tokio::test]
+async fn receipt_free_equivalent_column_order_preserves_rows() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::EntityTrait;
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("column-order.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let initial = RelationalStore::open(AdapterConfig {
+        connection_string: path.into(), max_connections: 1, ..Default::default()
+    }).await?;
+    let mut reordered = Parent::collection_schema();
+    reordered.fields.reverse();
+    initial.ensure(reordered).await?;
+    initial.insert(&initial.db, &record("p", Parent::COLLECTION, json!({"label":"preserved"}))).await?;
+    super::relational_declaration::Entity::delete_many().exec(&initial.db).await?;
+    initial.db.clone().close().await?;
+    let reopened = store(path).await?;
+    let rows = reopened.query(QueryBuilder::new(Parent::COLLECTION).limit(1).build()).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].data["label"], "preserved");
+    Ok(())
+}
+
+#[tokio::test]
 async fn receipt_free_current_schema_is_proved_without_rewriting_rows()
     -> Result<(), Box<dyn std::error::Error>>
 {
