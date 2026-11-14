@@ -95,10 +95,7 @@ use super::*;
 
         let chat = chat_with_stubs(vec![
             Arc::new(StubDataModule::new(|_cmd, _p| {
-                Ok(json!({
-                    "success": false,
-                    "error": "unique constraint violated on (id)",
-                }))
+                Err("unique constraint violated on (id)".to_string())
             })),
             Arc::new(StubAircModule::with(move |_p| {
                 airc_calls_tracker.fetch_add(1, Ordering::SeqCst);

@@ -345,13 +345,7 @@ use crate::orm::types::CollectionSchema;
         let p: crate::commands::vector::backfill::VectorBackfillParams =
             serde_json::from_value(params)?;
         let handle = p.handle.as_str();
-        let filter: Option<std::collections::HashMap<String, FieldFilter>> = match p.filter {
-            Some(map) => Some(
-                serde_json::from_value(serde_json::Value::Object(map))
-                    .map_err(|e| format!("invalid filter: {e}"))?,
-            ),
-            None => None,
-        };
+        let filter = p.filter;
         let result = module
             .state
             .backfill_vectors(
@@ -524,8 +518,7 @@ use crate::orm::types::CollectionSchema;
         );
 
         if let Ok(CommandResult::Json(result)) = create_result {
-            assert!(result["success"].as_bool().unwrap_or(false));
-            let id = result["data"]["id"].as_str().unwrap();
+            let id = result["id"].as_str().expect("test: the created record carries its id");
 
             // Read with dbPath
             let read_result = read_via_state(
@@ -540,8 +533,7 @@ use crate::orm::types::CollectionSchema;
 
             assert!(read_result.is_ok());
             if let Ok(CommandResult::Json(read)) = read_result {
-                assert!(read["success"].as_bool().unwrap_or(false));
-                assert_eq!(read["data"]["data"]["name"], "Alice");
+                assert_eq!(read["data"]["name"], "Alice");
             }
         }
     }

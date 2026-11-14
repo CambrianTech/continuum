@@ -97,7 +97,7 @@ async fn test_vector_index_and_stats() {
     )
     .await;
     let record_id = match &create_result {
-        Ok(CommandResult::Json(result)) => result["data"]["id"].as_str().expect("test: created id").to_string(),
+        Ok(CommandResult::Json(result)) => result["id"].as_str().expect("test: created id").to_string(),
         other => panic!("create failed: {other:?}"),
     };
 
@@ -292,7 +292,8 @@ async fn test_vector_cache_invalidation() {
                 assert!(matches!(result[..], [crate::orm::types::BatchOutcome::Removed]), "{result:?}");
             }
             "delete" => assert_eq!(module.state.delete_record(&alias, "test_cache", target()).await.expect("delete"), crate::orm::seam::Deleted::Removed),
-            "truncate" => assert_eq!(module.state.truncate_collection(&alias, "test_cache").await.expect("truncate"), 1),
+            // The resident row and this round's target.
+            "truncate" => assert_eq!(module.state.truncate_collection(&alias, "test_cache").await.expect("truncate"), 2),
             "clear" => { module.state.clear_all_collections(&alias).await.expect("clear"); }
             _ => unreachable!("fixture operation"),
         }
