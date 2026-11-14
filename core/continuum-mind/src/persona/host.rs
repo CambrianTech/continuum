@@ -70,6 +70,8 @@ use uuid::Uuid;
 /// - `serve_persona_loop` returns `Err` from a non-recoverable error
 ///   (e.g., `high_water_mark` failed) — resolves with `Err`.
 /// - `.abort()`'d by the caller — the supervisor's shutdown path.
+///
+/// A panic never resolves it: the loop is started again after a backoff (see the body).
 pub async fn spawn_persona_service(
     ctx: HostedPersona,
     opts: ServeOptions,
@@ -95,57 +97,65 @@ pub async fn spawn_persona_service(
         .await
         .map_err(|e| format!("conversation.prime() failed before spawn: {e}"))?;
 
-    // Wrap the per-persona service loop in `catch_unwind` so a panic
-    // inside any single turn (malformed input, adapter bug, RAG store
-    // corruption) doesn't silently kill THIS persona's task — same
-    // RTOS-safe shape `start_tick_loops` uses for every ServiceModule.
-    // Per docs/architecture/CONCURRENCY-STYLE-GUIDE.md: every owned
-    // task wraps its body in `AssertUnwindSafe(...).catch_unwind()`
-    // and surfaces panics through `probe!` + per-module logger.
+    // A panic in any turn (malformed input, adapter bug, store corruption) ends that START of
+    // her loop, never her: the host starts it again after a doubling, capped wait, and the new
+    // start's obligation recovery pins a notice for the turn the panic cut and readmits it. One
+    // panic once ended her loop for good (2026-11-08: all four residents dark on the
+    // newest_result.rs char-boundary panic, Benchy and Atlas for 43 min). A panic that repeats
+    // slows her loudly through the wait, never spins. Per CONCURRENCY-STYLE-GUIDE.md every owned
+    // task wraps its body in `AssertUnwindSafe(...).catch_unwind()` and surfaces panics by probe.
     let persona_name = ctx.identity.agent_name.to_string();
     let persona_id = ctx.identity.peer_id.as_uuid();
     Ok(rt_handle.spawn(async move {
         use futures::FutureExt;
-        let outcome =
-            std::panic::AssertUnwindSafe(serve_persona_loop(&ctx, &mut conversation, opts, obligations))
+        let mut obligations = obligations;
+        let mut streak = 0u32;
+        loop {
+            let next_start = obligations.next_start();
+            let started = std::time::Instant::now();
+            let outcome = std::panic::AssertUnwindSafe(serve_persona_loop(&ctx, &mut conversation, opts.clone(), obligations))
                 .catch_unwind()
                 .await;
-        match outcome {
-            Ok(Err(reason)) => {
-                continuum_base::probe!(
-                    class = "persona.service_loop.failed",
-                    persona = %persona_name,
-                    persona_id = %persona_id,
-                    reason = %reason,
-                    "persona foreground loop exited with an error"
-                );
-                Err(reason)
-            }
-            Ok(Ok(outcome)) => Ok(outcome),
-            Err(panic) => {
-                let panic_msg = if let Some(s) = panic.downcast_ref::<&'static str>() {
-                    (*s).to_string()
-                } else if let Some(s) = panic.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "<non-string panic payload>".to_string()
-                };
-                tracing::error!(
-                    persona = %persona_name,
-                    persona_id = %persona_id,
-                    "Persona service_loop aborted with panic: {}",
-                    panic_msg
-                );
-                continuum_base::probe!(
-                    class = "persona.service_loop.aborted",
-                    persona = %persona_name,
-                    persona_id = %persona_id,
-                    reason = %panic_msg
-                );
-                Err(format!(
-                    "persona '{persona_name}' service loop panicked: {panic_msg}"
-                ))
-            }
+            let panic = match outcome {
+                Ok(Err(reason)) => {
+                    continuum_base::probe!(
+                        class = "persona.service_loop.failed",
+                        persona = %persona_name,
+                        persona_id = %persona_id,
+                        reason = %reason,
+                        "persona foreground loop exited with an error"
+                    );
+                    return Err(reason);
+                }
+                Ok(Ok(outcome)) => return Ok(outcome),
+                Err(panic) => panic,
+            };
+            let panic_msg = if let Some(s) = panic.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "<non-string panic payload>".to_string()
+            };
+            // A start that outlived the longest wait was healthy: the next panic waits from the floor.
+            let wait = crate::persona::obligation::restart_wait(&mut streak, started.elapsed());
+            tracing::error!(
+                persona = %persona_name,
+                persona_id = %persona_id,
+                restart_in_s = wait.as_secs(),
+                "Persona service_loop panicked; restarting it: {}",
+                panic_msg
+            );
+            continuum_base::probe!(
+                class = "persona.service_loop.restarted",
+                persona = %persona_name,
+                persona_id = %persona_id,
+                streak = streak as u64,
+                restart_in_s = wait.as_secs(),
+                reason = %panic_msg
+            );
+            tokio::time::sleep(wait).await;
+            obligations = next_start;
         }
     }))
 }
@@ -812,10 +822,17 @@ pub(crate) struct SlotBackoff {
     pub until_ms: u64,
 }
 
-/// Doubling from 2 s, capped at 10 min: a refused seat is tried again soon in case the
-/// cause was transient (a daemon mid-restart), then rarely, and never at pass rate.
+/// The first retry of a refused seat: soon, in case the cause was transient (a daemon mid-restart).
+// derived-or-floor: a floor, the first step of the seat retry's doubling.
+const SEAT_RETRY_FLOOR_SECS: u64 = 2;
+/// The longest a refused seat waits between tries: rarely, and never at pass rate.
+// derived-or-floor: a ceiling on a retry wait for a seat that keeps being refused; it bounds how stale a recovered cause can be.
+const SEAT_RETRY_CAP_SECS: u64 = 600;
+
+/// A refused seat's next wait: doubling from [`SEAT_RETRY_FLOOR_SECS`], capped at [`SEAT_RETRY_CAP_SECS`].
 pub(crate) fn backoff_delay(attempts: u32) -> std::time::Duration {
-    std::time::Duration::from_secs((2u64 << attempts.saturating_sub(1).min(9)).min(600))
+    use std::time::Duration;
+    continuum_base::time::doubling::doubling_wait(attempts, Duration::from_secs(SEAT_RETRY_FLOOR_SECS), Duration::from_secs(SEAT_RETRY_CAP_SECS))
 }
 
 /// Pure half of the backoff filter. Plans whose persona is inside its backoff are dropped.

@@ -29,6 +29,27 @@ pub struct Failures {
 // derived-or-floor: a ceiling — below one generation on the fastest tier (66-88 s median, M5 10-26); it only bounds a backoff wait.
 const BACKOFF_CAP_SECS: u64 = 30;
 
+/// The first wait of the doubling backoff: one second, the shortest a person reads as "a moment".
+// derived-or-floor: a floor, the first step of the doubling; the cap below bounds every later one.
+const BACKOFF_FLOOR_SECS: u64 = 1;
+
+/// The `streak`th wait of this backoff, in seconds: 1, 2, 4, ... up to [`BACKOFF_CAP_SECS`].
+fn doubling_wait_secs(streak: u32) -> u64 {
+    use std::time::Duration;
+    continuum_base::time::doubling::doubling_wait(streak, Duration::from_secs(BACKOFF_FLOOR_SECS), Duration::from_secs(BACKOFF_CAP_SECS)).as_secs()
+}
+
+/// How long the host waits before starting a persona's loop again after a panic ended a start
+/// that ran for `ran`: the same doubling, capped backoff as a failing store. A start that outlived
+/// the cap was healthy, so its panic counts as the first again.
+pub fn restart_wait(streak: &mut u32, ran: std::time::Duration) -> std::time::Duration {
+    if ran.as_secs() > BACKOFF_CAP_SECS {
+        *streak = 0;
+    }
+    *streak = streak.saturating_add(1);
+    std::time::Duration::from_secs(doubling_wait_secs(*streak))
+}
+
 impl Failures {
     pub fn succeeded(&self) {
         self.streak.store(0, Ordering::Relaxed);
@@ -43,7 +64,7 @@ impl Failures {
 
     pub fn failed(&self, persona: &str, step: &'static str, turn: Uuid) {
         let streak = self.streak.fetch_add(1, Ordering::Relaxed) + 1;
-        let wait = (1u64 << streak.saturating_sub(1).min(u64::BITS - 1)).min(BACKOFF_CAP_SECS);
+        let wait = doubling_wait_secs(streak);
         self.until_ms.store(continuum_base::time::EpochMs::now().millis() + wait * 1000, Ordering::Relaxed);
         continuum_base::probe!(
             class = "persona.obligation.unconfirmed",
@@ -123,5 +144,18 @@ mod tests {
         assert!(failures.backing_off().expect("still backing off") > 1_000, "it doubles"); // expect: the invariant under test
         failures.succeeded();
         assert!(failures.backing_off().is_none(), "a success clears the backoff");
+    }
+
+    // what this catches: a panicked loop restarted at once forever (a spin on an input that
+    // panics every time) or never again (2026-11-08, four residents dark). Repeated panics wait
+    // longer, up to the cap; a start that ran healthy past the cap starts from the floor again.
+    #[test]
+    fn a_repeating_panic_waits_longer_and_a_healthy_start_resets_the_wait() {
+        let quick = std::time::Duration::ZERO;
+        let mut streak = 0;
+        let waits: Vec<u64> = (0..7).map(|_| restart_wait(&mut streak, quick).as_secs()).collect();
+        assert_eq!(waits, vec![1, 2, 4, 8, 16, BACKOFF_CAP_SECS, BACKOFF_CAP_SECS]);
+        let healthy = std::time::Duration::from_secs(BACKOFF_CAP_SECS + 1);
+        assert_eq!(restart_wait(&mut streak, healthy).as_secs(), 1, "a healthy start's panic waits from the floor");
     }
 }
