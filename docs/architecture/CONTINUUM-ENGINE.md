@@ -1245,6 +1245,75 @@ lost (queued requests all complete). **Core (S4, Codex):** the relaunch call sit
 `launch.rs:221`) call `reconfigure`; a plan below the live geometry now reconfigures too, which is what
 gives memory back to the user's app.
 
+#### S2 status, 2026-11-14: what holds the M5's memory, and the slice that gives it back
+
+**What holds it.** These figures come from the live engine's own `/props` on the M5 (fork `b5534b531`,
+the s4 pin; Qwen3.6-35B-A3B Q4_K_M, `-c 453435 --parallel 5`, q4_0 KV, `--cache-ram 9131`,
+`--ctx-checkpoints 32`), read 2026-11-14 12:5xZ. At that read `vm_stat` showed 36.2 GB wired and the
+llama-server RSS was 28.9 GB.
+
+| Holder (`memory_breakdown`) | Bytes | Follows the geometry? |
+|---|---|---|
+| Weights, `MTL0_Mapped` | 20.41 GB | no; a reconfigure never reloads them |
+| KV pool + recurrent state, `MTL0` context | 4.26 GB (453,632 cells, 9,390 B/cell) | yes |
+| Graph, `MTL0` compute | 3.03 GB | yes: reserved for `n_ctx` x `n_ubatch` |
+| Graph, `CPU` compute | 1.89 GB | yes |
+| Host prompt cache and checkpoints | up to 9.1 GiB, plus 32 per slot | no: `/prompt-cache/limit` (fork #110, SV-POOL) gives it back |
+
+So a context shrink can return about 7.3 GB of device memory plus up to 1.9 GB of host graph. It cannot
+return the other ~29 GB of wired memory. Most of that is the weights; expert paging (SV-F4) is the lever
+for them. The host cache is SV-POOL's verb. The MTP draft context and the projector are absent from
+`ctx_tgt`'s breakdown (section 4.7.1 measured them at 3.15 GB and 0.90 GB), so they are not counted here.
+
+**What exists.** S2 is already written. Fork #104 is the reference; fork #105 ports it onto
+`codex/s4-per-mind-integration`, the branch the core pins. Neither was merged until 2026-11-14.
+- `POST /reconfigure {n_ctx, n_seq}` is a task on the main loop. It runs between batched decode steps,
+  pages every slot out (generations in progress included), runs `destroy_contexts` and
+  `build_contexts(target)` on the same weights, and pages every state back in.
+- A state the target cannot hold is parked and named in `paged_out`. It is never cut.
+- Two cases are refused by type (`server-reconfigure.h`): a KV type change, and a learn whose optimizer
+  lives in the context.
+- The lifetimes are split: `load_weights`, `build_contexts` and `destroy_contexts`
+  (`server-context.cpp`), with `server-slot-page.{h,cpp}` as the one state mover.
+- Freeing the context frees its backend buffers (`llama_free` -> `ggml_backend_buffer_free`). On Metal
+  that releases the `MTLBuffer` and takes it out of the residency set.
+
+**The slice landed 2026-11-14 (fork #105, merged with s4).**
+- `/props` `memory_breakdown` was the load's snapshot, so it went stale after the first reconfigure.
+  It now comes from the live allocator, through one reader (`memory_breakdown_report`) that serves both
+  the load and every reconfigure.
+- `context_geometry.max_tokens_per_sequence` is `n_ctx_slot`, the size the slots enforce.
+
+The validator (`test_a_shrink_gives_the_kv_memory_back_and_a_grow_takes_it_again`, seconds on CPU CI)
+holds four states and shrinks the pool from 1,024 to 256 cells. It asserts that:
+- the KV bytes fall to exactly cells x bytes-per-cell;
+- context plus compute falls;
+- the weights' bytes are unchanged;
+- a grow back takes the same bytes again, with every state's next tokens identical to an
+  unreconfigured control;
+- 100 grow and shrink cycles end at the exact bytes they started at.
+
+The interface is one verb with a typed outcome: `Applied` names its paged-out and paged-in slots, and
+`Refused` names its reason. It is the same in process (`server_reconfigure_engine`) and over HTTP.
+
+**Still unproven on hardware.** CI runs on CPU (ubuntu, windows), and the fork has no macOS server job.
+The M5 receipt is owed after deploy. It needs `vm_stat` wired GB and free GB, and the engine's
+`memory_breakdown`, before and after one shrink while the residents hold state (for example
+`n_ctx` 453,632 -> 262,144), and again after the grow back. The check passes when wired memory falls by
+the `MTL0` context + compute delta that `/props` reports, within the noise of an unchanged control read
+taken just before.
+
+**Next slices.**
+1. Pin the fork at #105's merge, then add the core's typed client: `llama_server/reconfigure.rs`, with
+   `Geometry` in and `Applied{live, paged_out, paged_in} | Refused{reason}` out, matched by variant.
+   Owner: Fable.
+2. The core drives it (SV-S4). The live host room from #6011's grant pool sets the target `n_ctx`. A
+   plan below the live geometry reconfigures instead of relaunching, and a parked slot's mind is
+   re-placed by residency. Owner: Codex.
+3. SV-POOL: the host deficit's shed path calls `/prompt-cache/limit` before the contexts shrink,
+   because cached prompts are cheaper to lose than live KV. Owner: Codex, with SV-S4.
+4. The M5 receipt above. Owner: whoever deploys the pin bump. The card stays open until it is posted.
+
 ### 4.6 Risks
 
 - **Metal and unified memory.** RAM pages, checkpoints, KV and weights all draw on one physical pool, under macOS's GPU wired limit. If the budget is not one pool, the machine swaps and everything stalls. `get_data` has to synchronize the context first. `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE` (llama.h:1024) suits speculative checkpoints only.
@@ -2369,7 +2438,7 @@ already shipped").
 | SV-3b | One live engine, minds' memory moved by us (CLAUDE.md line 3b): weights load once; context and slots resize live; each mind's KV pages GPU <-> RAM <-> disk per sequence (`llama_state_seq_*`); shared prefixes are copied (`seq_cp`), never re-prefilled; one memory budget; llama-server becomes the OpenAI-compatible adapter for external drivers; relaunch only a dead engine. State in CLAUDE.md: FIRST (10-27): MindMemory, the one owner of every mind's KV (API published, Codex accepted): seat/pause/retire/resume/attach/forget replace 41 paths; Fable builds seat + its stop, Codex moves relaunch/academy/idle/adopt onto pause (rows SV-MM1 to SV-MM3). Then the fork verbs S1-S3, proven over today's endpoint, then a separate `continuum-serving` process hosts it with Rust policy (S5). | 4 | Fable (engine, paging), Codex (admission, relaunch call sites) | median act at 4 residents beats llama-server, reuse >= 80%, no relaunch while serving, footprint flat over 100 resize cycles | slices S0-S7 each land with a seconds-scale validator |
 | SV-S0 | `serving-replay` validator: captured act sequences against a small hybrid GGUF, in seconds, with no residents | 4.5 | Fable | gate: to set | reuse, fresh tokens, page-ins, relaunches = 0 |
 | SV-S1 | Fork: RAM page verbs, checkpoint budget, `.dft` sidecar | 4.2, 4.3 | Fable | gate: to set | S0, plus restore ms |
-| SV-S2 | Fork: `reconfigure` without reloading the model | 4.5, "S2 in detail" | Fable | gate: to set | 100 resize cycles with flat footprint (the full S2 validator in section 4.5) |
+| SV-S2 | Fork: `reconfigure` without reloading the model (fork #105; status in 4.5, "S2 status, 2026-11-14") | 4.5, "S2 in detail" | Fable | on the M5, one shrink with residents holding state lowers `vm_stat` wired GB by the `MTL0` context + compute delta `/props` reports, with no weight reload | 100 resize cycles with flat footprint (the full S2 validator in section 4.5) |
 | SV-S3 | Fork: per-task priority and aging in slot selection; `CapacityReport` | 4.1, 4.3 | Fable (mechanism), Codex (policy) | gate: to set | starvation fixture |
 | SV-S4 | Core: admission consumes `CapacityReport`; relaunch call sites (serving_daemon/launch.rs:221, reconcile.rs) call `reconfigure` | 4.5 | Codex | gate: to set | no relaunch while serving |
 | SV-S5 | `continuum-serving` host and `ServingPort`; M5 side-by-side against llama-server (4 minds, growing contexts) | 4.1, 4.2 | Fable | gate: to set | act time, wait, reuse, footprint |
