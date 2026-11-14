@@ -967,7 +967,7 @@ mod tests {
             }
         }
         let (benchy, atlas) = (Uuid::new_v4(), Uuid::new_v4());
-        let held = |mind, need| LaneRequirement::wished(mind, t(need), 1.0).held(Observed::Exact(t(need)));
+        let held = |mind, need| LaneRequirement::wished(mind, t(need), crate::inference::planning::window_allocator::Growth::Unmeasured).held(Observed::Exact(t(need)));
         let minds = vec![held(benchy, 148_818), held(atlas, 135_619)];
         let seat = crate::capacity::window_grant::seat_window(132_300, Some(262_144));
         assert!(minds_over_the_grid(&minds, seat).is_empty(), "after: one seat holds either need");
