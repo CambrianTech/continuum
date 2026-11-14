@@ -1,5 +1,6 @@
 //! Compile the existing entity declarations into SeaQuery schema statements.
 //! Rust derives and generated decorator schemas share this translation.
+use super::storage_error::StorageError;
 use std::collections::BTreeSet;
 
 use sea_orm::sea_query::{
@@ -31,7 +32,7 @@ fn action(rule: CascadeRule) -> ForeignKeyAction {
     }
 }
 
-pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, String> {
+pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, StorageError> {
     if schema.collection.is_empty() {
         return Err("entity collection is empty".into());
     }

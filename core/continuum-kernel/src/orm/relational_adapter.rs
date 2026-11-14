@@ -1,4 +1,5 @@
 //! StorageAdapter boundary for the schema-driven SeaORM provider.
+use super::storage_error::StorageError;
 use super::{
     adapter::{AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter},
     query::{QueryBuilder, StorageQuery},
@@ -21,10 +22,10 @@ fn receipt<T>(result: Result<T, String>) -> StorageResult<T> {
 
 impl SeaOrmAdapter {
     /// Open the file owned by a typed ORM store.
-    pub async fn open(path: &std::path::Path) -> Result<Self, String> {
+    pub async fn open(path: &std::path::Path) -> Result<Self, StorageError> {
         let connection_string = path
             .to_str()
-            .ok_or_else(|| format!("database path {} is not valid UTF-8", path.display()))?
+            .ok_or(StorageError::Config(super::storage_error::ConfigFault::PathText))?
             .to_owned();
         Self::connect(AdapterConfig {
             connection_string,
@@ -33,7 +34,7 @@ impl SeaOrmAdapter {
         .await
     }
 
-    pub async fn connect(config: AdapterConfig) -> Result<Self, String> {
+    pub async fn connect(config: AdapterConfig) -> Result<Self, StorageError> {
         Ok(Self {
             store: RelationalStore::open(config).await?,
         })
@@ -56,7 +57,7 @@ impl StorageAdapter for SeaOrmAdapter {
             max_record_size: 1_000_000_000,
         }
     }
-    async fn close(&mut self) -> Result<(), String> {
+    async fn close(&mut self) -> Result<(), StorageError> {
         let _guard = self.store.writer_gate.lock().await;
         self.store
             .db
@@ -82,7 +83,7 @@ impl StorageAdapter for SeaOrmAdapter {
     async fn scan(
         &self,
         query: StorageQuery,
-    ) -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, String> {
+    ) -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, StorageError> {
         use futures::StreamExt;
         use sea_orm::StreamTrait;
         let schema = self.store.schema(&query.collection)?;
@@ -96,8 +97,7 @@ impl StorageAdapter for SeaOrmAdapter {
             .store
             .db
             .stream(sea_orm::DbBackend::Sqlite.build(&statement))
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
         Ok(rows
             .map(move |row| {
                 row.map_err(|error| error.to_string())
@@ -166,7 +166,7 @@ impl StorageAdapter for SeaOrmAdapter {
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
         StorageResult::ok(self.store.collections())
     }
-    async fn binary_snapshot(&self, collection: &str) -> Result<super::BinarySnapshot, String> {
+    async fn binary_snapshot(&self, collection: &str) -> Result<super::BinarySnapshot, StorageError> {
         self.store.binary_snapshot(collection).await
     }
     async fn create_binary(
@@ -212,7 +212,7 @@ impl StorageAdapter for SeaOrmAdapter {
     async fn clear_all(&self) -> StorageResult<ClearAllResult> {
         receipt(self.store.clear().await)
     }
-    async fn cleanup(&self) -> Result<(), String> {
+    async fn cleanup(&self) -> Result<(), StorageError> {
         self.store.optimize().await
     }
 }

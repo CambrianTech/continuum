@@ -73,6 +73,18 @@ pub enum StorageError {
     /// An append's sequence spec does not fit its collection's declaration.
     #[error("{collection}: the append cannot run: {fault}")]
     Append { collection: String, fault: AppendFault },
+    /// A field storage owns (id, timestamps, version) was written by a caller.
+    #[error("{field} is owned by storage")]
+    StorageOwned { field: String },
+    /// A native write carried no payloads.
+    #[error("a native write needs at least one payload")]
+    NoPayloads,
+    /// A binary page would mix producer descriptors.
+    #[error("a binary page mixes producer descriptors")]
+    MixedProducers,
+    /// A spawned storage task ended without its answer.
+    #[error(transparent)]
+    Task(#[from] tokio::task::JoinError),
     /// No row with this id.
     #[error("{collection} has no row {id}")]
     NotFound { collection: String, id: UUID },
@@ -132,6 +144,8 @@ pub enum ConfigFault {
     Namespace,
     #[error("the connection count exceeds u32")]
     CapacityRange,
+    #[error("the database path is not UTF-8")]
+    PathText,
 }
 
 /// What is wrong with a stored value under its declared type.
@@ -170,6 +184,16 @@ pub enum QueryFault {
     ContainsNotText,
     #[error("this store does not run regex queries")]
     Regex,
+    #[error("delete_matching takes a predicate, not joins or pagination")]
+    DeletePredicate,
+    #[error("a join alias is invalid or collides")]
+    JoinAlias,
+    #[error("a generated join projection collides with a declared column")]
+    JoinCollision,
+    #[error("vector statistics need rank-one payloads")]
+    RankOne,
+    #[error("cyclic foreign keys need an explicit deletion policy")]
+    CyclicDelete,
 }
 
 /// Why an append's sequence spec does not fit its collection.

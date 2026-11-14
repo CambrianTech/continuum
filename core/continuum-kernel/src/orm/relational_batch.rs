@@ -1,4 +1,5 @@
 //! A detached committing task owns the transaction and its revision publication.
+use super::storage_error::StorageError;
 use super::{
     query::QueryBuilder,
     types::{BatchOperation, BatchOperationType, DataRecord, RecordMetadata},
@@ -6,7 +7,7 @@ use super::{
 use serde_json::{json, Value};
 
 impl super::relational::RelationalStore {
-    pub async fn batch(&self, operations: Vec<BatchOperation>) -> Result<Vec<Value>, String> {
+    pub async fn batch(&self, operations: Vec<BatchOperation>) -> Result<Vec<Value>, StorageError> {
         self.write_with_revisions(move |store, transaction| {
             Box::pin(async move {
                 let mut results = Vec::with_capacity(operations.len());

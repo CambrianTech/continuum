@@ -10,6 +10,7 @@
 //! - Non-destructive (source data is never deleted)
 //! - Bounded pages; progress follows committed writes
 
+use super::storage_error::StorageError;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
@@ -219,7 +220,7 @@ impl MigrationHandle {
 
     /// Verify receipts, schemas and exact scalar/native values in bounded snapshots.
     /// Offline callers must keep writers quiescent across collections and adoption.
-    pub async fn verify(&self) -> Result<MigrationVerification, String> {
+    pub async fn verify(&self) -> Result<MigrationVerification, StorageError> {
         let mut results = Vec::new();
         let states = self.states.read().clone();
         // No collection receipts means no migration evidence, not successful
@@ -318,7 +319,7 @@ impl MigrationEngine {
     }
 
     /// Run the full migration
-    pub async fn run(&mut self) -> Result<MigrationProgress, String> {
+    pub async fn run(&mut self) -> Result<MigrationProgress, StorageError> {
         self.running.store(true, Ordering::Relaxed);
         self.wait_until_resumed().await?;
 
@@ -375,7 +376,7 @@ impl MigrationEngine {
     }
 
     /// Migrate a single collection with streaming pagination
-    async fn migrate_collection(&self, collection: &str) -> Result<(), String> {
+    async fn migrate_collection(&self, collection: &str) -> Result<(), StorageError> {
         let state = {
             let states = self.states.read();
             states
@@ -463,7 +464,7 @@ impl MigrationEngine {
         self.paused.send_replace(false);
     }
 
-    async fn wait_until_resumed(&self) -> Result<(), String> {
+    async fn wait_until_resumed(&self) -> Result<(), StorageError> {
         let mut control = self.paused.subscribe();
         control.wait_for(|paused| !*paused).await
             .map(|_| ())
@@ -471,7 +472,7 @@ impl MigrationEngine {
     }
 
     /// Convenience: verify
-    pub async fn verify(&self) -> Result<MigrationVerification, String> {
+    pub async fn verify(&self) -> Result<MigrationVerification, StorageError> {
         self.handle().verify().await
     }
 }

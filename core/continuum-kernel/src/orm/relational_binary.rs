@@ -1,4 +1,5 @@
 //! Native payload access through the existing schema and transaction owner.
+use super::storage_error::StorageError;
 use super::{
     adapter::naming,
     binary::{descriptor_column, BinaryValue},
@@ -12,9 +13,9 @@ impl super::relational::RelationalStore {
         &self,
         record: super::types::DataRecord,
         payloads: std::collections::BTreeMap<String, BinaryValue>,
-    ) -> Result<String, String> {
+    ) -> Result<String, StorageError> {
         if payloads.is_empty() {
-            return Err("native create requires at least one payload".into());
+            return Err(StorageError::NoPayloads);
         }
         // Compile typed bindings before dispatch, then move them into the same committing owner.
         super::binary::native_identity(&record.id)?;
@@ -23,8 +24,7 @@ impl super::relational::RelationalStore {
             Box::pin(async move {
                 transaction
                     .execute(DbBackend::Sqlite.build(&statement))
-                    .await
-                    .map_err(|e| e.to_string())?;
+                    .await?;
                 let revision = store
                     .native_changed_on(transaction, &record.collection, &record.id)
                     .await?;
@@ -34,15 +34,15 @@ impl super::relational::RelationalStore {
         .await
     }
 
-    pub(super) fn binary_column(&self, collection: &str, field: &str) -> Result<Alias, String> {
+    pub(super) fn binary_column(&self, collection: &str, field: &str) -> Result<Alias, StorageError> {
         let schema = self.schema(collection)?;
         let declared = schema
             .fields
             .iter()
             .find(|f| f.name == field)
-            .ok_or("undeclared binary field")?;
+            .ok_or_else(|| StorageError::Undeclared { collection: collection.to_owned(), field: field.to_owned() })?;
         if declared.field_type != FieldType::Binary {
-            return Err("native payload access requires a declared binary field".into());
+            return Err(StorageError::NotBinary { collection: collection.to_owned(), field: field.to_owned() });
         }
         super::relational_query::column(&schema, field)
     }
@@ -53,10 +53,10 @@ impl super::relational::RelationalStore {
         id: String,
         payloads: std::collections::BTreeMap<String, BinaryValue>,
         condition: super::binary::BinaryWriteCondition,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, StorageError> {
         super::binary::native_identity(&id)?;
         if payloads.is_empty() {
-            return Err("native update requires at least one payload".into());
+            return Err(StorageError::NoPayloads);
         }
         let mut fields = Vec::with_capacity(payloads.len() * 2);
         let mut predicate = sea_orm::Condition::all();
@@ -85,7 +85,7 @@ impl super::relational::RelationalStore {
                     )
                     .await?;
                 if !changed && condition == super::binary::BinaryWriteCondition::Replace {
-                    return Err(format!("binary row {collection}:{id} does not exist"));
+                    return Err(StorageError::NotFound { collection: collection.to_string(), id: id.to_string() });
                 }
                 let revisions = if changed {
                     vec![

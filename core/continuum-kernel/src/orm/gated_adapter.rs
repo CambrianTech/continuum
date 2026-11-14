@@ -9,6 +9,7 @@
 
 #![cfg(test)]
 
+use super::storage_error::StorageError;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -96,8 +97,8 @@ impl StorageAdapter for GatedAdapter {
     fn capabilities(&self) -> AdapterCapabilities {
         self.inner.capabilities()
     }
-    async fn close(&mut self) -> Result<(), String> {
-        Err("the gated fixture does not own its adapter".to_string())
+    async fn close(&mut self) -> Result<(), StorageError> {
+        Err(StorageError::Unsupported { adapter: "gated fixture", operation: "close" })
     }
     async fn create(&self, record: DataRecord) -> StorageResult<DataRecord> {
         self.write(move |a| Box::pin(async move { a.create(record).await }))
@@ -112,7 +113,7 @@ impl StorageAdapter for GatedAdapter {
     async fn scan(
         &self,
         query: StorageQuery,
-    ) -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, String> {
+    ) -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, StorageError> {
         self.inner.scan(query).await
     }
     async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
@@ -167,7 +168,7 @@ impl StorageAdapter for GatedAdapter {
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
         self.inner.list_collections().await
     }
-    async fn binary_snapshot(&self, collection: &str) -> Result<super::BinarySnapshot, String> {
+    async fn binary_snapshot(&self, collection: &str) -> Result<super::BinarySnapshot, StorageError> {
         self.inner.binary_snapshot(collection).await
     }
     async fn create_binary(
@@ -212,7 +213,7 @@ impl StorageAdapter for GatedAdapter {
         self.write(move |a| Box::pin(async move { a.clear_all().await }))
             .await
     }
-    async fn cleanup(&self) -> Result<(), String> {
+    async fn cleanup(&self) -> Result<(), StorageError> {
         self.inner.cleanup().await
     }
 }

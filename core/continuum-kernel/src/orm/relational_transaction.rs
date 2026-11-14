@@ -1,4 +1,5 @@
 //! One committing owner for mutations, independent of the requesting task's lifetime.
+use super::storage_error::StorageError;
 use super::{query::StorageQuery, relational::RelationalStore, types::DataRecord};
 use sea_orm::{DatabaseTransaction, TransactionTrait};
 use std::{future::Future, pin::Pin};
@@ -6,7 +7,7 @@ use std::{future::Future, pin::Pin};
 type WriteFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 
 impl RelationalStore {
-    pub async fn write<T, F>(&self, operation: F) -> Result<T, String>
+    pub async fn write<T, F>(&self, operation: F) -> Result<T, StorageError>
     where
         T: Send + 'static,
         F: for<'a> FnOnce(&'a RelationalStore, &'a DatabaseTransaction) -> WriteFuture<'a, T>
@@ -19,7 +20,7 @@ impl RelationalStore {
         .await
     }
 
-    pub async fn write_with_revisions<T, F>(&self, operation: F) -> Result<T, String>
+    pub async fn write_with_revisions<T, F>(&self, operation: F) -> Result<T, StorageError>
     where
         T: Send + 'static,
         F: for<'a> FnOnce(
@@ -32,19 +33,19 @@ impl RelationalStore {
         let store = self.clone();
         tokio::spawn(async move {
             let _guard = store.writer_gate.lock().await;
-            let transaction = store.db.begin().await.map_err(|e| e.to_string())?;
+            let transaction = store.db.begin().await?;
             let (result, revisions) = operation(&store, &transaction).await?;
-            transaction.commit().await.map_err(|e| e.to_string())?;
+            transaction.commit().await?;
             for revision in revisions {
                 store.committed(revision.domain, &revision.collection, revision.high);
             }
             Ok(result)
         })
         .await
-        .map_err(|e| format!("storage transaction task failed: {e}"))?
+        ?
     }
 
-    pub async fn create(&self, record: DataRecord) -> Result<DataRecord, String> {
+    pub async fn create(&self, record: DataRecord) -> Result<DataRecord, StorageError> {
         self.write(move |store, transaction| {
             Box::pin(async move {
                 store.insert(transaction, &record).await?;
@@ -60,19 +61,19 @@ impl RelationalStore {
         id: String,
         data: serde_json::Value,
         increment: bool,
-    ) -> Result<DataRecord, String> {
+    ) -> Result<DataRecord, StorageError> {
         self.write(move |store, transaction| {
             Box::pin(async move {
                 if !store
                     .update_on(transaction, &collection, &id, data, increment)
                     .await?
                 {
-                    return Err(format!("update row {collection}:{id} does not exist"));
+                    return Err(StorageError::NotFound { collection: collection.to_string(), id: id.clone() });
                 }
                 store
                     .read_on(transaction, &collection, &id)
                     .await?
-                    .ok_or_else(|| format!("updated row {collection}:{id} disappeared"))
+                    .ok_or(StorageError::Corrupt { what: "an updated row vanished inside its own transaction" })
             })
         })
         .await
@@ -82,14 +83,14 @@ impl RelationalStore {
         &self,
         record: DataRecord,
         field: String,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, StorageError> {
         self.write(move |store, transaction| {
             Box::pin(async move { store.monotonic_on(transaction, &record, &field).await })
         })
         .await
     }
 
-    pub async fn delete_matching(&self, query: StorageQuery) -> Result<usize, String> {
+    pub async fn delete_matching(&self, query: StorageQuery) -> Result<usize, StorageError> {
         self.write_with_revisions(move |store, transaction| {
             Box::pin(async move {
                 let deleted = store.delete_on(transaction, query).await?;

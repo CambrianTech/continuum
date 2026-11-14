@@ -21,6 +21,7 @@
 //! SeaOrmAdapter (per pool)
 //! ```
 
+use super::storage_error::StorageError;
 use dashmap::DashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -127,7 +128,7 @@ impl ConnectionManager {
     /// Get or create a pool for the given database path
     ///
     /// CRITICAL: db_path MUST be provided - no fallbacks allowed
-    async fn get_or_create_pool(&self, db_path: &Path) -> Result<Arc<ManagedPool>, String> {
+    async fn get_or_create_pool(&self, db_path: &Path) -> Result<Arc<ManagedPool>, StorageError> {
         // Fast path: pool exists
         if let Some(pool) = self.pools.get(db_path) {
             pool.touch();
@@ -156,7 +157,7 @@ impl ConnectionManager {
     }
 
     /// Evict the least recently used pool
-    async fn evict_lru(&self) -> Result<(), String> {
+    async fn evict_lru(&self) -> Result<(), StorageError> {
         // Find the LRU pool
         let mut oldest: Option<(PathBuf, u64)> = None;
 
@@ -193,7 +194,7 @@ impl ConnectionManager {
     }
 
     /// Close all pools
-    pub async fn close_all(&self) -> Result<(), String> {
+    pub async fn close_all(&self) -> Result<(), StorageError> {
         let paths: Vec<PathBuf> = self.pools.iter().map(|e| e.key().clone()).collect();
         for path in paths {
             if let Some((_, pool)) = self.pools.remove(&path) {
@@ -337,7 +338,7 @@ impl ConnectionManager {
     }
 
     /// Run cleanup/optimization on a database
-    pub async fn cleanup(&self, db_path: &Path) -> Result<(), String> {
+    pub async fn cleanup(&self, db_path: &Path) -> Result<(), StorageError> {
         let pool = self.get_or_create_pool(db_path).await?;
         let adapter = pool.adapter.read().await;
         adapter.cleanup().await
