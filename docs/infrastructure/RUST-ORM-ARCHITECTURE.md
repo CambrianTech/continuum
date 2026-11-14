@@ -90,7 +90,12 @@ delta replay and the GPU consumer remain separate implementation obligations; th
 descriptor fields alone do not establish GPU search or its quality.
 
 The bulk reader appends native rows to caller-owned contiguous bytes and parallel
-UUIDs. Its borrowed BinaryPageRequest groups collection, field, cursor and a required
+UUIDs. A BinarySnapshot pins the collection and native revision in the existing
+SeaORM read transaction, including when the native head is absent. All pages on that
+handle see the same database state. WAL writers can commit with available pool capacity;
+each snapshot leases a connection, so retaining all connections can delay writers. Drop releases
+the transaction; consumers must release it after extraction, before waiting on GPU work.
+Its borrowed BinaryPageRequest groups field, cursor and a required
 NonZeroUsize page size; BinaryPageOutput groups the caller's mutable buffer views.
 Only the cursor is optional because beginning traversal is a valid state. The old
 positional signature and runtime zero-size refusal are removed.
@@ -101,7 +106,8 @@ no numeric materialization. NULL pairs are excluded in storage before LIMIT; a p
 NULL pair or mixed descriptor refuses the page without appending output. Capacity may
 be reserved on refusal, but existing buffer contents and lengths remain unchanged.
 This is not mmap/Metal zero-copy: SQLite owns its result buffers. The current cursor
-is still an ID-ordered live scan. IDs and cursors are typed UUIDs; native identity text
+is ID-ordered within that pinned snapshot. The native revision identifies payload
+write/delete state, not scalar-filter invalidations or GPU adoption. IDs and cursors are typed UUIDs; native identity text
 must be canonical lowercase hyphenated UUIDs so database ordering matches the cursor.
 Revision-watermarked newest-first traversal, deletion replay and the GPU consumer remain
 unfinished; this bulk-copy slice must not be presented as the complete engine seam.

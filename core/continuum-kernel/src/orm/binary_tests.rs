@@ -30,6 +30,8 @@ struct RequiredNativeRow {
 
 #[path = "binary_group_tests.rs"]
 mod group_tests;
+#[path = "binary_snapshot_tests.rs"]
+mod snapshot_tests;
 
 fn descriptor(element_type: ElementType, shape: Vec<u64>) -> BinaryDescriptor {
     BinaryDescriptor {
@@ -129,10 +131,10 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
         assert!(!append_changes.has_changed()?);
         let mut bytes = Vec::new();
         let mut ids = Vec::new();
-        let header = real
-            .binary_page_into(
+        let snapshot = real.binary_snapshot(RequiredNativeRow::COLLECTION).await?;
+        let header = snapshot
+            .page_into(
                 &crate::orm::binary::BinaryPageRequest {
-                    collection: RequiredNativeRow::COLLECTION,
                     field: "payload",
                     after: None,
                     limit: std::num::NonZeroUsize::new(1)
@@ -143,8 +145,7 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
                     ids: &mut ids,
                 },
             )
-            .await
-            .into_result()?
+            .await?
             .ok_or("missing descriptor")?;
         assert_eq!(ids, [uuid::Uuid::from_u128(1)]);
         let page = [TestRecord {
@@ -442,10 +443,10 @@ async fn read_page(
 ) -> Result<Vec<TestRecord>, String> {
     let mut bytes = Vec::new();
     let mut ids = Vec::new();
-    let descriptor = store
-        .binary_page_into(
+    let snapshot = store.binary_snapshot(collection).await?;
+    let descriptor = snapshot
+        .page_into(
             &crate::orm::binary::BinaryPageRequest {
-                collection: collection,
                 field: field,
                 after: after
                     .map(|id| uuid::Uuid::parse_str(&id))
@@ -514,9 +515,10 @@ async fn bulk_native_page_reuses_capacity_and_refuses_mixed_descriptors_atomical
     let pointer = bytes.as_ptr();
     let mut ids = vec![uuid::Uuid::from_u128(99)];
     assert!(store
-        .binary_page_into(
+        .binary_snapshot(NativeRow::COLLECTION)
+        .await?
+        .page_into(
             &crate::orm::binary::BinaryPageRequest {
-                collection: NativeRow::COLLECTION,
                 field: "payload",
                 after: None,
                 limit: std::num::NonZeroUsize::new(3).ok_or("test page size must be positive")?
@@ -531,9 +533,10 @@ async fn bulk_native_page_reuses_capacity_and_refuses_mixed_descriptors_atomical
     assert_eq!(bytes, [99]);
     assert_eq!(ids, [uuid::Uuid::from_u128(99)]);
     let result = store
-        .binary_page_into(
+        .binary_snapshot(NativeRow::COLLECTION)
+        .await?
+        .page_into(
             &crate::orm::binary::BinaryPageRequest {
-                collection: NativeRow::COLLECTION,
                 field: "payload",
                 after: None,
                 limit: std::num::NonZeroUsize::new(2).ok_or("test page size must be positive")?,
@@ -602,9 +605,10 @@ async fn native_identity_refuses_aliases_and_corrupt_late_rows_without_appending
     let mut bytes = vec![99];
     let mut ids = vec![uuid::Uuid::from_u128(99)];
     assert!(store
-        .binary_page_into(
+        .binary_snapshot(NativeRow::COLLECTION)
+        .await?
+        .page_into(
             &crate::orm::binary::BinaryPageRequest {
-                collection: NativeRow::COLLECTION,
                 field: "payload",
                 after: None,
                 limit: std::num::NonZeroUsize::new(2).ok_or("test page size must be positive")?

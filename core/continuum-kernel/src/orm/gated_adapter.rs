@@ -167,12 +167,8 @@ impl StorageAdapter for GatedAdapter {
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
         self.inner.list_collections().await
     }
-    async fn binary_page_into(
-        &self,
-        request: &super::binary::BinaryPageRequest<'_>,
-        output: super::binary::BinaryPageOutput<'_>,
-    ) -> StorageResult<Option<super::binary::BinaryDescriptor>> {
-        self.inner.binary_page_into(request, output).await
+    async fn binary_snapshot(&self, collection: &str) -> Result<super::BinarySnapshot, String> {
+        self.inner.binary_snapshot(collection).await
     }
     async fn create_binary(
         &self,

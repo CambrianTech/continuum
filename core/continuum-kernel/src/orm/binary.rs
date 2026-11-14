@@ -4,7 +4,6 @@
 /// A bounded native read. Absence of a cursor means the beginning, not missing input.
 #[derive(Debug, Clone, Copy)]
 pub struct BinaryPageRequest<'a> {
-    pub collection: &'a str,
     pub field: &'a str,
     pub after: Option<uuid::Uuid>,
     pub limit: std::num::NonZeroUsize,

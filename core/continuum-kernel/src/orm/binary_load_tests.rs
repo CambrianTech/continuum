@@ -44,8 +44,9 @@ async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes:
             if native {
                 let mut contiguous = Vec::new();
                 let mut ids = Vec::new();
-                let descriptor = store.binary_page_into(
-            &crate::orm::binary::BinaryPageRequest { collection: collection, field: "payload", after: Some(cursor), limit: std::num::NonZeroUsize::new(32).ok_or("test page size must be positive")? },
+                let snapshot = store.binary_snapshot(collection).await?;
+                let descriptor = snapshot.page_into(
+            &crate::orm::binary::BinaryPageRequest { field: "payload", after: Some(cursor), limit: std::num::NonZeroUsize::new(32).ok_or("test page size must be positive")? },
             crate::orm::binary::BinaryPageOutput { bytes: &mut contiguous, ids: &mut ids },
         ).await?
                     .ok_or("missing native descriptor")?;
