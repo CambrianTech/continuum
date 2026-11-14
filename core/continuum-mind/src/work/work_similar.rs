@@ -446,11 +446,14 @@ impl WorkGet {
             .map(submission::WorkReviewResult::from).collect();
         // the holder's card only: a review card's next step is its verdict, not a submission
         if card.reviews.is_none() {
-            let latest = card.latest_submission().map(|s| s.submission_id);
-            let outcomes: Vec<_> = latest
-                .map(|id| board.submission_reviews_for(id).filter(|r| r.card_id == card.card_id).map(|r| r.outcome).collect())
-                .unwrap_or_default(); // unwrap_or_default: no submission, no outcomes
-            receipt.next = crate::persona::work_board::submissions::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), crate::persona::work_board::submissions::submission_review_handoff(board, card.card_id, latest), card.pull_request.as_ref());
+            let latest = card.latest_submission();
+            let policy = crate::persona::work_board::review::room_policy(airc, room).await.counted();
+            let state = match latest {
+                Some(submission) => crate::persona::work_board::submissions::review_state(board, submission, &policy),
+                None => crate::cognition::review_verdict::ReviewState::Awaiting { passes: 0, required: policy.required },
+            };
+            let latest = latest.map(|s| s.submission_id);
+            receipt.next = crate::persona::work_board::submissions::next_after_submission(latest.map(|id| id.as_uuid()), state, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), crate::persona::work_board::submissions::submission_review_handoff(board, card.card_id, latest), card.pull_request.as_ref());
         }
         Ok(receipt)
     }

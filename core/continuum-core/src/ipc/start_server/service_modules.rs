@@ -29,6 +29,9 @@ pub(super) fn register_code_data_and_service_modules(
         rt_handle.clone(),
         Arc::new(crate::modules::acting_provider::CoreActing),
     ));
+    // The merge gate's card verdicts read the caller's boards as her airc identity, which the mind
+    // holds (card 5a94e88e: a linked PR merges only on a recorded independent pass at its head).
+    code_state.card_boards.install(Arc::new(continuum_mind::work::card_boards::CallerCardBoards));
     runtime.register(Arc::new(CodeModule::new(code_state.clone())));
 
     // Phase 4: DataModule (database-agnostic storage via ORM adapters)

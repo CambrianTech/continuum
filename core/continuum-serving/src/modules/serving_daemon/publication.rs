@@ -63,7 +63,7 @@ pub fn published_lanes(served: Option<u32>, target_lanes: u32) -> u32 {
 /// has been exceeded", llama.cpp server-context.cpp; Cormac on #5720). The share is a KV CHARGE,
 /// never a mind's window or a seat's width: each mind is granted her measured need
 /// (`capacity::window_grant`), and a seat is as wide as one sequence holds
-/// (`window_grant::seat_window`; the M5, 2026-11-14: 132,300 read as the widest lane named two minds
+/// (`window_grant::SeatWindow`; the M5, 2026-11-14: 132,300 read as the widest lane named two minds
 /// unservable on a pool holding 262,144 per sequence).
 pub fn sequence_share(served_pool: u32, sequences: u32, trained_window: u32) -> (u32, u32) {
     let sequences = sequences.max(1);

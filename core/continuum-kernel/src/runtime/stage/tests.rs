@@ -383,3 +383,103 @@ async fn an_inline_panic_is_caught_and_counts_toward_the_quarantine() {
     );
     assert_eq!(runner.latest(), None, "nothing was ever published");
 }
+
+/// The act graph's dataflow: produced-once artifacts and the stage that runs on them.
+mod dataflow {
+    use super::*;
+
+    const WARM: TopicName = TopicName("test/prefix.warm");
+    const RESULT: TopicName = TopicName("test/tool.result");
+
+    // what this catches: a consumer that waits forever on a producer that is gone (its task
+    // panicked, was cancelled, or returned without delivering): the drop is the event.
+    #[tokio::test]
+    async fn a_dropped_producer_settles_abandoned_and_wakes_its_waiter() {
+        let (produces, mut subscribes) = artifact::<u32, &'static str>(WARM);
+        let waiter = tokio::spawn(async move { subscribes.settled().await.settled });
+        drop(produces);
+        assert!(matches!(waiter.await, Ok(Settled::Abandoned)));
+    }
+
+    // what this catches: a consumer that arrives after the producer finished must not wait, and
+    // must be told the overlap was complete (the prefill-during-tool receipt reads this).
+    #[tokio::test]
+    async fn a_consumer_after_the_settle_waits_for_nothing() {
+        let (produces, mut subscribes) = artifact::<u32, &'static str>(WARM);
+        produces.produce(7);
+        let met = subscribes.settled().await;
+        assert_eq!(met.arrival, Arrival::AlreadySettled);
+        assert!(matches!(met.settled, Settled::Ready(v) if *v == 7));
+    }
+
+    // what this catches: a typed failure flattened into "absent": the consumer must be able to
+    // match on why the producer could not deliver.
+    #[tokio::test]
+    async fn a_failure_reaches_every_subscriber_typed() {
+        let (produces, subscribes) = artifact::<u32, &'static str>(WARM);
+        let mut second = subscribes.clone();
+        produces.fail("refused");
+        assert!(matches!(second.settled().await.settled, Settled::Failed(why) if *why == "refused"));
+        assert!(matches!(subscribes.now(), Some(Settled::Failed(_))));
+    }
+
+    // what this catches: a handoff that copies, or that hangs when its producer is dropped.
+    #[tokio::test]
+    async fn a_handoff_moves_its_value_and_an_abandoned_one_says_so() {
+        let (produces, consumer) = handoff::<Vec<u8>, &'static str>(WARM);
+        produces.hand_over(vec![1, 2]);
+        assert!(matches!(consumer.settled().await.settled, Settled::Ready(v) if v == vec![1, 2]));
+        let (produces, consumer) = handoff::<Vec<u8>, &'static str>(WARM);
+        drop(produces);
+        assert!(matches!(consumer.settled().await.settled, Settled::Abandoned));
+    }
+
+    struct Joins;
+
+    #[async_trait]
+    impl DependentStage for Joins {
+        type Inputs = (Subscribes<u32, &'static str>, Subscribes<u32, &'static str>);
+        type Produces = u32;
+        type Fails = &'static str;
+        fn produces(&self) -> TopicName {
+            TopicName("test/joined")
+        }
+        async fn run(
+            self,
+            inputs: <Self::Inputs as Inputs>::Settled,
+        ) -> Result<u32, &'static str> {
+            let (result, warm) = inputs;
+            let Settled::Ready(result) = result.settled else {
+                return Err("no result");
+            };
+            // The optional input degrades: absent or failed, the stage still runs.
+            let warm = match warm.settled {
+                Settled::Ready(warm) => *warm,
+                Settled::Failed(_) | Settled::Abandoned => 0,
+            };
+            Ok(*result + warm)
+        }
+    }
+
+    // what this catches: a dependent stage that runs before its LAST input settles (a stage
+    // ordered by hand instead of by its data), or that hangs when an optional input fails.
+    // Event order only: no timing is asserted.
+    #[tokio::test]
+    async fn a_dependent_stage_runs_only_once_every_input_has_settled() {
+        let (result, result_in) = artifact::<u32, &'static str>(RESULT);
+        let (warm, warm_in) = artifact::<u32, &'static str>(WARM);
+        let mut joined = spawn_when_ready(Joins, (result_in, warm_in));
+        result.produce(40);
+        tokio::task::yield_now().await;
+        assert!(joined.now().is_none(), "it ran with one input still open");
+        warm.produce(2);
+        assert!(matches!(joined.settled().await.settled, Settled::Ready(v) if *v == 42));
+
+        let (result, result_in) = artifact::<u32, &'static str>(RESULT);
+        let (warm, warm_in) = artifact::<u32, &'static str>(WARM);
+        let mut joined = spawn_when_ready(Joins, (result_in, warm_in));
+        warm.fail("superseded");
+        result.produce(40);
+        assert!(matches!(joined.settled().await.settled, Settled::Ready(v) if *v == 40));
+    }
+}

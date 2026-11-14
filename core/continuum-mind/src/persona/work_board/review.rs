@@ -8,48 +8,39 @@
 //! is the room binding's `params.review` ([`ReviewPolicy`]); the evidence is the board's
 //! reviews of the card's latest submission.
 //!
-//! The count is pure and pinned by a table. The read is one board read plus one wall read.
+//! The state is `review_verdict::derive` (pure, pinned by its table in continuum-rooms). The read
+//! is one board read plus one wall read.
 
 use airc_lib::{Airc, WorkCardId};
 use uuid::Uuid;
 
+use crate::cognition::review_verdict::{derive, MindOf, PeerIsMind, ReviewState};
 use crate::experience::binding::ReviewPolicy;
 
-/// One review of a submission, reduced to what the policy reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ReviewFact {
-    pub reviewer: Uuid,
-    pub passed: bool,
-}
-
-/// How many passing reviews count toward `policy.required`: passes only, one per
-/// distinct reviewer, and the author's own pass only where the room allows self-review.
-/// Roles are declared but not yet enforced (membership does not carry roles yet).
-pub(crate) fn passing_reviewers(reviews: &[ReviewFact], author: Option<Uuid>, policy: &ReviewPolicy) -> usize {
-    let mut counted: Vec<Uuid> = Vec::new();
-    for r in reviews {
-        if !r.passed || counted.contains(&r.reviewer) {
-            continue;
-        }
-        if Some(r.reviewer) == author && !policy.self_review {
-            continue;
-        }
-        counted.push(r.reviewer);
+/// The mind behind a board peer: the resident whose airc identity it is, else the peer itself.
+/// The one identity owner the self-review rule reads (`review_verdict::MindOf`), so a mind is never
+/// compared as two raw ids from two namespaces.
+impl MindOf for crate::persona::PersonaAircRuntimeRegistry {
+    fn mind_of(&self, peer: airc_core::PeerId) -> Uuid {
+        self.iter()
+            .find(|runtime| runtime.airc().peer_id() == peer)
+            .map(|runtime| runtime.persona_id())
+            .unwrap_or_else(|| peer.as_uuid()) // unwrap_or_else: a peer no resident is, is its own mind
     }
-    counted.len()
 }
 
-/// The room's review state for a card: its declared policy and the passes that count.
+/// The room's review state for a card: its declared policy and the state its latest submission's
+/// recorded verdicts derive (`review_verdict::derive`, the one derivation).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RoomReview {
     pub policy: ReviewPolicy,
-    pub passed: usize,
+    pub state: ReviewState,
 }
 
 impl RoomReview {
     /// Must the card still wait for review before it finishes?
     pub fn outstanding(&self) -> bool {
-        (self.passed as u32) < self.policy.required
+        !self.state.passed()
     }
 }
 
@@ -63,6 +54,25 @@ pub enum PolicyRead {
     /// The room's policy could not be read now; the reason is probed.
     Unavailable(String),
     Declared(ReviewPolicy),
+}
+
+impl PolicyRead {
+    /// The policy a derivation counts under: the declared one, else the default (one independent
+    /// pass, no self-review). The default is the floor, never looser than a declaration.
+    pub fn counted(&self) -> ReviewPolicy {
+        match self {
+            PolicyRead::Declared(policy) => policy.clone(),
+            PolicyRead::Absent | PolicyRead::Unavailable(_) => ReviewPolicy::default(),
+        }
+    }
+
+    /// The declared policy, or `None` when the room declares none or it could not be read.
+    pub fn declared(&self) -> Option<&ReviewPolicy> {
+        match self {
+            PolicyRead::Declared(policy) => Some(policy),
+            PolicyRead::Absent | PolicyRead::Unavailable(_) => None,
+        }
+    }
 }
 
 /// The review policy `room` declares. The one place a policy is read.
@@ -105,52 +115,26 @@ pub(crate) async fn room_review(airc: &std::sync::Arc<Airc>, card_id: WorkCardId
         return None;
     };
     let board = airc.work_board_in(&room).await.ok()?;
-    let latest = card.latest_submission();
-    let author = latest.map(|s| s.publisher.as_uuid()).or(card.owner.map(|o| o.as_uuid()));
-    let reviews: Vec<ReviewFact> = match latest {
-        Some(sub) => board
-            .submission_reviews_for(sub.submission_id)
-            .filter(|r| r.card_id == card.card_id)
-            .map(|r| ReviewFact {
-                reviewer: r.reviewer.as_uuid(),
-                passed: r.outcome == airc_work::WorkReviewOutcome::Passed,
-            })
-            .collect(),
-        None => Vec::new(),
+    let state = match card.latest_submission() {
+        Some(latest) => derive(latest, board.submission_reviews_for(latest.submission_id), &policy, &minds()),
+        None => ReviewState::Awaiting { passes: 0, required: policy.required },
     };
-    let passed = passing_reviewers(&reviews, author, &policy);
-    Some(RoomReview { policy, passed })
+    Some(RoomReview { policy, state })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// The identity owner this node has: its resident registry, or none (every peer its own mind).
+pub(crate) fn minds() -> MindsHere {
+    MindsHere(crate::persona::PersonaAircRuntimeRegistry::try_global())
+}
 
-    const AUTHOR: Uuid = Uuid::from_u128(1);
-    const PEER_A: Uuid = Uuid::from_u128(2);
-    const PEER_B: Uuid = Uuid::from_u128(3);
+/// [`MindOf`] over the node's registry when one is installed.
+pub(crate) struct MindsHere(Option<crate::persona::PersonaAircRuntimeRegistry>);
 
-    fn pass(r: Uuid) -> ReviewFact {
-        ReviewFact { reviewer: r, passed: true }
-    }
-
-    // what this catches: the acceptance policy applied to a submission's reviews (card
-    // fa4aaaaa). Passes only; one per distinct reviewer; the author's own pass only where
-    // the room allows self-review; `required` decides whether the card still waits.
-    #[test]
-    fn passes_count_once_per_reviewer_and_self_only_where_allowed() {
-        let one = ReviewPolicy::default();
-        let fail = ReviewFact { reviewer: PEER_A, passed: false };
-        assert_eq!(passing_reviewers(&[fail], Some(AUTHOR), &one), 0, "a failure is not a pass");
-        assert_eq!(passing_reviewers(&[pass(PEER_A), pass(PEER_A)], Some(AUTHOR), &one), 1, "one reviewer, one pass");
-        assert_eq!(passing_reviewers(&[pass(AUTHOR)], Some(AUTHOR), &one), 0, "no self-review by default");
-        let selfish = ReviewPolicy { self_review: true, ..ReviewPolicy::default() };
-        assert_eq!(passing_reviewers(&[pass(AUTHOR)], Some(AUTHOR), &selfish), 1, "Kimi on her own work, where allowed");
-
-        let two = ReviewPolicy { required: 2, ..ReviewPolicy::default() };
-        let after_one = RoomReview { policy: two.clone(), passed: passing_reviewers(&[pass(PEER_A)], Some(AUTHOR), &two) };
-        assert!(after_one.outstanding(), "required: 2 waits for a second reviewer");
-        let after_two = RoomReview { policy: two.clone(), passed: passing_reviewers(&[pass(PEER_A), pass(PEER_B)], Some(AUTHOR), &two) };
-        assert!(!after_two.outstanding());
+impl MindOf for MindsHere {
+    fn mind_of(&self, peer: airc_core::PeerId) -> Uuid {
+        match &self.0 {
+            Some(registry) => registry.mind_of(peer),
+            None => PeerIsMind.mind_of(peer),
+        }
     }
 }
