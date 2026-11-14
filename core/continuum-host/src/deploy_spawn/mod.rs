@@ -51,6 +51,6 @@ mod os;
 /// on Windows it first tries the registered scheduler task (via `probe`) and falls back to a breakaway
 /// spawn when no task is available. The probe closure runs platform-specific checks — it is passed as
 /// a parameter so this crate does not depend on any Continuum subsystem that provides bounded probes.
-pub fn spawn_deploy(plan: &SpawnPlan, probe: ProbeFn) -> Result<Spawned, String> {
-    os::spawn(plan, probe)
+pub fn spawn_deploy(plan: &SpawnPlan, probe: ProbeFn, permit_check: PermitCheck) -> Result<Spawned, String> {
+    os::spawn(plan, probe, permit_check)
 }
