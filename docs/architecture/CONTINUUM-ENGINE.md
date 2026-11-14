@@ -554,8 +554,9 @@ Continuum runtime work must follow these rules:
     waiting on a timer instead of the core's exit (the core's own shutdown is
     2.2 s), and two CI tests (gateway port rebind, adopted-checkpoint save) fail
     on whatever machine is slower than the one their duration was tuned on
-    (cards b5b9bef3, 13590777). The `time_bounds` and `wall_clock` ratchets count
-    sleeps and timeouts used as control flow, tests included.
+    (cards b5b9bef3, 13590777). The `waits_that_decide_flow` ratchet counts
+    sleeps, intervals, ticks, `Duration` constants and timeouts used as control
+    flow, tests included (below, after rule 11).
 11. **Rust is deterministic only when states and failures are types** (Joel,
     2026-11-14: "Rust is HIGHLY deterministic if you use it right"; "Even when
     you code rust it looks like js"). A review of five PRs that night
@@ -584,6 +585,44 @@ Continuum runtime work must follow these rules:
     - And **strings as identities** (verbs, field names, producer labels,
       `format!` keys beside a typed id, `serde_json::Value.get("field")` where
       a typed input exists): an identity is an enum or newtype.
+
+#### The shape ratchets (rules 10-11)
+
+Joel, 2026-11-14: "I can't even keep track of the thousands of these you've
+made. This is 90% your code and the rest is codex." Agents wrote these shapes,
+so a gate tracks them, not a person. `core/source-hygiene/src/shapes/` holds
+six token rules over the shared lexer (strings and comments are never code).
+Each counts every `core/` workspace member, not only the audited set, and holds
+two ratchets: `<name>` (production) and `<name>_in_tests`. A total may only fall,
+judged against the PR's own base tree by the PR's rules; every crate's count is
+recorded beside it. A touched file keeps its old sites and may add none. Only a
+touched file's sites can move, so the total rises exactly when the touched files
+gain sites. Crates are not judged one at a time, because a crate cut moves sites
+between crates with the total unchanged. Every CI run prints every crate of
+every ratchet, folded in its log ("every crate of every ratchet").
+
+Baseline totals (canary `958ea3056`, CI run 43547453878, production / tests):
+
+| Ratchet | What it counts | Baseline |
+|---|---|---|
+| `waits_that_decide_flow` | `sleep`/`sleep_until`, `interval`, `tick_interval: Some`, `Duration` constants, a `timeout`/`timeout_at`/`recv_timeout` whose `Err` side carries on. The only exemption is `// event-exempt: <the remote that may never answer>` | 398 / 291 |
+| `unknown_as_value` | `map_or(0` / `map_or(0.0`, `unwrap_or(0)` / `unwrap_or_default()` on a measurement-named read, `.max(1)` guarding a division, `usize`/`u32`/`u64::MAX` as a returned sentinel | 218 / 34 |
+| `stringly_errors` (library code) | `Result<_, String>`, `Result<_, ()>`, `map_err` to `format!`/`to_string`/`to_owned`, `..Error`/`..Failure` variants holding a bare `String` | 2,923 / 238 |
+| `state_as_flags` | a struct with 2+ `bool`/`AtomicBool` fields; `match (a, b, ..)` over 2+ `Option` fields of one struct declared in the same crate | 145 / 9 |
+| `string_identities` | a `.get("..")` on JSON outside wire code; a `HashMap`/`BTreeMap<String, _>` struct field in library code | 839 / 184 |
+| `contract_shape` | a library fn with 5+ parameters or 3+ consecutive parameters of one primitive type; `.clone()` passed straight as a call argument; a `pub fn` taking an owned `String`/`Vec` | 2,192 / 1,250 |
+
+The rules are lexical, so they approximate. A clone or an owned buffer the
+callee keeps is counted too. A timeout bound to a variable counts, because its
+`Err` side is out of sight. A fallback on a read whose name says nothing is
+missed. The full per-crate table is
+`docs/planning/SHAPE-RATCHET-BASELINE-2026-11-14.md`. The ten crates where a
+sweep pays most, by total sites: continuum-core 1,481, continuum-engine 1,444,
+continuum-mind 984, continuum-kernel 835, continuum-cognition 726,
+continuum-live 482, continuum-academy 337, continuum-dreaming 309,
+continuum-cli-lifecycle 262, continuum-grid 211. The floor, where phase 5 starts:
+`continuum-base` 15 stringly errors and 1 string identity; `continuum-host` 7 waits
+(5 production, 2 test), 2 unknowns and 1 contract; `continuum-pack` is not cut yet.
 
 ### Domain Mapping
 
