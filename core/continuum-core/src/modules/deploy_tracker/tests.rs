@@ -12,19 +12,13 @@ use super::*;
 async fn a_held_engine_launches_nothing_and_its_release_launches_attempt_one() {
     use crate::inference::llama_server::serving_hold::{HeldWork, HoldCause, ServingHold};
     use crate::inference::llama_server::ServingSnapshot;
-    use super::super::deploy_actuator::{DeploySpawner, RecordingSpawner, SpawnPlan, Spawned};
+    use super::super::deploy_actuator::RecordingSpawner;
     let Ok(dir) = tempfile::tempdir() else { panic!("a temp dir") };
     let user_home = dir.path().join("home");
     let root = user_home.join(".continuum");
     assert!(std::fs::create_dir_all(&root).is_ok());
-    let spawner = Arc::new(RecordingSpawner::new(Some(4242)));
-    struct Shared(Arc<RecordingSpawner>);
-    impl DeploySpawner for Shared {
-        fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String> {
-            self.0.spawn(plan)
-        }
-    }
-    let actuator = Arc::new(DeployActuator::with_spawner(user_home, root.clone(), None, Box::new(Shared(spawner.clone()))));
+    // A launch through the spawner leaves a receipt carrying its pid (a failed one carries none).
+    let actuator = Arc::new(DeployActuator::with_spawner(user_home, root.clone(), None, Box::new(RecordingSpawner::new(Some(4242)))));
     let training = ServingHold {
         since_ms: 1,
         by: HoldCause::Resident {
@@ -54,11 +48,10 @@ async fn a_held_engine_launches_nothing_and_its_release_launches_attempt_one() {
     for tick in 0..3 {
         assert!(tracker.actuate(DeployRequest::new(tip, now), tip, true, now + tick * 3_600_000).await.is_ok());
     }
-    assert!(spawner.plans.lock().is_empty(), "held: nothing launched");
-    assert!(actuator.receipt().is_none(), "held: no attempt recorded");
+    assert!(actuator.receipt().is_none(), "held: nothing launched, no attempt recorded");
     serving_tx.send_modify(|snapshot| snapshot.held_for = None);
     assert!(tracker.actuate(DeployRequest::new(tip, now), tip, false, now + 4 * 3_600_000).await.is_ok());
-    assert_eq!(spawner.plans.lock().len(), 1, "released: launched");
+    assert_eq!(actuator.receipt().and_then(|receipt| receipt.pid), Some(4242), "released: launched");
     assert_eq!(actuator.receipt().map(|receipt| receipt.attempt), Some(1), "the first launch is attempt one");
 }
 
@@ -82,24 +75,19 @@ async fn a_newer_green_tip_requests_one_deploy_and_the_running_tip_requests_none
     use crate::inference::llama_server::ServingSnapshot;
     use crate::system_resources::disk_reporters::TrackedDir;
     use continuum_cli_lifecycle::deploy_health::{self, DeployHealth};
-    use super::super::deploy_actuator::{DeploySpawner, RecordingSpawner, SpawnPlan, Spawned};
-    struct Shared(Arc<RecordingSpawner>);
-    impl DeploySpawner for Shared {
-        fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String> {
-            self.0.spawn(plan)
-        }
-    }
+    use super::super::deploy_actuator::RecordingSpawner;
     const RUNNING: &str = "a9b055a83";
     const NEWER: &str = "b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0";
-    let tracker_on = |root: &std::path::Path, source: FixedTip, spawner: &Arc<RecordingSpawner>| {
+    // Launches are read off the actuator's receipt: a launch through the spawner carries its pid.
+    let tracker_on = |root: &std::path::Path, source: FixedTip| {
         let state_dir = root.join("state");
         assert!(std::fs::create_dir_all(&state_dir).is_ok());
-        let actuator = Arc::new(DeployActuator::with_spawner(root.join("home"), root.to_path_buf(), None, Box::new(Shared(spawner.clone()))));
+        let actuator = Arc::new(DeployActuator::with_spawner(root.join("home"), root.to_path_buf(), None, Box::new(RecordingSpawner::new(Some(4242)))));
         let (_serving_tx, serving) = tokio::sync::watch::channel(ServingSnapshot::empty());
         DeployTrackerModule {
             source: Box::new(source),
             root: root.to_path_buf(),
-            state_writer: Some(TrackedDir::new("state", state_dir.clone()).writer()),
+            state_writer: Some(TrackedDir::new("state", root.join("state")).writer()),
             state_dir,
             stranded_reported: parking_lot::Mutex::new(None),
             actuator,
@@ -111,32 +99,31 @@ async fn a_newer_green_tip_requests_one_deploy_and_the_running_tip_requests_none
 
     // Newer and green: one request, one launch, and the second tick re-stamps nothing.
     let Ok(dir) = tempfile::tempdir() else { panic!("a temp dir") };
-    let spawner = Arc::new(RecordingSpawner::new(Some(4242)));
-    let tracker = tracker_on(dir.path(), FixedTip(NEWER, Checks::Green), &spawner);
+    let tracker = tracker_on(dir.path(), FixedTip(NEWER, Checks::Green));
     assert!(tracker.tick().await.is_ok());
     let Some(first) = read_request(dir.path()) else { panic!("a newer green tip records a request") };
     assert_eq!(first.tip_sha, NEWER);
+    let Some(launch) = tracker.actuator.receipt() else { panic!("the consumer is launched for the request") };
+    assert_eq!((launch.pid, launch.attempt), (Some(4242), 1), "launched through the spawner, attempt one");
     assert!(tracker.tick().await.is_ok());
     assert_eq!(read_request(dir.path()), Some(first), "exactly one request: the second tick keeps the first");
-    assert_eq!(spawner.plans.lock().len(), 1, "the consumer is launched once for the request");
+    assert_eq!(tracker.actuator.receipt().map(|again| (again.spawned_ms, again.attempt)), Some((launch.spawned_ms, 1)), "and one launch: the second tick launches nothing");
     assert!(!dir.path().join("state").join(TRACKER_STANDING_FILE).exists(), "a deploy wanted is no standing block");
 
     // The running build IS the tip: no request, no launch, no block.
     let Ok(dir) = tempfile::tempdir() else { panic!("a temp dir") };
-    let spawner = Arc::new(RecordingSpawner::new(Some(4242)));
-    let tracker = tracker_on(dir.path(), FixedTip("a9b055a83614d90f029818e32333160a064583bc", Checks::Green), &spawner);
+    let tracker = tracker_on(dir.path(), FixedTip("a9b055a83614d90f029818e32333160a064583bc", Checks::Green));
     assert!(tracker.tick().await.is_ok());
     assert_eq!(read_request(dir.path()), None, "the running tip requests nothing");
-    assert!(spawner.plans.lock().is_empty(), "and launches nothing");
+    assert!(tracker.actuator.receipt().is_none(), "and launches nothing");
     assert!(matches!(deploy_health::read(dir.path(), RUNNING), DeployHealth::NoRequest));
 
     // No published core yet: no request, and the health line names the typed wait.
     let Ok(dir) = tempfile::tempdir() else { panic!("a temp dir") };
-    let spawner = Arc::new(RecordingSpawner::new(Some(4242)));
-    let tracker = tracker_on(dir.path(), FixedTip(NEWER, Checks::Unpublished), &spawner);
+    let tracker = tracker_on(dir.path(), FixedTip(NEWER, Checks::Unpublished));
     assert!(tracker.tick().await.is_ok());
     assert_eq!(read_request(dir.path()), None, "nothing published: nothing requested");
-    assert!(spawner.plans.lock().is_empty());
+    assert!(tracker.actuator.receipt().is_none(), "and nothing launched");
     assert!(
         matches!(deploy_health::read(dir.path(), RUNNING), DeployHealth::NotRequested { standing } if standing.verdict == DeployVerdict::AwaitingPublication),
         "the wait reaches the health line"
