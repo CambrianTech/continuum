@@ -278,8 +278,11 @@ extensions. Generic data access must not bypass a domain's protected write owner
 ## 6. Current declaration and deletion
 
 Joel's November 14 clarification, relayed by Fable on PR #5954, is **no legacy
-runtime path**. The ORM owner should upgrade existing databases at boot from the
-current declaration, preserving rows and custody. Apply supported additive changes
+runtime path**. The ORM owner evolves a store whenever an entity is opened from the
+current derive/decorator declaration, preserving rows and custody on every machine.
+This is ordinary entity admission, not a startup-only pass or manual database repair.
+Columns, indexes, defaults, typed selects and filters come from that declaration.
+Apply supported additive changes
 and their declaration-owned defaults or typed backfill in one transaction, then
 record the receipt. Unsupported destructive or ambiguous changes fail explicitly;
 there is no old-format reader, dual backend or fallback afterwards. Replace callers
