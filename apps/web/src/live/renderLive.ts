@@ -137,10 +137,10 @@ function renderComposition(body: LiveContentBody): TemplateResult {
     </div>`;
   }
   const n = body.participants.length;
-  // Spec: cols from count — 2 for ≤4, 3 for ≤9, 4 for ≤16; rows = ceil(n / cols)
-  const cols = n <= 4 ? 2 : n <= 9 ? 3 : 4;
+  // Spec: cols from count — ceil(sqrt(n)) gives 2 for ≤4, 3 for ≤9, 4 for ≤16
+  const cols = Math.ceil(Math.sqrt(n));
   const rows = Math.ceil(n / cols);
-  return html`<div class="live-grid" data-composition="grid" data-count=${n} style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr)">
+  return html`<div class="live-grid" data-composition="grid" data-count=${n} style="--cols:${cols};--rows:${rows}">
     ${repeat(body.participants, (p) => p.id, participantTile)}
     ${audioSinks}
   </div>`;
