@@ -90,14 +90,24 @@ delta replay and the GPU consumer remain separate implementation obligations; th
 descriptor fields alone do not establish GPU search or its quality.
 
 The bulk reader appends native rows to caller-owned contiguous bytes and parallel
-UUIDs. It borrows SQLite payload/header views while their query results remain
+UUIDs. A BinarySnapshot pins the collection and native revision in the existing
+SeaORM read transaction, including when the native head is absent. All pages on that
+handle see the same database state. WAL writers can commit with available pool capacity;
+each snapshot leases a connection, so retaining all connections can delay writers. Drop releases
+the transaction; consumers must release it after extraction, before waiting on GPU work.
+Its borrowed BinaryPageRequest groups field, cursor and a required
+NonZeroUsize page size; BinaryPageOutput groups the caller's mutable buffer views.
+Only the cursor is optional because beginning traversal is a valid state. The old
+positional signature and runtime zero-size refusal are removed.
+It borrows SQLite payload/header views while their query results remain
 owned, decodes one common descriptor, validates the whole page, and then copies each
 payload once into the destination. There is no per-row payload/header allocation and
 no numeric materialization. NULL pairs are excluded in storage before LIMIT; a partial
 NULL pair or mixed descriptor refuses the page without appending output. Capacity may
 be reserved on refusal, but existing buffer contents and lengths remain unchanged.
 This is not mmap/Metal zero-copy: SQLite owns its result buffers. The current cursor
-is still an ID-ordered live scan. IDs and cursors are typed UUIDs; native identity text
+is ID-ordered within that pinned snapshot. The native revision identifies payload
+write/delete state, not scalar-filter invalidations or GPU adoption. IDs and cursors are typed UUIDs; native identity text
 must be canonical lowercase hyphenated UUIDs so database ordering matches the cursor.
 Revision-watermarked newest-first traversal, deletion replay and the GPU consumer remain
 unfinished; this bulk-copy slice must not be presented as the complete engine seam.
@@ -116,9 +126,14 @@ Declared foreign-key cascades now contribute their transitive identity closure t
 one recursive ORM query, using UNION to deduplicate cycles and converging paths. Only
 reachable native collections receive tombstones; SET NULL survivors stay live and a
 RESTRICT failure rolls back every receipt. The owner restores and physically verifies
-its persisted schema catalog once at open, so children participate even before their
+its persisted schema catalog once at open using primary-key receipt pages (64 per
+transfer, with no collection-count cap), so children participate even before their
 caller re-admits a declaration. A new external declaration requires admission or a
 new owner before deletion; an incomplete catalog cannot silently miss descendants.
+Receipt validation currently retains exact declaration/physical equality. Removing its
+JSON comparison requires strict declaration decoding first: permissive serde defaults
+and ignored unknown fields must not silently admit unsupported metadata. This remains
+an explicit CPU/schema improvement gap; paging alone does not remove serialization.
 The existing committing owner publishes typed domain/collection revision notices only
 after commit. Append and native receivers share that owner but never share a revision
 domain. Native create/update, direct deletes, batch deletes, cascades and clear return
@@ -126,6 +141,13 @@ their notices through the transaction result; rollback and conditional no-op emi
 Persisted heads seed receivers on owner restart. These are wakeup hints backed by
 durable heads, not a snapshot or replay proof: ordered delta paging and its completion
 semantics must land before consumers may use a high-water mark as processed work.
+The current receipt table coalesces each identity to its latest revision. A fixed
+upper revision with live paged queries is therefore eventual reconciliation, not an
+as-of snapshot: a row can move past that bound before its page is read. Exact snapshot
+completion must retain one existing-owner read transaction across head capture,
+metadata and payload pages. Scalar changes and FK-driven updates currently do not
+advance native revisions; a filtered corpus must include their invalidations before
+this receipt stream can claim membership completeness.
 The sequence-head declaration now has a composite domain/collection identity; any
 previous development database needs the offline schema migration before adoption.
 
@@ -258,6 +280,22 @@ inside one transaction. It never interprets unknown progress as unstarted automa
 The receipt records rows, historical NULLs, changed rows and whether changes applied.
 This narrow repair does not perform the full schema/native-payload migration above.
 
+### Runtime orchestration and deterministic completion
+
+Publish work through its existing owner and await its typed result or completion
+receipt. Elapsed time is not evidence of completion, cancellation, resource release
+or physical death. Use event barriers for ordering and fault replay; do not use sleeps
+or arbitrary timeouts to establish correctness. Model absence with Option, failure
+with Result and explicit error variants, and admissible persisted states in schemas.
+Required inputs are required fields; Option represents meaningful absence, never a
+required input deferred to a missing-parameter error. Group cohesive arguments into
+named structs, borrow requests and views where possible, and move native buffers only
+when ownership transfers. Types own validation, behavior and lifecycle through
+composition. Unwrap/expect require a rare, proven invariant; recoverable states use
+typed errors rather than panic or defaults.
+Runtime and critical startup execute in Rust owners. Shell scripts or Python require
+a concrete exceptional necessity or appropriateness; they are not orchestration
+shortcuts. Development build tooling is separate from the installed runtime.
 ## 7. Proof and current implementation gaps
 
 Use the same dataset, query shapes, concurrency and exact artifact revisions before

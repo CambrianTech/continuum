@@ -76,7 +76,8 @@ impl super::relational::RelationalStore {
                         other.collection != candidate.collection
                             && other.fields.iter().any(|field| {
                                 field.foreign_key.as_ref().is_some_and(|reference| {
-                                    reference.collection == candidate.collection
+                                    naming::to_table_name(&reference.collection)
+                                        == naming::to_table_name(&candidate.collection)
                                         && reference.on_delete != super::types::CascadeRule::SetNull
                                 })
                             })

@@ -30,6 +30,8 @@ struct RequiredNativeRow {
 
 #[path = "binary_group_tests.rs"]
 mod group_tests;
+#[path = "binary_snapshot_tests.rs"]
+mod snapshot_tests;
 
 fn descriptor(element_type: ElementType, shape: Vec<u64>) -> BinaryDescriptor {
     BinaryDescriptor {
@@ -45,7 +47,7 @@ fn descriptor(element_type: ElementType, shape: Vec<u64>) -> BinaryDescriptor {
 #[tokio::test]
 async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::{sync::Arc, time::Duration};
+    use std::sync::Arc;
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("cancelled-native.db");
     let path = path.to_str().ok_or("non-UTF8 fixture path")?;
@@ -107,20 +109,21 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
                     .map(|_| ())
             }
         });
-        tokio::time::timeout(Duration::from_secs(5), gate.entered.notified()).await?;
+        gate.entered.notified().await;
         request.abort();
         assert!(request.await.is_err_and(|error| error.is_cancelled()));
         // A pending write must not block an independent metadata reader.
-        let count = tokio::time::timeout(
-            Duration::from_secs(5),
-            real.count(QueryBuilder::new(RequiredNativeRow::COLLECTION).build()),
-        )
-        .await?
-        .into_result()?;
+        let count = real
+            .count(QueryBuilder::new(RequiredNativeRow::COLLECTION).build())
+            .await
+            .into_result()?;
         assert_eq!(count, usize::from(!creating));
         gate.release.notify_one();
-        tokio::time::timeout(Duration::from_secs(5), gate.done.notified()).await?;
-        tokio::time::timeout(Duration::from_secs(5), native_changes.changed()).await??;
+        gate.done.await?;
+        assert!(
+            native_changes.has_changed()?,
+            "completed native write did not publish its revision"
+        );
         assert_eq!(
             *native_changes.borrow_and_update(),
             if creating { 1 } else { 2 }
@@ -128,17 +131,21 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
         assert!(!append_changes.has_changed()?);
         let mut bytes = Vec::new();
         let mut ids = Vec::new();
-        let header = real
-            .binary_page_into(
-                RequiredNativeRow::COLLECTION,
-                "payload",
-                None,
-                1,
-                &mut bytes,
-                &mut ids,
+        let snapshot = real.binary_snapshot(RequiredNativeRow::COLLECTION).await?;
+        let header = snapshot
+            .page_into(
+                &crate::orm::binary::BinaryPageRequest {
+                    field: "payload",
+                    after: None,
+                    limit: std::num::NonZeroUsize::new(1)
+                        .ok_or("test page size must be positive")?,
+                },
+                crate::orm::binary::BinaryPageOutput {
+                    bytes: &mut bytes,
+                    ids: &mut ids,
+                },
             )
-            .await
-            .into_result()?
+            .await?
             .ok_or("missing descriptor")?;
         assert_eq!(ids, [uuid::Uuid::from_u128(1)]);
         let page = [TestRecord {
@@ -436,17 +443,22 @@ async fn read_page(
 ) -> Result<Vec<TestRecord>, String> {
     let mut bytes = Vec::new();
     let mut ids = Vec::new();
-    let descriptor = store
-        .binary_page_into(
-            collection,
-            field,
-            after
-                .map(|id| uuid::Uuid::parse_str(&id))
-                .transpose()
-                .map_err(|e| e.to_string())?,
-            limit,
-            &mut bytes,
-            &mut ids,
+    let snapshot = store.binary_snapshot(collection).await?;
+    let descriptor = snapshot
+        .page_into(
+            &crate::orm::binary::BinaryPageRequest {
+                field: field,
+                after: after
+                    .map(|id| uuid::Uuid::parse_str(&id))
+                    .transpose()
+                    .map_err(|e| e.to_string())?,
+                limit: std::num::NonZeroUsize::new(limit)
+                    .ok_or("test page size must be positive")?,
+            },
+            crate::orm::binary::BinaryPageOutput {
+                bytes: &mut bytes,
+                ids: &mut ids,
+            },
         )
         .await?;
     match descriptor {
@@ -503,26 +515,36 @@ async fn bulk_native_page_reuses_capacity_and_refuses_mixed_descriptors_atomical
     let pointer = bytes.as_ptr();
     let mut ids = vec![uuid::Uuid::from_u128(99)];
     assert!(store
-        .binary_page_into(
-            NativeRow::COLLECTION,
-            "payload",
-            None,
-            3,
-            &mut bytes,
-            &mut ids
+        .binary_snapshot(NativeRow::COLLECTION)
+        .await?
+        .page_into(
+            &crate::orm::binary::BinaryPageRequest {
+                field: "payload",
+                after: None,
+                limit: std::num::NonZeroUsize::new(3).ok_or("test page size must be positive")?
+            },
+            crate::orm::binary::BinaryPageOutput {
+                bytes: &mut bytes,
+                ids: &mut ids
+            },
         )
         .await
         .is_err());
     assert_eq!(bytes, [99]);
     assert_eq!(ids, [uuid::Uuid::from_u128(99)]);
     let result = store
-        .binary_page_into(
-            NativeRow::COLLECTION,
-            "payload",
-            None,
-            2,
-            &mut bytes,
-            &mut ids,
+        .binary_snapshot(NativeRow::COLLECTION)
+        .await?
+        .page_into(
+            &crate::orm::binary::BinaryPageRequest {
+                field: "payload",
+                after: None,
+                limit: std::num::NonZeroUsize::new(2).ok_or("test page size must be positive")?,
+            },
+            crate::orm::binary::BinaryPageOutput {
+                bytes: &mut bytes,
+                ids: &mut ids,
+            },
         )
         .await?;
     assert_eq!(result, Some(descriptor(ElementType::I8, vec![2])));
@@ -583,13 +605,18 @@ async fn native_identity_refuses_aliases_and_corrupt_late_rows_without_appending
     let mut bytes = vec![99];
     let mut ids = vec![uuid::Uuid::from_u128(99)];
     assert!(store
-        .binary_page_into(
-            NativeRow::COLLECTION,
-            "payload",
-            None,
-            2,
-            &mut bytes,
-            &mut ids
+        .binary_snapshot(NativeRow::COLLECTION)
+        .await?
+        .page_into(
+            &crate::orm::binary::BinaryPageRequest {
+                field: "payload",
+                after: None,
+                limit: std::num::NonZeroUsize::new(2).ok_or("test page size must be positive")?
+            },
+            crate::orm::binary::BinaryPageOutput {
+                bytes: &mut bytes,
+                ids: &mut ids
+            },
         )
         .await
         .is_err());

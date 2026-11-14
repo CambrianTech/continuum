@@ -6,6 +6,9 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+#[path = "relational_catalog_tests.rs"]
+mod catalog_tests;
+
 #[derive(Serialize, Deserialize, Entity)]
 #[entity(collection = "relational_parents")]
 struct Parent {
@@ -195,7 +198,13 @@ async fn cancelled_request_retains_commit_and_revision_custody(
     release_tx
         .send(())
         .map_err(|_| "transaction owner disappeared with caller")?;
-    tokio::time::timeout(std::time::Duration::from_secs(5), revision.changed()).await??;
+    // The write owned this gate before written_rx resolved. Its release proves
+    // commit/rollback and publication finished, including a terminal error.
+    let _completed = store.writer_gate.lock().await;
+    assert!(
+        revision.has_changed()?,
+        "completed append did not publish its revision"
+    );
     assert_eq!(*revision.borrow(), 1);
     assert!(store
         .read_on(&store.db, Child::COLLECTION, "cancelled")

@@ -2,7 +2,7 @@
 //! Existing tables without this receipt require an explicit offline migration.
 use super::{adapter::naming, types::CollectionSchema};
 use sea_orm::entity::prelude::*;
-use sea_orm::{QueryOrder, Set};
+use sea_orm::{QueryOrder, QuerySelect, Set};
 use serde::Deserialize;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
@@ -82,22 +82,38 @@ pub(super) async fn record<C: ConnectionTrait>(
     Ok(())
 }
 
-/// Restore the bounded schema catalog once per connection owner, not per data row.
+// Transfer batch size, never a cap on the number of declarations admitted.
+const CATALOG_PAGE_SIZE: u64 = 64;
+
+/// Restore schema receipts in primary-key pages once per connection owner.
 /// Receipt and physical verification still precede admission; this is not inference.
 pub(super) async fn restore<C: ConnectionTrait>(
     db: &C,
 ) -> Result<std::collections::HashMap<String, std::sync::Arc<CollectionSchema>>, String> {
-    let receipts = Entity::find().all(db).await.map_err(|e| e.to_string())?;
-    let mut schemas = std::collections::HashMap::with_capacity(receipts.len());
-    for receipt in receipts {
-        let schema: CollectionSchema =
-            CollectionSchema::deserialize(&receipt.declaration).map_err(|e| e.to_string())?;
-        if receipt.collection != schema.collection {
-            return Err("schema receipt identity mismatch".into());
+    let mut schemas = std::collections::HashMap::new();
+    let mut after: Option<String> = None;
+    loop {
+        let mut query = Entity::find()
+            .order_by_asc(Column::Collection)
+            .limit(CATALOG_PAGE_SIZE);
+        if let Some(cursor) = &after {
+            query = query.filter(Column::Collection.gt(cursor.as_str()));
         }
-        super::relational_schema::compile(&schema)?;
-        verify(&receipt, &schema, &physical(db, &schema.collection).await?)?;
-        schemas.insert(schema.collection.clone(), std::sync::Arc::new(schema));
+        let receipts = query.all(db).await.map_err(|e| e.to_string())?;
+        if receipts.is_empty() {
+            break;
+        }
+        for receipt in receipts {
+            let schema: CollectionSchema =
+                CollectionSchema::deserialize(&receipt.declaration).map_err(|e| e.to_string())?;
+            if receipt.collection != schema.collection {
+                return Err("schema receipt identity mismatch".into());
+            }
+            super::relational_schema::compile(&schema)?;
+            verify(&receipt, &schema, &physical(db, &schema.collection).await?)?;
+            after = Some(receipt.collection);
+            schemas.insert(schema.collection.clone(), std::sync::Arc::new(schema));
+        }
     }
     Ok(schemas)
 }

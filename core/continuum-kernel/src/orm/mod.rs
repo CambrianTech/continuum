@@ -78,6 +78,8 @@ mod relational_array_stats;
 
 pub mod binary;
 mod relational_binary;
+mod binary_snapshot;
+pub use binary_snapshot::BinarySnapshot;
 
 #[cfg(test)]
 mod tests;

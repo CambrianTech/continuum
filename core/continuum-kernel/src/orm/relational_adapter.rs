@@ -166,20 +166,8 @@ impl StorageAdapter for SeaOrmAdapter {
     async fn list_collections(&self) -> StorageResult<Vec<String>> {
         StorageResult::ok(self.store.collections())
     }
-    async fn binary_page_into(
-        &self,
-        collection: &str,
-        field: &str,
-        after: Option<uuid::Uuid>,
-        limit: usize,
-        bytes: &mut Vec<u8>,
-        ids: &mut Vec<uuid::Uuid>,
-    ) -> StorageResult<Option<super::binary::BinaryDescriptor>> {
-        receipt(
-            self.store
-                .binary_page_into(collection, field, after, limit, bytes, ids)
-                .await,
-        )
+    async fn binary_snapshot(&self, collection: &str) -> Result<super::BinarySnapshot, String> {
+        self.store.binary_snapshot(collection).await
     }
     async fn create_binary(
         &self,
