@@ -766,7 +766,10 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // the board shows her is one exact call and no list is ever cut by a count. The 108 are the
     // enum and its doc, the reach itself: measured in CI at 5c57eb8c9 (job 132356394952) as
     // 17986 -> 18094 before #5945 landed; the two tools are independent, so the deltas add.
-    const AGENTIC_SURFACE_CEILING: u32 = 18270;
+    // 18270 -> 18317 (#6001, cards 0174211f, 5a94e88e): work/review gains `verified_head`, the
+    // commit a pass verified (it must be the submission's head): Aiko passed a copy of 905cadb
+    // while the PR head failed CI. Measured in CI on e490eeca8 + canary.
+    const AGENTIC_SURFACE_CEILING: u32 = 18317;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(

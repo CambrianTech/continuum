@@ -327,8 +327,9 @@ impl ActionCommand for WorkSubmit {
         });
         // Guidance reflects this command's board snapshot. A concurrently
         // arriving verdict appears on the next work/get or work/submission read.
-        // A submission published just now carries no verdict yet: nothing recorded, nothing passed.
-        let state = ReviewState::Awaiting { passes: 0, required: 1 };
+        // A retry under the same id publishes the submission the board already holds, verdicts and
+        // all: its state is derived like every other read's.
+        let state = review_state(&board, &published, &crate::persona::work_board::review::room_policy(airc, &room).await.counted());
         Ok(WorkSubmitResult {
             outcome: SubmitOutcome::Published,
             submission_id: published.submission_id.as_uuid(),

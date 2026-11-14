@@ -164,7 +164,7 @@ impl Resident {
 // nothing yet; a review that arrives before her turn is staged holds (ProvenanceHeld, never
 // Unbound or passed); once the turn stages, the next review binds exactly the issuing turn's
 // row; the binding reads back through a new runtime (not a process restart); a same-id retry from a later act keeps
-// the first generation. (Her own review: IndependentReviewRequired; acceptance is the
+// the first generation. (Her own review, in a room declaring `self: true`; acceptance is the
 // second-identity test below.)
 #[tokio::test]
 pub(super) async fn an_ordinary_submit_binds_the_turn_that_issued_it_through_review() -> TestResult {
@@ -183,10 +183,13 @@ pub(super) async fn an_ordinary_submit_binds_the_turn_that_issued_it_through_rev
     assert_eq!(early.credit.map(|c| c.state), Some(State::ProvenanceHeld), "{:?}", early.credit_error);
 
     let issuing_row = r.stage("issuing-gen").await?;
-    let passed = r.reviewer().run(&plain, r.review(published.submission_id, review_card, held, ReviewOutcome::Passed)?).await?;
-    assert!(passed.credit_error.is_none(), "{:?}", passed.credit_error);
-    let credit = passed.credit.ok_or("the review reached her credit")?;
-    assert_eq!(credit.state, State::IndependentReviewRequired);
+    // A send-back binds without settling: what binds is the issuing turn, whatever the verdict.
+    // (Her own PASS settles where the room admits self-review, which needs the training
+    // destination this runtime does not serve; the independent pass is the test below.)
+    let judged = r.reviewer().run(&plain, r.review(published.submission_id, review_card, held, ReviewOutcome::Failed)?).await?;
+    assert!(judged.credit_error.is_none(), "{:?}", judged.credit_error);
+    let credit = judged.credit.ok_or("the review reached her credit")?;
+    assert_eq!(credit.state, State::FailedReview);
     assert_eq!(credit.staged_revision_id, Some(issuing_row.id), "bound to the turn that issued the submission");
 
     let reopened = conn_as(data_runtime(), r.persona);
@@ -336,7 +339,7 @@ pub(super) async fn a_retry_from_a_persisted_unpublished_record_keeps_the_first_
     let review_card = r.review_card(submission);
     let held = r.airc.claim_work_card(airc_lib::ClaimWorkCard { card_id: review_card, ttl_ms: 60_000 }).await?;
     let plain = Ctx { caller: Some(CallerIdentity::local_persona(r.airc.peer_id())), ..Default::default() };
-    let reviewed = r.reviewer().run(&plain, r.review(submission, review_card, held, ReviewOutcome::Passed)?).await?;
+    let reviewed = r.reviewer().run(&plain, r.review(submission, review_card, held, ReviewOutcome::Failed)?).await?;
     let credit = reviewed.credit.ok_or("the review reached her credit")?;
     assert_eq!(credit.staged_revision_id, Some(first_row.id), "{:?}", reviewed.credit_error);
     Ok(())
