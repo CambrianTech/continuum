@@ -206,7 +206,7 @@ pub async fn advance_card_state_effective(
                         continuum_base::probe!(
                             class = "work.review.awaiting_more",
                             parent = %short8(parent),
-                            passed = parent_gate.passed as u64,
+                            state = ?parent_gate.state,
                             required = parent_gate.policy.required,
                             "a review closed, but the room's policy asks for more passing reviews — the parent waits"
                         );

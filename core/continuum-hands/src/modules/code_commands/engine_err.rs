@@ -144,6 +144,24 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
     Ok(())
 }
 
+/// Where THIS call's hands stand ([`crate::code::hands::CheckoutRoot`]), provisioning their
+/// engine on first use: THE one root every git, gh and cargo verb and the shell resolve against,
+/// the same one the file verbs' engine resolves relative paths against. Owned, so the `DashMap`
+/// guard is dropped before the caller awaits a child process.
+pub(crate) async fn checkout_root_for(state: &CodeState, ctx: &Ctx) -> Result<crate::code::hands::CheckoutRoot, CommandError> {
+    checkout_root_of(state, &hands_of(state, ctx)).await
+}
+
+/// [`checkout_root_for`] for hands already keyed.
+pub(crate) async fn checkout_root_of(state: &CodeState, key: &HandsKey) -> Result<crate::code::hands::CheckoutRoot, CommandError> {
+    ensure_engine(state, key).await?;
+    state
+        .file_engines
+        .get(&key.map_key())
+        .map(|engine| crate::code::hands::CheckoutRoot::of(engine.value()))
+        .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))
+}
+
 /// Is `who` a LOCAL identity — the boot-window `LOCAL_OWNER`, or the operator / agent
 /// self-peer? Local identities work in the core's own checkout; everyone else in a layer.
 pub(super) fn is_local_who(state: &CodeState, who: &str) -> bool {
@@ -191,15 +209,10 @@ pub(super) async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String,
     // The ENGINE decides the root, once for these hands' life, and the shell opens there.
     // Hands are never re-rooted (card fc9e9fd7), so a shell that exists stands at its
     // engine's root.
-    ensure_engine(state, key).await?;
+    let root = checkout_root_of(state, key).await?;
     if state.shell_sessions.contains_key(who) {
         return Ok(map_key);
     }
-    let root = state
-        .file_engines
-        .get(&who.to_string())
-        .map(|e| e.workspace_root())
-        .ok_or_else(|| CommandError::Internal("engine vanished after provisioning".into()))?;
     let session_id = uuid::Uuid::new_v4().to_string();
     let mut shell = ShellSession::new(&session_id, &key.caller, &root)
         .map_err(|e| CommandError::Internal(format!("shell init failed: {e}")))?;
@@ -343,7 +356,7 @@ impl ActionCommand for CodeWrite {
             class = "code.write.landed",
             path = %p.file_path,
             existed = before.is_some(),
-            before_bytes = before.unwrap_or(0),
+            before_bytes = before.unwrap_or(0), // unwrap_or: no file before the write is 0 bytes, and `existed` says which
             after_bytes = p.content.len() as u64,
             shrank = before.is_some_and(|b| (p.content.len() as u64) < b / 2),
             ok = out.is_ok(),

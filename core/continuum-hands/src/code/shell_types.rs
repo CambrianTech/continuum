@@ -33,6 +33,10 @@ pub enum ShellExecutionStatus {
 pub struct ShellExecuteResponse {
     pub execution_id: String,
     pub status: ShellExecutionStatus,
+    /// The absolute directory the command ran in: the checkout these hands stand at, the root
+    /// her file verbs resolve relative paths against too. Named on every result, so a command
+    /// run in another checkout than she believes is visible (cards c8546b52, 566e390e).
+    pub cwd: String,
     /// Full stdout (only present when `wait: true` and execution completed).
     #[ts(optional)]
     pub stdout: Option<String>,

@@ -134,21 +134,45 @@ mod interleavings {
         assert_clean(&world);
     }
 
-    // what this catches: a grant revoked between the quote and the reserve still dispatching. A's
-    // turn ends with B waiting; A renders her next act against the grant still published; the
-    // publication hands her grant off; her reserve is refused typed and nothing is sent.
+    // what this catches: an act rendered against a grant that is owed to a waiter. A's turn ends
+    // with B waiting; her next act takes no hold on the grant she owes (it waits for a grant, nothing
+    // is rendered against it), so the handoff begins at that act boundary and B is served.
     #[test]
-    fn a_grant_revoked_during_the_quote_refuses_the_reserve() {
+    fn a_grant_owed_to_a_waiter_is_not_held_by_her_next_act() {
         let mut world = two_on_a_small_pool();
         run(&mut world, &[Step::Publish]);
         run(&mut world, &turn(0));
-        run(&mut world, &[Step::Terminal(0), Step::Quote(0), Step::Publish]);
-        assert_eq!(world.published(0), 0, "her publication is retiring");
-        let applied = world.apply(Step::Reserve(0));
-        assert!(matches!(applied.refused, Some(ReserveRefused::Changed { current: None, .. } | ReserveRefused::Retiring { .. })), "{:?}", applied.refused);
-        assert_eq!(world.phase(0), Phase::Idle);
+        run(&mut world, &[Step::Terminal(0), Step::Quote(0)]);
+        assert_eq!(world.phase(0), Phase::Idle, "her next act waits for a grant, holding none");
+        let applied = world.apply(Step::Publish);
+        assert_eq!(applied.tickets, vec![0], "the handoff begins at her act boundary");
         run(&mut world, &[Step::Reclaimed(0), Step::Publish]);
         assert_eq!(world.published(1), 60, "the waiter is served once the cells are physically reclaimed");
+        assert_clean(&world);
+    }
+
+    // what this catches (the M5, d6c0dd892, 2026-11-14 09:38:36Z): Atlas served a turn, rendered her
+    // next act against her grant and waited for a lane; the next publication handed that grant off
+    // to a waiter (her seat was unused: no request in custody), and her dispatch failed with "her
+    // grant changed since this request was rendered (89513 -> None)". A rendered act holds its grant:
+    // no handoff begins under it, her reserve succeeds on the lease she was priced against, and the
+    // handoff waits for the act to end.
+    #[test]
+    fn a_rendered_act_keeps_its_grant_through_a_publication() {
+        let mut world = World::new(100, 100, &[("A", 40), ("C", 40), ("B", 60)]);
+        run(&mut world, &[Step::Publish]);
+        assert_eq!((world.published(0), world.published(1), world.published(2)), (40, 40, 0), "B waits");
+        run(&mut world, &turn(0));
+        run(&mut world, &[Step::Terminal(0), Step::Quote(0)]);
+        assert_eq!(world.phase(0), Phase::Quoted, "her next act holds the grant it is rendered against");
+        let applied = world.apply(Step::Publish);
+        assert!(applied.tickets.is_empty(), "no handoff under a rendered act\n{}", world.log.join("\n"));
+        assert_eq!(world.published(0), 40, "her grant does not move under the act");
+        let applied = world.apply(Step::Reserve(0));
+        assert_eq!(applied.refused, None, "dispatched against the grant she was priced on");
+        assert_eq!(world.phase(0), Phase::Reserved);
+        run(&mut world, &[Step::Send(0), Step::Terminal(0), Step::Publish]);
+        assert_eq!(world.observe().rendered.get(&world.mind(0)), None, "the act's hold ended with it");
         assert_clean(&world);
     }
 }

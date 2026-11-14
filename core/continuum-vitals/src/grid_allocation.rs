@@ -150,10 +150,12 @@ impl LanePlan {
     /// new clothes (Astra's review question on this change). What the box serves now is a
     /// seat because it is running.
     ///
-    /// `None` when nothing is LIVE — not ready, no model, no lanes, or an unknown window:
-    /// an absence, never a substituted intent and never fabricated capacity.
+    /// `None` when nothing is LIVE — not ready, no model, no lanes, or an unknown window —
+    /// or while the seat is unreported: an absence, never a substituted intent and never
+    /// fabricated capacity.
     pub fn serving(
         snapshot: &continuum_engine::inference::llama_server::ServingSnapshot,
+        seat: continuum_engine::capacity::window_grant::SeatWindow,
         capability_rank: continuum_kernel::capability::Capability,
         decode_tps_per_lane: Option<f32>,
     ) -> Option<Self> {
@@ -166,15 +168,16 @@ impl LanePlan {
         if !snapshot.is_live() || snapshot.lanes == 0 || snapshot.served_context_window == 0 {
             return None;
         }
+        // A seat is what one mind may be granted here, as the grant owner reports it; until it does
+        // there is no row, never the pool's equal share standing in (`SeatWindow`).
+        let continuum_engine::capacity::window_grant::SeatWindow::Reported(seat) = seat else {
+            return None;
+        };
         let model_id = snapshot.active_model.clone()?;
         Some(Self {
             model_id,
             capability_rank,
-            // a seat is what one mind may be granted here, never the pool's equal share (`seat_window`)
-            window: continuum_engine::capacity::window_grant::seat_window(
-                snapshot.served_context_window,
-                continuum_engine::capacity::window_grant::current_sequence_cap(),
-            ),
+            window: seat.get(),
             lanes: snapshot.lanes,
             decode_tps_per_lane,
         })

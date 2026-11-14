@@ -91,24 +91,11 @@ impl WorkVerb {
         }
     }
 
-    /// The verb's declared aliases, the first being the name her tool list offers it under. The
-    /// mind's work commands declare `ALIASES` from this, so the alias has one owner.
-    pub const fn aliases(self) -> &'static [&'static str] {
-        match self {
-            WorkVerb::Claim => &["claim_task"],
-            WorkVerb::Heartbeat => &["heartbeat_task", "extend_claim"],
-            WorkVerb::Note => &["ledger", "note_task"],
-            WorkVerb::Release => &["release_task"],
-            WorkVerb::State => &["update_task", "close_task"],
-            WorkVerb::Review | WorkVerb::Submission | WorkVerb::Submit => &[],
-        }
-    }
-
     /// The name her tool list offers the verb under (`sdk_codegen::wire_name`, the one function
-    /// her function list is named by), so a move her text names is one she can call.
+    /// her function list is named by: `work/release` → `work_release`), so a move her text names
+    /// is one she can call, and every work verb shares one scheme (card d2b6dbce).
     pub fn offered(self) -> String {
-        use continuum_kernel::sdk_codegen::{offer_style_for, primary_alias, wire_name};
-        wire_name(self.command(), primary_alias(self.aliases()), offer_style_for(None))
+        continuum_kernel::sdk_codegen::wire_name(self.command())
     }
 
     /// What holding this verb's precondition entitles her to besides the verb itself, as command
@@ -161,6 +148,9 @@ pub enum Unmet {
     StaleClaim { current: Option<ClaimId> },
     /// The card changed since the revision she acted from (`current` is its revision now).
     StaleRevision { current: u64 },
+    /// Her mind published the submission under review, and the room does not admit self-review
+    /// (`review_verdict::author_may_review`).
+    AuthorCannotReview(crate::review_verdict::AuthorCannotReview),
 }
 
 impl std::fmt::Display for Unmet {
@@ -186,6 +176,7 @@ impl std::fmt::Display for Unmet {
             ),
             Unmet::StaleClaim { current: None } => write!(f, "the claim you named has ended: the card has no claim now"),
             Unmet::StaleRevision { current } => write!(f, "the card changed since you read it (revision {current}): read it again"),
+            Unmet::AuthorCannotReview(refused) => std::fmt::Display::fmt(refused, f),
             Unmet::OpenByHolder => write!(
                 f,
                 "you HOLD this card: `open` from its holder would drop your claim and leave your diff behind \

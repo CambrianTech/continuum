@@ -98,6 +98,34 @@ caller returning, a forgotten handle, and restart.
 Within one incarnation, overlapping runs publish with a compare-and-set on the input revisions
 they derived from: an older run's result never overwrites state derived from newer input.
 
+### Dataflow: artifacts and dependent stages (2026-11-14)
+
+A stage emits what it delivers; whatever needs it subscribes (CONTINUUM-ENGINE.md rule 10). The
+emission is owned once in `runtime/stage/artifact.rs`, so no feature hand-wires a `oneshot`, a
+`Notify` or a flag for it:
+
+- `artifact::<T, F>(topic)` opens a produced-once artifact: the producer holds `Produces`
+  (`produce(T)` or `fail(F)`), any number of consumers hold a cloneable `Subscribes` and receive
+  `Arc<T>` (a handle, never a copy). `handoff::<T, F>(topic)` is the one-consumer form that MOVES
+  the value (an admission, a guard). Every artifact settles exactly once: `Ready`, `Failed(F)`
+  typed by its stage, or `Abandoned`, which a dropped producer raises (a task that ended, panicked
+  or was cancelled), so a waiter never waits on a producer that is gone.
+- A consumer's wait returns `Awaited { settled, arrival }`: `AlreadySettled` (the producer's work
+  overlapped completely) or `WaitedFor(duration)`. The settle and the wait are probed for free
+  (`stage.artifact.settled`, `stage.artifact.awaited`).
+- `DependentStage` (`runtime/stage/dependent.rs`) is a pass of the act graph: it names the
+  artifact it produces, declares its inputs as a tuple of `Subscribes`, and runs ONCE, consuming
+  itself, when the LAST input settles. `spawn_when_ready(stage, inputs)` gives it its own task, the
+  wake, the inputs by handle, its output as an artifact (abandoned if the run panics) and its
+  timing (`stage.dependent.ran`). What a missing input means is the stage's to decide, from its
+  typed `Settled`.
+
+First consumers: prefill during the tool (outlier A: `cognition/llm_deliberation_faculty/
+prefill_during_tool.rs`, a `DependentStage` whose artifact her next generation subscribes to) and
+the endpoint-retained page IO's result (outlier B: `inference/turn_admission/paging_lifetime.rs`,
+a handoff of the turn's admission that replaced its `oneshot`). Follow-up, owner Fable: the
+`#[derive]` half of the for-free triplet, once a third consumer shows what it should generate.
+
 ## 2. Contracts at the three boundaries
 
 - **Task lifetime and delivery (Codex).** A dispatched run's completion goes through the shared

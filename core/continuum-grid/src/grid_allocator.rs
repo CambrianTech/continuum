@@ -376,6 +376,7 @@ impl Inner {
         // symmetric in source AND in rank.
         let local_plan = LanePlan::serving(
             &serving,
+            crate::capacity::window_grant::current_seat(),
             rank_of(serving.active_model.as_deref().unwrap_or("")) // unwrap_or: no model = no row anyway; `serving` returns None below
                 .unwrap_or(continuum_kernel::capability::Capability::ANY), // unwrap_or: a model this registry does not hold has no measurement and no weights to proxy: the least capability, exactly as a peer's would
             // The SAME rate this node beacons to its peers (own curve, fresh or stale), so
@@ -969,8 +970,12 @@ mod tests {
         let (benchy, atlas) = (Uuid::new_v4(), Uuid::new_v4());
         let held = |mind, need| LaneRequirement::wished(mind, t(need), crate::inference::planning::window_allocator::Growth::Unmeasured).held(Observed::Exact(t(need)));
         let minds = vec![held(benchy, 148_818), held(atlas, 135_619)];
-        let seat = crate::capacity::window_grant::seat_window(132_300, Some(262_144));
-        assert!(minds_over_the_grid(&minds, seat).is_empty(), "after: one seat holds either need");
+        assert!(minds_over_the_grid(&minds, 262_144).is_empty(), "after: one seat holds either need");
         assert_eq!(minds_over_the_grid(&minds, 132_300).len(), 2, "before: the equal share named both");
+        // the boot receipt (7f875ccfd, 07:52:27Z): 110,387 = 551,936 / 5 named three minds before the
+        // grant owner reported; an unreported seat is no row, so the widest is 0 and nobody is named
+        let boot = vec![held(Uuid::new_v4(), 164_441), held(Uuid::new_v4(), 150_890), held(Uuid::new_v4(), 151_377)];
+        assert_eq!(minds_over_the_grid(&boot, 110_387).len(), 3, "before: the share stood in at boot");
+        assert!(minds_over_the_grid(&boot, 0).is_empty(), "after: no reported seat names nobody");
     }
 }

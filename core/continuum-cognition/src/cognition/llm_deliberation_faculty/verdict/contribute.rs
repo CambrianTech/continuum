@@ -76,13 +76,14 @@ impl LlmDeliberationFaculty {
             }
         };
         let decided_window = decided.tokens();
-        // The grant LEASE this turn is rendered against (size and revision), when she is on the
-        // shared pool: the grant owner reserves that revision at dispatch, after any lane wait.
-        let lease_now = || crate::capacity::window_grant::current_lease(self.persona_id);
-        let mut rendered_lease = match decided {
-            crate::capacity::mind_window::Decided::Granted(_) => lease_now(),
+        // The grant LEASE this act is rendered against, HELD until the act ends (`hold_granted`): no
+        // replan moves it and no handoff takes it under her act; a change applies at her next act.
+        let hold_now = || crate::capacity::mind_window::hold_granted(self.persona_id);
+        let mut act_hold = match decided {
+            crate::capacity::mind_window::Decided::Granted(_) => match hold_now() { Ok(hold) => Some(hold), Err(refused) => return Some(Contribution::deliberation_fault(refused.to_string())) },
             _ => None,
         };
+        let mut rendered_lease = act_hold.as_ref().map(crate::capacity::window_grant::ActHold::lease);
         let capacity_readiness = Arc::new(crate::cognition::workspace::CapacityReadiness::new(
             self.persona_id,
             self.binding.clone(),
@@ -356,6 +357,7 @@ impl LlmDeliberationFaculty {
             // A rebuilt request with no max_tokens keeps the last one sent (the read of the
             // previous value is also what keeps the initializer honest).
             sent_allowance = request.max_tokens.or(sent_allowance);
+            self.prefix_warm_settled(ws.room_id).await; // her prefix, warmed while her last tool ran
             let result = self
                 .generate_for_workspace(ws, &binding, fit_window, request, terms, allocation, receipts)
                 .await?;
@@ -473,7 +475,8 @@ impl LlmDeliberationFaculty {
                         "her grant changed between render and dispatch: re-rendered against it, never sent"
                     );
                     grant_rerendered = true;
-                    rendered_lease = lease_now();
+                    act_hold = crate::capacity::window_grant::hold_for_act(self.persona_id); // None: none published, priced at the refusal's own count
+                    rendered_lease = act_hold.as_ref().map(crate::capacity::window_grant::ActHold::lease);
                     fit_window = rendered_lease.map_or(current, |lease| lease.tokens); // map_or: the refusal's own count when no lease is published
                     view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
                 }
@@ -844,6 +847,7 @@ impl LlmDeliberationFaculty {
                     return Some(v);
                 }
                 if !calls.is_empty() {
+                    self.prefill_during_tool(&binding.adapter, ws.room_id, request_template.as_ref(), &view.messages);
                     return Some(self.act_verdict(calls, &resp, ws.activity_room_id));
                 }
             }

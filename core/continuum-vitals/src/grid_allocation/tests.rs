@@ -1,5 +1,6 @@
 #![cfg(test)]
     use super::*;
+    use continuum_engine::capacity::window_grant::SeatWindow;
 
     // what this catches (Astra, Windows 2026-09-22): this node's row in the allocator
     // coming from its PLAN while every peer's comes from their SERVED beacon. A box
@@ -10,6 +11,7 @@
     #[test]
     fn the_local_row_is_the_served_geometry_the_beacon_publishes_or_nothing() {
         use continuum_engine::inference::llama_server::ServingSnapshot;
+        let seat = |n| SeatWindow::Reported(continuum_engine::inference::planning::window_allocator::Tokens::new(n).expect("test: a nonzero seat")); // expect: every seat here is a positive literal
         let served = ServingSnapshot {
             active_model: Some("qwen3.8-27b".into()),
             ready: true,
@@ -17,7 +19,7 @@
             served_context_window: 124_160,
             ..ServingSnapshot::empty()
         };
-        let row = LanePlan::serving(&served, continuum_kernel::capability::Capability::Proxy { score: 9 }, Some(20.0)).expect("a served lane is a row");
+        let row = LanePlan::serving(&served, seat(124_160), continuum_kernel::capability::Capability::Proxy { score: 9 }, Some(20.0)).expect("a served lane is a row");
         assert_eq!((row.lanes, row.window), (1, 124_160), "the beacon's numbers, not the plan's");
         assert!(row.holds(&coder().requirement), "a 124k lane seats the 64k role");
 
@@ -30,17 +32,18 @@
             served_context_window: 5_533,
             ..ServingSnapshot::empty()
         };
-        let shrunk = LanePlan::serving(&planned_shrink, continuum_kernel::capability::Capability::Proxy { score: 9 }, Some(20.0)).expect("still a row");
+        let shrunk = LanePlan::serving(&planned_shrink, seat(5_533), continuum_kernel::capability::Capability::Proxy { score: 9 }, Some(20.0)).expect("still a row");
         assert!(!shrunk.holds(&coder().requirement), "5,533 below 65,536 is the reading that starved the node");
 
         // Absence, not fabrication: nothing served ⇒ no row, on each of the three ways
         // "nothing" arrives.
-        assert!(LanePlan::serving(&ServingSnapshot::empty(), continuum_kernel::capability::Capability::Proxy { score: 9 }, None).is_none(), "no model = no row");
+        assert!(LanePlan::serving(&ServingSnapshot::empty(), seat(65_536), continuum_kernel::capability::Capability::Proxy { score: 9 }, None).is_none(), "no model = no row");
         // MID-RELAUNCH: geometry retained, `ready` false — `serving_consumer` flips the
         // flag and clears nothing. A lane that cannot serve is no seat (Astra's review).
         assert!(
             LanePlan::serving(
                 &ServingSnapshot { active_model: Some("m".into()), ready: false, lanes: 1, served_context_window: 32_768, ..ServingSnapshot::empty() },
+                seat(32_768),
                 continuum_kernel::capability::Capability::Proxy { score: 9 },
                 None
             )
@@ -48,13 +51,21 @@
             "a relaunching lane keeps its numbers and must NOT be announced as capacity"
         );
         assert!(
-            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 0, served_context_window: 65_536, ..ServingSnapshot::empty() }, continuum_kernel::capability::Capability::Proxy { score: 9 }, None).is_none(),
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 0, served_context_window: 65_536, ..ServingSnapshot::empty() }, seat(65_536), continuum_kernel::capability::Capability::Proxy { score: 9 }, None).is_none(),
             "zero lanes = no row"
         );
         assert!(
-            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 2, served_context_window: 0, ..ServingSnapshot::empty() }, continuum_kernel::capability::Capability::Proxy { score: 9 }, None).is_none(),
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 2, served_context_window: 0, ..ServingSnapshot::empty() }, seat(65_536), continuum_kernel::capability::Capability::Proxy { score: 9 }, None).is_none(),
             "unknown window = no row, never a guess"
         );
+        // what this catches (the M5, 2026-11-14, 7f875ccfd, 07:52:26-27Z): at boot, before the grant
+        // owner's first evaluation, the row's window was the pool's equal share (551,936 / 5 = 110,387)
+        // and the grid named three minds unservable. An unreported seat is no row; a reported one is
+        // the engine's per-sequence limit, whatever the share.
+        let pooled = ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 5, served_context_window: 110_387, ..ServingSnapshot::empty() };
+        assert!(LanePlan::serving(&pooled, SeatWindow::Unreported, 9, None).is_none(), "unreported seat = no row, never the share");
+        let row = LanePlan::serving(&pooled, seat(262_144), continuum_kernel::capability::Capability::Proxy { score: 9 }, None).expect("a reported seat is a row");
+        assert_eq!((row.lanes, row.window), (5, 262_144), "the seat is what one sequence holds, not 110,387");
     }
 
     // ---- fixtures: shapes, not Joel's grid. Numbers are illustrative machine classes. ----

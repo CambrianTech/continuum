@@ -1,12 +1,11 @@
 use super::*;
 
 impl LlmDeliberationFaculty {
-    /// Rebuild her native surfaces from the registry, in the model's wire dialect. Called
-    /// whenever the tool set or the model changes (tool assignment, a window or model set
-    /// at spawn), NEVER on the per-tick path. Which name a command is offered under is a
-    /// per-model POLICY ([`crate::ai::tool_dialect::offer_style_for`]): our canonical
-    /// `code_read`, or a model's trained reflex `read_file`; calls map back to canonical
-    /// commands on return. [[joel-boundary-design-values]]
+    /// Rebuild her native surfaces from the registry, named for the wire. Called whenever the
+    /// tool set or the model changes (tool assignment, a window or model set at spawn), NEVER
+    /// on the per-tick path. Every command is offered by its path (`work_release`,
+    /// [`crate::ai::tool_dialect::wire_name`]), so one family is one scheme; a model's trained
+    /// reflex (`read_file`) still resolves inbound. [[joel-boundary-design-values]]
     pub(super) fn rebuild_tool_surface(&mut self) {
         self.prompt_feedback.store(None); // New schema bytes invalidate prior prompt observations.
         *self.tools_epoch.get_mut() = None; // a new surface is selected afresh, never rebuilt from the old one's names
@@ -14,11 +13,8 @@ impl LlmDeliberationFaculty {
             self.surface = ToolSurface::default();
             return;
         }
-        let style =
-            crate::ai::tool_dialect::offer_style_for(Some(self.binding.load().requested_model()));
-        self.surface = ToolSurface::build(persona_tools::native_offers(), self.tools.clone(), |spec| {
-            crate::ai::tool_dialect::to_wire_spec_with(spec, style)
-        });
+        self.surface =
+            ToolSurface::build(persona_tools::native_offers(), self.tools.clone(), crate::ai::tool_dialect::to_wire_spec);
         self.share_vocabulary();
     }
 
