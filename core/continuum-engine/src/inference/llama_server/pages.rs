@@ -189,18 +189,60 @@ impl PageDirState {
         let mut index = 0;
         while index < self.retiring.len() {
             match poll(&mut self.retiring[index].child) {
-                Ok(Some(_)) => {
-                    let owner = self.retiring.swap_remove(index);
-                    owner.generation.observed_exit();
-                    if let Some(dir) = owner.reserved_dir {
-                        if let Some(i) = self.reservations.iter().position(|d| d == &dir) {
-                            self.reservations.swap_remove(i);
-                        }
-                    }
-                }
+                Ok(Some(_)) => self.release_exited(index),
                 Ok(None) | Err(_) => index += 1,
             }
         }
+    }
+
+    /// Release what an exited child held (its page dir, resource lease, engine install and
+    /// inputs), THEN announce the exit, so a waiter woken by it finds the capacity already back.
+    fn release_exited(&mut self, index: usize) {
+        let owner = self.retiring.swap_remove(index);
+        if let Some(dir) = &owner.reserved_dir {
+            if let Some(i) = self.reservations.iter().position(|d| d == dir) {
+                self.reservations.swap_remove(i);
+            }
+        }
+        let generation = owner.generation.clone();
+        drop(owner);
+        generation.observed_exit();
+    }
+
+    /// One poll of the retained child's own exit future: `Ready` once it exited (released here)
+    /// or once its entry is gone (collected by another observer). Unknown status retains custody
+    /// and ends the wait, exactly as [`Self::collect_exited_with`] treats it.
+    fn poll_reap(
+        &mut self,
+        generation: &crate::inference::slots::EngineGeneration,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<()> {
+        use std::future::Future;
+        use std::task::Poll;
+        let Some(index) = self.retiring.iter().position(|owner| owner.generation.same_engine(generation)) else {
+            return Poll::Ready(());
+        };
+        // `Child::wait` is cancel-safe and keeps its OS registration in the child, so a fresh
+        // future per wake resumes the same wait.
+        let polled = std::pin::pin!(self.retiring[index].child.wait()).poll(cx);
+        match polled {
+            Poll::Ready(Ok(_)) => {
+                self.release_exited(index);
+                Poll::Ready(())
+            }
+            Poll::Ready(Err(_)) => Poll::Ready(()),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// Wait on a retired child's exit as the OS reports it, never a poll cadence: the reaper owns the
+/// release of what it held. It also ends when another observer collected the child first.
+async fn reap(generation: crate::inference::slots::EngineGeneration) {
+    let exit = generation.exit();
+    tokio::select! {
+        () = std::future::poll_fn(|cx| PAGE_DIR_GUARD.lock().poll_reap(&generation, cx)) => {}
+        _ = exit.confirmed() => {}
     }
 }
 
@@ -228,13 +270,21 @@ pub(super) fn retire_page_owner(
     let reserved_dir = reservation.and_then(|mut reservation| reservation.0.take());
     guard.retiring.push(RetiringPageOwner {
         child,
-        generation,
+        generation: generation.clone(),
         reserved_dir,
         _resource_reservation: resource_reservation,
         _engine_install: engine_install,
         _local_inputs: local_inputs,
     });
     guard.collect_exited();
+    drop(guard);
+    // A tokio child exists only inside a runtime, so the reaper has one whenever the child was
+    // spawned by this process; outside one the retained entry stays with the collectors.
+    if !generation.has_exited() {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(reap(generation));
+        }
+    }
 }
 
 

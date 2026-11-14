@@ -79,6 +79,8 @@ mod relaunch_discard;
 pub(crate) use relaunch_discard::{DiscardReason, PendingDiscard};
 use relaunch_discard::DiscardLog;
 pub use engine_generation::*;
+mod engine_exit;
+pub use engine_exit::{EngineExit, EngineExitError};
 mod placement;
 pub use placement::*;
 pub(crate) mod page_io;
