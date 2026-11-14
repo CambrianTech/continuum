@@ -187,8 +187,7 @@ pub trait StorageAdapter: Send + Sync {
         &self,
         collection: &str,
         id: &str,
-        field: &str,
-        value: super::binary::BinaryValue,
+        payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
         condition: super::binary::BinaryWriteCondition,
     ) -> StorageResult<bool>;
 

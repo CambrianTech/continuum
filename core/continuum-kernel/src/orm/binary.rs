@@ -5,7 +5,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryWriteCondition {
     Replace,
-    /// No change if another producer has filled the field or removed the row.
+    /// No change unless every supplied payload/descriptor pair is absent and the row exists.
     IfAbsent,
 }
 

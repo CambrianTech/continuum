@@ -135,26 +135,29 @@ impl super::relational::RelationalStore {
         &self,
         collection: String,
         id: String,
-        field: String,
-        value: BinaryValue,
+        payloads: std::collections::BTreeMap<String, BinaryValue>,
         condition: super::binary::BinaryWriteCondition,
     ) -> Result<bool, String> {
         super::binary::native_identity(&id)?;
-        let column = self.binary_column(&collection, &field)?;
-        let (descriptor, bytes) = value.into_parts();
-        let header = descriptor.encode()?;
+        if payloads.is_empty() {
+            return Err("native update requires at least one payload".into());
+        }
+        let mut fields = Vec::with_capacity(payloads.len() * 2);
+        let mut predicate = sea_orm::Condition::all();
+        for (field, value) in payloads {
+            let column = self.binary_column(&collection, &field)?;
+            let header_column = Alias::new(descriptor_column(&field));
+            if condition == super::binary::BinaryWriteCondition::IfAbsent {
+                predicate = predicate
+                    .add(Expr::col(column.clone()).is_null())
+                    .add(Expr::col(header_column.clone()).is_null());
+            }
+            let (descriptor, bytes) = value.into_parts();
+            fields.push((column, bytes.into()));
+            fields.push((header_column, descriptor.encode()?.into()));
+        }
         self.write_with_revisions(move |store, transaction| {
             Box::pin(async move {
-                let predicate = match condition {
-                    super::binary::BinaryWriteCondition::Replace => sea_orm::Condition::all(),
-                    super::binary::BinaryWriteCondition::IfAbsent => {
-                        sea_orm::Condition::all().add(Expr::col(column.clone()).is_null())
-                    }
-                };
-                let fields = vec![
-                    (column, bytes.into()),
-                    (Alias::new(descriptor_column(&field)), header.into()),
-                ];
                 let changed = store
                     .update_fields_matching_on(
                         transaction,

@@ -182,16 +182,12 @@ impl StorageAdapter for GatedAdapter {
         &self,
         collection: &str,
         id: &str,
-        field: &str,
-        value: super::binary::BinaryValue,
+        payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
         condition: super::binary::BinaryWriteCondition,
     ) -> StorageResult<bool> {
-        let (collection, id, field) = (collection.to_owned(), id.to_owned(), field.to_owned());
+        let (collection, id) = (collection.to_owned(), id.to_owned());
         self.write(move |a| {
-            Box::pin(async move {
-                a.update_binary(&collection, &id, &field, value, condition)
-                    .await
-            })
+            Box::pin(async move { a.update_binary(&collection, &id, payloads, condition).await })
         })
         .await
     }

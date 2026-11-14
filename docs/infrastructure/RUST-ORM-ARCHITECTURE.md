@@ -141,6 +141,11 @@ payload length, identity and schema compatibility. It visits the small header, n
 payload elements. Any numerical validation belongs to the producer's measured GPU
 work. The descriptor and bytes commit atomically; a failed update cannot pair an old
 payload with a new descriptor. Their revision is one identity for cache invalidation.
+Native updates accept a nonempty map of declared payload fields, binding all bytes and
+descriptors in one UPDATE with one revision. Conditional initialization succeeds only
+when every supplied pair is NULL; a populated member makes the whole group a no-op.
+Unknown fields or invalid descriptors refuse before dispatch. There is no retained
+single-field update path.
 
 Payloads never pass through `serde_json::Value`, textual numbers, base64 or a second
 in-memory numeric array on the native path. A required external encoding terminates

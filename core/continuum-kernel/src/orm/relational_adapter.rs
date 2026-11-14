@@ -192,19 +192,12 @@ impl StorageAdapter for SeaOrmAdapter {
         &self,
         collection: &str,
         id: &str,
-        field: &str,
-        value: super::binary::BinaryValue,
+        payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
         condition: super::binary::BinaryWriteCondition,
     ) -> StorageResult<bool> {
         receipt(
             self.store
-                .update_binary(
-                    collection.to_owned(),
-                    id.to_owned(),
-                    field.to_owned(),
-                    value,
-                    condition,
-                )
+                .update_binary(collection.to_owned(), id.to_owned(), payloads, condition)
                 .await,
         )
     }

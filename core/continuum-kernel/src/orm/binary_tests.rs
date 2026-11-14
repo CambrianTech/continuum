@@ -28,79 +28,8 @@ struct RequiredNativeRow {
     sketch: Vec<u8>,
 }
 
-#[tokio::test]
-async fn required_native_fields_create_atomically_without_body_readback(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let path = directory.path().join("native-pair.sqlite");
-    let path = path.to_str().ok_or("test path is not UTF-8")?;
-    let store = open(path).await?;
-    store.ensure(RequiredNativeRow::collection_schema()).await?;
-    let record = || DataRecord {
-        id: uuid::Uuid::from_u128(1).to_string(),
-        collection: RequiredNativeRow::COLLECTION.into(),
-        data: json!({"label":"typed scalar"}),
-        metadata: RecordMetadata::default(),
-    };
-    let payloads = || -> Result<_, String> {
-        Ok(std::collections::BTreeMap::from([
-            (
-                "payload".into(),
-                BinaryValue::new(
-                    BinaryDescriptor {
-                        unit: true,
-                        scale: Some(0.125),
-                        ..descriptor(ElementType::I8, vec![2])
-                    },
-                    vec![0, 8],
-                )?,
-            ),
-            (
-                "sketch".into(),
-                BinaryValue::new(descriptor(ElementType::Bit, vec![2]), vec![0])?,
-            ),
-        ]))
-    };
-    assert!(store.create(record()).await.is_err());
-    let mut incomplete = payloads()?;
-    incomplete.remove("sketch");
-    assert!(store.create_binary(record(), incomplete).await.is_err());
-    assert_eq!(
-        store
-            .count(QueryBuilder::new(RequiredNativeRow::COLLECTION).build())
-            .await?,
-        0
-    );
-    assert_eq!(
-        store.create_binary(record(), payloads()?).await?,
-        uuid::Uuid::from_u128(1).to_string()
-    );
-    assert!(store.create_binary(record(), payloads()?).await.is_err());
-    let page = read_page(&store, RequiredNativeRow::COLLECTION, "payload", None, 1).await?;
-    assert_eq!(
-        page[0]
-            .value
-            .as_ref()
-            .ok_or("missing required payload")?
-            .bytes(),
-        &[0, 8]
-    );
-    let query = QueryBuilder::new(RequiredNativeRow::COLLECTION)
-        .select(vec!["label".into()])
-        .limit(1)
-        .build();
-    let rows = store.query(query).await?;
-    assert_eq!(rows[0].data["label"], "typed scalar");
-    assert!(rows[0].data.get("payload").is_none());
-    drop(store);
-    let store = open(path).await?;
-    store.ensure(RequiredNativeRow::collection_schema()).await?;
-    for (field, expected) in payloads()? {
-        let page = read_page(&store, RequiredNativeRow::COLLECTION, &field, None, 1).await?;
-        assert_eq!(page[0].value.as_ref(), Some(&expected));
-    }
-    Ok(())
-}
+#[path = "binary_group_tests.rs"]
+mod group_tests;
 
 fn descriptor(element_type: ElementType, shape: Vec<u64>) -> BinaryDescriptor {
     BinaryDescriptor {
@@ -170,8 +99,7 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
                     .update_binary(
                         RequiredNativeRow::COLLECTION,
                         &uuid::Uuid::from_u128(1).to_string(),
-                        "payload",
-                        payload,
+                        std::collections::BTreeMap::from([("payload".into(), payload)]),
                         BinaryWriteCondition::Replace,
                     )
                     .await
@@ -354,8 +282,7 @@ async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<()
             .update_binary(
                 NativeRow::COLLECTION.into(),
                 uuid::Uuid::from_u128(1).to_string(),
-                "payload".into(),
-                winner.clone(),
+                std::collections::BTreeMap::from([("payload".into(), winner.clone())]),
                 BinaryWriteCondition::IfAbsent
             )
             .await?
@@ -377,8 +304,7 @@ async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<()
             .update_binary(
                 NativeRow::COLLECTION.into(),
                 uuid::Uuid::from_u128(1).to_string(),
-                "payload".into(),
-                delayed,
+                std::collections::BTreeMap::from([("payload".into(), delayed)]),
                 BinaryWriteCondition::IfAbsent
             )
             .await?
@@ -394,8 +320,7 @@ async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<()
             .update_binary(
                 NativeRow::COLLECTION.into(),
                 uuid::Uuid::from_u128(2).to_string(),
-                "payload".into(),
-                winner,
+                std::collections::BTreeMap::from([("payload".into(), winner)]),
                 BinaryWriteCondition::IfAbsent
             )
             .await?
@@ -432,8 +357,10 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
             .update_binary(
                 NativeRow::COLLECTION.into(),
                 uuid::Uuid::from_u128(n as u128).to_string(),
-                "payload".into(),
-                BinaryValue::new(descriptor(*kind, vec![2]), bytes.clone())?,
+                std::collections::BTreeMap::from([(
+                    "payload".into(),
+                    BinaryValue::new(descriptor(*kind, vec![2]), bytes.clone())?,
+                )]),
                 BinaryWriteCondition::Replace,
             )
             .await?;
@@ -719,8 +646,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
             .update_binary(
                 NativeRow::COLLECTION.into(),
                 id.clone(),
-                "payload".into(),
-                payload()?,
+                std::collections::BTreeMap::from([("payload".into(), payload()?)]),
                 BinaryWriteCondition::IfAbsent
             )
             .await?
@@ -738,8 +664,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
             .update_binary(
                 NativeRow::COLLECTION.into(),
                 id.clone(),
-                "payload".into(),
-                payload()?,
+                std::collections::BTreeMap::from([("payload".into(), payload()?)]),
                 BinaryWriteCondition::Replace
             )
             .await?
@@ -795,8 +720,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
             .update_binary(
                 NativeRow::COLLECTION.into(),
                 id.clone(),
-                "payload".into(),
-                payload()?,
+                std::collections::BTreeMap::from([("payload".into(), payload()?)]),
                 BinaryWriteCondition::Replace
             )
             .await?

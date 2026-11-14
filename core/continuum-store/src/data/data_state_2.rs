@@ -155,7 +155,7 @@ impl DataState {
                 }, bytemuck::cast_slice(&embedding).to_vec())?;
 
                 let update_result = adapter
-                    .update_binary(collection, &record.id, "embedding", payload, crate::orm::binary::BinaryWriteCondition::IfAbsent)
+                    .update_binary(collection, &record.id, std::collections::BTreeMap::from([("embedding".into(), payload)]), crate::orm::binary::BinaryWriteCondition::IfAbsent)
                     .await;
 
                 match update_result.into_result() {
