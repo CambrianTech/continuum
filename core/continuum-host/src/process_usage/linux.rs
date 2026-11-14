@@ -18,3 +18,19 @@ pub(super) fn cpu_time(pid: u32) -> Option<Duration> {
     let nanos = u128::from(utime.saturating_add(stime)) * Duration::from_secs(1).as_nanos() / u128::from(hz);
     u64::try_from(nanos).ok().map(Duration::from_nanos)
 }
+
+/// `RssAnon` plus `VmSwap` from `/proc/<pid>/status`, in bytes (the file reports kB).
+pub(super) fn anon_footprint(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let kb = |line: &str| line.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).map(|v| v * 1024);
+    let anon = status.lines().find(|l| l.starts_with("RssAnon:")).and_then(kb)?;
+    // A kernel that reports no VmSwap line has no swap to count for this process.
+    let swap = status.lines().find(|l| l.starts_with("VmSwap:")).and_then(kb).map_or(0, |s| s);
+    Some(anon + swap)
+}
+
+/// `/proc/<pid>/cmdline`: NUL-separated args.
+pub(super) fn args(pid: u32) -> Option<Vec<String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    Some(raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect())
+}

@@ -345,7 +345,7 @@ pub fn measured_record(model: &str) -> Option<MeasuredCost> {
 /// 2026-10-10 23:34Z, the lifetime peak read 19.02 GB while the running engine held 11 GB,
 /// and that 8 GB became a 4.6 GB "fixed" cost per lane that kept the plan at one lane.
 pub fn anon_footprint_of(pid: u32) -> Option<u64> {
-    let reading = anon_footprint_impl(pid)?;
+    let reading = continuum_host::process_usage::anon_footprint(pid)?;
     let process = (pid, crate::inference::engine_residency::process_start_s(pid).unwrap_or(0)); // unwrap_or: an unreadable start time keys by pid alone, as before
     let mut windows = RECENT_FOOTPRINTS.lock();
     Some(recent_max(&mut windows, process, EpochMs::now().millis(), reading))
@@ -381,56 +381,6 @@ fn recent_max(windows: &mut FootprintWindows, process: (u32, u64), now_ms: u64, 
     max
 }
 
-#[cfg(target_os = "macos")]
-fn anon_footprint_impl(pid: u32) -> Option<u64> {
-    // struct rusage_info_v4: ri_uuid[16], then 35 u64. ri_phys_footprint is index 7
-    // (v0: user_time, system_time, pkg_idle_wkups, interrupt_wkups, pageins, wired_size,
-    // resident_size, PHYS_FOOTPRINT, proc_start_abstime, proc_exit_abstime); v1 adds six
-    // child_* fields (10..16), v2 two diskio (16..18), v3 nine cpu_time_qos/billed/serviced
-    // (18..27), v4 logical_writes (27), LIFETIME_MAX_PHYS_FOOTPRINT (28), instructions,
-    // cycles, billed_energy, serviced_energy, interval_max_phys_footprint, runnable_time.
-    //
-    // The CURRENT footprint only. The recent maximum over a window is taken by the caller
-    // ([`anon_footprint_of`]), never the lifetime peak (index 28), which holds the engine's
-    // load and read 19.02 GB against a running 11 GB on the M5 (2026-10-10).
-    #[repr(C)]
-    struct RusageInfoV4 {
-        uuid: [u8; 16],
-        fields: [u64; 35],
-    }
-    extern "C" {
-        fn proc_pid_rusage(pid: libc::c_int, flavor: libc::c_int, buffer: *mut RusageInfoV4) -> libc::c_int;
-    }
-    const RUSAGE_INFO_V4: libc::c_int = 4;
-    const PHYS_FOOTPRINT: usize = 7;
-    let mut info = RusageInfoV4 { uuid: [0; 16], fields: [0; 35] };
-    // SAFETY: the buffer is a correctly sized, writable rusage_info_v4; libproc only
-    // writes within it for flavor V4.
-    let rc = unsafe { proc_pid_rusage(pid as libc::c_int, RUSAGE_INFO_V4, &mut info) };
-    (rc == 0).then(|| info.fields[PHYS_FOOTPRINT])
-}
-
-#[cfg(target_os = "linux")]
-fn anon_footprint_impl(pid: u32) -> Option<u64> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    let mut anon = None;
-    let mut swap = 0u64;
-    for line in status.lines() {
-        let kb = |l: &str| l.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).map(|v| v * 1024);
-        if line.starts_with("RssAnon:") {
-            anon = kb(line);
-        } else if line.starts_with("VmSwap:") {
-            swap = kb(line).unwrap_or(0); // unwrap_or: an unparseable VmSwap line counts no swap, never a guess
-        }
-    }
-    anon.map(|a| a + swap)
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn anon_footprint_impl(_pid: u32) -> Option<u64> {
-    None
-}
-
 /// The bytes of the model file a lane process was launched with (`-m` / `--model`),
 /// read off the process's own argv and stat'd: the weights it maps. `anon_footprint_of`
 /// excludes mapped files by design, so this is the other half of what the lane holds.
@@ -439,7 +389,7 @@ fn anon_footprint_impl(_pid: u32) -> Option<u64> {
 /// A split GGUF (`…-00001-of-000NN.gguf`) is summed over its parts. `None` = could not
 /// read the argv or stat the file (a dead pid, another platform): never zero.
 pub fn model_file_bytes_of(pid: u32) -> Option<u64> {
-    let args = process_args(pid)?;
+    let args = continuum_host::process_usage::args(pid)?;
     model_file_bytes(Path::new(model_path_in(&args)?))
 }
 
@@ -474,57 +424,13 @@ fn model_file_bytes(path: &Path) -> Option<u64> {
         .sum()
 }
 
-#[cfg(target_os = "macos")]
-fn process_args(pid: u32) -> Option<Vec<String>> {
-    // KERN_PROCARGS2: an i32 argc, the exec path, NUL padding, then argc NUL-terminated args.
-    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
-    let mut size: libc::size_t = 0;
-    // SAFETY: a size query (null buffer) on a valid mib.
-    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) } != 0 {
-        return None;
-    }
-    let mut buf = vec![0u8; size];
-    // SAFETY: the buffer is `size` writable bytes, as the query returned.
-    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0) } != 0 {
-        return None;
-    }
-    buf.truncate(size);
-    parse_procargs2(&buf)
-}
-
-/// PURE: the argv inside a KERN_PROCARGS2 buffer.
-#[cfg(any(target_os = "macos", test))]
-fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
-    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?) as usize;
-    let mut rest = &buf[4..];
-    // Skip the exec path and the NUL padding after it.
-    let path_end = rest.iter().position(|b| *b == 0)?;
-    rest = &rest[path_end..];
-    let first = rest.iter().position(|b| *b != 0)?;
-    rest = &rest[first..];
-    let args: Vec<String> = rest
-        .split(|b| *b == 0)
-        .take(argc)
-        .map(|a| String::from_utf8_lossy(a).into_owned())
-        .collect();
-    (args.len() == argc).then_some(args)
-}
-
-#[cfg(target_os = "linux")]
-fn process_args(pid: u32) -> Option<Vec<String>> {
-    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    Some(raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect())
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn process_args(_pid: u32) -> Option<Vec<String>> {
-    None
-}
+/// The record's file inside the `state` class.
+const RECORD_FILE: &str = "lane-footprint.json";
 
 fn default_path() -> Option<PathBuf> {
     crate::paths::continuum_home()
         .ok()
-        .map(|h| h.join("state").join("lane-footprint.json"))
+        .map(|h| h.join("state").join(RECORD_FILE))
 }
 
 fn load() -> BTreeMap<String, MeasuredCost> {
@@ -539,20 +445,20 @@ pub fn load_from(path: &Path) -> BTreeMap<String, MeasuredCost> {
 }
 
 fn save_all(costs: &BTreeMap<String, MeasuredCost>) {
-    if let Some(p) = default_path() {
-        save_to(&p, costs);
+    // No registered `state` class (before boot installs it, or in a test): nothing is saved, and
+    // the record is re-measured within a minute of the next boot.
+    if let Ok(state) = continuum_kernel::system_resources::disk_reporters::ClassWriter::of("state") {
+        save_to(&state, costs);
     }
 }
 
-pub fn save_to(path: &Path, costs: &BTreeMap<String, MeasuredCost>) {
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(bytes) = serde_json::to_vec_pretty(costs) {
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, bytes).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
-        }
+/// Save the records through the class that owns `state/` (staged and replaced whole).
+pub fn save_to(state: &continuum_kernel::system_resources::disk_reporters::ClassWriter, costs: &BTreeMap<String, MeasuredCost>) {
+    let saved = serde_json::to_vec_pretty(costs)
+        .map_err(std::io::Error::from)
+        .and_then(|bytes| state.replace(Path::new(RECORD_FILE), &bytes));
+    if let Err(e) = saved {
+        continuum_base::probe!(class = "serving.footprint.unsaved", error = %e, "the lane-footprint record was not saved; it re-measures after a restart");
     }
 }
 
@@ -682,7 +588,7 @@ mod tests {
             "m".to_string(),
             MeasuredCost { per_token_bytes: 36_000, lanes: 8, window: 51_712, allocated_tokens: None, anon_bytes: 25_700_000_000, last_ms: 5 , ..Default::default() },
         );
-        save_to(&path, &costs);
+        save_to(&continuum_kernel::system_resources::disk_reporters::TrackedDir::new("state", dir.path().to_path_buf()).writer(), &costs);
         assert_eq!(load_from(&path), costs);
         let mut legacy = serde_json::to_value(&costs).expect("record fixture");
         legacy["m"].as_object_mut().expect("record object").remove("allocated_tokens");
@@ -706,10 +612,6 @@ mod tests {
         assert_eq!(model_path_in(&args(&["llama-server", "--model=/w/b.gguf"])), Some("/w/b.gguf"));
         assert_eq!(model_path_in(&args(&["llama-server", "--port", "1"])), None);
 
-        // KERN_PROCARGS2 layout: argc, exec path, NUL padding, then the args.
-        let mut buf = 2i32.to_ne_bytes().to_vec();
-        buf.extend_from_slice(b"/bin/llama-server\0\0\0-m\0/w/a.gguf\0ENV=1\0");
-        assert_eq!(parse_procargs2(&buf), Some(args(&["-m", "/w/a.gguf"])));
 
         let dir = tempfile::tempdir().expect("test: tempdir");
         let whole = dir.path().join("m.gguf");
