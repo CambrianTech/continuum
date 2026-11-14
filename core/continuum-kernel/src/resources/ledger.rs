@@ -164,7 +164,7 @@ impl ResourceLeaseLedger {
     }
 
     pub fn capacity(&self, kind: ResourceKind) -> u64 {
-        self.capacity.get(&kind).copied().unwrap_or(0)
+        self.capacity.get(&kind).copied().unwrap_or(0) // unwrap_or: an unscanned kind grants nothing (fail-closed: no grant against a resource not scanned)
     }
 
     /// Bytes currently spoken for of this kind — sums ALL leases, expired
@@ -188,7 +188,7 @@ impl ResourceLeaseLedger {
     /// Bytes of this kind physically resident across everyone, as last scanned.
     /// Absent → 0 (no physical monitor for this kind yet).
     pub fn physical_used(&self, kind: ResourceKind) -> u64 {
-        self.physical_used.get(&kind).copied().unwrap_or(0)
+        self.physical_used.get(&kind).copied().unwrap_or(0) // unwrap_or: no physical monitor for this kind; its capacity is unscanned too, so nothing is granted against it
     }
 
     /// What is REALLY spoken for of this kind: the larger of what we have granted
@@ -234,7 +234,7 @@ impl ResourceLeaseLedger {
         self.reservations
             .get(&(kind, consumer_id.to_string()))
             .copied()
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: no floor reserved is a floor of 0 bytes, a fact, not an unknown
     }
 
     // ---- measurement axis (monitored residency, never reserved) ------------
@@ -358,6 +358,37 @@ impl ResourceLeaseLedger {
         self.available_for(consumer_id, kind)
             .saturating_add(self.measured_by(consumer_id, kind))
             .min(self.capacity(kind))
+    }
+
+    /// The room `consumer_id` may size a successor into when it holds nothing on the board yet:
+    /// the pool's capacity less every OTHER consumer's claim, the largest of its reserved floor, its
+    /// grant and its measured residency. Computed from claims alone, never from `physical_used`, so
+    /// a boot reads it before the consumer's own bytes are attributed and while a predecessor's are
+    /// still leaving (a gap reading reads that `budget_for_replacing` as 0, and a pool launched from
+    /// it is the 2,048-token dark node of card 8569b03d). Every other consumer's floor stays
+    /// outside it: the M5, 2026-11-14 03:35Z, sized its engine with no device room at boot and the
+    /// embed lane's leases were refused at 0 available for the rest of the hour.
+    ///
+    /// Bytes resident that no consumer of ours claims (the OS, other processes) are not in it: on
+    /// unified memory they are the host's to count (the serving host room), on a discrete card the
+    /// next steady read (`budget_for_replacing`) bounds them.
+    pub fn room_beside_others(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        let mut others: Vec<&str> = self
+            .reservations
+            .keys()
+            .filter(|(k, _)| *k == kind)
+            .map(|(_, c)| c.as_str())
+            .chain(self.leases.values().filter(|l| l.kind == kind).map(|l| l.consumer_id.as_str()))
+            .chain(self.measured.iter().filter(|(_, fs)| fs.iter().any(|f| f.kind == kind)).map(|(c, _)| c.as_str()))
+            .filter(|c| *c != consumer_id)
+            .collect();
+        others.sort_unstable();
+        others.dedup();
+        let claimed = others
+            .into_iter()
+            .map(|c| self.reservation(c, kind).max(self.granted_to(c, kind)).max(self.measured_by(c, kind)))
+            .fold(0u64, |acc, b| acc.saturating_add(b));
+        self.capacity(kind).saturating_sub(claimed)
     }
 
     /// THE over-commit guard. Grant `req.bytes` of `req.kind` only if they fit
@@ -515,10 +546,8 @@ impl ResourceLeaseLedger {
         candidates.sort_by(|a, b| {
             let sa = arbiter.reclaim_score(a, &ctx);
             let sb = arbiter.reclaim_score(b, &ctx);
-            // Highest score reclaimed first; NaN-safe; lease_id breaks ties.
-            sb.partial_cmp(&sa)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.lease_id.cmp(&b.lease_id))
+            // Highest score reclaimed first; a total order (NaN included); lease_id breaks ties.
+            sb.total_cmp(&sa).then_with(|| a.lease_id.cmp(&b.lease_id))
         });
 
         // Track each consumer's remaining held bytes as we choose victims, so a

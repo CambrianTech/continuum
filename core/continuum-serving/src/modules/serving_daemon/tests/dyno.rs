@@ -247,6 +247,70 @@ mod the_pool_fits_the_host {
     }
 }
 
+// Dyno 14: the boot counts the device room (the M5, 2026-11-14 03:35Z, canary 958ea3056). The boot
+// launch planned on `OwnCredit::ToApply` (`serving.plan.branch` at 1794627093748: stable, usable 0,
+// credited 0) and read no device room, launched -c 661410, and the embed lane's 186,908,672 B leases
+// were refused at 0 available 12 times in 26 minutes. The device is 55,662,788,608 B
+// (`serving.vram_ceiling_prior.seeded`); the engine's measured cost at that pool is 13,520 B/token
+// (`state/lane-footprint.json` at 661,500). Driven through the computed room (the ledger's
+// `room_beside_others`, pinned in `resources::ledger::tests::the_embed_floor_survives_a_boot_sizing`)
+// and `host_fit::pool_fit`.
+mod boot_counts_the_device_room {
+    use super::super::super::host_fit::{pool_fit, Bound, PoolFit, Rooms};
+    use crate::inference::planning::serving_plan::ModelFootprint;
+    use crate::resources::{ResourceKind, ResourceLeaseLedger};
+
+    const DEVICE: u64 = 55_662_788_608;
+    const EMBED_FLOOR: u64 = 186_908_672;
+    const SEQUENCES: u32 = 5;
+    const TRAINED: u32 = 262_144;
+
+    fn m5_measured() -> ModelFootprint {
+        let mut fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None)
+            .expect("test: a footprint from the weights");
+        fp.kv_per_token = 13_520;
+        fp
+    }
+
+    /// The board at the boot: the device full of a leaving engine's unattributed bytes, the embed
+    /// lane's floor reserved.
+    fn boot_board() -> ResourceLeaseLedger {
+        let mut ledger = ResourceLeaseLedger::new();
+        ledger.set_capacity(ResourceKind::Vram, DEVICE);
+        ledger.set_physical_used(ResourceKind::Vram, DEVICE);
+        ledger.reserve("embed", ResourceKind::Vram, EMBED_FLOOR);
+        ledger
+    }
+
+    // what this catches: the recorded boot. The only device reading the launch had is the gap's
+    // replace-myself budget, 0, so the launch read no device room (sizing from it would launch at the
+    // floor), and nothing kept the embed lane's floor out of the pool.
+    #[test]
+    fn before_the_boot_has_no_device_room_to_read() {
+        assert_eq!(boot_board().budget_for_replacing("serving", ResourceKind::Vram), 0);
+        let fit = pool_fit(661_410, Some(&m5_measured()), Rooms { host: None, device: None }, 0, SEQUENCES, TRAINED);
+        assert_eq!(fit, PoolFit::Unmeasured { demand: 661_410 }, "no room read: the need launched unchecked");
+    }
+
+    // what this catches: the fix. At the boot the device room is computed from the other consumers'
+    // claims, the embed floor outside it, so the pool is min(need, host, device) from the first launch;
+    // a device the need does not fit bounds it. On these receipts the need fits the device (the
+    // engine's device cost at 661,410 is 38.3 GB of the 55.5 GB room), so the hour's refusals were not
+    // the device room: they were the unified pool's host side (free 0.1 GB) and the embed lane's own
+    // 13,547 MiB request (`embedding.neural.failed`).
+    #[test]
+    fn after_the_boot_sizes_beside_the_embed_floor() {
+        let fp = m5_measured();
+        let room = boot_board().room_beside_others("serving", ResourceKind::Vram);
+        assert_eq!(room, DEVICE - EMBED_FLOOR);
+        let fit = pool_fit(661_410, Some(&fp), Rooms { host: None, device: Some(room) }, 0, SEQUENCES, TRAINED);
+        assert_eq!(fit, PoolFit::Fits { demand: 661_410, fit: 1_310_720 });
+        let crowded = DEVICE - 30_000_000_000;
+        let bounded = pool_fit(661_410, Some(&fp), Rooms { host: None, device: Some(crowded) }, 0, SEQUENCES, TRAINED);
+        assert!(matches!(bounded, PoolFit::Bounded { by: Bound::Device { .. }, .. }), "a device the need does not fit bounds it: {bounded:?}");
+    }
+}
+
 // Dyno 11: standing starvation (the M5, 2026-11-13 23:40Z, canary 0ed0d231b, card 0f631c46): 0.4 GB
 // free, the compressor flat at 2,565,898 pages of 16 KiB (42 GB), swap flat at 14.5 of 15 GB, the
 // kernel at critical, and the engine's host prompt cache launched at --cache-ram 16525 MiB. Every
