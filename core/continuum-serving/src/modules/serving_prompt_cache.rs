@@ -12,9 +12,13 @@
 //! prompt, while every other holder (mind results, rendering, the model itself) costs a mind
 //! something it is using. It reports at [`MemoryPriority::Batch`], the priority that yields first:
 //! the monitor charges the deficit to it before any higher priority (`deficit_at`), and it lowers
-//! its limit by its share, planned from what the cache holds ([`lever`]). When the OS has read
-//! itself normal on two polls in a row the monitor calls [`MemoryReporter::take_again`] and the
-//! cache goes back to its launch grant, the engine's `/prompt-cache/limit` reply the receipt.
+//! its limit by its share, planned from what the cache holds ([`lever`]). When the OS reads itself
+//! normal with room to spare, the monitor offers that measured headroom
+//! ([`MemoryReporter::take_again`]) and the cache is raised by at most it, less what its current
+//! limit has not filled yet, toward its launch grant; the engine's `/prompt-cache/limit` reply is
+//! the receipt. Never in one jump on a calm reading: on the M5, 2026-11-14 01:06:52Z, a deficit
+//! lowered the cache 8,717 -> 1 MiB and 9 s later two OS-normal polls raised it straight back to
+//! 8,717.
 //!
 //! Only the OS's own deficit lowers the cache, never the monitor's fixed RAM gates alone: those
 //! read pressure on a host the OS calls normal, and would lower what the take-again half raises.
@@ -23,6 +27,7 @@
 //! call starts at most one step on the runtime; a poll that finds one in flight leaves it, and the
 //! next poll recomputes the share from what is still held and still owed.
 
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -56,8 +61,6 @@ struct Inner {
     runtime: tokio::runtime::Handle,
     /// One step on the engine at a time.
     in_flight: AtomicBool,
-    /// A step that could not run (at the floor, unknown, refused) is said once until one runs.
-    stuck_said: AtomicBool,
 }
 
 /// Holds `in_flight` for one step; dropping it (the step finished, or its task was torn down)
@@ -92,7 +95,6 @@ impl PromptCacheShedder {
                 pressure,
                 runtime,
                 in_flight: AtomicBool::new(false),
-                stuck_said: AtomicBool::new(false),
             }),
         }
     }
@@ -104,11 +106,12 @@ impl PromptCacheShedder {
         monitor.add_reporter(Arc::new(shedder));
     }
 
-    /// Start lowering the cache by its share of the host's deficit, if it owes one and no step is
-    /// in flight. The handle lets a test wait for the step; the monitor drops it.
+    /// Start lowering the cache by its share of the host's deficit, if it owes one, a step is
+    /// left above the route's floor, and no step is in flight. The handle lets a test wait for the
+    /// step; the monitor drops it.
     pub(crate) fn shed_now(&self) -> Option<JoinHandle<()>> {
-        let launched_mib = self.inner.launched_mib()?;
-        let held = self.inner.held_bytes(launched_mib);
+        let grant = self.inner.grant()?;
+        let held = self.inner.held_bytes(grant);
         let share = {
             let snapshot = self.inner.pressure.borrow();
             if snapshot.deficit_bytes == 0 {
@@ -120,104 +123,81 @@ impl PromptCacheShedder {
             return None;
         }
         let guard = InFlight::begin(&self.inner)?;
+        let step = guard.0.lever.plan(grant, share)?;
         Some(self.inner.runtime.spawn(async move {
-            guard.0.lower(launched_mib, share).await;
+            guard.0.lower(step, share).await;
         }))
     }
 
-    /// Start taking the cache back to its launch grant, if serving lowered it and no step is in
-    /// flight. The handle lets a test wait for the step; the monitor drops it.
-    pub(crate) fn take_again_now(&self) -> Option<JoinHandle<()>> {
-        let launched_mib = self.inner.launched_mib()?;
-        let lowered = self.inner.lever.last().is_some_and(|last| last.limit_mib.get() < u64::from(launched_mib));
-        if !lowered {
-            return None;
-        }
+    /// Start raising the cache by at most `headroom` bytes toward its launch grant, if it is below
+    /// it with room past what its limit has not filled, and no step is in flight. Returns the step
+    /// and the bytes it claims of the headroom; the monitor drops the handle.
+    pub(crate) fn take_again_now(&self, headroom: NonZeroU64) -> Option<(JoinHandle<()>, u64)> {
+        let grant = self.inner.grant()?;
         let guard = InFlight::begin(&self.inner)?;
-        Some(self.inner.runtime.spawn(async move {
-            guard.0.take_back(launched_mib).await;
-        }))
+        let raise = guard.0.lever.plan_raise(grant, headroom)?;
+        let step = self.inner.runtime.spawn(async move {
+            guard.0.raise(raise, headroom).await;
+        });
+        Some((step, raise.claimed_bytes()))
     }
 }
 
 impl Inner {
-    /// The serving engine's launch grant in MiB (0 = unknown); `None` while no engine is ready.
-    fn launched_mib(&self) -> Option<u32> {
+    /// The serving engine's launch grant; `None` while no engine is ready or the snapshot names no
+    /// grant (its `0`), the one absence the lever sees.
+    fn grant(&self) -> Option<NonZeroU64> {
         let snapshot = self.serving.borrow();
-        snapshot.ready.then_some(snapshot.host_prompt_cache_mib)
+        snapshot.ready.then(|| NonZeroU64::new(u64::from(snapshot.host_prompt_cache_mib))).flatten()
     }
 
     /// What the cache holds as far as serving knows: what the engine last said, or, before serving
     /// first asked, its launch grant (the most it can hold).
-    fn held_bytes(&self, launched_mib: u32) -> u64 {
+    fn held_bytes(&self, grant: NonZeroU64) -> u64 {
         match self.lever.last() {
             Some(last) => last.held_bytes,
-            None => u64::from(launched_mib) << 20,
+            None => grant.get() << 20,
         }
     }
 
-    async fn lower(&self, launched_mib: u32, share: u64) {
-        let step = match self.lever.plan(launched_mib, share) {
-            Ok(step) => step,
-            Err(why) => {
-                if !self.stuck_said.swap(true, Ordering::AcqRel) {
-                    continuum_base::probe!(
-                        class = "serving.reclaim.prompt_cache",
-                        target_bytes = share,
-                        no_step = ?why,
-                        "the prompt cache cannot be lowered further: the higher priorities give back the rest of the host's deficit"
-                    );
-                }
-                return;
-            }
-        };
+    async fn lower(&self, step: lever::Step, share: u64) {
         match self.lever.apply(step, share).await {
-            Ok(applied) => {
-                self.stuck_said.store(false, Ordering::Release);
-                continuum_base::probe!(
-                    class = "serving.reclaim.prompt_cache",
-                    limit_before_mib = step.before_mib.get(),
-                    limit_after_mib = applied.limit_after_mib.get(),
-                    calls = applied.calls,
-                    target_bytes = share,
-                    freed_bytes = applied.freed_bytes,
-                    held_bytes = applied.held_bytes,
-                    "serving lowered its host prompt cache by its share of the host's memory deficit, first of every holder"
-                );
-            }
-            Err(error) => {
-                if !self.stuck_said.swap(true, Ordering::AcqRel) {
-                    continuum_base::probe!(
-                        class = "serving.reclaim.prompt_cache",
-                        limit_before_mib = step.before_mib.get(),
-                        limit_after_mib = step.after_mib.get(),
-                        target_bytes = share,
-                        refusal = %error,
-                        "the engine did not lower its prompt cache: the higher priorities give back the host's deficit"
-                    );
-                }
-            }
+            Ok(applied) => continuum_base::probe!(
+                class = "serving.reclaim.prompt_cache",
+                limit_before_mib = step.before_mib.get(),
+                limit_after_mib = applied.limit_after_mib.get(),
+                calls = applied.calls,
+                target_bytes = share,
+                freed_bytes = applied.freed_bytes,
+                held_bytes = applied.held_bytes,
+                "serving lowered its host prompt cache by its share of the host's memory deficit, first of every holder"
+            ),
+            Err(error) => continuum_base::probe!(
+                class = "serving.reclaim.prompt_cache",
+                limit_before_mib = step.before_mib.get(),
+                limit_after_mib = step.after_mib.get(),
+                target_bytes = share,
+                refusal = %error,
+                "the engine did not lower its prompt cache: the higher priorities give back the host's deficit"
+            ),
         }
     }
 
-    async fn take_back(&self, launched_mib: u32) {
-        match self.lever.take_back(launched_mib).await {
-            Ok(Some(raised)) => {
-                self.stuck_said.store(false, Ordering::Release);
-                continuum_base::probe!(
-                    class = "serving.prompt_cache.take_again",
-                    limit_before_mib = raised.before_mib.get(),
-                    limit_after_mib = raised.after_mib.get(),
-                    held_bytes = raised.held_bytes,
-                    "the OS reads normal: serving took its host prompt cache back to its launch grant"
-                );
-            }
-            Ok(None) => {}
+    async fn raise(&self, raise: lever::Raise, headroom: NonZeroU64) {
+        match self.lever.raise(raise).await {
+            Ok(raised) => continuum_base::probe!(
+                class = "serving.prompt_cache.take_again",
+                limit_before_mib = raised.before_mib.get(),
+                limit_after_mib = raised.after_mib.get(),
+                headroom_bytes = headroom.get(),
+                held_bytes = raised.held_bytes,
+                "the OS reads normal with room to spare: serving raised its host prompt cache by at most that room"
+            ),
             Err(error) => continuum_base::probe!(
                 class = "serving.prompt_cache.take_again",
-                limit_after_mib = launched_mib,
+                limit_after_mib = raise.after_mib.get(),
                 refusal = %error,
-                "the engine did not take its prompt cache back: the next calm poll asks again"
+                "the engine did not raise its prompt cache: the next calm poll with room asks again"
             ),
         }
     }
@@ -229,21 +209,18 @@ impl MemoryReporter for PromptCacheShedder {
     }
 
     fn budget(&self) -> MemoryBudgetSpec {
-        let held = self.inner.launched_mib().map_or(0, |launched_mib| self.inner.held_bytes(launched_mib));
+        let held = self.inner.grant().map_or(0, |grant| self.inner.held_bytes(grant)); // map_or: no engine serving holds nothing
         MemoryBudgetSpec { name: NAME.to_string(), priority: PRIORITY, min_bytes: 0, preferred_bytes: held, max_bytes: held }
     }
 
     fn report(&self) -> ModuleMemoryReport {
-        let (bytes, detail) = match (self.inner.launched_mib(), self.inner.lever.last()) {
+        let (bytes, detail) = match (self.inner.grant(), self.inner.lever.last()) {
             (None, _) => (0, "no engine serving".to_string()),
-            (Some(launched_mib), Some(last)) => (
+            (Some(grant), Some(last)) => (
                 last.held_bytes,
-                format!("held as the engine last said, limit {} of launch grant {launched_mib} MiB", last.limit_mib),
+                format!("held as the engine last said, limit {} of launch grant {grant} MiB", last.limit_mib),
             ),
-            (Some(launched_mib), None) => (
-                u64::from(launched_mib) << 20,
-                format!("launch grant {launched_mib} MiB, contents not yet asked"),
-            ),
+            (Some(grant), None) => (grant.get() << 20, format!("launch grant {grant} MiB, contents not yet asked")),
         };
         ModuleMemoryReport { name: NAME.to_string(), bytes, detail, can_shed: true }
     }
@@ -261,9 +238,10 @@ impl MemoryReporter for PromptCacheShedder {
         drop(self.shed_now());
     }
 
-    /// Take the cache back to its launch grant.
-    fn take_again(&self) {
-        drop(self.take_again_now());
+    /// Raise the cache by at most the host's measured headroom; the bytes claimed come off what
+    /// the monitor offers the next reporter.
+    fn take_again(&self, headroom: NonZeroU64) -> u64 {
+        self.take_again_now(headroom).map_or(0, |(_step, claimed)| claimed) // map_or: no step started claims nothing
     }
 }
 

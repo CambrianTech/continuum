@@ -146,6 +146,93 @@ mod boot_during_memory_settle {
     }
 }
 
+// Dyno 12: the pool fits the host (the M5, 2026-11-14 00:57Z, canary 7a29474a9). The boot read 52,122
+// MiB available, 1,344 MiB compressed and 5,915 MiB swapped (`memory.pressure` at 1794617812455);
+// the stable-arm plan named 3 x 207,691 over a 46,011,570,176 B budget (`serving.launch.plan` at
+// 1794617823874), and the engine launched at `-c 623070` (124,614 x 5) beside `--cache-ram 8717`.
+// The measured cost at that pool (`state/lane-footprint.json`): 15,163 B per token. Seventeen
+// minutes later the kernel read pressure with a 3,915 MiB deficit. Driven through the daemon's own
+// demand (`launch_pool`) and host fit (`host_fit::pool_fit`).
+mod the_pool_fits_the_host {
+    use super::super::super::host_fit::{pool_fit, Bound, HostRoom, PoolFit, Rooms};
+    use super::super::super::launch::{launch_pool, Seated};
+    use crate::inference::planning::serving_plan::ModelFootprint;
+    use continuum_host::host_memory::{HostMemoryReading, OsMemoryPressure};
+
+    const MIB: u64 = 1 << 20;
+    const TRAINED: u32 = 262_144;
+    const SEQUENCES: u32 = 5;
+    /// The four residents' held needs at the launch (`serving.launch.await_settle`, need 382,706).
+    const NEED: u64 = 382_706;
+    const CACHE_MIB: u64 = 8_717;
+
+    fn m5_measured() -> ModelFootprint {
+        let mut fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None)
+            .expect("test: a footprint from the weights");
+        fp.kv_per_token = 15_163;
+        fp
+    }
+
+    fn boot() -> (HostMemoryReading, u64) {
+        let reading = HostMemoryReading {
+            free_bytes: 52_122 * MIB,
+            reclaimable_bytes: 0,
+            compressed_bytes: 1_344 * MIB,
+            swapped_in_bytes: 0,
+            swapped_out_bytes: 0,
+            free_target_bytes: 62 * MIB,
+            pressure: Some(OsMemoryPressure::Normal),
+        };
+        (reading, 5_915 * MIB)
+    }
+
+    /// What the engine holds at `pool` by the plan's own cost (weights, the prompt cache, each
+    /// sequence's compute floor and the measured per-token cost with its compute rate).
+    fn engine_bytes(fp: &ModelFootprint, pool: u64) -> u64 {
+        let per_token = fp.kv_per_token + fp.kv_per_token / crate::inference::planning::serving_plan::PREFILL_COMPUTE_KV_DIVISOR;
+        fp.weights_bytes + CACHE_MIB * MIB + u64::from(SEQUENCES) * fp.compute_buffer_per_lane() + pool * per_token
+    }
+
+    fn demand(fp: &ModelFootprint) -> u64 {
+        launch_pool(Some(fp), 25_592_004_608, 207_691, 3, SEQUENCES, TRAINED, Seated { need: NEED, proven: None })
+    }
+
+    // what this catches: the recorded launch, reproduced. The demand is the plan's 3 x 207,691,
+    // the engine's own cost at it exceeds what the host could give without displacing anyone, and
+    // nothing in the launch read the host.
+    #[test]
+    fn before_the_launch_takes_the_plan_whole() {
+        let fp = m5_measured();
+        let pool = demand(&fp);
+        assert_eq!(pool, 3 * 207_691, "the plan's pool, launched whole");
+        assert_eq!(pool / u64::from(SEQUENCES) * u64::from(SEQUENCES), 623_070, "-c 623070");
+        let (reading, swap) = boot();
+        let room = HostRoom::of(&reading, swap, 0);
+        assert!(engine_bytes(&fp, pool) > room.bytes(), "the engine at 623k ({} B) is past the host's room ({} B)", engine_bytes(&fp, pool), room.bytes());
+    }
+
+    // what this catches: the fix. The same demand against the boot's reading is Bounded: the pool is
+    // what the room holds beside the cache, every resident's need still inside it, and the engine's
+    // cost at it within the room. A replaced engine's bytes count as room; a host with no reading
+    // launches the demand.
+    #[test]
+    fn after_the_pool_is_what_the_host_holds_and_the_minds_share_it() {
+        let fp = m5_measured();
+        let (reading, swap) = boot();
+        let room = HostRoom::of(&reading, swap, 0);
+        let host = |room| Rooms { host: Some(room), device: None };
+        let fit = pool_fit(demand(&fp), Some(&fp), host(room), CACHE_MIB * MIB, SEQUENCES, TRAINED);
+        let PoolFit::Bounded { demand: asked, fit: held, by: Bound::Host(_) } = fit else { panic!("test: the boot's demand exceeds its room: {fit:?}") };
+        let pool = fit.pool(SEQUENCES);
+        assert_eq!((asked, pool), (623_073, held));
+        assert!(pool < asked && pool >= NEED, "bounded below the plan, above the residents' need: {pool}");
+        assert!(engine_bytes(&fp, pool) <= room.bytes(), "the engine fits the room at {pool}");
+        let replacing = HostRoom::of(&reading, swap, 10 * (1 << 30));
+        assert!(matches!(pool_fit(asked, Some(&fp), host(replacing), CACHE_MIB * MIB, SEQUENCES, TRAINED), PoolFit::Fits { .. }), "a replaced engine's bytes come back");
+        assert_eq!(pool_fit(asked, Some(&fp), Rooms { host: None, device: None }, CACHE_MIB * MIB, SEQUENCES, TRAINED).pool(SEQUENCES), asked, "no reading: never a dark node");
+    }
+}
+
 // Dyno 11: standing starvation (the M5, 2026-11-13 23:40Z, canary 0ed0d231b, card 0f631c46): 0.4 GB
 // free, the compressor flat at 2,565,898 pages of 16 KiB (42 GB), swap flat at 14.5 of 15 GB, the
 // kernel at critical, and the engine's host prompt cache launched at --cache-ram 16525 MiB. Every
@@ -195,17 +282,18 @@ mod standing_starvation {
 
     // what this catches: the fix, end to end. The deficit is what the OS displaced since it last read
     // normal (never 0 while it says critical); the cache at Batch is charged first, so its 16.5 GB
-    // comes off the minds' share; the cache's lever is asked and lowers the engine's limit; and after
-    // two OS-normal polls the cache is taken back to its launch grant, the engine's reply the receipt.
+    // comes off the minds' share; the cache's lever is asked and lowers the engine's limit; and once
+    // the OS reads normal with room above where it read pressure, the cache is raised by that room,
+    // the engine's reply the receipt.
     #[tokio::test]
-    async fn after_the_cache_is_asked_first_and_taken_back_when_the_os_reads_normal() {
+    async fn after_the_cache_is_asked_first_and_raised_within_the_measured_room() {
         let mut host = HostDeficit::default();
-        assert_eq!(host.observe(Some(&reading(20 * GB, 3 * GB, OsMemoryPressure::Normal)), GB), 0, "boot: OS normal, baseline 4 GB");
+        assert_eq!(host.observe(Some(&reading(20 * GB, 3 * GB, OsMemoryPressure::Normal)), GB).owed_bytes(), 0, "boot: OS normal, baseline 4 GB");
         let displaced = 2_565_898 * 16_384 + SWAP_USED;
         for _ in 0..3 {
-            assert_eq!(host.observe(Some(&starved()), SWAP_USED), displaced - 4 * GB, "flat starvation stays owed");
+            assert_eq!(host.observe(Some(&starved()), SWAP_USED).owed_bytes(), displaced - 4 * GB, "flat starvation stays owed");
         }
-        let deficit = host.observe(Some(&starved()), SWAP_USED);
+        let deficit = host.observe(Some(&starved()), SWAP_USED).owed_bytes();
 
         let cache = FakeEngineCache::full(M5_GRANT_MIB);
         let (shedder, _serving, pressure) = rig(cache.clone(), M5_GRANT_MIB);
@@ -217,13 +305,92 @@ mod standing_starvation {
         shedder.shed_now().expect("test: the lever is asked").await.expect("test: the step ran");
         assert_eq!(cache.asked(), vec![1], "a deficit past the whole cache lowers it to the route's floor");
 
-        host.observe(Some(&reading(20 * GB, 30 * GB, OsMemoryPressure::Normal)), SWAP_USED);
-        assert!(!host.take_again_due(), "one calm poll is a spike");
-        assert_eq!(host.observe(Some(&reading(20 * GB, 30 * GB, OsMemoryPressure::Normal)), SWAP_USED), 0);
-        assert!(host.take_again_due());
+        let calm = host.observe(Some(&reading(20 * GB, 30 * GB, OsMemoryPressure::Normal)), SWAP_USED);
+        let room = calm.headroom().expect("test: 20 GB free, the OS read pressure at 0.4 GB");
+        assert_eq!(room.get(), 20 * GB - 400_000_000);
         pressure.send_replace(poll(&shedder, 0, &minds, (40 * GB, 64 * GB)));
-        shedder.take_again_now().expect("test: the cache is taken back").await.expect("test: the step ran");
-        assert_eq!(cache.asked(), vec![1, u64::from(M5_GRANT_MIB)], "back to --cache-ram 16525");
+        let (step, claimed) = shedder.take_again_now(room).expect("test: the cache is raised");
+        step.await.expect("test: the step ran");
+        assert_eq!(cache.asked(), vec![1, u64::from(M5_GRANT_MIB)], "the room holds the whole grant: back to --cache-ram 16525");
+        assert_eq!(claimed, (u64::from(M5_GRANT_MIB) - 1) * MIB, "and it claims what it may now fill");
+    }
+}
+
+// Dyno 13: the take-again flap (the M5, 2026-11-14 01:06:52Z, canary 7a29474a9, #5981). The deficit
+// lowered the engine's prompt cache 8,717 -> 1 MiB (`serving.reclaim.prompt_cache` at
+// 1794618412459, held 0 after it), and 9.1 s later (`serving.prompt_cache.take_again` at
+// 1794618421570) two OS-normal polls raised it straight back to 8,717; the kernel read pressure
+// again within minutes (01:13Z: deficit 3,020-4,160 MiB at 4,914-5,979 MiB available). The polls
+// between were not probed (the monitor probes on level change), so the calm readings here sit
+// inside the range the OS read pressure at.
+mod take_again_flap {
+    use crate::modules::serving_prompt_cache::tests::{poll, rig, FakeEngineCache, MIB};
+    use crate::system_resources::memory_pressure::{HostDeficit, HostDeficitReading};
+    use continuum_host::host_memory::{HostMemoryReading, OsMemoryPressure};
+
+    const MB: u64 = 1_000_000;
+    const GB: u64 = 1_000_000_000;
+    const GRANT_MIB: u32 = 8_717;
+    const QUIET_RAM: (u64, u64) = (0, 64 * GB);
+
+    fn reading(available: u64, pressure: OsMemoryPressure) -> HostMemoryReading {
+        HostMemoryReading { free_bytes: available, reclaimable_bytes: 0, compressed_bytes: 15 * GB, swapped_in_bytes: 0, swapped_out_bytes: 0, free_target_bytes: 62 * MB, pressure: Some(pressure) }
+    }
+
+    /// The pressured polls: the receipts' available range.
+    fn episode(host: &mut HostDeficit) {
+        for available in [4_914 * MB, 5_979 * MB, 5_798 * MB] {
+            assert!(matches!(host.observe(Some(&reading(available, OsMemoryPressure::Warn)), 0), HostDeficitReading::Owed(_)));
+        }
+    }
+
+    // what this catches: the recorded flap's shape. Two OS-normal readings inside the pressure range
+    // carry no room above it, so any rule that raises the cache on them (#5981 raised to the whole
+    // 8,717 MiB grant) re-enters pressure.
+    #[test]
+    fn before_a_brief_normal_reading_carries_no_room() {
+        let mut host = HostDeficit::default();
+        episode(&mut host);
+        for _ in 0..2 {
+            let calm = host.observe(Some(&reading(5_500 * MB, OsMemoryPressure::Normal)), 0);
+            assert!(matches!(calm, HostDeficitReading::Calm { .. }), "the OS reads normal");
+            assert_eq!(calm.headroom(), None, "but 5.5 GB is inside the 4.9-6.0 GB it read pressure at");
+        }
+        assert!(u64::from(GRANT_MIB) * MIB > 5_979 * MB - 5_500 * MB, "the old one-jump raise: 8,717 MiB into no room");
+    }
+
+    // what this catches: the fix. Lowered to 1 MiB, then calm polls: inside the pressure range
+    // nothing is offered; with room the cache rises by at most that room less what its limit has not
+    // filled; offered the same room again it rises no further; and a pressured poll offers nothing
+    // (the shed path owns it again). The limit never jumps past the room.
+    #[tokio::test]
+    async fn after_regrowth_is_monotone_within_measured_room() {
+        let mut host = HostDeficit::default();
+        let cache = FakeEngineCache::holding(0);
+        let (shedder, _serving, pressure) = rig(cache.clone(), GRANT_MIB);
+        episode(&mut host);
+        pressure.send_replace(poll(&shedder, 26_471_432_192, &[], QUIET_RAM));
+        shedder.shed_now().expect("test: the lever is asked").await.expect("test: the step ran");
+        assert_eq!(cache.asked(), vec![1], "lowered to the route's floor by the recorded 26,471,432,192 B target");
+
+        let brief = host.observe(Some(&reading(5_500 * MB, OsMemoryPressure::Normal)), 0);
+        assert!(brief.headroom().is_none(), "no room: the monitor offers nothing");
+
+        let calm = host.observe(Some(&reading(8 * GB, OsMemoryPressure::Normal)), 0);
+        let room = calm.headroom().expect("test: room above the episode");
+        assert_eq!(room.get(), 8 * GB - 5_979 * MB);
+        pressure.send_replace(poll(&shedder, 0, &[], QUIET_RAM));
+        let (step, claimed) = shedder.take_again_now(room).expect("test: raised within the room");
+        step.await.expect("test: the step ran");
+        assert!(claimed <= room.get(), "never past the room: {claimed}");
+        let raised = 1 + ((room.get() - MIB) >> 20);
+        assert_eq!(cache.asked(), vec![1, raised]);
+        assert!(raised < u64::from(GRANT_MIB), "a step, never the whole grant at once");
+        assert!(shedder.take_again_now(room).is_none(), "the same room again: what it was given is unfilled");
+
+        let pressed = host.observe(Some(&reading(5 * GB, OsMemoryPressure::Warn)), 0);
+        assert!(matches!(pressed, HostDeficitReading::Owed(_)) && pressed.headroom().is_none(), "pressure: nothing offered, the deficit is owed");
+        assert_eq!(cache.asked(), vec![1, raised], "monotone: no raise past the room, no re-entry by the cache");
     }
 }
 
