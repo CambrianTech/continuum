@@ -547,8 +547,10 @@ fn serving_footprint_fn_resolves_live_catalog_weights() {
     // with f16/unset this is byte-identical to raw parts; with q8_0 configured the
     // rate halves on BOTH sides. Before this the expectation assumed f16 and the
     // test failed on any box actually serving quantized KV while CI stayed green.
+    // The resolver's own footprint: no catalog prior and no engine reading for this model, so
+    // its compute rate is unknown and only the compute floor is reserved.
     let fp = apply_kv_quantization(
-        crate::inference::planning::serving_plan::footprint::calibrated_from_parts(id, 4096, 8192, false, None).expect("footprint"),
+        crate::inference::planning::serving_plan::footprint::footprint_from_parts(id, 4096, 8192, false, None).expect("footprint"),
     );
     let kv_per_token = fp.kv_per_token; // 20_000 raw, ÷ live quant divisor
     let expect = 4096 + 2 * kv_per_token * 8192 + fp.prefill_compute_reserve(8192, 2);
