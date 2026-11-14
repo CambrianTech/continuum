@@ -550,7 +550,7 @@ impl LlamaServerControl for LlamaServerProcess {
         let checkpoint = transition
             .checkpoint_residents(&self.client, &self.root)
             .await
-            .map_err(LlamaServerError::Spawn)?;
+            .map_err(|failure| LlamaServerError::Spawn(failure.to_string()))?;
         self.validate_owned_launch(&session.original).await?;
         if !current() {
             return Err(LlamaServerError::Superseded);

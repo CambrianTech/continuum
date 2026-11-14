@@ -128,9 +128,9 @@ pub(super) fn register_pressure_broker(
         }
 
         // KV page disk-tier owner: each mind's saved page is the disk level of her KV (GPU,
-        // RAM, disk). Freed in value order (unserved model dirs, pages no ledger confirms, then
-        // the coldest non-resident confirmed pages, forgotten through their pool first), never a
-        // resident's page or the ledger. Registered after the cargo pools, so on a tie in volume
+        // RAM, disk). Freed in value order (unserved model dirs, pages no ledger confirms, then,
+        // only under its own budget or a critical volume, the coldest non-resident confirmed
+        // pages, forgotten through their pool first), never a resident's page or the ledger. Registered after the cargo pools, so on a tie in volume
         // pressure the build cache sheds before minds' warm state.
         if let Some(dir) = crate::system_resources::tracked_dir("kv-pages") {
             broker.register(Arc::new(crate::inference::slots::KvPageStorePool::new(dir))

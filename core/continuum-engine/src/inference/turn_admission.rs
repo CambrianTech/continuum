@@ -42,6 +42,7 @@ pub use transient::admit_transient;
 #[cfg(test)]
 use transient::admit_transient_through;
 
+pub(crate) use page_receipt::PageAction;
 use page_receipt::{terminal_receipt, Terminal};
 use page_liveness::{bounded_page_receipt, wait_while_engine_progresses, PageLiveness, Receipt};
 #[cfg(test)]
@@ -146,7 +147,7 @@ impl TurnAdmission {
         root: &str,
         slot: u32,
         key: &PageKey,
-        action: &str,
+        action: PageAction,
     ) -> Result<(Self, bool), String> {
         self.paging_in_flight = true;
         match kv_page_action(client, root, slot, key, action).await {
@@ -610,7 +611,7 @@ async fn admit(
                             // Only a completed save can make this page restorable again.
                             pool.note_page_lost(&prev);
                             let saved;
-                            (admission, saved) = admission.page_action(&client, &paging_root, pg.slot, &prev, "save").await?;
+                            (admission, saved) = admission.page_action(&client, &paging_root, pg.slot, &prev, PageAction::Save).await?;
                             if saved {
                                 pool.note_saved(prev);
                                 admission.saved_evictee = true;
@@ -619,7 +620,7 @@ async fn admit(
                         if pg.restore && interested.load(std::sync::atomic::Ordering::Acquire) {
                             let restored;
                             pool.note_overwritten(pg.slot);
-                            (admission, restored) = admission.page_action(&client, &paging_root, pg.slot, &k, "restore").await?;
+                            (admission, restored) = admission.page_action(&client, &paging_root, pg.slot, &k, PageAction::Restore).await?;
                             admission.page_confirmed = restored;
                             admission.page_in = match (restored, pg.basis) {
                                 (true, crate::inference::slots::SequenceBasis::PageBehindLive) => PageIn::RestoredBehindLive,
@@ -774,9 +775,9 @@ pub(crate) async fn kv_page_action(
     root: &str,
     slot: u32,
     key: &PageKey,
-    action: &str,
+    action: PageAction,
 ) -> PageOutcome {
-    let path = if action == "save" {
+    let path = if action == PageAction::Save {
         match crate::inference::slots::directory().page_admission_path(root) {
             Ok(path) => path,
             Err(reason) => {
@@ -804,13 +805,13 @@ async fn kv_page_action_with_capacity(
     root: &str,
     slot: u32,
     key: &PageKey,
-    action: &str,
+    action: PageAction,
     governed: bool,
     admit_bytes: impl FnOnce(u64) -> Result<(), String>,
 ) -> PageOutcome {
-    let url = format!("{}/slots/{}?action={}", root.trim_end_matches('/'), slot, action);
+    let url = format!("{}/slots/{}", root.trim_end_matches('/'), slot);
     let filename = crate::inference::slots::page_filename(key);
-    let operation = (action == "restore").then(uuid::Uuid::new_v4);
+    let operation = (action == PageAction::Restore).then(uuid::Uuid::new_v4);
     let (p50_ms, p90_ms, measured) = KV_PAGE_SWITCH_MS.p50_p90();
     let bound = kv_page_wedge_bound(p90_ms);
     // Another slot may be mid-batch: its counters move once per batch, so an engine that is
@@ -832,11 +833,11 @@ async fn kv_page_action_with_capacity(
     // `/slots` is itself a task on that queue, so it cannot answer during one long batch:
     // the engine PROCESS's CPU, read beside it, says busy or dead (`page_liveness`).
     let liveness = PageLiveness::for_root(root);
-    let mut payload = if action == "save" { page_body(&filename) } else { json!({ "filename": filename }) };
+    let mut payload = if action == PageAction::Save { page_body(&filename) } else { json!({ "filename": filename }) };
     if let Some(operation) = operation {
         payload["operation_id"] = json!(operation);
     }
-    if action == "save" && governed {
+    if action == PageAction::Save && governed {
         // A separate action is required: older engines must not mistake a quote for a write.
         let projected = wait_while_engine_progresses(
             request_quote(client, root, slot, &filename), bounds,
@@ -863,7 +864,7 @@ async fn kv_page_action_with_capacity(
     }
     // The same progress bound covers the complete receipt, not just headers.
     let receipt = bounded_page_receipt(
-        client.post(&url).json(&payload),
+        client.post(&url).query(&[("action", action)]).json(&payload),
         bounds,
         &liveness,
         || async {
@@ -875,7 +876,7 @@ async fn kv_page_action_with_capacity(
         |busy_checkpoints| {
             continuum_base::probe!(
                 class = "inference.kv_page.busy_not_dead",
-                action = %action,
+                action = ?action,
                 slot = slot as u64,
                 waited_ms = started.elapsed().as_millis() as u64,
                 bound_ms = bound.as_millis() as u64,
@@ -898,7 +899,7 @@ async fn kv_page_action_with_capacity(
         Receipt::Unresolved { cpu_spent, pending } => {
             unresolved = Some(UnresolvedPage {
                 root: root.to_owned(),
-                action: action.to_owned(),
+                action,
                 slot,
                 filename: filename.clone(),
                 cpu_spent,
@@ -916,10 +917,9 @@ async fn kv_page_action_with_capacity(
     // its clock starts after a busy slot's deferral, so `ms - engine_ms` is the wait and
     // engine_ms the load (card a40e1bbf; the 5090 2026-10-11: Kimi's restores took 6-7.5 min
     // and nothing could say how much was waiting for the slot and how much was reading).
-    let engine_ms = body.as_ref().and_then(|b| {
-        b["timings"][if action == "save" { "save_ms" } else { "restore_ms" }].as_f64().map(|ms| ms as u64)
-    });
-    let engine_bytes = body.as_ref().and_then(|b| b[if action == "save" { "n_written" } else { "n_read" }].as_u64());
+    let (timing_field, bytes_field) = action.engine_fields();
+    let engine_ms = body.as_ref().and_then(|b| b["timings"][timing_field].as_f64().map(|ms| ms as u64));
+    let engine_bytes = body.as_ref().and_then(|b| b[bytes_field].as_u64());
     let outcome = match terminal_receipt(action, slot, &filename, status, body.as_ref()) {
         Some(Terminal::Completed) => PageOutcome::Completed,
         Some(Terminal::Rejected) => PageOutcome::Rejected,
@@ -929,7 +929,7 @@ async fn kv_page_action_with_capacity(
         let cpu_spent = unresolved.cpu_spent();
         continuum_base::probe!(
             class = "inference.kv_page.unresolved",
-            action = %action,
+            action = ?action,
             slot = slot as u64,
             waited_ms = started.elapsed().as_millis() as u64,
             unmoved_ms = bounds.unmoved.as_millis() as u64,
@@ -944,7 +944,7 @@ async fn kv_page_action_with_capacity(
         let evidence = crate::inference::engine_stall::capture(root).await;
         continuum_base::probe!(
             class = "inference.kv_page.stall_evidence",
-            action = %action,
+            action = ?action,
             slot = slot as u64,
             status = status as u64,
             silent_ms = %evidence.silent_ms.map_or_else(|| "unknown".to_string(), |ms| ms.to_string()),
@@ -960,7 +960,7 @@ async fn kv_page_action_with_capacity(
     }
     continuum_base::probe!(
         class = "inference.kv_page.action",
-        action = %action,
+        action = ?action,
         slot = slot as u64,
         page = %key,
         ok,
