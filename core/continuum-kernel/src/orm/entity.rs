@@ -185,6 +185,12 @@ impl OrmEntityRegistry {
         map.get(collection).cloned()
     }
 
+    /// Snapshot the boot declarations for adapter admission. The lock is released
+    /// before the storage owner performs asynchronous schema operations.
+    pub fn declarations(&self) -> Vec<CollectionSchema> {
+        self.schemas.read().values().cloned().collect()
+    }
+
     /// Test-only reset of the global singleton. NOT for production use
     /// — registry is write-once at boot by design. Most tests should
     /// construct fresh `OrmEntityRegistry::new()` instances instead of
