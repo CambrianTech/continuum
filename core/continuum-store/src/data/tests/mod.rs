@@ -7,6 +7,50 @@
 use crate::orm::types::CollectionSchema;
     mod vector;
 
+    #[tokio::test]
+    async fn queries_require_an_explicit_bound_before_opening_storage()
+        -> Result<(), Box<dyn std::error::Error>>
+    {
+        let module = DataModule::new(no_substrate_entities);
+        let (_rejected_tmp, rejected_path) = test_db_path("rejected-query-bound");
+        for command in ["data/query", "data/queryWithJoin"] {
+            for params in [
+                json!({"dbPath":rejected_path,"collection":"public"}),
+                json!({"dbPath":rejected_path,"collection":"public","limit":null}),
+                json!({"dbPath":rejected_path,"collection":"public","limit":-1}),
+            ] {
+                assert!(module.state.dispatch(command, params).await.is_err());
+                assert!(!std::path::Path::new(&rejected_path).exists(), "invalid bounds must fail before storage opens");
+            }
+        }
+        let (_tmp, path) = test_db_path("bounded-query");
+        let adapter = module.state.get_adapter(&path).await?;
+        declare_fixture(adapter.as_ref(), "bounded_records", &[("value", crate::orm::FieldType::Number)]).await;
+        for value in 1..=3 {
+            adapter.create(DataRecord {
+                id: value.to_string(), collection: "bounded_records".into(),
+                data: json!({"value":value}), metadata: RecordMetadata::default(),
+            }).await.into_result()?;
+        }
+        for command in ["data/query", "data/queryWithJoin"] {
+            for limit in [0, 1, 2] {
+                let result = module.state.dispatch(command, json!({
+                    "dbPath":path,"collection":"bounded_records","limit":limit,
+                    "filter":{"value":{"$gte":2}},
+                    "sort":[{"field":"value","direction":"asc"}],"select":["value"]
+                })).await?;
+                let rows: crate::orm::types::StorageResult<Vec<DataRecord>> =
+                    serde_json::from_value(result.to_json_value()?)?;
+                let rows = rows.into_result()?;
+                assert_eq!(rows.len(), limit);
+                for (index, row) in rows.iter().enumerate() {
+                    assert_eq!(row.data["value"], json!(index + 2));
+                }
+            }
+        }
+        Ok(())
+    }
+
     // what this catches: a stale postgres:// DATABASE_URL must fail loudly, never fall back to SQLite.
     #[test]
     pub(super) fn postgres_connection_strings_are_rejected() {
@@ -99,12 +143,12 @@ use crate::orm::types::CollectionSchema;
             }
             for name in ["data/query", "data/query-open", "data/queryWithJoin"] {
                 let error = module.state.dispatch(name, json!({
-                    "collection": collection, "dbPath": "invalid-handle"
+                    "collection": collection, "dbPath": "invalid-handle", "limit": 1
                 })).await.expect_err(name);
                 assert!(error.contains("protected collection"), "{name}: {error}");
             }
             let error = module.state.handle_query_with_join(serde_json::from_value(json!({
-                "collection": "public", "dbPath": "invalid-handle",
+                "collection": "public", "dbPath": "invalid-handle", "limit": 1,
                 "joins": [{"collection": collection, "alias": "decision",
                     "localField": "id", "foreignField": "id", "type": "left"}]
             })).unwrap()).await.expect_err("private join");
@@ -149,6 +193,7 @@ use crate::orm::types::CollectionSchema;
         ] {
             let mut params = attack;
             params["dbPath"] = json!(path);
+            params["limit"] = json!(1);
             let error = module.state.dispatch("data/query", params).await.expect_err("SQL expression must not execute");
             assert!(error.contains("invalid storage identifier"), "{error}");
         }

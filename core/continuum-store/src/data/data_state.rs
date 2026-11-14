@@ -107,7 +107,7 @@ impl DataState {
             collection: params.collection.clone(),
             filter: params.filter,
             sort: params.sort,
-            limit: params.limit,
+            limit: Some(params.limit),
             offset: params.offset,
             select: params.select,
             ..Default::default()
@@ -247,7 +247,7 @@ impl DataState {
             collection: params.collection,
             filter: params.filter,
             sort: params.sort,
-            limit: params.limit,
+            limit: Some(params.limit),
             offset: params.offset,
             joins: params.joins,
             select: params.select,

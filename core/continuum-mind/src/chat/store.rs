@@ -85,20 +85,17 @@ impl ChatModule {
         }
     }
 
-    /// The rows of `collection` matching `filter`, optionally sorted and limited.
+    /// A bounded set of rows matching `filter`, optionally sorted.
     pub(super) async fn query_rows(
         &self,
         collection: &str,
         filter: Value,
         sort: Option<Value>,
-        limit: Option<usize>,
+        limit: usize,
     ) -> Result<Vec<Value>, String> {
-        let mut query = json!({ "collection": collection, "filter": filter });
+        let mut query = json!({ "collection": collection, "filter": filter, "limit": limit });
         if let Some(sort) = sort {
             query["sort"] = sort;
-        }
-        if let Some(limit) = limit {
-            query["limit"] = json!(limit);
         }
         records(collection, self.store("data/query", query).await?)
     }
@@ -125,7 +122,7 @@ impl ChatModule {
                 collection,
                 json!({ "id": { "$eq": id.to_string() } }),
                 None,
-                Some(1),
+                1,
             )
             .await?;
         let Some(row) = rows.into_iter().next() else {

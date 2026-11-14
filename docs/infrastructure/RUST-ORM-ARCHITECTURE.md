@@ -213,6 +213,11 @@ measured explicitly; per-element conversion is not an acceptable substitute.
 
 ## 4. Select before materializing
 
+The generic `data/query` and `data/queryWithJoin` commands require an explicit
+nonnegative integer `limit`. Zero returns no rows; omission, NULL and negative
+values fail before opening storage. There is no implicit default or global cap.
+Callers that need traversal use the existing bounded paging contract.
+
 Queries are typed intermediate objects compiled by the shared owner. Entity metadata
 validates fields, relationships, projection and ordering; values are bound parameters.
 No SQL in application callers or repair utilities. Provider-specific operations stay

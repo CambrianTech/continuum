@@ -361,8 +361,7 @@ pub(super) struct QueryParams {
     pub(super) filter: Option<std::collections::HashMap<String, FieldFilter>>,
     #[serde(default)]
     pub(super) sort: Option<Vec<crate::orm::query::SortSpec>>,
-    #[serde(default)]
-    pub(super) limit: Option<usize>,
+    pub(super) limit: usize,
     #[serde(default)]
     pub(super) offset: Option<usize>,
     #[serde(default)]
@@ -378,8 +377,7 @@ pub(super) struct QueryWithJoinParams {
     pub(super) filter: Option<std::collections::HashMap<String, FieldFilter>>,
     #[serde(default)]
     pub(super) sort: Option<Vec<crate::orm::query::SortSpec>>,
-    #[serde(default)]
-    pub(super) limit: Option<usize>,
+    pub(super) limit: usize,
     #[serde(default)]
     pub(super) offset: Option<usize>,
     #[serde(default)]

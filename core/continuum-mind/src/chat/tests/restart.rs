@@ -220,7 +220,7 @@ async fn a_ready_slot_refuses_a_different_executor_and_keeps_the_first() {
     let home = tempfile::tempdir().expect("isolated chat restart home");
     let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
     let chat = real_store_chat(relay(0, Arc::new(Mutex::new(Vec::new()))));
-    chat.query_rows(crate::chat::types::CHAT_MESSAGES_COLLECTION, json!({}), None, Some(1)).await.expect("the store is ensured");
+    chat.query_rows(crate::chat::types::CHAT_MESSAGES_COLLECTION, json!({}), None, 1).await.expect("the store is ensured");
     let first = chat.executor_slot.cloned().expect("installed");
     assert!(chat.executor_slot.install(Arc::clone(&first)).is_ok(), "the same executor again is a no-op");
     let other = Arc::new(CommandExecutor::new(Arc::new(ModuleRegistry::new())));
