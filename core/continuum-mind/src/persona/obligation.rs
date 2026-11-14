@@ -159,6 +159,7 @@ pub fn whole_page(returned: usize, total: usize) -> Result<(), ClientError> {
     Err(ClientError::Refused {
         command: "data/list".into(),
         outcome: None,
+        refusal: None,
         reason: format!(
             "{}: {returned} of {total} open obligations returned; a partial read cannot say which turns were interrupted",
             PersonaObligation::COLLECTION

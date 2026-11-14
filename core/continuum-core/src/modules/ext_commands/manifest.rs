@@ -361,8 +361,8 @@ impl DynCommand for ProcessCommand {
         &self,
         params: Value,
         _caller: Option<crate::routing::CallerIdentity>,
-    ) -> Result<CommandResult, String> {
-        self.run_process(params).await.map(CommandResult::Json)
+    ) -> Result<CommandResult, crate::sdk_codegen::CommandFailure> {
+        self.run_process(params).await.map(CommandResult::Json).map_err(crate::sdk_codegen::CommandFailure::from)
     }
 }
 

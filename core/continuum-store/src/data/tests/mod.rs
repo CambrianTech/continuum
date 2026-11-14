@@ -94,7 +94,7 @@ use crate::orm::types::CollectionSchema;
                     "collection": collection, "dbPath": "invalid-handle",
                     "id": "record", "data": {}, "embedding": [1.0],
                     "queryVector": [1.0], "textField": "need", "limit": 1
-                }), None).await.expect_err(name);
+                }), None).await.expect_err(name).message;
                 assert!(error.contains("protected collection"), "{name}: {error}");
             }
             for name in ["data/query", "data/query-open", "data/queryWithJoin"] {

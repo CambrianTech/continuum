@@ -165,9 +165,10 @@ review outcome). A health line's label is not a measurement.
 
 ### 2.6 Order of work (2026-11-13)
 
-1. The streaming pool: fork #110 (live `/prompt-cache/limit`) + the core reclaim, so the engine's
-   cache gives memory back under pressure. Measured on the M5: prefill tok/s, decode tok/s, free
-   memory, act latency.
+1. The streaming pool: fork #110 (live `/prompt-cache/limit`) + the host deficit's shed path, so the
+   engine's cache gives memory back first under pressure and takes it back when the OS reads normal
+   (card 0f631c46; the deficit is judged by the OS's own pressure verdict, never by our counters).
+   Measured on the M5: prefill tok/s, decode tok/s, free memory, act latency.
 2. GPU-driven vector culling: unit vectors at write as raw f16/f32 bytes, a no-copy GPU buffer, one
    GEMV dispatch with fused top-k and a popcount prefilter. Measured: 10k/100k search latency and
    recall@k.
@@ -2084,6 +2085,7 @@ pass after):**
 | A share bounds an admitted act | M5 2026-11-11 16:06-16:21Z, 9 of 15 acts refused (#5947) | admission | 0 refusals of an act within its grant |
 | A reply sized from the estimate overshoots the grant | M5 2026-11-11 17:47-18:02Z, 7 refusals (#5950) | admission | the reply sized from the measured prompt; 0 refusals when the prompt fits |
 | A fixed host cache starves the engine | M5 2026-11-13: 60 MB free, 34 GB compressed, prefill 92 tok/s against ~190 | serving | prefill and decode tok/s held as memory pressure rises; the cache gives memory back (fork #110) |
+| Standing starvation reads as clean | M5 2026-11-13 23:40Z: 0.4 GB free, compressor flat at 42 GB, swap 14.5 of 15 GB, kernel critical, deficit 0, cache lever never asked (dyno 11, `serving_daemon/tests/dyno.rs`) | memory + serving | deficit > 0 while the kernel says pressure; the cache (Batch) asked first and lowered; taken back to its grant after two OS-normal polls |
 | A reopen too large for the view loops | Eitan, IntelMac, 2026-11-11 to 11-13 (#5966) | context | consecutive reopens of one output advance through its pages |
 | A per-element store codec and per-pair norms | 2026-11-13 review of #5954, `similarity::cosine` | data path | bytes moved and CPU time per search fall to the copy and the GPU dispatch |
 | A Windows core's private commit runs away | BigMama 2026-11-13, 10.8 to 32.7 GB in 8 min | serving | resident memory flat over a recorded day |
@@ -2278,7 +2280,7 @@ already shipped").
 | SV-MM2 | `pause` and `resume`, with relaunch, academy, idle and adopted retirement moved onto them (the relaunch call sites are S4's) | 4.1a | Codex | gate: to set | the lifecycle validator, driving the actual retirement callers, including a second stop after an adoption |
 | SV-MM3 | `forget` on gene change | 4.1a | Fable | gate: to set | the lifecycle validator's in-place gene change scenario |
 | SV-EC | `EngineConfig` and KV capacity (#5188), incl. unrecorded backend -> f16/no-FA/half budget (Cormac's item 10): one `EngineConfig` from what the engine reports; KV layout and sequence capacity from the measured contract in #5188; one admission owner. Resolve-then-adopt owner in inference/planning. Cards 9b9f3b59, 172a886f. Section 5's build order puts it first (small, measurable on every node), before the epoch materializer. | 5, Fault 2 | Fable (line 3); Fable + Codex (goal 11 workstream) | no queue wait; warm-ahead runs | resolve-then-adopt contract on every node class; refuse on mismatch |
-| SV-POOL | The streaming pool: fork #110 (live `/prompt-cache/limit`) + the core reclaim, so the engine's cache gives memory back under pressure (section 2.6 item 1; card 494c99f1) | 2.3 (virtual texturing row), 4.3 | not stated | gate: to set | measured on the M5: prefill tok/s, decode tok/s, free memory, act latency |
+| SV-POOL | The streaming pool: fork #110 (live `/prompt-cache/limit`) + the host deficit's shed path, so the engine's cache gives memory back first under pressure (section 2.6 item 1; cards 494c99f1, 0f631c46) | 2.3 (virtual texturing row), 4.3 | not stated | gate: to set | measured on the M5: prefill tok/s, decode tok/s, free memory, act latency |
 | SV-F1 | Size the prompt cache and checkpoint retention from one measured memory budget, so the engine never pushes the machine into swap | 4.1b, 4.3 | not stated | gate: to set | validator: to set |
 | SV-F2 | Pages carry only the checkpoints a resume needs | 4.1b, 4.7.3 | not stated | gate: to set | validator: to set |
 | SV-F3 | Page IO goes RAM-first and off the main loop (S1), so a switch never stalls the other minds | 4.1b | see SV-S1 | gate: to set | see SV-S1 |
