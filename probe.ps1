@@ -1,9 +1,9 @@
 $now = [DateTime]::UtcNow.ToString("yyyy-MM-dd HH:mm:ss")
 Write-Output ("NOW=" + $now)
 $core = Get-CimInstance Win32_Process -Filter "Name='continuum-core-server.exe'"
-if ($core) { foreach ($x in $core) { Write-Output ("CORE PID=" + $x.ProcessId + " CreatedUTC=" + ([DateTimeOffset]::new($x.CreationTime).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss"))) } } else { Write-Output "CORE=ABSENT" }
+if ($core) { foreach ($x in $core) { $ct = [ManagementDateTimeConverter]::ToDateTime($x.CreationTime); Write-Output ("CORE PID=" + $x.ProcessId + " CreatedUTC=" + $ct.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss")) } } else { Write-Output "CORE=ABSENT" }
 $cli = Get-CimInstance Win32_Process -Filter "Name='continuum.exe'"
-if ($cli) { foreach ($x in $cli) { Write-Output ("CLIENT PID=" + $x.ProcessId + " CreatedUTC=" + ([DateTimeOffset]::new($x.CreationTime).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss"))) } }
+if ($cli) { foreach ($x in $cli) { $ct = [ManagementDateTimeConverter]::ToDateTime($x.CreationTime); Write-Output ("CLIENT PID=" + $x.ProcessId + " CreatedUTC=" + $ct.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss")) } }
 $found = @()
 $directs = @(
   "C:\Users\joelt\.continuum\deploy-request.json",
