@@ -136,6 +136,7 @@ impl AircIpcTransport {
                 // `AircCommandResponse::Error` is a gate sentence; a peer's inner
                 // `{ success: false, … }` crosses as `Ok { result }` with its data.
                 outcome: None,
+                refusal: None,
             })
     }
 }
@@ -175,11 +176,12 @@ impl Transport for AircIpcTransport {
 
         Self::decode_reply(Some(reply.body().clone())).map_err(|e| match e {
             ClientError::Refused {
-                reason, outcome, ..
+                reason, outcome, refusal, ..
             } => ClientError::Refused {
                 command: command.to_string(),
                 reason,
                 outcome,
+                refusal,
             },
             other => other,
         })

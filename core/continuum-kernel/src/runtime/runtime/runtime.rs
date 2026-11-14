@@ -391,12 +391,12 @@ pub(crate) async fn dispatch_with_panic_guard(
 /// under the same `catch_unwind` guard the module path uses. Persona tool calls
 /// flow through here; a panicking handler converts to a typed `Err` instead of
 /// poisoning the caller's task. The object owns its deps + knows its name, so the
-/// guard needs nothing but the object and the params.
+/// guard needs nothing but the object and the params. A refusal keeps its typed next moves.
 pub(crate) async fn dispatch_object_with_panic_guard(
     cmd: Arc<dyn crate::sdk_codegen::DynCommand>,
     params: serde_json::Value,
     caller: Option<crate::routing::CallerIdentity>,
-) -> Result<CommandResult, String> {
+) -> Result<CommandResult, crate::sdk_codegen::CommandFailure> {
     let name = cmd.name();
     let result = AssertUnwindSafe(cmd.invoke(params, caller))
         .catch_unwind()
@@ -414,7 +414,7 @@ pub(crate) async fn dispatch_object_with_panic_guard(
                 command = name,
                 reason = %panic_msg
             );
-            Err(format!("command '{name}' panicked: {panic_msg}"))
+            Err(format!("command '{name}' panicked: {panic_msg}").into())
         }
     }
 }
