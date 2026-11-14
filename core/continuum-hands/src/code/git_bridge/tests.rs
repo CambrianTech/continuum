@@ -564,6 +564,12 @@
         // a pre-commit hook is a process git starts: it records itself and outlives every bound here
         let hook = hooks.path().join("pre-commit");
         fs::write(&hook, format!("#!/bin/sh\necho $$ > {}\nexec sleep 600\n", hook_pid.display())).unwrap();
+        // APFS race guard: a freshly written file can still be "busy" in the kernel
+        // when another process tries to execute it (ETXTBUSY). Open + sync_all ensures
+        // pending writes are committed before git spawns /bin/sh on this path.
+        let mut f = fs::OpenOptions::new().write(true).open(&hook).unwrap();
+        f.sync_all().unwrap();
+        drop(f);
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
         let hooks_path = format!("core.hooksPath={}", hooks.path().display());
         let commit = ["-c", hooks_path.as_str(), "commit", "--allow-empty", "-q", "-m", "held"];
