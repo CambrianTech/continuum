@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// Inspect one persisted declaration without admitting schemas or reading row bodies.
+/// The connection is read-only even when the source is a running persona's store.
+#[tokio::test]
+#[ignore = "requires ORM_DECLARATION_DB and ORM_DECLARATION_COLLECTION"]
+async fn inspect_persisted_declaration_read_only() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::EntityTrait;
+    let path = std::env::var("ORM_DECLARATION_DB")?;
+    let collection = std::env::var("ORM_DECLARATION_COLLECTION")?;
+    let db = sea_orm::Database::connect(format!(
+        "sqlite://{}?mode=ro", path.replace('\\', "/")
+    )).await?;
+    let receipt = super::relational_declaration::Entity::find_by_id(&collection)
+        .one(&db).await?.ok_or("requested declaration receipt is absent")?;
+    let schema: CollectionSchema = serde_json::from_value(receipt.declaration)?; // Decode the persisted ORM catalog format, never application row bodies.
+    for field in &schema.fields {
+        println!("DECLARED_FIELD {} {} {:?} nullable={}", collection, field.name, field.field_type, field.nullable);
+    }
+    db.close().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn native_text_declaration_retires_json_codec_without_rewriting_values() -> Result<(), Box<dyn std::error::Error>> {
     use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, Set};
