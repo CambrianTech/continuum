@@ -58,7 +58,7 @@ crate::action_command! {
     params: VectorSearchParams,
     output: VectorSearchResults,
     run(this, _ctx, p) => {
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_deref().unwrap_or("main"); // an unnamed handle is the shared main store by contract
         let result = this
             .state
             .vector_search(handle, &p.collection, wire_query(p.query_vector, p.embedder), p.k, p.threshold, p.include_data)
