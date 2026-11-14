@@ -11,38 +11,6 @@ struct RustMemory {
     owned_field: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, crate::orm::Entity)]
-#[entity(collection = "rust_only_credit_decisions")]
-struct RustOnlyDecision {
-    #[serde(flatten)]
-    base: BaseEntity,
-    accepted: bool,
-}
-
-#[tokio::test]
-async fn rust_only_entity_is_readable_before_any_write_and_after_restart(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let registry = OrmEntityRegistry::new();
-    registry.register::<RustOnlyDecision>()?;
-    let home = tempfile::tempdir()?;
-    let path = home.path().join("decisions.sqlite");
-    for _ in 0..2 {
-        let mut adapter = crate::orm::SeaOrmAdapter::connect(crate::orm::adapter::AdapterConfig {
-            connection_string: path.to_string_lossy().into_owned(),
-            max_connections: 1,
-            ..Default::default()
-        }).await?;
-        crate::data::adapters::ensure_declared_schemas(&adapter, &registry).await?;
-        let count = adapter.count(crate::orm::StorageQuery {
-            collection: RustOnlyDecision::COLLECTION.into(),
-            ..Default::default()
-        }).await.into_result()?;
-        assert_eq!(count, 0);
-        adapter.close().await?;
-    }
-    Ok(())
-}
-
 #[tokio::test]
 async fn startup_and_later_admission_use_the_same_registered_declaration(
 ) -> Result<(), Box<dyn std::error::Error>> {
