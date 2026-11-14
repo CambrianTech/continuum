@@ -72,6 +72,15 @@ impl KvSlotPool {
     /// ledger's own keys (same fingerprint, page file present) become restorable first:
     /// a new core restoring the pages the last one saved. Returns the keys loaded.
     pub(crate) fn attach_ledger(&self, ledger: SavedLedger, load: bool) -> usize {
+        let (count, snapshot) = self.settle_ledger(ledger, load);
+        self.persist_ledger(snapshot);
+        count
+    }
+
+    /// [`Self::attach_ledger`] without its first write: the snapshot is returned for whoever
+    /// publishes this pool to write, so a pool settled and then not published (it lost the
+    /// install race) never writes over the published pool's ledger.
+    pub(super) fn settle_ledger(&self, ledger: SavedLedger, load: bool) -> (usize, Option<LedgerSnapshot>) {
         // A ledger that restores nothing has already named why (`LedgerUnread`, probed by `load`).
         let loaded = match load.then(|| ledger.load()) {
             Some(Ok(loaded)) => loaded,
@@ -79,7 +88,7 @@ impl KvSlotPool {
         };
         let count = loaded.keys.len();
         if self.ledger.set(ledger).is_err() {
-            return 0;
+            return (0, None);
         }
         let snapshot = {
             let mut saved = self.saved.lock();
@@ -94,8 +103,7 @@ impl KvSlotPool {
             }
             self.ledger_snapshot(&saved, &holders)
         };
-        self.persist_ledger(snapshot);
-        count
+        (count, snapshot)
     }
 
     /// Stamp the engine process into this pool's ledger and rewrite it, so a core that
