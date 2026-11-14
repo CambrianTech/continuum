@@ -10,7 +10,7 @@ use crate::inference::slots::discover::props_status_proves_endpoint_absent;
 // both read `None`, and the adopted checkpoint refused "requires a known pool" instead of
 // discovering it. Each engine state answers its own `Probed` variant, owned launches included.
 #[tokio::test]
-async fn each_engine_state_answers_its_own_probed_variant() -> Result<(), String> {
+async fn each_engine_state_answers_its_own_probed_variant() -> Result<(), Box<dyn std::error::Error>> {
     let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
     assert!(matches!(dir.get("unprobed"), Probed::NotAsked), "never probed asks, never reads as absent");
     dir.latch_unsupported("latched");
@@ -25,7 +25,7 @@ async fn each_engine_state_answers_its_own_probed_variant() -> Result<(), String
         let generation = transition.start_generation()?;
         match (dir.get(root), before) {
             (Probed::NotAsked, "not asked") | (Probed::Absent(PropsAbsent), "absent") => {}
-            (_, before) => return Err(format!("an unready launch over a {before} pool changed its answer")),
+            (_, before) => return Err(format!("an unready launch over a {before} pool changed its answer").into()),
         }
         let contract = KvPageContract {
             model_id: "fixture".into(),
