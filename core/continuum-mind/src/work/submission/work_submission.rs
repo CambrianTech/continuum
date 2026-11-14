@@ -122,6 +122,7 @@ impl ActionCommand for WorkSubmission {
             staged_evidence_error,
             patch,
             patch_error,
+            author_evidence: submitted.evidence.text().map(str::to_owned),
         })
     }
 }

@@ -142,6 +142,11 @@ pub struct WorkSubmitParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub submodules: Option<Vec<String>>,
+    /// What you ran and saw that proves the change (a capture path, a measurement, a test run and
+    /// its result). Signed with the submission; the reviewer reads it beside the diff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub evidence_text: Option<String>,
 }
 
 /// Where the card she named actually is, when it is not on the room she passed
@@ -802,6 +807,23 @@ pub(super) fn retain_patch(store: &airc_blobs::FsStore, patch: &str) -> Result<W
         size_bytes: patch.len() as u64,
         mime: Some("text/x-patch".to_string()),
     })
+}
+
+/// Her receipts for a change, signed into the submission: blank words are no evidence, and words
+/// past what a signed record carries are refused here with the bound, before anything publishes.
+pub(super) fn author_evidence_of(text: Option<&str>) -> Result<airc_work::AuthorEvidence, CommandError> {
+    match text {
+        Some(words) if words.len() > airc_work::EVIDENCE_TEXT_MAX_BYTES => Err(CommandError::Invalid(format!(
+            "evidence_text is {} bytes; a submission carries at most {}: name a capture or log by its path instead",
+            words.len(),
+            airc_work::EVIDENCE_TEXT_MAX_BYTES
+        ))),
+        Some(words) if !words.trim().is_empty() => Ok(airc_work::AuthorEvidence::Attached {
+            evidence: artifact_of_text(words).into_artifact()?,
+            text: Some(words.to_owned()),
+        }),
+        _ => Ok(airc_work::AuthorEvidence::Absent),
+    }
 }
 
 /// The evidence reference of a reviewer's own words: SHA-256 over the text, its length.

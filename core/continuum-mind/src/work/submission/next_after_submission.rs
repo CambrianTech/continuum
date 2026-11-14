@@ -11,6 +11,8 @@ impl ActionCommand for WorkSubmit {
     type Output = WorkSubmitResult;
 
     async fn run(&self, ctx: &Ctx, p: WorkSubmitParams) -> Result<WorkSubmitResult, CommandError> {
+        // Her receipts are judged before anything is derived or published: a bad one refuses whole.
+        let author_evidence = super::latest_submission::author_evidence_of(p.evidence_text.as_deref())?;
         let runtime = persona_runtime(&self.registry, ctx, "work/submit")?;
         let airc = runtime.airc();
         let room = room_of_card(airc, p.room.as_deref(), &p.card_id, "work/submit").await?;
@@ -299,10 +301,10 @@ impl ActionCommand for WorkSubmit {
         let grade_title = card.title.clone();
         let grade_patch = candidate.artifact.clone();
         let published_head = head;
-        let published = airc.submit_work_in(&room, airc_lib::SubmitWork {
+        let published = airc.submit_work_with_evidence_in(&room, airc_lib::SubmitWork {
             submission_id: candidate.submission_id, card_id, claim_id: candidate.claim_id,
             instance: candidate.instance, base_sha: candidate.base_sha, head: published_head.clone(), artifact: candidate.artifact,
-        }).await.map_err(|e| CommandError::Internal(format!(
+        }, author_evidence).await.map_err(|e| CommandError::Internal(format!(
             "submission {submission_id} publication was not acknowledged; retry with submission_id={submission_id} and the same selection: {e}")))?;
         crate::persona::work_board::board_index::wrote(airc, &room);
         // Her work reaches the merger only through a pull request linked to the card: ensured
@@ -753,4 +755,9 @@ pub struct WorkSubmissionResult {
     // `patch_error` naming why when this node holds no such bytes.
     pub patch: Option<String>,
     pub patch_error: Option<String>,
+    // The author's own receipts for the change (a capture, a measurement, a test run), signed
+    // with the submission: read beside the patch before judging it (card c9b42dd6).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub author_evidence: Option<String>,
 }
