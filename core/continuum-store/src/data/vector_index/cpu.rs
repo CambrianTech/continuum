@@ -36,7 +36,7 @@ pub(crate) struct MatrixBuilder {
 impl MatrixBuilder {
     /// Appends one page: `ids.len()` rows laid out row-major in `bytes`, all described by
     /// `descriptor` (the per-row shape `[dimension]`). This consumes the storage owner's
-    /// `binary_page_into` buffers directly: one byte copy per page, no decode.
+    /// the snapshot's `page_into` buffers directly: one byte copy per page, no decode.
     pub(crate) fn append_page(&mut self, descriptor: &BinaryDescriptor, bytes: &[u8], ids: &[RecordId]) -> Result<(), VectorIndexError> {
         let dimension = searchable_dimension(descriptor)?;
         if let Some(expected) = self.rows.as_ref().map(|rows| rows.dimension).filter(|expected| *expected != dimension) {

@@ -45,6 +45,9 @@ pub(crate) enum VectorStoreError {
     /// The storage owner's interface reports its faults as text; they stay its own.
     #[error("vector storage: {0}")]
     Store(String),
+    /// The store's page size is zero, so no page could ever be read.
+    #[error("the store's page size is zero")]
+    PageSize,
     /// A ranked row has no identity in the matrix that ranked it.
     #[error("ranked row {0} has no identity in its matrix")]
     RowIdentity(usize),
@@ -68,6 +71,7 @@ impl From<VectorStoreError> for CommandError {
             VectorStoreError::Index(_)
             | VectorStoreError::Store(_)
             | VectorStoreError::RowIdentity(_)
+            | VectorStoreError::PageSize
             | VectorStoreError::CacheType { .. }
             | VectorStoreError::Hydration { .. } => CommandError::Internal(error.to_string()),
         }

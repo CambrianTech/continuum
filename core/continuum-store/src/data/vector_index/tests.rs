@@ -61,7 +61,7 @@ pub(super) fn id_of(row: usize) -> RecordId {
     RecordId::from_u128(row as u128 + 1)
 }
 
-/// One native page of `rows`, as `binary_page_into` lays it out: row-major bytes, parallel ids.
+/// One native page of `rows`, as the snapshot's `page_into` lays it out: row-major bytes, parallel ids.
 pub(super) fn page_of(rows: &[Vec<f32>], first: usize) -> Result<(BinaryDescriptor, Vec<u8>, Vec<RecordId>), Box<dyn std::error::Error>> {
     let mut bytes = Vec::new();
     let mut descriptor = None;

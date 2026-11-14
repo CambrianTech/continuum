@@ -77,7 +77,7 @@ fn run(rows: usize, queries: usize) -> Result<Receipt, Box<dyn std::error::Error
     let old_load = started.elapsed();
 
     // NEW load: producer-certified payloads (normalized once at write), appended as bytes.
-    // The page arrives as `binary_page_into` lays it out: row-major bytes and parallel ids.
+    // The page arrives as the snapshot's `page_into` lays it out: row-major bytes and parallel ids.
     let (descriptor, page, ids) = super::page_of(&raw, 0)?;
     let started = Instant::now();
     let mut builder = MatrixBuilder::default();
