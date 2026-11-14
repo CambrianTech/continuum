@@ -4,9 +4,10 @@
 //! parameters and avoid copy when ref. Think of mutability. Define this at function and schemas."
 //! So at this seam:
 //! - what travels together is one struct (`RowRef`, `FieldRef`, `Update`, `BinaryWrite`);
-//! - what is only read is borrowed (`&StorageQuery`, `&DataRecord`, `&[BatchOperation]`), what is
-//!   consumed is owned (native payloads move into the statement), a schema is shared (`Arc`), and
-//!   only `close` takes `&mut self`;
+//! - a read borrows what it reads (`&StorageQuery`, `RowRef`); a write owns what it writes (records,
+//!   data, batches, payloads), because the committing task outlives the caller and moves them into
+//!   the statement, so a borrow would only force a copy; a schema is shared (`Arc`); only `close`
+//!   takes `&mut self`;
 //! - an outcome is a named state (`Deleted`, `Written`, `BinaryWritten`, `Versioning`), never a
 //!   `bool`; a failure is a [`StorageError`](super::storage_error::StorageError) variant.
 //!
@@ -39,11 +40,11 @@ pub enum Versioning {
     Keep,
 }
 
-/// A change to one row's declared fields.
-#[derive(Debug, Clone, Copy)]
+/// A change to one row's declared fields; the data is owned because the write consumes it.
+#[derive(Debug, Clone)]
 pub struct Update<'a> {
     pub row: RowRef<'a>,
-    pub data: &'a serde_json::Value,
+    pub data: serde_json::Value,
     pub versioning: Versioning,
 }
 

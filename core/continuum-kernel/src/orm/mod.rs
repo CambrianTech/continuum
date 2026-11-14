@@ -73,8 +73,11 @@ pub use relational_adapter::SeaOrmAdapter;
 pub use store::{commit_appending, OrmStore, OrmStoreError};
 pub use types::{
     CascadeRule, CollectionSchema, DataRecord, FieldType, ForeignKeyRef, RecordMetadata,
-    SchemaField, SchemaIndex, SequenceSpec, Sequenced, StorageResult,
+    SchemaField, SchemaIndex, SequenceSpec, Appended, BatchOperation, BatchOutcome, RowKey, RowWrite,
+    StorageResult,
 };
+pub use seam::{BinaryWrite, BinaryWritten, Deleted, FieldRef, RowRef, Update, Versioning, Written};
+pub use storage_error::StorageError;
 pub use vector::{
     BackfillVectorsProgress, BackfillVectorsRequest, EmbeddingModel, GenerateEmbeddingRequest,
     GenerateEmbeddingResponse, IndexVectorRequest, VectorEmbedding, VectorIndexStats,

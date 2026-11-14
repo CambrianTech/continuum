@@ -21,7 +21,7 @@ impl super::relational::RelationalStore {
         connection: &C,
         mut record: super::types::DataRecord,
         spec: &super::types::SequenceSpec,
-    ) -> Result<super::types::Sequenced, StorageError> {
+    ) -> Result<super::types::Appended, StorageError> {
         use sea_orm::sea_query::{Alias, Expr, Query};
         let schema = self.schema(&record.collection)?;
         let refuse = |fault| StorageError::Append { collection: record.collection.clone(), fault };
@@ -66,10 +66,9 @@ impl super::relational::RelationalStore {
             .await?
         {
             let seq: i64 = row.try_get_by_index(0)?;
-            return Ok(super::types::Sequenced {
-                seq: seq.try_into().map_err(|_| StorageError::Corrupt { what: "a stored sequence is negative" })?,
-                fresh: false,
-            });
+            return Ok(super::types::Appended::Existing(
+                seq.try_into().map_err(|_| StorageError::Corrupt { what: "a stored sequence is negative" })?,
+            ));
         }
         let seed = match Entity::find_by_id(("append".to_owned(), table_name.clone()))
             .one(connection)
@@ -99,10 +98,9 @@ impl super::relational::RelationalStore {
             .ok_or_else(|| StorageError::Malformed { collection: record.collection.clone(), expected: super::storage_error::Shape::Object })?
             .insert(spec.sequence.clone(), serde_json::json!(high));
         self.insert(connection, &record).await?;
-        Ok(super::types::Sequenced {
-            seq: high.try_into().map_err(|_| StorageError::Corrupt { what: "a stored sequence is negative" })?,
-            fresh: true,
-        })
+        Ok(super::types::Appended::Fresh(
+            high.try_into().map_err(|_| StorageError::Corrupt { what: "a stored sequence is negative" })?,
+        ))
     }
 }
 

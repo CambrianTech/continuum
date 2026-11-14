@@ -18,7 +18,7 @@ use super::query::StorageQuery;
 use super::seam::{BinaryWrite, BinaryWritten, Deleted, FieldRef, RowRef, Update, Written};
 use super::storage_error::StorageError;
 use super::types::{
-    BatchOperation, CollectionSchema, CollectionStats, DataRecord, UUID,
+    BatchOperation, BatchOutcome, CollectionSchema, CollectionStats, DataRecord, UUID,
 };
 
 /// Database-side summary of a declared binary vector field.
@@ -86,7 +86,7 @@ pub trait StorageAdapter: Send + Sync {
 
     // ─── Rows ────────────────────────────────────────────────────────────────
     /// Create `record`; returns the stored row.
-    async fn create(&self, record: &DataRecord) -> Result<DataRecord, StorageError>;
+    async fn create(&self, record: DataRecord) -> Result<DataRecord, StorageError>;
     /// The row `row` names; [`StorageError::NotFound`] when it does not exist.
     async fn read(&self, row: RowRef<'_>) -> Result<DataRecord, StorageError>;
     /// The rows `query` selects.
@@ -109,18 +109,19 @@ pub trait StorageAdapter: Send + Sync {
     /// create the row if absent, overwrite it when the stored `field` <= the record's, keep it
     /// otherwise. The compare runs inside the write, so no other writer can slip between a read
     /// and the write it justified. The primitive for a monotonic high-water mark.
-    async fn upsert_monotonic(&self, record: &DataRecord, field: &str) -> Result<Written, StorageError>;
+    async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> Result<Written, StorageError>;
     /// Delete every row `query`'s filter selects, as ONE statement; returns the count. The filter
     /// is judged when the delete runs, never by a stale selection.
-    async fn delete_matching(&self, query: &StorageQuery) -> Result<usize, StorageError>;
+    async fn delete_matching(&self, query: StorageQuery) -> Result<usize, StorageError>;
 
     // ─── Batches ─────────────────────────────────────────────────────────────
     /// Execute `operations` ATOMICALLY: all commit, or none do. The first failing operation
     /// aborts the batch, rolls back every earlier one, and is the error; the returned values
     /// describe operations that all committed.
-    async fn batch(&self, operations: &[BatchOperation]) -> Result<Vec<Value>, StorageError>;
+    /// The operations are owned: the committing task outlives this call and moves each record in.
+    async fn batch(&self, operations: Vec<BatchOperation>) -> Result<Vec<BatchOutcome>, StorageError>;
     /// The committed high-water of a collection written by
-    /// [`super::types::BatchOperationType::Append`], published by the committing write itself.
+    /// [`super::types::BatchOperation::Append`], published by the committing write itself.
     /// A hint to drain from a cursor, never the data.
     fn sequence_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64>;
     /// Native commits, in their own domain of the shared revision owner.
@@ -140,7 +141,7 @@ pub trait StorageAdapter: Send + Sync {
     /// Create `record` with its native payloads; returns the new row's id.
     async fn create_binary(
         &self,
-        record: &DataRecord,
+        record: DataRecord,
         payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
     ) -> Result<UUID, StorageError>;
     /// Write native payloads to one row under its condition.

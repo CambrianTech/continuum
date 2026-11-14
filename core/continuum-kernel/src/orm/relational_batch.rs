@@ -2,90 +2,71 @@
 use super::storage_error::StorageError;
 use super::{
     query::QueryBuilder,
-    types::{BatchOperation, BatchOperationType, DataRecord, RecordMetadata},
+    types::{Appended, BatchOperation, BatchOutcome, DataRecord, RecordMetadata, RowWrite},
 };
-use serde_json::{json, Value};
+
+fn record(row: RowWrite) -> DataRecord {
+    DataRecord { id: row.id, collection: row.collection, data: row.data, metadata: RecordMetadata::default() }
+}
 
 impl super::relational::RelationalStore {
-    pub async fn batch(&self, operations: Vec<BatchOperation>) -> Result<Vec<Value>, StorageError> {
+    /// Run `operations` in one write transaction: all commit, or none do. The operations are owned
+    /// because the committing task outlives the caller's borrow and moves each record into its write.
+    pub async fn batch(&self, operations: Vec<BatchOperation>) -> Result<Vec<BatchOutcome>, StorageError> {
         self.write_with_revisions(move |store, transaction| {
             Box::pin(async move {
-                let mut results = Vec::with_capacity(operations.len());
+                let mut outcomes = Vec::with_capacity(operations.len());
                 let mut committed = Vec::new();
-                for op in operations {
-                    let id = op.id.ok_or("batch operation requires an id")?;
-                    let result = match op.operation_type {
-                        BatchOperationType::Read => {
-                            let row = store
-                                .read_on(transaction, &op.collection, &id)
+                for operation in operations {
+                    let outcome = match operation {
+                        BatchOperation::Read(row) => {
+                            let record = store
+                                .read_on(transaction, &row.collection, &row.id)
                                 .await?
-                                .ok_or_else(|| format!("Record not found: {id}"))?;
-                            json!({"success":true, "data":row})
+                                .ok_or(StorageError::NotFound { collection: row.collection, id: row.id })?;
+                            BatchOutcome::Read { record }
                         }
-                        BatchOperationType::Delete => {
+                        BatchOperation::Delete(row) => {
                             let deleted = store
-                                .delete_on(
-                                    transaction,
-                                    QueryBuilder::new(&op.collection)
-                                        .filter_eq("id", id)
-                                        .build(),
-                                )
+                                .delete_on(transaction, QueryBuilder::new(&row.collection).filter_eq("id", row.id).build())
                                 .await?;
                             committed.extend(deleted.revisions);
-                            json!({"success":true,"deleted":deleted.count != 0})
+                            if deleted.count == 0 { BatchOutcome::Absent } else { BatchOutcome::Removed }
                         }
-                        BatchOperationType::Update => {
-                            if !store
-                                .update_on(
-                                    transaction,
-                                    &op.collection,
-                                    &id,
-                                    op.data.ok_or("update requires data")?,
-                                    true,
-                                )
-                                .await?
-                            {
-                                return Err(format!(
-                                    "update row {}:{id} does not exist",
-                                    op.collection
-                                ));
+                        BatchOperation::Update(row) => {
+                            if !store.update_on(transaction, &row.collection, &row.id, row.data, true).await? {
+                                return Err(StorageError::NotFound { collection: row.collection, id: row.id });
                             }
-                            json!({"success":true})
+                            BatchOutcome::Updated
                         }
-                        kind => {
-                            let record = DataRecord {
-                                id,
-                                collection: op.collection,
-                                data: op.data.ok_or("write requires data")?,
-                                metadata: RecordMetadata::default(),
-                            };
-                            match kind {
-                                BatchOperationType::Create => {
-                                    store.insert(transaction, &record).await?;
-                                    json!({"success":true,"data":record})
-                                }
-                                BatchOperationType::Ensure => {
-                                    let created = store.ensure_on(transaction, &record).await?;
-                                    json!({"success":true,"created":created})
-                                }
-                                BatchOperationType::Append(spec) => {
-                                    let collection = record.collection.clone();
-                                    let receipt =
-                                        store.append_on(transaction, record, &spec).await?;
-                                    committed.push(super::relational_transaction::Revision {
-                                        domain: super::relational_sequence::Domain::Append,
-                                        collection,
-                                        high: receipt.seq,
-                                    });
-                                    json!({"success":true,"seq":receipt.seq,"fresh":receipt.fresh})
-                                }
-                                _ => return Err("invalid batch write classification".into()),
+                        BatchOperation::Create(row) => {
+                            let record = record(row);
+                            store.insert(transaction, &record).await?;
+                            BatchOutcome::Created { record }
+                        }
+                        BatchOperation::Ensure(row) => {
+                            if store.ensure_on(transaction, &record(row)).await? {
+                                BatchOutcome::Ensured
+                            } else {
+                                BatchOutcome::AlreadyPresent
                             }
+                        }
+                        BatchOperation::Append { row, spec } => {
+                            let collection = row.collection.clone();
+                            let appended = store.append_on(transaction, record(row), &spec).await?;
+                            if let Appended::Fresh(high) = appended {
+                                committed.push(super::relational_transaction::Revision {
+                                    domain: super::relational_sequence::Domain::Append,
+                                    collection,
+                                    high,
+                                });
+                            }
+                            BatchOutcome::Appended { appended }
                         }
                     };
-                    results.push(result);
+                    outcomes.push(outcome);
                 }
-                Ok((results, committed))
+                Ok((outcomes, committed))
             })
         })
         .await

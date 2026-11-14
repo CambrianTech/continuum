@@ -28,7 +28,7 @@ fn declared(from: &CollectionSchema, field: &str, to: &CollectionSchema, target:
 }
 
 impl super::relational::RelationalStore {
-    pub async fn query_joined(&self, query: StorageQuery) -> Result<Vec<DataRecord>, StorageError> {
+    pub async fn query_joined(&self, query: &StorageQuery) -> Result<Vec<DataRecord>, StorageError> {
         let schema = self.schema(&query.collection)?;
         let mut primary = query.clone();
         primary.joins = None;
