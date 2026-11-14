@@ -118,6 +118,7 @@ async fn checkpoint_every_endpoint() {
             endpoint = %root,
             saved = matches!(outcome, StopCheckpoint::Saved),
             outcome = ?outcome,
+            failure = ?outcome.failure(),
             residents = ?residents,
             ms = started.elapsed().as_millis() as u64,
             "every resident a slot holds saved before the stop, so each returns where she left off"
@@ -136,6 +137,16 @@ pub(crate) enum StopCheckpoint {
     /// Every resident's save confirmed.
     Saved,
     Failed(super::CheckpointFailure<super::OwnedCheckpointRefusal>),
+}
+
+impl StopCheckpoint {
+    /// Why the checkpoint did not save, when it did not: the typed failure, for its probe.
+    fn failure(&self) -> Option<&super::CheckpointFailure<super::OwnedCheckpointRefusal>> {
+        match self {
+            Self::Failed(failure) => Some(failure),
+            Self::Ended | Self::EngineChanged | Self::Saved => None,
+        }
+    }
 }
 
 /// Save every resident `endpoint`'s slots hold through the relaunch checkpoint (the drained
