@@ -29,6 +29,7 @@ pub mod record_decode;
 mod relational_schema;
 mod relational_declaration;
 mod relational_structure;
+mod relational_catalog_tokens;
 mod relational_evolution;
 #[cfg(test)]
 mod relational_derived_tests;

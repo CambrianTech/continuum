@@ -139,12 +139,14 @@ async fn receipt_free_current_schema_is_proved_without_rewriting_rows()
         .add_column(ColumnDef::new(Alias::new("extra")).text()).to_owned();
     admitted.db.execute(DbBackend::Sqlite.build(&drift)).await?;
     admitted.db.clone().close().await?;
-    let refused = RelationalStore::open(AdapterConfig {
+    let evolved = RelationalStore::open(AdapterConfig {
         connection_string: path.into(), max_connections: 1, ..Default::default()
     }).await?;
-    let error = refused.ensure(Child::collection_schema()).await.err().ok_or("drift accepted")?;
-    assert!(error.contains("physical schema differs"), "{error}");
-    assert!(declaration::Entity::find_by_id(Child::COLLECTION).one(&refused.db).await?.is_none());
+    evolved.ensure(Child::collection_schema()).await?;
+    assert!(declaration::Entity::find_by_id(Child::COLLECTION).one(&evolved.db).await?.is_some());
+    assert_eq!(serde_json::to_value(&before)?, serde_json::to_value(evolved.query(query()).await?)?);
+    let shape = super::relational_structure::read(&evolved.db, Child::COLLECTION).await?;
+    assert!(!shape.columns.iter().any(|column| column.name == "extra"));
     Ok(())
 }
 

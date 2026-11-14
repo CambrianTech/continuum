@@ -115,12 +115,8 @@ async fn verify_current_declaration(
 }
 
 fn catalog_requires_expression_proof(rows: &[catalog::Model]) -> bool {
-    rows.iter().any(|row| !matches!(row.r#type.as_str(), "table" | "index") || row.sql.as_ref().is_some_and(|sql| {
-        let upper = sql.to_ascii_uppercase();
-        ["CHECK", "WHERE", "GENERATED", "COLLATE", "WITHOUT", "STRICT", "AUTOINCREMENT",
-            "CONFLICT", "DEFERRABLE", "INITIALLY", "VIRTUAL"]
-            .iter().any(|keyword| upper.contains(keyword))
-    }))
+    rows.iter().any(|row| !matches!(row.r#type.as_str(), "table" | "index")
+        || row.sql.as_ref().is_some_and(|sql| super::relational_catalog_tokens::requires_expression_proof(sql)))
 }
 
 pub(super) async fn record<C: ConnectionTrait>(
