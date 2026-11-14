@@ -37,7 +37,7 @@ mod tests;
 #[must_use = "an unresolved page switch is held with its slot's custody until its receipt (UnresolvedPage::hold)"]
 pub(crate) struct UnresolvedPage {
     pub(super) root: String,
-    pub(super) action: String,
+    pub(super) action: super::page_receipt::PageAction,
     pub(super) slot: u32,
     /// The page file the switch reads or writes: what a terminal receipt must name.
     pub(super) filename: String,
@@ -137,7 +137,7 @@ impl UnresolvedPage {
                                 Ok(reply) => reply,
                                 Err(_) => (0, None), // a transport failure: status zero, never a receipt
                             };
-                            break match terminal_receipt(&action, slot, &filename, status, body.as_ref()) {
+                            break match terminal_receipt(action, slot, &filename, status, body.as_ref()) {
                                 Some(terminal) => Released::Verified(terminal),
                                 None => Released::Fenced(quarantined(&endpoint)),
                             };
@@ -156,7 +156,7 @@ impl UnresolvedPage {
             continuum_base::probe!(
                 class = "inference.kv_page.unresolved_released",
                 endpoint = %root,
-                action = %action,
+                action = ?action,
                 slot = slot as u64,
                 held_ms = held.elapsed().as_millis() as u64,
                 released_by = match released {
