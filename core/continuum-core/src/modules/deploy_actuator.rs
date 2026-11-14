@@ -45,8 +45,9 @@ pub(crate) const ACTUATOR_SWITCH_KEY: &str = "CONTINUUM_DEPLOY_ACTUATOR";
 /// The CLI verb the actuator launches — the consumer that turns a request into a reboot.
 pub(crate) const CONSUMER_VERB: &str = "deploy-consume";
 /// Actuations per request before the actuator stops and lets `deploy.stranded` speak.
-/// Mirrors the consumer's own per-tip bound: one for a transient, one to confirm, no
-/// third of a rebuild loop.
+/// Measured at 3 on a slow tier (Intel Mac ~70 min deploy): one for a transient
+/// failure (network glitch, cargo cache miss), one to confirm the tip lands,
+/// no third of a rebuild loop — the tracker's bound prevents blind re-launching.
 pub(crate) const ACTUATE_MAX_ATTEMPTS: u32 = 3;
 /// The Windows consumer task `continuum install --supervisor` registers (S4U, every ten
 /// minutes). Firing it on demand is how the core actuates without becoming the parent of
