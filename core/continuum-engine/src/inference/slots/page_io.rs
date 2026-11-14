@@ -90,35 +90,35 @@ async fn checkpoint_every_endpoint() {
         let started = std::time::Instant::now();
         let (skipped, pool) = {
             let state = endpoint.state.lock();
-            let pool = match state.pool() {
-                Probed::Known(pool) => Some(std::sync::Arc::clone(pool)),
-                Probed::NotAsked | Probed::Absent(_) => None,
-            };
-            (StopCheckpointSkip::of(&state), pool)
+            (StopCheckpointSkip::of(&state), state.pool().cloned())
         };
-        // Read outside the endpoint's state lock: no new lock order.
-        let residents = pool.map_or(0, |pool| pool.holders.lock().len() as u64);
+        // Counted outside the endpoint's state lock (no new lock order); an endpoint never asked
+        // or without paging keeps saying so instead of counting as zero residents.
+        let residents = match pool {
+            Probed::Known(pool) => Probed::Known(pool.holders.lock().len() as u64),
+            Probed::NotAsked => Probed::NotAsked,
+            Probed::Absent(why) => Probed::Absent(why),
+        };
         if let Some(skip) = skipped {
             // Named, never silent (the M5, 2026-11-13 23:40Z: a stop with no checkpoint receipt and
             // a next boot that restored nothing): residents of an engine this core did not launch
             // are not saved by this stop, and the next boot says so per mind (`cold_turn`).
             continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_skipped", endpoint = %root,
-                reason = skip.as_str(), residents,
+                reason = ?skip, residents = ?residents,
                 "the stop saved no resident of this endpoint: each re-prefills from her last confirmed page, or cold");
             return;
         }
         // Before the drain: a stop cut during its checkpoint still leaves whom it was saving.
-        continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_started", endpoint = %root, residents,
+        continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_started", endpoint = %root,
+            residents = ?residents,
             "the stop drains this endpoint's acts, then saves every resident a slot holds, all at once");
-        let Some(outcome) = checkpoint_endpoint(client, &root, &endpoint).await else {
-            return; // the generation ended between the read above and the checkpoint
-        };
+        let outcome = checkpoint_endpoint(client, &root, &endpoint).await;
         continuum_base::probe!(
             class = "inference.kv_page.stop_checkpoint",
             endpoint = %root,
-            ok = outcome.is_ok(),
-            error = outcome.as_ref().err().map_or("", String::as_str),
-            residents,
+            saved = matches!(outcome, StopCheckpoint::Saved),
+            outcome = ?outcome,
+            residents = ?residents,
             ms = started.elapsed().as_millis() as u64,
             "every resident a slot holds saved before the stop, so each returns where she left off"
         );
@@ -126,21 +126,36 @@ async fn checkpoint_every_endpoint() {
     .await;
 }
 
-/// Save every resident `endpoint`'s slots hold through the relaunch
-/// checkpoint (the drained writer, confirmed saves). `None` when no engine was launched
-/// there. An adopted or exited engine refuses, and it is named, never retried. The endpoint
-/// stays suspended afterwards: the node is stopping.
+/// What the stop's checkpoint of one endpoint came to.
+#[derive(Debug)]
+pub(crate) enum StopCheckpoint {
+    /// No generation of this core is on the endpoint: never launched here, or it ended.
+    Ended,
+    /// Another engine took the endpoint before the checkpoint held it.
+    EngineChanged,
+    /// Every resident's save confirmed.
+    Saved,
+    Failed(super::CheckpointFailure<super::OwnedCheckpointRefusal>),
+}
+
+/// Save every resident `endpoint`'s slots hold through the relaunch checkpoint (the drained
+/// writer, confirmed saves). An adopted or exited engine refuses, and it is named, never
+/// retried. The endpoint stays suspended afterwards: the node is stopping.
 pub(crate) async fn checkpoint_endpoint(
     client: &reqwest::Client,
     root: &str,
     endpoint: &std::sync::Arc<super::EndpointSlots>,
-) -> Option<Result<(), String>> {
-    let generation = endpoint.state.lock().generation().cloned()?;
-    let mut transition = match endpoint.transition_for_generation(&generation).await {
-        Ok(transition) => transition,
-        Err(()) => return Some(Err("the engine changed before the stop's checkpoint".to_owned())),
+) -> StopCheckpoint {
+    let Some(generation) = endpoint.state.lock().generation().cloned() else {
+        return StopCheckpoint::Ended;
     };
-    Some(transition.checkpoint_residents(client, root).await.map(|_| ()))
+    let Ok(mut transition) = endpoint.transition_for_generation(&generation).await else {
+        return StopCheckpoint::EngineChanged;
+    };
+    match transition.checkpoint_residents(client, root).await {
+        Ok(_) => StopCheckpoint::Saved,
+        Err(failure) => StopCheckpoint::Failed(failure),
+    }
 }
 
 /// Why the stop's checkpoint passed an endpoint by.
@@ -162,13 +177,6 @@ impl StopCheckpointSkip {
             Probed::Known(_) => Self::Adopted,
             Probed::NotAsked | Probed::Absent(_) => Self::NoPagedEngine,
         })
-    }
-
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Adopted => "adopted_engine",
-            Self::NoPagedEngine => "no_paged_engine",
-        }
     }
 }
 

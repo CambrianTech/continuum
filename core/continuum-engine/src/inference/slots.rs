@@ -73,6 +73,9 @@ mod adopted_replacement;
 mod discover;
 pub use discover::{PoolDiscoveryMiss, PropsAbsent};
 pub(crate) use discover::served_ctx_by_root;
+mod checkpoint_failure;
+pub use checkpoint_failure::{CheckpointFailure, OwnedCheckpointRefusal, SaveFailure};
+use checkpoint_failure::CheckpointSave;
 mod adopted_checkpoint_refusal;
 pub use adopted_checkpoint_refusal::AdoptedCheckpointRefusal;
 mod relaunch_discard;
@@ -87,7 +90,7 @@ pub use page_io::PageIoSettle;
 mod page_store_pool;
 pub use page_store_pool::KvPageStorePool;
 #[cfg(test)]
-pub(crate) use page_store_pool::{ColdPages, StorePressure};
+pub(crate) use page_store_pool::{ColdPages, Ratio, StorePressure};
 
 #[cfg(test)]
 mod tests;

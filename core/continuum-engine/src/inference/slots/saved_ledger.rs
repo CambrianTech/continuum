@@ -78,8 +78,6 @@ pub(super) struct LedgerSnapshot {
 pub(super) struct LoadedLedger {
     pub(super) keys: std::collections::HashSet<PageKey>,
     pub(super) residents: Vec<(u32, PageKey)>,
-    /// Why nothing was read, when nothing was: every page in the dir re-prefills once.
-    pub(super) unread: Option<LedgerUnread>,
 }
 
 /// Why a page dir's ledger restored nothing: each is a different thing to fix, and a restart
@@ -89,8 +87,8 @@ pub(crate) enum LedgerUnread {
     /// No ledger beside the pages: nothing was ever confirmed here, or the last stop's
     /// checkpoint never wrote one.
     Missing,
-    /// The file is there and could not be read.
-    Unreadable,
+    /// The file is there and could not be read, for this reason.
+    Unreadable(std::io::ErrorKind),
     /// The file is not a ledger this core can parse.
     Malformed,
     /// Written before the page-format identity, with no identity files to date it against.
@@ -98,18 +96,6 @@ pub(crate) enum LedgerUnread {
     /// Written under another page format (model, adapters, draft, KV cache type or flash
     /// attention changed): its pages hold KV this engine would compute differently.
     OtherPageFormat,
-}
-
-impl LedgerUnread {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Missing => "missing",
-            Self::Unreadable => "unreadable",
-            Self::Malformed => "malformed",
-            Self::LegacyUndated => "legacy_undated",
-            Self::OtherPageFormat => "other_page_format",
-        }
-    }
 }
 
 impl SavedLedger {
@@ -179,15 +165,15 @@ impl SavedLedger {
     /// ledger's pages newer than every identity file), with their page file still present.
     /// Anything else is no eligibility, never a guess: a missing file, another format's
     /// ledger, a malformed one. Residents come back only for the same engine process.
-    pub(super) fn load(&self) -> LoadedLedger {
-        let unread = |why: LedgerUnread| {
+    pub(super) fn load(&self) -> Result<LoadedLedger, LedgerUnread> {
+        let unread = |why: LedgerUnread| -> Result<LoadedLedger, LedgerUnread> {
             continuum_base::probe!(
                 class = "inference.kv_page.ledger_unread",
                 path = %self.path.display(),
-                why = why.as_str(),
+                why = ?why,
                 "no confirmed-save ledger restored: every page in this dir re-prefills once"
             );
-            LoadedLedger { unread: Some(why), ..LoadedLedger::default() }
+            Err(why)
         };
         let Some(dir) = self.path.parent() else {
             return unread(LedgerUnread::Missing);
@@ -195,7 +181,7 @@ impl SavedLedger {
         let bytes = match std::fs::read(&self.path) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return unread(LedgerUnread::Missing),
-            Err(_) => return unread(LedgerUnread::Unreadable),
+            Err(e) => return unread(LedgerUnread::Unreadable(e.kind())),
         };
         let Ok(file) = serde_json::from_slice::<SavedLedgerFile>(&bytes) else {
             return unread(LedgerUnread::Malformed);
@@ -259,7 +245,7 @@ impl SavedLedger {
         } else {
             Vec::new()
         };
-        LoadedLedger { keys: fold.keys, residents, unread: None }
+        Ok(LoadedLedger { keys: fold.keys, residents })
     }
 }
 

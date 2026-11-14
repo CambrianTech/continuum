@@ -26,10 +26,12 @@
   },
   "store_pressure": {
     "value": {
-      "own": 0.03,
-      "volume": 0.85
+      "store_bytes": 2663949869,
+      "store_budget_bytes": 99428492902,
+      "volume_used_bytes": 840739848192,
+      "volume_total_bytes": 994284929024
     },
-    "receipt": "the KV page store on the M5, 2026-11-14 ~00:50Z: ~2.6 GB on disk (ls ~/.continuum/cache/kv-pages) of a 92.6 GiB budget (cargo_target_budget_bytes: 10% of the 926 GiB volume), volume 143 GiB free of 926 GiB (df -h /); the broker asked it for 9,946,101,555 B every few minutes and it forgot 29 minds' pages from 22:40Z to 00:50Z (inference.kv_page.store_evicted cold_minds_forgotten)"
+    "receipt": "the KV page store on the M5, 2026-11-14 ~00:50Z: 2,663,949,869 B on disk (ls -la ~/.continuum/cache/kv-pages/ggml-org_Qwen3.6-35B-A3B-GGUF: two pages, their sidecars and the ledger) against its budget of 10% of the volume (cargo_target_budget_bytes); the volume 926 GiB with 143 GiB available (df -h /). The broker asked the store for 9,946,101,555 B every few minutes and it forgot 29 minds' pages from 22:40Z to 00:50Z (inference.kv_page.store_evicted cold_minds_forgotten)"
   },
   "engine_page_lanes": {
     "value": 1,

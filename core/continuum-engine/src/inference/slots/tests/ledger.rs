@@ -305,21 +305,19 @@ fn a_restart_names_why_its_ledger_restored_nothing() {
     let other = KvPageContract { cache_type: Some("f16".into()), ..contract.clone() }.fingerprint().expect("test: fp");
     let k = mind(31);
 
-    assert_eq!(SavedLedger::in_dir(dir.path(), fp.clone()).load().unread, Some(LedgerUnread::Missing), "nothing was ever saved here");
+    assert_eq!(SavedLedger::in_dir(dir.path(), fp.clone()).load().err(), Some(LedgerUnread::Missing), "nothing was ever saved here");
 
     let first = KvSlotPool::new("test://unread", 2);
     first.attach_ledger(SavedLedger::in_dir(dir.path(), fp.clone()), false);
     first.note_saved(k);
     std::fs::write(dir.path().join(page_filename(&k)), b"kv").expect("test: page");
 
-    let same = SavedLedger::in_dir(dir.path(), fp).load();
-    assert_eq!(same.unread, None, "the same page format reads the ledger");
+    let same = SavedLedger::in_dir(dir.path(), fp).load().expect("the same page format reads the ledger");
     assert!(same.keys.contains(&k), "and offers her page: she restores, never re-prefills");
 
-    let changed = SavedLedger::in_dir(dir.path(), other).load();
-    assert_eq!(changed.unread, Some(LedgerUnread::OtherPageFormat), "a key mismatch is a typed discard");
-    assert!(changed.keys.is_empty(), "and offers nothing");
+    let changed = SavedLedger::in_dir(dir.path(), other).load().err();
+    assert_eq!(changed, Some(LedgerUnread::OtherPageFormat), "a key mismatch is a typed discard, offering nothing");
 
     std::fs::write(dir.path().join(SAVED_LEDGER_FILE), b"{not a ledger").expect("test: torn ledger");
-    assert_eq!(SavedLedger::in_dir(dir.path(), "any".into()).load().unread, Some(LedgerUnread::Malformed));
+    assert_eq!(SavedLedger::in_dir(dir.path(), "any".into()).load().err(), Some(LedgerUnread::Malformed));
 }

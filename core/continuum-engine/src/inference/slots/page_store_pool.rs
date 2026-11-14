@@ -68,19 +68,35 @@ impl KvPageStorePool {
     /// The store's own budget pressure and its volume's, read once for one decision.
     fn pressures(&self) -> StorePressure {
         let volume = DiskPressureMonitor::volume_for(self.tracked.path());
-        let own = self.tracked.bytes() as f64 / budget_bytes(volume.as_ref()).max(1) as f64;
-        let volume = volume
-            .filter(|volume| volume.total_bytes > 0)
-            .map_or(0.0, |volume| volume.total_bytes.saturating_sub(volume.available_bytes) as f64 / volume.total_bytes as f64);
-        StorePressure { own, volume }
+        StorePressure {
+            own: Ratio::of(self.tracked.bytes(), budget_bytes(volume.as_ref())),
+            volume: volume.and_then(|v| Ratio::of(v.total_bytes.saturating_sub(v.available_bytes), v.total_bytes)),
+        }
     }
 }
 
-/// The store's own budget pressure and the pressure of the volume it sits on.
+/// A share of a whole: built only from a part and a nonzero whole, so a ratio nobody could
+/// measure is `None`, never a 0.0 that reads as calm.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Ratio(f64);
+
+impl Ratio {
+    /// `part / whole`; `None` when the whole is empty (no reading to divide by).
+    pub(crate) fn of(part: u64, whole: u64) -> Option<Self> {
+        (whole > 0).then(|| Self(part as f64 / whole as f64))
+    }
+
+    fn tier(self) -> PressureTier {
+        PressureTier::for_pressure(self.0)
+    }
+}
+
+/// The store's own budget pressure and the pressure of the volume it sits on, each `None` when
+/// unread.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct StorePressure {
-    pub(crate) own: f64,
-    pub(crate) volume: f64,
+    pub(crate) own: Option<Ratio>,
+    pub(crate) volume: Option<Ratio>,
 }
 
 /// Whether a pass may give back confirmed minds' pages (rung 3). Losing one costs her a full
@@ -101,13 +117,13 @@ impl ColdPages {
     /// The decision for one pass, on the broker's own tiers: the store acts on its own bytes
     /// from the tier the broker acts at (High), and on the volume's only at Critical, where the
     /// broker relieves every pool at once.
+    /// A pressure that was not read is unknown, and unknown never keeps: the store answers as
+    /// it did before it could tell its own bytes from the volume's.
     pub(crate) fn under(pressure: StorePressure) -> Self {
-        let own = PressureTier::for_pressure(pressure.own);
-        let volume = PressureTier::for_pressure(pressure.volume);
-        if matches!(own, PressureTier::High | PressureTier::Critical) || volume == PressureTier::Critical {
-            Self::Yield
-        } else {
-            Self::Keep
+        match (pressure.own.map(Ratio::tier), pressure.volume.map(Ratio::tier)) {
+            (Some(PressureTier::High | PressureTier::Critical), _) | (_, Some(PressureTier::Critical)) => Self::Yield,
+            (Some(_), Some(_)) => Self::Keep,
+            (None, _) | (_, None) => Self::Yield,
         }
     }
 }
@@ -139,8 +155,12 @@ impl ResourcePool for KvPageStorePool {
     /// cannot see a volume other classes filled. An unsampled volume adds no pressure of its
     /// own; the class's budget pressure still counts.
     fn pressure(&self) -> f64 {
-        let pressure = self.pressures();
-        cache_pool_pressure(pressure.own, pressure.volume)
+        match self.pressures() {
+            StorePressure { own: Some(own), volume: Some(volume) } => cache_pool_pressure(own.0, volume.0),
+            StorePressure { own: Some(known), volume: None } | StorePressure { own: None, volume: Some(known) } => known.0,
+            // Neither its budget nor its volume read: no measured pressure brings the broker here.
+            StorePressure { own: None, volume: None } => 0.0,
+        }
     }
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
@@ -159,14 +179,14 @@ impl ResourcePool for KvPageStorePool {
             continuum_base::probe!(
                 class = "inference.kv_page.store_evicted",
                 want_bytes,
-                own_pressure = pressure.own,
-                volume_pressure = pressure.volume,
+                own_pressure = ?pressure.own,
+                volume_pressure = ?pressure.volume,
                 cold_pages = ?cold_pages,
                 unserved_bytes = evicted.unserved,
                 unconfirmed_bytes = evicted.unconfirmed,
                 cold_bytes = evicted.cold,
                 cold_minds_forgotten = evicted.forgotten as u64,
-                declined = evicted.declined.map_or("", Decline::as_str),
+                declined = ?evicted.declined,
                 "the KV page store gave bytes back in value order: unserved model dirs, then pages no \
                  ledger confirms, then (only under its own pressure or a critical volume) the coldest \
                  non-resident confirmed pages, each forgotten first"
@@ -302,16 +322,6 @@ pub(super) enum Decline {
     MindsPagesKept,
 }
 
-impl Decline {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Unreadable => "unreadable",
-            Self::Unproven => "unproven",
-            Self::PageIoBusy => "page_io_busy",
-            Self::MindsPagesKept => "minds_pages_kept",
-        }
-    }
-}
 
 /// What one pass freed, by rung.
 #[derive(Debug, Default)]
@@ -645,7 +655,7 @@ mod tests {
     fn a_hot_volume_takes_dead_pages_but_keeps_minds_pages_across_a_restart() {
         static GATE: AdmissionGate = AdmissionGate::new();
         let f = fixture();
-        let m5 = StorePressure { own: 3.0 / 99.0, volume: 0.85 };
+        let m5 = StorePressure { own: Ratio::of(3, 99), volume: Ratio::of(85, 100) };
         assert_eq!(ColdPages::under(m5), ColdPages::Keep, "the M5's recorded pressure is the volume's, not the store's");
 
         let pass = evict_page_store(&f.root, &f.view(), &GATE, u64::MAX, ColdPages::under(m5));
@@ -662,8 +672,11 @@ mod tests {
     // rule: every class keeps an eviction). Its own budget and a critical volume still take them.
     #[test]
     fn the_stores_own_pressure_or_a_critical_volume_still_takes_minds_pages() {
-        assert_eq!(ColdPages::under(StorePressure { own: 0.85, volume: 0.10 }), ColdPages::Yield, "its own bytes");
-        assert_eq!(ColdPages::under(StorePressure { own: 0.03, volume: 0.96 }), ColdPages::Yield, "a volume about to run out");
-        assert_eq!(ColdPages::under(StorePressure { own: 0.79, volume: 0.94 }), ColdPages::Keep, "below both tiers");
+        let at = |own: u64, volume: u64| StorePressure { own: Ratio::of(own, 100), volume: Ratio::of(volume, 100) };
+        assert_eq!(ColdPages::under(at(85, 10)), ColdPages::Yield, "its own bytes");
+        assert_eq!(ColdPages::under(at(3, 96)), ColdPages::Yield, "a volume about to run out");
+        assert_eq!(ColdPages::under(at(79, 94)), ColdPages::Keep, "below both tiers");
+        let unread = StorePressure { own: Ratio::of(3, 100), volume: Ratio::of(1, 0) };
+        assert_eq!(ColdPages::under(unread), ColdPages::Yield, "an unread volume is unknown, never calm");
     }
 }

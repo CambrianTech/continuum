@@ -6,18 +6,20 @@
 //! others doing the same. Whether a mind that was out of a slot still has her page is the page
 //! store's REAL decision ([`ColdPages::under`]) at the recorded pressure.
 
-use crate::inference::slots::{ColdPages, StorePressure};
+use crate::inference::slots::{ColdPages, Ratio, StorePressure};
 
 use super::recorded::Receipted;
 
 /// The restart's data file, compiled in so a run needs no file system.
 const RESTART_JSON: &str = include_str!("../../../fixtures/dyno/2026-11-13-restart.json");
 
-/// The recorded store and volume pressure.
+/// The recorded store and volume, in bytes.
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
 pub(crate) struct RecordedPressure {
-    pub(crate) own: f64,
-    pub(crate) volume: f64,
+    pub(crate) store_bytes: u64,
+    pub(crate) store_budget_bytes: u64,
+    pub(crate) volume_used_bytes: u64,
+    pub(crate) volume_total_bytes: u64,
 }
 
 /// Everything the restart scenario replays.
@@ -106,7 +108,10 @@ impl RestartDay {
     /// The page store's decision at the recorded pressure.
     pub(crate) fn recorded_cold_pages(&self) -> ColdPages {
         let p = self.store_pressure.value;
-        ColdPages::under(StorePressure { own: p.own, volume: p.volume })
+        ColdPages::under(StorePressure {
+            own: Ratio::of(p.store_bytes, p.store_budget_bytes),
+            volume: Ratio::of(p.volume_used_bytes, p.volume_total_bytes),
+        })
     }
 
     /// A restart where each recorded mind was `at_stop[i]`, with the page store deciding by

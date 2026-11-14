@@ -72,7 +72,11 @@ impl KvSlotPool {
     /// ledger's own keys (same fingerprint, page file present) become restorable first:
     /// a new core restoring the pages the last one saved. Returns the keys loaded.
     pub(crate) fn attach_ledger(&self, ledger: SavedLedger, load: bool) -> usize {
-        let loaded = if load { ledger.load() } else { LoadedLedger::default() };
+        // A ledger that restores nothing has already named why (`LedgerUnread`, probed by `load`).
+        let loaded = match load.then(|| ledger.load()) {
+            Some(Ok(loaded)) => loaded,
+            Some(Err(_unread)) | None => LoadedLedger::default(),
+        };
         let count = loaded.keys.len();
         if self.ledger.set(ledger).is_err() {
             return 0;
@@ -782,21 +786,6 @@ impl ResidentCheckpoint<'_> {
             return Err("resident checkpoint generation is no longer current".into());
         }
         Ok(self.transition)
-    }
-}
-
-// A backend request can outlive its cancelled Rust future. Quarantine while the
-// writer is still held, matching TurnAdmission's existing read-lease rule.
-pub(super) struct CheckpointSave {
-    pub(super) endpoint: Arc<EndpointSlots>,
-    pub(super) pending: bool,
-}
-
-impl Drop for CheckpointSave {
-    fn drop(&mut self) {
-        if self.pending {
-            self.endpoint.quarantine_paging();
-        }
     }
 }
 

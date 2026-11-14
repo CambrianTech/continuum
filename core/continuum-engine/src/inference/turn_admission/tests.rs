@@ -188,12 +188,12 @@
         let b = PageKey::mind(Uuid::from_u128(3)).expect("test: non-nil ids");
         // Exact pre-write admission uses the same HTTP boundary and policy, with
         // supplied volume evidence instead of mutating the process-wide monitor.
-        assert!(matches!(kv_page_action_with_capacity(&client, &root, 0, &a, "save", true, |bytes| {
+        assert!(matches!(kv_page_action_with_capacity(&client, &root, 0, &a, PageAction::Save, true, |bytes| {
             crate::paging::pool::ensure_projected_disk_capacity("fixture", 900, 1000, bytes)
                 .map_err(|error| error.to_string())
         }).await, PageOutcome::Rejected));
         assert!(saves.lock().unwrap().is_empty(), "capacity refusal must not issue a save");
-        assert!(matches!(kv_page_action_with_capacity(&client, &root, 0, &a, "save", true, |bytes| {
+        assert!(matches!(kv_page_action_with_capacity(&client, &root, 0, &a, PageAction::Save, true, |bytes| {
             assert_eq!(bytes, 100);
             crate::paging::pool::ensure_projected_disk_capacity("fixture", 800, 1000, bytes)
                 .map_err(|error| error.to_string())
