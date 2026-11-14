@@ -556,6 +556,25 @@ Continuum runtime work must follow these rules:
     on whatever machine is slower than the one their duration was tuned on
     (cards b5b9bef3, 13590777). The `time_bounds` and `wall_clock` ratchets count
     sleeps and timeouts used as control flow, tests included.
+11. **Rust is deterministic only when states and failures are types** (Joel,
+    2026-11-14: "Rust is HIGHLY deterministic if you use it right"; "Even when
+    you code rust it looks like js"). A review of five PRs that night
+    (`~/.continuum/evidence/js-shaped-rust-2026-11-14/review.md`) found ~30
+    sites in three recurring shapes; every reviewer asks these, and a ratchet
+    counts them in touched files:
+    - **Unknown stored as a value** (0, 0.0, `usize::MAX`, `""`, `.max(1)`
+      meaning "not measured"): can this number be zero or MAX for a reason
+      other than the measurement? Absence is `Option`, `Probed` or an enum.
+    - **A typed failure turned into a `String`** (`Result<_, String>`,
+      `map_err(|e| format!(..))`, `Err(())`, variants holding a `String`,
+      `{success, error: Option<String>}` envelopes): can the caller `match` on
+      why it failed?
+    - **One state spread across `Option`s and `bool`s** (flags rebuilt from an
+      enum, parallel `Option`s matched as a tuple with a `_ =>` fallback): does
+      a combination exist the code never handles? Make it unrepresentable.
+    - And **strings as identities** (verbs, field names, producer labels,
+      `format!` keys beside a typed id, `serde_json::Value.get("field")` where
+      a typed input exists): an identity is an enum or newtype.
 
 ### Domain Mapping
 
