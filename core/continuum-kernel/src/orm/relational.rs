@@ -158,13 +158,9 @@ impl RelationalStore {
     pub async fn ensure(&self, schema: CollectionSchema) -> Result<(), String> {
         let _guard = self.schema_gate.lock().await;
         if let Some(existing) = self.schemas.read().get(&schema.collection) {
-            if !super::entity::schemas_equivalent(existing.as_ref(), &schema) {
-                return Err(format!(
-                    "{} has conflicting entity declarations",
-                    schema.collection
-                ));
+            if super::entity::schemas_equivalent(existing.as_ref(), &schema) {
+                return Ok(());
             }
-            return Ok(());
         }
         let declared = super::relational_schema::compile(&schema)?;
         let _write = self.writer_gate.lock().await;

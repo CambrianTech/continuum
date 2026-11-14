@@ -3,6 +3,56 @@
 use super::*;
 
 #[tokio::test]
+async fn declaration_addition_evolves_rows_and_receipt_atomically() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("evolution.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let initial = store(path).await?;
+    initial.insert(&initial.db, &record("p", Parent::COLLECTION, json!({"label":"retained"}))).await?;
+    let mut current = Parent::collection_schema();
+    current.fields.push(SchemaField {
+        name: "status".into(), field_type: FieldType::String, nullable: false,
+        default_value: Some(json!("ready")), indexed: true, unique: false,
+        max_length: None, foreign_key: None,
+    });
+    initial.ensure(current.clone()).await?;
+    let query = || QueryBuilder::new(Parent::COLLECTION).limit(1).build();
+    let rows = initial.query(query()).await?;
+    assert_eq!(rows[0].data["status"], "ready");
+    assert_eq!(rows[0].data["label"], "retained");
+    // A missing required value rejects the entire next declaration, including
+    // an otherwise-valid addition that precedes it.
+    let mut invalid = current.clone();
+    let mut extra = current.fields.last().ok_or("new field absent")?.clone();
+    extra.name = "extra".into();
+    invalid.fields.push(extra.clone());
+    extra.name = "missingValue".into();
+    extra.default_value = None;
+    invalid.fields.push(extra);
+    assert!(initial.ensure(invalid).await.is_err());
+    // Fail after ALTER has run: another table already owns this index name.
+    // The admitted map, physical table and receipt must all retain current.
+    let mut collision = current.clone();
+    let mut extra = current.fields.last().ok_or("new field absent")?.clone();
+    extra.name = "extra".into();
+    collision.fields.push(extra);
+    collision.indexes.push(SchemaIndex {
+        name: "idx_relational_children_seq".into(), fields: vec!["status".into()],
+        unique: false, descending: false,
+    });
+    assert!(initial.ensure(collision).await.is_err());
+    initial.db.clone().close().await?;
+    let reopened = RelationalStore::open(AdapterConfig {
+        connection_string: path.into(), max_connections: 1, ..Default::default()
+    }).await?;
+    reopened.ensure(current).await?;
+    let rows = reopened.query(query()).await?;
+    assert_eq!(rows[0].data["status"], "ready");
+    assert!(rows[0].data.get("extra").is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn receipt_free_equivalent_column_order_preserves_rows() -> Result<(), Box<dyn std::error::Error>> {
     use sea_orm::EntityTrait;
     let directory = tempfile::tempdir()?;

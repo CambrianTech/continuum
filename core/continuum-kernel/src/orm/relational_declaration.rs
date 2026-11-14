@@ -46,8 +46,8 @@ async fn physical<C: ConnectionTrait>(db: &C, collection: &str) -> Result<Vec<ca
 }
 
 /// True means a new table may be created. False means its durable receipt verified.
-pub(super) async fn admit<C: ConnectionTrait>(
-    db: &C,
+pub(super) async fn admit(
+    db: &sea_orm::DatabaseTransaction,
     schema: &CollectionSchema,
 ) -> Result<bool, SchemaError> {
     let actual = physical(db, &schema.collection).await?;
@@ -57,7 +57,13 @@ pub(super) async fn admit<C: ConnectionTrait>(
         .map_err(SchemaError::from)?
     {
         Some(receipt) => {
-            verify(&receipt, schema, &actual)?;
+            verify_physical(&receipt, &actual)?;
+            let previous = decode(&receipt)?;
+            if !super::entity::schemas_equivalent(&previous, schema) {
+                super::relational_evolution::evolve(db, &previous, schema).await?;
+                Entity::delete_by_id(&schema.collection).exec(db).await?;
+                record(db, schema).await?;
+            }
             Ok(false)
         }
         None if actual.is_empty() => Ok(true),
@@ -168,12 +174,6 @@ fn decode(receipt: &Model) -> Result<CollectionSchema, SchemaError> {
         return Err(SchemaError::gap(&receipt.collection, "schema receipt identity mismatch"));
     }
     Ok(schema)
-}
-fn verify(receipt: &Model, schema: &CollectionSchema, actual: &[catalog::Model]) -> Result<(), SchemaError> {
-    if !super::entity::schemas_equivalent(&decode(receipt)?, schema) {
-        return Err(SchemaError::difference(&schema.collection, SchemaDiff::Declaration));
-    }
-    verify_physical(receipt, actual)
 }
 fn verify_physical(receipt: &Model, actual: &[catalog::Model]) -> Result<(), SchemaError> {
     let rows = receipt.physical.as_array()

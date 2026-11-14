@@ -29,6 +29,7 @@ pub mod record_decode;
 mod relational_schema;
 mod relational_declaration;
 mod relational_structure;
+mod relational_evolution;
 pub mod schema_error;
 mod relational_query;
 mod relational_codec;

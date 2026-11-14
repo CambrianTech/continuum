@@ -656,12 +656,15 @@ async fn declared_optional_number_is_exact_and_rejects_text() {
 }
 
 #[tokio::test]
-async fn conflicting_schema_is_refused_without_mutating_saved_rows() {
+async fn derived_optional_field_evolves_without_mutating_saved_values() -> Result<(), Box<dyn std::error::Error>> {
     let (adapter, _tmp) = fresh_adapter().await;
     let store = OrmStore::<EvolvingV1>::new(adapter.clone()).await.expect("schema");
     let row = EvolvingV1 { base: BaseEntity::for_new_record(), name: "retained".into() };
     let id = Uuid::parse_str(&row.base.id).expect("fixture UUID");
     store.save(id, &row).await.expect("save");
-    assert!(OrmStore::<EvolvingV2>::new(adapter).await.is_err(), "schema changes require explicit migration");
-    assert_eq!(store.find_by_id(id).await.expect("read").expect("retained").name, "retained");
+    let evolved = OrmStore::<EvolvingV2>::new(adapter).await?;
+    let loaded = evolved.find_by_id(id).await?.ok_or("saved row absent")?;
+    assert_eq!(loaded.name, "retained");
+    assert_eq!(loaded.rejected_at_ms, None);
+    Ok(())
 }
