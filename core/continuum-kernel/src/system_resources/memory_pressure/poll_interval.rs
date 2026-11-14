@@ -503,9 +503,10 @@ pub struct PressureSnapshot {
     /// gave no reading this poll.
     #[ts(type = "number | null")]
     pub compressed_bytes: Option<u64>,
-    /// Bytes the host needs given back to come out of memory pressure (`host_deficit`): what the
-    /// OS has compressed and swapped since it was last clean, plus what it lacks of its own free
-    /// target. Zero on a clean box, or with no host reading.
+    /// Bytes the host needs given back to come out of memory pressure (`host_deficit`): while the
+    /// OS reports pressure, what it has compressed and swapped since it last read normal plus what
+    /// it lacks of its own free target, never less than that target. Zero while the OS reads
+    /// normal, or with no host reading or verdict.
     #[ts(type = "number")]
     pub deficit_bytes: u64,
 }
@@ -590,6 +591,16 @@ pub trait MemoryReporter: Send + Sync {
     /// - Agents: stop spawning new agents
     fn shed_load(&self, _level: PressureLevel) {
         // Default: no-op. Override to implement pressure response.
+    }
+
+    /// The other half of shedding: the OS reads itself normal with `headroom` bytes it can give
+    /// without re-entering pressure (`HostDeficitReading::headroom`), so a reporter that gave
+    /// memory back may take up to that much again. Returns the bytes it claimed (what it may now
+    /// fill), which the monitor takes off the headroom before offering the rest to the next
+    /// reporter. Called every such poll; keep it cheap when there is nothing to take back.
+    /// Default: nothing taken.
+    fn take_again(&self, _headroom: std::num::NonZeroU64) -> u64 {
+        0
     }
 }
 

@@ -81,6 +81,7 @@ mod shed_lru;
 pub use shed_lru::{ByteSized, ShedLru};
 mod memory_pressure_monitor;
 mod host_deficit;
+pub use host_deficit::{HostDeficit, HostDeficitReading};
 
 // =============================================================================
 // Tests

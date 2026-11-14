@@ -112,7 +112,8 @@ async fn checkpoint_every_endpoint() {
         continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_started", endpoint = %root,
             residents = ?residents,
             "the stop drains this endpoint's acts, then saves every resident a slot holds, all at once");
-        let outcome = checkpoint_endpoint(client, &root, &endpoint).await;
+        let condemn = || crate::inference::llama_server::condemn("the node is stopping: its turns were handed back, so their acts end before the stop's checkpoint");
+        let outcome = checkpoint_endpoint(client, &root, &endpoint, condemn).await;
         continuum_base::probe!(
             class = "inference.kv_page.stop_checkpoint",
             endpoint = %root,
@@ -152,15 +153,25 @@ impl StopCheckpoint {
 /// Save every resident `endpoint`'s slots hold through the relaunch checkpoint (the drained
 /// writer, confirmed saves). An adopted or exited engine refuses, and it is named, never
 /// retried. The endpoint stays suspended afterwards: the node is stopping.
+///
+/// CONDEMNED FIRST, through the one drain a replacement uses (`drain_for_replacement`): the
+/// writer waits for every admitted act's guard, and the turn settle before this has already
+/// handed those turns back, so nothing else ends them. Without it the stop waited on their
+/// decodes: the M5 2026-11-13/14 (card b5b9bef3), 4 turns handed back at 00:51:56Z and no save
+/// until a manual SIGTERM at 00:53:34Z; 23:40Z the same, 7 min at 19:19Z.
 pub(crate) async fn checkpoint_endpoint(
     client: &reqwest::Client,
     root: &str,
     endpoint: &std::sync::Arc<super::EndpointSlots>,
+    condemn: impl FnOnce(),
 ) -> StopCheckpoint {
     let Some(generation) = endpoint.state.lock().generation().cloned() else {
         return StopCheckpoint::Ended;
     };
-    let Ok(mut transition) = endpoint.transition_for_generation(&generation).await else {
+    let drained = endpoint
+        .drain_for_replacement(Some(&generation), Some(&generation), || Ok::<(), std::convert::Infallible>(()), condemn, &|| true)
+        .await;
+    let Ok(Ok(mut transition)) = drained else {
         return StopCheckpoint::EngineChanged;
     };
     match transition.checkpoint_residents(client, root).await {
