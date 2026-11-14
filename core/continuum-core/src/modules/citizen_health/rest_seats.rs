@@ -138,11 +138,8 @@ fn assemble(read: Read) -> CitizenHealth {
         directed_wait_p50_ms,
         directed_wait_p90_ms,
         directed_waits: directed_waits as u64,
-        // what one mind may hold here (`seat_window`), never the pool's equal share
-        served_window: u64::from(crate::capacity::window_grant::seat_window(
-            serving.served_context_window,
-            crate::capacity::window_grant::current_sequence_cap(),
-        )),
+        // what one mind may hold here (`SeatWindow`), 0 until reported, never the pool's equal share
+        served_window: u64::from(crate::capacity::window_grant::current_seat().wire_tokens()),
         acts: c.acts,
         writes: c.writes,
         lanes_granted: c.lanes_granted,

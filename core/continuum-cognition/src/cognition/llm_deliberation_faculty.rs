@@ -103,6 +103,7 @@ mod read_receipt;
 pub use read_receipt::ReadReceipt;
 use self::reply_claim::*;
 mod verdict;
+mod prefill_during_tool;
 mod tool_surface;
 use super::tool_surface::{SelectedSurface, ToolSurface};
 
@@ -238,6 +239,8 @@ pub struct LlmDeliberationFaculty {
     held_blocks: parking_lot::Mutex<std::collections::HashMap<(Uuid, String), crate::cognition::context_streams::blocks::Grounding>>,
     /// A measurement fork's (`fork_eval_cycle`): its turns warm their own page, never hers.
     forked: bool,
+    /// Her prompt, prefilled into her slot while her tool runs (`prefill_during_tool.rs`).
+    prefix_warm: prefill_during_tool::PendingPrefix,
 }
 
 impl LlmDeliberationFaculty {
@@ -272,6 +275,7 @@ impl LlmDeliberationFaculty {
             held_blocks: parking_lot::Mutex::new(std::collections::HashMap::new()),
             reading: Default::default(),
             forked: false,
+            prefix_warm: Default::default(),
         }
     }
 
@@ -717,6 +721,8 @@ pub mod test_support {
         pub live_window: Option<u32>,
         /// The adapter admits by the engine's exact prompt count (`counts_prompts_exactly`).
         pub counts_exactly: bool,
+        /// Where a served prompt stays (`prompt_cache`): `PinnedSlot` makes her act warm her prefix.
+        pub prompt_cache: crate::ai::adapter::PromptCache,
         /// The dispatch terms of every request, in order (`generate_admitted`), aligned with `seen`.
         pub terms_seen: Mutex<Vec<crate::ai::types::DispatchTerms>>,
         pub window_sequence: Mutex<VecDeque<u32>>,
@@ -732,6 +738,7 @@ pub mod test_support {
                 rejections: Mutex::new(VecDeque::new()),
                 live_window: None,
                 counts_exactly: false,
+                prompt_cache: crate::ai::adapter::PromptCache::NotKept,
                 terms_seen: Mutex::new(Vec::new()),
                 window_sequence: Mutex::new(VecDeque::new()),
                 on_window_read: Mutex::new(None),
@@ -776,6 +783,9 @@ pub mod test_support {
         }
         fn counts_prompts_exactly(&self) -> bool {
             self.counts_exactly
+        }
+        fn prompt_cache(&self) -> crate::ai::adapter::PromptCache {
+            self.prompt_cache
         }
         fn live_served_window(&self) -> Option<u32> {
             // Inject the exact load → observation → publication interleaving

@@ -188,6 +188,55 @@ async fn every_mind_resumes_where_she_left_off_across_a_stop_and_a_boot() {
     server_b.abort();
 }
 
+// what this catches (the M5, 2026-11-14 07:48:28Z, #5987 deployed as 7f875ccfd): the stop condemns
+// acts in flight (#5988) and a cut act drops her attribution, so the stop's checkpoint saved only
+// the one resident that was idle; the new engine (new fork pin b5534b531) and core came up with one
+// page and three minds cold (`cold_turn cause="no_page"`). A mind whose act the stop cut is saved
+// from the tokens her slot holds, and both minds restore on the next core's new engine.
+#[tokio::test]
+async fn a_mind_whose_act_the_stop_cut_is_saved_and_restores_after_the_boot() {
+    let dir = tempfile::tempdir().expect("test: page dir");
+    let client = reqwest::Client::new();
+    let lanes = Arc::new(Semaphore::new(2));
+
+    // Engine A: two residents, neither ever paged out (no page on disk yet).
+    let (root_a, slots_a, _, server_a) = fake_engine(dir.path().to_path_buf()).await;
+    let (endpoint_a, pool_a) = boot(&root_a, dir.path()).await;
+    for (mind, tokens) in [(1, 100), (2, 200)] {
+        act(&lanes, &pool_a, &client, &root_a, &slots_a, mind, tokens).await;
+    }
+    // Mind 1's next act is sent, the engine prefills part of it, and the stop cuts it.
+    let cut = PageKey::mind(Uuid::from_u128(1)).expect("test: non-nil id");
+    let mut turn = admit_turn(&lanes, crate::inference::slots::SlotClass::Turn, Some(cut), Some(pool_a.clone()), &client, &root_a, 180, std::time::Duration::ZERO)
+        .await
+        .expect("test: her next act admitted");
+    let slot = turn.slot().expect("test: her slot");
+    turn.dispatching();
+    slots_a.lock().expect("test: fixture mutex").insert(slot, "1:180".to_owned());
+    drop(turn); // condemned by the stop: no completion
+
+    let stopped = crate::inference::slots::page_io::checkpoint_endpoint(&client, &root_a, &endpoint_a, || {}).await;
+    assert!(matches!(stopped, crate::inference::slots::page_io::StopCheckpoint::Saved), "test: the stop saves: {stopped:?}");
+    server_a.abort();
+
+    // Engine B (another process, as after a fork-pin change; the page format names no build) and a
+    // new core on the same page directory.
+    let (root_b, slots_b, _, server_b) = fake_engine(dir.path().to_path_buf()).await;
+    let (_endpoint_b, pool_b) = boot(&root_b, dir.path()).await;
+    for (mind, held_at_stop) in [(1u128, "1:180"), (2, "2:200")] {
+        let key = PageKey::mind(Uuid::from_u128(mind)).expect("test: non-nil id");
+        let mut turn = admit_turn(&lanes, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool_b.clone()), &client, &root_b, 300, std::time::Duration::ZERO)
+            .await
+            .expect("test: admitted after the boot");
+        assert_eq!(turn.page_in(), PageIn::Restored, "mind {mind} restores, never cold");
+        let slot = turn.slot().expect("test: a slot");
+        let held = slots_b.lock().expect("test: fixture mutex").get(&slot).cloned();
+        assert_eq!(held.as_deref(), Some(held_at_stop), "mind {mind} resumes what her slot held at the stop");
+        turn.generation_completed();
+    }
+    server_b.abort();
+}
+
 /// Two minds resident on a fresh two-slot engine (no scratch slot), so a transient
 /// borrow must detach and save one: mind 1, the cheaper page at 100 tokens.
 async fn two_residents(dir: &std::path::Path) -> (String, Slots, Arc<SaveHold>, Arc<KvSlotPool>, Arc<Semaphore>, tokio::task::JoinHandle<()>) {
