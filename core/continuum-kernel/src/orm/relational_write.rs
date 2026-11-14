@@ -45,15 +45,15 @@ impl super::relational::RelationalStore {
         let schema = self.schema(collection)?;
 
         let mut fields = Vec::new();
-        for (name, value) in data.as_object().ok_or_else(|| StorageError::Malformed { collection: collection.to_string(), expected: Shape::Object })? {
+        for (name, value) in data.as_object().ok_or_else(|| StorageError::Malformed { collection: collection.to_string().into(), expected: Shape::Object })? {
             if super::types::METADATA_KEYS.contains(&name.as_str()) {
-                return Err(StorageError::StorageOwned { field: name.clone() });
+                return Err(StorageError::StorageOwned { field: name.clone().into() });
             }
             let field = schema
                 .fields
                 .iter()
                 .find(|f| f.name == *name)
-                .ok_or_else(|| StorageError::Undeclared { collection: collection.to_string(), field: name.clone() })?;
+                .ok_or_else(|| StorageError::Undeclared { collection: collection.to_string().into(), field: name.clone().into() })?;
             fields.push((
                 Alias::new(naming::to_snake_case(name)),
                 super::relational_codec::encode(field, value)?,
@@ -166,7 +166,7 @@ impl super::relational::RelationalStore {
             .as_object()
             .is_some_and(|data| data.contains_key(field))
         {
-            return Err(StorageError::Required { collection: record.collection.clone(), field: field.to_string() });
+            return Err(StorageError::Required { collection: record.collection.clone().into(), field: field.to_string().into() });
         }
         let table = Alias::new(naming::to_table_name(&record.collection));
         let mut conflict = OnConflict::column(Alias::new("id"));

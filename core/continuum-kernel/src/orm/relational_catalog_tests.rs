@@ -98,7 +98,7 @@ async fn conversion_refusal_identifies_boundary_and_preserves_evidence()
     assert!(matches!(physical, Err(SchemaError::PhysicalTypeConversion {
         table, column, previous, requested,
     }) if table == Parent::COLLECTION && column == "label"
-        && previous == "TEXT" && !requested.is_empty() && requested != previous));
+        && previous == "TEXT" && !requested.as_str().is_empty() && requested != previous));
     tx.rollback().await?;
     let rows = initial.query(&QueryBuilder::new(Parent::COLLECTION).limit(1).build()).await?;
     assert_eq!(rows[0].id, "negative-review");

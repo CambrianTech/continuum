@@ -85,7 +85,7 @@ pub(super) async fn replay(
                         },
                     )
                     .await
-                    .map_err(|e| e.to_string())?;
+                    ?;
                 for change in &changes {
                     let id = change.cursor.id.as_u128();
                     assert!(seen.insert(id), "duplicate delta identity");

@@ -39,9 +39,9 @@ impl super::relational::RelationalStore {
             .fields
             .iter()
             .find(|f| f.name == field)
-            .ok_or_else(|| StorageError::Undeclared { collection: collection.to_owned(), field: field.to_owned() })?;
+            .ok_or_else(|| StorageError::Undeclared { collection: collection.to_owned().into(), field: field.to_owned().into() })?;
         if declared.field_type != FieldType::Binary {
-            return Err(StorageError::NotBinary { collection: collection.to_owned(), field: field.to_owned() });
+            return Err(StorageError::NotBinary { collection: collection.to_owned().into(), field: field.to_owned().into() });
         }
         super::relational_query::column(&schema, field)
     }
@@ -84,7 +84,7 @@ impl super::relational::RelationalStore {
                     )
                     .await?;
                 if !changed && condition == super::binary::BinaryWriteCondition::Replace {
-                    return Err(StorageError::NotFound { collection: collection.to_string(), id: id.to_string() });
+                    return Err(StorageError::NotFound { collection: collection.to_string().into(), id: id.to_string() });
                 }
                 let revisions = if changed {
                     vec![

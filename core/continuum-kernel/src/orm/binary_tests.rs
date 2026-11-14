@@ -317,7 +317,7 @@ async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<()
             .await?
     );
     let after = store.query(&metadata_query()).await?;
-    assert!(!native_changes.has_changed().map_err(|e| e.to_string())?);
+    assert!(!native_changes.has_changed()?);
     assert_eq!(before[0].metadata.version, after[0].metadata.version);
     assert_eq!(before[0].metadata.updated_at, after[0].metadata.updated_at);
     let page = read_page(&store, NativeRow::COLLECTION, "payload", None, 1).await?;
@@ -450,7 +450,7 @@ async fn read_page(
                 after: after
                     .map(|id| uuid::Uuid::parse_str(&id))
                     .transpose()
-                    .map_err(|e| e.to_string())?,
+                    ?,
                 limit: std::num::NonZeroUsize::new(limit)
                     .ok_or("test page size must be positive")?,
             },
@@ -785,7 +785,7 @@ async fn revision_counter_exhaustion_refuses_without_float_promotion() -> Result
     ))
     .one(&store.db)
     .await
-    .map_err(|e| e.to_string())?
+    ?
     .ok_or("missing maximum head")?;
     assert_eq!(persisted.high, i64::MAX);
     Ok(())

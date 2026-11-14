@@ -191,7 +191,7 @@ impl RelationalStore {
             .read()
             .get(collection)
             .cloned()
-            .ok_or_else(|| StorageError::Unadmitted { collection: collection.to_owned() })
+            .ok_or_else(|| StorageError::Unadmitted { collection: collection.to_owned().into() })
     }
 
     pub fn collections(&self) -> Vec<String> {
@@ -293,7 +293,7 @@ impl RelationalStore {
     ) -> Result<sea_orm::sea_query::InsertStatement, StorageError> {
         let schema = self.schema(&record.collection)?;
         let fields = record.data.as_object().ok_or_else(|| StorageError::Malformed {
-            collection: record.collection.clone(),
+            collection: record.collection.clone().into(),
             expected: super::storage_error::Shape::Object,
         })?;
         let mut values = Vec::new();
@@ -301,12 +301,12 @@ impl RelationalStore {
         for field in &schema.fields {
             if let Some(payload) = payloads.remove(&field.name) {
                 if field.field_type != super::types::FieldType::Binary {
-                    return Err(StorageError::NotBinary { collection: record.collection.clone(), field: field.name.clone() });
+                    return Err(StorageError::NotBinary { collection: record.collection.clone().into(), field: field.name.clone().into() });
                 }
                 if fields.contains_key(&field.name) {
                     return Err(StorageError::TwoRepresentations {
-                        collection: record.collection.clone(),
-                        field: field.name.clone(),
+                        collection: record.collection.clone().into(),
+                        field: field.name.clone().into(),
                     });
                 }
                 let (descriptor, bytes) = payload.into_parts();
@@ -331,7 +331,7 @@ impl RelationalStore {
                             Some(value) => value,
                             None if field.nullable => &serde_json::Value::Null,
                             None => {
-                                return Err(StorageError::Required { collection: record.collection.clone(), field: name.to_owned() })
+                                return Err(StorageError::Required { collection: record.collection.clone().into(), field: name.to_owned().into() })
                             }
                         },
                     };
@@ -344,7 +344,7 @@ impl RelationalStore {
             values.push(Expr::val(value).into());
         }
         if let Some(field) = payloads.into_keys().next() {
-            return Err(StorageError::Undeclared { collection: record.collection.clone(), field });
+            return Err(StorageError::Undeclared { collection: record.collection.clone().into(), field: field.into() });
         }
         for name in fields.keys() {
             super::relational_query::column(&schema, name)?;

@@ -4,6 +4,7 @@ use sea_orm::{ConnectionTrait, FromQueryResult};
 use sea_orm::sea_query::{Alias, Asterisk, Func, Query};
 use super::schema_error::SchemaError;
 
+use super::schema_error::GapFault;
 /// Assignment behavior, not logical codec identity. INTEGER and NUMERIC differ
 /// for CAST, which the native INSERT SELECT rebuild never uses.
 #[derive(Debug, PartialEq, Eq)]
@@ -97,7 +98,7 @@ async fn rows<C: ConnectionTrait, T: FromQueryResult>(
 pub(super) async fn read<C: ConnectionTrait>(db: &C, table: &str) -> Result<Structure, SchemaError> {
     let mut columns: Vec<Column> = rows(db, "pragma_table_xinfo", table).await?;
     if columns.iter().any(|column| column.hidden != 0) {
-        return Err(SchemaError::gap(table, "generated columns require expression proof"));
+        return Err(SchemaError::gap(table, GapFault::GeneratedColumn));
     }
     for column in &mut columns { column.r#type.make_ascii_uppercase(); }
     columns.sort();
@@ -108,7 +109,7 @@ pub(super) async fn read<C: ConnectionTrait>(db: &C, table: &str) -> Result<Stru
         // Auxiliary rowid/storage columns have no bearing on the declared index keys.
         columns.retain(|column| column.key != 0);
         if index.partial != 0 || columns.iter().any(|column| column.name.is_none()) {
-            return Err(SchemaError::gap(table, "expression indexes require expression proof"));
+            return Err(SchemaError::gap(table, GapFault::ExpressionIndex));
         }
         columns.sort();
         shapes.push(IndexShape {

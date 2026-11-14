@@ -35,6 +35,7 @@ mod relational_conversion;
 mod relational_derived_tests;
 pub mod schema_error;
 pub mod seam;
+pub mod names;
 pub mod storage_error;
 mod relational_query;
 mod relational_codec;

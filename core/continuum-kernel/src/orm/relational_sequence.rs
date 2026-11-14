@@ -24,7 +24,7 @@ impl super::relational::RelationalStore {
     ) -> Result<super::types::Appended, StorageError> {
         use sea_orm::sea_query::{Alias, Expr, Query};
         let schema = self.schema(&record.collection)?;
-        let refuse = |fault| StorageError::Append { collection: record.collection.clone(), fault };
+        let refuse = |fault| StorageError::Append { collection: record.collection.clone().into(), fault };
         let unique_field = schema
             .fields
             .iter()
@@ -74,7 +74,7 @@ impl super::relational::RelationalStore {
             .one(connection)
             .await?
         {
-            Some(head) => head.high.checked_add(1).ok_or_else(|| StorageError::SequenceExhausted { collection: record.collection.clone() })?,
+            Some(head) => head.high.checked_add(1).ok_or_else(|| StorageError::SequenceExhausted { collection: record.collection.clone().into() })?,
             None => {
                 let max = Query::select()
                     .expr(Expr::col(sequence).max())
@@ -86,7 +86,7 @@ impl super::relational::RelationalStore {
                     .ok_or(StorageError::Corrupt { what: "a MAX returned no row" })?;
                 let max: Option<i64> = row.try_get_by_index(0)?;
                 match max {
-                    Some(high) => high.checked_add(1).ok_or_else(|| StorageError::SequenceExhausted { collection: record.collection.clone() })?,
+                    Some(high) => high.checked_add(1).ok_or_else(|| StorageError::SequenceExhausted { collection: record.collection.clone().into() })?,
                     None => 1,
                 }
             }
@@ -95,7 +95,7 @@ impl super::relational::RelationalStore {
         record
             .data
             .as_object_mut()
-            .ok_or_else(|| StorageError::Malformed { collection: record.collection.clone(), expected: super::storage_error::Shape::Object })?
+            .ok_or_else(|| StorageError::Malformed { collection: record.collection.clone().into(), expected: super::storage_error::Shape::Object })?
             .insert(spec.sequence.clone(), serde_json::json!(high));
         self.insert(connection, &record).await?;
         Ok(super::types::Appended::Fresh(
@@ -139,7 +139,7 @@ pub(super) async fn next_on<C: ConnectionTrait>(
     let row = connection
         .query_one(connection.get_database_backend().build(&statement))
         .await?
-        .ok_or_else(|| StorageError::SequenceExhausted { collection: key.to_owned() })?;
+        .ok_or_else(|| StorageError::SequenceExhausted { collection: key.to_owned().into() })?;
     Ok(row.try_get("", "high")?)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

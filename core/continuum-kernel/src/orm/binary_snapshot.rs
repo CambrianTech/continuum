@@ -103,7 +103,7 @@ impl BinarySnapshot {
     }
 
     fn not_binary(&self, field: &str) -> StorageError {
-        StorageError::NotBinary { collection: self.schema.collection.clone(), field: field.to_owned() }
+        StorageError::NotBinary { collection: self.schema.collection.clone().into(), field: field.to_owned().into() }
     }
 
     /// The descriptor column of `field`, when the schema declares it binary.

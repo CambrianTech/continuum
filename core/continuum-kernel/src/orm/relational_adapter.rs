@@ -61,7 +61,7 @@ impl StorageAdapter for SeaOrmAdapter {
         self.store
             .read_on(&self.store.db, row.collection, row.id)
             .await?
-            .ok_or_else(|| StorageError::NotFound { collection: row.collection.to_owned(), id: row.id.clone() })
+            .ok_or_else(|| StorageError::NotFound { collection: row.collection.to_owned().into(), id: row.id.clone() })
     }
     async fn query(&self, query: &StorageQuery) -> Result<Vec<DataRecord>, StorageError> {
         self.store.query(query).await

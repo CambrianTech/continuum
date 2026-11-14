@@ -11,7 +11,7 @@ use serde_json::{Map, Number, Value};
 use super::storage_error::{StorageError, StoredFault};
 
 fn mismatch(field: &SchemaField) -> StorageError {
-    StorageError::TypeMismatch { field: field.name.clone(), declared: field.field_type.clone() }
+    StorageError::TypeMismatch { field: field.name.clone().into(), declared: field.field_type.clone() }
 }
 
 /// Bind producer-owned text directly. The SQL driver owns the one required copy;
@@ -38,7 +38,7 @@ pub(super) fn encode(field: &SchemaField, value: &Value) -> Result<SqlValue, Sto
         return if field.nullable {
             Ok(SqlValue::String(None))
         } else {
-            Err(StorageError::NotNullable { field: field.name.clone() })
+            Err(StorageError::NotNullable { field: field.name.clone().into() })
         };
     }
     match field.field_type {
@@ -48,7 +48,7 @@ pub(super) fn encode(field: &SchemaField, value: &Value) -> Result<SqlValue, Sto
         FieldType::Boolean => value.as_bool().map(Into::into).ok_or_else(|| mismatch(field)),
         FieldType::Number if value.is_number() => super::relational_query::value(value),
         FieldType::Number => Err(mismatch(field)),
-        FieldType::Binary => Err(StorageError::BinaryThroughJson { field: field.name.clone() }),
+        FieldType::Binary => Err(StorageError::BinaryThroughJson { field: field.name.clone().into() }),
         FieldType::Json => Ok(serde_json::to_string(value)?.into()), // disk: a Json-declared field is stored as SQLite TEXT
     }
 }
@@ -63,16 +63,16 @@ pub(super) fn scalar(
         return if field.nullable {
             Ok(Value::Null)
         } else {
-            Err(StorageError::NotNullable { field: field.name.clone() })
+            Err(StorageError::NotNullable { field: field.name.clone().into() })
         };
     }
-    let invalid = |fault| StorageError::InvalidStored { field: field.name.clone(), fault };
+    let invalid = |fault| StorageError::InvalidStored { field: field.name.clone().into(), fault };
     match field.field_type {
         FieldType::String | FieldType::Date | FieldType::Uuid => Ok(Value::String(row.try_get::<String, _>(index)?)),
-        FieldType::Binary => Err(StorageError::BinaryThroughJson { field: field.name.clone() }),
+        FieldType::Binary => Err(StorageError::BinaryThroughJson { field: field.name.clone().into() }),
         FieldType::Json => {
             let text: String = row.try_get(index)?;
-            serde_json::from_str(&text).map_err(|source| StorageError::StoredJson { field: field.name.clone(), source })
+            serde_json::from_str(&text).map_err(|source| StorageError::StoredJson { field: field.name.clone().into(), source })
         }
         FieldType::Boolean => match row.try_get::<i64, _>(index)? {
             0 => Ok(Value::Bool(false)),
@@ -83,9 +83,9 @@ pub(super) fn scalar(
             "INTEGER" => Ok(Value::Number(row.try_get::<i64, _>(index)?.into())),
             "REAL" => Number::from_f64(row.try_get(index)?).map(Value::Number).ok_or_else(|| invalid(StoredFault::NonFinite)),
             storage => Err(StorageError::StorageClass {
-                field: field.name.clone(),
+                field: field.name.clone().into(),
                 declared: field.field_type.clone(),
-                found: storage.to_owned(),
+                found: storage.to_owned().into(),
             }),
         },
     }
@@ -116,7 +116,7 @@ impl RowDecoder {
                 continue;
             }
             let field = self.fields.get(col.name()).map(|index| &schema.fields[*index])
-                .ok_or_else(|| StorageError::Undecodable { collection: schema.collection.clone(), column: col.name().to_owned() })?;
+                .ok_or_else(|| StorageError::Undecodable { collection: schema.collection.clone().into(), column: col.name().to_owned().into() })?;
             fields.insert(field.name.clone(), scalar(row, index, field)?);
         }
         let metadata_string = |name: &'static str| -> Result<String, StorageError> {

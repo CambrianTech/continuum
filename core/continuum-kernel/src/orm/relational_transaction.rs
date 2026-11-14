@@ -68,7 +68,7 @@ impl RelationalStore {
                     .update_on(transaction, &collection, &id, data, increment)
                     .await?
                 {
-                    return Err(StorageError::NotFound { collection: collection.to_string(), id: id.clone() });
+                    return Err(StorageError::NotFound { collection: collection.to_string().into(), id: id.clone() });
                 }
                 store
                     .read_on(transaction, &collection, &id)

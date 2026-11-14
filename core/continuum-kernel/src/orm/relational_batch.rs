@@ -23,7 +23,7 @@ impl super::relational::RelationalStore {
                             let record = store
                                 .read_on(transaction, &row.collection, &row.id)
                                 .await?
-                                .ok_or(StorageError::NotFound { collection: row.collection, id: row.id })?;
+                                .ok_or(StorageError::NotFound { collection: row.collection.into(), id: row.id })?;
                             BatchOutcome::Read { record }
                         }
                         BatchOperation::Delete(row) => {
@@ -36,7 +36,7 @@ impl super::relational::RelationalStore {
                         }
                         BatchOperation::Update(row) => {
                             if !store.update_on(transaction, &row.collection, &row.id, row.data, true).await? {
-                                return Err(StorageError::NotFound { collection: row.collection, id: row.id });
+                                return Err(StorageError::NotFound { collection: row.collection.into(), id: row.id });
                             }
                             BatchOutcome::Updated
                         }

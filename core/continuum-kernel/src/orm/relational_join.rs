@@ -77,7 +77,7 @@ impl super::relational::RelationalStore {
                         .fields
                         .iter()
                         .find(|f| naming::to_snake_case(&f.name) == naming::to_snake_case(name))
-                        .ok_or_else(|| StorageError::Undeclared { collection: join.collection.clone(), field: name.clone() })?
+                        .ok_or_else(|| StorageError::Undeclared { collection: join.collection.clone().into(), field: name.clone().into() })?
                         .clone();
                     let output = format!("joined_{number}_field_{i}");
                     statement.expr_as(Expr::col((alias.clone(), col)), Alias::new(&output));

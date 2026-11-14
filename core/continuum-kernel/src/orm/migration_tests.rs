@@ -7,7 +7,7 @@ use super::*;
 
     #[tokio::test]
     async fn equal_counts_cannot_verify_a_rejected_migration() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let dir = tempfile::tempdir()?;
         let source = setup_sqlite(&dir.path().join("source.db").to_string_lossy()).await;
         let target = setup_sqlite(&dir.path().join("target.db").to_string_lossy()).await;
         let schema = CollectionSchema {
@@ -287,7 +287,7 @@ use std::{collections::BTreeMap, num::NonZeroUsize};
 
 #[tokio::test]
 async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_restart() -> Result<(), Box<dyn std::error::Error>> {
-    let home = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let home = tempfile::tempdir()?;
     let open = |name: &str| AdapterConfig {
         connection_string: home.path().join(name).to_string_lossy().into_owned(),
         ..Default::default()
@@ -383,13 +383,13 @@ async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_resta
     // valid row must not reach the destination before the whole page validates.
     use sea_orm::{ConnectionTrait, DbBackend, sea_query::{Alias, Expr, Query}};
     let database = sea_orm::Database::connect(format!("sqlite://{}", open("source.db").connection_string))
-        .await.map_err(|e| e.to_string())?;
+        .await?;
     let mut damage = Query::update();
     damage.table(Alias::new(crate::orm::adapter::naming::to_table_name("native_rows")))
         .value(Alias::new("payload__descriptor"), Expr::value(vec![0_u8]))
         .and_where(Expr::col(Alias::new("id")).eq(uuid::Uuid::from_u128(2).to_string()));
-    database.execute(DbBackend::Sqlite.build(&damage)).await.map_err(|e| e.to_string())?;
-    database.close().await.map_err(|e| e.to_string())?;
+    database.execute(DbBackend::Sqlite.build(&damage)).await?;
+    database.close().await?;
     let rejected = Arc::new(SeaOrmAdapter::connect(open("rejected.db")).await?);
     let mut failed = MigrationEngine::new(source, rejected.clone(), MigrationConfig {
         batch_size: std::num::NonZeroUsize::MIN.saturating_add(1), collections: Some(vec!["native_rows".into()]),

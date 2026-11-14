@@ -245,16 +245,16 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn create_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, Box<dyn std::error::Error + Send + Sync>> {
         let p: crate::commands::data::create::DataCreateParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
+            serde_json::from_value(params)?;
         let handle = p.handle.as_str();
         let result = module
             .state
             .create_record(handle, p.collection, p.id, p.data)
-            .await.map_err(|e| e.to_string())?;
+            .await?;
         Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
+            serde_json::to_value(result)?,
         ))
     }
 
@@ -262,16 +262,16 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn read_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, Box<dyn std::error::Error + Send + Sync>> {
         let p: crate::commands::data::read::DataReadParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
+            serde_json::from_value(params)?;
         let handle = p.handle.as_str();
         let result = module
             .state
             .read_record(handle, &p.collection, &p.id)
-            .await.map_err(|e| e.to_string())?;
+            .await?;
         Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
+            serde_json::to_value(result)?,
         ))
     }
 
@@ -285,7 +285,7 @@ use crate::orm::types::CollectionSchema;
     ) -> Result<CommandResult, Box<dyn std::error::Error>> {
         let p: crate::commands::vector::index::VectorIndexParams = serde_json::from_value(params)?;
         let handle = p.handle.as_str();
-        let record = module.state.index_vector(handle, &p.collection, p.id, p.embedding).await.map_err(|e| e.to_string())?;
+        let record = module.state.index_vector(handle, &p.collection, p.id, p.embedding).await?;
         Ok(CommandResult::Json(serde_json::to_value(crate::orm::types::StorageResult::ok(record))?))
     }
 
@@ -294,13 +294,13 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn stats_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, Box<dyn std::error::Error + Send + Sync>> {
         let p: crate::commands::vector::stats::VectorStatsParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
+            serde_json::from_value(params)?;
         let handle = p.handle.as_str();
-        let result = module.state.vector_stats(handle, &p.collection).await.map_err(|e| e.to_string())?;
+        let result = module.state.vector_stats(handle, &p.collection).await?;
         Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
+            serde_json::to_value(result)?,
         ))
     }
 
@@ -313,7 +313,7 @@ use crate::orm::types::CollectionSchema;
         let p: crate::commands::vector::search::VectorSearchParams = serde_json::from_value(params)?;
         let handle = p.handle.as_str();
         let query = crate::data::wire_query(&p.query_vector, p.embedder.as_deref());
-        let result = module.state.vector_search(handle, &p.collection, query, p.k, p.threshold, p.include_data).await.map_err(|e| e.to_string())?;
+        let result = module.state.vector_search(handle, &p.collection, query, p.k, p.threshold, p.include_data).await?;
         Ok(CommandResult::Json(serde_json::to_value(result)?))
     }
 
@@ -322,16 +322,16 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn invalidate_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, Box<dyn std::error::Error + Send + Sync>> {
         let p: crate::commands::vector::invalidate_cache::VectorInvalidateCacheParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
+            serde_json::from_value(params)?;
         let handle = p.handle.as_str();
         let result = module
             .state
             .invalidate_vector_cache(handle, &p.collection)
-            .await.map_err(|e| e.to_string())?;
+            .await?;
         Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
+            serde_json::to_value(result)?,
         ))
     }
 
@@ -340,9 +340,9 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn backfill_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, Box<dyn std::error::Error + Send + Sync>> {
         let p: crate::commands::vector::backfill::VectorBackfillParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
+            serde_json::from_value(params)?;
         let handle = p.handle.as_str();
         let filter: Option<std::collections::HashMap<String, FieldFilter>> = match p.filter {
             Some(map) => Some(
@@ -361,9 +361,9 @@ use crate::orm::types::CollectionSchema;
                 p.model,
                 filter,
             )
-            .await.map_err(|e| e.to_string())?;
+            .await?;
         Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
+            serde_json::to_value(result)?,
         ))
     }
 

@@ -35,10 +35,12 @@ async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes:
     let collection = if native { Native::COLLECTION } else { JsonBaseline::COLLECTION };
     let start = Instant::now();
     let mut operations = tokio::task::JoinSet::new();
-    // Fixed offered arrivals, not a closed loop that stops submitting during stalls.
+    // Fixed offered arrivals, not a closed loop that stops submitting during stalls: an
+    // interval that bursts to catch up keeps every arrival on its schedule.
+    let mut arrivals = tokio::time::interval(Duration::from_millis(5));
+    arrivals.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
     for sequence in 0..128_u32 {
-        let scheduled = start + Duration::from_millis(u64::from(sequence) * 5);
-        tokio::time::sleep_until(tokio::time::Instant::from_std(scheduled)).await;
+        let scheduled = arrivals.tick().await.into_std();
         let store = store.clone();
         let expected = expected.clone();
         let bytes = bytes.clone();

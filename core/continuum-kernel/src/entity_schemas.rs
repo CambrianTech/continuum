@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn declarations_preserve_constraints_and_refuse_unknown_types() -> Result<(), String> {
+    fn declarations_preserve_constraints_and_refuse_unknown_types() -> Result<(), Box<dyn std::error::Error>> {
         let mut entity: EntitySchema = serde_json::from_value(serde_json::json!({
             "collection": "child", "entityClass": "Child", "fields": [{
                 "fieldName": "parentId", "fieldType": "foreign_key", "options": {
@@ -383,7 +383,7 @@ mod tests {
                     "default": "root", "index": true
                 }
             }], "compositeIndexes": [{"name": "parent_order", "fields": ["parentId"], "direction": "DESC"}]
-        })).map_err(|e| e.to_string())?;
+        }))?;
         let schema = to_collection_schema(&entity)?;
         let field = &schema.fields[0];
         assert_eq!(field.default_value, Some(Value::String("root".into())));
