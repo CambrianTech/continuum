@@ -29,6 +29,14 @@ async fn healthy_restore_outlives_generation_prediction() -> Result<(), Box<dyn 
     let root = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let pool = crate::inference::slots::directory().ensure_pool(&root, 3);
+    // The fixture serves the original slot paging protocol. Publish that
+    // negotiated capability before asking admission to restore a saved page.
+    if !crate::inference::slots::directory()
+        .negotiate_page_admission(&root, &pool, None, None)
+        .await
+    {
+        return Err("fixture page admission was not published".into());
+    }
     let key = PageKey::mind(Uuid::new_v4()).ok_or("activity key")?;
     pool.note_saved(key);
     let sem = Arc::new(Semaphore::new(1));
