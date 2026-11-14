@@ -607,10 +607,10 @@ fn hf_repo_id(hint: &str) -> Option<String> {
     ))
 }
 
-/// The HF auth token for gated repos, from the environment. `None` for public
-/// repos (the common case). We read the standard `HF_TOKEN` var.
+/// The HF auth token for gated repos, read from config.env. `None` for public
+/// repos (the common case).
 fn hf_token() -> Option<String> {
-    std::env::var("HF_TOKEN").ok().filter(|t| !t.is_empty())
+    continuum_base::config_env::read("HF_TOKEN").filter(|t| !t.is_empty())
 }
 
 /// Quant tiers we prefer when the caller does not name one, best-balance first.

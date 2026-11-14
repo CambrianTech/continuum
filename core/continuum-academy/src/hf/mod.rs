@@ -193,7 +193,7 @@ pub async fn search_hub(kind: HubKind, p: HfSearchParams) -> Result<HfSearchResu
     let mut req = client.get(kind.api_endpoint()).query(&params);
     // HF_TOKEN lifts the anonymous rate limit and reaches gated repos. Optional —
     // public search needs none; this is an opportunistic header, not a precondition.
-    if let Some(token) = std::env::var("HF_TOKEN").ok().filter(|t| !t.is_empty()) {
+    if let Some(token) = continuum_base::config_env::read("HF_TOKEN").filter(|t| !t.is_empty()) {
         req = req.bearer_auth(token);
     }
 
