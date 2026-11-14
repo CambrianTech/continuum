@@ -616,8 +616,8 @@ fn plan_serving_at_rest_into(
     // Reconcile: accept a new plan only if its closeness (per-mille of target served)
     // is >= the standing one. A node whose closeness stops climbing keeps what it has
     // and surfaces that fact in the rationale rather than swapping to a worse-served model.
-    let inc_closeness = inc_plan.as_ref().map(|p| p.closeness()).unwrap_or(0);
-    let fresh_closeness = fresh.as_ref().map(|p| p.closeness()).unwrap_or(0);
+    let inc_closeness = inc_plan.as_ref().map(|p| p.closeness()).unwrap_or(0); // JUSTIFIED unwrap_or: no incumbent plan means closeness is zero (nothing to improve on), and 0 < any positive fresh_closeness so the upgrade gate fires correctly
+    let fresh_closeness = fresh.as_ref().map(|p| p.closeness()).unwrap_or(0); // JUSTIFIED unwrap_or: same reasoning — absent fresh plan means no candidate for upgrade, 0 closeness won't beat a standing incumbent
     let upgrade_worth_it = fresh.as_ref().is_some_and(|fresh_plan| {
         let f = &fresh_plan.base_model;
         let fresh_lanes = fresh_plan.lanes as u32;
