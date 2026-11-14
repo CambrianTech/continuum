@@ -28,6 +28,9 @@ const CLOSED: u64 = 1 << 63;
 /// Admission state for one resource: open/closed plus the in-flight count, in one word.
 pub struct AdmissionGate {
     word: AtomicU64,
+    /// Published when the gate becomes closed AND empty: the event a stop subscribes to
+    /// ([`drained`](Self::drained)), never a poll of the count (card b5b9bef3).
+    emptied: tokio::sync::Notify,
 }
 
 impl AdmissionGate {
@@ -36,6 +39,29 @@ impl AdmissionGate {
     pub const fn new() -> Self {
         Self {
             word: AtomicU64::new(0),
+            emptied: tokio::sync::Notify::const_new(),
+        }
+    }
+
+    /// Resolves once the gate is closed with nothing in flight, the moment the last permit
+    /// releases (or at once if it already is). Subscribed BEFORE the word is read, so a release
+    /// landing between the read and the wait still wakes it.
+    pub async fn drained(&self) {
+        loop {
+            let emptied = self.emptied.notified();
+            tokio::pin!(emptied);
+            emptied.as_mut().enable();
+            if self.word.load(Ordering::Acquire) == CLOSED {
+                return;
+            }
+            emptied.await;
+        }
+    }
+
+    /// Publish [`drained`](Self::drained) when the word a change left is closed and empty.
+    fn publish_if_drained(&self, left: u64) {
+        if left == CLOSED {
+            self.emptied.notify_waiters();
         }
     }
 
@@ -118,7 +144,7 @@ impl AdmissionGate {
     /// Saturating, so a double release cannot wrap the count into the closed bit and
     /// reopen a shut gate. A double release is still a bug; this only bounds the damage.
     pub fn release_one(&self) {
-        let _ = self
+        let released = self
             .word
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
                 let count = cur & !CLOSED;
@@ -130,6 +156,9 @@ impl AdmissionGate {
                     Some((cur & CLOSED) | (count - 1))
                 }
             });
+        if let Ok(before) = released {
+            self.publish_if_drained(before - 1);
+        }
     }
 
     /// Shut the gate. Returns whether THIS call closed it, so a second caller — a signal
@@ -139,7 +168,9 @@ impl AdmissionGate {
     /// One-way by design: the only caller is a stop, and a reopen would exist to be called
     /// by mistake. A gate is re-opened by constructing a new one.
     pub fn close(&self) -> bool {
-        self.word.fetch_or(CLOSED, Ordering::AcqRel) & CLOSED == 0
+        let before = self.word.fetch_or(CLOSED, Ordering::AcqRel);
+        self.publish_if_drained(before | CLOSED);
+        before & CLOSED == 0
     }
 }
 
@@ -159,7 +190,8 @@ impl Drop for Permit<'_> {
     fn drop(&mut self) {
         // Subtracting 1 from the whole word decrements the low-bit count and cannot reach
         // the closed bit, because a permit only exists when the count was at least 1.
-        self.gate.word.fetch_sub(1, Ordering::AcqRel);
+        let before = self.gate.word.fetch_sub(1, Ordering::AcqRel);
+        self.gate.publish_if_drained(before - 1);
     }
 }
 
@@ -323,6 +355,33 @@ mod tests {
         assert_eq!(gate.in_flight(), 1, "the work is still in flight after the hand-off");
         gate.release_one(); // the holder finished it
         assert_eq!(gate.in_flight(), 0);
+    }
+
+    // what this catches: a stop that polls the count instead of hearing the last release
+    // (card b5b9bef3). `drained` waits while work is in flight or the gate is open, and resolves
+    // on the release that empties a closed gate, without anyone checking the count.
+    #[tokio::test]
+    async fn drained_is_published_by_the_last_release_of_a_closed_gate() {
+        let gate = std::sync::Arc::new(AdmissionGate::new());
+        let first = gate.admit().expect("open");
+        let second = gate.admit().expect("open");
+        let waiter = tokio::spawn({
+            let gate = std::sync::Arc::clone(&gate);
+            async move { gate.drained().await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished(), "an open gate is never drained");
+        gate.close();
+        drop(first);
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished(), "one release with work left is not the drain");
+        drop(second);
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("the last release publishes the drain")
+            .expect("test: waiter task");
+        // Already drained: answered at once.
+        gate.drained().await;
     }
 
     // what this catches: a gate defaulting CLOSED, which would make every producer in a
