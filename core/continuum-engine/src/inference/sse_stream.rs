@@ -283,6 +283,11 @@ pub(crate) struct StreamOutcome {
     pub(crate) terminal: Option<crate::capacity::window_grant::TerminalReceipt>,
 }
 
+/// Consume `response`'s SSE stream to completion (or a watchdog failure).
+/// The longest a stalled stream waits on a lane that is working for others: the act's own
+/// ceiling, so a caller without an act bound above it (a probe, an eval) still ends.
+const STARVED_WAIT_CEILING: std::time::Duration = crate::inference::llama_server::UNMOVED_CEILING;
+
 /// Whether a stream that has been silent (or stalled) for `idle` sits on a lane that did real
 /// work, prefill or decode, for ANYONE within that window, and has been open less than the
 /// ceiling. Busy, not dead: the bound becomes a checkpoint (card 115f9a14).
@@ -298,14 +303,11 @@ fn lane_class(idle: std::time::Duration, model: Option<&str>) -> crate::inferenc
 
 /// PURE: whether a stalled stream waits on, from the ONE classification of the lane taken at
 /// this checkpoint (Cormac on #4506: two reads could disagree and strike a working lane) and
-/// how long the stream has been open. A stream open past the act's own ceiling
-/// ([`ACT_CEILING`](crate::inference::turn_bound::ACT_CEILING)) ends, so a caller without an act
-/// bound above it (a probe, an eval) still ends.
+/// how long the stream has been open.
 fn waits_on(class: crate::inference::llama_server::NeverStartedClass, open: std::time::Duration) -> bool {
-    open < crate::inference::turn_bound::ACT_CEILING && class == crate::inference::llama_server::NeverStartedClass::Starved
+    open < STARVED_WAIT_CEILING && class == crate::inference::llama_server::NeverStartedClass::Starved
 }
 
-/// Consume `response`'s SSE stream to completion (or a watchdog failure).
 pub(crate) async fn consume_sse_stream(
     cfg: &OpenAICompatibleConfig,
     request: &crate::ai::types::TextGenerationRequest,
@@ -924,6 +926,6 @@ mod tests {
         assert!(waits_on(working, open), "a working lane: the stream waits on");
         assert!(!waits_on(classify_never_started_timeout(Some(200_000), 90_000), open), "nothing for anyone in the window: ends");
         assert!(!waits_on(classify_never_started_timeout(None, 90_000), open), "never any work observed: ends");
-        assert!(!waits_on(working, crate::inference::turn_bound::ACT_CEILING), "past the ceiling: ends, bounded");
+        assert!(!waits_on(working, STARVED_WAIT_CEILING), "past the ceiling: ends, bounded");
     }
 }

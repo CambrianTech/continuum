@@ -123,7 +123,7 @@ pub use external::{external_serving_pin, probe_external_serving};
 mod progress;
 pub(crate) use progress::{
     engine_probe, engine_props, restore_probe, slots_probe, unmoved_window, wait_while_engine_progresses, EngineProbe,
-    EngineProgress, WaitBounds,
+    EngineProgress, WaitBounds, UNMOVED_CEILING,
 };
 #[cfg(test)]
 pub(crate) use progress::{engine_probe_within, slots_progress, window_at_rate, window_rate};

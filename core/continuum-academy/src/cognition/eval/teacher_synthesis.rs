@@ -31,7 +31,7 @@ async fn acquire_teacher_lane(model: &str) -> Result<EvalLane, CommandError> {
     use crate::inference::llama_server::{await_ready_serving, DEFAULT_SERVING_WAIT};
     if let Err(why) = await_ready_serving(DEFAULT_SERVING_WAIT).await {
         return Err(CommandError::Internal(format!(
-            "{why} -- cannot run the teacher. Bring up serving (ai/inference/serve) before genome/teach."
+            "{why} -- cannot run the teacher until a served model is ready; bring serving up, then teach again."
         )));
     }
     spawn_base_eval_lane(model).await

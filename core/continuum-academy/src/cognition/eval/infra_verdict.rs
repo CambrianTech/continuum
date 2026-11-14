@@ -10,7 +10,7 @@ pub(super) fn infra_verdict(outcome: &PassOutcome) -> Option<InfraUnavailable> {
         reason: outcome
             .infra_reason
             .clone()
-            .unwrap_or_else(|| "serving lane never recovered".to_string()),
+            .unwrap_or_else(|| "serving lane never recovered".to_string()), // unwrap_or_else: a fault that recorded no reason is a lane that never came back to ready
         tasks_attempted: outcome.results.len() as u32,
         infra_faults: outcome.infra_faults,
     })

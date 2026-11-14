@@ -325,8 +325,8 @@ pub(super) async fn installed_receiver(
 /// The first live snapshot `rx` carries: the current one if it is live, else the daemon's next
 /// live publish. `DaemonGone` when the daemon drops its sender, since nothing further can arrive.
 pub(super) async fn live_snapshot(mut rx: watch::Receiver<ServingSnapshot>) -> Result<ServingSnapshot, ServingNotReady> {
-    // The guard is consumed inside `map`, so no borrow of `rx` outlives it.
-    rx.wait_for(ServingSnapshot::is_live).await.map(|snap| snap.clone()).map_err(|_closed| ServingNotReady::DaemonGone)
+    let live = rx.wait_for(ServingSnapshot::is_live).await.map_err(|_closed| ServingNotReady::DaemonGone)?;
+    Ok(live.clone())
 }
 
 

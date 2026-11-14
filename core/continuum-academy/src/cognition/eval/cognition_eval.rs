@@ -57,7 +57,7 @@ impl CognitionEval {
         // reference to a doomed eval).
         let persona_uuid = crate::cognition::persona_workspace::global()
             .resolve_persona(&p.persona_id)
-            .map_err(|e| CommandError::Invalid(format!("{e} Or call persona/instances/list.")))?
+            .map_err(|e| CommandError::Invalid(format!("{e} Or list the personas online now and pass one of their ids.")))?
             // The workspace fork machinery below is keyed by bare `Uuid`; unwrap the
             // resolved identity ONCE, here, rather than threading two types through it.
             .as_uuid();
@@ -84,7 +84,7 @@ impl CognitionEval {
         } else {
             p.eval_set
                 .clone()
-                .unwrap_or_else(|| DEFAULT_EVAL_SET.to_string())
+                .unwrap_or_else(|| DEFAULT_EVAL_SET.to_string()) // unwrap_or_else: no eval_set param means the committed default battery
         };
 
         // Task source: inline → a gym reference resolved through `gym::resolve_gym`
@@ -99,7 +99,7 @@ impl CognitionEval {
         let mut tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
             inline
         } else {
-            let reference = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET);
+            let reference = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET); // unwrap_or: no eval_set param means the committed default battery
             let (origin, text) =
                 crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
             crate::cognition::gym::parse_tasks(&text, &origin).map_err(CommandError::Invalid)?
@@ -152,7 +152,7 @@ impl CognitionEval {
             let tag = p
                 .run_id
                 .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()); // unwrap_or_else: a run with no run_id gets a fresh unique tag
             match provision_ephemeral_eval_root(&tag) {
                 Ok(root) => Some(EphemeralEvalRoot::new(root)),
                 Err(e) => {
@@ -173,7 +173,7 @@ impl CognitionEval {
 
         // #207: suppress the fork's drifting episodic recall for a reproducible ABSOLUTE
         // baseline. Opt-in; default false = memories intact (the natural persona).
-        let suppress_recall = p.suppress_recall.unwrap_or(false);
+        let suppress_recall = p.suppress_recall.unwrap_or(false); // unwrap_or: recall stays on unless the caller asks to suppress it
 
         // Fork an EPHEMERAL measurement copy of her mind — the exam runs on the
         // copy while the LIVING persona keeps living (heartbeat beating, present in
@@ -227,7 +227,7 @@ impl CognitionEval {
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
-                    "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy of her mind. She either isn't running or the id is wrong; call persona/instances/list for the personas online right now."
+                    "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy of her mind. She either isn't running or the id is wrong; list the personas online right now."
                 )))?;
                 _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
                 cycle
@@ -246,7 +246,7 @@ impl CognitionEval {
                 })
                 .await
                 .ok_or_else(|| CommandError::NotFound(format!(
-                    "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy of her mind. She either isn't running or the id is wrong; call persona/instances/list for the personas online right now."
+                    "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy of her mind. She either isn't running or the id is wrong; list the personas online right now."
                 )))?;
                 _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
                 cycle
@@ -331,7 +331,7 @@ impl CognitionEval {
                         })
                         .await
                         .ok_or_else(|| CommandError::NotFound(format!(
-                            "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy of her mind. She either isn't running or the id is wrong; call persona/instances/list for the personas online right now."
+                            "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy of her mind. She either isn't running or the id is wrong; list the personas online right now."
                         )))?;
                         _eval_lane = Some(el); // holds the lane + its VRAM lease alive for the run
                         cycle
@@ -346,7 +346,7 @@ impl CognitionEval {
                         })
                         .await
                         .ok_or_else(|| CommandError::NotFound(format!(
-                            "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy without measuring her live mind. She either isn't running or the id is wrong; call persona/instances/list for the personas online right now."
+                            "persona {persona_uuid} is not online — no workspace template after {WORKSPACE_TEMPLATE_WAIT_TRIES}s, so eval cannot fork a measurement copy without measuring her live mind. She either isn't running or the id is wrong; list the personas online right now."
                         )))?
                     }
                 }
@@ -500,7 +500,7 @@ impl CognitionEval {
                 name: gene.name.clone(),
                 path: gene.path.clone(),
                 domain: String::new(),
-                scale: gene.scale.unwrap_or(1.0),
+                scale: gene.scale.unwrap_or(1.0), // unwrap_or: a gene named with no scale runs at its trained scale, 1.0
             }]);
             let gene_outcome = run_pass(
                 &cycle,
@@ -542,11 +542,11 @@ impl CognitionEval {
                 lane_placement: placement_evidence
                     .as_ref()
                     .map(|e| e.device.clone())
-                    .unwrap_or_default(),
+                    .unwrap_or_default(), // unwrap_or_default: a shared-lane run has no dedicated placement; empty is the wire's none
                 lane_placement_reason: placement_evidence
                     .as_ref()
                     .map(|e| e.reason.clone())
-                    .unwrap_or_default(),
+                    .unwrap_or_default(), // unwrap_or_default: a shared-lane run has no dedicated placement; empty is the wire's none
                 lane_free_vram_bytes: placement_evidence.as_ref().and_then(|e| e.free_vram_bytes),
                 lane_estimated_footprint_bytes: placement_evidence
                     .as_ref()
@@ -604,7 +604,7 @@ impl CognitionEval {
         // (reviewers>=1, live single-pass only) forks a second copy of the same persona
         // as a reviewer and grades the reviewed answer — same model, +1 teammate.
         let want_team =
-            p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
+            p.reviewers.is_some_and(|n| n >= 1) && p.gene.is_none() && p.base_model_id.is_none();
         let outcome = if want_team {
             let reviewer = crate::cognition::persona_workspace::global()
                 .fork_eval_cycle(&persona_uuid, needs_tools, eval_workspace_root.as_deref(), suppress_recall)

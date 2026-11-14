@@ -209,7 +209,7 @@ pub(super) fn restore_probe_response(status: reqwest::StatusCode, body: &serde_j
     if body.is_array() {
         return slots_progress(body).map_or(EngineProbe::Busy, EngineProbe::Progress);
     }
-    restore_progress(body, operation, slot).unwrap_or(EngineProbe::Busy)
+    restore_progress(body, operation, slot).unwrap_or(EngineProbe::Busy) // unwrap_or: a body that is not this restore's record proves no progress; Busy is bounded like a quiet engine
 }
 
 
@@ -299,10 +299,13 @@ impl WaitBounds {
     }
 }
 
+/// The longest any wait lets a processing engine stay unmoved: the act's own ceiling, so a
+/// caller without an act bound above it (a probe, an eval, a page switch) still ends.
+pub(crate) const UNMOVED_CEILING: std::time::Duration = crate::inference::turn_bound::ACT_CEILING;
+
 /// THE window in which a processing engine may show no `/slots` counter movement and still
 /// be working: `floor`, or TWO batches at `model`'s measured prefill rate, whichever is
-/// longer. The act's own ceiling ([`ACT_CEILING`](crate::inference::turn_bound::ACT_CEILING), so a caller
-/// without an act bound above it still ends) caps the RATE-derived part only; a caller's floor above it
+/// longer. [`UNMOVED_CEILING`] caps the RATE-derived part only; a caller's floor above it
 /// stands (the window never shortens a bound the caller already chose), so the result is
 /// `max(floor, min(two batches, ceiling))`. The counters advance a whole batch at a time
 /// (`lane_args::UBATCH_TOKENS`), so a lane prefilling one 2,048-token chunk every ~176 s (the
@@ -316,7 +319,7 @@ impl WaitBounds {
 /// The rate is the SLOWER of the two measurements ([`window_rate`]): the server-total one
 /// (`serving_rates`, over busy windows) and the per-request one (`prefill_rate`, fresh or
 /// stale). The two errors are not symmetric: a window too long only delays calling a truly
-/// stuck engine, and `ACT_CEILING` still bounds it; a window too short refuses a working
+/// stuck engine, and [`UNMOVED_CEILING`] still bounds it; a window too short refuses a working
 /// engine and the evicted mind loses her page. Measured on enrico 2026-10-26 13:15-14:15Z
 /// (0eeceda84): the per-request rate read 9.7-16.2 tok/s, the windows used implied 64-174 tok/s
 /// (server-total), and 3 saves were still refused 23-64 s into a ~125-210 s batch, the window being two of them, 250-420 s (card
@@ -352,7 +355,7 @@ pub(crate) fn window_rate(server_total: Option<f64>, per_request: Option<f64>) -
     }
 }
 
-/// PURE: [`unmoved_window`] at a known rate: `max(floor, min(two batches, ACT_CEILING))`.
+/// PURE: [`unmoved_window`] at a known rate: `max(floor, min(two batches, UNMOVED_CEILING))`.
 pub(crate) fn window_at_rate(floor: std::time::Duration, prefill_tps: Option<f64>) -> std::time::Duration {
     prefill_tps
         .filter(|r| r.is_finite() && *r > 0.0)
@@ -360,7 +363,7 @@ pub(crate) fn window_at_rate(floor: std::time::Duration, prefill_tps: Option<f64
         // past the ceiling is the ceiling
         .map(|r| {
             std::time::Duration::try_from_secs_f64(2.0 * f64::from(crate::inference::lane_args::UBATCH_TOKENS) / r)
-                .map_or(crate::inference::turn_bound::ACT_CEILING, |d| d.min(crate::inference::turn_bound::ACT_CEILING))
+                .map_or(UNMOVED_CEILING, |d| d.min(UNMOVED_CEILING))
         })
         .map_or(floor, |chunk| floor.max(chunk))
 }

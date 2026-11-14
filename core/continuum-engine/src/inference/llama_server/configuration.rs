@@ -63,7 +63,6 @@ pub const READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// generous bound that covers the real physical event, still bounded so a truly
 /// wedged lane fails loud. Scoped to ephemeral lanes via `is_live_lane` so the live
 /// lane's tighter fail-loud budget is untouched.
-// event-exempt: a load that may hang; the child's exit event and the load's measured progress are watched first, and elapse fails NotReady
 pub(super) const EPHEMERAL_READY_TIMEOUT: Duration = Duration::from_secs(240);
 
 
@@ -81,7 +80,6 @@ pub(super) const EPHEMERAL_READY_TIMEOUT: Duration = Duration::from_secs(240);
 /// returns. Bounding each probe converts "wedged" into a fast `Unreachable` — the
 /// exact signal `ensure_model_serving` turns into serve()+reclaim. Kept under the
 /// serving daemon's reconcile cadence so a probe never overruns its own tick.
-// event-exempt: a request to the engine, which may hold its socket and never answer; a refused or reset connection fails first
 pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 
 
@@ -97,7 +95,6 @@ pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 /// budget produced sustained FALSE decode-failures that killed healthy lanes all
 /// night (heartbeat → not-ready → kill+respawn → bind race → "crash loop"). A probe's
 /// job is truth, not speed — it runs on a slow cadence; let it wait out the queue.
-// event-exempt: a decode request to an engine whose compute may be wedged; a refused or reset connection fails first
 pub(super) const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(75);
 
 
