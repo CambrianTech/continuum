@@ -545,6 +545,37 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
     let _prebuilt_startup = if !requested_source_build && !options.service {
         Some(supervisor_install::maintenance::StartupPermit::acquire(&continuum_core::paths::continuum_home()?).await?)
     } else { None };
+    // ── WARM BUILD (card a837974f): compile while old core still serves ───
+    // If we have a source tree and haven't already got a prebuilt artifact,
+    // run a conservative build pass BEFORE stopping anything.  CARGO_BUILD_JOBS=2
+    // keeps rustc from OOMing unified-memory nodes that still host a serving
+    // core (M5, 2026-10-23).  On success we skip building in dark_phase and
+    // drop straight to exec — the receipt shows ~0s build time.  On any miss
+    // we fall through to the existing dark build below.
+    if requested_source_build && prebuilt.is_none() {
+        if let Ok(script) = locate_start_script() {
+            println!("▶ warm build: compiling while old core still serves (CARGO_BUILD_JOBS=2)");
+            let mut cmd = std::process::Command::new(locate_bash()?);
+            cmd.arg(&script);
+            apply_core_runtime_env(&mut cmd)?;
+            if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
+                cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
+            }
+            match build_warm(cmd).await {
+                Ok(artifact) => {
+                    let after = git_head_short_sha();
+                    continuum_cli_lifecycle::deploy_provenance::source_build_verdict(
+                        target_sha.as_deref(), after.as_deref(), &artifact.build_sha,
+                    )?;
+                    println!("✓ warm build ready: {} (build {})", artifact.path.display(), artifact.build_sha);
+                    prebuilt = Some(artifact);
+                }
+                Err(e) => {
+                    eprintln!("⚠ warm build failed ({e}); falling back to dark build after stop");
+                }
+            }
+        }
+    }
     let mut dark = DarkWindow::start();
     if let Err(failed) = stop_with_authority(true, options.operator_present).await {
         #[cfg(windows)]
@@ -585,23 +616,28 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         };
         let mut built = None;
         if let Some(script) = &build_script {
-            let mut cmd = std::process::Command::new(locate_bash()?);
-            cmd.arg(script);
-            apply_core_runtime_env(&mut cmd)?;
-            if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
-                cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
+            if prebuilt.is_some() {
+                println!("✓ skipping dark build — warm build produced {}", prebuilt.as_ref().unwrap().path.display());
+                dark.built(); // no build time in the dark window
+            } else {
+                let mut cmd = std::process::Command::new(locate_bash()?);
+                cmd.arg(script);
+                apply_core_runtime_env(&mut cmd)?;
+                if let CliSelfBuild::Skip { .. } = cli_self_build(std::env::consts::OS) {
+                    cmd.env("CONTINUUM_SKIP_SELF_BUILD", running_cli_image());
+                }
+                println!("▶ building dark: serving is stopped, the build takes the whole machine (build-only pass of {})", script.display());
+                let artifact = build_dark(cmd).await?;
+                // A shared checkout can advance while Cargo is reading it. A binary reporting
+                // either endpoint is not proof of a coherent source tree (2026-10-01).
+                let after = git_head_short_sha();
+                continuum_cli_lifecycle::deploy_provenance::source_build_verdict(
+                    target_sha.as_deref(), after.as_deref(), &artifact.build_sha,
+                )?;
+                dark.built();
+                println!("✓ dark build validated: {} (build {})", artifact.path.display(), artifact.build_sha);
+                built = Some(artifact);
             }
-            println!("▶ building dark: serving is stopped, the build takes the whole machine (build-only pass of {})", script.display());
-            let artifact = build_dark(cmd).await?;
-            // A shared checkout can advance while Cargo is reading it. A binary reporting
-            // either endpoint is not proof of a coherent source tree (2026-10-01).
-            let after = git_head_short_sha();
-            continuum_cli_lifecycle::deploy_provenance::source_build_verdict(
-                target_sha.as_deref(), after.as_deref(), &artifact.build_sha,
-            )?;
-            dark.built();
-            println!("✓ dark build validated: {} (build {})", artifact.path.display(), artifact.build_sha);
-            built = Some(artifact);
         }
         #[cfg(windows)]
         if let Some((repo, (original, engine))) = &prepared_engine {

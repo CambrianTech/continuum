@@ -269,3 +269,15 @@ pub(super) async fn build_dark(mut cmd: std::process::Command) -> Result<Prebuil
     }
     PrebuiltCore::prepare(&receipt.artifact()?).await
 }
+
+/// Build with conservative concurrency limits so rustc doesn't OOM a
+/// unified-memory node that still has a serving core running.  Used for
+/// pre-build while old core serves; falls back to dark build on any miss.
+pub(super) async fn build_warm(mut cmd: std::process::Command) -> Result<PrebuiltCore, String> {
+    // Aggressive concurrency limit — safe for unified memory when another
+    // process (llama-server) is resident at ~16-32 GB.  Each job needs ~4-5
+    // GB peak; with two jobs we stay under ~10 GB compiler + serving core
+    // shared pool on an M5's 24-32 GB unified memory.
+    cmd.env("CARGO_BUILD_JOBS", "2");
+    build_dark(cmd).await
+}
