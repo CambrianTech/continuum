@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::orm::binary::{BinaryPageOutput, BinaryPageRequest};
 use std::{collections::BTreeMap, num::NonZeroUsize};

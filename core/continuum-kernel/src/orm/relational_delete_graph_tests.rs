@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::orm::{
     adapter::AdapterConfig,

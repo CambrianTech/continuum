@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::adapter::AdapterConfig;
 use super::relational::RelationalStore;
 use super::{

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Isolated storage-stage replay. This does not simulate GPU search or resident adoption.
 use super::{binary::{BinaryDescriptor, BinaryValue, ByteOrder, ElementType}, *};
 use super::{adapter::AdapterConfig, relational::RelationalStore};
