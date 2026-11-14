@@ -7,6 +7,7 @@ impl super::relational::RelationalStore {
     pub async fn create_binary(&self, record: super::types::DataRecord,
         payloads: std::collections::BTreeMap<String, BinaryValue>) -> Result<String, String> {
         // Compile typed bindings before dispatch, then move them into the same committing owner.
+        super::binary::native_identity(&record.id)?;
         let statement = self.insert_statement_with_binary(&record, payloads)?;
         self.write(move |_store, transaction| Box::pin(async move {
             transaction.execute(DbBackend::Sqlite.build(&statement)).await.map_err(|e| e.to_string())?;
@@ -26,7 +27,7 @@ impl super::relational::RelationalStore {
     /// output mutation, so refusal or cancellation leaves both buffers unchanged.
     /// This is an ID-ordered live page, not a revision-watermarked snapshot.
     pub async fn binary_page_into(&self, collection: &str, field: &str,
-        after: Option<String>, limit: usize, bytes: &mut Vec<u8>, ids: &mut Vec<String>,
+        after: Option<uuid::Uuid>, limit: usize, bytes: &mut Vec<u8>, ids: &mut Vec<uuid::Uuid>,
     ) -> Result<Option<BinaryDescriptor>, String> {
         use sea_orm::sqlx::Row;
         if limit == 0 { return Err("binary page size must be positive".into()); }
@@ -38,7 +39,7 @@ impl super::relational::RelationalStore {
             .expr_as(Expr::col(header_column.clone()), Alias::new("descriptor"))
             .and_where(Expr::col(column).is_not_null().or(Expr::col(header_column).is_not_null()))
             .order_by(Alias::new("id"), Order::Asc).limit(u64::try_from(limit).map_err(|_| "page size exceeds u64")?);
-        if let Some(after) = after { query.and_where(Expr::col(Alias::new("id")).gt(after)); }
+        if let Some(after) = after { query.and_where(Expr::col(Alias::new("id")).gt(after.to_string())); }
         let rows = self.db.query_all(DbBackend::Sqlite.build(&query)).await.map_err(|e| e.to_string())?;
         let mut borrowed = Vec::with_capacity(rows.len());
         let mut first_header: Option<&[u8]> = None;
@@ -66,18 +67,19 @@ impl super::relational::RelationalStore {
             }
             if stride != payload.len() { return Err("binary payload length disagrees with descriptor".into()); }
             total = total.checked_add(payload.len()).ok_or("native page exceeds address space")?;
-            borrowed.push((id, payload));
+            borrowed.push((super::binary::native_identity(id)?, payload));
         }
         bytes.try_reserve(total).map_err(|e| e.to_string())?;
         ids.try_reserve(borrowed.len()).map_err(|e| e.to_string())?;
         // No await or fallible decoding after the caller buffers start changing.
         for (id, payload) in borrowed {
             bytes.extend_from_slice(payload);
-            ids.push(id.to_owned());
+            ids.push(id);
         }
         Ok(descriptor)
     }
     pub async fn update_binary(&self, collection: String, id: String, field: String, value: BinaryValue, condition: super::binary::BinaryWriteCondition) -> Result<bool, String> {
+        super::binary::native_identity(&id)?;
         let column = self.binary_column(&collection, &field)?;
         let (descriptor, bytes) = value.into_parts();
         let header = descriptor.encode()?;

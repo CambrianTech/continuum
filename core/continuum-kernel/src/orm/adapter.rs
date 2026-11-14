@@ -166,7 +166,7 @@ pub trait StorageAdapter: Send + Sync {
     async fn list_collections(&self) -> StorageResult<Vec<String>>;
 
     /// Bounded native payload reads; scalar projections use the normal query owner.
-    async fn binary_page_into(&self, collection: &str, field: &str, after: Option<String>, limit: usize, bytes: &mut Vec<u8>, ids: &mut Vec<String>) -> StorageResult<Option<super::binary::BinaryDescriptor>>;
+    async fn binary_page_into(&self, collection: &str, field: &str, after: Option<uuid::Uuid>, limit: usize, bytes: &mut Vec<u8>, ids: &mut Vec<uuid::Uuid>) -> StorageResult<Option<super::binary::BinaryDescriptor>>;
     async fn create_binary(&self, record: DataRecord, payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>) -> StorageResult<String>;
     async fn update_binary(&self, collection: &str, id: &str, field: &str, value: super::binary::BinaryValue, condition: super::binary::BinaryWriteCondition) -> StorageResult<bool>;
 

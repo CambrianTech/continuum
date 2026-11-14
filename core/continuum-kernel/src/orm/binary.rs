@@ -126,3 +126,14 @@ impl BinaryValue {
 pub(super) fn descriptor_column(field: &str) -> String {
     format!("{}__descriptor", super::adapter::naming::to_snake_case(field))
 }
+
+/// A typed page cursor must have exactly the same ordering as persisted identity text.
+/// Validate canonical spelling on native writes and reads; never silently rewrite it.
+pub(super) fn native_identity(text: &str) -> Result<uuid::Uuid, String> {
+    let id = uuid::Uuid::parse_str(text).map_err(|e| format!("invalid native row identity: {e}"))?;
+    let mut canonical = [0_u8; 36];
+    if id.hyphenated().encode_lower(&mut canonical) != text {
+        return Err("native row identity requires canonical lowercase hyphenated UUID".into());
+    }
+    Ok(id)
+}

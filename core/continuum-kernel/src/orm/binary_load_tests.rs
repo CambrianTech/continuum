@@ -39,7 +39,7 @@ async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes:
         let bytes = bytes.clone();
         operations.spawn(async move {
             let execution_start = Instant::now();
-            let cursor = format!("{:06}", (sequence as usize * 73) % 9900);
+            let cursor = uuid::Uuid::from_u128((u128::from(sequence) * 73) % 9900);
             let rows;
             if native {
                 let mut contiguous = Vec::new();
@@ -53,7 +53,7 @@ async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes:
                 for row in contiguous.chunks_exact(bytes.len()) {
                     if row != bytes { return Err("native replay byte mismatch".to_string()); }
                 }            } else {
-                let query = QueryBuilder::new(collection).filter("id", QueryOperator::Gt(cursor.into())).limit(32).build();
+                let query = QueryBuilder::new(collection).filter("id", QueryOperator::Gt(cursor.to_string().into())).limit(32).build();
                 let page = store.query(query).await?;
                 rows = page.len();
                 for mut row in page {
@@ -103,10 +103,10 @@ async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error
         let mut json_statements = Vec::new();
         for n in first..(first + 100).min(10003) {
             native_statements.push(store.insert_statement_with_binary(
-                &record(Native::COLLECTION, format!("{n:06}"), serde_json::json!({})),
+                &record(Native::COLLECTION, uuid::Uuid::from_u128(n as u128).to_string(), serde_json::json!({})),
                 std::collections::BTreeMap::from([("payload".into(), BinaryValue::new(descriptor.clone(), bytes.clone())?)])
             )?);
-            json_statements.push(store.insert_statement(&record(JsonBaseline::COLLECTION, format!("{n:06}"), json_payload.clone()))?);
+            json_statements.push(store.insert_statement(&record(JsonBaseline::COLLECTION, uuid::Uuid::from_u128(n as u128).to_string(), json_payload.clone()))?);
         }
         store.write(move |_, transaction| Box::pin(async move {
             use sea_orm::ConnectionTrait;
