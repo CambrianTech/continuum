@@ -209,7 +209,7 @@ pub(super) fn restore_probe_response(status: reqwest::StatusCode, body: &serde_j
     if body.is_array() {
         return slots_progress(body).map_or(EngineProbe::Busy, EngineProbe::Progress);
     }
-    restore_progress(body, operation, slot).unwrap_or(EngineProbe::Busy)
+    restore_progress(body, operation, slot).unwrap_or(EngineProbe::Busy) // unwrap_or: a body that is not this restore's record proves no progress; Busy is bounded like a quiet engine
 }
 
 
@@ -249,6 +249,7 @@ pub(crate) async fn engine_probe_within(
         .trim_start_matches("https://")
         .trim_end_matches('/')
         .to_string();
+    // event-exempt: a socket that may never accept nor refuse; a refused connect, the error event, reads Unreachable first
     let connect = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&addr)).await;
     match connect {
         Ok(Ok(stream)) => drop(stream),

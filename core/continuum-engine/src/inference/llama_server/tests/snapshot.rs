@@ -1,74 +1,61 @@
 //! Snapshot regression fixtures.
 #![cfg(test)]
 use super::*;
-/// what this catches (2026-08-11, the solve-prelude keyhole): the settle wait
-/// must resolve on the FIRST ready snapshot whose layout differs from the
-/// pre-quiesce one (event-gated on the watch, no polling), and a planner that
-/// keeps its layout must end as `Unchanged` at the bound — a legitimate
-/// outcome that proceeds, never a park. A non-ready layout change must NOT
-/// resolve it (mid-relaunch snapshots are transient, not a settled plan).
+/// A pending future stays pending on its first poll: the event it waits for has not happened.
+async fn assert_pending<F: std::future::Future + Unpin>(future: &mut F, why: &str) {
+    std::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(std::pin::Pin::new(&mut *future), cx).is_pending(), "{why}");
+        std::task::Poll::Ready(())
+    })
+    .await;
+}
+
+fn live(model: &str) -> ServingSnapshot {
+    let mut snap = ServingSnapshot::empty();
+    snap.ready = true;
+    snap.active_model = Some(model.into());
+    snap
+}
+
+// what this catches (rule 10): a reader that arrives before the daemon installs its state
+// polling the `OnceLock` on a timer instead of awaiting the install. The wait is pending until the
+// install signals, and resolves on that signal; nothing here sleeps or reads a clock.
 #[tokio::test]
-async fn await_snapshot_resettle_resolves_on_ready_layout_change_and_bounds_out_otherwise() {
-    use super::{await_snapshot_resettle, ServingSnapshot, SnapshotSettle};
-    use std::time::Duration;
+async fn a_reader_before_the_install_awaits_the_install_itself() {
+    use super::super::snapshot::installed_receiver;
+    let state = std::sync::OnceLock::new();
+    let installed = tokio::sync::Notify::new();
+    let (tx, rx) = tokio::sync::watch::channel(live("installed-model"));
+    let mut waiting = Box::pin(installed_receiver(&state, &installed));
+    assert_pending(&mut waiting, "nothing is installed yet").await;
+    assert!(state.set(rx).is_ok());
+    installed.notify_waiters();
+    let received = waiting.await;
+    assert_eq!(received.borrow().active_model.as_deref(), Some("installed-model"), "the installed receiver, delivered by the signal");
+    drop(tx);
+    // Already installed: answered at once, no signal needed.
+    assert!(installed_receiver(&state, &installed).await.borrow().is_live());
+}
 
-    // Resettle: a ready snapshot with a NEW layout resolves the wait.
+// what this catches: the live wait resolving on a publish that is not live (ready without a
+// model), or parking forever when the daemon drops its sender. It resolves on the daemon's first
+// live publish, and a dropped sender ends it with nothing.
+#[tokio::test]
+async fn the_live_wait_resolves_on_the_first_live_publish_and_names_a_gone_daemon() {
+    use super::super::snapshot::live_snapshot;
     let (tx, rx) = tokio::sync::watch::channel(ServingSnapshot::empty());
-    let waiter = tokio::spawn(await_snapshot_resettle(
-        rx,
-        4,
-        16384,
-        Duration::from_secs(5),
-    ));
-    // Transient mid-relaunch publish (not ready) must be ignored…
-    let mut transitional = ServingSnapshot::empty();
-    transitional.lanes = 1;
-    transitional.served_context_window = 32768;
-    transitional.ready = false;
-    tx.send(transitional.clone()).unwrap();
-    // …and the settled ready layout resolves it.
-    transitional.ready = true;
-    tx.send(transitional).unwrap();
-    assert_eq!(
-        waiter.await.unwrap(),
-        SnapshotSettle::Resettled {
-            lanes: 1,
-            window: 32768
-        }
-    );
+    let mut waiting = Box::pin(live_snapshot(rx));
+    assert_pending(&mut waiting, "an empty snapshot is not live").await;
+    let mut ready_without_a_model = ServingSnapshot::empty();
+    ready_without_a_model.ready = true;
+    tx.send_replace(ready_without_a_model);
+    assert_pending(&mut waiting, "ready without a model is not live").await;
+    tx.send_replace(live("published-model"));
+    assert_eq!(waiting.await.and_then(|s| s.active_model).as_deref(), Some("published-model"));
 
-    // Unchanged, EARLY: two ready publishes with the same layout mean the
-    // planner ran and held — resolves well before the (long) bound, so a
-    // no-change solve pays reconcile-tick latency, never the full backstop.
-    let (tx2, rx2) = tokio::sync::watch::channel(ServingSnapshot::empty());
-    let waiter2 = tokio::spawn(await_snapshot_resettle(
-        rx2,
-        4,
-        16384,
-        Duration::from_secs(30),
-    ));
-    let mut same = ServingSnapshot::empty();
-    same.lanes = 4;
-    same.served_context_window = 16384;
-    same.ready = true;
-    tx2.send(same.clone()).unwrap();
-    tokio::task::yield_now().await;
-    tx2.send(same).unwrap();
-    let early = tokio::time::timeout(Duration::from_secs(2), waiter2)
-        .await
-        .expect("two unchanged ready publishes must resolve early, not ride the bound")
-        .unwrap();
-    assert_eq!(early, SnapshotSettle::Unchanged);
-
-    // Unchanged, BACKSTOP: a daemon that stops publishing ends at the bound.
-    let (_tx3, rx3) = tokio::sync::watch::channel(ServingSnapshot::empty());
-    let waiter3 = tokio::spawn(await_snapshot_resettle(
-        rx3,
-        4,
-        16384,
-        Duration::from_millis(80),
-    ));
-    assert_eq!(waiter3.await.unwrap(), SnapshotSettle::Unchanged);
+    let (gone, rx) = tokio::sync::watch::channel(ServingSnapshot::empty());
+    drop(gone);
+    assert_eq!(live_snapshot(rx).await, None, "a gone daemon publishes nothing further");
 }
 
 /// what this catches (#350): the two states an EMPTY serving snapshot can mean
