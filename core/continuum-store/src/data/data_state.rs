@@ -1,4 +1,6 @@
 use super::*;
+use super::vector_corpus::EMBEDDING_FIELD;
+use super::vector_index::{unit_f32, CpuMatrix, Producer, ResidentMatrix, VectorStoreError};
 
 // Migration command params now live with their typed ActionCommands in
 // commands/migration/*. The `migration/*` output structs (MigrationProgress,
@@ -397,36 +399,26 @@ impl DataState {
         collection: &str,
         id: String,
         embedding: Vec<f64>,
-    ) -> Result<StorageResult<DataRecord>, String> {
-        require_public_collection(collection)?;
-        use std::time::Instant;
-        let start = Instant::now();
+    ) -> Result<DataRecord, VectorStoreError> {
+        require_public_collection(collection).map_err(VectorStoreError::Refused)?;
+        let start = std::time::Instant::now();
 
-        let (scope, adapter) = self.adapter_with_identity(handle).await?;
-        let payload = super::vector_index::unit_f32(embedding.iter().map(|value| *value as f32), "vector/index")
-            .map_err(|error| format!("vector/index {collection}/{id}: {error}"))?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await.map_err(VectorStoreError::Store)?;
+        let payload = unit_f32(embedding.iter().map(|value| *value as f32), &Producer::IndexCommand)?;
         let written = adapter
-            .update_binary(collection, &id, super::vector_corpus::EMBEDDING_FIELD, payload, crate::orm::binary::BinaryWriteCondition::Replace)
-            .await;
-
-        // Invalidate vector cache for this collection since we modified an embedding
+            .update_binary(
+                collection,
+                &id,
+                std::collections::BTreeMap::from([(EMBEDDING_FIELD.to_owned(), payload)]),
+                crate::orm::binary::BinaryWriteCondition::Replace,
+            )
+            .await
+            .into_result();
+        // The cached matrix may hold this row's previous vector, whatever the write did.
         self.vector_cache.invalidate(&scope, collection);
-
-        let total_ms = start.elapsed().as_millis();
-        log_info!(
-            "data",
-            "vector/index",
-            "Indexed vector for {} in {}ms, success={}",
-            id,
-            total_ms,
-            written.success
-        );
-        let result = match written.into_result() {
-            Ok(_) => adapter.read(collection, &id).await,
-            Err(error) => StorageResult::err(error),
-        };
-
-        Ok(result)
+        written.map_err(VectorStoreError::Store)?;
+        log_info!("data", "vector/index", "Indexed vector for {} in {}ms", id, start.elapsed().as_millis());
+        adapter.read(collection, &id).await.into_result().map_err(VectorStoreError::Store)
     }
 
     /// Get vector index statistics for a collection.
@@ -441,7 +433,7 @@ impl DataState {
 
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
-        let stats = adapter.numeric_array_stats(collection, super::vector_corpus::EMBEDDING_FIELD).await.into_result()
+        let stats = adapter.numeric_array_stats(collection, EMBEDDING_FIELD).await.into_result()
             .map_err(|e| format!("vector stats for {collection}: {e}"))?;
         if stats.min_length != stats.max_length {
             return Err(format!("{collection} contains inconsistent embedding dimensions: {} to {}", stats.min_length, stats.max_length));
@@ -451,8 +443,7 @@ impl DataState {
         let vector_dimensions = stats.max_length;
 
         // Check cache status
-        let cached_count = self.vector_cache.get::<super::vector_index::CpuMatrix>(&scope, collection)
-            .map_or(0, |matrix| <super::vector_index::CpuMatrix as super::vector_index::ResidentMatrix>::len(&matrix));
+        let cached_count = self.vector_cache.get::<CpuMatrix>(&scope, collection).map_or(0, |matrix| matrix.len());
 
         let total_ms = start.elapsed().as_millis();
         log_info!(

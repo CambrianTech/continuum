@@ -179,7 +179,7 @@ impl MemoryPressureMonitor {
         use sysinfo::ProcessesToUpdate;
 
         // --- Phase 1: brief lock — ingest + plan. ---
-        let (total, available, swap_used, rss, pressure, level, consecutive_at_level, live, compressed, deficit) = {
+        let (total, available, swap_used, rss, pressure, level, consecutive_at_level, live, compressed, deficit, take_again_due) = {
             let mut st = self.state.lock();
 
             // Drain new reporters (added via add_reporter()).
@@ -237,6 +237,7 @@ impl MemoryPressureMonitor {
                 host.as_ref().map(crate::system_resources::swap_activity::SwapTraffic::of),
             );
             let deficit = st.host_deficit.observe(host.as_ref(), swap_used);
+            let take_again_due = st.host_deficit.take_again_due();
             let compressed = host.as_ref().map(|reading| reading.compressed_bytes);
             let level = PressureLevel::worse(
                 PressureLevel::worse(
@@ -297,6 +298,7 @@ impl MemoryPressureMonitor {
                     compressed_mb = compressed.map_or(-1, |bytes| (bytes / (1024 * 1024)) as i64),
                     host_available_mb = host.as_ref().map_or(-1, |reading| (reading.available_bytes() / (1024 * 1024)) as i64),
                     free_target_mb = host.as_ref().map_or(-1, |reading| (reading.free_target_bytes / (1024 * 1024)) as i64),
+                    os_pressure = ?host.as_ref().and_then(|reading| reading.pressure),
                     deficit_mb = deficit / (1024 * 1024),
                     consecutive = consecutive_at_level,
                     "memory pressure as the node reads it — swap is its own axis: a full swap file, or live paging, is pressure even when the page counters read free"
@@ -389,6 +391,7 @@ impl MemoryPressureMonitor {
                 live,
                 compressed,
                 deficit,
+                take_again_due,
             )
         };
 
@@ -414,7 +417,7 @@ impl MemoryPressureMonitor {
 
         // --- Phase 3: brief lock — fold outcomes into counters, decide the gate,
         // build the snapshot, log, and collect shed targets. ---
-        let (snapshot, shed_targets) = {
+        let (snapshot, shed_targets, take_again_targets) = {
             let mut st = self.state.lock();
 
             let mut module_reports = Vec::with_capacity(results.len());
@@ -507,6 +510,17 @@ impl MemoryPressureMonitor {
             } else {
                 Vec::new()
             };
+            // The take-again half: once the OS has read itself normal on two polls in a row,
+            // every reporter that can shed may take back what it gave.
+            let take_again_targets: Vec<Arc<dyn MemoryReporter>> = if take_again_due {
+                st.reporters
+                    .iter()
+                    .filter(|e| !e.disabled && e.reporter.can_shed())
+                    .map(|e| e.reporter.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
             // Build the snapshot.
             let now_ms = continuum_base::time::EpochMs::now().millis();
@@ -558,7 +572,7 @@ impl MemoryPressureMonitor {
                 );
             }
 
-            (snapshot, shed_targets)
+            (snapshot, shed_targets, take_again_targets)
         };
 
         // Publish lock-free. The channel overwrites; readers never block us.
@@ -580,6 +594,11 @@ impl MemoryPressureMonitor {
             let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 reporter.shed_load(level);
             }));
+        }
+        for reporter in take_again_targets {
+            if std::panic::catch_unwind(AssertUnwindSafe(|| reporter.take_again())).is_err() {
+                clog_warn!("🧠 MemoryReporter '{}' panicked taking memory back", reporter.name());
+            }
         }
     }
 }

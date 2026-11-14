@@ -94,7 +94,7 @@ use crate::orm::types::CollectionSchema;
                     "collection": collection, "dbPath": "invalid-handle",
                     "id": "record", "data": {}, "embedding": [1.0],
                     "queryVector": [1.0], "textField": "need", "limit": 1
-                }), None).await.expect_err(name);
+                }), None).await.expect_err(name).message;
                 assert!(error.contains("protected collection"), "{name}: {error}");
             }
             for name in ["data/query", "data/query-open", "data/queryWithJoin"] {
@@ -243,12 +243,13 @@ use crate::orm::types::CollectionSchema;
         let p: crate::commands::vector::index::VectorIndexParams =
             serde_json::from_value(params).map_err(|e| e.to_string())?;
         let handle = p.handle.as_deref().unwrap_or("main");
-        let result = module
+        let record = module
             .state
             .index_vector(handle, &p.collection, p.id, p.embedding)
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
+            serde_json::to_value(crate::orm::types::StorageResult::ok(record)).map_err(|e| e.to_string())?,
         ))
     }
 
@@ -286,7 +287,8 @@ use crate::orm::types::CollectionSchema;
                 p.threshold,
                 p.include_data,
             )
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(CommandResult::Json(
             serde_json::to_value(result).map_err(|e| e.to_string())?,
         ))

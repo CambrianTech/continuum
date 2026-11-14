@@ -30,7 +30,8 @@ impl super::relational::RelationalStore {
                                         .build(),
                                 )
                                 .await?;
-                            json!({"success":true,"deleted":deleted != 0})
+                            committed.extend(deleted.revisions);
+                            json!({"success":true,"deleted":deleted.count != 0})
                         }
                         BatchOperationType::Update => {
                             if !store
@@ -70,7 +71,11 @@ impl super::relational::RelationalStore {
                                     let collection = record.collection.clone();
                                     let receipt =
                                         store.append_on(transaction, record, &spec).await?;
-                                    committed.push((collection, receipt.seq));
+                                    committed.push(super::relational_transaction::Revision {
+                                        domain: super::relational_sequence::Domain::Append,
+                                        collection,
+                                        high: receipt.seq,
+                                    });
                                     json!({"success":true,"seq":receipt.seq,"fresh":receipt.fresh})
                                 }
                                 _ => return Err("invalid batch write classification".into()),

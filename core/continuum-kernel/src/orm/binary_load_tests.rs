@@ -39,18 +39,21 @@ async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes:
         let bytes = bytes.clone();
         operations.spawn(async move {
             let execution_start = Instant::now();
-            let cursor = format!("{:06}", (sequence as usize * 73) % 9900);
+            let cursor = uuid::Uuid::from_u128((u128::from(sequence) * 73) % 9900);
             let rows;
             if native {
-                let page = store.binary_page(collection, "payload", Some(cursor), 32).await?;
-                rows = page.len();
-                for row in page {
-                    if row.value.as_ref().ok_or("missing native payload")?.bytes() != bytes {
-                        return Err("native replay byte mismatch".to_string());
-                    }
+                let mut contiguous = Vec::new();
+                let mut ids = Vec::new();
+                let descriptor = store.binary_page_into(collection, "payload", Some(cursor), 32, &mut contiguous, &mut ids).await?
+                    .ok_or("missing native descriptor")?;
+                rows = ids.len();
+                if descriptor.byte_len()? != bytes.len() || contiguous.len() != rows * bytes.len() {
+                    return Err("native replay shape mismatch".to_string());
                 }
-            } else {
-                let query = QueryBuilder::new(collection).filter("id", QueryOperator::Gt(cursor.into())).limit(32).build();
+                for row in contiguous.chunks_exact(bytes.len()) {
+                    if row != bytes { return Err("native replay byte mismatch".to_string()); }
+                }            } else {
+                let query = QueryBuilder::new(collection).filter("id", QueryOperator::Gt(cursor.to_string().into())).limit(32).build();
                 let page = store.query(query).await?;
                 rows = page.len();
                 for mut row in page {
@@ -100,10 +103,10 @@ async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error
         let mut json_statements = Vec::new();
         for n in first..(first + 100).min(10003) {
             native_statements.push(store.insert_statement_with_binary(
-                &record(Native::COLLECTION, format!("{n:06}"), serde_json::json!({})),
+                &record(Native::COLLECTION, uuid::Uuid::from_u128(n as u128).to_string(), serde_json::json!({})),
                 std::collections::BTreeMap::from([("payload".into(), BinaryValue::new(descriptor.clone(), bytes.clone())?)])
             )?);
-            json_statements.push(store.insert_statement(&record(JsonBaseline::COLLECTION, format!("{n:06}"), json_payload.clone()))?);
+            json_statements.push(store.insert_statement(&record(JsonBaseline::COLLECTION, uuid::Uuid::from_u128(n as u128).to_string(), json_payload.clone()))?);
         }
         store.write(move |_, transaction| Box::pin(async move {
             use sea_orm::ConnectionTrait;

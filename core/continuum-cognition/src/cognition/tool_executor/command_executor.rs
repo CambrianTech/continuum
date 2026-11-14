@@ -642,6 +642,7 @@ impl ToolExecutor for CommandToolExecutor {
                         command: call.name.clone(),
                         outcome: None,
                         reason: format!("reported, not run: {}", call.input),
+                        refusal: None,
                     })),
                     blanks if !blanks.is_empty() => {
                         continuum_base::probe!(
@@ -654,10 +655,11 @@ impl ToolExecutor for CommandToolExecutor {
                         Err(Refused::Client(ClientError::Refused {
                             command: command.to_string(),
                             outcome: None,
+                            refusal: None,
                             reason: format!(
                                 "you sent the manual's blank as a value for {}: the example block is a \
                                  SHAPE, and `<replace-with-…>` / a run of zeros marks a field YOU fill \
-                                 from your own work (a real path, a real id from work/list, the sha256 of \
+                                 from your own work (a real path, a real id from the board, the sha256 of \
                                  your patch). Nothing was run. Put the real value there — or omit the \
                                  field where the verb says it derives it — and call again.",
                                 blanks
@@ -742,6 +744,7 @@ impl ToolExecutor for CommandToolExecutor {
                         tool_use_id: tool_use_id.clone(),
                         verdict,
                         dispatch_handle,
+                        next_commands: Vec::new(),
                     });
 
                     // boundary: tool-result transcript now contains a durable image reference.
@@ -789,6 +792,12 @@ impl ToolExecutor for CommandToolExecutor {
                     // Index back to the call that failed (the OK path never pays
                     // this — names are only needed to build recovery guidance).
                     let attempted = call.name.as_str();
+                    // The commands her refusal names as her next moves, typed: her hands admit them
+                    // into her next act's tools (`ToolHead::load`), so a next move is callable.
+                    let next_commands: Vec<String> = match &refused {
+                        Refused::Client(ClientError::Refused { refusal: Some(refusal), .. }) => refusal.next.commands().map(str::to_owned).collect(),
+                        _ => Vec::new(),
+                    };
                     let (raw, guidance) = match refused {
                         // A reported sentinel held with its cut generation keeps its own words.
                         Refused::Held(_) if is_reported_sentinel(attempted) => {
@@ -835,6 +844,7 @@ impl ToolExecutor for CommandToolExecutor {
                         tool_use_id: tool_use_id.clone(),
                         verdict: ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
                         dispatch_handle: None,
+                        next_commands,
                     });
                     // The same custody as a success: saved whole, handed back whole.
                     // No cause on line 1 yet: a refusal's kind arrives typed with the command's

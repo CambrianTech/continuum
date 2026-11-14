@@ -1,8 +1,7 @@
 //! The consumer's contract: certified unit rows, typed refusals, one dot product per score,
 //! and a measured prefilter that keeps the exact ranking.
-use super::cpu::{dot, CpuMatrix};
-use super::unit::UnitVectorError;
-use super::{unit_f32, RecallTarget, ResidentMatrix, VectorIndexError, NATIVE_ORDER};
+use super::cpu::{dot, CpuMatrix, MatrixBuilder};
+use super::{unit_f32, Hit, Producer, RecallTarget, RecordId, ResidentMatrix, UnitVectorError, VectorIndexError, NATIVE_ORDER};
 use crate::orm::binary::{BinaryDescriptor, BinaryValue, ElementType};
 use std::num::NonZeroUsize;
 
@@ -53,16 +52,33 @@ pub(super) mod synthetic {
 }
 
 pub(super) fn unit(values: &[f32]) -> Result<BinaryValue, UnitVectorError> {
-    unit_f32(values.iter().copied(), "test/producer")
+    unit_f32(values.iter().copied(), &Producer::IndexCommand)
 }
 
-pub(super) fn matrix_of(rows: &[Vec<f32>]) -> Result<CpuMatrix, Box<dyn std::error::Error>> {
-    let mut matrix = CpuMatrix::default();
-    for (row, values) in rows.iter().enumerate() {
-        let value = unit(values)?;
-        matrix.append_rows(value.descriptor(), value.bytes(), vec![format!("row-{row}")])?;
+/// The id the fixtures give row `row`.
+pub(super) fn id_of(row: usize) -> RecordId {
+    RecordId::from_u128(row as u128 + 1)
+}
+
+/// One native page of `rows`, as `binary_page_into` lays it out: row-major bytes, parallel ids.
+pub(super) fn page_of(rows: &[Vec<f32>], first: usize) -> Result<(BinaryDescriptor, Vec<u8>, Vec<RecordId>), Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    let mut descriptor = None;
+    for values in rows {
+        let (row_descriptor, row_bytes) = unit(values)?.into_parts();
+        bytes.extend_from_slice(&row_bytes);
+        descriptor = Some(row_descriptor);
     }
-    Ok(matrix)
+    let ids = (first..first + rows.len()).map(id_of).collect();
+    Ok((descriptor.ok_or("test: a page has rows")?, bytes, ids))
+}
+
+/// The sealed matrix of `rows`, appended as one page.
+pub(super) fn matrix_of(rows: &[Vec<f32>]) -> Result<CpuMatrix, Box<dyn std::error::Error>> {
+    let (descriptor, bytes, ids) = page_of(rows, 0)?;
+    let mut builder = MatrixBuilder::default();
+    builder.append_page(&descriptor, &bytes, &ids)?;
+    Ok(builder.seal(RecallTarget::STORE))
 }
 
 pub(super) fn floats(value: &BinaryValue) -> Vec<f32> {
@@ -76,9 +92,13 @@ pub(super) fn normalized(rows: &[Vec<f32>]) -> Result<Vec<Vec<f32>>, UnitVectorE
 
 /// Every row scored, best first: the ranking the prefilter must reproduce.
 pub(super) fn exact(normalized: &[Vec<f32>], query: &[f32], k: usize) -> Vec<usize> {
-    let mut scored: Vec<(usize, f32)> = normalized.iter().map(|row| dot(query, row)).enumerate().collect();
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    scored.into_iter().take(k).map(|(row, _)| row).collect()
+    let mut scored: Vec<Hit> = normalized.iter().enumerate().map(|(row, values)| Hit { row, score: dot(query, values) }).collect();
+    scored.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.row.cmp(&b.row)));
+    scored.into_iter().take(k).map(|hit| hit.row).collect()
+}
+
+fn rows_of(hits: &[Hit]) -> Vec<usize> {
+    hits.iter().map(|hit| hit.row).collect()
 }
 
 // what this catches: the producer's normalization drifting past f32's error bound. The bound:
@@ -121,55 +141,55 @@ fn uncertified_rows_and_queries_are_refused() -> Result<(), Box<dyn std::error::
     let certified = unit(&[3.0, 4.0])?;
     let (descriptor, bytes) = certified.clone().into_parts();
     let raw = BinaryValue::new(BinaryDescriptor { unit: false, ..descriptor.clone() }, bytes.clone())?;
-    let mut matrix = CpuMatrix::default();
-    assert!(matches!(matrix.append_rows(raw.descriptor(), raw.bytes(), vec!["raw".into()]), Err(VectorIndexError::NotUnit { .. })));
-    matrix.append_rows(certified.descriptor(), certified.bytes(), vec!["unit".into()])?;
-    let one = NonZeroUsize::MIN;
-    assert!(matches!(matrix.search(&raw, one), Err(VectorIndexError::NotUnit { .. })));
+    let mut builder = MatrixBuilder::default();
+    assert!(matches!(builder.append_page(raw.descriptor(), raw.bytes(), &[id_of(0)]), Err(VectorIndexError::NotUnit { .. })));
+    builder.append_page(certified.descriptor(), certified.bytes(), &[id_of(1)])?;
     let wider = unit(&[1.0, 2.0, 3.0])?;
-    assert_eq!(matrix.search(&wider, one), Err(VectorIndexError::Dimension { expected: 2, found: 3 }));
-    assert!(matches!(matrix.append_rows(wider.descriptor(), wider.bytes(), vec!["wide".into()]), Err(VectorIndexError::Dimension { .. })));
-    let quantized = BinaryValue::new(BinaryDescriptor { element_type: ElementType::F16, ..descriptor.clone() }, vec![0; 4])?;
-    assert_eq!(matrix.search(&quantized, one), Err(VectorIndexError::Element(ElementType::F16)));
-    // A bulk page whose bytes disagree with its row count never enters the matrix.
+    assert!(matches!(builder.append_page(wider.descriptor(), wider.bytes(), &[id_of(2)]), Err(VectorIndexError::Dimension { .. })));
+    // A page whose bytes disagree with its row count never enters the matrix.
     assert_eq!(
-        matrix.append_rows(&descriptor, &bytes, vec!["a".into(), "b".into()]),
+        builder.append_page(&descriptor, &bytes, &[id_of(3), id_of(4)]),
         Err(VectorIndexError::PageLength { expected: 16, found: 8 }),
     );
+    let matrix = builder.seal(RecallTarget::STORE);
     assert_eq!(matrix.len(), 1);
+    let one = NonZeroUsize::MIN;
+    assert!(matches!(matrix.search(&raw, one), Err(VectorIndexError::NotUnit { .. })));
+    assert_eq!(matrix.search(&wider, one), Err(VectorIndexError::Dimension { expected: 2, found: 3 }));
+    let quantized = BinaryValue::new(BinaryDescriptor { element_type: ElementType::F16, ..descriptor }, vec![0; 4])?;
+    assert_eq!(matrix.search(&quantized, one), Err(VectorIndexError::Element(ElementType::F16)));
     Ok(())
 }
 
-// what this catches: the bulk page seam (`binary_page_into`) and per-record appends diverging.
+// what this catches: a corpus split across pages ranking differently from one page.
 #[test]
-fn a_bulk_page_equals_its_rows_appended_one_by_one() -> Result<(), Box<dyn std::error::Error>> {
+fn pages_append_to_the_same_matrix_as_one_page() -> Result<(), Box<dyn std::error::Error>> {
     let rows = [vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0], vec![0.6, 0.8, 0.0]];
-    let single = matrix_of(&rows)?;
-    let mut bulk = CpuMatrix::default();
-    let mut page = Vec::new();
-    let mut descriptor = None;
-    for values in &rows {
-        let (row_descriptor, bytes) = unit(values)?.into_parts();
-        page.extend_from_slice(&bytes);
-        descriptor = Some(row_descriptor);
+    let whole = matrix_of(&rows)?;
+    let mut paged = MatrixBuilder::default();
+    for (first, page) in [(0, &rows[..2]), (2, &rows[2..])] {
+        let (descriptor, bytes, ids) = page_of(page, first)?;
+        paged.append_page(&descriptor, &bytes, &ids)?;
     }
-    let descriptor = descriptor.ok_or("test: page has rows")?;
-    bulk.append_rows(&descriptor, &page, (0..rows.len()).map(|row| format!("row-{row}")).collect())?;
+    let paged = paged.seal(RecallTarget::STORE);
     let query = unit(&[0.6, 0.8, 0.0])?;
     let k = NonZeroUsize::new(3).ok_or("test: k")?;
-    assert_eq!(bulk.search(&query, k)?, single.search(&query, k)?);
-    assert_eq!(single.search(&query, k)?.first().map(|(row, _)| *row), Some(2));
+    assert_eq!(paged.search(&query, k)?, whole.search(&query, k)?);
+    assert_eq!(whole.search(&query, k)?.first().map(|hit| hit.row), Some(2));
+    assert_eq!(paged.id(2), Some(id_of(2)));
     Ok(())
 }
 
-// what this catches: ties reordering between calls, or k past the corpus.
+// what this catches: ties reordering between calls, k past the corpus, or an empty matrix.
 #[test]
 fn equal_scores_keep_corpus_order_and_k_is_bounded_by_the_rows() -> Result<(), Box<dyn std::error::Error>> {
     let matrix = matrix_of(&[vec![1.0, 1.0], vec![1.0, 1.0], vec![-1.0, 0.0]])?;
     let ranked = matrix.search(&unit(&[1.0, 1.0])?, NonZeroUsize::new(99).ok_or("test: k")?)?;
-    assert_eq!(ranked.iter().map(|(row, _)| *row).collect::<Vec<_>>(), vec![0, 1, 2]);
-    assert_eq!(ranked[0].1, ranked[1].1, "identical directions score identically");
-    assert_eq!(matrix.id(1), Some("row-1"));
+    assert_eq!(rows_of(&ranked), vec![0, 1, 2]);
+    assert_eq!(ranked[0].score, ranked[1].score, "identical directions score identically");
+    let empty = MatrixBuilder::default().seal(RecallTarget::STORE);
+    assert_eq!(empty.search(&unit(&[1.0, 1.0])?, NonZeroUsize::MIN)?, Vec::new());
+    assert_eq!(empty.candidates(NonZeroUsize::MIN), None);
     Ok(())
 }
 
@@ -182,16 +202,16 @@ fn measured_prefilter_keeps_the_exact_top_k() -> Result<(), Box<dyn std::error::
     let centers = synthetic::centers(&mut stream, 50, 384);
     let rows = synthetic::clustered(&mut stream, &centers, 1000, 1.0);
     let queries = synthetic::clustered(&mut stream, &centers, 40, 1.0);
-    let mut matrix = matrix_of(&rows)?;
-    matrix.calibrate(RecallTarget::STORE);
+    let matrix = matrix_of(&rows)?;
     let k = NonZeroUsize::new(10).ok_or("test: k")?;
-    assert!(matrix.candidates(k.get()) < rows.len() / 2, "clustered rows must prune: {} of {}", matrix.candidates(k.get()), rows.len());
+    let candidates = matrix.candidates(k).ok_or("test: clustered rows must be measured to prune")?;
+    assert!(candidates.get() < rows.len() / 2, "clustered rows must prune: {candidates} of {}", rows.len());
     let resident = normalized(&rows)?;
     let mut kept = 0usize;
     for query in &queries {
         let query = unit(query)?;
         let truth = exact(&resident, &floats(&query), k.get());
-        let found: Vec<usize> = matrix.search(&query, k)?.into_iter().map(|(row, _)| row).collect();
+        let found = rows_of(&matrix.search(&query, k)?);
         kept += truth.iter().filter(|row| found.contains(row)).count();
     }
     let recall = kept as f64 / (queries.len() * k.get()) as f64;

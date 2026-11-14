@@ -7,22 +7,29 @@
 //! first j neighbors. The candidate count for k is the `target` quantile of the probes'
 //! needs at depth k, so `target` of the probes keep their COMPLETE top-k. Nothing here is a
 //! tuned constant: the probe count and the measured depth both come from the target.
-use super::cpu::{dot, hamming, words, Ranked};
+use super::cpu::{dot, hamming, Ranked, Rows};
 use super::RecallTarget;
+use std::num::NonZeroUsize;
 
-/// Candidates needed per k, measured on the matrix it belongs to.
+/// Candidates needed per k, measured on the rows they belong to.
 #[derive(Debug, Clone)]
-pub(super) struct CandidateNeed {
+pub(super) enum CandidateNeed {
+    /// Fewer than two rows: there is no other row to measure a probe against, so every row
+    /// is scored (a measured fact about this corpus, not a fallback).
+    Unmeasurable,
     /// `by_k[j - 1]`: candidates so that `target` of the probes keep their whole top-j.
-    by_k: Vec<usize>,
+    Measured { by_k: Vec<NonZeroUsize> },
 }
 
 impl CandidateNeed {
-    pub(super) fn candidates(&self, k: usize) -> usize {
-        let Some(&deepest) = self.by_k.last() else { return usize::MAX };
-        match self.by_k.get(k.saturating_sub(1)) {
-            Some(&need) => need,
-            None => deepest.saturating_mul(k).div_ceil(self.by_k.len()),
+    /// Rows to admit for `k`; `None` means every row is scored.
+    pub(super) fn candidates(&self, k: NonZeroUsize) -> Option<NonZeroUsize> {
+        let Self::Measured { by_k } = self else { return None };
+        let deepest = by_k.last()?;
+        match by_k.get(k.get() - 1) {
+            Some(need) => Some(*need),
+            // Past the measured depth, the deepest need scales linearly with k.
+            None => deepest.checked_mul(k).map(|scaled| scaled.get().div_ceil(by_k.len())).and_then(NonZeroUsize::new),
         }
     }
 }
@@ -34,28 +41,29 @@ fn probes(rows: usize, target: RecallTarget) -> usize {
     if wanted.is_finite() && (wanted as usize) < rows { wanted as usize } else { rows }
 }
 
-pub(super) fn measure(rows: &[f32], sketches: &[u64], dimension: usize, target: RecallTarget) -> CandidateNeed {
-    let count = sketches.len() / words(dimension);
+pub(super) fn measure(rows: &Rows, target: RecallTarget) -> CandidateNeed {
+    let count = rows.ids.len();
+    let dimension = rows.dimension.get();
+    let words = super::cpu::words(rows.dimension);
     let probes = probes(count, target);
     // Neighbors are measured as deep as the target's quantile is observed: as many as there are
     // probes (100 at 0.99, past `vector/search`'s default k of 10). A larger k scales the
     // deepest measured need linearly ([`CandidateNeed::candidates`]).
     let depth = probes.min(count.saturating_sub(1));
     if probes == 0 || depth == 0 {
-        return CandidateNeed { by_k: Vec::new() };
+        return CandidateNeed::Unmeasurable;
     }
-    let words = words(dimension);
     // needs[p * depth + (j - 1)] = rows probe p must admit to keep its top-j.
     let mut needs = vec![0usize; probes * depth];
     let mut scored: Vec<Ranked> = Vec::with_capacity(count);
     let mut cumulative = vec![0usize; dimension + 1];
     for (probe, need) in needs.chunks_exact_mut(depth).enumerate() {
         let row = probe * count / probes;
-        let query = &rows[row * dimension..(row + 1) * dimension];
-        let sketch = &sketches[row * words..(row + 1) * words];
+        let query = &rows.values[row * dimension..(row + 1) * dimension];
+        let sketch = &rows.sketches[row * words..(row + 1) * words];
         scored.clear();
         cumulative.iter_mut().for_each(|bucket| *bucket = 0);
-        let others = rows.chunks_exact(dimension).zip(sketches.chunks_exact(words)).enumerate();
+        let others = rows.values.chunks_exact(dimension).zip(rows.sketches.chunks_exact(words)).enumerate();
         for (other, (values, bits)) in others.filter(|(other, _)| *other != row) {
             scored.push(Ranked { score: dot(query, values), row: other });
             if let Some(bucket) = cumulative.get_mut(hamming(sketch, bits)) {
@@ -72,7 +80,7 @@ pub(super) fn measure(rows: &[f32], sketches: &[u64], dimension: usize, target: 
         best.sort_unstable_by(|a, b| b.cmp(a));
         let mut deepest = 0usize;
         for (slot, neighbor) in need.iter_mut().zip(best.iter()) {
-            let bits = &sketches[neighbor.row * words..(neighbor.row + 1) * words];
+            let bits = &rows.sketches[neighbor.row * words..(neighbor.row + 1) * words];
             // A Hamming distance never exceeds the dimension: the histogram has a bucket for it.
             deepest = deepest.max(cumulative[hamming(sketch, bits)]);
             *slot = deepest;
@@ -87,8 +95,13 @@ pub(super) fn measure(rows: &[f32], sketches: &[u64], dimension: usize, target: 
                 *slot = need[j];
             }
             column.sort_unstable();
-            column[quantile]
+            // Each need counts at least the neighbor itself, so the quantile is never zero.
+            NonZeroUsize::new(column[quantile])
         })
-        .collect();
-    CandidateNeed { by_k }
+        .collect::<Option<Vec<_>>>();
+    match by_k {
+        Some(by_k) => CandidateNeed::Measured { by_k },
+        // Unreachable by construction (see above); scoring every row is still exact.
+        None => CandidateNeed::Unmeasurable,
+    }
 }

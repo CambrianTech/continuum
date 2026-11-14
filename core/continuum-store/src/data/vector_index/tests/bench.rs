@@ -11,8 +11,8 @@
 //! buffers each path allocates per query, not sampled. Recall@k is NEW's top-k against
 //! OLD's f64 ranking (the exact answer). The default run is the 1k receipt with its gates;
 //! `--features stress-tests` reports 1k / 10k / 100k (`-- --nocapture` to read it).
-use super::super::cpu::CpuMatrix;
-use super::super::{unit_f32, RecallTarget, ResidentMatrix};
+use super::super::cpu::MatrixBuilder;
+use super::super::{unit_f32, Hit, Producer, RecallTarget, ResidentMatrix};
 use super::synthetic;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
@@ -76,13 +76,12 @@ fn run(rows: usize, queries: usize) -> Result<Receipt, Box<dyn std::error::Error
     let old_load = started.elapsed();
 
     // NEW load: producer-certified payloads (normalized once at write), appended as bytes.
-    let payloads = raw.iter().map(|values| unit_f32(values.iter().copied(), "bench/producer")).collect::<Result<Vec<_>, _>>()?;
+    // The page arrives as `binary_page_into` lays it out: row-major bytes and parallel ids.
+    let (descriptor, page, ids) = super::page_of(&raw, 0)?;
     let started = Instant::now();
-    let mut matrix = CpuMatrix::default();
-    for (row, payload) in payloads.iter().enumerate() {
-        matrix.append_rows(payload.descriptor(), payload.bytes(), vec![row.to_string()])?;
-    }
-    matrix.calibrate(RecallTarget::STORE);
+    let mut builder = MatrixBuilder::default();
+    builder.append_page(&descriptor, &page, &ids)?;
+    let matrix = builder.seal(RecallTarget::STORE);
     let new_load = started.elapsed();
 
     let k = NonZeroUsize::new(K).ok_or("bench: k")?;
@@ -96,13 +95,12 @@ fn run(rows: usize, queries: usize) -> Result<Receipt, Box<dyn std::error::Error
         old_times.push(started.elapsed());
         // NEW query: normalized once by its producer (the wire boundary), then searched.
         let started = Instant::now();
-        let query = unit_f32(wire.iter().map(|value| *value as f32), "bench/query")?;
+        let query = unit_f32(wire.iter().map(|value| *value as f32), &Producer::WireQuery)?;
         let found = matrix.search(&query, k)?;
         new_times.push(started.elapsed());
-        kept += truth.iter().filter(|row| found.iter().any(|(hit, _)| hit == *row)).count();
+        kept += truth.iter().filter(|row| found.iter().any(|hit| hit.row == **row)).count();
     }
-    let candidates = matrix.candidates(K);
-    let words = DIMENSION.div_ceil(64);
+    let candidates = matrix.candidates(k).map_or(rows, NonZeroUsize::get);
     Ok(Receipt {
         rows,
         old_load,
@@ -113,9 +111,8 @@ fn run(rows: usize, queries: usize) -> Result<Receipt, Box<dyn std::error::Error
         new_p99: percentile(&mut new_times, 0.99),
         // The wire query as f64, then one (index, f64) per row.
         old_bytes_per_query: DIMENSION * 8 + rows * std::mem::size_of::<(usize, f64)>(),
-        // The query payload and its floats, its sketch, the radius histogram, the k-heap.
-        new_bytes_per_query: DIMENSION * 4 * 2 + words * 8 + (DIMENSION + 1) * std::mem::size_of::<usize>()
-            + K * std::mem::size_of::<(f32, usize)>(),
+        // The query payload, its copy into the thread's reused scratch, and the k hits.
+        new_bytes_per_query: DIMENSION * 4 * 2 + K * std::mem::size_of::<Hit>(),
         candidates,
         recall: kept as f64 / (probes.len() * K) as f64,
     })

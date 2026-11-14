@@ -52,6 +52,10 @@ from the first sample row.
 String-backed enums used in predicates declare `#[entity(text)]`: their stored value
 is the scalar string, not a quoted JSON document. The shared write codec refuses
 nonstrings; indexes and query bindings operate on the same declared representation.
+Predicates and cursors bind through the declared scalar write codec. Wrong-type
+values and scalar comparisons against opaque JSON/BLOB fields fail before execution,
+including count/delete on empty collections; they must never masquerade as zero
+matches. NULL/existence predicates remain available for opaque fields.
 
 Integers stay exact; NULL is distinct from missing, empty and zero. A creation default
 applies only where the declaration explicitly permits it. A default never repairs an
@@ -85,6 +89,46 @@ the explicit offline migration before adoption. Bulk reads, revision-watermarked
 delta replay and the GPU consumer remain separate implementation obligations; these
 descriptor fields alone do not establish GPU search or its quality.
 
+The bulk reader appends native rows to caller-owned contiguous bytes and parallel
+UUIDs. It borrows SQLite payload/header views while their query results remain
+owned, decodes one common descriptor, validates the whole page, and then copies each
+payload once into the destination. There is no per-row payload/header allocation and
+no numeric materialization. NULL pairs are excluded in storage before LIMIT; a partial
+NULL pair or mixed descriptor refuses the page without appending output. Capacity may
+be reserved on refusal, but existing buffer contents and lengths remain unchanged.
+This is not mmap/Metal zero-copy: SQLite owns its result buffers. The current cursor
+is still an ID-ordered live scan. IDs and cursors are typed UUIDs; native identity text
+must be canonical lowercase hyphenated UUIDs so database ordering matches the cursor.
+Revision-watermarked newest-first traversal, deletion replay and the GPU consumer remain
+unfinished; this bulk-copy slice must not be presented as the complete engine seam.
+
+Native create/update now record an internal per-row revision in the same committing
+transaction as the bytes and descriptor. The existing sequence-head owner allocates
+revisions in a typed native domain, separate from append sequence custody; a single
+UPSERT RETURNING advances a head and refuses overflow. Failed transactions roll back
+both head and row receipt, and an unchanged conditional write consumes no revision.
+Direct predicate deletes, batch deletes and owner clear now mark matching native
+receipts deleted in the same transaction. A database-side identity subquery selects
+victims without materializing bodies or a CPU victim list; no matching receipt means
+no new revision. Delete primitives require a transaction rather than an arbitrary
+connection. Rollback and recreation preserve the head and tombstone contracts.
+Declared foreign-key cascades now contribute their transitive identity closure through
+one recursive ORM query, using UNION to deduplicate cycles and converging paths. Only
+reachable native collections receive tombstones; SET NULL survivors stay live and a
+RESTRICT failure rolls back every receipt. The owner restores and physically verifies
+its persisted schema catalog once at open, so children participate even before their
+caller re-admits a declaration. A new external declaration requires admission or a
+new owner before deletion; an incomplete catalog cannot silently miss descendants.
+The existing committing owner publishes typed domain/collection revision notices only
+after commit. Append and native receivers share that owner but never share a revision
+domain. Native create/update, direct deletes, batch deletes, cascades and clear return
+their notices through the transaction result; rollback and conditional no-op emit none.
+Persisted heads seed receivers on owner restart. These are wakeup hints backed by
+durable heads, not a snapshot or replay proof: ordered delta paging and its completion
+semantics must land before consumers may use a high-water mark as processed work.
+The sequence-head declaration now has a composite domain/collection identity; any
+previous development database needs the offline schema migration before adoption.
+
 The producer chooses its representation and performs normalization or precision
 selection once in its compute path. Storage binds and returns those native bytes.
 It does not iterate through elements to encode, decode, normalize, check finiteness,
@@ -97,6 +141,11 @@ payload length, identity and schema compatibility. It visits the small header, n
 payload elements. Any numerical validation belongs to the producer's measured GPU
 work. The descriptor and bytes commit atomically; a failed update cannot pair an old
 payload with a new descriptor. Their revision is one identity for cache invalidation.
+Native updates accept a nonempty map of declared payload fields, binding all bytes and
+descriptors in one UPDATE with one revision. Conditional initialization succeeds only
+when every supplied pair is NULL; a populated member makes the whole group a no-op.
+Unknown fields or invalid descriptors refuse before dispatch. There is no retained
+single-field update path.
 
 Payloads never pass through `serde_json::Value`, textual numbers, base64 or a second
 in-memory numeric array on the native path. A required external encoding terminates

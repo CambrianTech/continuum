@@ -97,9 +97,10 @@ pub trait StorageAdapter: Send + Sync {
 
     /// Stream declared records for replay without materializing a result set.
     /// Dropping the stream releases its database read and connection.
-    async fn scan(&self, query: StorageQuery)
-        -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, String>;
-
+    async fn scan(
+        &self,
+        query: StorageQuery,
+    ) -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, String>;
 
     /// Query with JOINs for optimal loading of related data
     /// Returns records with joined data nested under alias keys
@@ -153,6 +154,8 @@ pub trait StorageAdapter: Send + Sync {
     /// the committing write itself (cancellation-safe for the caller). A hint to drain from a
     /// cursor, never the data.
     fn sequence_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64>;
+    /// Native commits use an independent domain in the shared revision owner.
+    fn native_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64>;
 
     // ─── Schema Operations ───────────────────────────────────────────────────
 
@@ -166,11 +169,33 @@ pub trait StorageAdapter: Send + Sync {
     async fn list_collections(&self) -> StorageResult<Vec<String>>;
 
     /// Bounded native payload reads; scalar projections use the normal query owner.
-    async fn binary_page(&self, collection: &str, field: &str, after: Option<String>, limit: usize) -> StorageResult<Vec<super::binary::BinaryRecord>>;
-    async fn create_binary(&self, record: DataRecord, payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>) -> StorageResult<String>;
-    async fn update_binary(&self, collection: &str, id: &str, field: &str, value: super::binary::BinaryValue, condition: super::binary::BinaryWriteCondition) -> StorageResult<bool>;
+    async fn binary_page_into(
+        &self,
+        collection: &str,
+        field: &str,
+        after: Option<uuid::Uuid>,
+        limit: usize,
+        bytes: &mut Vec<u8>,
+        ids: &mut Vec<uuid::Uuid>,
+    ) -> StorageResult<Option<super::binary::BinaryDescriptor>>;
+    async fn create_binary(
+        &self,
+        record: DataRecord,
+        payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
+    ) -> StorageResult<String>;
+    async fn update_binary(
+        &self,
+        collection: &str,
+        id: &str,
+        payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
+        condition: super::binary::BinaryWriteCondition,
+    ) -> StorageResult<bool>;
 
-    async fn numeric_array_stats(&self, collection: &str, field: &str) -> StorageResult<NumericArrayStats>;
+    async fn numeric_array_stats(
+        &self,
+        collection: &str,
+        field: &str,
+    ) -> StorageResult<NumericArrayStats>;
 
     async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats>;
 

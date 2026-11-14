@@ -1,53 +1,54 @@
 //! The resident vector matrix per collection; cache cell detachment owns invalidation.
-use super::vector_index::{CpuMatrix, RecallTarget, ResidentMatrix};
+use super::vector_index::{CpuMatrix, MatrixBuilder, RecallTarget, VectorStoreError};
 use super::DataState;
+use crate::runtime::shared_compute::ComputeError;
 use std::sync::Arc;
 
-/// The binary field every vector collection declares for its embeddings.
+/// The binary field every vector collection declares for its embeddings: the one name the
+/// writers, the filters, the stats and the matrix all use.
 pub(super) const EMBEDDING_FIELD: &str = "embedding";
 
 impl DataState {
-    /// Builds the collection's resident matrix from native pages: raw producer bytes are
-    /// appended into one buffer, never decoded into JSON numbers. The storage owner's bulk
-    /// `binary_page_into` replaces the per-record append below with one page append (and a
-    /// revision watermark replaces whole rebuilds with deltas).
+    /// Builds the collection's resident matrix from native pages: each page's raw producer
+    /// bytes land in one reused buffer and are appended to the matrix in one copy, never
+    /// decoded into numbers on the way. Rows without a vector are not in the pages.
     pub(super) async fn vector_corpus(
         &self,
         handle: &str,
         collection: &str,
-    ) -> Result<Arc<CpuMatrix>, String> {
-        let scope = self.resolve_handle(handle)?;
+    ) -> Result<Arc<CpuMatrix>, VectorStoreError> {
+        let scope = self.resolve_handle(handle).map_err(VectorStoreError::Store)?;
         self.vector_cache
             .get_or_try_compute(&scope, collection, async {
-                let adapter = self.adapter_for_backend(handle, scope.clone()).await?;
+                let adapter = self.adapter_for_backend(handle, scope.clone()).await.map_err(VectorStoreError::Store)?;
                 // The store's page size bounds one transfer, not the searchable corpus:
-                // every page is visited before the matrix is published.
+                // every page is visited before the matrix is sealed.
                 let page_size = super::default_page_size();
-                let mut matrix = CpuMatrix::default();
+                let mut matrix = MatrixBuilder::default();
+                let mut bytes = Vec::new();
+                let mut ids = Vec::new();
                 let mut after = None;
                 loop {
-                    let page = adapter
-                        .binary_page(collection, EMBEDDING_FIELD, after.take(), page_size)
+                    bytes.clear();
+                    ids.clear();
+                    let descriptor = adapter
+                        .binary_page_into(collection, EMBEDDING_FIELD, after, page_size, &mut bytes, &mut ids)
                         .await
-                        .into_result()?;
-                    let full = page.len() == page_size;
-                    let last = page.last().map(|record| record.id.clone());
-                    for record in page {
-                        // A row without a vector is not indexed yet; it is not an error.
-                        let Some(value) = record.value else { continue };
-                        matrix
-                            .append_rows(value.descriptor(), value.bytes(), vec![record.id.clone()])
-                            .map_err(|error| format!("vector corpus record {}: {error}", record.id))?;
+                        .into_result()
+                        .map_err(VectorStoreError::Store)?;
+                    let Some(descriptor) = descriptor else { break };
+                    matrix.append_page(&descriptor, &bytes, &ids)?;
+                    match ids.last() {
+                        Some(last) if ids.len() == page_size => after = Some(*last),
+                        _ => break,
                     }
-                    if !full {
-                        break;
-                    }
-                    after = Some(last.ok_or("full vector page has no final identity")?);
                 }
-                matrix.calibrate(RecallTarget::STORE);
-                Ok::<_, String>(matrix)
+                Ok::<_, VectorStoreError>(matrix.seal(RecallTarget::STORE))
             })
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| match error {
+                ComputeError::Initialize(error) => error,
+                ComputeError::TypeMismatch { scope, key } => VectorStoreError::CacheType { scope, key },
+            })
     }
 }

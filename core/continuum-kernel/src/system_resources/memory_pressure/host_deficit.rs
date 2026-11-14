@@ -9,59 +9,77 @@
 //! or swaps, our resident caches cost every mind decode speed, so what the OS has displaced is
 //! what we owe.
 //!
+//! Why the OS decides when it is clean: on the M5 on 2026-11-13 (23:40Z, canary 0ed0d231b) 0.4 GB
+//! were free, 42 GB sat in the compressor and swap was 14.5 of 15 GB, yet the deficit read 0 on
+//! almost every poll. Under STANDING starvation the kernel holds free pages at its small free
+//! target by compressing, so the compressor and swap stop growing and the free target is met: the
+//! first cut of this file called that poll "clean" (no shortfall, no growth) and took the whole
+//! 42 GB displaced as its baseline. Starvation read as normal. Only the OS knows whether it is
+//! under pressure, and it says so: its own pressure verdict (`OsMemoryPressure`, read by the host
+//! adapter: macOS `kern.memorystatus_vm_pressure_level`, Linux PSI).
+//!
 //! The formula, per poll, from the host reading (`continuum_host::host_memory`):
 //!
 //! ```text
 //! displaced = compressed + swap_used                 bytes the OS has pushed out of plain RAM
 //! shortfall = max(0, free_target - (free + reclaimable))   what the OS still needs to reach its
 //!                                                           own free target
-//! clean     = shortfall == 0 AND no swap-out AND the compressor did not grow since the last poll
-//! clean  => baseline = displaced; deficit = 0
-//! else   => deficit = (displaced - baseline) + shortfall
-//!           (no clean poll seen yet, e.g. a restart into pressure: baseline = 0)
+//! OS Normal       => baseline = displaced; deficit = 0
+//! OS Warn/Critical => deficit = max((displaced - baseline) + shortfall, free_target)
+//!                     (no OS-normal poll seen yet, e.g. a restart into pressure: baseline = 0;
+//!                      no baseline is ever taken while the OS reports pressure)
+//! no verdict      => deficit = 0, no baseline (unknown, never calm: the RAM gate and the swap
+//!                     axis still decide)
 //! ```
 //!
-//! Every threshold is the machine's own: the free target is the kernel's (macOS
-//! `vm.vm_page_free_target`, Linux `min_free_kbytes`), and "grew" is a comparison with the last
-//! reading, never a fraction. Inert swap left by an old build does not pin the deficit: the next
-//! clean poll takes it into the baseline. A clean box is zero by construction. No reading (an OS
-//! without an adapter, a failed call) is no deficit claim: the RAM gate and the swap axis still
-//! decide there.
+//! While the OS reports pressure the deficit is never 0: when nothing grew since the last
+//! OS-normal poll (standing starvation that began at a displaced level the OS once tolerated),
+//! the deficit is the kernel's own free target, so every poll gives back one free target's worth
+//! more until the OS reads normal again. Every number is the machine's own: the verdict and the
+//! free target are the kernel's (macOS `vm.vm_page_free_target`, Linux `min_free_kbytes`), and
+//! "grew" is a comparison with the OS-normal reading, never a fraction. Inert swap left by an old
+//! build does not pin the deficit: the next OS-normal poll takes it into the baseline.
 
-use continuum_host::host_memory::HostMemoryReading;
+use continuum_host::host_memory::{HostMemoryReading, OsMemoryPressure};
 
 use super::{MemoryPriority, PressureLevel, PressureSnapshot};
 
-/// The deficit across polls: the last reading (to see growth) and what the OS held displaced at
-/// the last clean poll.
+/// The deficit across polls: what the OS held displaced at its last OS-normal poll, and how many
+/// polls in a row the OS has read itself normal (the take-again half's hysteresis).
 #[derive(Debug, Default)]
-pub(crate) struct HostDeficit {
-    last: Option<(u64, u64)>,
+pub struct HostDeficit {
     baseline: Option<u64>,
+    calm_polls: u32,
 }
 
 impl HostDeficit {
     /// Fold one poll in and return its deficit in bytes. `swap_used` is the swap occupancy the
-    /// monitor reads beside the reading. The first reading has nothing to compare with: 0.
-    pub(crate) fn observe(&mut self, reading: Option<&HostMemoryReading>, swap_used: u64) -> u64 {
-        let Some(reading) = reading else {
-            self.last = None;
-            return 0;
-        };
-        let now = (reading.compressed_bytes, reading.swapped_out_bytes);
-        let Some((compressed_before, swapped_out_before)) = self.last.replace(now) else {
+    /// monitor reads beside the reading.
+    pub fn observe(&mut self, reading: Option<&HostMemoryReading>, swap_used: u64) -> u64 {
+        let Some((reading, pressure)) = reading.and_then(|reading| reading.pressure.map(|pressure| (reading, pressure))) else {
+            self.calm_polls = 0;
             return 0;
         };
         let displaced = reading.compressed_bytes.saturating_add(swap_used);
-        let shortfall = reading.shortfall_bytes();
-        let compressing = reading.compressed_bytes > compressed_before;
-        let swapping_out = reading.swapped_out_bytes > swapped_out_before;
-        if shortfall == 0 && !compressing && !swapping_out {
-            self.baseline = Some(displaced);
-            return 0;
+        match pressure {
+            OsMemoryPressure::Normal => {
+                self.baseline = Some(displaced);
+                self.calm_polls = self.calm_polls.saturating_add(1);
+                0
+            }
+            OsMemoryPressure::Warn | OsMemoryPressure::Critical => {
+                self.calm_polls = 0;
+                let grown = self.baseline.map_or(displaced, |baseline| displaced.saturating_sub(baseline));
+                grown.saturating_add(reading.shortfall_bytes()).max(reading.free_target_bytes)
+            }
         }
-        let grown = self.baseline.map_or(displaced, |baseline| displaced.saturating_sub(baseline));
-        grown.saturating_add(shortfall)
+    }
+
+    /// Whether a reporter that gave memory back may take it again: the OS has read itself normal
+    /// on two polls in a row (the same hysteresis `shed_due` applies before shedding). No reading
+    /// or no verdict is never calm.
+    pub fn take_again_due(&self) -> bool {
+        self.calm_polls >= 2
     }
 }
 
@@ -145,21 +163,28 @@ mod tests {
     /// The M5's free target: `vm.vm_page_free_target` 4,000 pages of 16 KiB (2026-11-13).
     const M5_FREE_TARGET: u64 = 4_000 * 16_384;
 
-    fn reading(free: u64, reclaimable: u64, compressed: u64, swapped_out: u64) -> HostMemoryReading {
+    fn reading(free: u64, reclaimable: u64, compressed: u64, pressure: OsMemoryPressure) -> HostMemoryReading {
         HostMemoryReading {
             free_bytes: free,
             reclaimable_bytes: reclaimable,
             compressed_bytes: compressed,
             swapped_in_bytes: 0,
-            swapped_out_bytes: swapped_out,
+            swapped_out_bytes: 0,
             free_target_bytes: M5_FREE_TARGET,
+            pressure: Some(pressure),
         }
     }
 
-    /// The incident poll: 60 MB free, the file cache already dropped, 34 GB compressed, and the
-    /// OS still swapping out.
-    fn incident(swapped_out: u64) -> HostMemoryReading {
-        reading(60 * MB, 0, 34 * GB, swapped_out)
+    /// The first incident poll: 60 MB free, the file cache already dropped, 34 GB compressed, and
+    /// the kernel reading itself under pressure.
+    fn incident() -> HostMemoryReading {
+        reading(60 * MB, 0, 34 * GB, OsMemoryPressure::Warn)
+    }
+
+    /// The 23:40Z poll: 0.4 GB free (above the 64 MB target, so no shortfall), the compressor
+    /// flat at 2,565,898 pages of 16 KiB (42 GB), the kernel at critical.
+    fn standing_starvation() -> HostMemoryReading {
+        reading(400 * MB, 0, 2_565_898 * 16_384, OsMemoryPressure::Critical)
     }
 
     fn snapshot(deficit_bytes: u64, held: Vec<HeldAtPriority>) -> PressureSnapshot {
@@ -174,26 +199,24 @@ mod tests {
     }
 
     // what this catches: the 2026-11-13 M5 incident. Free 60 MB, compressor 34 GB, swap 8.6 of
-    // 10 GB, RAM "used" under the old gate: the deficit is positive (after a clean baseline, and
-    // after a restart straight into the pressure), the level is at least Warning, the shed path
-    // runs on every poll while it lasts, and a reporter at Interactive is asked to give back
+    // 10 GB, RAM "used" under the old gate: the deficit is positive (after an OS-normal baseline,
+    // and after a restart straight into the pressure), the level is at least Warning, the shed
+    // path runs on every poll while it lasts, and a reporter at Interactive is asked to give back
     // bytes although the RAM overrun alone is zero.
     #[test]
     fn the_m5_incident_has_a_deficit_and_the_reporters_shed() {
         let swap_used = 8_600 * MB;
         let mut host = HostDeficit::default();
-        assert_eq!(host.observe(Some(&reading(20 * GB, 8 * GB, 2 * GB, 100 * GB)), GB), 0, "the first reading");
-        assert_eq!(host.observe(Some(&reading(20 * GB, 8 * GB, 2 * GB, 100 * GB)), GB), 0, "clean: baseline 3 GB");
-        let deficit = host.observe(Some(&incident(101 * GB)), swap_used);
+        assert_eq!(host.observe(Some(&reading(20 * GB, 8 * GB, 2 * GB, OsMemoryPressure::Normal)), GB), 0, "OS normal: baseline 3 GB");
+        let deficit = host.observe(Some(&incident()), swap_used);
         let shortfall = M5_FREE_TARGET - 60 * MB;
-        assert_eq!(deficit, 34 * GB + swap_used - 3 * GB + shortfall, "displaced past the clean baseline, plus the free target");
+        assert_eq!(deficit, 34 * GB + swap_used - 3 * GB + shortfall, "displaced past the OS-normal baseline, plus the free target");
 
         let mut restarted = HostDeficit::default();
-        restarted.observe(Some(&incident(101 * GB)), swap_used);
         assert_eq!(
-            restarted.observe(Some(&incident(102 * GB)), swap_used),
+            restarted.observe(Some(&incident()), swap_used),
             34 * GB + swap_used + shortfall,
-            "no clean poll since the restart: everything displaced is owed"
+            "no OS-normal poll since the restart: everything displaced is owed, from the first poll"
         );
 
         assert_eq!(PressureLevel::from_deficit(deficit), PressureLevel::Warning);
@@ -211,14 +234,57 @@ mod tests {
         assert_eq!(incident_snapshot.deficit_at(MemoryPriority::Realtime), 0, "only OOM stops Realtime");
     }
 
-    // what this catches: a clean box shedding. A compressor that is small and steady, no swap
-    // growth and free memory above the kernel's target is no deficit on any poll, Normal, and no
-    // shed; inert swap a build left behind does not count.
+    // what this catches: standing starvation read as normal (the M5, 2026-11-13 23:40Z). The
+    // compressor (42 GB) and swap (14.5 of 15 GB) are flat and free memory sits above the
+    // kernel's target, so the old counter rule called every poll clean, took the whole 42 GB as
+    // its baseline and read 0. The kernel says critical: no baseline is taken, the deficit is what
+    // the OS has displaced since it last read normal, and it never drops to 0 while the kernel
+    // says pressure, even with nothing growing past a baseline the OS once tolerated.
+    #[test]
+    fn standing_starvation_is_owed_while_the_os_says_pressure() {
+        let swap_used = 14_500 * MB;
+        let displaced = 2_565_898 * 16_384 + swap_used;
+        let mut host = HostDeficit::default();
+        assert_eq!(host.observe(Some(&reading(20 * GB, 8 * GB, 2 * GB, OsMemoryPressure::Normal)), GB), 0, "OS normal at boot: baseline 3 GB");
+        for poll in 0..30 {
+            let deficit = host.observe(Some(&standing_starvation()), swap_used);
+            assert_eq!(deficit, displaced - 3 * GB, "poll {poll}: flat counters, still owed, the baseline never moves");
+            assert!(!host.take_again_due());
+        }
+
+        let mut tolerated = HostDeficit::default();
+        tolerated.observe(Some(&reading(400 * MB, 0, 2_565_898 * 16_384, OsMemoryPressure::Normal)), swap_used);
+        assert_eq!(
+            tolerated.observe(Some(&standing_starvation()), swap_used),
+            M5_FREE_TARGET,
+            "nothing grew since the OS read normal: the kernel's own free target, never 0"
+        );
+    }
+
+    // what this catches: the take-again half firing on a single calm poll, on a host with no
+    // verdict, or while pressure persists. Two OS-normal polls in a row, and only those, are due.
+    #[test]
+    fn take_again_is_due_only_after_two_os_normal_polls() {
+        let mut host = HostDeficit::default();
+        host.observe(Some(&standing_starvation()), 0);
+        host.observe(Some(&reading(20 * GB, 8 * GB, 2 * GB, OsMemoryPressure::Normal)), 0);
+        assert!(!host.take_again_due(), "one calm poll is a spike");
+        host.observe(Some(&reading(20 * GB, 8 * GB, 2 * GB, OsMemoryPressure::Normal)), 0);
+        assert!(host.take_again_due());
+        let mut no_verdict = reading(20 * GB, 8 * GB, 2 * GB, OsMemoryPressure::Normal);
+        no_verdict.pressure = None;
+        assert_eq!(host.observe(Some(&no_verdict), 0), 0, "no verdict: no deficit claim");
+        assert!(!host.take_again_due(), "and never calm");
+    }
+
+    // what this catches: a clean box shedding. While the OS reads itself normal, a small
+    // compressor and inert swap a build left behind are no deficit on any poll, Normal, and no
+    // shed.
     #[test]
     fn a_clean_box_has_no_deficit_and_sheds_nothing() {
         let mut host = HostDeficit::default();
         for _ in 0..5 {
-            let deficit = host.observe(Some(&reading(12 * GB, 6 * GB, 500 * MB, 7 * GB)), 1_700 * MB);
+            let deficit = host.observe(Some(&reading(12 * GB, 6 * GB, 500 * MB, OsMemoryPressure::Normal)), 1_700 * MB);
             assert_eq!(deficit, 0);
             assert_eq!(PressureLevel::from_deficit(deficit), PressureLevel::Normal);
             assert!(!shed_due(PressureLevel::Normal, 5, deficit));

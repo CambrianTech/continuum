@@ -105,7 +105,7 @@ mod boot_during_memory_settle {
     }
 
     fn compressed(bytes: u64) -> HostMemoryReading {
-        HostMemoryReading { free_bytes: 0, reclaimable_bytes: 0, compressed_bytes: bytes, swapped_in_bytes: 0, swapped_out_bytes: 0, free_target_bytes: 0 }
+        HostMemoryReading { free_bytes: 0, reclaimable_bytes: 0, compressed_bytes: bytes, swapped_in_bytes: 0, swapped_out_bytes: 0, free_target_bytes: 0, pressure: None }
     }
 
     // what this catches: the recorded boot, reproduced. The boot's demand held no resident (need 0),
@@ -143,6 +143,87 @@ mod boot_during_memory_settle {
 
         let applied = floor_sized(MIN_SERVE_CTX, &NEEDS, at_t15).expect("an engine already at the floor is floor-sized");
         assert_eq!((applied.held_now, applied.held_then), (0, NEEDS.len()), "the grown plan is applied: none held, then all");
+    }
+}
+
+// Dyno 11: standing starvation (the M5, 2026-11-13 23:40Z, canary 0ed0d231b, card 0f631c46): 0.4 GB
+// free, the compressor flat at 2,565,898 pages of 16 KiB (42 GB), swap flat at 14.5 of 15 GB, the
+// kernel at critical, and the engine's host prompt cache launched at --cache-ram 16525 MiB. Every
+// poll printed `memory.pressure.shed level=critical deficit_mb=0`, and `serving.reclaim.prompt_cache`
+// fired zero times. Driven through the monitor's own deficit (`HostDeficit`) and the cache's own
+// reporter (`PromptCacheShedder`), as the monitor composes them each poll.
+mod standing_starvation {
+    use crate::modules::serving_prompt_cache::tests::{poll, rig, FakeEngineCache, M5_GRANT_MIB, MIB};
+    use crate::system_resources::memory_pressure::{HeldAtPriority, HostDeficit};
+    use crate::system_resources::MemoryPriority;
+    use continuum_host::host_memory::{HostMemoryReading, OsMemoryPressure};
+
+    const GB: u64 = 1_000_000_000;
+    const SWAP_USED: u64 = 14_500_000_000;
+    /// `vm.vm_page_free_target` on the M5: 4,000 pages of 16 KiB.
+    const FREE_TARGET: u64 = 4_000 * 16_384;
+
+    fn reading(free: u64, compressed: u64, pressure: OsMemoryPressure) -> HostMemoryReading {
+        HostMemoryReading {
+            free_bytes: free,
+            reclaimable_bytes: 0,
+            compressed_bytes: compressed,
+            swapped_in_bytes: 289_360_556 * 16_384,
+            swapped_out_bytes: 444_562_085 * 16_384,
+            free_target_bytes: FREE_TARGET,
+            pressure: Some(pressure),
+        }
+    }
+
+    /// The 23:40Z poll, the same every poll: nothing grows, the free target is met, the kernel says
+    /// critical.
+    fn starved() -> HostMemoryReading {
+        reading(400_000_000, 2_565_898 * 16_384, OsMemoryPressure::Critical)
+    }
+
+    // what this catches: the recorded defect's inputs. On the starved poll the counters read clean
+    // (free above the kernel's target, compressor and swap flat), which is all the first deficit rule
+    // looked at: it took the whole 42 GB + 14.5 GB displaced as its baseline and read 0. Only the
+    // kernel's own verdict tells the two apart.
+    #[test]
+    fn before_the_counters_read_the_starved_host_as_clean() {
+        let (first, second) = (starved(), starved());
+        assert_eq!(first.shortfall_bytes(), 0, "0.4 GB free is above the 64 MB target");
+        assert_eq!((first.compressed_bytes, first.swapped_out_bytes), (second.compressed_bytes, second.swapped_out_bytes), "nothing grows");
+        assert_eq!(first.pressure, Some(OsMemoryPressure::Critical), "the kernel's verdict is the only signal left");
+    }
+
+    // what this catches: the fix, end to end. The deficit is what the OS displaced since it last read
+    // normal (never 0 while it says critical); the cache at Batch is charged first, so its 16.5 GB
+    // comes off the minds' share; the cache's lever is asked and lowers the engine's limit; and after
+    // two OS-normal polls the cache is taken back to its launch grant, the engine's reply the receipt.
+    #[tokio::test]
+    async fn after_the_cache_is_asked_first_and_taken_back_when_the_os_reads_normal() {
+        let mut host = HostDeficit::default();
+        assert_eq!(host.observe(Some(&reading(20 * GB, 3 * GB, OsMemoryPressure::Normal)), GB), 0, "boot: OS normal, baseline 4 GB");
+        let displaced = 2_565_898 * 16_384 + SWAP_USED;
+        for _ in 0..3 {
+            assert_eq!(host.observe(Some(&starved()), SWAP_USED), displaced - 4 * GB, "flat starvation stays owed");
+        }
+        let deficit = host.observe(Some(&starved()), SWAP_USED);
+
+        let cache = FakeEngineCache::full(M5_GRANT_MIB);
+        let (shedder, _serving, pressure) = rig(cache.clone(), M5_GRANT_MIB);
+        let minds = [HeldAtPriority { priority: MemoryPriority::Interactive, bytes: 2 * GB }];
+        let snapshot = poll(&shedder, deficit, &minds, (48 * GB, 64 * GB));
+        let cache_bytes = u64::from(M5_GRANT_MIB) * MIB;
+        assert_eq!(snapshot.deficit_at(MemoryPriority::Interactive), deficit - cache_bytes, "the cache is charged before the minds");
+        pressure.send_replace(snapshot);
+        shedder.shed_now().expect("test: the lever is asked").await.expect("test: the step ran");
+        assert_eq!(cache.asked(), vec![1], "a deficit past the whole cache lowers it to the route's floor");
+
+        host.observe(Some(&reading(20 * GB, 30 * GB, OsMemoryPressure::Normal)), SWAP_USED);
+        assert!(!host.take_again_due(), "one calm poll is a spike");
+        assert_eq!(host.observe(Some(&reading(20 * GB, 30 * GB, OsMemoryPressure::Normal)), SWAP_USED), 0);
+        assert!(host.take_again_due());
+        pressure.send_replace(poll(&shedder, 0, &minds, (40 * GB, 64 * GB)));
+        shedder.take_again_now().expect("test: the cache is taken back").await.expect("test: the step ran");
+        assert_eq!(cache.asked(), vec![1, u64::from(M5_GRANT_MIB)], "back to --cache-ram 16525");
     }
 }
 

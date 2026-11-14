@@ -91,7 +91,7 @@ pub use continuum_base::tool_disclosure::Disclosure;
 pub use events::{event_registry, event_registry_defects, EventDescriptor, EventSpec};
 #[cfg(feature = "ts-codegen")]
 pub use events::{generate_event_api, generate_event_map};
-pub use handler::{dispatch, dispatch_with_caller, CommandError, CommandHandler, Ctx, Outcome};
+pub use handler::{dispatch, dispatch_with_caller, CommandError, CommandFailure, CommandHandler, Ctx, Outcome};
 
 /// Self-register a `CommandSpec` type into the auto-discovered registry. ONE line
 /// at the command's own declaration site — never a central list:

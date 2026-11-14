@@ -5,8 +5,30 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryWriteCondition {
     Replace,
-    /// No change if another producer has filled the field or removed the row.
+    /// No change unless every supplied payload/descriptor pair is absent and the row exists.
     IfAbsent,
+}
+
+/// Why a descriptor, or a payload under it, is not a valid native value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BinaryDescriptorError {
+    #[error("binary descriptor requires shape and producer identity")]
+    Incomplete,
+    #[error("binary scale requires I8 and a finite positive value")]
+    Scale,
+    #[error("packed bits cannot declare numerical L2 normalization")]
+    UnitBits,
+    #[error("binary shape exceeds address space")]
+    AddressSpace,
+    #[error("binary payload holds {found} bytes, its descriptor needs {expected}")]
+    PayloadLength { expected: usize, found: usize },
+}
+
+/// The storage owner's string-error paths still carry descriptor faults as text.
+impl From<BinaryDescriptorError> for String {
+    fn from(error: BinaryDescriptorError) -> Self {
+        error.to_string()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,12 +40,12 @@ pub enum ElementType {
 }
 
 impl ElementType {
-    fn payload_len(self, elements: usize) -> Result<usize, String> {
+    fn payload_len(self, elements: usize) -> Result<usize, BinaryDescriptorError> {
         let width = match self {
             Self::Bit => return Ok(elements / 8 + usize::from(elements % 8 != 0)),
             Self::U8 | Self::I8 => 1, Self::F16 | Self::Bf16 => 2, Self::F32 => 4, Self::F64 => 8,
         };
-        elements.checked_mul(width).ok_or_else(|| "binary shape exceeds address space".into())
+        elements.checked_mul(width).ok_or(BinaryDescriptorError::AddressSpace)
     }
     fn read(tag: u8) -> Result<Self, String> {
         match tag { 1 => Ok(Self::U8), 2 => Ok(Self::I8), 3 => Ok(Self::F16), 4 => Ok(Self::Bf16), 5 => Ok(Self::F32), 6 => Ok(Self::F64), 7 => Ok(Self::Bit), _ => Err("unknown binary element type".into()) }
@@ -49,19 +71,19 @@ pub struct BinaryDescriptor {
 }
 
 impl BinaryDescriptor {
-    pub fn byte_len(&self) -> Result<usize, String> {
-        if self.shape.is_empty() || self.producer.is_empty() { return Err("binary descriptor requires shape and producer identity".into()); }
+    pub fn byte_len(&self) -> Result<usize, BinaryDescriptorError> {
+        if self.shape.is_empty() || self.producer.is_empty() { return Err(BinaryDescriptorError::Incomplete); }
         if let Some(scale) = self.scale {
             if self.element_type != ElementType::I8 || !scale.is_finite() || scale <= 0.0 {
-                return Err("binary scale requires I8 and a finite positive value".into());
+                return Err(BinaryDescriptorError::Scale);
             }
         }
         if self.unit && self.element_type == ElementType::Bit {
-            return Err("packed bits cannot declare numerical L2 normalization".into());
+            return Err(BinaryDescriptorError::UnitBits);
         }
         let elements = self.shape.iter().try_fold(1_usize, |size, &dimension| {
-            size.checked_mul(usize::try_from(dimension).map_err(|_| "binary dimension exceeds address space")?)
-                .ok_or("binary shape exceeds address space")
+            size.checked_mul(usize::try_from(dimension).map_err(|_| BinaryDescriptorError::AddressSpace)?)
+                .ok_or(BinaryDescriptorError::AddressSpace)
         })?;
         self.element_type.payload_len(elements)
     }
@@ -114,8 +136,9 @@ pub struct BinaryValue {
 }
 
 impl BinaryValue {
-    pub fn new(descriptor: BinaryDescriptor, bytes: Vec<u8>) -> Result<Self, String> {
-        if descriptor.byte_len()? != bytes.len() { return Err("binary payload length disagrees with descriptor".into()); }
+    pub fn new(descriptor: BinaryDescriptor, bytes: Vec<u8>) -> Result<Self, BinaryDescriptorError> {
+        let expected = descriptor.byte_len()?;
+        if expected != bytes.len() { return Err(BinaryDescriptorError::PayloadLength { expected, found: bytes.len() }); }
         Ok(Self { descriptor, bytes })
     }
     pub fn descriptor(&self) -> &BinaryDescriptor { &self.descriptor }
@@ -127,8 +150,13 @@ pub(super) fn descriptor_column(field: &str) -> String {
     format!("{}__descriptor", super::adapter::naming::to_snake_case(field))
 }
 
-#[derive(Debug)]
-pub struct BinaryRecord {
-    pub id: String,
-    pub value: Option<BinaryValue>,
+/// A typed page cursor must have exactly the same ordering as persisted identity text.
+/// Validate canonical spelling on native writes and reads; never silently rewrite it.
+pub(super) fn native_identity(text: &str) -> Result<uuid::Uuid, String> {
+    let id = uuid::Uuid::parse_str(text).map_err(|e| format!("invalid native row identity: {e}"))?;
+    let mut canonical = [0_u8; 36];
+    if id.hyphenated().encode_lower(&mut canonical) != text {
+        return Err("native row identity requires canonical lowercase hyphenated UUID".into());
+    }
+    Ok(id)
 }

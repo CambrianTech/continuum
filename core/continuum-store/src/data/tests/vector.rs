@@ -2,7 +2,12 @@
 //! Vector indexing, ranking and cache behavior on the shared SQLite fixture. Embeddings are
 //! native unit-vector payloads written through `vector/index`, never JSON numbers.
 use super::*;
-use crate::data::vector_index::ResidentMatrix;
+use crate::data::vector_index::{RecordId, ResidentMatrix, UnitVectorError, VectorStoreError};
+
+/// A record id the native store accepts: canonical UUIDs, ordered by `n`.
+fn record_id(n: u128) -> RecordId {
+    RecordId::from_u128(n + 1)
+}
 
 /// A vector collection: optional text and an optional native embedding.
 async fn declare_vectors(adapter: &dyn StorageAdapter, collection: &str) {
@@ -34,18 +39,17 @@ async fn vector_corpus_pages_past_rows_without_embeddings() {
     declare_vectors(adapter.as_ref(), "test_vector_pages").await;
     let page_size = crate::data::max_concurrent_queries::default_page_size();
     for index in 0..page_size + 3 {
-        let id = format!("row-{index:06}");
+        let id = record_id(index as u128).to_string();
         create_row(adapter.as_ref(), "test_vector_pages", &id).await;
         if index >= page_size {
-            let indexed = module.state.index_vector(&db_path, "test_vector_pages", id, vec![index as f64, 1.0])
+            module.state.index_vector(&db_path, "test_vector_pages", id, vec![index as f64, 1.0])
                 .await.expect("test: index");
-            assert!(indexed.success, "{indexed:?}");
         }
     }
     let vectors = module.state.vector_corpus(&db_path, "test_vector_pages").await.expect("test: corpus");
     assert_eq!(vectors.len(), 3, "an unindexed page must not end corpus traversal");
     for offset in 0..3 {
-        assert_eq!(vectors.id(offset), Some(format!("row-{:06}", page_size + offset).as_str()));
+        assert_eq!(vectors.id(offset), Some(record_id((page_size + offset) as u128)));
     }
 }
 
@@ -65,9 +69,10 @@ async fn zero_vector_is_refused_at_index() {
     let (_tmp, db_path) = test_db_path("vector_zero");
     let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
     declare_vectors(adapter.as_ref(), "test_zero").await;
-    create_row(adapter.as_ref(), "test_zero", "zero").await;
-    let refused = module.state.index_vector(&db_path, "test_zero", "zero".into(), vec![0.0; 384]).await;
-    assert!(matches!(refused, Err(ref error) if error.contains("zero vector")), "{refused:?}");
+    let zero = record_id(0).to_string();
+    create_row(adapter.as_ref(), "test_zero", &zero).await;
+    let refused = module.state.index_vector(&db_path, "test_zero", zero, vec![0.0; 384]).await;
+    assert!(matches!(refused, Err(VectorStoreError::Unit(UnitVectorError::Zero))), "{refused:?}");
     assert!(module.state.vector_corpus(&db_path, "test_zero").await.expect("test: corpus").len() == 0);
 }
 
@@ -146,9 +151,9 @@ async fn test_vector_search_basic() {
         (0..384).map(|i| (i as f64) * 0.003).collect(),
     ];
     for (idx, emb) in embeddings.iter().enumerate() {
-        let id = format!("document-{idx}");
+        let id = record_id(idx as u128).to_string();
         create_row(adapter.as_ref(), "test_search", &id).await;
-        assert!(module.state.index_vector(&db_path, "test_search", id, emb.clone()).await.expect("test: index").success);
+        module.state.index_vector(&db_path, "test_search", id, emb.clone()).await.expect("test: index");
     }
 
     let query_vector: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
@@ -205,7 +210,7 @@ async fn test_vector_search_basic() {
         .vector_search(&db_path, "test_search", query_vector, 3, 0.0, true)
         .await;
     assert!(
-        matches!(hydrated, Err(ref error) if error.contains(id)),
+        matches!(hydrated, Err(VectorStoreError::Hydration { id: missing, .. }) if missing.to_string() == id),
         "missing cached record must reach the caller: {hydrated:?}"
     );
 }
@@ -220,8 +225,10 @@ async fn test_vector_cache_invalidation() {
     assert_ne!(db_path, alias);
     let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
     declare_vectors(adapter.as_ref(), "test_cache").await;
-    create_row(adapter.as_ref(), "test_cache", "resident").await;
-    assert!(module.state.index_vector(&db_path, "test_cache", "resident".into(), vec![1.0; 384]).await.expect("test: index").success);
+    let resident = record_id(0).to_string();
+    let target = record_id(1).to_string();
+    create_row(adapter.as_ref(), "test_cache", &resident).await;
+    module.state.index_vector(&db_path, "test_cache", resident, vec![1.0; 384]).await.expect("test: index");
 
     // First search populates the resident matrix.
     let query: Vec<f64> = vec![1.0; 384];
@@ -255,32 +262,32 @@ async fn test_vector_cache_invalidation() {
     for operation in ["delete", "batch", "truncate", "clear"] {
         module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before create");
         let created = module.state.create_record(
-            &alias, "test_cache".into(), Some("mutation-target".into()), json!({}),
+            &alias, "test_cache".into(), Some(target.clone()), json!({}),
         ).await.expect("create through mutation owner");
         assert!(created.success, "{created:?}");
-        assert!(module.state.index_vector(&alias, "test_cache", "mutation-target".into(), vec![1.0; 384]).await.expect("alias index").success);
+        module.state.index_vector(&alias, "test_cache", target.clone(), vec![1.0; 384]).await.expect("alias index");
         let warm = module.state.vector_search(
             &db_path, "test_cache", vec![1.0; 384], 10, 0.0, true,
         ).await.expect("warm corpus");
-        assert!(warm.results.iter().any(|hit| hit.id == "mutation-target"));
+        assert!(warm.results.iter().any(|hit| hit.id == target));
         let alias_stats = module.state.vector_stats(&alias, "test_cache").await.expect("alias stats");
         assert_eq!(alias_stats.cached_vectors, warm.corpus_size);
         assert!(module.state.invalidate_vector_cache(&alias, "test_cache").await.expect("alias invalidation").cache_invalidated);
         assert_eq!(module.state.vector_stats(&db_path, "test_cache").await.expect("sentinel stats").cached_vectors, 0);
         module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before reindex");
-        assert!(module.state.index_vector(&alias, "test_cache", "mutation-target".into(), vec![-1.0; 384]).await.expect("reindex").success);
+        module.state.index_vector(&alias, "test_cache", target.clone(), vec![-1.0; 384]).await.expect("reindex");
         let changed = module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.5, true)
             .await.expect("search reindexed corpus");
-        assert!(changed.results.iter().all(|hit| hit.id != "mutation-target"));
+        assert!(changed.results.iter().all(|hit| hit.id != target));
         match operation {
             "batch" => {
                 let result = module.state.batch_operations(&alias, vec![crate::orm::types::BatchOperation {
                     operation_type: crate::orm::types::BatchOperationType::Delete,
-                    collection: "test_cache".into(), id: Some("mutation-target".into()), data: None,
+                    collection: "test_cache".into(), id: Some(target.clone()), data: None,
                 }]).await.expect("batch delete");
                 assert!(result.success, "{result:?}");
             }
-            "delete" => assert!(module.state.delete_record(&alias, "test_cache".into(), "mutation-target".into()).await.expect("delete").success),
+            "delete" => assert!(module.state.delete_record(&alias, "test_cache".into(), target.clone()).await.expect("delete").success),
             "truncate" => assert!(module.state.truncate_collection(&alias, "test_cache").await.expect("truncate").success),
             "clear" => assert!(module.state.clear_all_collections(&alias).await.expect("clear").success),
             _ => unreachable!("fixture operation"),
@@ -288,7 +295,7 @@ async fn test_vector_cache_invalidation() {
         let after = module.state.vector_search(
             &db_path, "test_cache", vec![1.0; 384], 10, 0.0, true,
         ).await.expect("search after acknowledged mutation");
-        assert!(after.results.iter().all(|hit| hit.id != "mutation-target"));
+        assert!(after.results.iter().all(|hit| hit.id != target));
         let expected = if matches!(operation, "truncate" | "clear") { 0 } else { warm.corpus_size - 1 };
         assert_eq!(after.corpus_size, expected, "{operation} must refresh the corpus");
     }

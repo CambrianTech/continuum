@@ -143,6 +143,8 @@ impl Drop for KvSlotLease {
 /// Recency tie-break window: within it, a fresher equal-cost tail outranks a
 /// staler one; beyond it equal-cost tails are genuinely equivalent. Strictly
 /// smaller than [`COST_STEP`] so pricing always dominates recency.
+/// derived-or-floor: it only orders slots whose measured prices are exactly equal; any window
+/// below `COST_STEP` leaves every priced eviction unchanged, so no measurement would move it.
 pub(super) const RECENCY_TIEBREAK_MS: u64 = 600_000;
 
 /// One token-cost step in the eviction score — must exceed the largest possible
@@ -181,6 +183,9 @@ pub struct KvSlotPool {
     /// slot pinned waits on before it leases again (card ff9ecfd8), so it never runs unpinned
     /// over a resident's KV. A wake signal, not a queue: the order stays the server's own.
     pub(super) released: Arc<tokio::sync::Notify>,
+    /// The scratch slot's own release signal: scratch cannot satisfy citizen admission, so its
+    /// release wakes only what waits for scratch ([`Self::busy_until_release`]).
+    pub(super) scratch_released: Arc<tokio::sync::Notify>,
     /// Where [`Self::saved`] persists, set once when the engine is ready under a contract
     /// that has a page dir and a fingerprint ([`SavedLedger`]). Unset = in-memory only.
     pub(super) ledger: std::sync::OnceLock<SavedLedger>,
@@ -199,20 +204,21 @@ pub struct KvSlotPool {
 
 /// A slot's operation permit. Dropping a citizen permit wakes turns waiting for a slot
 /// ([`KvSlotPool::released`]); the holder's pin was already dropped (field order in
-/// `TurnAdmission`), so a woken turn finds that lease evictable.
+/// `TurnAdmission`), so a woken turn finds that lease evictable. Dropping the scratch permit
+/// wakes only scratch's waiters ([`KvSlotPool::scratch_released`]).
 pub struct SlotPermit {
     pub(super) _permit: tokio::sync::OwnedSemaphorePermit,
-    /// Scratch has its own semaphore waiters, but cannot satisfy citizen admission.
-    pub(super) released: Option<Arc<tokio::sync::Notify>>,
+    pub(super) released: Arc<tokio::sync::Notify>,
 }
 
 impl Drop for SlotPermit {
     fn drop(&mut self) {
-        if let Some(released) = &self.released {
-            released.notify_waiters();
-        }
+        self.released.notify_waiters();
     }
 }
+
+/// The wait for a slot's next release, registered before the check that found it busy.
+pub(crate) type SlotRelease = std::pin::Pin<Box<tokio::sync::futures::OwnedNotified>>;
 
 /// What a Turn must do AROUND its request to honor the KV paging design — the
 /// OS-context-switch shape (Joel: "many threads but one at a time … they page
