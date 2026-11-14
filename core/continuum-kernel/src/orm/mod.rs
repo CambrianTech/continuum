@@ -34,6 +34,8 @@ mod relational_evolution;
 #[cfg(test)]
 mod relational_derived_tests;
 pub mod schema_error;
+pub mod seam;
+pub mod storage_error;
 mod relational_query;
 mod relational_codec;
 mod relational;
