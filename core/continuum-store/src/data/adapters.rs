@@ -86,12 +86,21 @@ pub(super) async fn ensure_declared_schemas(
     adapter: &SeaOrmAdapter,
     registry: &crate::orm::OrmEntityRegistry,
 ) -> Result<(), String> {
+    let mut declarations = std::collections::BTreeMap::new();
     for schema in crate::entity_schemas::get_entity_schemas()
         .map_err(|e| e.to_string())?
         .values()
     {
+        declarations.insert(schema.collection.clone(), resolve_collection_schema(registry, &schema.collection)?);
+    }
+    // Rust-only entities have no generated decorator entry. Admit them before
+    // publishing this adapter too, so the first read never depends on a write.
+    for schema in registry.declarations() {
+        declarations.insert(schema.collection.clone(), schema);
+    }
+    for schema in declarations.into_values() {
         adapter
-            .ensure_schema(resolve_collection_schema(registry, &schema.collection)?)
+            .ensure_schema(schema)
             .await
             .into_result()?;
     }
