@@ -2,8 +2,6 @@
 //!
 //! Launches a detached process in its own group with stdout/stderr redirected to a log file.
 //! No probe or permit callbacks are needed on this platform — they are stubbed by the caller.
-
-use std::io::Seek;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};

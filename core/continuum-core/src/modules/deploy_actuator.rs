@@ -45,9 +45,10 @@ pub(crate) const ACTUATOR_SWITCH_KEY: &str = "CONTINUUM_DEPLOY_ACTUATOR";
 /// The CLI verb the actuator launches — the consumer that turns a request into a reboot.
 pub(crate) const CONSUMER_VERB: &str = "deploy-consume";
 /// Actuations per request before the actuator stops and lets `deploy.stranded` speak.
-/// Measured at 3 on a slow tier (Intel Mac ~70 min deploy): one for a transient
-/// failure (network glitch, cargo cache miss), one to confirm the tip lands,
-/// no third of a rebuild loop — the tracker's bound prevents blind re-launching.
+/// Mirrors [`crate::bin::continuum::deploy_ledger::CONSUME_MAX_ATTEMPTS`] (one owner,
+/// two sites that cannot drift): measured at 3 on a slow tier (Intel Mac ~70 min deploy)
+/// — one for a transient failure (network glitch, cargo cache miss), one to confirm
+/// the tip lands, no third of a rebuild loop — the tracker's bound prevents blind re-launching.
 pub(crate) const ACTUATE_MAX_ATTEMPTS: u32 = 3;
 /// The Windows consumer task `continuum install --supervisor` registers (S4U, every ten
 /// minutes). Firing it on demand is how the core actuates without becoming the parent of
@@ -299,87 +300,25 @@ fn open_log_for_child(path: &Path) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
-/// The real spawner.
+// Platform-specific callback factories — thin adapters selected at the module boundary so
+// deploy_actuator.rs itself carries no OS branches; all spawn logic lives in continuum-host.
+#[cfg_attr(unix, path = "spawner_callbacks_unix.rs")]
+#[cfg_attr(windows, path = "spawner_callbacks_windows.rs")]
+mod callbacks;
+
+/// The real spawner — delegates all OS-specific spawning to [`continuum_host::deploy_spawn`].
 pub(crate) struct CliSpawner;
 
-#[cfg(unix)]
 impl DeploySpawner for CliSpawner {
     fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String> {
-        use std::os::unix::process::CommandExt;
-        let log = open_log_for_child(&plan.log).map_err(|e| format!("cannot open {}: {e}", plan.log.display()))?;
-        let err = log.try_clone().map_err(|e| format!("cannot clone the log handle: {e}"))?;
-        // A NEW PROCESS GROUP: the reboot the consumer runs stops the core by signalling
-        // the core's group (the start script's setsid), and the consumer must not be in it.
-        let child = Command::new(&plan.cli)
-            .args(&plan.args)
-            .current_dir(&plan.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(err))
-            .process_group(0)
-            .spawn()
-            .map_err(|e| format!("cannot spawn {} {}: {e}", plan.cli.display(), plan.args.join(" ")))?;
-        Ok(Spawned {
-            pid: Some(child.id()),
-            mode: format!("{} (new process group)", plan.args.join(" ")),
-            child: Some(child),
-        })
-    }
-}
-
-#[cfg(windows)]
-impl DeploySpawner for CliSpawner {
-    fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String> {
-        use std::os::windows::process::CommandExt;
-        // A disabled task is not permission to bypass maintenance with a child.
-        // Keep the shared permit across both Scheduler and detached spawn paths.
-        let _startup = continuum_cli_lifecycle::supervisor_install::maintenance::StartupPermit::acquire_deploy(&plan.cwd)?;
-        // FIRST the registered consumer task: the scheduler runs it under the S4U
-        // principal, outside this core's job object, and serializes it against its own
-        // ten-minute firing (MultipleInstancesPolicy IgnoreNew) — one consumer at a time
-        // on this box, whoever asked. `continuum install --supervisor` grants the user
-        // RX on the task so this needs no elevation.
-        let run = crate::system_resources::bounded_command::probe(
-            "schtasks",
-            &["/Run", "/TN", DEPLOY_TASK],
-            TASK_RUN_TIMEOUT,
-        );
-        if run.stdout_if_ok().is_some() {
-            return Ok(Spawned { pid: None, mode: format!("schtasks /Run {DEPLOY_TASK}"), child: None });
-        }
-        // No task (or not runnable by this user): spawn the consumer ourselves, breaking
-        // away from any job object first (a child of the core's job dies when the core's
-        // reboot ends that job — card 82af11f5), then without when the job forbids it.
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        let launch = |flags: u32| -> std::io::Result<std::process::Child> {
-            let log = open_log_for_child(&plan.log)?;
-            let err = log.try_clone()?;
-            Command::new(&plan.cli)
-                .args(&plan.args)
-                .current_dir(&plan.cwd)
-                .stdin(Stdio::null())
-                .stdout(Stdio::from(log))
-                .stderr(Stdio::from(err))
-                .creation_flags(flags)
-                .spawn()
+        let (probe, permit_check) = callbacks::make();
+        let host_plan = continuum_host::deploy_spawn::SpawnPlan {
+            cli: plan.cli.clone(),
+            args: plan.args.clone(),
+            cwd: plan.cwd.clone(),
+            log: plan.log.clone(),
         };
-        let task_outcome = run.outcome();
-        let (child, how) = match launch(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB) {
-            Ok(c) => (c, "breakaway"),
-            Err(e) if e.raw_os_error() == Some(5) => (
-                launch(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW)
-                    .map_err(|e| format!("cannot spawn {} {}: {e}", plan.cli.display(), plan.args.join(" ")))?,
-                "child-of-job (breakaway denied)",
-            ),
-            Err(e) => return Err(format!("cannot spawn {} {}: {e}", plan.cli.display(), plan.args.join(" "))),
-        };
-        Ok(Spawned {
-            pid: Some(child.id()),
-            mode: format!("{} ({how}; task {DEPLOY_TASK} {task_outcome})", plan.args.join(" ")),
-            child: Some(child),
-        })
+        continuum_host::deploy_spawn::spawn_deploy(&host_plan, probe, permit_check)
     }
 }
 
@@ -487,7 +426,7 @@ impl DeployActuator {
             let path = self.receipt_path();
             let tmp = path.with_extension("json.tmp");
             if std::fs::write(&tmp, bytes).is_ok() {
-                let _ = std::fs::rename(&tmp, &path);
+                let _ = continuum_host::durable::replace(&tmp, &path);
             }
         }
     }
