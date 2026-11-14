@@ -109,8 +109,16 @@ This is not mmap/Metal zero-copy: SQLite owns its result buffers. The current cu
 is ID-ordered within that pinned snapshot. The native revision identifies payload
 write/delete state, not scalar-filter invalidations or GPU adoption. IDs and cursors are typed UUIDs; native identity text
 must be canonical lowercase hyphenated UUIDs so database ordering matches the cursor.
-Revision-watermarked newest-first traversal, deletion replay and the GPU consumer remain
-unfinished; this bulk-copy slice must not be presented as the complete engine seam.
+Native snapshot changes_into traverses coalesced native changes by descending revision
+and UUID, with an exclusive since revision and composite continuation key. It appends
+typed Upsert (descriptor plus absolute byte range) or Remove entries and native bytes
+into caller-owned buffers. Tombstones and absent optional native fields produce Remove;
+partial pairs or missing live rows refuse before either buffer changes. Continue on the
+same snapshot with unchanged field and since; cursors are not independently bound.
+End-of-interval means no further database page, not consumer/GPU adoption. Advance an
+applied watermark only after all changes and downstream transfers complete. Scalar-filter
+invalidations and GPU integration remain unfinished. Migration must populate native
+revision receipts; arbitrary preexisting payloads are not inferred.
 
 Native create/update now record an internal per-row revision in the same committing
 transaction as the bytes and descriptor. The existing sequence-head owner allocates
@@ -142,7 +150,7 @@ after commit. Append and native receivers share that owner but never share a rev
 domain. Native create/update, direct deletes, batch deletes, cascades and clear return
 their notices through the transaction result; rollback and conditional no-op emit none.
 Persisted heads seed receivers on owner restart. These are wakeup hints backed by
-durable heads, not a snapshot or replay proof: ordered delta paging and its completion
+durable heads, not a consumer adoption proof: downstream delta application and completion
 semantics must land before consumers may use a high-water mark as processed work.
 The current receipt table coalesces each identity to its latest revision. A fixed
 upper revision with live paged queries is therefore eventual reconciliation, not an
