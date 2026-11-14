@@ -6,13 +6,9 @@
 //! must admit to keep it. A probe's need at depth j is the largest such count among its
 //! first j neighbors. The candidate count for k is the `target` quantile of the probes'
 //! needs at depth k, so `target` of the probes keep their COMPLETE top-k. Nothing here is a
-//! tuned constant except [`MEASURED_DEPTH`], which bounds which k are measured directly.
+//! tuned constant: the probe count and the measured depth both come from the target.
 use super::cpu::{dot, hamming, words, Ranked};
 use super::RecallTarget;
-
-/// The largest k measured directly; `vector/search` defaults to k = 10. A larger k scales
-/// the deepest measured need linearly, and the bench reports recall at k = 100 past it.
-const MEASURED_DEPTH: usize = 64;
 
 /// Candidates needed per k, measured on the matrix it belongs to.
 #[derive(Debug, Clone)]
@@ -41,7 +37,10 @@ fn probes(rows: usize, target: RecallTarget) -> usize {
 pub(super) fn measure(rows: &[f32], sketches: &[u64], dimension: usize, target: RecallTarget) -> CandidateNeed {
     let count = sketches.len() / words(dimension);
     let probes = probes(count, target);
-    let depth = MEASURED_DEPTH.min(count.saturating_sub(1));
+    // Neighbors are measured as deep as the target's quantile is observed: as many as there are
+    // probes (100 at 0.99, past `vector/search`'s default k of 10). A larger k scales the
+    // deepest measured need linearly ([`CandidateNeed::candidates`]).
+    let depth = probes.min(count.saturating_sub(1));
     if probes == 0 || depth == 0 {
         return CandidateNeed { by_k: Vec::new() };
     }
