@@ -156,4 +156,3 @@ async fn required_native_fields_create_atomically_without_body_readback(
     );
     Ok(())
 }
-
