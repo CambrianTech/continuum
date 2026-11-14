@@ -479,6 +479,7 @@ fn a_host_never_sinks_below_what_its_physical_capacity_serves() {
         fits_on_gpu: true,
         rationale: String::new(),
         lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
+            window_target: 0,
     };
     // The 5090: 32 GB × 0.80 physical. The floor is the 27B — even though the
     // plan that asked was computed over a candidate list the unload had emptied
@@ -555,6 +556,7 @@ fn downshift_gate_classifies_the_transient_lobotomy() {
         fits_on_gpu: true,
         rationale: String::new(),
         lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
+            window_target: 0,
     };
     let both = vec![devstral.clone(), tiny.clone()];
 
