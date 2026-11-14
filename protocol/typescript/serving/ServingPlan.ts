@@ -74,4 +74,9 @@ rationale: string,
  * 5090 (2026-10-12, build 6160: `demand_lanes=2`, `fits_on_gpu=true`) could not say
  * whether the GPU, the per-lane floor or a cold boot's memory chose one lane.
  */
-lanesBound: LanesBound, };
+lanesBound: LanesBound,
+  /**
+   * The target context window for this plan — derived from persona requirements,
+   * not a fixed hardware constant. Used to compute closeness() as servedContextWindow / windowTarget.
+   */
+  windowTarget: number, };
