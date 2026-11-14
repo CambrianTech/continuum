@@ -182,16 +182,10 @@ impl ActionCommand for ToolOutput {
     const NAME: &'static str = "tool/output";
     // THE RECOVERY VERB MUST BE IN HER VOCABULARY. Measured 2026-08-28: the
     // elision marker tells her to "jump straight to what broke" with
-    // `tool/output`, and this command declared NO aliases — so under
-    // `OfferStyle::TrainedReflex` (which offers each command's PRIMARY alias,
-    // `code/read` → `read_file`) it never landed on the menu in a name her
-    // training reaches for, and across every log on this box it had been called
-    // exactly ZERO times. The substrate was handing her a handle and naming a
-    // verb she did not hold: the tail of every flood-sized error — which is
-    // usually the actual failure — was unreadable to her.
-    //
-    // Inbound resolution accepts every style (`from_wire_name`), so adding
-    // aliases can only widen what she can say, never narrow it.
+    // `tool/output`, and across every log on this box it had been called exactly
+    // ZERO times. The aliases below are the names a model reaches for; inbound
+    // resolution (`from_wire_name`) accepts them, so they only widen what she can
+    // say. She is offered it as `tool_output` (its path, `wire_name`), like every verb.
     //
     // Aliases were not enough: it was not NATIVE, so a native-call model could not emit it at
     // all (measured 2026-11-06 on the M5: no act called it, while every folded act, saved result
@@ -271,8 +265,8 @@ impl ActionCommand for ToolOutput {
 crate::register_stateless_command!(ToolOutput);
 continuum_kernel::register_outcome!(ToolOutput);
 
-/// The verb every handle she is shown names: it renders as her tool list offers it (today
-/// `read_output`, its first alias), and it only builds while `tool/output` is native and in every
+/// The verb every handle she is shown names: it renders as her tool list offers it
+/// (`tool_output`, its path), and it only builds while `tool/output` is native and in every
 /// surface. Text that reopens something renders a [`Reopen`], which carries it.
 pub const TOOL_OUTPUT: VerbRef<ToolOutput> = VerbRef::always();
 
@@ -280,7 +274,7 @@ pub const TOOL_OUTPUT: VerbRef<ToolOutput> = VerbRef::always();
 /// params, serialized), rendered once. Every handle she is shown (a folded act, a repeat, a saved
 /// result, a shed thought, a collapsed receipt, a too-large result) names its way back with this,
 /// so there is one form to learn and it is always a call she can make as written:
-/// `read_output({"act":3})`, `read_output({"outputId":"deadbeef"})`.
+/// `tool_output({"act":3})`, `tool_output({"outputId":"deadbeef"})`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reopen<'a> {
     /// One of her act numbers.
@@ -535,14 +529,10 @@ mod tests {
     #[test]
     fn a_reopen_is_one_call_she_can_make_as_written() {
         use crate::sdk_codegen::wire_name;
-        let offered = wire_name(
-            <ToolOutput as ActionCommand>::NAME,
-            crate::sdk_codegen::primary_alias(<ToolOutput as ActionCommand>::ALIASES),
-            crate::sdk_codegen::offer_style_for(None),
-        );
-        assert_eq!(offered, "read_output", "her list offers the trained reflex, its first alias");
-        assert_eq!(Reopen::Act(3).to_string(), r#"read_output({"act":3})"#);
-        assert_eq!(Reopen::Output("deadbeef").to_string(), r#"read_output({"outputId":"deadbeef"})"#);
+        let offered = wire_name(<ToolOutput as ActionCommand>::NAME);
+        assert_eq!(offered, "tool_output", "her list offers the verb by its path, never an alias");
+        assert_eq!(Reopen::Act(3).to_string(), r#"tool_output({"act":3})"#);
+        assert_eq!(Reopen::Output("deadbeef").to_string(), r#"tool_output({"outputId":"deadbeef"})"#);
         // A page's reading on (`prompt/newest_result.rs`) is the same call with its selection.
         for reopen in [Reopen::Act(3), Reopen::Output("deadbeef"), Reopen::Lines { output: "deadbeef", range: spill::LineRange { start: 41, end: Some(900) } }, Reopen::Lines { output: "deadbeef", range: spill::LineRange { start: 41, end: None } }, Reopen::Bytes { output: "deadbeef", offset: 4_096 }] {
             let shown = reopen.to_string();

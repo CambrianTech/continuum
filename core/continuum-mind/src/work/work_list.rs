@@ -222,8 +222,7 @@ pub struct WorkListResult {
 #[async_trait]
 impl ActionCommand for WorkList {
     const NAME: &'static str = "work/list";
-    const ALIASES: &'static [&'static str] = &["list_tasks"];
-    const NATIVE: bool = true; // core room workflow — the read half of claim_task; without it the board is write-only
+    const NATIVE: bool = true; // core room workflow — the read half of work/claim; without it the board is write-only
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "List the work board's cards (read-only): short id, title, state, owner, and whether it is \
