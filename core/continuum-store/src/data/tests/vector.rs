@@ -118,7 +118,7 @@ async fn test_vector_index_and_stats() {
     )
     .await;
     match &index_result {
-        Ok(CommandResult::Json(result)) => assert!(result["success"].as_bool().unwrap_or(false), "{result}"), // test: absent success is a failure
+        Ok(CommandResult::Json(result)) => assert_eq!(result["id"], json!(record_id), "{result}"),
         other => panic!("index failed: {other:?}"),
     }
 

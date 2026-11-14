@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::data::DataState;
-use crate::orm::types::{DataRecord, StorageResult};
+use crate::orm::types::DataRecord;
 
 /// Params for `vector/index`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -36,14 +36,13 @@ crate::action_command! {
     name: "vector/index",
     access: Privileged,
     params: VectorIndexParams,
-    output: StorageResult<DataRecord>,
+    output: DataRecord,
     run(this, _ctx, p) => {
         let handle = p.handle.as_str();
-        // The wire keeps its receipt shape; the store seam below it is typed.
         let record = this
             .state
             .index_vector(handle, &p.collection, p.id, p.embedding)
             .await?;
-        Ok(StorageResult::ok(record))
+        Ok(record)
     }
 }

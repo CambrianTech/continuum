@@ -41,7 +41,8 @@ use crate::orm::types::CollectionSchema;
                 })).await?;
                 let rows: crate::orm::types::StorageResult<Vec<DataRecord>> =
                     serde_json::from_value(result.to_json_value()?)?;
-                let rows = rows.into_result()?;
+                assert!(rows.success, "{:?}", rows.error);
+                let Some(rows) = rows.data else { return Err("a successful receipt carries its rows".into()) };
                 assert_eq!(rows.len(), limit);
                 for (index, row) in rows.iter().enumerate() {
                     assert_eq!(row.data["value"], json!(index + 2));
@@ -278,7 +279,7 @@ use crate::orm::types::CollectionSchema;
     /// Test seam: drive [`DataState::index_vector`] through the same
     /// [`VectorIndexParams`](crate::commands::vector::index::VectorIndexParams)
     /// deserialization the typed `vector/index` command uses. Returns the typed
-    /// `StorageResult<DataRecord>` as JSON.
+    /// indexed `DataRecord` as JSON.
     pub(super) async fn index_via_state(
         module: &DataModule,
         params: serde_json::Value,
@@ -286,7 +287,7 @@ use crate::orm::types::CollectionSchema;
         let p: crate::commands::vector::index::VectorIndexParams = serde_json::from_value(params)?;
         let handle = p.handle.as_str();
         let record = module.state.index_vector(handle, &p.collection, p.id, p.embedding).await?;
-        Ok(CommandResult::Json(serde_json::to_value(crate::orm::types::StorageResult::ok(record))?))
+        Ok(CommandResult::Json(serde_json::to_value(record)?))
     }
 
     /// Test seam for the typed `vector/stats` command. Returns [`VectorStats`] as
