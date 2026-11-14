@@ -11,6 +11,8 @@ use sea_orm::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::storage_error::{ConfigFault, StorageError};
+
 #[derive(Clone)]
 pub(super) struct RelationalStore {
     pub db: DatabaseConnection,
@@ -27,12 +29,12 @@ pub(super) struct RelationalStore {
 }
 
 impl RelationalStore {
-    pub async fn open(config: AdapterConfig) -> Result<Self, String> {
+    pub async fn open(config: AdapterConfig) -> Result<Self, StorageError> {
         if config.max_connections == 0 {
-            return Err("connection pool requires positive capacity".into());
+            return Err(StorageError::Config(ConfigFault::NoCapacity));
         }
         if config.namespace.is_some() {
-            return Err("SQLite namespaces require separate database owners".into());
+            return Err(StorageError::Config(ConfigFault::Namespace));
         }
         let in_memory = config.connection_string == ":memory:";
         if !in_memory {
@@ -42,7 +44,7 @@ impl RelationalStore {
                 .filter(|parent| !parent.as_os_str().is_empty())
             {
                 continuum_host::confine::open_root(parent)
-                    .map_err(|error| format!("database directory {}: {error}", parent.display()))?;
+                    .map_err(|source| StorageError::Io { path: parent.to_path_buf(), source })?;
             }
         }
         let url = if in_memory {
@@ -59,7 +61,7 @@ impl RelationalStore {
                 config
                     .max_connections
                     .try_into()
-                    .map_err(|_| "connection count exceeds u32")?,
+                    .map_err(|_| StorageError::Config(ConfigFault::CapacityRange))?,
             )
             .connect_timeout(std::time::Duration::from_millis(config.timeout_ms))
             .acquire_timeout(std::time::Duration::from_millis(config.timeout_ms))
@@ -69,10 +71,8 @@ impl RelationalStore {
                     .journal_mode(sea_orm::sqlx::sqlite::SqliteJournalMode::Wal)
                     .optimize_on_close(true, None)
             });
-        let db = Database::connect(options)
-            .await
-            .map_err(|e| e.to_string())?;
-        let schema_db = super::relational_evolution::schema_connection(&url).await.map_err(|error| error.to_string())?;
+        let db = Database::connect(options).await?;
+        let schema_db = super::relational_evolution::schema_connection(&url).await?;
         let initialized = async {
             use super::relational_schema::DeclaredTable;
             use sea_orm::EntityName;
@@ -88,10 +88,10 @@ impl RelationalStore {
             Ok::<(), super::schema_error::SchemaError>(())
         }.await;
         let closed = schema_db.close().await;
-        initialized.map_err(|error| error.to_string())?;
-        closed.map_err(|error| error.to_string())?;
-        let catalog_read = db.begin().await.map_err(|e| e.to_string())?;
-        let schemas = super::relational_declaration::restore(&catalog_read).await.map_err(|error| error.to_string())?;
+        initialized?;
+        closed?;
+        let catalog_read = db.begin().await?;
+        let schemas = super::relational_declaration::restore(&catalog_read).await?;
         use super::relational_sequence::{Column, Entity};
         use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
         let mut revisions = HashMap::new();
@@ -113,7 +113,7 @@ impl RelationalStore {
                         ),
                 );
             }
-            let heads = query.all(&catalog_read).await.map_err(|e| e.to_string())?;
+            let heads = query.all(&catalog_read).await?;
             if heads.is_empty() {
                 break;
             }
@@ -124,12 +124,13 @@ impl RelationalStore {
                 let domain = match head.domain.as_str() {
                     "append" => super::relational_sequence::Domain::Append,
                     "native" => super::relational_sequence::Domain::Native,
-                    _ => return Err("unknown persisted revision domain".into()),
+                    _ => return Err(StorageError::Corrupt { what: "a persisted revision names an unknown domain" }),
                 };
-                if head.high <= 0 {
-                    return Err("nonpositive persisted revision".into());
-                }
-                let high = u64::try_from(head.high).map_err(|_| "negative persisted revision")?;
+                // A head is written only by a commit, so it is positive (the u64 conversion refuses the rest).
+                let high = u64::try_from(head.high)
+                    .ok()
+                    .filter(|high| *high > 0)
+                    .ok_or(StorageError::Corrupt { what: "a persisted revision is not positive" })?;
                 revisions.insert(
                     (
                         domain,
@@ -139,7 +140,7 @@ impl RelationalStore {
                 );
             }
         }
-        catalog_read.commit().await.map_err(|e| e.to_string())?;
+        catalog_read.commit().await?;
         Ok(Self {
             db,
             in_memory,
@@ -151,53 +152,46 @@ impl RelationalStore {
         })
     }
 
-    pub async fn ensure(&self, schema: CollectionSchema) -> Result<(), String> {
+    pub async fn ensure(&self, schema: &CollectionSchema) -> Result<(), StorageError> {
         let _guard = self.schema_gate.lock().await;
         if let Some(existing) = self.schemas.read().get(&schema.collection) {
-            if super::entity::schemas_equivalent(existing.as_ref(), &schema) {
+            if super::entity::schemas_equivalent(existing.as_ref(), schema) {
                 return Ok(());
             }
         }
-        let declared = super::relational_schema::compile(&schema)?;
+        let declared = super::relational_schema::compile(schema)?;
         let _write = self.writer_gate.lock().await;
         // SQLite DROP TABLE executes FK actions even during a rebuild. Use a
         // short-lived, pinned schema connection; normal read/write connections
         // keep FK enforcement enabled. Validate all references before commit.
-        let schema_db = super::relational_evolution::schema_connection(&self.schema_url).await.map_err(|error| error.to_string())?;
+        let schema_db = super::relational_evolution::schema_connection(&self.schema_url).await?;
         let result = async {
-        let transaction = schema_db.begin().await.map_err(|e| e.to_string())?;
-        if super::relational_declaration::admit(&transaction, &schema).await.map_err(|error| error.to_string())? {
-            transaction
-                .execute(DbBackend::Sqlite.build(&declared.create))
-                .await
-                .map_err(|e| e.to_string())?;
-            for index in declared.indexes {
-                transaction
-                    .execute(DbBackend::Sqlite.build(&index))
-                    .await
-                    .map_err(|e| e.to_string())?;
+            let transaction = schema_db.begin().await?;
+            if super::relational_declaration::admit(&transaction, schema).await? {
+                transaction.execute(DbBackend::Sqlite.build(&declared.create)).await?;
+                for index in declared.indexes {
+                    transaction.execute(DbBackend::Sqlite.build(&index)).await?;
+                }
+                super::relational_declaration::record(&transaction, schema).await?;
             }
-            super::relational_declaration::record(&transaction, &schema).await.map_err(|error| error.to_string())?;
+            super::relational_evolution::verify_references(&transaction).await?;
+            transaction.commit().await?;
+            Ok::<(), StorageError>(())
         }
-        super::relational_evolution::verify_references(&transaction).await.map_err(|error| error.to_string())?;
-        transaction.commit().await.map_err(|e| e.to_string())?;
-        Ok::<(), String>(())
-        }.await;
-        let closed = schema_db.close().await.map_err(|error| error.to_string());
+        .await;
+        let closed = schema_db.close().await;
         result?;
         closed?;
-        self.schemas
-            .write()
-            .insert(schema.collection.clone(), Arc::new(schema));
+        self.schemas.write().insert(schema.collection.clone(), Arc::new(schema.clone()));
         Ok(())
     }
 
-    pub fn schema(&self, collection: &str) -> Result<Arc<CollectionSchema>, String> {
+    pub fn schema(&self, collection: &str) -> Result<Arc<CollectionSchema>, StorageError> {
         self.schemas
             .read()
             .get(collection)
             .cloned()
-            .ok_or_else(|| format!("collection {collection} has no admitted entity schema"))
+            .ok_or_else(|| StorageError::Unadmitted { collection: collection.to_owned() })
     }
 
     pub fn collections(&self) -> Vec<String> {
@@ -238,19 +232,15 @@ impl RelationalStore {
             });
     }
 
-    pub async fn query(&self, query: StorageQuery) -> Result<Vec<DataRecord>, String> {
+    pub async fn query(&self, query: &StorageQuery) -> Result<Vec<DataRecord>, StorageError> {
         let schema = self.schema(&query.collection)?;
         let statement = super::relational_query::select(
             &schema,
-            &query,
+            query,
             super::relational_query::Selection::Page,
         )?;
         let started = std::time::Instant::now();
-        let rows = self
-            .db
-            .query_all(DbBackend::Sqlite.build(&statement))
-            .await
-            .map_err(|e| e.to_string())?;
+        let rows = self.db.query_all(DbBackend::Sqlite.build(&statement)).await?;
         let database_ms = started.elapsed().as_millis() as u64;
         // The connection has returned to the pool before any JSON body is parsed.
         let decode_started = std::time::Instant::now();
@@ -263,42 +253,36 @@ impl RelationalStore {
         result
     }
 
-    pub async fn count(&self, query: StorageQuery) -> Result<usize, String> {
+    pub async fn count(&self, query: &StorageQuery) -> Result<usize, StorageError> {
         let schema = self.schema(&query.collection)?;
         let statement = super::relational_query::select(
             &schema,
-            &query,
+            query,
             super::relational_query::Selection::Count,
         )?;
         let row = self
             .db
             .query_one(DbBackend::Sqlite.build(&statement))
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("count returned no row")?;
-        let count: i64 = row.try_get("", "count").map_err(|e| e.to_string())?;
-        count
-            .try_into()
-            .map_err(|_| "count is outside usize".into())
+            .await?
+            .ok_or(StorageError::Corrupt { what: "a COUNT returned no row" })?;
+        let count: i64 = row.try_get("", "count")?;
+        usize::try_from(count).map_err(|_| StorageError::Overflow { what: "a row count" })
     }
 
     pub async fn insert<C: ConnectionTrait>(
         &self,
         connection: &C,
         record: &DataRecord,
-    ) -> Result<(), String> {
+    ) -> Result<(), StorageError> {
         let insert = self.insert_statement(record)?;
-        connection
-            .execute(DbBackend::Sqlite.build(&insert))
-            .await
-            .map_err(|e| e.to_string())?;
+        connection.execute(DbBackend::Sqlite.build(&insert)).await?;
         Ok(())
     }
 
     pub fn insert_statement(
         &self,
         record: &DataRecord,
-    ) -> Result<sea_orm::sea_query::InsertStatement, String> {
+    ) -> Result<sea_orm::sea_query::InsertStatement, StorageError> {
         self.insert_statement_with_binary(record, std::collections::BTreeMap::new())
     }
 
@@ -306,24 +290,24 @@ impl RelationalStore {
         &self,
         record: &DataRecord,
         mut payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
-    ) -> Result<sea_orm::sea_query::InsertStatement, String> {
+    ) -> Result<sea_orm::sea_query::InsertStatement, StorageError> {
         let schema = self.schema(&record.collection)?;
-        let fields = record
-            .data
-            .as_object()
-            .ok_or("record data must be an object")?;
+        let fields = record.data.as_object().ok_or_else(|| StorageError::Malformed {
+            collection: record.collection.clone(),
+            expected: super::storage_error::Shape::Object,
+        })?;
         let mut values = Vec::new();
         let mut columns = Vec::new();
         for field in &schema.fields {
             if let Some(payload) = payloads.remove(&field.name) {
                 if field.field_type != super::types::FieldType::Binary {
-                    return Err(format!(
-                        "{}.{} is not a declared binary field",
-                        record.collection, field.name
-                    ));
+                    return Err(StorageError::NotBinary { collection: record.collection.clone(), field: field.name.clone() });
                 }
                 if fields.contains_key(&field.name) {
-                    return Err("binary field supplied through two representations".into());
+                    return Err(StorageError::TwoRepresentations {
+                        collection: record.collection.clone(),
+                        field: field.name.clone(),
+                    });
                 }
                 let (descriptor, bytes) = payload.into_parts();
                 columns.push(Alias::new(super::adapter::naming::to_snake_case(
@@ -346,7 +330,9 @@ impl RelationalStore {
                         None => match &field.default_value {
                             Some(value) => value,
                             None if field.nullable => &serde_json::Value::Null,
-                            None => return Err(format!("{}.{} is required", record.collection, name)),
+                            None => {
+                                return Err(StorageError::Required { collection: record.collection.clone(), field: name.to_owned() })
+                            }
                         },
                     };
                     encode(field, value)?
@@ -357,8 +343,8 @@ impl RelationalStore {
             )));
             values.push(Expr::val(value).into());
         }
-        if !payloads.is_empty() {
-            return Err("native write contains undeclared binary fields".into());
+        if let Some(field) = payloads.into_keys().next() {
+            return Err(StorageError::Undeclared { collection: record.collection.clone(), field });
         }
         for name in fields.keys() {
             super::relational_query::column(&schema, name)?;
@@ -369,8 +355,7 @@ impl RelationalStore {
                 &record.collection,
             )))
             .columns(columns)
-            .values(values)
-            .map_err(|e| e.to_string())?;
+            .values(values)?;
         Ok(insert)
     }
 }

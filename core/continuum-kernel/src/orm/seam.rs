@@ -4,8 +4,9 @@
 //! parameters and avoid copy when ref. Think of mutability. Define this at function and schemas."
 //! So at this seam:
 //! - what travels together is one struct (`RowRef`, `FieldRef`, `Update`, `BinaryWrite`);
-//! - what is only read is borrowed (`&StorageQuery`, `&DataRecord`, `&[BatchOperation]`), a schema
-//!   is shared (`Arc`), and only `close` takes `&mut self`;
+//! - what is only read is borrowed (`&StorageQuery`, `&DataRecord`, `&[BatchOperation]`), what is
+//!   consumed is owned (native payloads move into the statement), a schema is shared (`Arc`), and
+//!   only `close` takes `&mut self`;
 //! - an outcome is a named state (`Deleted`, `Written`, `BinaryWritten`, `Versioning`), never a
 //!   `bool`; a failure is a [`StorageError`](super::storage_error::StorageError) variant.
 //!
@@ -60,11 +61,12 @@ pub enum Written {
     Kept,
 }
 
-/// Native payloads for one row's declared binary fields, under a write condition.
-#[derive(Debug, Clone, Copy)]
+/// Native payloads for one row's declared binary fields, under a write condition. The payloads
+/// are owned: the write moves their bytes into the statement, so borrowing would copy them.
+#[derive(Debug)]
 pub struct BinaryWrite<'a> {
     pub row: RowRef<'a>,
-    pub payloads: &'a BTreeMap<String, BinaryValue>,
+    pub payloads: BTreeMap<String, BinaryValue>,
     pub condition: BinaryWriteCondition,
 }
 

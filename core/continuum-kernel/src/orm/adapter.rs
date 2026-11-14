@@ -141,7 +141,7 @@ pub trait StorageAdapter: Send + Sync {
     async fn create_binary(
         &self,
         record: &DataRecord,
-        payloads: &std::collections::BTreeMap<String, super::binary::BinaryValue>,
+        payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
     ) -> Result<UUID, StorageError>;
     /// Write native payloads to one row under its condition.
     async fn update_binary(&self, write: BinaryWrite<'_>) -> Result<BinaryWritten, StorageError>;

@@ -24,12 +24,39 @@ pub enum StorageError {
     /// A stored value did not decode to its declared type.
     #[error(transparent)]
     Codec(#[from] serde_json::Error),
+    /// No entity schema has been admitted for this collection.
+    #[error("collection {collection} has no admitted entity schema")]
+    Unadmitted { collection: String },
+    /// Persisted state the store cannot read back as written (a contract of the store, broken).
+    #[error("persisted storage state is unreadable: {what}")]
+    Corrupt { what: &'static str },
+    /// The database's directory could not be opened.
+    #[error("database directory {path}: {source}")]
+    Io { path: std::path::PathBuf, #[source] source: std::io::Error },
+    /// The adapter's configuration cannot open a store.
+    #[error("storage configuration: {0}")]
+    Config(ConfigFault),
+    /// A native row's id is not a canonical lowercase hyphenated UUID (page cursors order by its text).
+    #[error("{id} is not a canonical lowercase hyphenated UUID")]
+    NotCanonicalId { id: String },
     /// No row with this id.
     #[error("{collection} has no row {id}")]
     NotFound { collection: String, id: UUID },
     /// The write's record is not the shape its collection declares.
     #[error("{collection}: the record is not {expected}")]
     Malformed { collection: String, expected: Shape },
+    /// A declared field the write left out, with no default and not nullable.
+    #[error("{collection}.{field} is required")]
+    Required { collection: String, field: String },
+    /// A field written as a native payload that is not declared binary.
+    #[error("{collection}.{field} is not a declared binary field")]
+    NotBinary { collection: String, field: String },
+    /// A binary field supplied both as JSON and as a native payload.
+    #[error("{collection}.{field} was supplied through two representations")]
+    TwoRepresentations { collection: String, field: String },
+    /// The statement could not be built (a column/value mismatch in the builder).
+    #[error(transparent)]
+    Query(#[from] sea_orm::sea_query::error::Error),
     /// A field the operation names is not declared on the collection.
     #[error("{collection}.{field} is not declared")]
     Undeclared { collection: String, field: String },
@@ -60,4 +87,15 @@ impl std::fmt::Display for Shape {
             Shape::Present => "present",
         })
     }
+}
+
+/// Why a configuration cannot open a store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ConfigFault {
+    #[error("a connection pool needs a positive capacity")]
+    NoCapacity,
+    #[error("SQLite namespaces need separate database owners")]
+    Namespace,
+    #[error("the connection count exceeds u32")]
+    CapacityRange,
 }
