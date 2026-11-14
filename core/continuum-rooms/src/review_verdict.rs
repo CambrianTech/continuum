@@ -59,8 +59,8 @@ impl std::fmt::Display for AuthorCannotReview {
         write!(
             f,
             "you published the submission on card {}, and this room's review policy does not admit the author's \
-             own review: another member reviews it. Next: work/list claimable=true, and review a submission \
-             someone else published.",
+             own review: another member reviews it. Next: work/list group=review_requests, and review a \
+             submission someone else published.",
             airc_core::shown_id::shown_form(self.card.as_uuid())
         )
     }
@@ -87,6 +87,73 @@ pub fn author_may_review(
 pub fn judged_submission<'b>(review_card: &WorkCard, cards: &'b [WorkCard]) -> Option<&'b WorkSubmission> {
     let parent = review_card.reviews?;
     cards.iter().find(|card| card.card_id == parent)?.latest_submission()
+}
+
+/// What a review card asks of a reviewer on the board now: the submission it judges, unless it was
+/// opened for an earlier submission its parent has since replaced (that card's verdict would judge
+/// work that no longer lands). On the M5, 2026-11-14, card 4d34acb9 stood with four open review
+/// cards, one per resubmission, each offered as claimable work.
+pub fn review_request<'b>(review_card: &WorkCard, cards: &'b [WorkCard]) -> Option<&'b WorkSubmission> {
+    let parent_id = review_card.reviews?;
+    let parent = cards.iter().find(|card| card.card_id == parent_id)?;
+    let judged = parent.latest_submission()?;
+    let superseded = parent.submissions.iter().any(|earlier| {
+        earlier.submission_id != judged.submission_id
+            && airc_work::submission_review_card_id(parent_id, earlier.submission_id) == review_card.card_id
+    });
+    (!superseded).then_some(judged)
+}
+
+/// A part a verdict must carry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewPart {
+    /// A pass names the commit it verified: the submission's head.
+    VerifiedHead,
+    /// Every verdict says what the reviewer ran and saw.
+    Evidence,
+}
+
+/// A verdict missing parts it must carry: every missing part named at once, with the head a pass
+/// verifies, so one refusal is her whole next call. Before, `work/review` refused one part at a
+/// time, the head first and the evidence on the retry, and neither refusal named the head.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewIncomplete {
+    pub missing: Vec<ReviewPart>,
+    /// The submission's head, when it records one: the commit a pass names.
+    pub head: Option<GitObjectId>,
+}
+
+impl std::fmt::Display for ReviewIncomplete {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let parts: Vec<String> = self
+            .missing
+            .iter()
+            .map(|part| match (part, &self.head) {
+                (ReviewPart::VerifiedHead, Some(head)) => format!(
+                    "verified_head={head} (the submission's head: run its checks at that commit, e.g. code/github/pr-checks and its tests)"
+                ),
+                (ReviewPart::VerifiedHead, None) => "verified_head (the submission's head, from work/submission)".to_string(),
+                (ReviewPart::Evidence, _) => "evidence_text (what you ran at that commit and what you saw)".to_string(),
+            })
+            .collect();
+        write!(f, "this review is missing {}. Call work/review again with them; every other field is read off the board", parts.join(" and "))
+    }
+}
+
+/// Does a verdict carry what it must? `passing` is a pass; `named_head` the commit she named;
+/// `evidence_given` whether she said what she ran. A pass on a submission with no recorded head is
+/// [`verified_head`]'s refusal ([`PassUnverified::HeadUnrecorded`]), never a missing part here.
+pub fn review_complete(passing: bool, named_head: Option<&str>, evidence_given: bool, submission: &WorkSubmission) -> Result<(), ReviewIncomplete> {
+    let head = submission.head.commit().cloned();
+    let head_missing = passing && head.is_some() && named_head.map(str::trim).is_none_or(str::is_empty);
+    let missing: Vec<ReviewPart> = [(head_missing, ReviewPart::VerifiedHead), (!evidence_given, ReviewPart::Evidence)]
+        .into_iter()
+        .filter_map(|(missing, part)| missing.then_some(part))
+        .collect();
+    match missing.is_empty() {
+        true => Ok(()),
+        false => Err(ReviewIncomplete { missing, head }),
+    }
 }
 
 /// A submission's review state, derived from its recorded verdicts.
@@ -341,5 +408,41 @@ mod tests {
         assert!(matches!(verified_head(&sub, Some("905cadb")), Err(PassUnverified::OtherCommit { .. })));
         let headless = WorkSubmission { head: airc_work::SubmissionHead::Unrecorded, ..sub };
         assert_eq!(verified_head(&headless, Some(HEAD)), Err(PassUnverified::HeadUnrecorded));
+    }
+
+    // what this catches: a reviewer refused one missing part per call with no head named (mind
+    // 7fecdd21 on the academy board, 2026-11-14: work/claim then work/review outcome=passed with no
+    // head and no evidence, refused in a loop). One refusal names every missing part and the head.
+    #[test]
+    fn an_incomplete_review_names_every_missing_part_and_the_head_at_once() {
+        let sub = submission();
+        let refused = review_complete(true, None, false, &sub).expect_err("a bare pass is incomplete"); // expect_err: the case under test
+        assert_eq!(refused.missing, [ReviewPart::VerifiedHead, ReviewPart::Evidence]);
+        let said = refused.to_string();
+        assert!(said.contains(&format!("verified_head={HEAD}")) && said.contains("evidence_text"), "{said}");
+        assert_eq!(review_complete(false, None, false, &sub).map_err(|r| r.missing), Err(vec![ReviewPart::Evidence]), "a send-back names no head");
+        assert_eq!(review_complete(true, Some(" "), true, &sub).map_err(|r| r.missing), Err(vec![ReviewPart::VerifiedHead]));
+        assert_eq!(review_complete(true, Some(HEAD), true, &sub), Ok(()));
+        let headless = WorkSubmission { head: airc_work::SubmissionHead::Unrecorded, ..sub };
+        assert_eq!(review_complete(true, None, true, &headless), Ok(()), "no recorded head is verified_head's refusal, not a missing part");
+    }
+
+    // what this catches: a review card opened for a submission its parent has since replaced,
+    // offered as a review request (card 4d34acb9 on the M5, 2026-11-14: four open review cards).
+    #[test]
+    fn only_the_review_card_of_the_newest_submission_is_a_request() {
+        let mut parent = fixture_card(CardState::Review, Some(peer(AUTHOR)), None, "work");
+        let first = fixture_submission(&parent);
+        let newer = WorkSubmission { submission_id: airc_work::SubmissionId::from_u128(10), ..first.clone() };
+        parent.submissions = vec![newer.clone(), first.clone()]; // newest first, as airc-work keeps them
+        let card_for = |judged: &WorkSubmission| WorkCard {
+            card_id: airc_work::submission_review_card_id(parent.card_id, judged.submission_id),
+            ..fixture_card(CardState::Open, None, Some(parent.card_id), "review")
+        };
+        let (stale, current) = (card_for(&first), card_for(&newer));
+        let cards = [parent.clone(), stale.clone(), current.clone()];
+        assert_eq!(review_request(&current, &cards).map(|s| s.submission_id), Some(newer.submission_id));
+        assert_eq!(review_request(&stale, &cards), None, "superseded by the resubmission");
+        assert_eq!(review_request(&parent, &cards), None, "a code card requests no review");
     }
 }

@@ -810,3 +810,53 @@
         let without = held_card_line(&held, None);
         assert!(!without.contains("work is at"), "no checkout on this node, no location claimed: {without}");
     }
+
+    // what this catches: a teammate's submission awaiting a reviewer that no resident's view offers
+    // (the M5, 2026-11-14: 46 awaited a reviewer, each review card one of 667 claimable cards, the
+    // group standing only its most recently changed, and no resident filed a review), and the
+    // author's own review card offered to her as claimable work `work/claim` then refuses.
+    #[tokio::test]
+    async fn a_teammates_review_request_leads_her_board_and_the_author_never_sees_it_as_claimable() {
+        let author = Uuid::from_u128(0xa1c0);
+        let mut parent = card("the pipefail fix", CardState::Review, Some(airc_core::PeerId::from_uuid(author)));
+        let submission = airc_work::WorkSubmission {
+            submission_id: airc_work::SubmissionId::from_u128(0x5b),
+            card_id: parent.card_id,
+            claim_id: parent.claim_id.expect("an owned fixture card is claimed"), // expect: `card` claims an owned card
+            instance: "i".into(),
+            base_sha: airc_work::GitObjectId::new("abc1234").expect("hex"), // expect: a literal hex id
+            head: airc_work::SubmissionHead::At(airc_work::GitObjectId::new("def4567").expect("hex")), // expect: a literal hex id
+            artifact: airc_blobs::MediaRef { hash: airc_blobs::ContentHash::from_bytes(b"patch"), size_bytes: 5, mime: None },
+            publisher: airc_core::PeerId::from_uuid(author),
+            submitted_at_ms: 1_000_000,
+        };
+        parent.submissions = vec![submission.clone()];
+        let mut review = card("review: the pipefail fix", CardState::Open, None);
+        review.card_id = airc_work::submission_review_card_id(parent.card_id, submission.submission_id);
+        review.reviews = Some(parent.card_id);
+        let mut cards = vec![review, parent];
+        for i in 0..40 {
+            let mut c = card(&format!("filler card {i}"), CardState::Open, None);
+            c.updated_at_ms = 2_000_000 + i as u64; // every filler changed after the request
+            cards.push(c);
+        }
+        let reader = Arc::new(StubReader::new(snapshot(cards)));
+
+        // A teammate: the request stands whole, after the claimable group, and the headline counts it.
+        let delivery = RoomBoardSource::new(persona(), reader.clone()).deliver(&ctx()).await;
+        let at = |items: &[RagItem], needle: &str| items.iter().position(|i| i.key.starts_with("card:") && i.content.contains(needle));
+        let request = at(&delivery.items, "review: the pipefail fix").expect("the review request is in her view"); // expect: the case under test
+        let last_filler = delivery.items.iter().rposition(|i| i.content.contains("filler card")).expect("the claimable group stands"); // expect: 40 claimable cards
+        assert!(request > last_filler, "the request is read after the claimable group, nearest her focus");
+        let headline = delivery.items.iter().find(|i| i.key == "headline").expect("the headline"); // expect: claimable cards exist
+        assert_eq!(headline.metadata["review_request_count"], 1);
+        assert!(headline.content.contains("1 of them review requests") && headline.content.contains("work/list group=review_requests"), "{}", headline.content);
+
+        // The author: her own review card is never claimable to her, only counted as hers in review.
+        let hers = RoomBoardSource::new(author, reader).deliver(&RagContext::for_persona(author, 1_000_000)).await;
+        assert_eq!(at(&hers.items, "review: the pipefail fix"), None, "never offered to the author as a card to take");
+        let node = hers.items.iter().find(|i| i.key == "nav:your submissions in review").expect("counted as hers in review"); // expect: the case under test
+        assert_eq!(node.metadata["count"], 1);
+        let headline = hers.items.iter().find(|i| i.key == "headline").expect("the headline"); // expect: she holds her card
+        assert_eq!((headline.metadata["open_count"].clone(), headline.metadata["review_request_count"].clone()), (serde_json::json!(40), serde_json::json!(0)));
+    }

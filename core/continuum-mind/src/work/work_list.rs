@@ -266,11 +266,9 @@ impl ActionCommand for WorkList {
             &owner_peers,
         )
         .await;
-        let reader = airc_core::PeerId::from_uuid(me);
-        let judges_her_own = |card: &airc_work::WorkCard| {
-            crate::cognition::review_verdict::judged_submission(card, &board.cards)
-                .is_some_and(|judged| crate::cognition::review_verdict::same_mind(&self.registry, judged.publisher, reader))
-        };
+        // Each card's group from the one owner her board view reads too (`board_nav`): a review card
+        // is a review request, or, judging her own submission, hers in review and never claimable.
+        let reader = crate::persona::board_nav::Reader { cards: &board.cards, me, minds: &self.registry, now_ms };
         // Render EVERY card once (holder resolution is the shared projection), then
         // filter on the rendered facts. Filtering before rendering would put the
         // availability question on the raw column again — the exact split this fixes.
@@ -279,6 +277,7 @@ impl ActionCommand for WorkList {
             .iter()
             .map(|c| {
                 let holder = crate::cognition::card_holder::holder(c, me, now_ms, &names);
+                let group = crate::persona::board_nav::group_of(c, &reader);
                 (
                     WorkListCard {
                         id: short8(c.card_id.as_uuid()),
@@ -289,13 +288,13 @@ impl ActionCommand for WorkList {
                         owner: holder.owner.map(|_| holder.display.clone()),
                         owner_id: holder.owner.filter(|_| !holder.is_self).map(|o| o.as_uuid()),
                         // Never offered to the mind whose work it judges (card 0174211f).
-                        claimable: holder.claimable() && !judges_her_own(c),
+                        claimable: holder.claimable() && group != Some(BoardGroup::YoursInReview),
                         lease: holder.lease_word().map(str::to_string),
                         priority: priority_str(c.priority).to_string(),
                         age_hours: now_ms.saturating_sub(c.created_at_ms) / 3_600_000,
                     },
                     c.state,
-                    crate::persona::board_nav::group_of(c, me, now_ms),
+                    group,
                     c.updated_at_ms,
                 )
             })
