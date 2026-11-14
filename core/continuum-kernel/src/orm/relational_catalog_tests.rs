@@ -198,3 +198,61 @@ fn declaration_decoding_requires_semantic_fields_and_refuses_unknown_metadata(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn revision_restart_crosses_domain_pages_and_rejects_late_corruption(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::orm::relational_sequence::{ActiveModel, Domain};
+    use sea_orm::{ActiveModelTrait, Set};
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("revision-heads.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let config = || AdapterConfig {
+        connection_string: path.into(),
+        max_connections: 1,
+        ..Default::default()
+    };
+    let initial = RelationalStore::open(config()).await?;
+    for domain in ["append", "native"] {
+        for index in 0..131i64 {
+            ActiveModel {
+                domain: Set(domain.into()),
+                collection: Set(format!("head_{index:03}")),
+                high: Set(index + 1),
+            }
+            .insert(&initial.db)
+            .await?;
+        }
+    }
+    initial.db.clone().close().await?;
+    let started = std::time::Instant::now();
+    let restored = RelationalStore::open(config()).await?;
+    println!(
+        "REVISION_REPLAY heads=262 elapsed_us={}",
+        started.elapsed().as_micros()
+    );
+    for domain in [Domain::Append, Domain::Native] {
+        for index in 0..131u64 {
+            assert_eq!(
+                *restored
+                    .revision(domain, &format!("head_{index:03}"))
+                    .borrow(),
+                index + 1
+            );
+        }
+    }
+    ActiveModel {
+        domain: Set("native".into()),
+        collection: Set("head_130".into()),
+        high: Set(0),
+    }
+    .update(&restored.db)
+    .await?;
+    restored.db.clone().close().await?;
+    let error = RelationalStore::open(config())
+        .await
+        .err()
+        .ok_or("corrupt late revision was admitted")?;
+    assert!(error.contains("nonpositive persisted revision"), "{error}");
+    Ok(())
+}
