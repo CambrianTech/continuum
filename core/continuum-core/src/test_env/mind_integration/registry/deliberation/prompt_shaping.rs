@@ -782,10 +782,10 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // so a family is one scheme. Path names are a few characters longer than the aliases they
     // replace: +28 tokens alone at 8b69d5aea (17986 -> 18014); together with #5843 and #5945
     // the total measured 18299 in CI at 27de29f37 (one token over the sum: tokenization merges).
-    // Merged onto canary at 18752 (#6000 + #6001): the deltas are independent, so 18752 + 29 =
-    // 18781 is the sum this merge pins until CI measures the merged tree (`code/git/merge` is now
-    // offered as `code_git_merge`, not its alias `git_merge`, which CI's number includes).
-    const AGENTIC_SURFACE_CEILING: u32 = 18781;
+    // 18752 -> 18783 (#5998 merged onto canary with #6000 + #6001): the +29 above plus +2 for
+    // #6000's `code/git/merge`, now offered by its path `code_git_merge` rather than its alias
+    // `git_merge`. Measured in CI on merge 9f093107c (job 132431324749).
+    const AGENTIC_SURFACE_CEILING: u32 = 18783;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(
