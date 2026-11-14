@@ -239,6 +239,9 @@ async fn lease_part(daemon: &Arc<ResourceDaemon>, pool: ResourceKind, bytes: u64
     // Subscribed BEFORE the first attempt, so a release between its refusal and the wait below is
     // a change the wait still sees.
     let mut changes = daemon.subscribe();
+    // Seen as of now: the authority hands out a clone of its stored receiver, which would count
+    // every board since its start as new, and the wait would answer from a stale one.
+    drop(changes.borrow_and_update());
     let attempt = |attempt: u8| match daemon.acquire_guarded(&request) {
         Ok(guard) => {
             continuum_base::probe!(
@@ -309,6 +312,7 @@ mod tests {
         let config = DaemonConfig { tick_interval: std::time::Duration::from_secs(24 * 3600), ..DaemonConfig::default() };
         let daemon = ResourceDaemon::start(vec![Arc::clone(&source) as Arc<dyn CapacitySource>], vec![], config);
         let mut board = daemon.subscribe();
+        drop(board.borrow_and_update());
         board.changed().await.expect("test: the authority's tick publishes");
         let serving = LeaseRequest {
             consumer_id: "serving".to_string(),
