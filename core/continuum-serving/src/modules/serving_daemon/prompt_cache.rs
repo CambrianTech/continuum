@@ -58,7 +58,7 @@ pub(super) fn derived_prompt_cache_mib(
     let live: std::collections::HashSet<uuid::Uuid> =
         crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
             .map(|r| r.live_personas().into_iter().collect())
-            .unwrap_or_default();
+            .unwrap_or_default(); // unwrap_or_default: no registry yet means no live persona, so the seeds alone answer
     let planned: Vec<uuid::Uuid> =
         crate::persona::seed::persona_ids_with_seeds_in(&crate::identity::citizen_path::citizens_kind_dir(
             &crate::paths::continuum_root(),
@@ -122,7 +122,8 @@ pub(super) fn derived_prompt_cache_mib(
         lanes,
         physical_bytes,
         serve_host_bytes,
-        available_bytes,
+        // The monitor reports 0 for a reading it could not take: no reading, never zero bytes.
+        (available_bytes > 0).then_some(available_bytes),
     );
     decision.reason = sized_by(&estimated, &demands, decision.reason);
     // Deduplicate the decision, not just its MiB: a different model or a prior
@@ -168,7 +169,7 @@ pub(super) fn derived_prompt_cache_mib(
             estimated_kv_bytes = ?decision.estimated_kv_bytes,
             affordable_bytes = ?decision.affordable_bytes,
             serve_host_bytes = decision.serve_host_bytes,
-            available_bytes = decision.available_bytes,
+            available_bytes = ?decision.available_bytes,
             serialized_state_bytes = ?measured_state,
             "prompt-cache sizing decision, not engine readback; KV estimate excludes draft state and checkpoints"
         );
@@ -232,7 +233,7 @@ pub(super) struct PromptCacheDecision {
     /// pagefile-backed allocations count), so `physical − commit` is always the hard
     /// floor there; it is the right clamp only where commit ≈ resident, the MoE
     /// mmap'd-expert case the host-cache lease was written for.
-    pub(super) available_bytes: u64,
+    pub(super) available_bytes: Option<u64>,
 }
 
 /// PURE: the prompt STATES the host cache is sized to hold — the law behind the grant.
@@ -343,7 +344,7 @@ pub(super) fn prompt_cache_decision(
     lanes: u32,
     physical_bytes: u64,
     serve_host_bytes: u64,
-    available_bytes: u64,
+    available_bytes: Option<u64>,
 ) -> PromptCacheDecision {
     let mut decision = PromptCacheDecision {
         reason: "prior_missing_footprint",
@@ -409,10 +410,9 @@ pub(super) fn prompt_cache_decision(
         let headroom = physical_bytes
             .saturating_sub(serve_host_bytes)
             .saturating_sub(floor);
-        let afford = if available_bytes > 0 {
-            headroom.min(available_bytes.saturating_sub(floor))
-        } else {
-            headroom
+        let afford = match available_bytes {
+            Some(available) => headroom.min(available.saturating_sub(floor)),
+            None => headroom,
         };
         // A cache that fills INTO the pressure band throttles its own planner. The live
         // budget steps the serving mode to Eco (budget × 0.55) when available RAM drops
@@ -423,22 +423,20 @@ pub(super) fn prompt_cache_decision(
         // seat that had read HEALTHY at three lanes two hours earlier — while the same
         // 17 GB grant was handed out again. The grant leaves the Eco EXIT band free
         // after it fills, so a full cache can never step the mode down by itself.
-        let afford = if available_bytes > 0 {
-            afford.min(
-                available_bytes.saturating_sub(crate::capacity::power_mode::ECO_EXIT_BYTES),
-            )
-        } else {
-            afford
+        //
+        // That band is also the co-consumers' room. A cache FILLS to its grant by design, so
+        // "everything above the OS floor" ends the serve at the floor with nothing left for
+        // the core's own growth, a sidecar, the eye (the M5, 2026-09-19: a 19,519 MiB grant
+        // from a 20,468 MiB afford, 6 GB of swap an hour later). A 15% fraction was taken off
+        // for that (#4216) the night before the band landed (#4222); with the band, it was
+        // the same reservation twice. The power mode's band is the one headroom policy, as
+        // it is for the plan (#4230). With no availability reading the band is left of what
+        // the serve leaves of physical memory: the same reading with nothing else running.
+        let free = match available_bytes {
+            Some(available) => available,
+            None => physical_bytes.saturating_sub(serve_host_bytes),
         };
-        // A cache FILLS to its grant by design, so "everything above the OS floor" is a
-        // grant to end the serve at the floor with nothing left for the co-consumers
-        // (the core's own growth, a sidecar, the eye). Measured 2026-09-19 on the M5: a
-        // 19,519 MiB grant from a 20,468 MiB afford, and the box sat 6 GB into swap with
-        // 25 GB in the compressor an hour later. The cache keeps this fraction back; the
-        // planner's window no longer does (the mode's fraction and the board's live
-        // subtraction are its headroom — `CACHE_GRANT_HEADROOM`).
-        let afford =
-            (afford as f64 * (1.0 - crate::inference::planning::serving_plan::CACHE_GRANT_HEADROOM)) as u64;
+        let afford = afford.min(free.saturating_sub(crate::capacity::power_mode::ECO_EXIT_BYTES));
         decision.reason = "resident_demand_kv_estimate";
         decision.affordable_bytes = Some(afford);
         decision.desired_mib =

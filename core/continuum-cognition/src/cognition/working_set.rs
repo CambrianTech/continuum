@@ -846,6 +846,19 @@ impl WorkingSetRegistry {
         self.observed.get(&persona).map(|e| *e.value())
     }
 
+    /// The seat one mind's turn requires: her typical growth sample ([`Self::sent_median_of`])
+    /// grown by HER measured growth ([`growth_of`]), never a fleet-wide factor. `None` until she
+    /// has a sample. The one derivation the grid's placement rules read.
+    pub fn prompt_floor_for(&self, persona: Uuid) -> Option<u32> {
+        let growth = self.observed.get(&persona).map_or(
+            crate::inference::planning::window_allocator::Growth::Unmeasured,
+            |e| growth_of(e.value()),
+        );
+        self.sent_median_of(&[persona])
+            .and_then(crate::inference::planning::window_allocator::Tokens::new)
+            .map(|median| crate::inference::planning::serving_plan::prompt_floor_of(median, growth).get())
+    }
+
     /// Every observation, for reporting. Order is unspecified (a concurrent map).
     pub fn all(&self) -> Vec<(Uuid, PersonaDemand)> {
         self.observed
@@ -877,8 +890,17 @@ impl WorkingSetRegistry {
     }
 }
 
-/// Each mind's requirement, from the untrimmed demand her turns assemble with the
-/// standard headroom, with her parked training examples' reservation beside it (never
+/// How far her act grows past her typical act: the p95 of her recent untrimmed demands over their
+/// median, measured once her ring holds a full working session ([`RECENT_TURNS`]), unmeasured
+/// before (`window_allocator::Growth`).
+pub fn growth_of(d: &PersonaDemand) -> crate::inference::planning::window_allocator::Growth {
+    // A zero slot is a turn not recorded yet; only recorded demands are samples.
+    let recorded = d.recent.iter().copied().filter_map(crate::inference::planning::window_allocator::Tokens::new);
+    crate::inference::planning::window_allocator::Growth::of(recorded, RECENT_TURNS)
+}
+
+/// Each mind's requirement, from the untrimmed demand her turns assemble grown by her own
+/// measured growth ([`growth_of`]), with her parked training examples' reservation beside it (never
 /// folded into her target or floor) — the ONE derivation, shared by the serving daemon (sizing this
 /// seat's lanes) and the grid allocator daemon (sizing the grid's roles). A mind with
 /// no turn yet is `Unknown`, never a number.
@@ -899,9 +921,9 @@ pub fn requirements_for(
             // Her parked training examples' reservation, carried beside her conversational target
             // and need (card ea157b1a): the allocator grows toward it only from spare budget.
             let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();
-            let measured = match wish {
-                None => LaneRequirement::unmeasured(*p),
-                Some(wish) => LaneRequirement::wished(*p, wish, crate::inference::planning::serving_plan::SENT_HEADROOM),
+            let measured = match (wish, demand.as_ref()) {
+                (Some(wish), Some(d)) => LaneRequirement::wished(*p, wish, growth_of(d)),
+                _ => LaneRequirement::unmeasured(*p),
             };
             match need {
                 Some(need) => measured.held(need),

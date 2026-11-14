@@ -100,7 +100,7 @@ pub struct TierCandidate {
     pub model_id: String,
     /// Higher = more capable. The ranker keeps the MOST capable model that still frees
     /// enough — never sheds more capability than the pressure demands.
-    pub capability_rank: u8,
+    pub capability_rank: continuum_kernel::capability::Capability,
     /// Total resident bytes (weights + per-lane KV × lanes) at the ctx's window/lanes.
     pub resident_bytes: u64,
 }
@@ -191,7 +191,7 @@ mod tests {
             .iter()
             .map(|(id, rank, bytes)| TierCandidate {
                 model_id: id.to_string(),
-                capability_rank: *rank,
+                capability_rank: continuum_kernel::capability::Capability::Proxy { score: *rank },
                 resident_bytes: *bytes,
             })
             .collect();

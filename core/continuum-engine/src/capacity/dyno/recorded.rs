@@ -144,7 +144,7 @@ impl Recorded {
             self.qwen36_trained_window.value,
             true,
             None,
-        )?;
+        ).map(crate::inference::planning::serving_plan::footprint::calibrated)?;
         footprint.kv_per_token = self.m5_kv_bytes_per_token.value;
         Some(footprint)
     }

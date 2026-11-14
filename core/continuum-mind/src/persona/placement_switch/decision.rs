@@ -4,8 +4,10 @@ use uuid::Uuid;
 /// A remote seat whose beacon is older than this is DARK for placement purposes —
 /// nine missed 10 s beacons. Much shorter than the fleet fold's 6 h "stale": a lane
 /// decision is per turn, a fleet verdict is per day.
+// derived-or-floor: nine missed beacons at the 10 s capacity-beacon cadence
 pub const REMOTE_SEAT_SILENT_MS: u64 = 90_000;
 /// A seat heard this recently is BACK; three beacons in a row.
+// derived-or-floor: three consecutive beacons at the 10 s capacity-beacon cadence
 pub const REMOTE_SEAT_FRESH_MS: u64 = 30_000;
 /// The bound a seat's MEASURED queue is judged against when this node has no measured
 /// queue of its own: the unattended time-to-first-token budget. A seat whose median
@@ -24,10 +26,11 @@ pub const SEAT_OVERLOADED_REASON: &str = "remote seat refused her last request: 
 /// only when the remote turn is expected FASTER — a measured seat is capacity only when
 /// its wait is under this node's own, or under the budget when this node has none.
 pub fn seat_queued(wait_p50_ms: u64, wait_samples: u32, home_wait_p50_ms: Option<u64>) -> bool {
-    wait_samples > 0 && wait_p50_ms >= home_wait_p50_ms.unwrap_or(SEAT_QUEUE_BOUND_MS)
+    wait_samples > 0 && wait_p50_ms >= home_wait_p50_ms.unwrap_or(SEAT_QUEUE_BOUND_MS) // unwrap_or: an unmeasured home wait is judged against the seat's own bound
 }
 /// At most one move per persona per cooldown — a flapping tower moves her twice an hour,
 /// never twice a minute.
+// derived-or-floor: a policy floor of at most one move per persona per ten minutes, so a flapping seat moves her twice an hour at most
 pub const MOVE_COOLDOWN_MS: u64 = 600_000;
 
 
@@ -56,7 +59,7 @@ pub struct OpportunityInputs<'a> {
     pub cooldown_ms: u64,
     /// The capability of her HOME plan (`PlacementSwitch::home_capability`); `None` =
     /// unknown in this life.
-    pub home_capability: Option<u8>,
+    pub home_capability: Option<continuum_kernel::capability::Capability>,
     /// What HER turn needs of a lane, measured: the same number the fall-home rule reads
     /// ([`seat_starves`]); `None` = unmeasured, the serve floor stands.
     pub turn_requirement: Option<u32>,
@@ -302,8 +305,8 @@ pub struct LocalShape {
     pub lane_wait_p50_ms: Option<u64>,
     pub resident: u32,
     pub lanes: u32,
-    /// Measured capability of the local served model, or the planner's unmeasured proxy cap.
-    pub rank: u8,
+    /// Capability of the local served model (measured, else its weights proxy).
+    pub rank: continuum_kernel::capability::Capability,
 }
 
 /// The pure chooser: which minds move to which peer. `candidates` = minds at Home with
@@ -313,7 +316,7 @@ pub struct LocalShape {
 pub fn choose_offloads(
     local: LocalShape,
     peers: &[PeerOffer],
-    rank_of: &(dyn Fn(&str) -> Option<u8> + Sync),
+    rank_of: &(dyn Fn(&str) -> Option<continuum_kernel::capability::Capability> + Sync),
     candidates: &[(Uuid, u64)],
     requirement_of: &dyn Fn(Uuid) -> Option<u32>,
 ) -> Vec<(Uuid, Uuid, String)> {

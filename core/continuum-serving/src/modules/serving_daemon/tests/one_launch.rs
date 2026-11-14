@@ -16,7 +16,7 @@ async fn a_ready_lane_is_never_relaunched_for_its_window_or_lanes() {
         usable_bytes: 45 * GB,
         perf_cores: 6,
     };
-    let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+    let candidates = vec![crate::inference::planning::serving_plan::footprint::footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).unwrap()];
     daemon.publish_plan(budget, &candidates, &candidates);
     let plan_window = daemon
         .plan_tx
@@ -124,7 +124,7 @@ fn the_launch_pool_is_the_live_plans_never_the_physical_totals() {
     let launch_pool = super::super::launch::launch_pool;
     let none = super::super::launch::Seated { need: 0, proven: None };
     let m5_trained = 262_144;
-    let mut m5 = footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, m5_trained, true, None)
+    let mut m5 = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, m5_trained, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated)
         .expect("a footprint from the weights");
     m5.kv_per_token = 8_317;
     let m5_live = 23 * GB;
@@ -133,7 +133,7 @@ fn the_launch_pool_is_the_live_plans_never_the_physical_totals() {
     assert!(launch_pool(Some(&m5), m5_live, 128_768, 2, 5, m5_trained, none) < 5 * u64::from(m5_trained), "never 5 x the trained window (590df4bc3)");
 
     let intel_trained = 32_768;
-    let mut intel = footprint_from_parts("intelmac", 5 * GB, intel_trained, true, None).expect("a footprint");
+    let mut intel = crate::inference::planning::serving_plan::footprint::footprint_from_parts("intelmac", 5 * GB, intel_trained, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).expect("a footprint");
     intel.kv_per_token = 8_192;
     assert_eq!(launch_pool(Some(&intel), 30 * GB, 32_768, 2, 9, intel_trained, none), 294_912, "the IntelMac: its fit, 9 x 32,768");
     assert_eq!(launch_pool(None, 30 * GB, 32_768, 2, 9, intel_trained, none), 65_536, "no footprint: the plan's own window x lanes");
@@ -148,7 +148,7 @@ fn the_launch_pool_is_the_live_plans_never_the_physical_totals() {
 fn a_relaunch_from_a_gap_budget_holds_every_seated_need_up_to_the_proven_pool() {
     use super::super::launch::{launch_pool, Seated};
     let trained = 262_144;
-    let mut m5 = footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, trained, true, None)
+    let mut m5 = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, trained, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated)
         .expect("a footprint from the weights");
     m5.kv_per_token = 8_317;
     let gap = 0;

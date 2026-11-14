@@ -98,7 +98,7 @@ mod boot_during_memory_settle {
     const GROWN_WINDOW: u32 = 134_690;
 
     fn m5() -> ModelFootprint {
-        let mut fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None)
+        let mut fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated)
             .expect("test: a footprint from the weights");
         fp.kv_per_token = 8_317;
         fp
@@ -168,9 +168,11 @@ mod the_pool_fits_the_host {
     const CACHE_MIB: u64 = 8_717;
 
     fn m5_measured() -> ModelFootprint {
-        let mut fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None)
+        let mut fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated)
             .expect("test: a footprint from the weights");
         fp.kv_per_token = 15_163;
+        // Fixture: the Devstral calibration at this KV rate, the compute rate the recorded boot planned with.
+        fp.compute = crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(fp.kv_per_token);
         fp
     }
 
@@ -190,7 +192,10 @@ mod the_pool_fits_the_host {
     /// What the engine holds at `pool` by the plan's own cost (weights, the prompt cache, each
     /// sequence's compute floor and the measured per-token cost with its compute rate).
     fn engine_bytes(fp: &ModelFootprint, pool: u64) -> u64 {
-        let per_token = fp.kv_per_token + fp.kv_per_token / crate::inference::planning::serving_plan::PREFILL_COMPUTE_KV_DIVISOR;
+        let per_token = match fp.compute.bytes_per_token() {
+            Some(rate) => fp.kv_per_token + rate,
+            None => fp.kv_per_token,
+        };
         fp.weights_bytes + CACHE_MIB * MIB + u64::from(SEQUENCES) * fp.compute_buffer_per_lane() + pool * per_token
     }
 
@@ -225,7 +230,9 @@ mod the_pool_fits_the_host {
         let room = HostRoom::of(&reading, swap, 0);
         let host = |room| Rooms { host: Some(room), device: None };
         // The probe recorded the four held needs' sum (382,706); split evenly here.
-        let claims = [95_676, 95_676, 95_676, 95_678].map(|need| MindClaim::Held { need });
+        // Fixture: the growth the grants used on that boot, 5/4 (the headroom then live at 958ea3056).
+        let growth = crate::inference::planning::window_allocator::Growth::Measured { tail: crate::inference::planning::window_allocator::test_tokens(5), typical: crate::inference::planning::window_allocator::test_tokens(4) };
+        let claims = [95_676, 95_676, 95_676, 95_678].map(|need| MindClaim::Held { need, growth });
         let need = need_with_growth(&claims, SEQUENCES, TRAINED).expect("test: four residents claim");
         assert_eq!(need, 478_382 + u64::from(crate::inference::planning::MIN_SERVE_CTX), "the grants' 1.25 over 382,706, plus the scratch sequence");
         let fit = pool_fit(need, Some(&fp), host(room), CACHE_MIB * MIB, SEQUENCES, TRAINED);
@@ -266,9 +273,11 @@ mod boot_counts_the_device_room {
     const TRAINED: u32 = 262_144;
 
     fn m5_measured() -> ModelFootprint {
-        let mut fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None)
+        let mut fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated)
             .expect("test: a footprint from the weights");
         fp.kv_per_token = 13_520;
+        // Fixture: the Devstral calibration at this KV rate, the compute rate the recorded boot planned with.
+        fp.compute = crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(fp.kv_per_token);
         fp
     }
 

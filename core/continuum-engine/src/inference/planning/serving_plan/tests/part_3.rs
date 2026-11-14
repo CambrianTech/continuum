@@ -27,8 +27,8 @@ use super::*;
         );
 
         // (b) More capable but it consumes the ENTIRE post-eviction budget, leaving nothing
-        // for KV — SWITCH_UP_HEADROOM must reject it rather than swap into a lane that
-        // cannot hold a window.
+        // for KV — the fit must reject it rather than swap into a lane that cannot hold a
+        // window.
         let marginal = vec![
             fp("devstral-24b", 14, 100_000, 131_072, 5),
             fp("hog-70b", 32, 100_000, 262_144, 9),
@@ -85,8 +85,9 @@ use super::*;
             weights_bytes: 17 * GB,
             kv_per_token: 65_536,
             context_window: 262_144,
-            capability_rank: 9,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(65_536),
         };
         let at_rest = HostBudget {
             usable_bytes: 32 * GB, // the ledger's replace-myself budget, capped at the card
@@ -119,8 +120,9 @@ use super::*;
             weights_bytes: 17 * GB,
             kv_per_token: 262_144,
             context_window: 262_144,
-            capability_rank: 9,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(262_144),
         };
         let physical = HostBudget {
             usable_bytes: (33.6 * GB as f64 * 0.80) as u64,
@@ -137,13 +139,22 @@ use super::*;
         assert_eq!(kv_free.window_within(physical.usable_bytes, 1), kv_free.context_window);
     }
 
+    // what this catches: a window sized to the untrimmed demand or to one outlier prompt instead
+    // of the typical sent prompt grown by the residents' measured growth; and a remembered
+    // window that covers the target being thrown away.
     #[test]
-    pub(super) fn the_window_follows_the_sent_prompt_with_headroom_and_the_sticky_window_can_cover_it() {
+    pub(super) fn the_window_follows_the_sent_prompt_grown_by_measured_growth_and_the_sticky_window_can_cover_it() {
+        use crate::inference::planning::window_allocator::{test_tokens, LaneRequirement};
+        let grown = |demand: ServingDemand, typical: u32| {
+            demand.with_requirements(vec![LaneRequirement::wished(uuid::Uuid::new_v4(), test_tokens(typical), QUARTER_GROWTH)])
+        };
         let d = ServingDemand::new(4, Some(505_342)).with_sent_tokens(Some(30_000));
-        assert_eq!(d.window_target(), 37_500, "sent × 1.25, not the untrimmed 505k");
+        let quarter = grown(ServingDemand::new(4, Some(505_342)).with_sent_tokens(Some(30_000)), 30_000);
+        assert_eq!(quarter.window_target(), 37_500, "sent grown by the measured 5/4, not the untrimmed 505k");
+        assert_eq!(d.window_target(), 30_000, "an unmeasured growth adds nothing");
         // The M5's boot, 2026-09-19 19:37Z: peak 144,891 (one prompt, ever), typical 51,242.
-        let m5 = ServingDemand::new(5, Some(505_342)).with_sent_tokens(Some(144_891)).with_sent_median(Some(51_242));
-        assert_eq!(m5.window_target(), 64_052, "the typical prompt with headroom, not the outlier's 181,114");
+        let m5 = grown(ServingDemand::new(5, Some(505_342)).with_sent_tokens(Some(144_891)).with_sent_median(Some(51_242)), 51_242);
+        assert_eq!(m5.window_target(), 64_052, "the typical prompt grown, not the outlier's 181,114");
         assert_eq!(choose_served_window(505_342, 64_052, Some(67_584)), 67_584, "and the remembered 67,584 covers it — served verbatim, no boot relaunch");
         assert_eq!(ServingDemand::new(4, Some(505_342)).window_target(), 505_342, "unmeasured sent: the untrimmed demand, as before");
         assert_eq!(ServingDemand::new(4, Some(20_000)).with_sent_tokens(Some(30_000)).window_target(), 20_000, "the untrimmed demand is the upper bound");
@@ -151,7 +162,7 @@ use super::*;
         let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
         let m = fp("m", 14, 112 * 1024, 131_072, 3);
         let plan = plan_serving(&host, std::slice::from_ref(&m), &d).unwrap();
-        assert!(plan.served_context_window <= 37_500 + 4_096 && plan.served_context_window >= 37_500 - 4_096, "served near the target: {}", plan.served_context_window);
+        assert!(plan.served_context_window <= 30_000 + 4_096 && plan.served_context_window >= 30_000 - 4_096, "served near the target: {}", plan.served_context_window);
     }
 
     // what this catches (card eb8d1839; the 5090, 2026-10-12, build 6160): a one-lane plan that
@@ -168,8 +179,9 @@ use super::*;
             weights_bytes: 16 * GB,
             kv_per_token: 32_768,
             context_window: 262_144,
-            capability_rank: 42,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: 42 },
             fixed_per_lane_bytes: 922_859_520,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(32_768),
         };
         let models = std::slice::from_ref(&model);
         // A typical prompt of ~60k: two lanes on a tight host cannot each clear that floor.

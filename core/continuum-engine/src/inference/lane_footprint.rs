@@ -34,9 +34,6 @@ pub const FRESH_MS: u64 = 60 * 60 * 1000;
 pub const SAVE_EVERY_MS: u64 = 60 * 1000;
 /// Samples are taken at most this often — one syscall a minute, not one a tick.
 pub const SAMPLE_EVERY_MS: u64 = 60 * 1000;
-/// A measured per-token cost within this much of the estimate is agreement, not a
-/// correction: the plan is not re-derived on rounding.
-pub const AGREEMENT_PCT: u64 = 20;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct MeasuredCost {
@@ -49,11 +46,31 @@ pub struct MeasuredCost {
     pub allocated_tokens: Option<u64>,
     pub anon_bytes: u64,
     pub last_ms: u64,
+    /// This node's engine's prefill compute buffer per allocated token, from `/props`
+    /// `memory_breakdown` (one reading per engine incarnation, [`record_compute`]). Kept when a
+    /// per-token reading is withheld or retired: a starved window still reports its graph, and
+    /// the plan needs the rate to size anything above the minimum (`serving_plan::ComputeRate`).
+    #[serde(default)]
+    pub compute_per_token: Option<u64>,
+    /// The per-token readings of the last [`FRESH_MS`], `(sampled_at_ms, per_token_bytes)`,
+    /// newest last: what [`MeasuredCost::spread`] reads. Drained to the window on every sample.
+    #[serde(default)]
+    pub readings: Vec<(u64, u64)>,
 }
 
 impl MeasuredCost {
     fn fresh_at(&self, now_ms: u64) -> bool {
         self.per_token_bytes > 0 && now_ms.saturating_sub(self.last_ms) <= FRESH_MS
+    }
+
+    /// The spread of this record's own readings: `(lowest, highest)` per-token cost over the
+    /// last [`FRESH_MS`]. Estimator: the min/max band of the readings. Sample floor: two
+    /// readings (one reading has no spread); `None` under it.
+    pub fn spread(&self) -> Option<(u64, u64)> {
+        let mut values = self.readings.iter().map(|(_, v)| *v);
+        let first = values.next()?;
+        let (lo, hi, count) = values.fold((first, first, 1usize), |(lo, hi, n), v| (lo.min(v), hi.max(v), n + 1));
+        (count >= 2).then_some((lo, hi))
     }
 }
 
@@ -102,10 +119,37 @@ fn per_token_for_allocation(anon_bytes: u64, lanes: u32, allocated_tokens: u64, 
     (per_token > 0).then_some(per_token)
 }
 
-/// Whether a measured per-token cost CORRECTS an estimate: larger by more than
-/// [`AGREEMENT_PCT`]. Smaller never corrects (a footprint is a lower bound).
-pub fn corrects(estimate: u64, measured: u64) -> bool {
-    measured.saturating_mul(100) > estimate.saturating_mul(100 + AGREEMENT_PCT)
+/// Whether a record CORRECTS an estimate: every one of its readings lies above it (the
+/// estimate is below the record's measured spread, [`MeasuredCost::spread`]). Smaller never
+/// corrects (a footprint is a lower bound), and a record without a spread yet (one reading)
+/// corrects nothing: one reading cannot tell a correction from its own noise.
+pub fn corrects(estimate: u64, record: &MeasuredCost) -> bool {
+    record.spread().is_some_and(|(lowest, _)| lowest > estimate)
+}
+
+/// Whether a new reading MOVED outside the record's measured spread (a save is due); a record
+/// without a spread yet moves on every reading.
+fn moved_outside(record: &MeasuredCost, reading: u64) -> bool {
+    record.spread().is_none_or(|(lowest, highest)| reading < lowest || reading > highest)
+}
+
+/// Record this node's engine's prefill compute rate for `model` (`/props` `memory_breakdown`
+/// compute bytes on the accelerators over the allocated tokens, one reading per engine
+/// incarnation). Kept beside the per-token record and across its retirement. Saved when it
+/// changes.
+pub fn record_compute(model: &str, bytes_per_token: u64) {
+    let mut costs = COSTS.lock();
+    let entry = costs.entry(model.to_string()).or_default();
+    if entry.compute_per_token != Some(bytes_per_token) {
+        entry.compute_per_token = Some(bytes_per_token);
+        save_all(&costs);
+    }
+}
+
+/// This node's measured prefill compute rate for `model`, whatever the age of its per-token
+/// record: the graph a model's engine reserves does not drift with the box's load.
+pub fn measured_compute(model: &str) -> Option<u64> {
+    COSTS.lock().get(model).and_then(|c| c.compute_per_token)
 }
 
 static COSTS: LazyLock<parking_lot::Mutex<BTreeMap<String, MeasuredCost>>> =
@@ -198,6 +242,8 @@ pub fn observe(
         allocated_tokens: Some(allocated_tokens),
         anon_bytes,
         last_ms: now,
+        compute_per_token: None,
+        readings: Vec::new(),
     });
     use std::sync::atomic::Ordering;
     let mut costs = COSTS.lock();
@@ -216,13 +262,28 @@ pub fn observe(
 /// (2026-09-19) would otherwise survive a relaunch for [`FRESH_MS`] while every fresh
 /// sample of the new process read "nothing beyond the cache" and left it standing.
 fn apply_sample(costs: &mut BTreeMap<String, MeasuredCost>, model: &str, sample: Option<&MeasuredCost>) -> bool {
-    let before = costs.get(model).map(|c| c.per_token_bytes).unwrap_or(0);
+    let prior = costs.get(model).cloned();
     match sample {
         Some(cost) => {
-            costs.insert(model.to_string(), cost.clone());
-            before == 0 || corrects(before, cost.per_token_bytes) || corrects(cost.per_token_bytes, before)
+            let moved = prior.as_ref().is_none_or(|p| p.per_token_bytes == 0 || moved_outside(p, cost.per_token_bytes));
+            // The window's readings, this one appended; the compute rate carried when the sample has none.
+            let mut readings: Vec<(u64, u64)> = prior.as_ref().map_or_else(Vec::new, |p| p.readings.clone());
+            readings.retain(|(at, _)| cost.last_ms.saturating_sub(*at) <= FRESH_MS);
+            readings.push((cost.last_ms, cost.per_token_bytes));
+            let compute_per_token = cost.compute_per_token.or(prior.as_ref().and_then(|p| p.compute_per_token));
+            costs.insert(model.to_string(), MeasuredCost { readings, compute_per_token, ..cost.clone() });
+            moved
         }
-        None => costs.remove(model).is_some(),
+        // Retired: the per-token record and its readings go; a measured compute rate stays.
+        None => match prior {
+            Some(p) if p.compute_per_token.is_some() => {
+                let had_reading = p.per_token_bytes > 0;
+                costs.insert(model.to_string(), MeasuredCost { compute_per_token: p.compute_per_token, ..Default::default() });
+                had_reading
+            }
+            Some(_) => costs.remove(model).is_some(),
+            None => false,
+        },
     }
 }
 
@@ -284,7 +345,7 @@ pub fn measured_record(model: &str) -> Option<MeasuredCost> {
 /// 2026-10-10 23:34Z, the lifetime peak read 19.02 GB while the running engine held 11 GB,
 /// and that 8 GB became a 4.6 GB "fixed" cost per lane that kept the plan at one lane.
 pub fn anon_footprint_of(pid: u32) -> Option<u64> {
-    let reading = anon_footprint_impl(pid)?;
+    let reading = continuum_host::process_usage::anon_footprint(pid)?;
     let process = (pid, crate::inference::engine_residency::process_start_s(pid).unwrap_or(0)); // unwrap_or: an unreadable start time keys by pid alone, as before
     let mut windows = RECENT_FOOTPRINTS.lock();
     Some(recent_max(&mut windows, process, EpochMs::now().millis(), reading))
@@ -320,56 +381,6 @@ fn recent_max(windows: &mut FootprintWindows, process: (u32, u64), now_ms: u64, 
     max
 }
 
-#[cfg(target_os = "macos")]
-fn anon_footprint_impl(pid: u32) -> Option<u64> {
-    // struct rusage_info_v4: ri_uuid[16], then 35 u64. ri_phys_footprint is index 7
-    // (v0: user_time, system_time, pkg_idle_wkups, interrupt_wkups, pageins, wired_size,
-    // resident_size, PHYS_FOOTPRINT, proc_start_abstime, proc_exit_abstime); v1 adds six
-    // child_* fields (10..16), v2 two diskio (16..18), v3 nine cpu_time_qos/billed/serviced
-    // (18..27), v4 logical_writes (27), LIFETIME_MAX_PHYS_FOOTPRINT (28), instructions,
-    // cycles, billed_energy, serviced_energy, interval_max_phys_footprint, runnable_time.
-    //
-    // The CURRENT footprint only. The recent maximum over a window is taken by the caller
-    // ([`anon_footprint_of`]), never the lifetime peak (index 28), which holds the engine's
-    // load and read 19.02 GB against a running 11 GB on the M5 (2026-10-10).
-    #[repr(C)]
-    struct RusageInfoV4 {
-        uuid: [u8; 16],
-        fields: [u64; 35],
-    }
-    extern "C" {
-        fn proc_pid_rusage(pid: libc::c_int, flavor: libc::c_int, buffer: *mut RusageInfoV4) -> libc::c_int;
-    }
-    const RUSAGE_INFO_V4: libc::c_int = 4;
-    const PHYS_FOOTPRINT: usize = 7;
-    let mut info = RusageInfoV4 { uuid: [0; 16], fields: [0; 35] };
-    // SAFETY: the buffer is a correctly sized, writable rusage_info_v4; libproc only
-    // writes within it for flavor V4.
-    let rc = unsafe { proc_pid_rusage(pid as libc::c_int, RUSAGE_INFO_V4, &mut info) };
-    (rc == 0).then(|| info.fields[PHYS_FOOTPRINT])
-}
-
-#[cfg(target_os = "linux")]
-fn anon_footprint_impl(pid: u32) -> Option<u64> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    let mut anon = None;
-    let mut swap = 0u64;
-    for line in status.lines() {
-        let kb = |l: &str| l.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).map(|v| v * 1024);
-        if line.starts_with("RssAnon:") {
-            anon = kb(line);
-        } else if line.starts_with("VmSwap:") {
-            swap = kb(line).unwrap_or(0);
-        }
-    }
-    anon.map(|a| a + swap)
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn anon_footprint_impl(_pid: u32) -> Option<u64> {
-    None
-}
-
 /// The bytes of the model file a lane process was launched with (`-m` / `--model`),
 /// read off the process's own argv and stat'd: the weights it maps. `anon_footprint_of`
 /// excludes mapped files by design, so this is the other half of what the lane holds.
@@ -378,7 +389,7 @@ fn anon_footprint_impl(_pid: u32) -> Option<u64> {
 /// A split GGUF (`…-00001-of-000NN.gguf`) is summed over its parts. `None` = could not
 /// read the argv or stat the file (a dead pid, another platform): never zero.
 pub fn model_file_bytes_of(pid: u32) -> Option<u64> {
-    let args = process_args(pid)?;
+    let args = continuum_host::process_usage::args(pid)?;
     model_file_bytes(Path::new(model_path_in(&args)?))
 }
 
@@ -413,57 +424,13 @@ fn model_file_bytes(path: &Path) -> Option<u64> {
         .sum()
 }
 
-#[cfg(target_os = "macos")]
-fn process_args(pid: u32) -> Option<Vec<String>> {
-    // KERN_PROCARGS2: an i32 argc, the exec path, NUL padding, then argc NUL-terminated args.
-    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
-    let mut size: libc::size_t = 0;
-    // SAFETY: a size query (null buffer) on a valid mib.
-    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) } != 0 {
-        return None;
-    }
-    let mut buf = vec![0u8; size];
-    // SAFETY: the buffer is `size` writable bytes, as the query returned.
-    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, buf.as_mut_ptr().cast(), &mut size, std::ptr::null_mut(), 0) } != 0 {
-        return None;
-    }
-    buf.truncate(size);
-    parse_procargs2(&buf)
-}
-
-/// PURE: the argv inside a KERN_PROCARGS2 buffer.
-#[cfg(any(target_os = "macos", test))]
-fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
-    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?) as usize;
-    let mut rest = &buf[4..];
-    // Skip the exec path and the NUL padding after it.
-    let path_end = rest.iter().position(|b| *b == 0)?;
-    rest = &rest[path_end..];
-    let first = rest.iter().position(|b| *b != 0)?;
-    rest = &rest[first..];
-    let args: Vec<String> = rest
-        .split(|b| *b == 0)
-        .take(argc)
-        .map(|a| String::from_utf8_lossy(a).into_owned())
-        .collect();
-    (args.len() == argc).then_some(args)
-}
-
-#[cfg(target_os = "linux")]
-fn process_args(pid: u32) -> Option<Vec<String>> {
-    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    Some(raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect())
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn process_args(_pid: u32) -> Option<Vec<String>> {
-    None
-}
+/// The record's file inside the `state` class.
+const RECORD_FILE: &str = "lane-footprint.json";
 
 fn default_path() -> Option<PathBuf> {
     crate::paths::continuum_home()
         .ok()
-        .map(|h| h.join("state").join("lane-footprint.json"))
+        .map(|h| h.join("state").join(RECORD_FILE))
 }
 
 fn load() -> BTreeMap<String, MeasuredCost> {
@@ -478,20 +445,20 @@ pub fn load_from(path: &Path) -> BTreeMap<String, MeasuredCost> {
 }
 
 fn save_all(costs: &BTreeMap<String, MeasuredCost>) {
-    if let Some(p) = default_path() {
-        save_to(&p, costs);
+    // No registered `state` class (before boot installs it, or in a test): nothing is saved, and
+    // the record is re-measured within a minute of the next boot.
+    if let Ok(state) = continuum_kernel::system_resources::disk_reporters::ClassWriter::of("state") {
+        save_to(&state, costs);
     }
 }
 
-pub fn save_to(path: &Path, costs: &BTreeMap<String, MeasuredCost>) {
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(bytes) = serde_json::to_vec_pretty(costs) {
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, bytes).is_ok() {
-            let _ = std::fs::rename(&tmp, path);
-        }
+/// Save the records through the class that owns `state/` (staged and replaced whole).
+pub fn save_to(state: &continuum_kernel::system_resources::disk_reporters::ClassWriter, costs: &BTreeMap<String, MeasuredCost>) {
+    let saved = serde_json::to_vec_pretty(costs)
+        .map_err(std::io::Error::from)
+        .and_then(|bytes| state.replace(Path::new(RECORD_FILE), &bytes));
+    if let Err(e) = saved {
+        continuum_base::probe!(class = "serving.footprint.unsaved", error = %e, "the lane-footprint record was not saved; it re-measures after a restart");
     }
 }
 
@@ -545,8 +512,7 @@ mod tests {
                 window: 2_048,
                 allocated_tokens: None,
                 anon_bytes: 500_000_000,
-                last_ms: EpochMs::now().millis(),
-            },
+                last_ms: EpochMs::now().millis(), ..Default::default() },
         );
         assert!(measured_record(model).is_some(), "the trap record rules before retirement");
         assert!(retire(model), "a record was there to retire");
@@ -564,9 +530,16 @@ mod tests {
         // The live shape: 25.7 GB anonymous, 8 lanes × 51,712, compute floor 1.36 GB/lane.
         let per_token = per_token_from(25_700_000_000, 8, 51_712, 1_357_000_000, 0).expect("attributable");
         assert!((35_000..38_000).contains(&per_token), "{per_token} B/token");
-        assert!(corrects(10_240, per_token), "3.5× the estimate is a correction");
-        assert!(!corrects(per_token, 10_240), "a smaller reading never corrects downward");
-        assert!(!corrects(10_240, 12_000), "17% is agreement, not a correction");
+        // Fixture records: readings a minute apart, the last one the record's value.
+        let record = |readings: &[u64]| MeasuredCost {
+            per_token_bytes: *readings.last().expect("test: a fixture record has readings"), // expect: every fixture passes at least one reading
+            readings: readings.iter().enumerate().map(|(i, v)| (i as u64 * SAMPLE_EVERY_MS, *v)).collect(),
+            ..Default::default()
+        };
+        assert!(corrects(10_240, &record(&[per_token, per_token + 500])), "every reading 3.5x above the estimate corrects it");
+        assert!(!corrects(per_token, &record(&[10_240, 10_500])), "smaller readings never correct downward");
+        assert!(!corrects(11_000, &record(&[10_240, 12_000])), "an estimate inside the readings' own spread is agreement");
+        assert!(!corrects(10_240, &record(&[per_token])), "one reading has no spread: nothing corrects under the floor of two");
         // Degenerate shapes attribute nothing.
         assert_eq!(per_token_from(gb, 0, 51_712, 0, 0), None);
         assert_eq!(per_token_from(gb, 2, 0, 0, 0), None);
@@ -597,7 +570,7 @@ mod tests {
         assert!(beyond < inflated && beyond > 32_768, "{beyond}: less than the inflated read, still a real excess");
 
         let mut costs = BTreeMap::new();
-        let stale = MeasuredCost { per_token_bytes: 133_720, lanes, window, allocated_tokens: None, anon_bytes: anon, last_ms: 1 };
+        let stale = MeasuredCost { per_token_bytes: 133_720, lanes, window, allocated_tokens: None, anon_bytes: anon, last_ms: 1 , ..Default::default() };
         assert!(apply_sample(&mut costs, "m", Some(&stale)), "first record is a move");
         assert!(apply_sample(&mut costs, "m", None), "an unattributable sample retires it — a save is due");
         assert!(costs.get("m").is_none(), "nothing rules the plan from disk");
@@ -613,9 +586,9 @@ mod tests {
         let mut costs = BTreeMap::new();
         costs.insert(
             "m".to_string(),
-            MeasuredCost { per_token_bytes: 36_000, lanes: 8, window: 51_712, allocated_tokens: None, anon_bytes: 25_700_000_000, last_ms: 5 },
+            MeasuredCost { per_token_bytes: 36_000, lanes: 8, window: 51_712, allocated_tokens: None, anon_bytes: 25_700_000_000, last_ms: 5 , ..Default::default() },
         );
-        save_to(&path, &costs);
+        save_to(&continuum_kernel::system_resources::disk_reporters::TrackedDir::new("state", dir.path().to_path_buf()).writer(), &costs);
         assert_eq!(load_from(&path), costs);
         let mut legacy = serde_json::to_value(&costs).expect("record fixture");
         legacy["m"].as_object_mut().expect("record object").remove("allocated_tokens");
@@ -639,10 +612,6 @@ mod tests {
         assert_eq!(model_path_in(&args(&["llama-server", "--model=/w/b.gguf"])), Some("/w/b.gguf"));
         assert_eq!(model_path_in(&args(&["llama-server", "--port", "1"])), None);
 
-        // KERN_PROCARGS2 layout: argc, exec path, NUL padding, then the args.
-        let mut buf = 2i32.to_ne_bytes().to_vec();
-        buf.extend_from_slice(b"/bin/llama-server\0\0\0-m\0/w/a.gguf\0ENV=1\0");
-        assert_eq!(parse_procargs2(&buf), Some(args(&["-m", "/w/a.gguf"])));
 
         let dir = tempfile::tempdir().expect("test: tempdir");
         let whole = dir.path().join("m.gguf");
@@ -679,5 +648,24 @@ mod tests {
             assert!(own > 0);
         }
         assert_eq!(anon_footprint_of(u32::MAX - 1), None);
+    }
+
+    // what this catches: a measured compute rate lost with a starved window's per-token record
+    // (the window that cannot be measured is the one a model with no compute rate is served at,
+    // so the rate would never be learned), and readings outliving their window.
+    #[test]
+    fn a_compute_rate_survives_retirement_and_readings_drain_to_their_window() {
+        let mut costs = BTreeMap::new();
+        let at = |ms: u64, per_token: u64| MeasuredCost { per_token_bytes: per_token, last_ms: ms, compute_per_token: Some(7_199), ..Default::default() };
+        assert!(apply_sample(&mut costs, "m", Some(&at(1, 30_000))), "a first reading always moves the record");
+        assert!(apply_sample(&mut costs, "m", Some(&at(2, 31_000))), "no spread yet: a second reading moves it");
+        assert!(!apply_sample(&mut costs, "m", Some(&at(3, 30_500))), "inside the measured spread: no save due");
+        assert!(apply_sample(&mut costs, "m", Some(&at(4, 40_000))), "outside the spread: moved");
+        assert_eq!(costs["m"].readings.len(), 4);
+        assert!(apply_sample(&mut costs, "m", Some(&at(4 + FRESH_MS + 1, 50_000))), "outside the spread: moved");
+        assert_eq!(costs["m"].readings, vec![(4 + FRESH_MS + 1, 50_000)], "readings older than the window drained");
+        assert!(apply_sample(&mut costs, "m", None), "retired");
+        assert_eq!((costs["m"].per_token_bytes, costs["m"].compute_per_token), (0, Some(7_199)), "the compute rate stays");
+        assert!(costs["m"].readings.is_empty());
     }
 }

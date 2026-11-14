@@ -19,7 +19,7 @@
             served_context_window: 124_160,
             ..ServingSnapshot::empty()
         };
-        let row = LanePlan::serving(&served, seat(124_160), 9, Some(20.0)).expect("a served lane is a row");
+        let row = LanePlan::serving(&served, seat(124_160), continuum_kernel::capability::Capability::Proxy { score: 9 }, Some(20.0)).expect("a served lane is a row");
         assert_eq!((row.lanes, row.window), (1, 124_160), "the beacon's numbers, not the plan's");
         assert!(row.holds(&coder().requirement), "a 124k lane seats the 64k role");
 
@@ -32,30 +32,30 @@
             served_context_window: 5_533,
             ..ServingSnapshot::empty()
         };
-        let shrunk = LanePlan::serving(&planned_shrink, seat(5_533), 9, Some(20.0)).expect("still a row");
+        let shrunk = LanePlan::serving(&planned_shrink, seat(5_533), continuum_kernel::capability::Capability::Proxy { score: 9 }, Some(20.0)).expect("still a row");
         assert!(!shrunk.holds(&coder().requirement), "5,533 below 65,536 is the reading that starved the node");
 
         // Absence, not fabrication: nothing served ⇒ no row, on each of the three ways
         // "nothing" arrives.
-        assert!(LanePlan::serving(&ServingSnapshot::empty(), seat(65_536), 9, None).is_none(), "no model = no row");
+        assert!(LanePlan::serving(&ServingSnapshot::empty(), seat(65_536), continuum_kernel::capability::Capability::Proxy { score: 9 }, None).is_none(), "no model = no row");
         // MID-RELAUNCH: geometry retained, `ready` false — `serving_consumer` flips the
         // flag and clears nothing. A lane that cannot serve is no seat (Astra's review).
         assert!(
             LanePlan::serving(
                 &ServingSnapshot { active_model: Some("m".into()), ready: false, lanes: 1, served_context_window: 32_768, ..ServingSnapshot::empty() },
                 seat(32_768),
-                9,
+                continuum_kernel::capability::Capability::Proxy { score: 9 },
                 None
             )
             .is_none(),
             "a relaunching lane keeps its numbers and must NOT be announced as capacity"
         );
         assert!(
-            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 0, served_context_window: 65_536, ..ServingSnapshot::empty() }, seat(65_536), 9, None).is_none(),
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 0, served_context_window: 65_536, ..ServingSnapshot::empty() }, seat(65_536), continuum_kernel::capability::Capability::Proxy { score: 9 }, None).is_none(),
             "zero lanes = no row"
         );
         assert!(
-            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 2, served_context_window: 0, ..ServingSnapshot::empty() }, seat(65_536), 9, None).is_none(),
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 2, served_context_window: 0, ..ServingSnapshot::empty() }, seat(65_536), continuum_kernel::capability::Capability::Proxy { score: 9 }, None).is_none(),
             "unknown window = no row, never a guess"
         );
         // what this catches (the M5, 2026-11-14, 7f875ccfd, 07:52:26-27Z): at boot, before the grant
@@ -64,7 +64,7 @@
         // the engine's per-sequence limit, whatever the share.
         let pooled = ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 5, served_context_window: 110_387, ..ServingSnapshot::empty() };
         assert!(LanePlan::serving(&pooled, SeatWindow::Unreported, 9, None).is_none(), "unreported seat = no row, never the share");
-        let row = LanePlan::serving(&pooled, seat(262_144), 9, None).expect("a reported seat is a row");
+        let row = LanePlan::serving(&pooled, seat(262_144), continuum_kernel::capability::Capability::Proxy { score: 9 }, None).expect("a reported seat is a row");
         assert_eq!((row.lanes, row.window), (5, 262_144), "the seat is what one sequence holds, not 110,387");
     }
 
@@ -72,17 +72,17 @@
     fn coder() -> Role {
         Role {
             name: "coder".into(),
-            requirement: Requirement { window: 65_536, target_window: None, min_capability: 7, decode_floor_tps: Some(10.0) },
+            requirement: Requirement { window: 65_536, target_window: None, min_capability: continuum_kernel::capability::Capability::Proxy { score: 7 }, decode_floor_tps: Some(10.0) },
         }
     }
     fn orchestrator() -> Role {
         Role {
             name: "orchestrator".into(),
-            requirement: Requirement { window: 32_768, target_window: None, min_capability: 3, decode_floor_tps: None },
+            requirement: Requirement { window: 32_768, target_window: None, min_capability: continuum_kernel::capability::Capability::Proxy { score: 3 }, decode_floor_tps: None },
         }
     }
     fn plan(model: &str, cap: u8, window: u32, lanes: u32, tps: Option<f32>) -> LanePlan {
-        LanePlan { model_id: model.into(), capability_rank: cap, window, lanes, decode_tps_per_lane: tps }
+        LanePlan { model_id: model.into(), capability_rank: continuum_kernel::capability::Capability::Proxy { score: cap }, window, lanes, decode_tps_per_lane: tps }
     }
     const US: Uuid = Uuid::from_u128(0xA11);
     fn minds(role: usize, home: Option<Uuid>, n: usize) -> Vec<Mind> {
@@ -261,7 +261,7 @@
         let two_k = offer(n, vec![plan("27b", 9, 2_048, 1, None), plan("27b", 9, 2_048, 2, None)]);
         let m = minds(0, Some(n), 6);
         let a = allocate(&inputs(vec![two_k], m.clone()));
-        assert_eq!(a.node(n).unwrap().verdict, NodeVerdict::BelowEveryRequirement { best_window: 2_048, best_capability: 9 });
+        assert_eq!(a.node(n).unwrap().verdict, NodeVerdict::BelowEveryRequirement { best_window: 2_048, best_capability: continuum_kernel::capability::Capability::Proxy { score: 9 } });
         assert!(a.seated.is_empty());
         assert_eq!(a.dormant.len(), 6, "every mind dormant, identity kept — none seated on a useless lane");
         assert_eq!(a.open_total(), 0, "and nothing tells the spawner to mint more");
@@ -504,17 +504,17 @@
         use continuum_experience::experience::role::RoleId;
         let coder = |window: u32| CitizenRecipe {
             role: RoleId::Coder,
-            requirement: Some(CitizenRequirement { window_tokens: window, min_capability: 7, decode_floor_tps: Some(10.0) }),
+            requirement: Some(CitizenRequirement { window_tokens: window, min_capability: continuum_kernel::capability::Capability::Proxy { score: 7 }, decode_floor_tps: Some(10.0) }),
         };
         let helper = CitizenRecipe { role: RoleId::Helper, requirement: None };
         let lax = CitizenRecipe {
             role: RoleId::Coder,
-            requirement: Some(CitizenRequirement { window_tokens: 8_192, min_capability: 3, decode_floor_tps: Some(5.0) }),
+            requirement: Some(CitizenRequirement { window_tokens: 8_192, min_capability: continuum_kernel::capability::Capability::Proxy { score: 3 }, decode_floor_tps: Some(5.0) }),
         };
         let (roles, floors) = roles_from(&[coder(65_536), helper.clone(), coder(131_072), lax], Some(70_071));
         assert_eq!(roles.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), vec!["coder", "helper"], "authoring order is priority");
-        assert_eq!(roles[0].requirement, Requirement { window: 131_072, target_window: None, min_capability: 7, decode_floor_tps: Some(10.0) }, "the strictest declared requirement wins on every axis — a later laxer citizen loosens nothing");
-        assert_eq!(roles[1].requirement, Requirement { window: continuum_engine::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET, target_window: Some(70_071), min_capability: 0, decode_floor_tps: None }, "undeclared demand is a target, never a gate");
+        assert_eq!(roles[0].requirement, Requirement { window: 131_072, target_window: None, min_capability: continuum_kernel::capability::Capability::Proxy { score: 7 }, decode_floor_tps: Some(10.0) }, "the strictest declared requirement wins on every axis — a later laxer citizen loosens nothing");
+        assert_eq!(roles[1].requirement, Requirement { window: continuum_engine::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET, target_window: Some(70_071), min_capability: continuum_kernel::capability::Capability::Proxy { score: 0 }, decode_floor_tps: None }, "undeclared demand is a target, never a gate");
         assert_eq!(floors, vec![RoleFloor { role: 0, min_seats: 3 }, RoleFloor { role: 1, min_seats: 1 }]);
         let (roles, _) = roles_from(&[helper], None);
         assert_eq!(roles[0].requirement.window, continuum_engine::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET, "nothing measured yet = the bootstrap working-set floor");
@@ -558,7 +558,7 @@
         use continuum_experience::experience::role::RoleId;
         let declared = CitizenRecipe {
             role: RoleId::Coder,
-            requirement: Some(CitizenRequirement { window_tokens: 32_768, min_capability: 7, decode_floor_tps: Some(10.0) }),
+            requirement: Some(CitizenRequirement { window_tokens: 32_768, min_capability: continuum_kernel::capability::Capability::Proxy { score: 7 }, decode_floor_tps: Some(10.0) }),
         };
         let measured = CitizenRecipe { role: RoleId::Coder, requirement: None };
         for citizens in [[declared.clone(), measured.clone()], [measured.clone(), declared.clone()]] {
@@ -586,7 +586,7 @@
     #[test]
     fn a_better_seat_is_judged_in_the_allocators_own_order_and_never_on_equality() {
         let base = plan("27b", 9, 67_072, 2, None);
-        let req = Requirement { window: 0, target_window: None, min_capability: 0, decode_floor_tps: None };
+        let req = Requirement { window: 0, target_window: None, min_capability: continuum_kernel::capability::Capability::Proxy { score: 0 }, decode_floor_tps: None };
         assert_eq!(base.better_than(&base, &req), None, "equal plans: no move");
         assert_eq!(plan("27b", 9, 67_072, 2, Some(14.0)).better_than(&base, &req), None, "decode is not an axis of the order");
         assert_eq!(plan("30b", 10, 2_048, 1, None).better_than(&base, &req), Some(BetterBy::Capability), "capability beats everything below it");
@@ -623,14 +623,15 @@
             weights_bytes: 19_000_000_000,
             kv_per_token: 32_768,
             context_window: 262_144,
-            capability_rank: 9,
+            capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
+            compute: continuum_engine::inference::planning::serving_plan::ComputeRate::Measured { bytes_per_token: 32_768 / 4 }, // fixture: the Devstral calibration, a quarter of the KV rate
         };
         let host = HostBudget { usable_bytes: 25_000_000_000, perf_cores: 12 };
         let plan = plan_serving(&host, &[model], &ServingDemand::new(2, Some(70_000))).expect("a 27B fits a 25 GB budget");
         let lane = LanePlan::of(&plan, None);
         assert_eq!(lane.model_id, "coder-27b");
-        assert_eq!(lane.capability_rank, 9);
+        assert_eq!(lane.capability_rank, continuum_kernel::capability::Capability::Proxy { score: 9 });
         assert_eq!(lane.window, plan.served_context_window);
         assert_eq!(lane.lanes, plan.lanes);
         assert!(lane.lanes >= 1);
@@ -642,7 +643,7 @@
         // orchestration; the verdict names the plan's real width either way.
         let expected = match i.roles.iter().position(|r| lane.holds(&r.requirement)) {
             Some(role) => NodeVerdict::Hosts { role },
-            None => NodeVerdict::BelowEveryRequirement { best_window: lane.window, best_capability: 9 },
+            None => NodeVerdict::BelowEveryRequirement { best_window: lane.window, best_capability: continuum_kernel::capability::Capability::Proxy { score: 9 } },
         };
         assert_eq!(a.node(n).unwrap().verdict, expected);
         assert!(lane.window < coder().requirement.window, "the shape this fixture pins: two lanes on 25 GB do not reach the coder window");

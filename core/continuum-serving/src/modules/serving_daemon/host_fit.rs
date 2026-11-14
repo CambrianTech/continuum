@@ -29,7 +29,8 @@
 
 use continuum_host::host_memory::HostMemoryReading;
 
-use crate::inference::planning::serving_plan::{ModelFootprint, SENT_HEADROOM};
+use crate::inference::planning::serving_plan::ModelFootprint;
+use crate::inference::planning::window_allocator::{Growth, Tokens};
 use crate::inference::planning::MIN_SERVE_CTX;
 
 /// What the host can give an engine now, every term from its own reading.
@@ -56,9 +57,9 @@ impl HostRoom {
 /// One seated mind's claim on the pool, from her requirement (`window_allocator::Measure`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MindClaim {
-    /// A held turn measured her floor: the pool holds it with the growth margin her grant uses
-    /// (`Demand::of`'s target, `SENT_HEADROOM` over her need).
-    Held { need: u64 },
+    /// A held turn measured her floor: the pool holds it grown by her own measured growth, the
+    /// margin her grant uses (`Demand::of`'s target).
+    Held { need: u64, growth: Growth },
     /// No held turn yet: her own measured wish or declared size is her floor, as is.
     Own { target: u64 },
 }
@@ -79,7 +80,10 @@ pub(super) fn need_with_growth(claims: &[MindClaim], sequences: u32, trained_win
     let claimed: u64 = claims
         .iter()
         .map(|claim| match *claim {
-            MindClaim::Held { need } => (need as f64 * SENT_HEADROOM) as u64,
+            MindClaim::Held { need, growth } => u32::try_from(need)
+                .ok()
+                .and_then(Tokens::new)
+                .map_or(need, |need| u64::from(growth.grow(need).get())),
             MindClaim::Own { target } => target,
         })
         .map(|tokens| tokens.min(trained))
@@ -183,7 +187,9 @@ mod tests {
     // remembers nobody launched at the floor (the 2,048-token dark node of card 8569b03d).
     #[test]
     fn the_need_is_each_claim_with_the_grants_growth_and_a_least_window_per_free_sequence() {
-        let claims = [MindClaim::Held { need: 100_000 }, MindClaim::Own { target: 900_000 }];
+        // Fixture: her full ring measured her p95 act at 5/4 of her median act.
+        let growth = crate::inference::planning::window_allocator::Growth::Measured { tail: crate::inference::planning::window_allocator::test_tokens(5), typical: crate::inference::planning::window_allocator::test_tokens(4) };
+        let claims = [MindClaim::Held { need: 100_000, growth }, MindClaim::Own { target: 900_000 }];
         assert_eq!(need_with_growth(&claims, 4, 262_144), Some(125_000 + 262_144 + 2 * u64::from(MIN_SERVE_CTX)));
         assert_eq!(need_with_growth(&[], 5, 262_144), None, "nobody remembered: the plan's pool stands");
     }
@@ -201,7 +207,7 @@ mod tests {
     // leave minds dark, and a bounded pool below one prompt per sequence.
     #[test]
     fn the_pool_is_the_demand_until_the_host_bounds_it() {
-        let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).expect("test: a footprint");
+        let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).expect("test: a footprint");
         let host = |r| Rooms { host: Some(r), device: None };
         assert_eq!(pool_fit(100_000, Some(&fp), Rooms { host: None, device: None }, 0, 5, 262_144).pool(5), 100_000, "no reading: the demand stands");
         assert!(matches!(pool_fit(100_000, Some(&fp), host(room(60 * GB, 0, 0)), 0, 5, 262_144), PoolFit::Fits { .. }));
@@ -215,7 +221,7 @@ mod tests {
     // working set. The smaller room bounds it, and says which.
     #[test]
     fn the_device_room_bounds_a_pool_the_host_would_hold() {
-        let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).expect("test: a footprint");
+        let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).expect("test: a footprint");
         let rooms = Rooms { host: Some(room(60 * GB, 0, 0)), device: Some(25 * GB) };
         let fit = pool_fit(1_000_000, Some(&fp), rooms, 0, 5, 262_144);
         assert!(matches!(fit, PoolFit::Bounded { by: Bound::Device { room }, .. } if room == 25 * GB), "{fit:?}");

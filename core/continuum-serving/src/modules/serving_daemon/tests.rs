@@ -7,20 +7,21 @@
 // sat free — every turn a full re-prefill. Same footprint, same demand, same box:
 // unified pays the working set, discrete does not, and the discrete answer is the
 // demand-sized one.
-/// The grant the cache may be promised out of a ceiling: the ceiling less the
-/// cache's grant headroom (#4216 — a cache fills to its grant).
-pub(super) fn grantable(ceiling: u64) -> u64 {
-    (ceiling as f64 * (1.0 - crate::inference::planning::serving_plan::CACHE_GRANT_HEADROOM)) as u64
+/// The grant with no availability reading: what the serve leaves of physical memory, above
+/// the OS floor and above the Eco exit band (the power mode's headroom, the one co-consumer
+/// reservation; a cache fills to its grant).
+pub(super) fn grantable_from_physical(physical: u64, serve_host: u64) -> u64 {
+    let left = physical.saturating_sub(serve_host);
+    left.saturating_sub(host_os_floor_bytes(physical))
+        .min(left.saturating_sub(crate::capacity::power_mode::ECO_EXIT_BYTES))
 }
 
 /// The grant out of a known `available` reading: the smaller of "above the OS
-/// floor" and "above the Eco exit band", less the co-consumer share.
+/// floor" and "above the Eco exit band".
 pub(super) fn grantable_from_available(physical: u64, available: u64) -> u64 {
-    grantable(
-        available
-            .saturating_sub(host_os_floor_bytes(physical))
-            .min(available.saturating_sub(crate::capacity::power_mode::ECO_EXIT_BYTES)),
-    )
+    available
+        .saturating_sub(host_os_floor_bytes(physical))
+        .min(available.saturating_sub(crate::capacity::power_mode::ECO_EXIT_BYTES))
 }
 use super::*;
 use crate::inference::planning::serving_plan::footprint::apply_kv_quantization;
@@ -494,8 +495,8 @@ pub(super) fn boot_squeeze() -> (HostBudget, Vec<ModelFootprint>) {
             perf_cores: 6,
         },
         vec![
-            footprint_from_parts("qwen3-27b", 19 * GB, 8192, true, None).unwrap(),
-            footprint_from_parts("coder-4b", 3 * GB, 8192, true, None).unwrap(),
+            crate::inference::planning::serving_plan::footprint::footprint_from_parts("qwen3-27b", 19 * GB, 8192, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).unwrap(),
+            crate::inference::planning::serving_plan::footprint::footprint_from_parts("coder-4b", 3 * GB, 8192, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).unwrap(),
         ],
     )
 }

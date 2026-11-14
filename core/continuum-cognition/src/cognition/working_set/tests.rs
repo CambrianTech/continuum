@@ -650,6 +650,11 @@ fn a_censored_need_raises_her_residency_by_its_value_never_to_a_whole_sequence()
     let reg = WorkingSetRegistry::new();
     let aiko = Uuid::new_v4();
     let would_have_held = 114_592;
+    // A full working session before the nine measured acts: one act of 60,000 among her 48,000s,
+    // so her measured growth (p95 over median) is 60,000 / 48,000.
+    for (t, demand) in [60_000, 48_000, 48_000, 48_000, 48_000, 48_000, 48_000].into_iter().enumerate() {
+        reg.record_in_memory(aiko, demand, 100 + t as u64);
+    }
     for t in 0..9u64 {
         reg.record_in_memory(aiko, 48_000, t);
         // Five of nine acts overflowed; the rest were held at her budgeter's floor.
@@ -660,10 +665,10 @@ fn a_censored_need_raises_her_residency_by_its_value_never_to_a_whole_sequence()
     assert_eq!(need_tokens(&demand), Some(NeedSample::AtLeast { at_least: would_have_held }), "the measurement keeps the bound, typed as one");
     assert_eq!(resident_need(&demand).map(|need| need.value().get()), Some(would_have_held), "residency reads her need, censored samples included");
     let requirement = &requirements_for(&[aiko], &reg)[0];
-    assert_eq!(requirement.wish.map(|w| w.get()), Some(48_000), "the bound raises no wish");
+    assert_eq!(requirement.measure.wish().map(|w| w.get()), Some(48_000), "the bound raises no wish");
     let Measure::Held { need, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
     assert!(need.is_bound(), "a bound stays a bound, so admission can clamp it: {need:?}");
-    // granted its value, within her wish with the sent headroom (48,000 x 1.25), never a sequence
+    // granted its value, within her wish grown by her measured growth (48,000 x 60/48), never a sequence
     assert_eq!(need.value().get(), 60_000, "granted its value up to her wish");
     assert_eq!(need.within(262_144).get(), 60_000, "under a roomy ceiling: its value, never a whole sequence");
     assert_eq!(need.within(58_112).get(), 58_112, "past the ceiling: the ceiling, never parked (Sahar)");
@@ -701,7 +706,7 @@ fn held_turns_alone_stay_an_exact_need_and_raise_no_wish() {
     }
     assert_eq!(need_tokens(&reg.demand_of(aris).expect("recorded")), Some(NeedSample::Exact(30_004)), "the upper median, as before");
     let requirement = &requirements_for(&[aris], &reg)[0];
-    assert_eq!(requirement.wish.map(|w| w.get()), Some(48_000), "an exact need leaves her wish where her turns measured it");
+    assert_eq!(requirement.measure.wish().map(|w| w.get()), Some(48_000), "an exact need leaves her wish where her turns measured it");
     let Measure::Held { need, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
     assert_eq!(Some(need), std::num::NonZeroU32::new(30_004).map(crate::inference::planning::window_allocator::observed::Observed::Exact), "an exact need, typed as one");
 }
@@ -845,7 +850,7 @@ fn a_stale_target_never_cuts_her_floor_on_the_way_to_admission() {
     reg.record_need_in_memory(her, NeedSample::AtLeast { at_least: 116_240 }, 5);
     reg.record_floor_in_memory(her, 60_000, 5);
     let requirement = &requirements_for(&[her], &reg)[0];
-    let Measure::Held { need, target } = requirement.measure else { panic!("a held need: {requirement:?}") };
+    let Measure::Held { need, target, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
     assert!(target.get() >= 60_000, "her target rises to her floor: {target:?}");
     assert_eq!(need.within(58_112).get(), 60_000, "past the ceiling her floor stands, and waits");
     assert!(need.within(262_144).get() >= 60_000, "under a roomy ceiling, never below her floor");
@@ -871,4 +876,28 @@ fn a_boot_remembers_its_newest_held_residents_and_nobody_else() {
     assert_eq!(reg.remembered_residents(2), vec![newest, older], "the population's newest held residents");
     assert_eq!(reg.remembered_residents(9).len(), 3, "a mind that never held a turn is no resident");
     assert!(requirements_for(&reg.remembered_residents(2), &reg).iter().all(|r| r.measure.target().is_some()), "each remembered resident is a measured requirement");
+}
+
+// what this catches: one fleet-wide factor standing in for her growth (`SENT_HEADROOM = 1.25` for
+// every mind on every node). Her target is her wish grown by her own ring, p95 over median; with
+// fewer turns than one working session nothing is added that her turns did not measure.
+#[test]
+fn her_target_is_her_wish_grown_by_her_own_ring() {
+    use crate::inference::planning::window_allocator::Growth;
+    let mut ring = [30_000u32; RECENT_TURNS];
+    ring[0] = 60_000;
+    let seasoned = PersonaDemand { recent: ring, last_tokens: 30_000, ..PersonaDemand::default() };
+    assert!(matches!(growth_of(&seasoned), Growth::Measured { .. }), "a full ring is measured");
+    let mut young_ring = [0u32; RECENT_TURNS];
+    young_ring[..2].copy_from_slice(&[30_000, 60_000]);
+    let young = PersonaDemand { recent: young_ring, last_tokens: 60_000, ..PersonaDemand::default() };
+    assert_eq!(growth_of(&young), Growth::Unmeasured, "two turns are not a working session");
+    let reg = WorkingSetRegistry::new();
+    let (her, newcomer) = (Uuid::new_v4(), Uuid::new_v4());
+    reg.observed.insert(her, seasoned);
+    reg.observed.insert(newcomer, young);
+    let targets: Vec<_> = requirements_for(&[her, newcomer], &reg).iter().map(|r| r.measure.target().map(|t| t.get())).collect();
+    // Hers: her 30k median grown to her 60k p95. The newcomer's: the upper median of her two
+    // recorded turns (60k), ungrown.
+    assert_eq!(targets, vec![Some(60_000), Some(60_000)], "her ring's spike is her room; the newcomer's wish stands alone");
 }

@@ -22,7 +22,7 @@ pub struct AccessGetResult {
     pub policy: AccessPolicy,
     /// The capability rank of the model this node serves now (a local citizen's level).
     #[ts(optional)]
-    pub local_cognitive_rank: Option<u8>,
+    pub local_cognitive_rank: Option<continuum_kernel::capability::Capability>,
     /// The level a local citizen gets right now under this policy.
     pub local_citizen_level: TrustLevel,
 }
@@ -59,7 +59,7 @@ impl From<AccessLevelChange> for Option<TrustLevel> {
 pub struct AccessSetParams {
     /// The capability rank at or above which a citizen gets the full working surface.
     #[ts(optional)]
-    pub full_access_min_rank: Option<u8>,
+    pub full_access_min_rank: Option<continuum_kernel::capability::Capability>,
     /// The citizen (peer id) a decision is about.
     #[ts(optional, type = "string")]
     pub peer: Option<Uuid>,
@@ -106,7 +106,7 @@ crate::action_command! {
                 policy.decisions.retain(|d| d.peer != peer);
                 if let Some(level) = Option::<TrustLevel>::from(change) {
                     let reason = p.reason.clone().filter(|r| !r.trim().is_empty()).ok_or_else(|| {
-                        CommandError::Invalid("access/set: a decision needs a reason (it is shown wherever it is read)".into())
+                        CommandError::Invalid("a decision needs a reason (it is shown wherever it is read)".into())
                     })?;
                     policy.decisions.push(AccessDecision {
                         peer,
@@ -118,7 +118,7 @@ crate::action_command! {
                 }
             }
             (None, None) => {}
-            (Some(_), None) | (None, Some(_)) => return Err(CommandError::Invalid("access/set: a decision needs both peer and level".into())),
+            (Some(_), None) | (None, Some(_)) => return Err(CommandError::Invalid("a decision needs both peer and level".into())),
         }
         access_decision::store(policy.clone()).map_err(CommandError::Internal)?;
         let rank = access_decision::local_cognitive_rank();

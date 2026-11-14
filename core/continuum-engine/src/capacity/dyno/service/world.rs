@@ -191,7 +191,7 @@ impl World {
         crate::capacity::window_grant::stamp_revisions(None, &mut next);
         for (i, tokens) in grants {
             let id = self.mind(*i);
-            let state = self.minds.get_mut(&id).expect("test: a seeded holder is a mind");
+            let state = self.minds.get_mut(&id).expect("test: a seeded holder is a mind"); // expect: the dyno's own state invariant, a seeded holder is a mind
             state.published = *tokens;
             state.resident = *tokens;
             self.first_served.insert(id, 0);
@@ -241,14 +241,14 @@ impl World {
                 };
                 // No hold (none published, handed off, or owed to a waiter): her act waits for a grant.
                 if let Some(hold) = held {
-                    let s = self.minds.get_mut(&id).expect("test: indexed mind");
+                    let s = self.minds.get_mut(&id).expect("test: indexed mind"); // expect: the dyno's own state invariant, indexed mind
                     (s.phase, s.quoted, s.hold) = (Phase::Quoted, Some(hold.lease()), Some(hold));
                 }
                 Applied::default()
             }
             Step::Reserve(i) => self.reserve(i),
             Step::Send(i) => {
-                let s = self.minds.get_mut(&self.order[i % self.order.len()]).expect("test: indexed mind");
+                let s = self.minds.get_mut(&self.order[i % self.order.len()]).expect("test: indexed mind"); // expect: the dyno's own state invariant, indexed mind
                 if s.phase == Phase::Reserved && s.reserved_on == Some(self.engine) {
                     s.phase = Phase::Sent;
                     s.resident = s.resident.max(s.quoted.map_or(0, |l| l.tokens));
@@ -258,9 +258,9 @@ impl World {
             Step::Terminal(i) | Step::Disconnect(i) => {
                 let engine = self.engine;
                 let id = self.mind(i);
-                let s = self.minds.get_mut(&id).expect("test: indexed mind");
+                let s = self.minds.get_mut(&id).expect("test: indexed mind"); // expect: the dyno's own state invariant, indexed mind
                 if s.phase == Phase::Sent {
-                    let reservation = s.reservation.take().expect("test: a sent request holds its reservation");
+                    let reservation = s.reservation.take().expect("test: a sent request holds its reservation"); // expect: the dyno's own state invariant, a sent request holds its reservation
                     let current = s.reserved_on == Some(engine);
                     s.end_act();
                     if matches!(step, Step::Terminal(_)) {
@@ -275,7 +275,7 @@ impl World {
                 Applied::default()
             }
             Step::CancelQuoted(i) => {
-                let s = self.minds.get_mut(&self.order[i % self.order.len()]).expect("test: indexed mind");
+                let s = self.minds.get_mut(&self.order[i % self.order.len()]).expect("test: indexed mind"); // expect: the dyno's own state invariant, indexed mind
                 if s.phase == Phase::Quoted {
                     s.end_act();
                     s.quoted = None;
@@ -284,7 +284,7 @@ impl World {
             }
             Step::CancelReserved(i) => {
                 let engine = self.engine;
-                let s = self.minds.get_mut(&self.order[i % self.order.len()]).expect("test: indexed mind");
+                let s = self.minds.get_mut(&self.order[i % self.order.len()]).expect("test: indexed mind"); // expect: the dyno's own state invariant, indexed mind
                 if s.phase == Phase::Reserved {
                     drop(s.reservation.take());
                     s.unresolved += u32::from(s.reserved_on == Some(engine));
@@ -299,7 +299,7 @@ impl World {
                         Step::Reclaimed(_) => self.owner.reclaimed(ticket),
                         _ => self.owner.refused(ticket),
                     };
-                    let s = self.minds.get_mut(&id).expect("test: indexed mind");
+                    let s = self.minds.get_mut(&id).expect("test: indexed mind"); // expect: the dyno's own state invariant, indexed mind
                     if let (Step::Reclaimed(_), Ok(())) = (step, &outcome) {
                         s.resident = 0;
                     }
@@ -316,7 +316,7 @@ impl World {
         let id = self.mind(i);
         let now = self.lease_now(id);
         let engine = self.engine;
-        let s = self.minds.get_mut(&id).expect("test: indexed mind");
+        let s = self.minds.get_mut(&id).expect("test: indexed mind"); // expect: the dyno's own state invariant, indexed mind
         let (Phase::Quoted, Some(quoted)) = (s.phase, s.quoted) else { return Applied::default() };
         let needed = quoted.tokens.saturating_sub(1).max(1);
         let mut slot = None;
@@ -342,7 +342,7 @@ impl World {
         let demands: Vec<Demand<Mind>> = self.order.iter().map(|mind| {
             let s = &self.minds[mind];
             let need = test_tokens(s.need);
-            Demand { mind: *mind, need, target: need, wish: need, in_flight: s.phase != Phase::Idle, settled: s.completed_since_grant, ceiling: self.ceiling }
+            Demand { mind: *mind, need, target: need, wish: need, turn: match (&s.phase, s.completed_since_grant) { (Phase::Idle, true) => crate::capacity::window_grant::Turn::Settled, (Phase::Idle, false) => crate::capacity::window_grant::Turn::Unsettled, _ => crate::capacity::window_grant::Turn::InFlight }, ceiling: self.ceiling, growth: crate::inference::planning::window_allocator::Growth::Unmeasured }
         }).collect();
         let (next, tickets) = self.owner.publish(&mut self.fair, &demands, self.pool, self.ceiling, Some(self.engine), self.current.clone());
         self.publications += 1;
@@ -357,13 +357,13 @@ impl World {
             if !s.completed_since_grant && !(s.idle_at_last_publish && !s.owns_request()) {
                 self.violations.push((self.steps, Step::Publish, Violation::TicketWithoutCompletion { mind }));
             }
-            applied.tickets.push(self.order.iter().position(|m| *m == mind).expect("test: a ticket names a mind"));
+            applied.tickets.push(self.order.iter().position(|m| *m == mind).expect("test: a ticket names a mind")); // expect: the dyno's own state invariant, a ticket names a mind
             self.tickets.insert(mind, ticket);
         }
         let retiring_now = self.observe().retiring;
         for (index, mind) in self.order.clone().into_iter().enumerate() {
             let granted = next.grant_for(mind).unwrap_or(0); // unwrap_or: no grant this publication
-            let s = self.minds.get_mut(&mind).expect("test: ordered mind");
+            let s = self.minds.get_mut(&mind).expect("test: ordered mind"); // expect: the dyno's own state invariant, ordered mind
             if s.published < s.need && granted >= s.need {
                 s.completed_since_grant = false;
                 s.owed_since = None;

@@ -43,24 +43,21 @@ fn directed_pending() -> bool {
 // Neither the gauge nor the turn-level permit can fix this — the reservation must live
 // at the LANE the model call actually consumes. So every model call acquires a lane
 // here, priced by priority:
-//   - directed → acquires from the FULL pool (MAX_LANES). Waits only if MAX_LANES other
+//   - directed → acquires from the FULL pool (the served lanes). Waits only if that many other
 //                directed calls already hold every lane (all lanes serving live work).
-//   - non-directed (ambient + idle self-tick) → additionally bounded to (MAX_LANES-1),
+//   - non-directed (ambient + idle self-tick) → additionally bounded to (lanes-1),
 //                so at least ONE lane is always reserved for a directed call.
 // No deadlock: directed never touches the non-directed cap, and non-directed holds at
-// most MAX_LANES-1 physical lanes, so a directed acquire always finds a free lane unless
+// most lanes-1 physical lanes, so a directed acquire always finds a free lane unless
 // every lane already serves directed. On a single-lane machine there is nothing to
 // reserve, so the non-directed budget floors at 1 (no starvation, no false guarantee).
 // [[conversational-latency-is-a-misdirection-budget]] [[never-thrash-sticky-hysteresis-on-every-lane]]
 
 /// The LIVE `--parallel` slot count of the running serving target, published by the
 /// serving daemon on every reconcile (`set_served_lane_count`). 0 until serving is up.
-/// This is the ground truth for how many physical decode lanes exist RIGHT NOW —
-/// distinct from `serving_plan::MAX_LANES`, which is only the safety ceiling. Before the
-/// compute-buffer fit term (#139), lanes were always == MAX_LANES so the constant was
-/// exact; now the plan serves DEMAND (e.g. 4 lanes on this box while MAX_LANES = 6), so
-/// sizing the admission semaphores by the constant would over-admit by the difference
-/// and weaken the directed-turn reservation. Sizing by THIS keeps the reservation exact.
+/// This is the ground truth for how many physical decode lanes exist RIGHT NOW: the plan
+/// serves DEMAND, so sizing the admission semaphores by any fixed count would over-admit by
+/// the difference and weaken the directed-turn reservation. Sizing by THIS keeps it exact.
 /// Every piece of admission state that used to be six separate process-global statics
 /// (`SERVED_LANE_COUNT`, `SERVING_LANES`, `NONDIRECTED_LANES`, their two installed
 /// counters, and the resize lock) plus the ambient-turn permits — owned by ONE type.
@@ -148,10 +145,9 @@ pub fn resident_departed(persona: uuid::Uuid) {
 }
 
 /// Physical decode lanes on the shared serving target — the LIVE served count when
-/// serving has come up, else the planner's `MAX_LANES` ceiling as the boot-time fallback.
-/// Floored at 1. Read live by the saturation gauge; captured at lazy-init by the lane
-/// semaphores (serving is always up before the first persona model call, so the init
-/// captures the real count, not the ceiling).
+/// serving has come up, else one: no engine has reported a lane yet. Read live by the
+/// saturation gauge; captured at lazy-init by the lane semaphores (serving is always up
+/// before the first persona model call, and a publication grows the semaphores).
 /// Publish the running serving target's live lane count (the plan's `--parallel`). The
 /// serving daemon calls this on every reconcile. Sizes the admission semaphores exactly:
 /// the lazy-init captures it at boot, and a LATER increase (roster grows, more personas
@@ -179,7 +175,7 @@ pub(super) fn resize_semaphore_to(sem: &tokio::sync::Semaphore, installed: &Atom
 }
 
 /// The lane count a sibling gate should boot with before any plan publishes — the same
-/// live-count-else-ceiling read the lane semaphores lazy-init from. Used by the prefill
+/// live-count-else-one read the lane semaphores lazy-init from. Used by the prefill
 /// throttle (#56) so both gates start from the ONE number.
 pub fn boot_lane_count() -> usize {
     LANES.lane_count()
@@ -271,12 +267,15 @@ impl LaneAdmission {
         }
     }
 
-    /// Physical decode lanes: the LIVE served count once serving is up, else the planner's
-    /// ceiling as the boot fallback. Floored at 1.
+    /// Physical decode lanes: the LIVE served count once serving is up. Before an engine has
+    /// reported its lanes there is one: a call admitted then runs alone, the inline pump's
+    /// capacity (`served_generations::admission_bound`), and the publication grows the
+    /// semaphores to what is served. Never a fixed ceiling standing in for the engine's report.
     pub(super) fn lane_count(&self) -> usize {
-        match self.served.load(Ordering::Acquire) {
-            0 => (crate::inference::planning::serving_plan::MAX_LANES as usize).max(1),
-            n => n,
+        match std::num::NonZeroUsize::new(self.served.load(Ordering::Acquire)) {
+            Some(published) => published.get(),
+            // No engine has reported its lanes: one call at a time until it does.
+            None => std::num::NonZeroUsize::MIN.get(),
         }
     }
 
@@ -558,7 +557,7 @@ impl Default for LaneAdmission {
 
 /// Acquire a serving lane for a model call, priced by priority (#139). `directed`
 /// callers take from the full lane pool; non-directed callers first claim the
-/// (MAX_LANES-1) non-directed budget, guaranteeing a directed caller always finds a free
+/// (lanes-1) non-directed budget, guaranteeing a directed caller always finds a free
 /// physical lane. Awaits only under genuine contention; the returned permit releases
 /// every lane on drop.
 /// How many physical serving-lane permits are free RIGHT NOW — a gauge for the

@@ -26,8 +26,9 @@ fn a_core_restart_over_an_engine_larger_than_free_memory_plans_that_engine_not_t
         weights_bytes: 20_419_565_568,
         kv_per_token: 8_317, // the M5 fixture's per-token cost (one_launch.rs)
         context_window: 262_144, // the catalog row's trained window
-        capability_rank: 9,
+        capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(8_317),
     };
     // The budget was exactly the credit: the board had nothing free beside the engine. System
     // memory free is not in the probes; any reading under the Eco line reproduces the case.
@@ -80,8 +81,9 @@ fn owned_bytes_are_never_credited_twice() {
         weights_bytes: 17 * GB,
         kv_per_token: 65_536,
         context_window: 262_144,
-        capability_rank: 9,
+        capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(65_536),
     };
     let at_rest = HostBudget { usable_bytes: 32 * GB, perf_cores: 8 };
     let demand = ServingDemand::new(2, Some(120_000));
@@ -164,8 +166,9 @@ fn m5_engine_footprint() -> ModelFootprint {
         weights_bytes: 20_419_565_568,
         kv_per_token: 8_317,
         context_window: 262_144,
-        capability_rank: 9,
+        capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(8_317),
     }
 }
 

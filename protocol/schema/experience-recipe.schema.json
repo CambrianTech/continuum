@@ -40,6 +40,53 @@
         }
       ]
     },
+    "Capability": {
+      "description": "A model's capability. The derived order is the planner's: every `Proxy` ranks below every `Measured`, and within a kind the higher score ranks higher. A role's minimum is the same type, so a `Measured` minimum is never met by a `Proxy`, and a `Proxy` minimum is met by a proxy at or above it or by any measured model.",
+      "oneOf": [
+        {
+          "description": "Derived from the weights (GB on disk, plus a tool-use bonus): \"bigger is smarter within a family\", nothing across families.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "proxy"
+              ],
+              "type": "string"
+            },
+            "score": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "score"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A measured score (the catalog's benchmark index).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "measured"
+              ],
+              "type": "string"
+            },
+            "score": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "score"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "CitizenRecipe": {
       "description": "One resident citizen an experience declares (#430) — a ROLE, not an identity. Identity (peer_id, name) is minted or resumed by the identity provider at hosting time; the MODEL is the serving daemon's per-host decision. A recipe authoring a device-specific model id would make the recipe non-portable across the grid, so the role is all it declares.",
       "properties": {
@@ -82,11 +129,16 @@
           ]
         },
         "minCapability": {
-          "default": 0,
-          "description": "The least capable model this role is competent on, on the footprint rank scale (`ModelFootprint::capability_rank`: a measured score — the AA index, 27B ≈ 42 — else the weights-GB proxy, +2 for tool use, capped at 40); 0 = any. A coder activity declares its tier here: 12 = a 27B-class Q4 base (16.5 GB → 18) or a measured score above it; a 1.5B (1 GB → 3), 7B (4.7 GB → 6) or 14B Q4 (9 GB → 11) CPU seat never holds a coder (card ccb316a7; Cormac on #4416: the floor sits BELOW the 27B's own proxy, or no seat holds a coder at all).",
-          "format": "uint8",
-          "minimum": 0.0,
-          "type": "integer"
+          "allOf": [
+            {
+              "$ref": "#/definitions/Capability"
+            }
+          ],
+          "default": {
+            "kind": "proxy",
+            "score": 0
+          },
+          "description": "The least capable model this role is competent on, typed as the footprint's own capability (`ModelFootprint::capability_rank`): a `measured` score (the AA index, 27B ≈ 42) or a `proxy` from the weights (GB, +2 for tool use). Any measured model meets a proxy minimum; a proxy NEVER meets a measured minimum. Absent = any model. A coder activity declares its tier here: proxy 12 = a 27B-class Q4 base (16.5 GB → 18) or any measured model; a 1.5B (1 GB → 3), 7B (4.7 GB → 6) or 14B Q4 (9 GB → 11) CPU seat never holds a coder (card ccb316a7; Cormac on #4416: the floor sits BELOW the 27B's own proxy, or no seat holds a coder at all)."
         },
         "windowTokens": {
           "description": "Tokens one turn of this role needs (a real coding turn, a chat turn).",

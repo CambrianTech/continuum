@@ -68,11 +68,17 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     // The excess is a real fixed term — named on the probe below so a fixed-residency
     // model can learn it — never a per-token one.
     let mut fp = fp;
+    // The prefill compute rate: this node's engine's reading, else the catalog's prior,
+    // else unknown (the planner then serves the minimum window until the engine reports).
+    if let (super::ComputeRate::Unknown, Some(bytes_per_token)) = (fp.compute, model.serving.prior_compute_bytes_per_token) {
+        fp.compute = super::ComputeRate::Prior { bytes_per_token };
+    }
     let measured = crate::inference::lane_footprint::measured_record(&fp.model_id);
     fp.kv_per_token = kv_rate_for_plan(
         header_rate.is_some(),
         fp.kv_per_token,
-        measured.as_ref().map(|r| r.per_token_bytes),
+        measured.as_ref(),
+        fp.compute.bytes_per_token(),
     );
     if header_rate.is_some() {
         if let Some(record) = &measured {
@@ -122,29 +128,44 @@ pub fn fixed_per_lane_from(header_rate: u64, record: &crate::inference::lane_foo
 /// process 36 KB/token (compute buffers at ubatch 2048 over a 412k total context, the
 /// hybrid's recurrent state and checkpoints) — the plan fitted 8 × 51,712 into 30 GB,
 /// the server took 47 GB, the box swapped and every stream ran at 7.9 t/s. The plan's
-/// per-token cost is `kv + kv / PREFILL_COMPUTE_KV_DIVISOR`, so kv is set to make that
-/// sum the measurement; a smaller measurement never lowers it (a footprint is a lower
-/// bound of the need).
+/// per-token cost is `kv + compute` (the measured [`super::ComputeRate`]), so kv is set to
+/// make that sum the record's lowest reading; a smaller measurement never lowers it (a
+/// footprint is a lower bound of the need), and an unknown compute rate attributes the whole
+/// reading to kv.
 /// The per-token rate the plan carries: a header-declared rate is physics and stands
 /// whatever the process measured; only a heuristic estimate is open to correction.
-pub fn kv_rate_for_plan(header_known: bool, estimate: u64, measured: Option<u64>) -> u64 {
+pub fn kv_rate_for_plan(
+    header_known: bool,
+    estimate: u64,
+    measured: Option<&crate::inference::lane_footprint::MeasuredCost>,
+    compute: Option<u64>,
+) -> u64 {
     match (header_known, measured) {
         (true, _) | (false, None) => estimate,
-        (false, Some(m)) => kv_per_token_from_measured(estimate, m),
+        (false, Some(record)) => kv_per_token_from_measured(estimate, record, compute),
     }
 }
 
 
-/// Pure half of [`apply_measured_cost`]: the kv rate whose plan cost (`kv + kv / D`)
-/// equals `measured`, or the estimate when the measurement does not correct it.
-fn kv_per_token_from_measured(estimate: u64, measured: u64) -> u64 {
-    use super::PREFILL_COMPUTE_KV_DIVISOR as D;
-    let estimated_cost = estimate.saturating_add(estimate / D);
-    if !crate::inference::lane_footprint::corrects(estimated_cost, measured) {
-        return estimate;
+/// Pure half of [`kv_rate_for_plan`]: the kv rate whose plan cost (`kv + compute`) equals the
+/// record's lowest reading, or the estimate when the record does not correct it (its readings
+/// do not all lie above the estimate's cost, `lane_footprint::corrects`).
+fn kv_per_token_from_measured(estimate: u64, record: &crate::inference::lane_footprint::MeasuredCost, compute: Option<u64>) -> u64 {
+    // With no measured compute rate the whole reading is attributed to kv.
+    let estimated_cost = match compute {
+        Some(rate) => estimate.saturating_add(rate),
+        None => estimate,
+    };
+    match record.spread() {
+        Some((lowest, _)) if crate::inference::lane_footprint::corrects(estimated_cost, record) => {
+            let kv = match compute {
+                Some(rate) => lowest.saturating_sub(rate),
+                None => lowest,
+            };
+            kv.max(estimate)
+        }
+        _ => estimate,
     }
-    // kv × (D + 1) / D = measured  →  kv = measured × D / (D + 1)
-    measured.saturating_mul(D) / (D + 1)
 }
 
 /// Memoized `gguf_keys::kv_bytes_per_token_f16` per artifact path. `None` is
@@ -211,11 +232,14 @@ fn kv_cache_quant_divisor() -> u64 {
 /// Pure footprint estimate from the fields that drive it — split out from the
 /// fs/registry IO so the (coarse, tunable) heuristics are unit-testable.
 /// `None` when there are no weights to serve.
-/// An UNMEASURED model's weight-proxy rank never reaches a measured frontier
-/// score: the proxy says "bigger ≈ smarter within a family", nothing across
-/// families, so it must lose to any model someone actually measured.
-// context-budget-exempt: a rank ceiling on a 0–255 capability scale, not a window or token budget
-pub const UNMEASURED_RANK_CAP: u8 = 40;
+
+/// Test fixture: a footprint with the Devstral calibration as its measured compute rate
+/// (`ComputeRate::devstral_calibration`), so a fixture plans a real window instead of the
+/// minimum an unknown rate is served at.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn calibrated(fp: ModelFootprint) -> ModelFootprint {
+    ModelFootprint { compute: super::ComputeRate::devstral_calibration(fp.kv_per_token), ..fp }
+}
 
 pub fn footprint_from_parts(
     id: &str,
@@ -240,15 +264,14 @@ pub fn footprint_from_parts(
     // (~110 KB for 14B, ~250 KB for 32B) tracks real Q4 GQA KV; still coarse, still floored.
     let kv_per_token = (weights_bytes / 80_000).max(20_000);
 
-    // Coarse capability rank: GB of weights (bigger ≈ more capable within a
-    // family), +bonus for tool/code capability. Saturates into u8.
-    let gb = (weights_bytes / 1_000_000_000).min(250) as u16;
+    // Coarse capability proxy: GB of weights (bigger ≈ more capable within a
+    // family), +bonus for tool/code capability, saturating at the score's width.
     let tool_bonus = if tool_capable { 2 } else { 0 };
-    // Measured beats proxy: a catalog score (one scale) IS the rank; the weight
-    // proxy is only for models nobody measured, and it caps below any measured
-    // frontier so the planner's "most capable that fits" means capable, not big.
-    let proxy_rank = gb.saturating_add(tool_bonus).min(u16::from(UNMEASURED_RANK_CAP)) as u8;
-    let capability_rank = measured_capability.unwrap_or(proxy_rank); // unwrap_or: measured beats proxy, the proxy ranks only a model nobody measured
+    let proxy = u8::try_from(weights_bytes / 1_000_000_000).map_or(u8::MAX, |gb| gb.saturating_add(tool_bonus));
+    // Measured beats proxy BY TYPE: any measured score outranks any proxy, so the
+    // planner's "most capable that fits" means capable, not big, with no ceiling on the
+    // proxy to tune.
+    let capability_rank = continuum_kernel::capability::Capability::of(measured_capability, proxy);
 
     Some(ModelFootprint {
         model_id: id.to_string(),
@@ -260,6 +283,10 @@ pub fn footprint_from_parts(
         context_window: context_window.max(MIN_SERVE_CTX),
         capability_rank,
         fixed_per_lane_bytes: 0,
+        // This node's own engine reading when it has one (the MoE lease builds from parts);
+        // `footprint_for` adds the catalog's prior when the node has none.
+        compute: crate::inference::lane_footprint::measured_compute(id)
+            .map_or(super::ComputeRate::Unknown, |bytes_per_token| super::ComputeRate::Measured { bytes_per_token }),
     })
 }
 
@@ -282,7 +309,8 @@ mod tests {
         let header_rate = 32_768u64;
         let (lanes, window) = (1u32, 56_832u32);
         let mut fp = ModelFootprint {
-            model_id: "m5-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: header_rate, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+            model_id: "m5-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: header_rate, context_window: 262_144, capability_rank: continuum_kernel::capability::Capability::Proxy { score: 42 }, fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(header_rate),
         };
         let true_fixed = 3_950_000_000u64; // what the engine really holds per lane beyond KV and the base buffer
         let anon = (fp.base_compute_buffer_per_lane() + true_fixed + header_rate * u64::from(window)) * u64::from(lanes);
@@ -290,7 +318,7 @@ mod tests {
         for _ in 0..4 {
             let per_token = crate::inference::lane_footprint::per_token_from(anon, lanes, window, fp.base_compute_buffer_per_lane(), 0)
                 .expect("test: a reading");
-            let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: per_token, lanes, window, allocated_tokens: None, anon_bytes: anon, last_ms: 0 };
+            let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: per_token, lanes, window, allocated_tokens: None, anon_bytes: anon, last_ms: 0 , ..Default::default() };
             fp.fixed_per_lane_bytes = fixed_per_lane_from(header_rate, &record).expect("valid fixture geometry");
             seen.push(fp.fixed_per_lane_bytes);
         }
@@ -304,19 +332,24 @@ mod tests {
     #[test]
     fn a_measured_per_token_cost_corrects_the_plans_rate_upward_only() {
         use super::kv_per_token_from_measured;
-        use super::super::PREFILL_COMPUTE_KV_DIVISOR as D;
+        // Fixture records: two readings a minute apart (a spread), compute fixture 0 unless named.
+        let reads = |a: u64, b: u64| crate::inference::lane_footprint::MeasuredCost {
+            per_token_bytes: b,
+            readings: vec![(0, a), (60_000, b)],
+            ..Default::default()
+        };
         // what this catches (2026-09-19, the M5 pinned at one lane): a header-declared
         // rate is never raised by a measurement — the excess is fixed residency; a
         // heuristic estimate still is.
-        assert_eq!(kv_rate_for_plan(true, 32_768, Some(55_925)), 32_768, "header rate is physics");
-        assert_eq!(kv_rate_for_plan(true, 32_768, None), 32_768);
-        assert_eq!(kv_rate_for_plan(false, 32_768, None), 32_768);
-        assert!(kv_rate_for_plan(false, 10_240, Some(36_000)) > 10_240, "a guess still learns from the process");
+        assert_eq!(kv_rate_for_plan(true, 32_768, Some(&reads(55_925, 55_925)), None), 32_768, "header rate is physics");
+        assert_eq!(kv_rate_for_plan(true, 32_768, None, None), 32_768);
+        assert_eq!(kv_rate_for_plan(false, 32_768, None, None), 32_768);
+        assert!(kv_rate_for_plan(false, 10_240, Some(&reads(36_000, 36_400)), None) > 10_240, "a guess still learns from the process");
         // The excess is carried, not dropped: the M5 shape (header 32,768 q8, a one-lane
         // sample of 55,925 at 67,340) yields ≈1.56 GB of fixed residency per lane, and
         // across budgets the plan with it fits no more lanes than the header-only plan
         // and no fewer than the raised-rate plan — strictly between them somewhere.
-        let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: 55_925, lanes: 1, window: 67_340, allocated_tokens: None, anon_bytes: 0, last_ms: 0 };
+        let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: 55_925, lanes: 1, window: 67_340, allocated_tokens: None, anon_bytes: 0, last_ms: 0 , ..Default::default() };
         let fixed = fixed_per_lane_from(32_768, &record).expect("valid fixture geometry");
         assert!((1_500_000_000..1_620_000_000).contains(&fixed), "{fixed} B per lane");
         assert_eq!(fixed_per_lane_from(65_536, &record), Some(0), "a sample under the rate carries nothing");
@@ -331,7 +364,8 @@ mod tests {
         unified.lanes = 0;
         assert_eq!(fixed_per_lane_from(100, &unified), None);
         let base = ModelFootprint {
-            model_id: "m5-27b".into(), weights_bytes: 16_500_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+            model_id: "m5-27b".into(), weights_bytes: 16_500_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: continuum_kernel::capability::Capability::Proxy { score: 42 }, fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(32_768),
         };
         let carried = ModelFootprint { fixed_per_lane_bytes: fixed, ..base.clone() };
         let raised = ModelFootprint { kv_per_token: 44_740, ..base.clone() };
@@ -355,10 +389,15 @@ mod tests {
         assert_eq!((lanes_at(&base, 30_000_000_000), lanes_at(&base, 34_000_000_000)), (3, 4));
         assert_eq!((lanes_at(&carried, 30_000_000_000), lanes_at(&carried, 34_000_000_000)), (2, 3));
         assert_eq!((lanes_at(&raised, 30_000_000_000), lanes_at(&raised, 34_000_000_000)), (2, 3));
-        let kv = kv_per_token_from_measured(10_240, 36_000);
-        assert_eq!(kv.saturating_add(kv / D) / 100, 36_000 / 100, "the plan's cost now equals the measurement");
-        assert_eq!(kv_per_token_from_measured(10_240, 12_000), 10_240, "within agreement: the estimate stands");
-        assert_eq!(kv_per_token_from_measured(36_000, 10_240), 36_000, "a smaller reading never lowers it");
+        // Fixture compute: the Devstral calibration's quarter of the 10,240 estimate.
+        let compute = 2_560;
+        let kv = kv_per_token_from_measured(10_240, &reads(36_000, 36_400), Some(compute));
+        assert_eq!(kv + compute, 36_000, "the plan's cost now equals the record's lowest reading");
+        assert_eq!(kv_per_token_from_measured(10_240, &reads(36_000, 36_400), None), 36_000, "an unknown compute rate attributes the whole reading to kv");
+        assert_eq!(kv_per_token_from_measured(10_240, &reads(11_000, 14_000), Some(compute)), 10_240, "the estimate's cost inside the readings' spread: it stands");
+        assert_eq!(kv_per_token_from_measured(36_000, &reads(10_240, 10_500), Some(compute)), 36_000, "a smaller reading never lowers it");
+        let one = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: 36_000, readings: vec![(0, 36_000)], ..Default::default() };
+        assert_eq!(kv_per_token_from_measured(10_240, &one, Some(compute)), 10_240, "one reading: no spread, no correction");
     }
 
     // what this catches: the plan's resident-KV divisor is the SAME resolved decision
@@ -385,11 +424,7 @@ mod tests {
             fp.context_window, 8192,
             "carries the model's trained ceiling, no clamp"
         );
-        assert!(
-            fp.capability_rank >= 5,
-            "3GB + tool bonus, got {}",
-            fp.capability_rank
-        );
+        assert_eq!(fp.capability_rank, continuum_kernel::capability::Capability::Proxy { score: 5 }, "3GB + tool bonus");
 
         // A leaner non-tool model ranks below the bigger tool-capable one.
         let small = footprint_from_parts("small", 1 * GB, 4096, false, None).unwrap();
@@ -403,7 +438,7 @@ mod tests {
 
     // what this catches: the planner's "most capable that fits" meaning BIG again.
     // A measured score is the rank; an unmeasured model keeps the weight proxy,
-    // capped below any measured frontier — so a 19 GB model someone measured at
+    // below any measured score by type — so a 19 GB model someone measured at
     // 42 outranks a 22 GB model nobody measured, and a 200 GB unmeasured model
     // still cannot outrank it. (Joel 2026-09-05: "You guys aren't understanding
     // how scaling works.")
@@ -412,16 +447,16 @@ mod tests {
         let measured = footprint_from_parts("qwen3.8-27b", 19 * GB, 8192, true, Some(42)).unwrap();
         let bigger_unmeasured = footprint_from_parts("ornith-35b", 22 * GB, 8192, true, None).unwrap();
         let huge_unmeasured = footprint_from_parts("huge", 200 * GB, 8192, true, None).unwrap();
-        assert_eq!(measured.capability_rank, 42, "a measured score is the rank");
+        use continuum_kernel::capability::Capability;
+        assert_eq!(measured.capability_rank, Capability::Measured { score: 42 }, "a measured score is the rank");
         assert!(
             measured.capability_rank > bigger_unmeasured.capability_rank,
-            "measured 42 beats the 22 GB proxy ({})",
+            "measured 42 beats the 22 GB proxy ({:?})",
             bigger_unmeasured.capability_rank
         );
-        assert_eq!(
-            huge_unmeasured.capability_rank, UNMEASURED_RANK_CAP,
-            "an unmeasured model caps at the proxy ceiling"
-        );
+        assert_eq!(huge_unmeasured.capability_rank, Capability::Proxy { score: 202 }, "an unmeasured model keeps its proxy, uncapped");
+        let low_measured = footprint_from_parts("measured-low", GB, 8192, false, Some(1)).unwrap();
+        assert!(low_measured.capability_rank > huge_unmeasured.capability_rank, "even a low measured score outranks the largest proxy");
         assert!(measured.capability_rank > huge_unmeasured.capability_rank);
     }
 }

@@ -87,7 +87,7 @@ use std::sync::atomic::Ordering;
 
 // what this catches (#139 idle admission): the in-flight gauge counts each
 // model-call entry, releases on drop, and reads SATURATED exactly at the serving
-// concurrency (serving_plan::MAX_LANES) — the signal a self-tick yields on so an
+// concurrency (a fixture lane count) — the signal a self-tick yields on so an
 // idle deliberation never deepens the queue live conversation waits behind.
 //
 // Drives a LOCAL Gauge instance — the SAME type production's process-global
@@ -98,7 +98,8 @@ use std::sync::atomic::Ordering;
 // the gauge kills that race at the root, so no TEST_SERIAL / drain-wait is needed here.
 #[test]
 fn inflight_gauge_counts_releases_and_saturates_at_serving_concurrency() {
-    let max = crate::inference::planning::serving_plan::MAX_LANES as usize;
+    // Fixture: an engine serving eight lanes.
+    let max = 8usize;
     let gauge = Gauge::new();
 
     assert_eq!(gauge.inflight(), 0, "a fresh gauge starts empty");
@@ -112,7 +113,7 @@ fn inflight_gauge_counts_releases_and_saturates_at_serving_concurrency() {
     // Every decode slot busy → one more call would queue behind the fleet.
     assert!(
         gauge.saturated(max),
-        "MAX_LANES outstanding must read saturated"
+        "every lane outstanding must read saturated"
     );
 
     guards.pop(); // free a slot
@@ -128,7 +129,7 @@ fn inflight_gauge_counts_releases_and_saturates_at_serving_concurrency() {
 
 // what this catches (#139 lane starvation): a directed (addressed) turn must never
 // queue behind non-directed model calls. Non-directed callers are capped at
-// (MAX_LANES-1) lanes, so a directed caller always finds a reserved lane — this is
+// (lanes-1) lanes, so a directed caller always finds a reserved lane — this is
 // the fix for the glass-boxed 8-minute directed-turn wait behind an idle self-tick
 // + one long ambient turn on the two decode lanes. This is the only test that
 // touches the process-global serving-lane semaphores, so it starts all-free.
@@ -136,6 +137,7 @@ fn inflight_gauge_counts_releases_and_saturates_at_serving_concurrency() {
 async fn directed_turn_always_finds_a_reserved_lane() {
     let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
     use std::time::Duration;
+    gate.set_served_lane_count(2); // fixture: an engine serving two lanes, one of them the reserve
     let budget = gate.nondirected_budget();
 
     // Fill the ENTIRE non-directed budget (all lanes idle/ambient work may hold).
@@ -144,9 +146,9 @@ async fn directed_turn_always_finds_a_reserved_lane() {
         nondirected.push(gate.acquire_serving_lane(None, LanePriority::Ambient, None).await);
     }
 
-    // On a machine with a lane to reserve (MAX_LANES >= 2), a directed call still
+    // On a machine with a lane to reserve (two or more lanes), a directed call still
     // acquires immediately — it is not blocked by the saturated non-directed budget.
-    if gate.lane_count() > 1 {
+    {
         let directed = tokio::time::timeout(
             Duration::from_millis(250),
             gate.acquire_serving_lane(None, LanePriority::Directed, None),
@@ -166,7 +168,7 @@ async fn directed_turn_always_finds_a_reserved_lane() {
         .await;
         assert!(
             extra_nondirected.is_err(),
-            "non-directed work over its (MAX_LANES-1) budget must wait, not preempt"
+            "non-directed work over its (lanes-1) budget must wait, not preempt"
         );
         drop(directed);
     }
@@ -174,16 +176,17 @@ async fn directed_turn_always_finds_a_reserved_lane() {
     drop(nondirected); // release (nothing else can observe this gate anyway)
 }
 
-// what this catches: boot-created pools must shrink when the first real plan
-// serves one lane, including the non-directed reservation.
+// what this catches: pools created before any engine reported its lanes admit one call, never a
+// guessed ceiling, and grow to the first served count, the non-directed reservation included.
 #[test]
-fn boot_ceiling_pools_shrink_to_the_first_served_count() {
+fn boot_pools_start_at_one_lane_and_grow_to_the_first_served_count() {
     let gate = LaneAdmission::new();
     let serving = gate.serving_lanes();
     let nondirected = gate.nondirected_lanes();
-    gate.set_served_lane_count(1);
-    assert_eq!(serving.available_permits(), 1);
-    assert_eq!(nondirected.available_permits(), 1);
+    assert_eq!((serving.available_permits(), nondirected.available_permits()), (1, 1), "no engine has reported: one lane");
+    gate.set_served_lane_count(4);
+    assert_eq!(serving.available_permits(), 4);
+    assert_eq!(nondirected.available_permits(), 3, "all but the directed reserve");
 }
 
 // what this catches: shrink never revokes held permits; the unchanged-plan
@@ -298,9 +301,8 @@ async fn cancelled_work_waiter_clears_its_priority_reservation() {
     assert!(futures::poll!(ambient.as_mut()).is_ready());
 }
 // what this catches: serving_lane_count reads the LIVE published count when serving is
-// up, and only falls back to the MAX_LANES ceiling when nothing has published yet —
-// the exact fix so the admission reservation sizes by what's SERVED (e.g. 4), not the
-// ceiling (6).
+// up, and before anything has published it is one lane, never a guessed ceiling (an
+// 8-lane `MAX_LANES` fallback admitted eight calls against an engine nobody had measured).
 //
 // Drives its OWN gate. The prior version swapped the process-global atomic and restored
 // it at the end — brittle in two ways at once: a sibling test reading the count in the
@@ -312,8 +314,8 @@ fn serving_lane_count_prefers_the_live_published_count_over_the_ceiling() {
     let gate = LaneAdmission::new();
     assert_eq!(
         gate.lane_count(),
-        (crate::inference::planning::serving_plan::MAX_LANES as usize).max(1),
-        "unset → MAX_LANES ceiling fallback"
+        1,
+        "unset → one lane until an engine reports"
     );
     gate.set_served_lane_count(4);
     assert_eq!(

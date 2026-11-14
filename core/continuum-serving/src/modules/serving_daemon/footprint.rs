@@ -52,6 +52,12 @@ impl ServingDaemonModule {
         let Some(model) = (self.model_resolver)(&active) else {
             return;
         };
+        // THE PREFILL COMPUTE RATE, on every platform (the fork reports `memory_breakdown`
+        // whatever the backend): recorded whatever the per-token arm below decides, so a starved
+        // window that withholds its per-token reading still teaches the plan its graph.
+        if let Some(rate) = engine_props().await.as_ref().and_then(crate::inference::weight_residency::compute_bytes_per_token) {
+            crate::inference::lane_footprint::record_compute(&active, rate);
+        }
         let Some(fp) = footprint_for(&model) else {
             return;
         };

@@ -416,10 +416,16 @@ pub struct ModelServingPrefs {
     /// bigger ≈ smarter within a family — which can never prefer a 19 GB
     /// Qwen3.8-27B (AA 42) over a 22 GB Ornith, and is exactly the scaling
     /// misread Joel called out (2026-09-05: "You guys aren't understanding how
-    /// scaling works"). A measured score outranks any weight proxy; an
-    /// unmeasured model keeps the proxy, capped below every measured frontier
-    /// score (see `inference::planning::serving_plan::footprint::UNMEASURED_RANK_CAP`).
+    /// scaling works"). A measured score outranks any weight proxy by type
+    /// (`continuum_kernel::capability::Capability`); an unmeasured model keeps the proxy.
     pub measured_capability: Option<u8>,
+    /// The engine's prefill compute buffer per allocated token, as a DECLARED PRIOR with its
+    /// receipt in the catalog entry: what the planner reserves for this model before any node
+    /// has served it. A node's own reading (`/props` `memory_breakdown`, recorded per model in
+    /// `inference::lane_footprint`) replaces it on the first launch. `None` = no prior: the
+    /// planner sizes no window-scaled reserve and serves the minimum window until the engine
+    /// reports (`serving_plan::ComputeRate::Unknown`).
+    pub prior_compute_bytes_per_token: Option<u64>,
 }
 
 impl Default for ModelServingPrefs {
@@ -434,6 +440,7 @@ impl Default for ModelServingPrefs {
             reasoning_budget: None,
             verified_ctx_ceiling: None,
             measured_capability: None,
+            prior_compute_bytes_per_token: None,
         }
     }
 }
@@ -692,6 +699,6 @@ pub struct Provider {
 impl Provider {
     /// Display name for logs + errors. Falls back to id when TOML omits `name`.
     pub fn display_name(&self) -> &str {
-        self.name.as_deref().unwrap_or(&self.id)
+        self.name.as_deref().unwrap_or(&self.id) // unwrap_or: a provider with no display name is shown by its id
     }
 }

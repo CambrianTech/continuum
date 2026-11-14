@@ -129,7 +129,7 @@ impl LivePool {
 /// The least the minds' grants hold now: each mind's need, and a mind whose act is in flight keeps
 /// the grant her act began on when it is larger; never less than one prompt's least window.
 pub(super) fn need_floor(demands: &[Demand<uuid::Uuid>], granted: Option<&PoolGrants>) -> u32 {
-    let held = |d: &Demand<uuid::Uuid>| match d.in_flight {
+    let held = |d: &Demand<uuid::Uuid>| match d.turn.in_flight() {
         true => granted.and_then(|g| g.grant_for(d.mind)).map_or(d.need.get(), |grant| grant.max(d.need.get())), // map_or: an act in flight with no grant on record holds her need
         false => d.need.get(),
     };
@@ -297,7 +297,8 @@ mod tests {
     }
 
     fn demand(mind: u128, need: u32, in_flight: bool) -> Demand<uuid::Uuid> {
-        Demand { mind: uuid::Uuid::from_u128(mind), need: t(need), target: t(need), wish: t(need), in_flight, settled: true, ceiling: 262_144 }
+        let turn = if in_flight { crate::capacity::window_grant::Turn::InFlight } else { crate::capacity::window_grant::Turn::Settled };
+        Demand { mind: uuid::Uuid::from_u128(mind), need: t(need), target: t(need), wish: t(need), turn, ceiling: 262_144, growth: crate::inference::planning::window_allocator::Growth::Unmeasured }
     }
 
     // what this catches (the M5, 2026-11-14 09:52Z: 0.2 GB free, compressor 29.3 GB and climbing,

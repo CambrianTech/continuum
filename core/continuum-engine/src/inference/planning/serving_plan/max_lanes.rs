@@ -1,75 +1,6 @@
 use super::*;
+use crate::inference::planning::window_allocator::{Growth, Tokens};
 
-/// SAFETY backstop on continuous-batching lanes for a single base model on one
-/// node — NOT the binding constraint. The binding constraint is now the
-/// compute-buffer-aware fit math ([`ModelFootprint::compute_buffer_per_lane`] +
-/// the per-lane floor and window reserve in [`plan_serving`]): the lane count
-/// follows persona DEMAND, capped by how many lanes' (KV + concurrent compute
-/// buffer) actually fit THIS host's budget. That is the #139/#56 "lane-scaled
-/// compute-buffer HEADROOM term so the ceiling derives from model size instead of
-/// a constant" — it makes N-lane serving OOM-safe by construction.
-///
-/// History: this was `2`, a flat clamp added 2026-07-14 after four concurrent
-/// prefill compute buffers (a transient ~batch-sized per-slot Metal allocation NOT
-/// in the KV arithmetic) blew the pool during a wake-briefing burst
-/// (`kIOGPUCommandBufferCallbackErrorOutOfMemory`). But `2` was calibrated for a
-/// ~16 GB budget and mis-applied to a 64 GB (≈55 GB Metal working-set) host, where
-/// it left ~29 GB idle and forced 4 personas onto 2 slots — the cross-persona KV
-/// clobber that is #139's whole latency story (each turn re-prefills ~10k cold
-/// because the slot was last written by a different persona's prompt+LoRA). With the
-/// compute buffer now RESERVED in the fit math, giving each persona its own warm
-/// slot is memory-safe. This ceiling stays only to bound pathological demand (a
-/// runaway roster) and llama.cpp `--parallel` practicality; real fit is the fit math.
-///
-/// 2026-07-16 RAISED 2 → 4 — the window-scaled compute term the earlier revert
-/// demanded now EXISTS. History: raised 2→6, reverted 6→2 same day (OOM) because the
-/// `compute_buffer_per_lane` reserve was a window-INDEPENDENT constant, so a 4-lane plan
-/// at a large served window under-provisioned the transient prefill buffer (which scales
-/// `O(ubatch × n_ctx)`) and 4 concurrent large-window prefills blew the Metal pool
-/// (`kIOGPU…OutOfMemory`). The prerequisite named there — "a WINDOW-SCALED compute term
-/// (reserve ∝ n_ctx)" — landed in [`plan_serving`] (commit 0925aa1ac): the served window
-/// now SOLVES THE FIXPOINT, shrinking so `lanes × (KV(C) + compute(C))` fits every lane,
-/// AND reserves co-consumer headroom. So more lanes no longer overcommit — the window
-/// auto-shrinks to pay for them (`served_window_footprint_fits_effective_budget…` pins
-/// the invariant). 4 = the resident-persona count: each mind gets its OWN warm slot, so a
-/// turn reuses ITS prefilled KV instead of re-prefilling ~10k cold after a slot-mate
-/// clobbered it (#139's whole latency story). Still a SANITY backstop, not the binding
-/// constraint — the real cap is the fit math (`kv_lanes`) ∩ DEMAND ∩ perf cores; this
-/// only bounds a pathological roster and llama.cpp `--parallel` practicality. Kept modest
-/// (4, not the 6 that OOM'd) pending a LARGE-prompt 4-lane live-GPU burst — the doc's
-/// acceptance gate. [[verify-real-device-numbers-not-a-clamp-premise]] [[capacity-fabric-live-never-block-sim-as-gym]]
-pub const MAX_LANES: u32 = 8;
-
-// ⚠️ 2026-07-17 REVERTED 4 → 2. Raising to 4 (warm slot per persona) was OOM-SAFE
-// (the window-scaled fit shrank -c to fit) but STARVED CONTEXT: splitting the budget 4
-// ways dropped the per-slot window to ~6k, and a live persona's assembled prompt is ~9k
-// (identity + tools + workspace-map + recall + memory), so every persona got
-// budget-truncated to fit — the "120k clamped to 3k → all models suck" regression, plus
-// a 145s decode loop on the starved/confused context. Warmth is worthless if the mind
-// can't see. The 4-lane premise was wrong: personas are NOT all concurrently active, so
-// lanes should follow real concurrent DEMAND (usually 1–2), not the resident count —
-// 2 lanes at ~19.8k each beats 4 warm lanes at 6k. Cross-turn clobber (the reason for the
-// raise) is the lesser evil vs a starved window; solve it with idle-warmth/duty-cycling,
-// NOT by cutting everyone's context. [[no-hardcoded-context-numbers-derive-from-the-live-window]]
-//
-// ✅ 2026-08-09 RAISED 2 → 8 (#266). The 2026-07-17 revert diagnosed the failure correctly
-// (a starved per-slot window) but fixed it in the WRONG place: it clamped the lane CEILING,
-// when the real defect was that the lane-COUNT gate below sheds against `MIN_SERVE_CTX`
-// (2048, the "runnable at all" floor) — far below the ~9k a live turn needs — so a raised
-// ceiling let 4 slots @ 6k through. That is now fixed at the true seam: the shed in
-// `plan_serving` requires each slot to clear `BOOTSTRAP_WORKING_SET` (16384 ≈ a full
-// assembled turn + generation headroom), the SAME "one full turn" figure the demand cap
-// uses. With that usable-window floor as the binding constraint, a slot per resident persona
-// is safe BY CONSTRUCTION — the plan only grows lanes toward the resident population while
-// each still gets a full turn, and sheds (surfacing `grid_overflow_lanes` + a probe) the
-// moment the floor would be breached, never below it. The 2026-07-17 "solve clobber with
-// duty-cycling, not lanes" stance was itself the bug this leaves on the table: cross-turn
-// KV clobber IS #266's whole latency story (measured: 96.3% of persona compute is prefill;
-// two of four citizens at 0.0% cache reuse across 10 turns — the LRU eviction of a warm
-// slot the resident count outnumbered). Giving each resident mind its own slot is what
-// keeps its prefilled prefix warm. This constant is once again a pure SANITY backstop
-// (pathological roster + llama.cpp `--parallel` practicality); the binding constraint is
-// the window floor, exactly as the earlier doc always claimed it should be.
 /// Cold-start DEMAND ceiling for the served window — the "B-now" half of the
 /// demand-derived cap (M5 + BigMama, 2026-07-26). Sizing a lane's window to fill
 /// the memory budget instead of to real demand is the cross-node serving-quality
@@ -98,11 +29,13 @@ pub const BOOTSTRAP_WORKING_SET: u32 = MIN_SERVE_CTX * 8;
 /// is a complete waste of a lane" — and, on a fixed floor: "you're making rigid laws that
 /// concern me". So the seam holds a comparison, never a constant: `None` requirement (no
 /// prompt ever measured or declared) imposes nothing beyond the engine's runnable floor.
-/// The per-lane floor a typical sent prompt implies: the prompt with headroom, never
-/// under the serve floor. PURE; the one arithmetic behind `typical_prompt_floor` and the
-/// placement rule's requirement.
-pub fn prompt_floor_of(sent_median: u32) -> u32 {
-    ((sent_median as f64 * SENT_HEADROOM) as u32).max(MIN_SERVE_CTX)
+/// The per-lane floor a typical sent prompt implies: the prompt grown by the measured growth of
+/// the minds it stands for (`window_allocator::Growth`: nothing while unmeasured), never under the
+/// serve floor. PURE; the one arithmetic behind `typical_prompt_floor` and the placement rule's
+/// requirement.
+pub fn prompt_floor_of(sent_median: Tokens, growth: Growth) -> Tokens {
+    let grown = growth.grow(sent_median);
+    Tokens::new(MIN_SERVE_CTX).map_or(grown, |floor| grown.max(floor))
 }
 
 pub fn persona_lane_holds(served_context_window: u32, requirement: Option<u32>) -> bool {
@@ -166,7 +99,7 @@ pub struct ServingDemand {
     /// [health] hour read "AT THE KNEE: 16 minds on 3 lanes, the measured decode knee is 2".
     pub knee: Option<u32>,
     /// The largest prompt any resident actually SENT (post-fit), when measured. The
-    /// served window follows THIS with [`SENT_HEADROOM`], never the untrimmed
+    /// served window follows THIS grown by the residents' measured growth, never the untrimmed
     /// `window_tokens` (which is the whole assembled context and saturates at
     /// 225k–505k): a 25k working set provisions ~32k per slot, leaving the host RAM
     /// for more lanes and the prompt-cache tier instead of a 137k slot nobody fills.
@@ -180,11 +113,6 @@ pub struct ServingDemand {
     /// (card 2eec3977: to be deleted with them).
     pub requirements: Vec<crate::inference::planning::window_allocator::LaneRequirement>,
 }
-
-/// Headroom over the largest sent prompt: a mind held at a too-small window fills it,
-/// so a window sized from what-was-sent must GROW past it to escape the clamp — 25%
-/// per plan, geometric, until the demand is met. The untrimmed demand still caps it.
-pub const SENT_HEADROOM: f64 = 1.25;
 
 impl ServingDemand {
     /// Demand from live measurement, with the cold-start case named explicitly.
@@ -231,10 +159,17 @@ impl ServingDemand {
         self.requirements = requirements;
         self
     }
-    /// The per-lane floor the residents actually need: their typical sent prompt with
-    /// headroom. `None` until a turn has been sent — the bootstrap prior stands then.
+    /// The per-lane floor the residents actually need: their typical sent prompt grown by
+    /// their measured growth. `None` until a turn has been sent — the bootstrap prior stands then.
     pub fn typical_prompt_floor(&self) -> Option<u32> {
-        self.sent_median.map(prompt_floor_of)
+        self.sent_median.and_then(Tokens::new).map(|median| prompt_floor_of(median, self.growth()).get())
+    }
+
+    /// The largest measured growth among the minds this demand carries a requirement for
+    /// (`window_allocator::Growth`): a floor or window shared by them covers each one's growth.
+    /// Unmeasured when none is measured, so nothing is added.
+    pub fn growth(&self) -> Growth {
+        self.requirements.iter().fold(Growth::Unmeasured, |largest, r| largest.max(r.growth))
     }
 
     /// Post-plan validation only needs the legacy floor when no per-mind
@@ -252,9 +187,9 @@ impl ServingDemand {
         self
     }
 
-    /// The window a plan should TARGET per slot: the roster's TYPICAL sent prompt with
-    /// headroom when one is known (measured this boot, or remembered from the last
-    /// serve), else the largest sent prompt with headroom, else the untrimmed demand —
+    /// The window a plan should TARGET per slot: the roster's TYPICAL sent prompt grown by
+    /// their measured growth when one is known (measured this boot, or remembered from the last
+    /// serve), else the largest sent prompt grown the same way, else the untrimmed demand —
     /// always capped by the untrimmed demand, an upper bound by construction.
     ///
     /// The typical, not the outlier (2026-09-19 19:37Z, the M5, card 29e4ab34): the
@@ -265,8 +200,9 @@ impl ServingDemand {
     /// a box whose steady budget is 27 GB), then Eco, then the collapse. A single outlier
     /// prompt is that turn's cost (it is trimmed to the window); it does not size the box.
     pub fn window_target(&self) -> u32 {
-        let with_headroom = |t: u32| (t as f64 * SENT_HEADROOM) as u32;
-        match self.sent_median.map(with_headroom).or(self.sent_tokens.map(with_headroom)) {
+        let growth = self.growth();
+        let grown = |sent: u32| Tokens::new(sent).map(|sent| growth.grow(sent).get());
+        match self.sent_median.and_then(grown).or(self.sent_tokens.and_then(grown)) {
             Some(t) => t.min(self.window_tokens).max(MIN_SERVE_CTX),
             None => self.window_tokens,
         }
@@ -294,40 +230,43 @@ pub fn choose_served_window(fits: u32, demand_tokens: u32, sticky: Option<u32>) 
     wanted.min(fits).max(MIN_SERVE_CTX)
 }
 
-/// Hysteresis margin for switching UP to a more capable model: it must fit
-/// within `(1 - SWITCH_UP_HEADROOM)` of the budget — i.e. with headroom to
-/// spare — before we abandon the incumbent for it. Stops transient budget
-/// bumps near a model's edge from flapping the served model (the live-budget
-/// thrash: free memory jitters, the "best fit" flips, the model reloads).
-pub const SWITCH_UP_HEADROOM: f64 = 0.10;
+/// The engine's transient prefill compute buffer per token of the window it serves. llama.cpp
+/// sizes the prefill graph for the FULL window (`O(ubatch × n_ctx)`), so the buffer GROWS with
+/// the window, and a window-independent reserve under-provisions exactly as it grows (the 53k
+/// OOM). The rate is MEASURED: `/props` `memory_breakdown` compute bytes on the accelerators
+/// over `context_geometry.allocated_tokens`, one reading per engine incarnation, recorded per
+/// (model, node) in `inference::lane_footprint`. It does not follow the KV rate: on the M5
+/// (2026-11-13, Qwen3.6-35B-A3B, q4_0 KV, ubatch 2048) it read 7,199 B/token, 0.55x the KV,
+/// where the `kv_per_token / 4` it replaces assumed 0.25x.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComputeRate {
+    /// Neither this node nor the catalog has measured it: the planner sizes no window-scaled
+    /// reserve and serves the minimum window until the engine's first `/props` reports it.
+    Unknown,
+    /// The catalog's declared prior for the model (`ModelServingPrefs::prior_compute_bytes_per_token`),
+    /// a receipt from another node: it stands until this node's first reading.
+    Prior { bytes_per_token: u64 },
+    /// This node's own engine reported it.
+    Measured { bytes_per_token: u64 },
+}
 
-/// The prompt cache's grant headroom (#4216): a cache FILLS to its grant, so the grant
-/// is the affordable figure less this fraction, never the whole of it.
-///
-/// This constant was born as the PLAN's co-consumer headroom (Joel 2026-07-16: the
-/// spawn-time free-VRAM snapshot could not see a browser or a game spike, so the window
-/// was sized to 85% of it). Two things have since made that reservation a second copy
-/// of itself: the governor's board subtracts every other holder's LIVE residency before
-/// serving is handed its budget (`budget_for_replacing`, 2026-08-19), and the power mode
-/// withholds its own fraction of that budget (`PowerMode::serving_fraction`: Eco 0.55,
-/// Comfort 0.80). Stacked, the plan kept 0.80 × 0.85 = 68% of a budget that already
-/// excluded the co-consumers. Measured 2026-09-19 on the M5 (64 GB, Comfort): board
-/// budget 37 GB after 18.7 GB of other holders → 25 GB for weights + lanes → ONE lane
-/// under a 19 GB model, while 2 × 67k lanes physically fit in 27.4 GB with 26% of the
-/// budget to spare. The plan now sizes to the budget the mode hands it — the mode IS
-/// the headroom policy, one place — and only the cache grant keeps this fraction.
-pub const CACHE_GRANT_HEADROOM: f64 = 0.15;
+impl ComputeRate {
+    /// The rate, when anyone has measured it.
+    pub fn bytes_per_token(self) -> Option<u64> {
+        match self {
+            Self::Unknown => None,
+            Self::Prior { bytes_per_token } | Self::Measured { bytes_per_token } => Some(bytes_per_token),
+        }
+    }
 
-/// The transient prefill compute buffer, expressed as a fraction of the KV rate
-/// (`kv_per_token / this`). llama.cpp sizes the prefill graph for the FULL served
-/// window (`O(ubatch × n_ctx)`), so the buffer GROWS with the window — a
-/// window-independent reserve under-provisions exactly as the window grows (the 53k
-/// OOM). Calibrated to Devstral-24B Q4 (MTL compute buffer 551 MiB @ ~26k → 1209 MiB
-/// @ ~53k ≈ 23.7 KiB/token; KV ≈ 112 KiB/token → ratio ≈ 1/5; rounded to 1/4 to
-/// over-reserve). Model-RELATIVE, never an absolute magic byte count — a smaller
-/// model's cheaper graph scales down with its KV rate. Refine as more (model, window)
-/// GPU-measured points land (the calibration the `MAX_LANES` doc flags as open).
-pub const PREFILL_COMPUTE_KV_DIVISOR: u64 = 4;
+    /// Test fixture: the Devstral-24B Q4 calibration the planner's tests were written against
+    /// (MTL compute buffer 551 MiB at ~26k tokens and 1,209 MiB at ~53k, about a quarter of its
+    /// 112 KiB/token KV), stated as a quarter of the fixture's own KV rate.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn devstral_calibration(kv_per_token: u64) -> Self {
+        Self::Measured { bytes_per_token: kv_per_token / 4 }
+    }
+}
 
 /// The honest, already-netted serving memory budget for THIS host — VRAM on
 /// a discrete GPU, the unified-memory serving slice on Apple Silicon. The
@@ -405,10 +344,10 @@ pub struct ModelFootprint {
     /// served window can never exceed. The model's stated capability, carried so
     /// the planner caps to it without re-fetching the model.
     pub context_window: u32,
-    /// Higher = more capable. The planner prefers the most capable model that
-    /// still fits at least one lane — "give them the most powerful persona we
-    /// can," never tiering down for its own sake.
-    pub capability_rank: u8,
+    /// Higher = more capable; any measured score outranks any weights proxy. The
+    /// planner prefers the most capable model that still fits at least one lane —
+    /// "give them the most powerful persona we can," never tiering down for its own sake.
+    pub capability_rank: continuum_kernel::capability::Capability,
     /// Fixed residency per lane LEARNED from the live process beyond the header's KV rate
     /// and the compute floor: the draft model's KV, the vision projector, engine buffers.
     /// Measured 2026-09-19 on the M5: (55,925 − 32,768) B/token × 67,340 ≈ 1.56 GB per
@@ -417,6 +356,11 @@ pub struct ModelFootprint {
     #[serde(skip)]
     #[ts(skip)]
     pub fixed_per_lane_bytes: u64,
+    /// The engine's prefill compute buffer per window token, measured on this node, else the
+    /// catalog's prior, else unknown ([`ComputeRate`]). Runtime-learned, never on the wire.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub compute: ComputeRate,
 }
 
 impl ModelFootprint {
@@ -431,7 +375,7 @@ impl ModelFootprint {
     /// this buffer). It is proportional to the graph size (≈ hidden × layers ×
     /// `--ubatch`), so it SCALES WITH MODEL SIZE, not a constant — the exact "lane-
     /// scaled compute-buffer HEADROOM term so the ceiling derives from model size
-    /// instead of a constant" the `MAX_LANES` doc names as the #139/#56 deeper fix.
+    /// instead of a constant" (#139/#56).
     /// Calibrated to the live measurement (Devstral-24B Q4, `MTL0 compute buffer size
     /// = 551 MiB` at `--ubatch 1024`, weights 13.66 GiB) and rounded UP via a
     /// weights-fraction so the reserve is conservative (over-reserve is a smaller
@@ -439,7 +383,7 @@ impl ModelFootprint {
     /// would scale this linearly. Reserving `lanes × this` before sizing the per-slot
     /// window is what makes N-lane serving fit BOTH the resident KV and the concurrent
     /// compute buffers — so the lane ceiling can follow persona DEMAND on a roomy host
-    /// and still stay OOM-safe on a small one, killing the flat `MAX_LANES = 2` clamp.
+    /// and still stay OOM-safe on a small one, killing the flat two-lane clamp.
     /// The largest per-slot window `lanes` lanes of this model fit inside
     /// `usable_bytes` (after co-consumer headroom, weights, and the per-lane compute
     /// floor + window-scaled reserve), capped at the model's trained window. The ONE
@@ -455,16 +399,23 @@ impl ModelFootprint {
         if self.kv_per_token == 0 {
             return self.context_window;
         }
-        // The budget as handed: the mode's fraction and the board's live subtraction of
-        // every other holder are the headroom (see `CACHE_GRANT_HEADROOM` for the copy
-        // this used to keep on top of them).
+        // The budget as handed: the mode's fraction and the board's live subtraction of every
+        // other holder are the headroom. A 15% reservation on top of them was the same headroom
+        // a second time (the M5, 2026-09-19: board budget 37 GB after 18.7 GB of other holders,
+        // 25 GB for weights and lanes, ONE lane under a 19 GB model while two 67k lanes fit in
+        // 27.4 GB); the planner keeps none (#4230).
         let after_weights = usable_bytes.saturating_sub(self.weights_bytes);
         let compute_floor = self.compute_buffer_per_lane();
-        let compute_rate = self.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
-        let per_token_cost = self.kv_per_token.saturating_add(compute_rate).max(1);
         let after_compute = after_weights.saturating_sub(compute_floor.saturating_mul(l));
-        (((after_compute / l) / per_token_cost).min(u32::MAX as u64) as u32)
-            .min(self.context_window)
+        // kv_per_token > 0 here (zero returned above), so every per-token cost is nonzero; a fit
+        // past the token width saturates there.
+        let fits = |per_token_cost: u64| ((after_compute / l) / per_token_cost).min(u64::from(u32::MAX)) as u32;
+        match self.compute.bytes_per_token() {
+            Some(rate) => fits(self.kv_per_token.saturating_add(rate)).min(self.context_window),
+            // No measured compute rate: no window-scaled reserve is sized, so the window is the
+            // runnable minimum (what the KV alone fits, never past it) until the engine reports.
+            None => fits(self.kv_per_token).min(MIN_SERVE_CTX).min(self.context_window),
+        }
     }
 
     /// What a lane costs beyond its KV: the base compute buffer plus the fixed residency a
@@ -510,16 +461,18 @@ impl ModelFootprint {
     /// `compute_reserve`) and the SAME number the board must attribute (E=mc²: one
     /// compute-reserve decision, one place). Per lane the buffer is NOT a constant:
     /// llama.cpp sizes the prefill graph for the FULL served window, so it grows with C
-    /// as `compute_floor + compute_rate·C` (`compute_rate = kv_per_token /
-    /// PREFILL_COMPUTE_KV_DIVISOR`). Worst case — every lane prefills at once (the
+    /// as `compute_floor + compute_rate·C` (`compute_rate`: the measured [`ComputeRate`]).
+    /// Worst case — every lane prefills at once (the
     /// wake-briefing burst) — so multiply by lanes. A window-INDEPENDENT reserve
     /// under-provisions exactly as the window grows (the 53k prefill OOM), so this
-    /// window-scales.
+    /// window-scales. With no measured rate ([`ComputeRate::Unknown`]) only the floor is
+    /// reserved, and the plan serves the minimum window (`window_within`).
     pub fn prefill_compute_reserve(&self, served_window: u32, lanes: u32) -> u64 {
-        let compute_rate = self.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
-        self.compute_buffer_per_lane()
-            .saturating_add(compute_rate.saturating_mul(served_window as u64))
-            .saturating_mul(lanes.max(1) as u64)
+        let per_lane = match self.compute.bytes_per_token() {
+            Some(rate) => self.compute_buffer_per_lane().saturating_add(rate.saturating_mul(served_window as u64)),
+            None => self.compute_buffer_per_lane(),
+        };
+        per_lane.saturating_mul(lanes.max(1) as u64)
     }
 
     /// The PEAK on-device residency serving can hit — [`resident_bytes`] (weights +
@@ -633,8 +586,6 @@ pub enum LanesBound {
     Demand,
     /// The host's performance cores capped the lanes below demand.
     Cores,
-    /// The `MAX_LANES` safety ceiling capped the lanes below demand.
-    MaxLanes,
     /// One more lane would have left each lane a window below the per-lane floor, so the
     /// budget stopped there. The evaluated candidate is reported, not just the verdict:
     /// `rejected_lanes` lanes would each have had `rejected_window` tokens, against
@@ -649,7 +600,7 @@ pub enum LanesBound {
 }
 
 /// What capped the lanes the requirements allocator would consider, before packing: the
-/// smallest of the four wins.
+/// smallest of the three wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
 #[ts(export, export_to = "../../../protocol/typescript/serving/LaneCapBy.ts")]
 #[serde(rename_all = "camelCase")]
@@ -658,8 +609,6 @@ pub enum LaneCapBy {
     Requirements,
     /// The host's performance cores.
     Cores,
-    /// The `MAX_LANES` safety ceiling.
-    MaxLanes,
     /// The demanded lane count (residents plus leased-in, knee-bounded).
     Demand,
 }

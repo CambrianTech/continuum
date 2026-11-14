@@ -50,7 +50,7 @@ pub struct Requirement {
     /// Among equally capable plans, prefer approaching this target before adding lanes.
     pub target_window: Option<u32>,
     /// The least capable model this role is competent on (`ModelFootprint::capability_rank`).
-    pub min_capability: u8,
+    pub min_capability: continuum_kernel::capability::Capability,
     /// Decode below this is not a seat (the knee). `None` = the role does not care.
     pub decode_floor_tps: Option<f32>,
 }
@@ -111,7 +111,7 @@ impl OfferTerms {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LanePlan {
     pub model_id: String,
-    pub capability_rank: u8,
+    pub capability_rank: continuum_kernel::capability::Capability,
     pub window: u32,
     pub lanes: u32,
     /// Measured per-lane decode at this lane count; `None` = never measured (an absence
@@ -156,7 +156,7 @@ impl LanePlan {
     pub fn serving(
         snapshot: &continuum_engine::inference::llama_server::ServingSnapshot,
         seat: continuum_engine::capacity::window_grant::SeatWindow,
-        capability_rank: u8,
+        capability_rank: continuum_kernel::capability::Capability,
         decode_tps_per_lane: Option<f32>,
     ) -> Option<Self> {
         // `is_live`, not just "has a model": a mid-relaunch publish keeps its geometry —
@@ -202,12 +202,12 @@ impl LanePlan {
     }
 
     /// Objective 2–4: capability, then lanes, then window.
-    pub fn rank(&self) -> (u8, u32, u32) {
+    pub fn rank(&self) -> (continuum_kernel::capability::Capability, u32, u32) {
         (self.capability_rank, self.lanes, self.window)
     }
 
     /// The single seat order shared by allocation and between-turn migration.
-    pub fn seat_key(&self, req: &Requirement) -> (u8, u32, u32, u32) {
+    pub fn seat_key(&self, req: &Requirement) -> (continuum_kernel::capability::Capability, u32, u32, u32) {
         (self.capability_rank, req.target_window.map_or(0, |target| self.window.min(target)), self.lanes, self.window)
     }
 
@@ -274,7 +274,7 @@ pub struct OfferBook {
     /// silence (an unplug). Relaunching and unplugged are two signals (Cormac on #4416):
     /// a node between plans still bounds the coder floor, so a 1.5B never holds a coder
     /// because a 27B blinked.
-    best_seen: std::collections::BTreeMap<Uuid, (u64, Vec<(u8, u32)>)>,
+    best_seen: std::collections::BTreeMap<Uuid, (u64, Vec<(continuum_kernel::capability::Capability, u32)>)>,
 }
 
 impl OfferBook {
@@ -295,7 +295,7 @@ impl OfferBook {
     /// counts by its last plans; a node silent past the window does not. Pairs, never a
     /// max per axis: a 27B at 35k beside a 7B at 65k is two seats, not one 27B at 65k
     /// (Cormac on #4416). Empty when nobody offers.
-    pub fn seats_live(&self, now_ms: u64, silent_after_ms: u64) -> Vec<(u8, u32)> {
+    pub fn seats_live(&self, now_ms: u64, silent_after_ms: u64) -> Vec<(continuum_kernel::capability::Capability, u32)> {
         self.best_seen
             .values()
             .filter(|(heard_at, _)| now_ms.saturating_sub(*heard_at) <= silent_after_ms)
@@ -435,7 +435,7 @@ pub enum NodeVerdict {
     Hosts { role: usize },
     /// Every runnable plan is below every role's requirement — the node seats nobody.
     /// `best_window`/`best_capability` say how far off it is.
-    BelowEveryRequirement { best_window: u32, best_capability: u8 },
+    BelowEveryRequirement { best_window: u32, best_capability: continuum_kernel::capability::Capability },
     /// The node offered no runnable plan at all.
     NothingRunnable,
 }
@@ -577,7 +577,7 @@ pub fn roles_from(
             None => Requirement {
                 window: continuum_engine::inference::planning::serving_plan::BOOTSTRAP_WORKING_SET,
                 target_window: measured_target,
-                min_capability: 0,
+                min_capability: continuum_kernel::capability::Capability::ANY,
                 decode_floor_tps: None,
             },
         };
@@ -617,8 +617,8 @@ pub fn roles_from(
 /// capability. Never a max per axis across different seats — a 27B at 35k and a 7B at
 /// 65k would give an ask of (27B, 65k) that neither holds. Joel: start at CPU on an
 /// Intel Mac alone; scale up when the 5090 joins; down when it leaves.
-pub fn ask_within(declared: &Requirement, seats: &[(u8, u32)]) -> Requirement {
-    let best_rank = seats.iter().map(|(r, _)| *r).max().unwrap_or(0); // unwrap_or: no seat = no floor to hold
+pub fn ask_within(declared: &Requirement, seats: &[(continuum_kernel::capability::Capability, u32)]) -> Requirement {
+    let best_rank = seats.iter().map(|(r, _)| *r).max().unwrap_or(continuum_kernel::capability::Capability::ANY); // unwrap_or: no seat = no floor to hold
     let min_capability = declared.min_capability.min(best_rank);
     let widest_at_rank = seats
         .iter()

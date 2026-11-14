@@ -2,6 +2,6 @@
 
 /**
  * What capped the lanes the requirements allocator would consider, before packing: the
- * smallest of the four wins.
+ * smallest of the three wins.
  */
-export type LaneCapBy = "requirements" | "cores" | "maxLanes" | "demand";
+export type LaneCapBy = "requirements" | "cores" | "demand";

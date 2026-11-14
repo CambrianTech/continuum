@@ -41,13 +41,11 @@ use crate::routing::trust_level::TrustLevel;
 mod projection;
 pub use projection::LocalInboundAircAuthorization;
 
-/// The default capability rank at which a citizen gets the full working surface. The scale is
-/// the Artificial Analysis Intelligence Index the serving planner already ranks models by
-/// (Qwen3.8-27B = 42, Qwen3.8-Flash-Next = 46; an unmeasured model's size proxy is capped at
-/// 40). Changed with `access/set`, never here.
-// derived-or-floor: a floor on the 0-255 capability scale, below every coder-tier model we
-// serve (42, 46) and above the small CPU-tier models.
-pub const DEFAULT_FULL_ACCESS_MIN_RANK: u8 = 30;
+/// The operator's default threshold for the full working surface: a MEASURED score on the
+/// Artificial Analysis Intelligence Index the serving planner ranks models by (Qwen3.8-27B = 42,
+/// Qwen3.8-Flash-Next = 46), below every coder-tier model we serve and above the small CPU-tier
+/// models. A policy value, typed: a weights proxy never meets it. Changed with `access/set`.
+pub const DEFAULT_FULL_ACCESS_MIN_RANK: continuum_kernel::capability::Capability = continuum_kernel::capability::Capability::Measured { score: 30 };
 
 /// One recorded access decision for one citizen: who decided, what level, and why.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -73,7 +71,7 @@ pub struct AccessDecision {
 #[ts(export, export_to = "../../../protocol/typescript/access/AccessPolicy.ts")]
 pub struct AccessPolicy {
     /// Capability rank at or above which a citizen gets the full working surface.
-    pub full_access_min_rank: u8,
+    pub full_access_min_rank: continuum_kernel::capability::Capability,
     /// Per-citizen decisions; a decision wins over the capability default.
     pub decisions: Vec<AccessDecision>,
     /// The policy file exists but could not be read: every citizen is restricted until
@@ -108,7 +106,7 @@ impl AccessPolicy {
     /// 5. otherwise by cognitive level: below the threshold `Provisional`, at or above it or
     ///    unmeasured `Trusted`, CAPPED by her registered trust when she has one (a peer
     ///    registered `Provisional` stays `Provisional`; Cormac on #4532).
-    pub fn citizen_trust(&self, peer: Uuid, known: bool, rank: Option<u8>, registered: Option<TrustLevel>) -> TrustLevel {
+    pub fn citizen_trust(&self, peer: Uuid, known: bool, rank: Option<continuum_kernel::capability::Capability>, registered: Option<TrustLevel>) -> TrustLevel {
         if self.unreadable {
             return TrustLevel::Provisional;
         }
@@ -141,7 +139,7 @@ static POLICY: RwLock<Option<AccessPolicy>> = RwLock::new(None);
 
 /// The current policy (cheap after the first read).
 pub fn policy() -> AccessPolicy {
-    if let Some(p) = POLICY.read().unwrap_or_else(|p| p.into_inner()).as_ref() {
+    if let Some(p) = POLICY.read().unwrap_or_else(|p| p.into_inner()).as_ref() { // unwrap_or_else: a poisoned lock still holds the last value; recover it
         return p.clone();
     }
     let unreadable = |path: &std::path::Path, error: String| {
@@ -156,36 +154,33 @@ pub fn policy() -> AccessPolicy {
     let loaded = match policy_path() {
         None => AccessPolicy::default(),
         Some(path) => match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<AccessPolicy>(&bytes).unwrap_or_else(|e| unreadable(&path, e.to_string())),
+            Ok(bytes) => serde_json::from_slice::<AccessPolicy>(&bytes).unwrap_or_else(|e| unreadable(&path, e.to_string())), // unwrap_or_else: an unparseable policy is recorded as unreadable, never a default
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => AccessPolicy::default(),
             Err(e) => unreadable(&path, e.to_string()),
         },
     };
-    *POLICY.write().unwrap_or_else(|p| p.into_inner()) = Some(loaded.clone());
+    *POLICY.write().unwrap_or_else(|p| p.into_inner()) = Some(loaded.clone()); // unwrap_or_else: a poisoned lock still holds the last value; recover it
     loaded
 }
 
 /// Persist `next` and make it current.
 pub fn store(next: AccessPolicy) -> Result<(), String> {
-    let path = policy_path().ok_or("no continuum home: the access policy has no place")?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
     let body = serde_json::to_vec_pretty(&next).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
-    *POLICY.write().unwrap_or_else(|p| p.into_inner()) = Some(next);
+    // Through the saved-state class that owns `state/` (staged and renamed by the class).
+    continuum_kernel::system_resources::disk_reporters::ClassWriter::of("state")
+        .and_then(|state| state.replace(std::path::Path::new("access-policy.json"), &body))
+        .map_err(|e| format!("the access policy could not be saved under state/: {e}"))?;
+    *POLICY.write().unwrap_or_else(|p| p.into_inner()) = Some(next); // unwrap_or_else: a poisoned lock still holds the last value; recover it
     Ok(())
 }
 
 /// The capability rank of the model this node serves now: a local persona's cognitive level.
 /// `None` when nothing is served or the model is not in the registry. Memoized per model id,
 /// so the gate stays cheap on every command.
-pub fn local_cognitive_rank() -> Option<u8> {
-    static MEMO: RwLock<Option<(String, Option<u8>)>> = RwLock::new(None);
+pub fn local_cognitive_rank() -> Option<continuum_kernel::capability::Capability> {
+    static MEMO: RwLock<Option<(String, Option<continuum_kernel::capability::Capability>)>> = RwLock::new(None);
     let model = crate::inference::llama_server::current_serving().active_model?;
-    if let Some((id, rank)) = MEMO.read().unwrap_or_else(|p| p.into_inner()).as_ref() {
+    if let Some((id, rank)) = MEMO.read().unwrap_or_else(|p| p.into_inner()).as_ref() { // unwrap_or_else: a poisoned lock still holds the last value; recover it
         if *id == model {
             return *rank;
         }
@@ -194,7 +189,7 @@ pub fn local_cognitive_rank() -> Option<u8> {
         .model(&model)
         .and_then(crate::inference::planning::serving_plan::footprint::footprint_for)
         .map(|f| f.capability_rank);
-    *MEMO.write().unwrap_or_else(|p| p.into_inner()) = Some((model, rank));
+    *MEMO.write().unwrap_or_else(|p| p.into_inner()) = Some((model, rank)); // unwrap_or_else: a poisoned lock still holds the last value; recover it
     rank
 }
 
@@ -211,18 +206,18 @@ mod tests {
     fn access_follows_cognitive_level_and_a_recorded_decision_wins() {
         let peer = Uuid::from_u128(7);
         let mut policy = AccessPolicy::default();
-        assert_eq!(policy.citizen_trust(peer, true, Some(42), None), TrustLevel::Trusted, "the 27B coder");
+        assert_eq!(policy.citizen_trust(peer, true, Some(continuum_kernel::capability::Capability::Measured { score: 42 }), None), TrustLevel::Trusted, "the 27B coder");
         assert_eq!(policy.citizen_trust(peer, true, None, None), TrustLevel::Trusted, "an unmeasured known citizen gets more, not less");
-        assert_eq!(policy.citizen_trust(peer, true, Some(12), None), TrustLevel::Provisional, "a weak model is restricted");
-        assert_eq!(policy.citizen_trust(peer, true, Some(42), Some(TrustLevel::Blocked)), TrustLevel::Blocked);
+        assert_eq!(policy.citizen_trust(peer, true, Some(continuum_kernel::capability::Capability::Measured { score: 12 }), None), TrustLevel::Provisional, "a weak model is restricted");
+        assert_eq!(policy.citizen_trust(peer, true, Some(continuum_kernel::capability::Capability::Measured { score: 42 }), Some(TrustLevel::Blocked)), TrustLevel::Blocked);
         // Cormac on #4532: an unknown IDENTITY is not an unknown capability; enrolling in a
         // room never grants a shell
         assert_eq!(policy.citizen_trust(peer, false, None, None), TrustLevel::Provisional, "a stranger is restricted");
         // and registered trust caps what capability grants
         assert_eq!(policy.citizen_trust(peer, true, None, Some(TrustLevel::Provisional)), TrustLevel::Provisional, "registered Provisional stays Provisional");
-        assert_eq!(policy.citizen_trust(peer, true, Some(42), Some(TrustLevel::Owner)), TrustLevel::Trusted, "a registered Owner peer still gets Trusted, never Owner, by capability");
-        policy.full_access_min_rank = 45;
-        assert_eq!(policy.citizen_trust(peer, true, Some(42), None), TrustLevel::Provisional, "the threshold is data");
+        assert_eq!(policy.citizen_trust(peer, true, Some(continuum_kernel::capability::Capability::Measured { score: 42 }), Some(TrustLevel::Owner)), TrustLevel::Trusted, "a registered Owner peer still gets Trusted, never Owner, by capability");
+        policy.full_access_min_rank = continuum_kernel::capability::Capability::Measured { score: 45 };
+        assert_eq!(policy.citizen_trust(peer, true, Some(continuum_kernel::capability::Capability::Measured { score: 42 }), None), TrustLevel::Provisional, "the threshold is data");
         policy.decisions.push(AccessDecision {
             peer,
             level: TrustLevel::Trusted,
@@ -230,7 +225,7 @@ mod tests {
             decided_by: None,
             decided_ms: 1,
         });
-        assert_eq!(policy.citizen_trust(peer, false, Some(12), None), TrustLevel::Trusted, "a decision wins, even for a stranger");
+        assert_eq!(policy.citizen_trust(peer, false, Some(continuum_kernel::capability::Capability::Measured { score: 12 }), None), TrustLevel::Trusted, "a decision wins, even for a stranger");
         // The fleet projection explains the same pure decision without reading live state.
         for level in [TrustLevel::Blocked, TrustLevel::Provisional, TrustLevel::Trusted, TrustLevel::Owner] {
             policy.decisions[0].level = level;
@@ -246,7 +241,7 @@ mod tests {
         assert_eq!(policy.local_inbound_airc_authorization(None), LocalInboundAircAuthorization::Uncorrelated);
         // an unreadable policy restricts everyone and never silently drops a recorded block
         let broken = AccessPolicy { unreadable: true, ..policy };
-        assert_eq!(broken.citizen_trust(peer, true, Some(42), None), TrustLevel::Provisional);
+        assert_eq!(broken.citizen_trust(peer, true, Some(continuum_kernel::capability::Capability::Measured { score: 42 }), None), TrustLevel::Provisional);
         assert_eq!(broken.local_inbound_airc_authorization(Some(peer)),
             LocalInboundAircAuthorization::PolicyUnreadable { effective_level: broken.citizen_trust(peer, false, None, None) });
     }
@@ -258,7 +253,7 @@ mod tests {
     fn a_resident_gets_full_hands_by_default_and_a_decision_restricts_her_later() {
         let peer = Uuid::new_v4();
         let mut policy = AccessPolicy::default();
-        policy.full_access_min_rank = 45;
+        policy.full_access_min_rank = continuum_kernel::capability::Capability::Measured { score: 45 };
         assert_eq!(policy.resident_trust(peer), TrustLevel::Trusted, "whatever her model");
         policy.decisions.push(AccessDecision {
             peer,

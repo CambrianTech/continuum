@@ -104,6 +104,22 @@ impl EngineMemory {
     pub fn accelerator_context(&self) -> u64 {
         self.per_buffer.iter().filter(|b| !is_host_backend(&b.buffer_type)).map(|b| b.context_bytes).sum()
     }
+
+    /// The compute buffers alone on accelerators: the prefill graph the engine reserved.
+    pub fn accelerator_compute(&self) -> u64 {
+        self.per_buffer.iter().filter(|b| !is_host_backend(&b.buffer_type)).map(|b| b.compute_bytes).sum()
+    }
+}
+
+/// The engine's prefill compute rate, by its own account: the compute bytes on its accelerators
+/// over the tokens its context allocated (`context_geometry.allocated_tokens`), one reading per
+/// engine incarnation (the graph is reserved at load). Read on every platform: the fork reports
+/// `memory_breakdown` whatever the backend. `None` when either report is missing, or nothing
+/// is computed on an accelerator (a CPU lane reserves no device graph).
+pub fn compute_bytes_per_token(props: &serde_json::Value) -> Option<u64> {
+    let compute = EngineMemory::from_props(props)?.accelerator_compute();
+    let tokens = ContextGeometry::from_props(props)?.allocated_tokens;
+    (compute > 0 && tokens > 0).then(|| compute / tokens)
 }
 
 /// The lane's KV on the device and the tokens it was allocated for, by the engine's own account:
@@ -243,6 +259,24 @@ fn is_gpu_backend(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_compute_rate_is_the_accelerators_compute_over_the_allocated_tokens() {
+        // what this catches: a compute rate guessed from the KV rate (`kv / 4`). The M5's own
+        // receipt, 2026-11-13T23:50Z (Qwen3.6-35B-A3B, q4_0 KV, ubatch 2048, 5 slots): the
+        // host CPU compute buffer is not the device graph and is never counted.
+        let props = serde_json::json!({
+            "memory_breakdown": [
+                {"buffer_type": "CPU", "model_bytes": 0u64, "context_bytes": 0u64, "compute_bytes": 957587744u64},
+                {"buffer_type": "MTL0", "model_bytes": 0u64, "context_bytes": 2944204800u64, "compute_bytes": 1621888960u64}
+            ],
+            "context_geometry": {"allocated_tokens": 225280, "max_tokens_per_sequence": 225280, "sequence_capacity": 5}
+        });
+        assert_eq!(compute_bytes_per_token(&props), Some(7_199));
+        let mut no_geometry = props.clone();
+        no_geometry.as_object_mut().map(|o| o.remove("context_geometry"));
+        assert_eq!(compute_bytes_per_token(&no_geometry), None, "no allocated tokens reported: no rate");
+    }
 
     // what this catches: the channel's three answers — a GPU-resident model
     // (accelerator bytes = the Metal/CUDA buffers, host mapped bytes excluded),

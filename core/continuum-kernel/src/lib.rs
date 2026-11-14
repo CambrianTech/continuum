@@ -8,6 +8,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![deny(clippy::await_holding_lock)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
+pub mod capability;
 pub mod concurrency;
 pub mod docker_tier;
 pub mod docker_tier_pool;

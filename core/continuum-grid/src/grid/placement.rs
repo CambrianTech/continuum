@@ -17,7 +17,7 @@ pub async fn follow_the_fleet(
     now_ms: u64,
     peers: Vec<PeerOffer>,
     local: LocalShape,
-    rank_of: &(dyn Fn(&str) -> Option<u8> + Sync),
+    rank_of: &(dyn Fn(&str) -> Option<continuum_kernel::capability::Capability> + Sync),
 ) -> Vec<String> {
     let heard: std::collections::HashMap<Uuid, u64> =
         peers.iter().map(|p| (p.peer, p.beacon_age_ms)).collect();
@@ -82,9 +82,7 @@ pub async fn follow_the_fleet(
             // real seat holds her and nobody is evicted on a stranger's demand. The node
             // median remains right where it belongs: SIZING lanes for the whole population
             // (`ServingDemand`), never ADMITTING one mind to a seat.
-            requirement: working_set
-                .sent_median_of(&[sw.persona_id()])
-                .map(crate::inference::planning::serving_plan::prompt_floor_of),
+            requirement: working_set.prompt_floor_for(sw.persona_id()),
         };
         // Withheld = she would have returned had the seat offered a slot. Pure and exact:
         // the same rule with the offer granted, so a cooldown or a queued seat is never
@@ -201,10 +199,7 @@ pub async fn follow_the_fleet(
             "her seat's beacon offers no slot this tick — no return ask sent; she stays home until it does"
         );
     }
-    let moves = choose_offloads(local, &peers, rank_of, &at_home, &|mind| {
-        working_set.sent_median_of(&[mind])
-            .map(crate::inference::planning::serving_plan::prompt_floor_of)
-    });
+    let moves = choose_offloads(local, &peers, rank_of, &at_home, &|mind| working_set.prompt_floor_for(mind));
     if !moves.is_empty() {
         let by_id: std::collections::HashMap<Uuid, Arc<PlacementSwitch>> =
             switches().into_iter().map(|s| (s.persona_id(), s)).collect();

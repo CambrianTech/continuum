@@ -158,8 +158,10 @@ impl Reservations {
                 .iter()
                 .filter(|d| !state.retiring.contains_key(&d.mind))
                 .map(|d| Demand {
-                    in_flight: false,
-                    settled: fair.changed.get(&d.mind).is_none_or(|at| state.receipts.get(&d.mind).is_some_and(|(_, served)| served > at)),
+                    turn: match fair.changed.get(&d.mind).is_none_or(|at| state.receipts.get(&d.mind).is_some_and(|(_, served)| served > at)) {
+                        true => crate::capacity::window_grant::Turn::Settled,
+                        false => crate::capacity::window_grant::Turn::Unsettled,
+                    },
                     ..*d
                 })
                 .collect();

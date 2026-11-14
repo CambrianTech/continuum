@@ -43,7 +43,7 @@ impl PromptSample {
 //
 // Deliberative model calls currently outstanding against the shared serving target.
 // A lock-free process-global gauge: the resource it measures — ONE shared
-// llama-server with `serving_plan::MAX_LANES` decode slots serving the whole fleet
+// llama-server with its served decode slots serving the whole fleet
 // via continuous batching — IS process-global, so the gauge granularity matches the
 // resource exactly (no per-caller Arc threading buys any fidelity).
 //
@@ -460,7 +460,7 @@ pub fn take_leased_in_peak() -> usize {
 }
 
 /// Deliberative model calls outstanding against the shared serving target right now.
-/// The served lane count the admission gate is sized to (0 before the first plan).
+/// The served lane count the admission gate is sized to (1 before the first plan).
 pub fn served_lane_count() -> usize {
     LANES.lane_count()
 }
@@ -471,11 +471,9 @@ pub fn inflight_model_calls() -> usize {
 
 /// True when every shared decode slot is busy, so one more call would QUEUE behind
 /// the fleet. Threshold is the LIVE served lane count (`LANES.lane_count()` — the real
-/// `--parallel` slots serving reports, `set_served_lane_count`), falling back to the
-/// `MAX_LANES` backstop only before the first plan lands. This must track the live count,
-/// not the `MAX_LANES` ceiling: once the ceiling can exceed the served count (#266 raised it
-/// 2 → 8), keying saturation off the ceiling would let a 2-slot host admit 8 in-flight and
-/// queue 6 at the backend before a self-tick ever yields. A self-tick yields on this;
+/// `--parallel` slots serving reports, `set_served_lane_count`), one before the first plan
+/// lands. Keying saturation off any fixed ceiling would let a 2-slot host admit that many
+/// in-flight and queue the rest at the backend before a self-tick ever yields. A self-tick yields on this;
 /// message/directed turns are never gated on it (a human/peer waits).
 pub fn shared_model_saturated() -> bool {
     INFLIGHT_MODEL_CALLS.saturated(LANES.lane_count())

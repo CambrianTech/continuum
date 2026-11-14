@@ -90,7 +90,7 @@ mod grants {
             RecordedNeed::Exact(n) => Observed::Exact(t(n)).within(pool),
             RecordedNeed::AtLeast(n) => Observed::AtLeast { at_least: t(n) }.within(pool),
         };
-        Demand { mind: resident.mind, need, target: need, wish: need, in_flight, settled: true, ceiling: pool }
+        Demand { mind: resident.mind, need, target: need, wish: need, turn: match in_flight { true => crate::capacity::window_grant::Turn::InFlight, false => crate::capacity::window_grant::Turn::Settled }, ceiling: pool, growth: crate::inference::planning::window_allocator::Growth::Unmeasured }
     }
 
     /// The SUPERSEDED composition (before #5793): the bare demand policy regranted on every tick
@@ -232,9 +232,8 @@ mod censored_demand {
     //! `DemandFollowing`); the measurement is the arm: her view as rendered after its last
     //! collapse (before), or at full detail (after: `View::collapsed_growth`).
     use crate::capacity::window_grant::{Demand, DemandFollowing, WindowPolicy};
-    use crate::inference::planning::serving_plan::SENT_HEADROOM;
     use crate::inference::planning::window_allocator::observed::Observed;
-    use crate::inference::planning::window_allocator::{test_tokens as t, LaneRequirement};
+    use crate::inference::planning::window_allocator::{test_tokens as t, Growth, LaneRequirement};
     use std::collections::BTreeMap;
 
     /// `serving.grants` pool_tokens and per_sequence_cap, 21:40:00Z.
@@ -257,7 +256,9 @@ mod censored_demand {
     ];
 
     /// Her wish ring as the working set keeps it (`working_set::requirement_tokens`: the upper
-    /// median of her last 16 demands, at least her newest when it overflowed her window).
+    /// median of her last 16 demands, at least her newest when it overflowed her window; her
+    /// growth: `Growth::of` over the same ring, measured once it holds 16).
+    const RING: usize = 16;
     #[derive(Default)]
     struct Ring {
         demands: Vec<u32>,
@@ -267,7 +268,7 @@ mod censored_demand {
     impl Ring {
         fn record(&mut self, demand: u32, served: u32) {
             self.demands.push(demand);
-            if self.demands.len() > 16 {
+            if self.demands.len() > RING {
                 self.demands.remove(0);
             }
             self.overflow = (demand > served).then_some(demand);
@@ -279,15 +280,19 @@ mod censored_demand {
             let typical = sorted[sorted.len() / 2];
             self.overflow.map_or(typical, |overflow| typical.max(overflow)) // map_or: a turn that fit leaves her typical turn
         }
+
+        fn growth(&self) -> Growth {
+            Growth::of(self.demands.iter().copied().filter_map(crate::inference::planning::window_allocator::Tokens::new), RING)
+        }
     }
 
     /// One publish on the idle pool: her requirement, her demand, her grant from what she holds.
     fn publish(ring: &Ring, held: u32) -> u32 {
         let aris = uuid::Uuid::from_u128(0x8044b75b);
         let need = Observed::AtLeast { at_least: t(BOUND) }.over(Some(t(FLOOR)));
-        let requirement = LaneRequirement::wished(aris, t(ring.wish()), SENT_HEADROOM).held(need);
+        let requirement = LaneRequirement::wished(aris, t(ring.wish()), ring.growth()).held(need);
         let demand = Demand::of(&requirement, t(TRAINED), POOL, false).expect("test: a held requirement is a demand"); // expect: wished and held, so measured
-        let grants = DemandFollowing.grant(&[Demand { settled: true, ..demand }], &BTreeMap::from([(aris, held)]), POOL);
+        let grants = DemandFollowing.grant(&[Demand { turn: crate::capacity::window_grant::Turn::Settled, ..demand }], &BTreeMap::from([(aris, held)]), POOL);
         grants[&aris]
     }
 
@@ -306,12 +311,15 @@ mod censored_demand {
 
     // what this catches: the recorded loop, reproduced through the real grant path. Measured from
     // her collapsed render, her requirement follows the collapse down: her window falls on an idle
-    // pool to below what her act holds at full detail, and she overflows act after act.
+    // pool, and she overflows act after act. With the recorded 1.25 headroom her last grant read
+    // 57,750, below her whole act; grown by her own ring's growth (p95 over median, measured from
+    // the 16th act) it ends near 73k, above it, and she still overflows 17 of 30 acts: the growth
+    // does not cure a requirement measured from a collapse, the full-detail measure does.
     #[test]
     fn measured_from_her_collapsed_view_her_window_falls_and_she_overflows() {
         let (grants, overflows) = play(FIRST_GRANT, &mut Ring::default(), |_, act| RECORDED[act]);
         let last = *grants.last().expect("test: a recorded act publishes"); // expect: RECORDED is nonempty
-        assert!(last < FIRST_GRANT && last < FULL_DETAIL, "her window fell below her whole act: {grants:?}");
+        assert!(last < FIRST_GRANT, "her window fell on an idle pool: {grants:?}");
         assert!(overflows >= RECORDED.len() / 2, "{overflows} of {} acts overflowed: {grants:?}", RECORDED.len());
     }
 

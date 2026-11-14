@@ -102,6 +102,11 @@ pub(super) fn llama_server_frontier() -> Vec<Model> {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
+            // PRIOR compute buffer, MEASURED on the M5 Pro 2026-11-13T23:50Z (engine pid 65942,
+            // `--ubatch-size 2048`, q4_0 KV, 5 slots): `/props` `memory_breakdown` MTL0
+            // compute_bytes 1,621,888,960 over context_geometry.allocated_tokens 225,280 =
+            // 7,199 B/token (0.55x its 13,069 B/token KV). A node's own first reading replaces it.
+            serving: ModelServingPrefs { prior_compute_bytes_per_token: Some(7_199), ..ModelServingPrefs::default() },
             ..ModelSpec::default()
         }),
         // ORNITH-1.5-35B-A3B — the WORK-TIER lane (Joel, 2026-08-22: "Swap it for
@@ -219,6 +224,7 @@ pub(super) fn llama_server_frontier() -> Vec<Model> {
                 // impossible to die mid-think (the 40k external receipt).
                 reasoning_budget: Some(8192),
                 verified_ctx_ceiling: Some(32_768),
+                prior_compute_bytes_per_token: None,
             },
                         // NOT persona_serving_eligible: EXPERIMENTAL — 32k verified, 46848 OOM'd all
             // night (2026-08-29), depth worse at 31k. Its measured score above is a FACT

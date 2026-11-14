@@ -11,8 +11,8 @@ use super::*;
 #[test]
 fn an_opportunity_never_steps_down_and_never_offers_a_seat_fall_home_would_reject() {
     use crate::cognition::grid_allocation::{BetterBy, LanePlan, Requirement};
-    const REQ: Requirement = Requirement { window: 0, target_window: None, min_capability: 0, decode_floor_tps: None };
-    let plan = |cap: u8, window: u32| LanePlan { model_id: "m".into(), capability_rank: cap, window, lanes: 2, decode_tps_per_lane: None };
+    const REQ: Requirement = Requirement { window: 0, target_window: None, min_capability: continuum_kernel::capability::Capability::Proxy { score: 0 }, decode_floor_tps: None };
+    let plan = |cap: u8, window: u32| LanePlan { model_id: "m".into(), capability_rank: continuum_kernel::capability::Capability::Proxy { score: cap }, window, lanes: 2, decode_tps_per_lane: None };
     fn base<'a>(current: Option<&'a LanePlan>, target: &'a LanePlan) -> OpportunityInputs<'a> {
         OpportunityInputs {
             current, current_holds_her: current.is_some(), target, requirement: &REQ, target_is_current: false,
@@ -21,22 +21,22 @@ fn an_opportunity_never_steps_down_and_never_offers_a_seat_fall_home_would_rejec
     }
     let (small, big) = (plan(2, 32_768), plan(30, 45_470));
     // Kimi: home is a 27B, her home plan is momentarily absent, a 1.5B seat is offered.
-    assert_eq!(decide_opportunity(&OpportunityInputs { home_capability: Some(30), ..base(None, &small) }), None);
+    assert_eq!(decide_opportunity(&OpportunityInputs { home_capability: Some(continuum_kernel::capability::Capability::Proxy { score: 30 }), ..base(None, &small) }), None);
     // Unknown home and no current plan: an absence is not permission.
     assert_eq!(decide_opportunity(&base(None, &small)), None);
     // A weak home stepping UP is still the point of the rule.
-    assert_eq!(decide_opportunity(&OpportunityInputs { home_capability: Some(2), ..base(None, &big) }), Some(BetterBy::Requirement));
+    assert_eq!(decide_opportunity(&OpportunityInputs { home_capability: Some(continuum_kernel::capability::Capability::Proxy { score: 2 }), ..base(None, &big) }), Some(BetterBy::Requirement));
     // Delia, measured: the 5090 seat's window 67,840 against her sent floor 70,608. The
     // placer called it better by requirement; fall-home then rejected it, 22 times.
     let seat_5090 = plan(30, 67_840);
     assert_eq!(
-        decide_opportunity(&OpportunityInputs { home_capability: Some(2), turn_requirement: Some(70_608), ..base(None, &seat_5090) }),
+        decide_opportunity(&OpportunityInputs { home_capability: Some(continuum_kernel::capability::Capability::Proxy { score: 2 }), turn_requirement: Some(70_608), ..base(None, &seat_5090) }),
         None
     );
     assert!(seat_starves(Some(seat_5090.window), Some(70_608)), "the same predicate fall-home reads");
     // A mind that seat does hold still moves up to it.
     assert_eq!(
-        decide_opportunity(&OpportunityInputs { home_capability: Some(2), turn_requirement: Some(56_557), ..base(None, &seat_5090) }),
+        decide_opportunity(&OpportunityInputs { home_capability: Some(continuum_kernel::capability::Capability::Proxy { score: 2 }), turn_requirement: Some(56_557), ..base(None, &seat_5090) }),
         Some(BetterBy::Requirement)
     );
 }
@@ -50,21 +50,21 @@ fn an_opportunity_never_steps_down_and_never_offers_a_seat_fall_home_would_rejec
 fn a_strictly_better_seat_moves_her_between_turns_and_never_inside_her_cooldown() {
     use crate::cognition::grid_allocation::{BetterBy, LanePlan};
     use crate::cognition::turn_ledger::TurnShape;
-    let plan = |cap: u8, window: u32, lanes: u32| LanePlan { model_id: "m".into(), capability_rank: cap, window, lanes, decode_tps_per_lane: None };
+    let plan = |cap: u8, window: u32, lanes: u32| LanePlan { model_id: "m".into(), capability_rank: continuum_kernel::capability::Capability::Proxy { score: cap }, window, lanes, decode_tps_per_lane: None };
     let (home, wide, strong) = (plan(9, 67_072, 2), plan(9, 131_072, 2), plan(12, 32_768, 1));
     fn i<'a>(current: Option<&'a LanePlan>, target: &'a LanePlan) -> OpportunityInputs<'a> {
         const REQUIREMENT: crate::cognition::grid_allocation::Requirement = crate::cognition::grid_allocation::Requirement {
-            window: 0, target_window: None, min_capability: 0, decode_floor_tps: None,
+            window: 0, target_window: None, min_capability: continuum_kernel::capability::Capability::Proxy { score: 0 }, decode_floor_tps: None,
         };
         OpportunityInputs {
             requirement: &REQUIREMENT,
             current, current_holds_her: current.is_some(), target, target_is_current: false, turn_in_flight: false, since_last_move_ms: 1_000, cooldown_ms: 1_000,
-            home_capability: Some(0), turn_requirement: None,
+            home_capability: Some(continuum_kernel::capability::Capability::Proxy { score: 0 }), turn_requirement: None,
         }
     }
     assert_eq!(decide_opportunity(&i(Some(&home), &wide)), Some(BetterBy::Window));
     let target_requirement = crate::cognition::grid_allocation::Requirement {
-        window: 16_384, target_window: Some(100_000), min_capability: 0, decode_floor_tps: None,
+        window: 16_384, target_window: Some(100_000), min_capability: continuum_kernel::capability::Capability::Proxy { score: 0 }, decode_floor_tps: None,
     };
     let narrow_many = plan(9, 32_768, 3);
     let mut toward_fit = i(Some(&narrow_many), &home);
@@ -105,8 +105,8 @@ fn a_strictly_better_seat_moves_her_between_turns_and_never_inside_her_cooldown(
 #[test]
 fn a_new_wider_node_moves_the_mind_it_holds_and_not_the_ones_it_does_not() {
     use crate::cognition::grid_allocation::{allocate, BetterBy, GridAllocation, GridInputs, LanePlan, Mind, NodeOffer, OfferTerms, Requirement, Role};
-    let role = |name: &str, window: u32| Role { name: name.into(), requirement: Requirement { window, target_window: None, min_capability: 0, decode_floor_tps: None } };
-    let plan = |window: u32, lanes: u32| LanePlan { model_id: "27b".into(), capability_rank: 9, window, lanes, decode_tps_per_lane: None };
+    let role = |name: &str, window: u32| Role { name: name.into(), requirement: Requirement { window, target_window: None, min_capability: continuum_kernel::capability::Capability::Proxy { score: 0 }, decode_floor_tps: None } };
+    let plan = |window: u32, lanes: u32| LanePlan { model_id: "27b".into(), capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 }, window, lanes, decode_tps_per_lane: None };
     let (home, joined) = (Uuid::from_u128(0x40), Uuid::from_u128(0x5090));
     let (coder, helper, sentinel) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
     let mind = |id, role| Mind { id, role, home: Some(home), owner: Uuid::nil() };
@@ -229,13 +229,13 @@ fn a_node_without_a_home_lane_parks_instead_of_downgrading() {
 }
 
 // what this catches: the pooled-demand rule — 16 minds on 7 lanes borrow a fresh
-// peer's two free lanes (27B measured 42 ≥ local proxy 40) for the two least-served
+// peer's two free lanes (27B measured 42 ≥ local measured 40) for the two least-served
 // minds; a stale beacon, a lower-ranked model, or a full peer lends nothing; and a
 // node with lanes to spare moves nobody.
 #[test]
 fn a_node_with_more_minds_than_lanes_borrows_a_peers_free_lanes() {
     let gpu = Uuid::from_u128(0x5090);
-    let rank = |m: &str| -> Option<u8> { match m { "qwen-27b" => Some(42), "tiny" => Some(10), _ => None } };
+    let rank = |m: &str| -> Option<continuum_kernel::capability::Capability> { match m { "qwen-27b" => Some(continuum_kernel::capability::Capability::Measured { score: 42 }), "tiny" => Some(continuum_kernel::capability::Capability::Measured { score: 10 }), _ => None } };
     let peers = vec![
         PeerOffer { peer: gpu, served_model: Some("qwen-27b".into()), lanes: 2, residents: 0, beacon_age_ms: 5_000, free_slots_live: 2, lane_wait_p50_ms: 0, lane_wait_samples: 0, served_context_window: None },
         PeerOffer { peer: Uuid::from_u128(1), served_model: Some("tiny".into()), lanes: 4, residents: 0, beacon_age_ms: 5_000, free_slots_live: 4, lane_wait_p50_ms: 0, lane_wait_samples: 0, served_context_window: None },
@@ -243,12 +243,12 @@ fn a_node_with_more_minds_than_lanes_borrows_a_peers_free_lanes() {
         PeerOffer { peer: Uuid::from_u128(3), served_model: Some("qwen-27b".into()), lanes: 8, residents: 0, beacon_age_ms: REMOTE_SEAT_FRESH_MS + 1, free_slots_live: 8, lane_wait_p50_ms: 0, lane_wait_samples: 0, served_context_window: None },
     ];
     let minds: Vec<(Uuid, u64)> = (1..=16u128).map(|i| (Uuid::from_u128(0x100 + i), 20 - (i as u64 % 5))).collect();
-    let moves = choose_offloads(LocalShape { resident: 16, lanes: 7, rank: 40, lane_wait_p50_ms: None }, &peers, &rank, &minds, &|_| None);
+    let moves = choose_offloads(LocalShape { resident: 16, lanes: 7, rank: continuum_kernel::capability::Capability::Measured { score: 40 }, lane_wait_p50_ms: None }, &peers, &rank, &minds, &|_| None);
     assert_eq!(moves.len(), 2, "two free lanes on the only eligible peer: {moves:?}");
     assert!(moves.iter().all(|(_, p, m)| *p == gpu && m == "qwen-27b"));
     let least = minds.iter().min_by_key(|(_, g)| *g).map(|(m, _)| *m).expect("a mind");
     assert_eq!(moves[0].0, least, "the least-served mind goes first");
-    assert!(choose_offloads(LocalShape { resident: 5, lanes: 7, rank: 40, lane_wait_p50_ms: None }, &peers, &rank, &minds, &|_| None).is_empty());
+    assert!(choose_offloads(LocalShape { resident: 5, lanes: 7, rank: continuum_kernel::capability::Capability::Measured { score: 40 }, lane_wait_p50_ms: None }, &peers, &rank, &minds, &|_| None).is_empty());
 }
 
 // what this catches (card 73eefbbb): which decided moves the workspace must be
@@ -282,9 +282,9 @@ fn offer(peer: u128, free: u32, wait_p50_ms: u64, wait_samples: u32) -> PeerOffe
     PeerOffer { peer: Uuid::from_u128(peer), served_model: Some("qwen-27b".into()), lanes: 4, residents: 4, beacon_age_ms: 5_000, free_slots_live: free, lane_wait_p50_ms: wait_p50_ms, lane_wait_samples: wait_samples, served_context_window: None }
 }
 fn local(resident: u32, lanes: u32, home_wait: Option<u64>) -> LocalShape {
-    LocalShape { resident, lanes, rank: 40, lane_wait_p50_ms: home_wait }
+    LocalShape { resident, lanes, rank: continuum_kernel::capability::Capability::Measured { score: 40 }, lane_wait_p50_ms: home_wait }
 }
-fn rank27(m: &str) -> Option<u8> { (m == "qwen-27b").then_some(42) }
+fn rank27(m: &str) -> Option<continuum_kernel::capability::Capability> { (m == "qwen-27b").then_some(continuum_kernel::capability::Capability::Measured { score: 42 }) }
 fn minds(n: u128) -> Vec<(Uuid, u64)> { (1..=n).map(|i| (Uuid::from_u128(0x100 + i), i as u64)).collect() }
 
 // what this catches (card c84d885a, S1b — Cormac's "NO RESERVATION" location): `free`
@@ -361,9 +361,10 @@ fn the_predicate_that_refuses_a_seat_is_the_one_that_retires_its_record() {
     // asymmetry would have crept back in.
     assert!(!seat_starves(None, Some(70_071)));
     assert!(!seat_starves(None, None));
-    // Nothing measured of her turn: the serve floor is the bar, on both sides.
-    assert!(!seat_starves(Some(crate::inference::planning::MIN_SERVE_CTX), None));
-    assert!(seat_starves(Some(crate::inference::planning::MIN_SERVE_CTX - 1), None));
+    // Nothing measured of her turn: the serve floor is the bar, on both sides (its exact
+    // boundary is the planner's own test, `persona_lane_holds`).
+    assert!(!seat_starves(Some(65_536), None), "a real seat holds a mind with nothing measured");
+    assert!(seat_starves(Some(1), None), "a seat under the serve floor starves her");
 }
 
 #[test]
