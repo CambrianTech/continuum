@@ -142,7 +142,7 @@ pub fn kv_rate_for_plan(
 ) -> u64 {
     match (header_known, measured) {
         (true, _) | (false, None) => estimate,
-        (false, Some(record)) => kv_per_token_from_measured(estimate, record, compute.map_or(0, |c| c)),
+        (false, Some(record)) => kv_per_token_from_measured(estimate, record, compute),
     }
 }
 
@@ -150,11 +150,19 @@ pub fn kv_rate_for_plan(
 /// Pure half of [`kv_rate_for_plan`]: the kv rate whose plan cost (`kv + compute`) equals the
 /// record's lowest reading, or the estimate when the record does not correct it (its readings
 /// do not all lie above the estimate's cost, `lane_footprint::corrects`).
-fn kv_per_token_from_measured(estimate: u64, record: &crate::inference::lane_footprint::MeasuredCost, compute: u64) -> u64 {
-    let estimated_cost = estimate.saturating_add(compute);
+fn kv_per_token_from_measured(estimate: u64, record: &crate::inference::lane_footprint::MeasuredCost, compute: Option<u64>) -> u64 {
+    // With no measured compute rate the whole reading is attributed to kv.
+    let estimated_cost = match compute {
+        Some(rate) => estimate.saturating_add(rate),
+        None => estimate,
+    };
     match record.spread() {
         Some((lowest, _)) if crate::inference::lane_footprint::corrects(estimated_cost, record) => {
-            lowest.saturating_sub(compute).max(estimate)
+            let kv = match compute {
+                Some(rate) => lowest.saturating_sub(rate),
+                None => lowest,
+            };
+            kv.max(estimate)
         }
         _ => estimate,
     }
@@ -392,13 +400,13 @@ mod tests {
         assert_eq!((lanes_at(&raised, 30_000_000_000), lanes_at(&raised, 34_000_000_000)), (2, 3));
         // Fixture compute: the Devstral calibration's quarter of the 10,240 estimate.
         let compute = 2_560;
-        let kv = kv_per_token_from_measured(10_240, &reads(36_000, 36_400), compute);
+        let kv = kv_per_token_from_measured(10_240, &reads(36_000, 36_400), Some(compute));
         assert_eq!(kv + compute, 36_000, "the plan's cost now equals the record's lowest reading");
-        assert_eq!(kv_per_token_from_measured(10_240, &reads(36_000, 36_400), 0), 36_000, "an unknown compute rate attributes the whole reading to kv");
-        assert_eq!(kv_per_token_from_measured(10_240, &reads(11_000, 14_000), compute), 10_240, "the estimate's cost inside the readings' spread: it stands");
-        assert_eq!(kv_per_token_from_measured(36_000, &reads(10_240, 10_500), compute), 36_000, "a smaller reading never lowers it");
+        assert_eq!(kv_per_token_from_measured(10_240, &reads(36_000, 36_400), None), 36_000, "an unknown compute rate attributes the whole reading to kv");
+        assert_eq!(kv_per_token_from_measured(10_240, &reads(11_000, 14_000), Some(compute)), 10_240, "the estimate's cost inside the readings' spread: it stands");
+        assert_eq!(kv_per_token_from_measured(36_000, &reads(10_240, 10_500), Some(compute)), 36_000, "a smaller reading never lowers it");
         let one = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: 36_000, readings: vec![(0, 36_000)], ..Default::default() };
-        assert_eq!(kv_per_token_from_measured(10_240, &one, compute), 10_240, "one reading: no spread, no correction");
+        assert_eq!(kv_per_token_from_measured(10_240, &one, Some(compute)), 10_240, "one reading: no spread, no correction");
     }
 
     // what this catches: the plan's resident-KV divisor is the SAME resolved decision

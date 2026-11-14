@@ -25,8 +25,10 @@ pub(super) fn anon_footprint(pid: u32) -> Option<u64> {
     let kb = |line: &str| line.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).map(|v| v * 1024);
     let anon = status.lines().find(|l| l.starts_with("RssAnon:")).and_then(kb)?;
     // A kernel that reports no VmSwap line has no swap to count for this process.
-    let swap = status.lines().find(|l| l.starts_with("VmSwap:")).and_then(kb).map_or(0, |s| s);
-    Some(anon + swap)
+    match status.lines().find(|l| l.starts_with("VmSwap:")).and_then(kb) {
+        Some(swap) => Some(anon + swap),
+        None => Some(anon),
+    }
 }
 
 /// `/proc/<pid>/cmdline`: NUL-separated args.

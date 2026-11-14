@@ -192,7 +192,10 @@ mod the_pool_fits_the_host {
     /// What the engine holds at `pool` by the plan's own cost (weights, the prompt cache, each
     /// sequence's compute floor and the measured per-token cost with its compute rate).
     fn engine_bytes(fp: &ModelFootprint, pool: u64) -> u64 {
-        let per_token = fp.kv_per_token + fp.compute.bytes_per_token().map_or(0, |rate| rate);
+        let per_token = match fp.compute.bytes_per_token() {
+            Some(rate) => fp.kv_per_token + rate,
+            None => fp.kv_per_token,
+        };
         fp.weights_bytes + CACHE_MIB * MIB + u64::from(SEQUENCES) * fp.compute_buffer_per_lane() + pool * per_token
     }
 

@@ -407,7 +407,9 @@ impl ModelFootprint {
         let after_weights = usable_bytes.saturating_sub(self.weights_bytes);
         let compute_floor = self.compute_buffer_per_lane();
         let after_compute = after_weights.saturating_sub(compute_floor.saturating_mul(l));
-        let fits = |per_token_cost: u64| u32::try_from((after_compute / l) / per_token_cost.max(1)).map_or(u32::MAX, |w| w);
+        // kv_per_token > 0 here (zero returned above), so every per-token cost is nonzero; a fit
+        // past the token width saturates there.
+        let fits = |per_token_cost: u64| ((after_compute / l) / per_token_cost).min(u64::from(u32::MAX)) as u32;
         match self.compute.bytes_per_token() {
             Some(rate) => fits(self.kv_per_token.saturating_add(rate)).min(self.context_window),
             // No measured compute rate: no window-scaled reserve is sized, so the window is the
@@ -466,10 +468,11 @@ impl ModelFootprint {
     /// window-scales. With no measured rate ([`ComputeRate::Unknown`]) only the floor is
     /// reserved, and the plan serves the minimum window (`window_within`).
     pub fn prefill_compute_reserve(&self, served_window: u32, lanes: u32) -> u64 {
-        let compute_rate = self.compute.bytes_per_token().map_or(0, |rate| rate);
-        self.compute_buffer_per_lane()
-            .saturating_add(compute_rate.saturating_mul(served_window as u64))
-            .saturating_mul(lanes.max(1) as u64)
+        let per_lane = match self.compute.bytes_per_token() {
+            Some(rate) => self.compute_buffer_per_lane().saturating_add(rate.saturating_mul(served_window as u64)),
+            None => self.compute_buffer_per_lane(),
+        };
+        per_lane.saturating_mul(lanes.max(1) as u64)
     }
 
     /// The PEAK on-device residency serving can hit — [`resident_bytes`] (weights +

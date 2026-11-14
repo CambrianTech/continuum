@@ -532,7 +532,7 @@ mod tests {
         assert!((35_000..38_000).contains(&per_token), "{per_token} B/token");
         // Fixture records: readings a minute apart, the last one the record's value.
         let record = |readings: &[u64]| MeasuredCost {
-            per_token_bytes: readings.last().copied().map_or(0, |v| v),
+            per_token_bytes: *readings.last().expect("test: a fixture record has readings"), // expect: every fixture passes at least one reading
             readings: readings.iter().enumerate().map(|(i, v)| (i as u64 * SAMPLE_EVERY_MS, *v)).collect(),
             ..Default::default()
         };

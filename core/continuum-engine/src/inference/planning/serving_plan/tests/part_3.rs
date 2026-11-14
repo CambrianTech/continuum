@@ -149,7 +149,8 @@ use super::*;
             demand.with_requirements(vec![LaneRequirement::wished(uuid::Uuid::new_v4(), test_tokens(typical), QUARTER_GROWTH)])
         };
         let d = ServingDemand::new(4, Some(505_342)).with_sent_tokens(Some(30_000));
-        assert_eq!(grown(d.clone(), 30_000).window_target(), 37_500, "sent grown by the measured 5/4, not the untrimmed 505k");
+        let quarter = grown(ServingDemand::new(4, Some(505_342)).with_sent_tokens(Some(30_000)), 30_000);
+        assert_eq!(quarter.window_target(), 37_500, "sent grown by the measured 5/4, not the untrimmed 505k");
         assert_eq!(d.window_target(), 30_000, "an unmeasured growth adds nothing");
         // The M5's boot, 2026-09-19 19:37Z: peak 144,891 (one prompt, ever), typical 51,242.
         let m5 = grown(ServingDemand::new(5, Some(505_342)).with_sent_tokens(Some(144_891)).with_sent_median(Some(51_242)), 51_242);

@@ -106,7 +106,7 @@ crate::action_command! {
                 policy.decisions.retain(|d| d.peer != peer);
                 if let Some(level) = Option::<TrustLevel>::from(change) {
                     let reason = p.reason.clone().filter(|r| !r.trim().is_empty()).ok_or_else(|| {
-                        CommandError::Invalid("access/set: a decision needs a reason (it is shown wherever it is read)".into())
+                        CommandError::Invalid("a decision needs a reason (it is shown wherever it is read)".into())
                     })?;
                     policy.decisions.push(AccessDecision {
                         peer,
@@ -118,7 +118,7 @@ crate::action_command! {
                 }
             }
             (None, None) => {}
-            (Some(_), None) | (None, Some(_)) => return Err(CommandError::Invalid("access/set: a decision needs both peer and level".into())),
+            (Some(_), None) | (None, Some(_)) => return Err(CommandError::Invalid("a decision needs both peer and level".into())),
         }
         access_decision::store(policy.clone()).map_err(CommandError::Internal)?;
         let rank = access_decision::local_cognitive_rank();

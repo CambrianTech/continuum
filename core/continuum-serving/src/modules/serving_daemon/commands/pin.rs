@@ -118,7 +118,7 @@ crate::action_command! {
         let snap = this.catalog.snapshot();
         let live = snap.get(&p.model_id).ok_or_else(|| {
             CommandError::NotFound(format!(
-                "unknown model id '{}' — call models/list to see the live universe",
+                "unknown model id '{}': it is not in the live universe of models",
                 p.model_id
             ))
         })?;
@@ -146,8 +146,8 @@ crate::action_command! {
                     "is in the catalog but not downloaded"
                 };
                 return Err(CommandError::Denied(format!(
-                    "model '{}' {} — run models/pull '{}' first, then pin it",
-                    p.model_id, why, p.model_id
+                    "model '{}' {}: download it first, then pin it",
+                    p.model_id, why
                 )));
             }
         };
@@ -332,7 +332,7 @@ mod tests {
     }
 
     // what this catches: a model with no servable artifact (plan None) is denied
-    // with the models/pull fix named — never pinned.
+    // with the download named as the next move — never pinned.
     #[tokio::test]
     async fn not_downloaded_is_denied() {
         let (catalog, id) = catalog_and_id();

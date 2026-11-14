@@ -66,7 +66,7 @@ impl Growth {
             Self::Measured { tail, typical } => {
                 let grown = u64::from(tokens.get()) * u64::from(tail.get()) / u64::from(typical.get());
                 // Past the token width is past any window: saturate there.
-                let grown = u32::try_from(grown).map_or(u32::MAX, |g| g);
+                let grown = grown.min(u64::from(u32::MAX)) as u32;
                 Tokens::new(grown).map_or(tokens, |g| g.max(tokens))
             }
         }
