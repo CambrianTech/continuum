@@ -215,7 +215,9 @@ impl std::fmt::Display for PathSecurityError {
                         path, workspace
                     )
                 } else {
-                    write!(f, "No file at '{}'. {}", path, lead)
+                    // The workspace is named here too: a miss in another checkout than she
+                    // believes must say which one it looked in (cards c8546b52, 566e390e).
+                    write!(f, "No file at '{}' under workspace '{}'. {}", path, workspace, lead)
                 }
             }
         }

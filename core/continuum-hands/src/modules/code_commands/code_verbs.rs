@@ -130,14 +130,18 @@ impl ActionCommand for CodeList {
 /// swallow; the miss still fails).
 pub(super) fn teach_layout_on_miss(engine: &FileEngine, requested: &str, original: &str) -> CommandError {
     match top_level_dir_names(engine) {
+        // The root is named whole, so a miss in another checkout than she believes is visible
+        // in the refusal itself (cards c8546b52, 566e390e).
         Some(dirs) if !dirs.is_empty() => CommandError::Invalid(format!(
-            "'{requested}' not found in this workspace. Top-level directories here: {}. \
-             Paths are relative to the root — don't assume source lives under `src/`; \
+            "'{requested}' not found in {}. Top-level directories there: {}. \
+             Paths are relative to that root — don't assume source lives under `src/`; \
              pick one of these or drill in with code/list <dir>.",
+            engine.workspace_root().display(),
             dirs.join(", ")
         )),
         Some(_) => CommandError::Invalid(format!(
-            "'{requested}' not found and the workspace root has no directories ({original})"
+            "'{requested}' not found and the workspace root {} has no directories ({original})",
+            engine.workspace_root().display()
         )),
         // Root itself couldn't be listed — never invent a layout, surface the real error.
         None => CommandError::Internal(original.to_string()),
@@ -501,6 +505,7 @@ pub(super) fn shell_response(s: &crate::code::shell_session::ExecutionState) -> 
     ShellExecuteResponse {
         execution_id: s.id.clone(),
         status: s.status.clone(),
+        cwd: s.cwd.display().to_string(),
         stdout: Some(s.stdout_lines.join("\n")),
         stderr: Some(s.stderr_lines.join("\n")),
         exit_code: s.exit_code,

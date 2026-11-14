@@ -131,6 +131,89 @@
     use crate::sdk_codegen::{AccessLevel, Ctx};
     use dashmap::DashMap;
 
+    // what this catches (cards c8546b52, 566e390e): her shell, her file verbs and her git standing
+    // in different checkouts. Atlas's shell stood in her card's worktree while read_file read her
+    // home workspace, and Aris's relative edit and code/list missed a file she had just read in
+    // her card's checkout (the M5, 2026-11-14). In a card claim's hands every verb resolves
+    // against ONE root, the shell's cwd is that root and says so, and her other hands' miss names
+    // the root it looked in.
+    #[tokio::test]
+    async fn every_verb_of_a_card_claims_hands_acts_in_its_one_checkout() {
+        let (home, card) = (tempfile::tempdir().expect("test: home"), tempfile::tempdir().expect("test: card"));
+        for dir in [home.path(), card.path()] {
+            let ok = std::process::Command::new("git").current_dir(dir).args(["init", "-q"]).status().expect("test: git").success();
+            assert!(ok, "git init in {}", dir.display());
+        }
+        std::fs::create_dir_all(card.path().join("core/deploy_spawn")).expect("test: dir");
+        std::fs::write(card.path().join("core/deploy_spawn/mod.rs"), "fn spawn() {}\n").expect("test: file");
+        let state = Arc::new(CodeState::new(
+            Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
+            tokio::runtime::Handle::current(),
+            Arc::new(crate::test_acting::TestActing),
+        ));
+        let her = uuid::Uuid::new_v4();
+        let resident = || crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(her));
+        let claim = crate::identity::hands_context::HandsContext::for_claim(her, uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let at_home = Ctx { caller: Some(resident()), ..Ctx::default() };
+        let at_card = Ctx { caller: Some(resident().in_hands(claim)), ..Ctx::default() };
+        let bind = CodeCreateWorkspace { state: state.clone() };
+        for (ctx, root) in [(&at_home, home.path()), (&at_card, card.path())] {
+            let params = CodeCreateWorkspaceParams {
+                workspace_root: root.to_string_lossy().into_owned(),
+                read_roots: Vec::new(),
+                path_prepend: Vec::new(),
+                refuse_inert_edits: false,
+            };
+            bind.run(ctx, params).await.expect("test: hands bound");
+        }
+        let canon = |p: &std::path::Path| std::fs::canonicalize(p).expect("test: canonical");
+        let root = checkout_root_for(&state, &at_card).await.expect("test: the claim's checkout");
+        assert_eq!(canon(root.path()), canon(card.path()), "the claim's hands stand in the card's checkout");
+
+        // The shell opens at that root, and its result names it.
+        let shell = ensure_shell(&state, &at_card).await.expect("test: shell");
+        let cwd = state.shell_sessions.get(&shell).map(|s| s.cwd().to_path_buf()).expect("test: a session");
+        assert_eq!(canon(&cwd), canon(root.path()), "the shell's cwd is the checkout her file verbs resolve against");
+
+        let relative = "core/deploy_spawn/mod.rs";
+        let read = CodeRead { state: state.clone() }
+            .run(&at_card, CodeReadParams { file_path: relative.into(), start_line: None, end_line: None })
+            .await
+            .expect("a relative read resolves in the card's checkout");
+        assert!(read.content.as_deref().is_some_and(|c| c.contains("spawn")), "{read:?}");
+        let edit = edit_call(serde_json::json!({
+            "file_path": relative, "edit_mode": {"type": "search_replace", "search": "spawn", "replace": "launch"}
+        }))
+        .expect("test: edit params");
+        CodeEdit { state: state.clone() }.run(&at_card, edit).await.expect("a relative edit lands in the card's checkout");
+        assert!(std::fs::read_to_string(card.path().join(relative)).expect("test: edited").contains("launch"));
+        let listed = CodeList { state: state.clone() }
+            .run(&at_card, CodeListParams { path: Some("core/deploy_spawn".into()), include_hidden: None })
+            .await
+            .expect("a relative list resolves in the card's checkout");
+        assert!(listed.entries.iter().any(|e| e.name == "mod.rs"), "{listed:?}");
+        let found = CodeSearch { state: state.clone() }
+            .run(&at_card, CodeSearchParams { pattern: "launch".into(), file_glob: None, max_results: None })
+            .await
+            .expect("search runs in the card's checkout");
+        assert!(found.matches.iter().any(|m| m.file_path.ends_with("mod.rs")), "{found:?}");
+        let status = crate::commands::code::git::status::CodeGitStatus { state: state.clone() }
+            .run(&at_card, crate::commands::code::git::status::GitStatusParams {})
+            .await
+            .expect("git status runs in the card's checkout");
+        assert!(status.untracked.iter().any(|f| f.starts_with("core")), "git sees the card's checkout: {status:?}");
+
+        // Her home hands are another checkout, and a miss there says which.
+        let missed = CodeRead { state: state.clone() }
+            .run(&at_home, CodeReadParams { file_path: relative.into(), start_line: None, end_line: None })
+            .await
+            .expect_err("the card's file is not in her home workspace");
+        let home_root = checkout_root_for(&state, &at_home).await.expect("test: home checkout");
+        assert!(missed.to_string().contains(&home_root.to_string()), "the miss names the root it looked in: {missed}");
+    }
+
+
     fn edit_call(v: serde_json::Value) -> Result<CodeEditParams, crate::sdk_codegen::ArgumentsRefusal> {
         crate::runtime::CommandRequest::<CodeEditParams>::decode(&v).map(|req| req.params)
     }

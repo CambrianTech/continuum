@@ -159,6 +159,7 @@ impl ShellSession {
         let state = Arc::new(Mutex::new(ExecutionState {
             id: execution_id.clone(),
             command: command.to_string(),
+            cwd: self.cwd.clone(),
             status: ShellExecutionStatus::Running,
             stdout_lines: Vec::new(),
             stderr_lines: Vec::new(),
@@ -292,6 +293,7 @@ impl ShellSession {
                     return Ok(ShellExecuteResponse {
                         execution_id: s.id.clone(),
                         status: s.status.clone(),
+                        cwd: s.cwd.display().to_string(),
                         stdout: Some(s.stdout_lines.join("\n")),
                         stderr: Some(s.stderr_lines.join("\n")),
                         exit_code: s.exit_code,

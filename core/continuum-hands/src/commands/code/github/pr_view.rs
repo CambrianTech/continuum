@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{run_gh_owned, workspace_root_for, GhRunError};
+use super::{run_gh_owned, checkout_root_for, GhRunError};
 use crate::modules::code::CodeState;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
@@ -176,7 +176,7 @@ crate::action_command! {
     params: GithubPrViewParams,
     output: GithubPrViewResult,
     run(this, ctx, p) => {
-        let root = workspace_root_for(&this.state, ctx).await?;
+        let root = checkout_root_for(&this.state, ctx).await?;
         Ok(view_pull_request(&root, p.number).await?)
     }
 }

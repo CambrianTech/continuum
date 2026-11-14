@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{run_gh, workspace_root_for};
+use super::{run_gh, checkout_root_for};
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
 
@@ -43,7 +43,7 @@ crate::action_command! {
         if p.title.trim().is_empty() {
             return Err(CommandError::Invalid("code/github/issue-create: 'title' is required".into()));
         }
-        let root = workspace_root_for(&this.state, ctx).await?;
+        let root = checkout_root_for(&this.state, ctx).await?;
         let mut args = vec![
             "issue".to_string(), "create".to_string(),
             "--title".to_string(), p.title,
@@ -53,7 +53,7 @@ crate::action_command! {
             args.push("--label".to_string());
             args.push(labels);
         }
-        let url = run_gh(root, args).await?;
+        let url = run_gh(root.into_path(), args).await?;
         Ok(GithubIssueCreateResult { url })
     }
 }

@@ -569,15 +569,27 @@ pub(super) async fn run_self_cycle(
     }
     let forwarder =
         spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
+    // HER HANDS ARE HER HELD CARD'S, on this turn as on every other (cards c8546b52, 566e390e).
+    // This musing turn drove with no hands bound, so it acted in her home workspace while her
+    // message turns acted in her card's checkout and her map and receipts still named the card:
+    // Aris read and edited `deploy_spawn/mod.rs` in her card's checkout, then her next edit and
+    // `code/list` of the same relative path ran at home and found nothing (the M5, 2026-11-14).
+    // Driven through the ONE binding the message, initiative and work turns use; with no card
+    // held it is her default hands, as before.
+    let stimulus = burst.rendered.clone();
     let (step, _turn_metrics, generation_receipts) = {
-        let outcome = crate::cognition::act_observe::drive_to_settle_with_input(
+        let (outcome, _, sync) = crate::persona::card_hands::drive_in_held_card(
             &cycle,
+            ctx.identity.peer_id.as_uuid(),
+            &ctx.identity.agent_name,
+            &stimulus,
             burst,
-            LIVE_MAX_ACTS,
             crate::cognition::workspace::TurnFraming::self_thread(false),
+            LIVE_MAX_ACTS,
             conversation,
         )
         .await;
+        sync.run().await;
         crate::cognition::act_observe::SettleStep::from_settled(outcome)
     };
     cycle.set_token_sink(None);

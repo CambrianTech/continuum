@@ -62,6 +62,50 @@ impl HandsKey {
     }
 }
 
+/// WHERE ONE SET OF HANDS STANDS: the absolute checkout every relative path of these hands,
+/// their shell's working directory and every git or gh verb of theirs resolves against (cards
+/// c8546b52, 566e390e). It is read from the one owner of that fact, the hands' file engine
+/// (`code_commands::checkout_root_of`), so no verb can resolve against a root of its own: Aris's
+/// relative `code/list` ran in her home workspace while her map and receipts named her card's
+/// checkout (the M5, 2026-11-14), because one of her turns acted with other hands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutRoot(std::path::PathBuf);
+
+impl CheckoutRoot {
+    /// The root `engine` stands at: its workspace, fixed for the hands' life.
+    pub(crate) fn of(engine: &crate::code::FileEngine) -> Self {
+        Self(engine.workspace_root())
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    pub fn into_path(self) -> std::path::PathBuf {
+        self.0
+    }
+}
+
+impl std::ops::Deref for CheckoutRoot {
+    type Target = std::path::Path;
+
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for CheckoutRoot {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CheckoutRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.display().fmt(f)
+    }
+}
+
 /// Hands admission as a dispatch hook: a caller bound to a context (a card claim's turn, an
 /// eval, a fork) is ADMITTED to its hands for the command's whole life, foreground or
 /// background, and the command runs as that admitted work, so a child process it starts keeps

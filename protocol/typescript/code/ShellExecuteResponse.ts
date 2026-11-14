@@ -9,6 +9,12 @@ import type { ShellExecutionStatus } from "./ShellExecutionStatus";
  */
 export type ShellExecuteResponse = { execution_id: string, status: ShellExecutionStatus, 
 /**
+ * The absolute directory the command ran in: the checkout these hands stand at, the root
+ * her file verbs resolve relative paths against too. Named on every result, so a command
+ * run in another checkout than she believes is visible (cards c8546b52, 566e390e).
+ */
+cwd: string, 
+/**
  * Full stdout (only present when `wait: true` and execution completed).
  */
 stdout?: string, 

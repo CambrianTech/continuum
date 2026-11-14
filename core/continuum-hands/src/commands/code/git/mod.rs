@@ -19,12 +19,11 @@
 //! with the workspace root resolved and the `DashMap` guard dropped FIRST, so a git never
 //! holds a shard lock across I/O, and a cancelled command ends its git and what it started.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::modules::code::CodeState;
-use crate::modules::code_commands::ensure_engine;
-use crate::sdk_codegen::{CommandError, Ctx, DynCommand};
+use crate::sdk_codegen::{CommandError, DynCommand};
 
 pub mod add;
 pub mod apply;
@@ -48,18 +47,9 @@ use push::CodeGitPush;
 use rebase::CodeGitRebase;
 use status::CodeGitStatus;
 
-/// Resolve the caller's workspace root, provisioning the engine on first use.
-/// Returns an OWNED [`PathBuf`] so the `DashMap` ref guard is dropped before the
-/// caller awaits its git — never a lock held across a shell-out.
-pub(crate) async fn workspace_root_for(state: &CodeState, ctx: &Ctx) -> Result<PathBuf, CommandError> {
-    let key = crate::modules::code_commands::hands_of(state, ctx);
-    ensure_engine(state, &key).await?;
-    let engine = state
-        .file_engines
-        .get(&key.map_key())
-        .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?;
-    Ok(engine.workspace_root())
-}
+/// Where the caller's hands stand: the one checkout root every verb of theirs resolves
+/// against, owned so the `DashMap` guard is dropped before a git is awaited.
+pub(crate) use crate::modules::code_commands::checkout_root_for;
 
 /// The commit her branch ends at now.
 pub(crate) async fn head(root: &Path) -> Result<String, CommandError> {

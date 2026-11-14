@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::card_verdict::{linked_cards, verdict_at_head, BoardsUnread, LinkedReview};
 use super::merge_gate::{judge, refused, MergeRefusal};
 use super::pr_head::{read_at_head, PrAddress, PrAtHead};
-use super::{run_gh_owned, workspace_root_for};
+use super::{run_gh_owned, checkout_root_for};
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::Ctx;
 
@@ -114,7 +114,7 @@ crate::action_command! {
     params: GithubPrMergeParams,
     output: GithubPrMergeResult,
     run(this, ctx, p) => {
-        let root = workspace_root_for(&this.state, ctx).await?;
+        let root = checkout_root_for(&this.state, ctx).await?;
         let pr = read_at_head(&root, &p.address()).await?;
         let review = linked_review(&this.state, ctx, &pr).await.map_err(|cause| refused(cause, &p))?;
         let merged_review = match &review {

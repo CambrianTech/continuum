@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::workspace_root_for;
+use super::checkout_root_for;
 use crate::code::git_bridge;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
@@ -49,7 +49,7 @@ crate::action_command! {
         }
         // Hers, author and committer: the acting peer, resolved before her workspace is touched.
         let actor = crate::modules::code_commands::engine_err::acting_git_actor(&this.state, ctx)?;
-        let root = workspace_root_for(&this.state, ctx).await?;
+        let root = checkout_root_for(&this.state, ctx).await?;
         let hash = git_bridge::git_commit(&root, &actor, &p.message).await.map_err(CommandError::Internal)?;
         Ok(GitCommitResult { hash })
     }
