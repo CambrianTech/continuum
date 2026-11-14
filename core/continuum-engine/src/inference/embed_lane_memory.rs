@@ -42,9 +42,39 @@ pub(crate) async fn lease(bytes: ContextBytes, texts: usize) -> Result<Vec<Lease
     Ok(guards)
 }
 
-/// One pool's lease, retried once when the authority publishes room for it (bounded by one of its
-/// own ticks), then refused with the availability it measured, never an allocation that would
-/// decode to degenerate zeros.
+/// What the resource authority answered a refused lease's wait with. Only the authority decides
+/// it; no elapsed time does (CONTINUUM-ENGINE.md, RTOS rule 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoomOutcome {
+    /// The authority's published board covers the need: `available` governed bytes for this
+    /// consumer. The one outcome a second attempt runs on.
+    Published { available: u64 },
+    /// The authority's publisher is gone: nothing will ever publish room again. Terminal.
+    AuthorityClosed,
+}
+
+/// Wait for the authority to publish room (`room` reads it: `Some(available)` once the board
+/// covers the need), or to close. Checked before the first wait, so room published between the
+/// refusal and this call is seen. While the authority publishes boards that still fall short, or
+/// publishes nothing, this stays pending: the caller's own bound (her act) ends it, never a timer
+/// here.
+async fn await_room<T>(changes: &mut tokio::sync::watch::Receiver<T>, mut room: impl FnMut() -> Option<u64>) -> RoomOutcome {
+    loop {
+        // Read OUTSIDE any borrow of the board: the authority publishes while holding its
+        // governor lock, which `room` takes.
+        if let Some(available) = room() {
+            return RoomOutcome::Published { available };
+        }
+        if changes.changed().await.is_err() {
+            return RoomOutcome::AuthorityClosed;
+        }
+    }
+}
+
+/// One pool's lease. Refused, it waits for the authority to publish room ([`await_room`]) and tries
+/// once more only then; a closed authority is a refusal. A second refusal (another consumer took
+/// the room first) reports the availability it measured, never an allocation that would decode to
+/// degenerate zeros.
 async fn lease_part(daemon: &std::sync::Arc<ResourceDaemon>, pool: ResourceKind, bytes: u64, floor: u64, texts: usize) -> Result<LeaseGuard, String> {
     // derived-or-floor: a SIGKILL backstop only; the RAII guard frees the bytes on drop, and an
     // embedding finishes in under a second, so the TTL never decides a live lease.
@@ -88,28 +118,33 @@ async fn lease_part(daemon: &std::sync::Arc<ResourceDaemon>, pool: ResourceKind,
     };
     let leased = match attempt(0)? {
         Ok(guard) => Ok(guard),
-        Err(_) => {
-            // Woken by the change that makes room. The authority's own tick bounds it: a transient
-            // over-commit is relieved within one, so past it the refusal below stands.
-            let room = async {
-                while daemon.available_for(EMBED_LANE_CONSUMER_ID, pool) < bytes {
-                    if changes.changed().await.is_err() {
-                        return; // the authority closed: the second attempt reports it
-                    }
-                }
-            };
-            let bound = crate::runtime::daemon::Daemon::cadence(daemon.as_ref());
-            // Room published or a tick without it: either way the second attempt decides.
-            let published = tokio::time::timeout(bound, room).await.is_ok();
+        Err(refused_at) => {
+            let waited = std::time::Instant::now();
+            let outcome = await_room(&mut changes, || {
+                let available = daemon.available_for(EMBED_LANE_CONSUMER_ID, pool);
+                (available >= bytes).then_some(available)
+            })
+            .await;
             continuum_base::probe!(
                 class = "embed.vram.room_wait",
                 pool = ?pool,
                 requested = bytes,
-                published = published,
-                bound_ms = bound.as_millis() as u64,
-                "a refused embedding lease waited on the authority for room before its second attempt"
+                refused_at = refused_at,
+                outcome = ?outcome,
+                waited_ms = waited.elapsed().as_millis() as u64,
+                "a refused embedding lease waited on the authority's own answer"
             );
-            attempt(1)?
+            match outcome {
+                RoomOutcome::Published { .. } => attempt(1)?,
+                RoomOutcome::AuthorityClosed => {
+                    return Err(format!(
+                        "embed: {pool:?} lease refused ({} MiB requested, {} MiB governed-available) and the \
+                         resource authority closed while it waited: refusing to embed ungoverned",
+                        bytes / (1024 * 1024),
+                        refused_at / (1024 * 1024),
+                    ));
+                }
+            }
         }
     };
     leased.map_err(|available| {
@@ -159,5 +194,40 @@ mod tests {
             .expect("test: join");
         assert!(leased.is_ok(), "the room the release made is leased: {:?}", leased.err());
         assert_eq!(released_at.elapsed(), std::time::Duration::ZERO, "granted by the release itself, never a timer");
+    }
+
+    // what this catches (Codex on #5991): the wait advanced the lease on elapsed time (a timeout
+    // whose expiry still ran the second attempt) and read the authority's closure as "published".
+    // Closure is a terminal outcome; boards that still fall short, or no board at all, keep the
+    // wait pending however long the clock runs; only a board with room answers Published.
+    #[tokio::test(start_paused = true)]
+    async fn the_room_wait_answers_only_the_authoritys_publication_or_its_closure() {
+        let short = || None;
+
+        let (authority, mut changes) = tokio::sync::watch::channel(());
+        drop(authority);
+        assert_eq!(await_room(&mut changes, short).await, RoomOutcome::AuthorityClosed, "a closed authority is terminal, never room");
+
+        let (authority, mut changes) = tokio::sync::watch::channel(());
+        let silent = await_room(&mut changes, short);
+        tokio::pin!(silent);
+        assert!(futures::poll!(silent.as_mut()).is_pending());
+        tokio::time::advance(std::time::Duration::from_secs(3600)).await;
+        assert!(futures::poll!(silent.as_mut()).is_pending(), "a silent authority: no elapsed time answers for it");
+        authority.send_replace(());
+        assert!(futures::poll!(silent.as_mut()).is_pending(), "a board that still falls short keeps it waiting");
+
+        let room = std::sync::atomic::AtomicU64::new(0);
+        let reads = || match room.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => None,
+            available => Some(available),
+        };
+        let mut changes = authority.subscribe();
+        let waiting = await_room(&mut changes, reads);
+        tokio::pin!(waiting);
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        room.store(70, std::sync::atomic::Ordering::SeqCst);
+        authority.send_replace(());
+        assert_eq!(waiting.await, RoomOutcome::Published { available: 70 }, "the publication with room answers, with its measure");
     }
 }
