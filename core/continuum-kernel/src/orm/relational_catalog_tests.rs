@@ -2,6 +2,44 @@
 
 use super::*;
 
+/// Validate the historical rejection timestamps before designing their one-time transfer.
+#[tokio::test]
+#[ignore = "requires ORM_DECLARATION_DB"]
+async fn validate_review_rejection_timestamps_read_only() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::{ConnectionTrait, TransactionTrait, sea_query::{Alias, Expr, Order, Query}};
+    let path = std::env::var("ORM_DECLARATION_DB")?;
+    let db = sea_orm::Database::connect(format!("sqlite://{}?mode=ro", path.replace('\\', "/"))).await?;
+    let tx = db.begin().await?;
+    let mut cursor: Option<String> = None;
+    let (mut valid, mut invalid) = (0_u64, 0_u64);
+    loop {
+        let mut query = Query::select();
+        query.columns([Alias::new("id"), Alias::new("rejected_at_ms")])
+            .from(Alias::new("staged_credit"))
+            .and_where(Expr::col(Alias::new("rejected_at_ms")).is_not_null())
+            .order_by(Alias::new("id"), Order::Asc).limit(128);
+        if let Some(after) = &cursor {
+            query.and_where(Expr::col(Alias::new("id")).gt(after.as_str()));
+        }
+        let rows = tx.query_all(tx.get_database_backend().build(&query)).await?;
+        if rows.is_empty() { break; }
+        for row in rows {
+            let id: String = row.try_get("", "id")?;
+            let timestamp: String = row.try_get("", "rejected_at_ms")?;
+            match timestamp.parse::<u64>().ok().and_then(|value| i64::try_from(value).ok()) {
+                Some(_) => valid += 1,
+                None => { invalid += 1; println!("INVALID_REJECTION_TIMESTAMP id={id}"); }
+            }
+            cursor = Some(id);
+        }
+    }
+    tx.rollback().await?;
+    db.close().await?;
+    println!("REJECTION_TIMESTAMP_VALIDATION valid={valid} invalid={invalid}");
+    if invalid != 0 { return Err("invalid rejection timestamps; row identities printed above".into()); }
+    Ok(())
+}
+
 /// Aggregate scalar storage classes in the database; never load credit bodies.
 #[tokio::test]
 #[ignore = "requires ORM_DECLARATION_DB, ORM_DECLARATION_COLLECTION, ORM_DECLARATION_COLUMN"]
