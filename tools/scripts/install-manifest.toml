@@ -72,6 +72,19 @@ type = "curl-sh"
 url = "https://raw.githubusercontent.com/CambrianTech/airc/canary/install.ps1"
 
 [[module]]
+id = "onnxruntime-cpu"
+order = 69
+tier = 2
+platforms = ["windows"]
+accept = "test-path ~/.continuum/lib/onnxruntime.dll"
+[module.sources.windows]
+type = "archive"
+url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxruntime-win-x64-1.23.0.zip"
+version = "1.23.0"
+sha256 = "72c23470310ec79a7d42d27fe9d257e6c98540c73fa5a1db1f67f538c6c16f2f"
+extract = "strip-top-dir"
+
+[[module]]
 id = "onnxruntime"
 order = 70
 tier = 2
@@ -84,7 +97,6 @@ url = "https://github.com/microsoft/onnxruntime/releases/download/v1.23.0/onnxru
 version = "1.23.0"
 sha256 = "ec423825a8782c0bbd5cbfabcd984363fbb99ff084afae128719690d4db7f8d5"
 extract = "strip-top-dir"
-
 # ── Tier 0: base ────────────────────────────────────────────────────────────
 [[module]]
 id = "rust"
