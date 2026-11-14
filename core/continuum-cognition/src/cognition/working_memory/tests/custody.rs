@@ -359,7 +359,7 @@ fn an_unsaved_result_keeps_its_bytes_through_a_shed_and_restore() {
     let whole = |m: &WorkingMemory| m.recent_results_messages().iter().any(|r| r.ends_with(&unsaved));
     assert!(whole(&wm), "kept whole through the shed");
     assert!(
-        wm.recent_results_messages().join("\n").contains(r#"ring-test"}) — collapsed"#),
+        wm.recent_results_messages().join("\n").contains(r#"a1b2c3d4e5f60718"}) — collapsed"#),
         "the saved ones around it collapsed"
     );
     let restored = WorkingMemory::new(8);
