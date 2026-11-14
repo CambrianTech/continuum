@@ -517,41 +517,50 @@ impl EndpointTransition {
             .map(|(&slot, &key)| (slot, key))
             .collect();
         residents.sort_unstable_by_key(|(slot, _)| *slot);
-        for (slot, key) in residents {
-            verify_engine()?;
-            pool.note_page_lost(&key);
-            let mut save = CheckpointSave {
-                endpoint: self.endpoint.clone(),
-                pending: true,
-            };
-            match kv_page_action(client, root, slot, &key, "save").await {
-                PageOutcome::Completed => {
-                    verify_engine()?;
-                    save.pending = false;
-                    pool.note_saved(key);
-                }
-                PageOutcome::Rejected => {
-                    save.pending = false;
-                    return Err(CheckpointFailure::Save(format!("checkpoint save rejected for slot {slot}")));
-                }
-                PageOutcome::Unresolved(unresolved) => {
-                    // The engine kept working without a receipt. This checkpoint's error does not
-                    // prove the engine is retired (Codex's follow-up on #5772), and the writer
-                    // cannot be handed to the request, so the save stays PENDING: its drop below
-                    // quarantines the endpoint, and no turn is admitted until a verified
-                    // replacement. The request itself stays owned by the endpoint until its
-                    // receipt. The page stays lost (noted above): no half-written restore.
-                    unresolved.hold(());
-                    return Err(CheckpointFailure::Save(format!(
-                        "checkpoint save unresolved for slot {slot}: the engine kept working without a receipt; endpoint quarantined"
-                    )));
-                }
-                PageOutcome::Uncertain => {
-                    return Err(CheckpointFailure::Save(format!(
+        // Every resident's save is issued at once and joined on its own receipt: the saves are
+        // independent, so the core adds no serial wait of its own and the stop costs what the
+        // engine's schedule of them costs. The fork pinned today (cd2e16d87) runs page tasks one at
+        // a time on its task loop (tools/server/server-queue.cpp:138-153, the save itself at
+        // server-context.cpp:2809/2960), so there they queue in the engine, and an engine that
+        // overlaps them makes the stop its largest save with no change here.
+        let verify_engine = &verify_engine;
+        let saves = residents.into_iter().map(|(slot, key)| {
+            let endpoint = self.endpoint.clone();
+            async move {
+                verify_engine()?;
+                pool.note_page_lost(&key);
+                let mut save = CheckpointSave { endpoint, pending: true };
+                match kv_page_action(client, root, slot, &key, "save").await {
+                    PageOutcome::Completed => {
+                        verify_engine()?;
+                        save.pending = false;
+                        pool.note_saved(key);
+                        Ok(())
+                    }
+                    PageOutcome::Rejected => {
+                        save.pending = false;
+                        Err(CheckpointFailure::Save(format!("checkpoint save rejected for slot {slot}")))
+                    }
+                    PageOutcome::Unresolved(unresolved) => {
+                        // The engine kept working without a receipt. This checkpoint's error does
+                        // not prove the engine is retired (Codex's follow-up on #5772), and the
+                        // writer cannot be handed to the request, so the save stays PENDING: its
+                        // drop quarantines the endpoint, and no turn is admitted until a verified
+                        // replacement. The request itself stays owned by the endpoint until its
+                        // receipt. The page stays lost (noted above): no half-written restore.
+                        unresolved.hold(());
+                        Err(CheckpointFailure::Save(format!(
+                            "checkpoint save unresolved for slot {slot}: the engine kept working without a receipt; endpoint quarantined"
+                        )))
+                    }
+                    PageOutcome::Uncertain => Err(CheckpointFailure::Save(format!(
                         "checkpoint save completion uncertain for slot {slot}; endpoint quarantined"
-                    )));
+                    ))),
                 }
             }
+        });
+        for saved in futures::future::join_all(saves).await {
+            saved?;
         }
         verify_engine()
     }

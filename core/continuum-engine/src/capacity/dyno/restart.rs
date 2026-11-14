@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Dyno 11: a restart with resident minds. What each mind pays to act again after serving comes
 //! down and up, from what the M5 recorded on 2026-11-13/14 (`fixtures/dyno/2026-11-13-restart.json`):
 //! a mind whose page is on disk restores it (bytes / the engine's measured restore rate), a mind
@@ -28,6 +29,22 @@ pub(crate) struct RestartDay {
     pub(crate) restore_bytes_per_ms: Receipted<u64>,
     pub(crate) save_bytes_per_ms: Receipted<u64>,
     pub(crate) store_pressure: Receipted<RecordedPressure>,
+    /// How many page saves or restores the engine runs at once (the pinned fork: one).
+    pub(crate) engine_page_lanes: Receipted<usize>,
+}
+
+/// When each job completes, issued all at once in order onto `lanes` engine lanes, each
+/// taking the next free lane: with one lane the sum, with a lane per job each its own time.
+fn completions(jobs_ms: &[u64], lanes: usize) -> Vec<u64> {
+    let mut free_at = vec![0u64; lanes.max(1)]; // max(1): an engine runs at least the job it is given
+    jobs_ms
+        .iter()
+        .map(|job| {
+            let lane = free_at.iter_mut().min().expect("test: at least one lane");
+            *lane += job;
+            *lane
+        })
+        .collect()
 }
 
 /// Where a mind's KV was when serving came down.
@@ -93,11 +110,13 @@ impl RestartDay {
     }
 
     /// A restart where each recorded mind was `at_stop[i]`, with the page store deciding by
-    /// `cold_pages` whether a paged-out mind's page survived until the stop. Restores run one at
-    /// a time (the engine restores one slot per request); re-prefills share the engine's
-    /// aggregate prefill rate equally while they run (processor sharing), so the smallest
-    /// context is warm first.
-    pub(crate) fn restart(&self, at_stop: &[AtStop], cold_pages: ColdPages) -> Restart {
+    /// `cold_pages` whether a paged-out mind's page survived until the stop. The core issues
+    /// every save at the stop and every restore at the boot at once (each mind's first act
+    /// waits on her own restore only); the engine runs them on `page_lanes` lanes, so the stop
+    /// costs the sum on one lane and the largest save on a lane each. Re-prefills share the
+    /// engine's aggregate prefill rate equally while they run (processor sharing), so the
+    /// smallest context is warm first.
+    pub(crate) fn restart(&self, at_stop: &[AtStop], cold_pages: ColdPages, page_lanes: usize) -> Restart {
         let contexts = &self.contexts_tokens.value;
         let has_page: Vec<bool> = at_stop
             .iter()
@@ -107,24 +126,27 @@ impl RestartDay {
                 AtStop::NoPage => false,
             })
             .collect();
-        let saved_bytes: u64 = contexts
+        let saves_ms: Vec<u64> = contexts
             .iter()
             .zip(at_stop)
             .filter(|(_, at)| **at == AtStop::Resident)
-            .map(|(tokens, _)| self.page_bytes(*tokens))
-            .sum();
-        let stop_save_ms = saved_bytes / self.save_bytes_per_ms.value;
+            .map(|(tokens, _)| self.page_bytes(*tokens) / self.save_bytes_per_ms.value)
+            .collect();
+        let stop_save_ms = completions(&saves_ms, page_lanes).into_iter().max().unwrap_or_default(); // unwrap_or_default: no resident, no save
 
         let mut minds: Vec<Option<MindReturn>> = vec![None; contexts.len()];
-        let mut restored_ms = 0u64;
+        let mut restoring: Vec<(usize, u64)> = Vec::new();
         let mut cold: Vec<(usize, u64)> = Vec::new();
         for (i, (tokens, page)) in contexts.iter().copied().zip(has_page).enumerate() {
             if page {
-                restored_ms += self.page_bytes(tokens) / self.restore_bytes_per_ms.value;
-                minds[i] = Some(MindReturn { how: Return::Restored, reprefilled_tokens: 0, first_act_ms: restored_ms });
+                restoring.push((i, self.page_bytes(tokens) / self.restore_bytes_per_ms.value));
             } else {
                 cold.push((i, tokens));
             }
+        }
+        let restores_ms: Vec<u64> = restoring.iter().map(|(_, ms)| *ms).collect();
+        for ((i, _), done_ms) in restoring.iter().zip(completions(&restores_ms, page_lanes)) {
+            minds[*i] = Some(MindReturn { how: Return::Restored, reprefilled_tokens: 0, first_act_ms: done_ms });
         }
         cold.sort_by_key(|(_, tokens)| *tokens);
         let (mut done_tokens, mut previous) = (0u64, 0u64);
@@ -154,13 +176,15 @@ mod tests {
     // what this catches (the M5, 2026-11-13 23:45Z deploy: the ledger restored nothing and every
     // mind's first act was a full prefill, `cold_turn cause="no_page"`): a restart that re-prefills
     // what a page on disk holds. Four recorded residents: cold, the last is acting again after
-    // ~401 s and 253,321 tokens are prefilled again; warm, ~5.6 s of restores and none, for ~13.5 s
-    // more in the stop's checkpoint.
+    // ~401 s and 253,321 tokens are prefilled again; restored on today's one-lane engine, ~5.6 s
+    // of restores and 0 tokens, for ~13.5 s of saves in the stop.
     #[test]
     fn a_restart_with_four_resident_minds_restores_instead_of_re_prefilling() {
         let day = day();
-        let cold = day.restart(&[AtStop::NoPage; 4], ColdPages::Keep);
-        let warm = day.restart(&[AtStop::Resident; 4], ColdPages::Keep);
+        let lanes = day.engine_page_lanes.value;
+        assert_eq!(lanes, 1, "the pinned fork runs one page task at a time");
+        let cold = day.restart(&[AtStop::NoPage; 4], ColdPages::Keep, lanes);
+        let warm = day.restart(&[AtStop::Resident; 4], ColdPages::Keep, lanes);
 
         assert_eq!(cold.reprefilled_tokens(), 253_321, "every mind re-prefills her whole context");
         assert!((400_000..=401_000).contains(&cold.all_acting_ms()), "cold: {} ms", cold.all_acting_ms());
@@ -170,10 +194,27 @@ mod tests {
         assert!(warm.minds.iter().all(|m| m.how == Return::Restored));
         assert!((5_000..=6_000).contains(&warm.all_acting_ms()), "warm: {} ms", warm.all_acting_ms());
         assert!((13_000..=14_000).contains(&warm.stop_save_ms), "the stop pays {} ms to save", warm.stop_save_ms);
-        assert!(
-            warm.stop_save_ms + warm.all_acting_ms() < cold.minds.iter().map(|m| m.first_act_ms).min().expect("test: four minds") / 10,
-            "saving and restoring every mind costs under a tenth of the FIRST cold mind's wait"
-        );
+        let first_cold = cold.minds.iter().map(|m| m.first_act_ms).min().expect("test: four minds");
+        assert!(warm.stop_save_ms + warm.all_acting_ms() < first_cold / 10, "saving and restoring all costs under a tenth of the first cold wait");
+    }
+
+    // what this catches (Joel, 2026-11-14: "independent work runs concurrently ... never serial
+    // minutes"): the core serializing independent saves or restores. Issued at once, on an engine
+    // that overlaps page tasks the stop costs its LARGEST save (Atlas's 90,853 tokens, ~4.9 s,
+    // not the ~13.5 s sum) and each mind acts after HER OWN restore (Aiko's 36,893 tokens ~0.8 s,
+    // not behind the others). The pinned fork is one lane, so this is the gain left in the fork.
+    #[test]
+    fn concurrent_page_io_costs_the_largest_save_and_each_mind_only_her_own_restore() {
+        let day = day();
+        let serial = day.restart(&[AtStop::Resident; 4], ColdPages::Keep, 1);
+        let overlapped = day.restart(&[AtStop::Resident; 4], ColdPages::Keep, 4);
+        let largest_save = day.contexts_tokens.value.iter().map(|t| t * day.page_bytes_per_token.value / day.save_bytes_per_ms.value).max();
+        assert_eq!(Some(overlapped.stop_save_ms), largest_save, "the stop is its largest save, not the sum");
+        assert!((4_800..=4_900).contains(&overlapped.stop_save_ms), "{} ms", overlapped.stop_save_ms);
+        for (mind, tokens) in overlapped.minds.iter().zip(&day.contexts_tokens.value) {
+            assert_eq!(mind.first_act_ms, tokens * day.page_bytes_per_token.value / day.restore_bytes_per_ms.value, "her own restore only");
+        }
+        assert!(overlapped.all_acting_ms() < serial.all_acting_ms() / 2, "{overlapped:?} vs {serial:?}");
     }
 
     // what this catches (the same night: 29 paged-out minds' pages taken by the store at volume
@@ -184,15 +225,16 @@ mod tests {
     #[test]
     fn a_paged_out_mind_keeps_her_page_under_the_recorded_pressure() {
         let day = day();
+        let lanes = day.engine_page_lanes.value;
         assert_eq!(day.recorded_cold_pages(), ColdPages::Keep, "the recorded pressure is the volume's, not the store's");
         // SHAPE, not a receipt: the second mind out of a slot at the stop (the M5 ran 5 personas on
         // 4 warm slots, `serving.plan decision="warm-slot-oversubscribed"` at 23:45:23Z).
         let at_stop = [AtStop::Resident, AtStop::PagedOut, AtStop::Resident, AtStop::Resident];
 
-        let kept = day.restart(&at_stop, day.recorded_cold_pages());
+        let kept = day.restart(&at_stop, day.recorded_cold_pages(), lanes);
         assert_eq!(kept.reprefilled_tokens(), 0, "she restores like the residents");
 
-        let yielded = day.restart(&at_stop, ColdPages::Yield);
+        let yielded = day.restart(&at_stop, ColdPages::Yield, lanes);
         assert_eq!(yielded.reprefilled_tokens(), 36_893, "her page was taken: her whole context again");
         assert!(yielded.all_acting_ms() > 10 * kept.all_acting_ms(), "{yielded:?} vs {kept:?}");
     }

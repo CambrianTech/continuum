@@ -1,6 +1,11 @@
 {
   "contexts_tokens": {
-    "value": [73826, 36893, 90853, 51749],
+    "value": [
+      73826,
+      36893,
+      90853,
+      51749
+    ],
     "receipt": "the four residents' slot tokens on the M5 engine (Qwen3.6-35B-A3B, pin cd2e16d87), ~/.continuum/logs/llama-server-58057.log.1 lines 66, 92, 97, 98 (2026-11-13 ~23:00Z): 'slot tokens = 73826', '36893', '90853', '51749'"
   },
   "cold_prefill_tok_per_s": {
@@ -20,7 +25,14 @@
     "receipt": "three saves on the M5 (core log inference.kv_page.action action=save): 00:38:32Z 1,523,431,072 B in 2,253 ms, 00:48:22Z 1,140,518,392 B in 2,372 ms, 00:50:27Z 1,360,948,864 B in 2,045 ms; 4,024,898,328 B / 6,670 ms"
   },
   "store_pressure": {
-    "value": { "own": 0.03, "volume": 0.85 },
+    "value": {
+      "own": 0.03,
+      "volume": 0.85
+    },
     "receipt": "the KV page store on the M5, 2026-11-14 ~00:50Z: ~2.6 GB on disk (ls ~/.continuum/cache/kv-pages) of a 92.6 GiB budget (cargo_target_budget_bytes: 10% of the 926 GiB volume), volume 143 GiB free of 926 GiB (df -h /); the broker asked it for 9,946,101,555 B every few minutes and it forgot 29 minds' pages from 22:40Z to 00:50Z (inference.kv_page.store_evicted cold_minds_forgotten)"
+  },
+  "engine_page_lanes": {
+    "value": 1,
+    "receipt": "how many page saves/restores the pinned fork (cd2e16d87) runs at once: one. They are tasks on its single task loop (tools/server/server-queue.cpp:138-153 process_new_tasks; save at server-context.cpp:2809/2960, restore at 2996/3076). Measured: two restores the core issued at once after the 2026-11-14 00:18Z relaunch, Aris (00:18:13.016Z, ms=2573 engine_ms=1012 wait_ms=1561) and Benchy (00:18:13.925Z, ms=1930 engine_ms=906 wait_ms=1024): Benchy waited 1,024 ms, Aris's 1,012 ms in the engine"
   }
 }

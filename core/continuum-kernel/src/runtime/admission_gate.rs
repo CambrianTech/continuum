@@ -28,6 +28,9 @@ const CLOSED: u64 = 1 << 63;
 /// Admission state for one resource: open/closed plus the in-flight count, in one word.
 pub struct AdmissionGate {
     word: AtomicU64,
+    /// Wakes [`AdmissionGate::drained`] waiters when the in-flight count reaches zero: a drain
+    /// waits on this event, never on a poll or a timer.
+    emptied: tokio::sync::Notify,
 }
 
 impl AdmissionGate {
@@ -36,6 +39,28 @@ impl AdmissionGate {
     pub const fn new() -> Self {
         Self {
             word: AtomicU64::new(0),
+            emptied: tokio::sync::Notify::const_new(),
+        }
+    }
+
+    /// Resolves once nothing admitted is in flight: the drain's completion event. Registered
+    /// before the count is read, so a release between the read and the await still wakes it.
+    pub async fn drained(&self) {
+        loop {
+            let emptied = self.emptied.notified();
+            tokio::pin!(emptied);
+            emptied.as_mut().enable();
+            if self.in_flight() == 0 {
+                return;
+            }
+            emptied.await;
+        }
+    }
+
+    /// One unit left the count: wake the drain when it was the last.
+    fn released(&self, before: u64) {
+        if before & !CLOSED == 1 {
+            self.emptied.notify_waiters();
         }
     }
 
@@ -118,7 +143,7 @@ impl AdmissionGate {
     /// Saturating, so a double release cannot wrap the count into the closed bit and
     /// reopen a shut gate. A double release is still a bug; this only bounds the damage.
     pub fn release_one(&self) {
-        let _ = self
+        let released = self
             .word
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
                 let count = cur & !CLOSED;
@@ -130,6 +155,9 @@ impl AdmissionGate {
                     Some((cur & CLOSED) | (count - 1))
                 }
             });
+        if let Ok(before) = released {
+            self.released(before);
+        }
     }
 
     /// Shut the gate. Returns whether THIS call closed it, so a second caller — a signal
@@ -159,7 +187,8 @@ impl Drop for Permit<'_> {
     fn drop(&mut self) {
         // Subtracting 1 from the whole word decrements the low-bit count and cannot reach
         // the closed bit, because a permit only exists when the count was at least 1.
-        self.gate.word.fetch_sub(1, Ordering::AcqRel);
+        let before = self.gate.word.fetch_sub(1, Ordering::AcqRel);
+        self.gate.released(before);
     }
 }
 

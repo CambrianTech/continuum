@@ -41,7 +41,6 @@ pub mod recorded;
 
 mod batch;
 mod knee;
-#[cfg(test)]
 mod restart;
 mod service;
 #[cfg(test)]

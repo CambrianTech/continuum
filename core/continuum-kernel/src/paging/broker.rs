@@ -344,7 +344,7 @@ impl PressureBroker {
             .map(|p| (p.pressure(), p.clone()))
             .filter(|(p, _)| *p >= self.config.act_above)
             .collect();
-        pressured.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        pressured.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)); // unwrap_or: a NaN pressure orders as a tie, never ahead of a measured one
         let act_on: &[(f64, Arc<dyn ResourcePool>)] = match tier {
             PressureTier::High | PressureTier::Critical => &pressured[..],
             _ => &[],
@@ -410,7 +410,7 @@ impl PressureBroker {
         views.sort_by(|a, b| {
             b.pressure
                 .partial_cmp(&a.pressure)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .unwrap_or(std::cmp::Ordering::Equal) // unwrap_or: a NaN pressure sorts as a tie in the snapshot view
         });
         let global_pressure = views.iter().map(|v| v.pressure).fold(0.0_f64, f64::max);
         BrokerSnapshot {

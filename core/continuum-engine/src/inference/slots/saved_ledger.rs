@@ -152,7 +152,7 @@ impl SavedLedger {
         Ok(ledger)
     }
 
-    /// Atomic replace (write a sibling, then `replace_file`) into a dir that must already
+    /// Atomic replace (`durable::write_replace`: staged, synced, renamed) into a dir that must already
     /// exist: the lane creates its page dir; the ledger never creates one. Writes are
     /// serialized and a snapshot older than the one on disk is dropped, so the file is
     /// always the newest set even when writers race.
@@ -170,9 +170,7 @@ impl SavedLedger {
             mind_residents: snapshot.residents,
         };
         let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)?;
-        continuum_host::durable::replace(&tmp, &self.path)?;
+        continuum_host::durable::write_replace(&self.path, &bytes)?;
         *written = snapshot.generation;
         Ok(())
     }
