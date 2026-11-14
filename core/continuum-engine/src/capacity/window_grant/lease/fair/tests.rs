@@ -75,6 +75,35 @@ fn refusal_restores_the_charged_holder_without_giving_capacity_to_the_waiter() {
     assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty(), "no immediate retry without a new completion");
 }
 
+// what this catches (the M5, d6c0dd892, 2026-11-14 09:37:41Z): Atlas rendered her act against an
+// 88,509 grant; her need grew and the next publication grew her grant to 89,513 (a new revision),
+// so her dispatch was refused "her grant changed since this request was rendered (88509 ->
+// Some(89513))" and re-rendered. An act holds its grant: the growth waits for her next act, the
+// request dispatches on the lease it was priced on, and the grant grows once the act ends.
+#[test]
+fn a_need_that_grows_under_a_rendered_act_moves_her_grant_at_the_next_act() {
+    let owner = Box::leak(Box::new(Reservations::new()));
+    let a = uuid::Uuid::from_u128(1);
+    let mut fair = FairGrantState::default();
+    let mut current = None;
+    let mut publish = |need: u32, current: &mut Option<PoolGrants>| {
+        let demands = [Demand { mind: a, need: t(need), target: t(need), wish: t(need), in_flight: false, settled: true, ceiling: 200 }];
+        let before = current.clone();
+        owner.fair_publish(&mut fair, &demands, 200, 200, engine(), || before, |next| *current = Some(next)).1
+    };
+    publish(88, &mut current);
+    let rendered = current.as_ref().expect("published").lease_for(a).expect("granted");
+    let act = owner.hold_act(a, || Some(rendered)).expect("her act holds her grant");
+    assert!(publish(90, &mut current).is_empty());
+    assert_eq!(current.as_ref().expect("published").lease_for(a), Some(rendered), "the same grant, the same revision, under the act");
+    let request = owner.reserve_against(a, rendered, 80, || current.as_ref().and_then(|c| c.lease_for(a)))
+        .expect("dispatched on the lease she was priced on");
+    settle(request, Some(&TerminalReceipt { finish: "stop".into() }));
+    drop(act);
+    publish(90, &mut current);
+    assert_eq!(current.as_ref().expect("published").grant_for(a), Some(90), "her grant grows at her next act");
+}
+
 fn engine() -> Option<EngineIncarnation> {
     Some(EngineIncarnation {
         pid: 7,
