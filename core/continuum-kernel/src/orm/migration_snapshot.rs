@@ -15,6 +15,25 @@ pub(super) struct MigrationRow {
 }
 
 impl super::BinarySnapshot {
+    /// Exact declared values at these two pinned snapshots. This does not freeze
+    /// other collections or prevent writes after either snapshot is released.
+    pub(super) async fn migration_matches(&self, other: &Self, limit: NonZeroUsize) -> Result<bool, String> {
+        if !super::entity::schemas_equivalent(&self.schema, &other.schema) { return Ok(false); }
+        let mut after = None;
+        loop {
+            let request = MigrationPage { after: after.as_deref(), limit };
+            let left = self.migration_page(&request).await?;
+            let right = other.migration_page(&request).await?;
+            if left.len() != right.len() { return Ok(false); }
+            if left.is_empty() { return Ok(true); }
+            for (left, right) in left.into_iter().zip(right) {
+                if left.record.id != right.record.id || left.record.data != right.record.data
+                    || left.payloads != right.payloads { return Ok(false); }
+                after = Some(left.record.id);
+            }
+        }
+    }
+
     pub(super) async fn migration_page(&self, request: &MigrationPage<'_>) -> Result<Vec<MigrationRow>, String> {
         let mut query = Query::select();
         query.from(Alias::new(naming::to_table_name(&self.schema.collection)));

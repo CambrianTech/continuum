@@ -224,7 +224,8 @@ impl MigrationHandle {
         self.running.load(Ordering::Relaxed)
     }
 
-    /// Verify migration by comparing record counts between source and target.
+    /// Verify receipts, schemas and exact scalar/native values in bounded snapshots.
+    /// Offline callers must keep writers quiescent across collections and adoption.
     pub async fn verify(&self) -> Result<MigrationVerification, String> {
         let mut results = Vec::new();
         let states = self.states.read().clone();
@@ -249,10 +250,17 @@ impl MigrationHandle {
 
             let src = source_count.into_result()?;
             let tgt = target_count.into_result()?;
-            let matches = src == tgt
+            let receipts_match = src == tgt
                 && *state.status.read() == MigrationStatus::Completed
                 && state.failed.load(Ordering::Relaxed) == 0
                 && state.migrated.load(Ordering::Relaxed) == src;
+            let matches = if receipts_match {
+                let source = self.source.binary_snapshot(collection).await?;
+                let target = self.target.binary_snapshot(collection).await?;
+                // A transfer-page bound, not a limit on verified rows.
+                source.migration_matches(&target, std::num::NonZeroUsize::new(64)
+                    .ok_or("invalid verification page size")?).await?
+            } else { false };
             if !matches {
                 all_match = false;
             }

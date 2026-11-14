@@ -71,9 +71,12 @@ never enter the scalar record envelope; each descriptor and byte allocation move
 unchanged into the destination transaction. Optional NULL pairs remain absent.
 The whole source page validates before its first destination write. Destination
 commits remain per row, so later failure can leave an explicitly incomplete target.
-This transfer mechanism does not yet provide legacy-schema conversion, durable
-resume, exact-value certification or the offline cutover command. Those are required
-before deployment; count-based verification alone does not certify data identity.
+Verification now requires completed write receipts, matching declarations and exact
+scalar values, native descriptors and bytes using bounded pinned pages on both stores.
+It detects equal-count payload or producer changes. Writers must remain quiescent:
+per-collection snapshots do not certify a globally atomic database cutover. This
+transfer mechanism does not yet provide legacy-schema conversion, durable resume
+or the offline cutover command. Those remain required before deployment.
 
 The producer supplies bytes and a typed descriptor. The descriptor identifies the
 element representation, shape, byte order, layout and producer/model identity.

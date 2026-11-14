@@ -23,7 +23,7 @@ async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_resta
             field("payload", FieldType::Binary),
         ]).collect(), indexes: vec![],
     }).await.into_result()?;
-    for index in 1_u128..=5 {
+    for index in 1_u128..=131 {
         let record = DataRecord {
             id: uuid::Uuid::from_u128(index).to_string(), collection: "native_rows".into(),
             data: serde_json::json!({"ordinal": 9_007_199_254_740_993_i64, "note": null}),
@@ -43,7 +43,7 @@ async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_resta
     let mut engine = MigrationEngine::new(source.clone(), target.clone(), MigrationConfig {
         batch_size: 2, throttle_ms: 0, collections: Some(vec!["native_rows".into()]),
     });
-    assert_eq!(engine.run().await?.migrated, 5);
+    assert_eq!(engine.run().await?.migrated, 131);
     drop(engine);
     drop(target);
     let target = SeaOrmAdapter::connect(open("target.db")).await?;
@@ -67,9 +67,31 @@ async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_resta
             compared += 1;
         }
     }
-    assert_eq!(compared, 5);
+    assert_eq!(compared, 131);
     drop(original);
     drop(restored);
+
+    // Equal row counts cannot hide a changed native producer or payload.
+    let checked = Arc::new(SeaOrmAdapter::connect(open("checked.db")).await?);
+    let mut verification = MigrationEngine::new(source.clone(), checked.clone(), MigrationConfig {
+        batch_size: 2, throttle_ms: 0, collections: Some(vec!["native_rows".into()]),
+    });
+    verification.run().await?;
+    assert!(verification.verify().await?.verified);
+    checked.update_binary("native_rows", &uuid::Uuid::from_u128(129).to_string(),
+        BTreeMap::from([("payload".into(), BinaryValue::new(BinaryDescriptor {
+            element_type: ElementType::U8, byte_order: ByteOrder::Little,
+            shape: vec![3], producer: "different-producer".into(), unit: false, scale: None,
+        }, vec![0, 255, 129])?)]), crate::orm::binary::BinaryWriteCondition::Replace,
+    ).await.into_result()?;
+    assert!(!verification.verify().await?.verified, "same bytes and counts, wrong producer");
+    checked.update_binary("native_rows", &uuid::Uuid::from_u128(129).to_string(),
+        BTreeMap::from([("payload".into(), BinaryValue::new(BinaryDescriptor {
+            element_type: ElementType::U8, byte_order: ByteOrder::Little,
+            shape: vec![3], producer: "fixture-producer-129".into(), unit: false, scale: None,
+        }, vec![0, 254, 129])?)]), crate::orm::binary::BinaryWriteCondition::Replace,
+    ).await.into_result()?;
+    assert!(!verification.verify().await?.verified, "same descriptor and counts, wrong bytes");
 
     // Replay a corrupt descriptor on the second row of a page. The first
     // valid row must not reach the destination before the whole page validates.
